@@ -1,0 +1,25 @@
+# boot.py — frozen module in openmv firmware. ioctl + computation only.
+#
+# This is a TEMPLATE. Tool 1 (firmware_build) substitutes the build-time
+# constants below before freezing it into firmware.bin. Substitution tokens:
+#
+#   @TRUSTED_KEYS@        - dict literal {key_id: pubkey_bytes} from trusted_keys.json
+#   @FRONT_SIZE@          - int, from board.json (partition_size // 2 & ~0xFFF)
+#   @PARTITION_SIZE@      - int, ROMFS partition size from board.json
+#   @OPENMV_FIRMWARE_VER@ - int, (major<<24)|(minor<<16)|(patch<<8)|build
+#   @MAX_SCHEMA_VERSION@  - int, highest trailer schema this boot.py understands
+#
+# The full, reviewed boot.py body is specified in the concept plan
+# ("boot.py (pure ioctl + computation)"). It is ported and hardened here as part
+# of working through the plan concept-by-concept — not yet filled in.
+
+import vfs, os, sys, struct, binascii, hashlib  # noqa: F401
+
+FRONT_SIZE     = @FRONT_SIZE@
+PARTITION_SIZE = @PARTITION_SIZE@
+TRUSTED_KEYS   = @TRUSTED_KEYS@
+MAX_SCHEMA_VERSION  = @MAX_SCHEMA_VERSION@
+OPENMV_FIRMWARE_VER = @OPENMV_FIRMWARE_VER@
+
+# TODO: port the trailer parser + signature/SHA verification + status state
+# machine + slot selection from the concept plan. Keep it pure ioctl + compute.

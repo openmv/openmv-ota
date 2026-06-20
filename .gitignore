@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+/build/
+/dist/
+.venv/
+/.venv/
+.eggs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Build outputs / release artefacts
+/releases/
+*.bin
+firmware.bin
+
+# Private signing material — NEVER commit these
+*.pem
+*.key
+keys/*.private
+keys/private/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

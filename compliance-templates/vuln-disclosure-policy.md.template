@@ -1,0 +1,22 @@
+# Vulnerability Disclosure Policy — {{PRODUCT_NAME}}
+
+> Template. {{VENDOR_NAME}} fills this in and publishes it; `security.txt`
+> references it. Supports CRA Annex I 2(4)(5)(6) coordinated disclosure.
+
+## Scope
+{{SCOPE}}
+
+## How to report
+Email {{SECURITY_CONTACT_EMAIL}} (PGP: {{PGP_KEY_URL}}).
+
+## Our commitments
+- Acknowledge within {{ACK_DAYS}} days.
+- Triage and provide an initial assessment within {{TRIAGE_DAYS}} days.
+- Target a fix and coordinated disclosure within {{DISCLOSURE_DAYS}} days.
+- Credit reporters who wish to be named.
+
+## Safe harbour
+{{SAFE_HARBOUR_STATEMENT}}
+
+## Out of scope
+{{OUT_OF_SCOPE}}

@@ -1,0 +1,14 @@
+{
+  "board": "OPENMV_N6",
+  "description": "OpenMV Cam N6 (Portenta N6 class, STM32N6, XSPI ROMFS).",
+  "romfs_partition_size": 25165824,
+  "romfs_front_size": 12582912,
+  "board_id": 0,
+  "firmware_version": 0,
+  "_source": "openmv/boards/OPENMV_N6/board_config.h OMV_ROMFS_PART0_LENGTH = 0x01800000 (24 MiB)",
+  "_notes": [
+    "romfs_front_size = romfs_partition_size // 2 & ~0xFFF.",
+    "board_id and firmware_version are placeholders (0) pending the schemes",
+    "decided while working through the plan."
+  ]
+}

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openmv-ota"
+version = "0.0.0"
+description = "Secure over-the-air update tooling for OpenMV cameras (ROMFS OTA, with room for firmware/bootloader OTA)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "OpenMV", email = "openmv@openmv.io" }]
+keywords = ["openmv", "ota", "romfs", "firmware", "update", "ed25519", "embedded"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Embedded Systems",
+    "Topic :: Security :: Cryptography",
+]
+
+# Runtime dependencies are added as each tool is built out (see the plan):
+#   signing/keys: cryptography, pyca-ed25519 backends, PKCS#11 (HSM)
+#   server:       a web framework + object-storage adapters
+#   sbom/cve:     cyclonedx, osv/nvd scanners
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+server = []
+hsm = []
+
+[project.urls]
+Homepage = "https://github.com/openmv/openmv-ota"
+Source = "https://github.com/openmv/openmv-ota"
+Issues = "https://github.com/openmv/openmv-ota/issues"
+
+[project.scripts]
+openmv-ota = "openmv_ota.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# The on-device SDK and C module ship as package data, bundled into the ROMFS
+# (SDK) or copied into the firmware tree (ed25519_verify) at build time.
+"openmv_ota" = [
+    "romfs/sdk/**/*",
+    "romfs/firmware_build/templates/*",
+    "romfs/firmware_build/ed25519_verify/**/*",
+    "romfs/update_server/deploy/*",
+]
+
+[tool.ruff]
+line-length = 100

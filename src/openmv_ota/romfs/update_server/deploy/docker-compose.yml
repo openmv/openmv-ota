@@ -1,0 +1,11 @@
+# docker-compose for local dev / self-hosted deploy of the update server.
+# TODO: define the service once update_server/app.py exists.
+#
+# services:
+#   openmv-ota-server:
+#     build: ../../../..
+#     command: openmv-ota romfs serve -c /config/server.yaml
+#     ports: ["8080:8080"]
+#     volumes:
+#       - ./config:/config
+#       - ./storage:/storage

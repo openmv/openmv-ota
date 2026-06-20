@@ -1,0 +1,38 @@
+# CRA Conformity Assessment Checklist — {{PRODUCT_NAME}}
+
+> Maps the openmv-ota stack onto each CRA Annex I essential requirement, showing
+> what this stack provides and what {{VENDOR_NAME}} must add. The customer
+> includes a completed copy in their technical documentation when self-certifying.
+>
+> The authoritative mapping table lives in the concept plan ("EU CRA / RED 3.3
+> alignment"); this template is the customer-facing fill-in version.
+
+## Annex I — essential cybersecurity requirements
+
+| Req | Provided by openmv-ota | Customer must add | Status |
+|---|---|---|---|
+| 1(2)(a) No known exploitable vulns at market | Build-time SBOM + NVD/OSV scan | Act on findings | ☐ |
+| 1(2)(c) Updates throughout support period | ROMFS OTA mechanism | Commit to a support period | ☐ |
+| 1(2)(d) Protection against unauthorised access | ed25519 sig + anti-rollback + golden fallback | — | ☐ |
+| 1(2)(e) Confidentiality of stored data | **Out of scope** (no image encryption) | Add encryption if applicable | ☐ |
+| 1(2)(f) Integrity of stored data | Signature + SHA-256 + CRC32 (ROMFS) | Cover /flash, /sdcard | ☐ |
+| 1(2)(h) Availability of essential functions | Trial-boot + golden image | — | ☐ |
+| 1(2)(j) Mitigate impact of incidents | Auto-rollback to BACK | — | ☐ |
+| 1(2)(k) Security event recording | `audit_log` pattern | Implement in app | ☐ |
+| 1(2)(m) Vulnerability handling | OTA + SBOM + transparency log + disclosure | Run the process | ☐ |
+
+## Annex I — vulnerability handling
+
+| Req | Provided | Customer must add | Status |
+|---|---|---|---|
+| 2(1) SBOM | Generated per build | Maintain | ☐ |
+| 2(3) Effective testing | RFC 8032 + Wycheproof + boot.py adversarial corpus | App-level tests | ☐ |
+| 2(5) Coordinated disclosure | `security.txt` template | Publish + staff it | ☐ |
+| 2(7) Free, timely updates | OTA delivery | Operate the server | ☐ |
+
+## RED 3.3 (Article 3.3(d)(e)(f))
+
+| Req | Coverage | Status |
+|---|---|---|
+| 3.3(d) Network protection | TLS + cert pinning (app) + signatures | ☐ |
+| 3.3(f) Fraud prevention | Per-image signature + anti-rollback | ☐ |

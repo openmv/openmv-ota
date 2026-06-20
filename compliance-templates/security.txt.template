@@ -1,0 +1,11 @@
+# security.txt — RFC 9116. Customer fills in and serves at
+# https://<domain>/.well-known/security.txt
+# Tool 1 pre-fills these from customer metadata at build time.
+
+Contact: mailto:{{SECURITY_CONTACT_EMAIL}}
+Expires: {{EXPIRES_ISO8601}}
+Encryption: {{PGP_KEY_URL}}
+Policy: {{VULN_DISCLOSURE_POLICY_URL}}
+Acknowledgments: {{ACKNOWLEDGMENTS_URL}}
+Preferred-Languages: en
+Canonical: https://{{DOMAIN}}/.well-known/security.txt
