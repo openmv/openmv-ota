@@ -57,22 +57,23 @@ pip install -e .
 
 ## Overview
 
-`openmv-ota` ships cooperating tools behind a single CLI, namespaced by
-subsystem. The ROMFS image tool is available today:
+`openmv-ota` is built in two clearly separated layers. The lower layer is a
+generic image tool that has nothing to do with updates; the upper layer adds
+everything that makes an image updatable in the field.
 
-| Command | Status | Purpose |
-|---|---|---|
-| `openmv-ota romfs build <dir> -o img --board B` | ✅ | Pack a directory into a ROMFS image (board-aware alignment) |
-| `openmv-ota romfs extract <img> -o <dir>` | ✅ | Unpack a ROMFS image to a directory |
-| `openmv-ota romfs ls` / `cat` / `info` / `verify` | ✅ | Inspect, read a file from, summarise, or validate an image |
-| `openmv-ota romfs boards` | ✅ | List known boards / show a board's ROMFS config |
-| `openmv-ota romfs build-firmware` | ▫ planned | Build openmv firmware with the frozen `boot.py` + `ed25519_verify` |
-| `openmv-ota romfs pack` | ▫ planned | Compose a signed factory / OTA slot |
-| `openmv-ota romfs serve` / `publish` | ▫ planned | Run the update server / upload a release |
-| `openmv-ota init`, `keys generate` | ▫ planned | Scaffold a customer repo / create keys |
+### Layer 1 — the ROMFS image tool (generic, available now)
 
-`--board` supplies the defaults (alignment rules + partition capacity); per-type
-`--align EXT=N` flags override those on top. See [docs/romfs.md](docs/romfs.md).
+`openmv-ota romfs` turns a directory into an OpenMV ROMFS image (the read-only
+`/rom` filesystem) and back. It is a **standalone utility with no knowledge of
+OTA, signing, or updates** — useful anywhere you'd build a ROMFS image, from the
+command line or CI.
+
+| Command | Purpose |
+|---|---|
+| `openmv-ota romfs build <dir> -o <img> --board <board>` | Pack a directory into a ROMFS image (board-aware alignment) |
+| `openmv-ota romfs extract <img> -o <dir>` | Unpack a ROMFS image to a directory |
+| `openmv-ota romfs ls` / `cat` / `info` / `verify` | List, read a file from, summarise, or validate an image |
+| `openmv-ota romfs boards` | List supported boards / show a board's ROMFS config |
 
 ```bash
 openmv-ota romfs build ./app -o app.romfs --board OPENMV_N6
@@ -80,8 +81,23 @@ openmv-ota romfs ls app.romfs -l
 openmv-ota romfs extract app.romfs -o ./out
 ```
 
-The on-device SDK (`import openmv_ota` on the camera) is bundled as package data
-and copied into the ROMFS at build time; customers never install it separately.
+`--board` supplies the defaults (alignment rules + partition capacity); per-type
+`--align EXT=N` flags override those on top. **Full reference:
+[docs/romfs.md](docs/romfs.md).**
+
+### Layer 2 — the OTA layers (built on top, in progress)
+
+Everything that makes an image *updatable* is a separate set of tools that
+consume the image tool above — they are stubbed today:
+
+- signing + trailer/slot composition (factory & OTA images),
+- the frozen `boot.py` and the `ed25519_verify` firmware module,
+- model compilation (mpy-cross / Vela / ST Edge AI),
+- the update server and the on-device SDK (`import openmv_ota` on the camera).
+
+See [openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md) for the
+design. Comprehensive user-facing documentation will live in openmv-doc; the
+docs here are intentionally brief developer notes.
 
 ## Contributing to the project
 
