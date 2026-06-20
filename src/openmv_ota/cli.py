@@ -40,11 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_keys_gen = keys_sub.add_parser("generate", help="create trusted_keys.json + keys")
     p_keys_gen.set_defaults(func=_not_implemented, _command="keys generate")
 
-    p_romfs = sub.add_parser("romfs", help="ROMFS OTA subsystem")
-    romfs_sub = p_romfs.add_subparsers(dest="_subcommand")
+    p_romfs = sub.add_parser("romfs", help="ROMFS image + OTA subsystem")
+    from openmv_ota.romfs import cli as romfs_cli
+
+    romfs_sub = romfs_cli.register(p_romfs)
+    # OTA-layer subcommands (not implemented yet; the core builder is `romfs build`).
     for name, help_text in (
         ("build-firmware", "build openmv firmware with frozen boot.py + ed25519_verify"),
-        ("build", "compose a factory or OTA ROMFS image"),
+        ("pack", "compose a signed factory or OTA ROMFS slot"),
         ("serve", "run the update server (local dev)"),
         ("publish", "upload a signed OTA release"),
     ):

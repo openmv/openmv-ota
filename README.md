@@ -29,9 +29,17 @@ full design — it is the source of truth for what this repo is building.
 
 ## Status
 
-Early development. The repository skeleton and design are in place; the tools are
-being built out concept-by-concept against the plan document. Nothing here is
-production-ready yet.
+Early development, built out concept-by-concept against the plan document.
+
+- **`openmv-ota romfs build` / `extract` — the core ROMFS image tool — is
+  implemented and tested** (100% coverage). It packs a directory into an OpenMV
+  ROMFS image with board-aware, per-extension alignment (so memory-mapped NPU
+  model blobs land on the right boundary), and unpacks images back to a
+  directory. The format is a faithful port of the OpenMV IDE's writer/reader and
+  reproduces real IDE-built images byte-for-byte.
+- The OTA layers (signing, the frozen `boot.py`, the `ed25519_verify` module,
+  the update server) are still stubs. Model compilation (mpy-cross / Vela /
+  ST Edge AI) is a planned layer on top of the core builder.
 
 ## Installation
 
@@ -49,17 +57,28 @@ pip install -e .
 
 ## Overview
 
-`openmv-ota` ships cooperating tools behind a single CLI. For the ROMFS subsystem:
+`openmv-ota` ships cooperating tools behind a single CLI, namespaced by
+subsystem. The ROMFS image tool is available today:
 
-| Command | Purpose |
-|---|---|
-| `openmv-ota init` | Scaffold a customer repo layout |
-| `openmv-ota keys generate` | Create `trusted_keys.json` + (HSM-bound) keys |
-| `openmv-ota romfs build-firmware` | Build openmv firmware with the frozen `boot.py` + `ed25519_verify` |
-| `openmv-ota romfs build --mode factory` | Compose a flashable FRONT+BACK golden image |
-| `openmv-ota romfs build --mode ota` | Compose a single signed OTA slot |
-| `openmv-ota romfs serve` | Run the update server (local dev) |
-| `openmv-ota romfs publish` | Upload a signed OTA release |
+| Command | Status | Purpose |
+|---|---|---|
+| `openmv-ota romfs build <dir> -o img --board B` | ✅ | Pack a directory into a ROMFS image (board-aware alignment) |
+| `openmv-ota romfs extract <img> -o <dir>` | ✅ | Unpack a ROMFS image to a directory |
+| `openmv-ota romfs ls` / `cat` / `info` / `verify` | ✅ | Inspect, read a file from, summarise, or validate an image |
+| `openmv-ota romfs boards` | ✅ | List known boards / show a board's ROMFS config |
+| `openmv-ota romfs build-firmware` | ▫ planned | Build openmv firmware with the frozen `boot.py` + `ed25519_verify` |
+| `openmv-ota romfs pack` | ▫ planned | Compose a signed factory / OTA slot |
+| `openmv-ota romfs serve` / `publish` | ▫ planned | Run the update server / upload a release |
+| `openmv-ota init`, `keys generate` | ▫ planned | Scaffold a customer repo / create keys |
+
+`--board` supplies the defaults (alignment rules + partition capacity); per-type
+`--align EXT=N` flags override those on top. See [docs/romfs.md](docs/romfs.md).
+
+```bash
+openmv-ota romfs build ./app -o app.romfs --board OPENMV_N6
+openmv-ota romfs ls app.romfs -l
+openmv-ota romfs extract app.romfs -o ./out
+```
 
 The on-device SDK (`import openmv_ota` on the camera) is bundled as package data
 and copied into the ROMFS at build time; customers never install it separately.

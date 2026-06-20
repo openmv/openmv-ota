@@ -26,7 +26,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+dev = ["pytest>=7", "pytest-cov>=4", "ruff"]
 server = []
 hsm = []
 
@@ -45,11 +45,39 @@ where = ["src"]
 # The on-device SDK and C module ship as package data, bundled into the ROMFS
 # (SDK) or copied into the firmware tree (ed25519_verify) at build time.
 "openmv_ota" = [
+    "data/*.json",
     "romfs/sdk/**/*",
     "romfs/firmware_build/templates/*",
     "romfs/firmware_build/ed25519_verify/**/*",
     "romfs/update_server/deploy/*",
 ]
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "--cov=openmv_ota --cov-report=term-missing --cov-fail-under=100"
+
+[tool.coverage.run]
+source = ["openmv_ota"]
+omit = [
+    # OTA-layer subsystems are stubs until later; the core romfs builder is
+    # what this first tool ships, and it is held to 100%.
+    "*/romfs/firmware_build/*",
+    "*/romfs/romfs_build/*",
+    "*/romfs/update_server/*",
+    "*/romfs/sdk/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
 [tool.ruff]
 line-length = 100
+# The on-device SDK and its examples are illustrative MicroPython snippets
+# (intentional comma-imports, references to user-supplied callbacks); they are
+# not part of the host-side lint surface.
+extend-exclude = ["src/openmv_ota/romfs/sdk/examples"]

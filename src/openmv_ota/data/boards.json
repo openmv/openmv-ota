@@ -1,0 +1,433 @@
+{
+  "_comment": "Per-board ROMFS config extracted from OpenMV IDE share/qtcreator/firmware/settings.json. Source of truth for alignment rules + partition sizes. npu/mpy_args are carried for the future model-compile layer and unused by the core builder.",
+  "_source_firmware_version": "4.8.1",
+  "boards": {
+    "OPENMV2": {
+      "display_name": "OpenMV Cam M4 (STM32F427)",
+      "arch": "OMV2 F4 256 JPEG",
+      "mpy_args": [
+        "-march=armv7emsp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 131072,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    },
+    "OPENMV3": {
+      "display_name": "OpenMV Cam M7 (STM32F765/67)",
+      "arch": "OMV3 F7 512",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 262144,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    },
+    "OPENMV4": {
+      "display_name": "OpenMV Cam H7 (STM32H743)",
+      "arch": "OMV4 H7 1024",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 131072,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    },
+    "OPENMV4P": {
+      "display_name": "OpenMV Cam H7 Plus (STM32H743 w/ SDRAM)",
+      "arch": "OMV4P H7 32768 SDRAM",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 8388608,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    },
+    "OPENMVPT": {
+      "display_name": "OpenMV Pure Thermal (STM32H743 w/ SDRAM)",
+      "arch": "OPENMVPT 65536 SDRAM",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 8388608,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    },
+    "OPENMV_RT1060": {
+      "display_name": "OpenMV Cam RT1062 (MIMXRT1062)",
+      "arch": "OMVRT1060 32768 SDRAM",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 8388608,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    },
+    "OPENMV_AE3": {
+      "display_name": "OpenMV AE3",
+      "arch": "OPENMV AE3",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "High Performance Core",
+          "index": 0,
+          "size": 25165824,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": {
+            "type": "vela",
+            "args": [
+              "--system-config RTSS_HP_SRAM_OSPI",
+              "--accelerator-config ethos-u55-256",
+              "--memory-mode Shared_Sram"
+            ],
+            "heapSize": 4194304,
+            "iniFilePath": "OPENMV_AE3/vela.ini"
+          }
+        },
+        {
+          "name": "High Efficiency Core",
+          "index": 1,
+          "size": 1048576,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": {
+            "type": "vela",
+            "args": [
+              "--system-config RTSS_HE_SRAM_MRAM",
+              "--accelerator-config ethos-u55-128",
+              "--memory-mode Shared_Sram"
+            ],
+            "heapSize": 2097152,
+            "iniFilePath": "OPENMV_AE3/vela.ini"
+          }
+        }
+      ]
+    },
+    "OPENMV_N6": {
+      "display_name": "OpenMV N6 (STM32N657)",
+      "arch": "OpenMV N6",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 25165824,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 32
+            },
+            {
+              "extension": "lite",
+              "alignment": 32
+            },
+            {
+              "extension": "onnx",
+              "alignment": 32
+            },
+            {
+              "extension": "bin",
+              "alignment": 32
+            }
+          ],
+          "npu": {
+            "type": "stedgeai",
+            "args": [
+              "--target stm32n6",
+              "--st-neural-art default@neuralart.json"
+            ],
+            "jsonFilePath": "OPENMV_N6/neuralart.json",
+            "mpoolFilePath": "OPENMV_N6/stm32n6.mpool"
+          }
+        }
+      ]
+    },
+    "ARDUINO_PORTENTA_H7": {
+      "display_name": "Arduino Portenta",
+      "arch": "PORTENTA H7 8192 SDRAM",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 4194304,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    },
+    "ARDUINO_GIGA": {
+      "display_name": "Arduino Giga",
+      "arch": "GIGA H7 8192 SDRAM",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 4194304,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    },
+    "ARDUINO_NICLA_VISION": {
+      "display_name": "Arduino Nicla Vision",
+      "arch": "NICLAV H7 1024",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 4194304,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    },
+    "ARDUINO_NANO_33_BLE_SENSE": {
+      "display_name": "Arduino Nano33 BLE",
+      "arch": "NANO33 M4",
+      "mpy_args": [
+        "-march=armv7emsp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 0,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    },
+    "ARDUINO_NANO_RP2040_CONNECT": {
+      "display_name": "Arduino Nano RP2040 Connect",
+      "arch": "PICO M0",
+      "mpy_args": [
+        "-march=armv6m"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 0,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 16
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
+    }
+  }
+}
