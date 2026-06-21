@@ -103,10 +103,11 @@ def render_config(name: str, vendor: str | None, boards: list[str]) -> str:
         "# disclosure_url = \"https://example.com/.well-known/security.txt\"\n\n"
         "[targets]\n"
         "boards = [%s]\n\n" % board_list
-        + "# Optional per-board overrides (win over firmware-resolved geometry):\n"
+        + "# Optional per-board settings:\n"
         "# [targets.OPENMV_AE3]\n"
-        "# partition_size = 25165824\n"
-        "# board_id = 1234\n"
+        "# partitions = [0, 1]       # target both cores (HP + HE); default [0]\n"
+        "# board_id = 1234           # applies to all the board's partitions\n"
+        "# partition_size = 25165824 # override geometry (single-partition only)\n"
     )
 
 

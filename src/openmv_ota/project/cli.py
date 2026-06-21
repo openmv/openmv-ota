@@ -202,6 +202,8 @@ def _print_summary(lock: lock_mod.Lock) -> None:
           % (tc.get("mpy_cross", {}).get("version"),
              tc.get("vela", {}).get("version"),
              tc.get("stedgeai", {}).get("version")))
-    for name, rb in lock.targets.get("resolved", {}).items():
-        print("  board %-18s part %s  front %s  (%s)"
-              % (name, rb.get("partition_size"), rb.get("front_size"), rb.get("geometry_source")))
+    for rb in lock.targets.get("resolved", []):
+        npu = rb.get("npu") or "-"
+        print("  %-18s part[%d] %s  front %s  npu %s  (%s)"
+              % (rb.get("name"), rb.get("partition_index"), rb.get("partition_size"),
+                 rb.get("front_size"), npu, rb.get("geometry_source")))

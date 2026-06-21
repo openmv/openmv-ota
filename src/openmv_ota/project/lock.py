@@ -96,5 +96,11 @@ def _diff(old, new, path: str, changes: list[str]) -> None:
     if isinstance(old, dict) and isinstance(new, dict):
         for k in sorted(set(old) | set(new)):
             _diff(old.get(k), new.get(k), "%s.%s" % (path, k), changes)
+    elif isinstance(old, list) and isinstance(new, list):
+        if len(old) != len(new):
+            changes.append("%s: %d entries -> %d entries" % (path, len(old), len(new)))
+        else:
+            for i, (o, n) in enumerate(zip(old, new)):
+                _diff(o, n, "%s[%d]" % (path, i), changes)
     elif old != new:
         changes.append("%s: %r -> %r" % (path, old, new))

@@ -69,3 +69,15 @@ def test_drift_reports_changes():
     assert "firmware.version" in joined
     assert "firmware.commit" in joined
     assert "firmware.dirty" in joined
+
+
+def test_drift_list_element_change():
+    a = _lock(submodules=[{"path": "x", "commit": "1"}])
+    b = _lock(submodules=[{"path": "x", "commit": "2"}])
+    assert any("submodules[0].commit" in c for c in lock_mod.drift(a, b))
+
+
+def test_drift_list_length_change():
+    a = _lock(submodules=[{"path": "x", "commit": "1"}])
+    b = _lock(submodules=[{"path": "x", "commit": "1"}, {"path": "y", "commit": "2"}])
+    assert any("entries ->" in c for c in lock_mod.drift(a, b))

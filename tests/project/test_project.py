@@ -40,7 +40,39 @@ def test_resolve_snapshot_fields(make_firmware, make_sdk):
     assert lock.firmware["version"] == "5.0.0"
     assert lock.firmware["version_code"] == (5 << 24)
     assert lock.toolchain["vela"]["version"] == "5.0.0"
-    assert lock.targets["resolved"]["OPENMV_N6"]["geometry_source"] == "firmware"
+    n6 = next(r for r in lock.targets["resolved"] if r["name"] == "OPENMV_N6")
+    assert n6["geometry_source"] == "firmware"
+
+
+def test_resolve_snapshot_ae3_dual_partition(make_firmware, make_sdk):
+    config = cfg.OtaConfig(name="p", vendor=None, boards=["OPENMV_AE3"],
+                           overrides={"OPENMV_AE3": {"partitions": [0, 1]}})
+    lock, _ = proj.resolve_snapshot(
+        make_firmware(), config, sdk_home_override=make_sdk(), config_digest="d", now=NOW)
+    resolved = lock.targets["resolved"]
+    assert [r["partition_index"] for r in resolved] == [0, 1]
+    # Each core has its own geometry and its own NPU compiler config.
+    hp = next(r for r in resolved if r["partition_index"] == 0)
+    he = next(r for r in resolved if r["partition_index"] == 1)
+    assert hp["partition_size"] == 25165824 and he["partition_size"] == 1048576
+    assert any("ethos-u55-256" in a for a in hp["npu_config"]["args"])
+    assert any("ethos-u55-128" in a for a in he["npu_config"]["args"])
+
+
+def test_resolve_snapshot_bad_partitions(make_firmware, make_sdk):
+    config = cfg.OtaConfig(name="p", vendor=None, boards=["OPENMV_AE3"],
+                           overrides={"OPENMV_AE3": {"partitions": "nope"}})
+    with pytest.raises(ProjectError, match="must be a list of integers"):
+        proj.resolve_snapshot(make_firmware(), config, sdk_home_override=make_sdk(),
+                              config_digest="d", now=NOW)
+
+
+def test_resolve_snapshot_partition_size_with_multi(make_firmware, make_sdk):
+    config = cfg.OtaConfig(name="p", vendor=None, boards=["OPENMV_AE3"],
+                           overrides={"OPENMV_AE3": {"partitions": [0, 1], "partition_size": 99}})
+    with pytest.raises(ProjectError, match="cannot be set when targeting multiple"):
+        proj.resolve_snapshot(make_firmware(), config, sdk_home_override=make_sdk(),
+                              config_digest="d", now=NOW)
 
 
 # --- ensure_sdk -------------------------------------------------------------
@@ -253,6 +285,22 @@ def test_load_project_firmware_override(tmp_path, make_firmware, make_sdk):
     root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
     p = proj.load_project(root, firmware=repo)
     assert p.firmware_path == repo.resolve()
+
+
+def test_load_project_partition_lookup(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, boards=["OPENMV_AE3"])
+    # Target both AE3 cores via a hand-edited config, then re-lock.
+    paths = proj.ProjectPaths(root)
+    paths.config.write_text(paths.config.read_text() + "\n[targets.OPENMV_AE3]\npartitions = [0, 1]\n")
+    proj.sync_project(root, firmware=repo, sdk_home_override=make_sdk(),
+                      install_sdk=False, allow_dirty=True, now=NOW)
+    p = proj.load_project(root, firmware=repo)
+    assert {t.partition_index for t in p.targets} == {0, 1}
+    assert p.board("OPENMV_AE3", 0).partition_size == 25165824
+    assert p.board("OPENMV_AE3", 1).partition_size == 1048576
+    with pytest.raises(ProjectError, match="partition 5 is not a target"):
+        p.board("OPENMV_AE3", 5)
 
 
 # --- verification (nothing-changed guarantee) -------------------------------

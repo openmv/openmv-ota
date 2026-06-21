@@ -102,14 +102,35 @@ Everything else is resolved into `openmv-ota.lock.json`:
 - the MicroPython version, its commit, and the `.mpy` ABI version;
 - the SDK version, and the resolved mpy-cross, Vela, and ST Edge AI versions;
 - every submodule commit;
-- per board: the arch and mpy-cross flags, the NPU type and its full compiler
-  config (Vela / ST Edge AI arguments and config-file references), the alignment
-  rules, and the partition and FRONT sizes.
+- per target (each board, and each of its targeted partitions): the arch and
+  mpy-cross flags, the NPU type and its full compiler config (Vela / ST Edge AI
+  arguments and config-file references), the alignment rules, and the partition
+  and FRONT sizes.
 
 Partition sizes come from the firmware's `boards/<BOARD>/board_config.h`. When a
 board's size is build-variant conditional, the bundled default is used instead
 and the source is recorded in `geometry_source`; set `partition_size` under a
 `[targets.<BOARD>]` table in `openmv-ota.toml` to override it.
+
+## Boards with multiple partitions
+
+A board can have more than one ROMFS partition, each its own image. The AE3 has
+two: the high-performance core (partition 0, OSPI) and the high-efficiency core
+(partition 1, MRAM), with different sizes and different NPU configs. A target
+defaults to partition 0; list the partitions to build images for both:
+
+```toml
+[targets]
+boards = ["OPENMV_AE3"]
+
+[targets.OPENMV_AE3]
+partitions = [0, 1]
+```
+
+Each partition is resolved independently — its own size, FRONT size, alignment
+rules, and NPU compiler config — and appears as a separate entry under
+`targets.resolved`. From Python, select one with `board(name, partition)`, or
+iterate `targets`.
 
 ## Reading a project from Python
 
@@ -123,9 +144,10 @@ from openmv_ota.project import load_project
 
 p = load_project("./my-product")  # raises if the firmware has drifted
 p.vela_path                       # path to the vela binary on this machine
+p.targets                         # every (board, partition) target to build for
 p.board("OPENMV_N6").front_size   # firmware-resolved FRONT partition size
 p.board("OPENMV_N6").alignment_rules
-p.board("OPENMV_N6").npu_config   # NPU compiler type, args, and config-file refs
+p.board("OPENMV_AE3", 1).npu_config   # HE-core NPU type, args, and file refs
 ```
 
 Pass `load_project("./my-product", verify=False)` to skip the check (reserved for

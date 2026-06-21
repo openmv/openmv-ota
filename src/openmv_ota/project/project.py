@@ -82,13 +82,25 @@ def resolve_snapshot(
     mpy_cross = sdk_res.resolve_mpy_cross(repo, mp)
 
     warnings: list[str] = []
-    resolved: dict[str, dict] = {}
+    resolved: list[dict] = []
     for name in config.boards:
         override = config.overrides.get(name, {})
-        idx = int(override.get("partition", 0))
-        rb, w = resolve_board(repo, name, idx, override)
-        warnings.extend(w)
-        resolved[name] = asdict(rb)
+        parts = override.get("partitions")
+        if parts is None:
+            parts = [override.get("partition", 0)]
+        elif not isinstance(parts, list) or not all(isinstance(i, int) for i in parts):
+            raise ProjectError("[targets.%s].partitions must be a list of integers" % name)
+        if len(parts) > 1 and "partition_size" in override:
+            raise ProjectError(
+                "[targets.%s]: partition_size cannot be set when targeting multiple "
+                "partitions" % name
+            )
+        for idx in parts:
+            per = {k: v for k, v in override.items() if k in ("board_id", "partition_size")}
+            rb, w = resolve_board(repo, name, int(idx), per)
+            warnings.extend(w)
+            resolved.append(asdict(rb))
+    resolved.sort(key=lambda r: (r["name"], r["partition_index"]))
 
     lock = lock_mod.Lock(
         generated_by=GENERATED_BY,
@@ -346,11 +358,18 @@ class LoadedProject:
     def stedgeai_path(self) -> str | None:
         return sdk_res.resolve_stedgeai(self.sdk_home).path
 
-    def board(self, name: str) -> ResolvedBoard:
-        resolved = self.lock.targets.get("resolved", {})
-        if name not in resolved:
-            raise ProjectError("board %r is not a target of this project" % name)
-        return ResolvedBoard(**resolved[name])
+    @property
+    def targets(self) -> list[ResolvedBoard]:
+        """Every (board, partition) target, for the build layer to iterate."""
+        return [ResolvedBoard(**e) for e in self.lock.targets.get("resolved", [])]
+
+    def board(self, name: str, partition: int = 0) -> ResolvedBoard:
+        for entry in self.lock.targets.get("resolved", []):
+            if entry["name"] == name and entry["partition_index"] == partition:
+                return ResolvedBoard(**entry)
+        raise ProjectError(
+            "board %r partition %d is not a target of this project" % (name, partition)
+        )
 
 
 def load_project(
