@@ -16,9 +16,9 @@ def test_no_command_prints_help(capsys):
     assert "usage" in capsys.readouterr().out.lower()
 
 
-def test_unimplemented_ota_subcommand(capsys):
-    # The OTA-layer subcommands are registered but not implemented yet.
-    assert main(["romfs", "pack"]) == 2
+def test_unimplemented_init(capsys):
+    # `init` is registered but not implemented yet.
+    assert main(["init"]) == 2
     assert "not implemented" in capsys.readouterr().err.lower()
 
 

@@ -46,6 +46,7 @@ where = ["src"]
 # (SDK) or copied into the firmware tree (ed25519_verify) at build time.
 "openmv_ota" = [
     "data/*.json",
+    "data/firmware/**/*",
     "romfs/sdk/**/*",
     "romfs/firmware_build/templates/*",
     "romfs/firmware_build/ed25519_verify/**/*",
@@ -56,6 +57,8 @@ where = ["src"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "--cov=openmv_ota --cov-report=term-missing --cov-fail-under=100 --import-mode=importlib"
+# Default norecursedirs excludes "build"; we have a tests/build/ dir to collect.
+norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}"]
 
 [tool.coverage.run]
 source = ["openmv_ota"]

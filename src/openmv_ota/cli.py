@@ -1,19 +1,13 @@
 """Single CLI entry point for openmv-ota.
 
-Commands are namespaced by subsystem so the tool can grow beyond ROMFS OTA
-without renaming anything:
+Commands are namespaced by subsystem:
 
-    openmv-ota init                     scaffold a customer repo layout
-    openmv-ota keys generate            create trusted_keys.json + signing keys
-    openmv-ota romfs build-firmware     Tool 1 — firmware w/ frozen boot.py
-    openmv-ota romfs build --mode ...   Tool 3 — compose factory / OTA images
-    openmv-ota romfs serve              Tool 4 — update server (local dev)
-    openmv-ota romfs publish            upload a signed OTA release
+    openmv-ota romfs …      pack / inspect a ROMFS image from a directory
+    openmv-ota project …    peg a project to a firmware checkout + toolchain
+    openmv-ota build romfs  compile a project's app + pack a romfs image
 
-    (future) openmv-ota firmware ...    whole-firmware OTA
-    (future) openmv-ota bootloader ...  bootloader OTA
-
-Subcommands are stubs today; see the concept plan for intended behaviour.
+    (future) openmv-ota build firmware   build firmware.bin
+    (future) openmv-ota ota …            signing / slots / update server
 """
 
 from __future__ import annotations
@@ -40,24 +34,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_keys_gen = keys_sub.add_parser("generate", help="create trusted_keys.json + keys")
     p_keys_gen.set_defaults(func=_not_implemented, _command="keys generate")
 
-    p_romfs = sub.add_parser("romfs", help="ROMFS image + OTA subsystem")
+    p_romfs = sub.add_parser("romfs", help="ROMFS image tool (pack/inspect a directory)")
     from openmv_ota.romfs import cli as romfs_cli
 
-    romfs_sub = romfs_cli.register(p_romfs)
-    # OTA-layer subcommands (not implemented yet; the core builder is `romfs build`).
-    for name, help_text in (
-        ("build-firmware", "build openmv firmware with frozen boot.py + ed25519_verify"),
-        ("pack", "compose a signed factory or OTA ROMFS slot"),
-        ("serve", "run the update server (local dev)"),
-        ("publish", "upload a signed OTA release"),
-    ):
-        sp = romfs_sub.add_parser(name, help=help_text)
-        sp.set_defaults(func=_not_implemented, _command=f"romfs {name}")
+    romfs_cli.register(p_romfs)
 
-    p_project = sub.add_parser("project", help="create/manage a firmware-pegged OTA project")
+    p_project = sub.add_parser("project", help="create/manage a firmware-pegged project")
     from openmv_ota.project import cli as project_cli
 
     project_cli.register(p_project)
+
+    p_build = sub.add_parser("build", help="firmware-aware artifact builders (romfs, …)")
+    from openmv_ota.build import cli as build_cli
+
+    build_cli.register(p_build)
 
     return parser
 

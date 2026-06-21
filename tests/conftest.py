@@ -1,5 +1,7 @@
-"""Fixtures for the project tests: a real temp firmware git repo and a fake SDK
-home tree. No network, no real toolchains."""
+"""Shared fixtures: a real temp firmware git repo and a fake SDK home tree.
+
+Used by both the project and build test suites. No network, no real toolchains.
+"""
 
 from __future__ import annotations
 
@@ -50,9 +52,10 @@ def make_firmware(tmp_path):
     """Create a real temp git repo mimicking an openmv checkout.
 
     ``omit`` drops a file to exercise error branches; ``with_remote`` toggles the
-    origin; the result is committed so git state resolves.
+    origin; ``with_mpy_cross`` commits a stub mpy-cross binary so the project
+    resolves a path for it.
     """
-    def _make(name="fw", *, sdk_version="1.6.0", with_remote=True, omit=()):
+    def _make(name="fw", *, sdk_version="1.6.0", with_remote=True, with_mpy_cross=False, omit=()):
         repo = tmp_path / name
         (repo / "protocol").mkdir(parents=True)
         if "omv_protocol" not in omit:
@@ -68,6 +71,10 @@ def make_firmware(tmp_path):
             d = repo / "boards" / board
             d.mkdir(parents=True)
             (d / "board_config.h").write_text(content)
+        if with_mpy_cross:
+            mc = repo / "lib" / "micropython" / "mpy-cross" / "build"
+            mc.mkdir(parents=True)
+            (mc / "mpy-cross").write_text("")
         git(repo, "init", "-q", "-b", "main")
         git(repo, "config", "user.email", "t@t")
         git(repo, "config", "user.name", "t")
