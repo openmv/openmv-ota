@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
         sp = romfs_sub.add_parser(name, help=help_text)
         sp.set_defaults(func=_not_implemented, _command=f"romfs {name}")
 
+    p_project = sub.add_parser("project", help="create/manage a firmware-pegged OTA project")
+    from openmv_ota.project import cli as project_cli
+
+    project_cli.register(p_project)
+
     return parser
 
 

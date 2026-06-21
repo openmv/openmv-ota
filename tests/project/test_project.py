@@ -1,0 +1,254 @@
+"""Tests for project orchestration: resolve, create, sync, status, setup, load."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from openmv_ota.project import config as cfg
+from openmv_ota.project import lock as lock_mod
+from openmv_ota.project import project as proj
+from openmv_ota.project.errors import ProjectError
+
+NOW = "2026-01-01T00:00:00Z"
+
+
+def _create(tmp_path, make_firmware, make_sdk, **over):
+    repo = over.pop("repo", None) or make_firmware()
+    root = over.pop("root", tmp_path / "proj")
+    kwargs = dict(
+        firmware=repo, boards=["OPENMV_N6", "OPENMV_AE3"], product=None, vendor=None,
+        sdk_home_override=make_sdk(), install_sdk=False, allow_dirty=True, force=False, now=NOW,
+    )
+    kwargs.update(over)
+    return root, proj.create_project(root, **kwargs)
+
+
+# --- resolve_snapshot -------------------------------------------------------
+
+def test_resolve_snapshot_not_git(tmp_path):
+    config = cfg.OtaConfig(name="p", vendor=None, boards=["OPENMV_N6"])
+    with pytest.raises(ProjectError, match="not a git repository"):
+        proj.resolve_snapshot(tmp_path, config, sdk_home_override=None, config_digest="d", now=NOW)
+
+
+def test_resolve_snapshot_fields(make_firmware, make_sdk):
+    config = cfg.OtaConfig(name="p", vendor=None, boards=["OPENMV_N6"])
+    lock, warnings = proj.resolve_snapshot(
+        make_firmware(), config, sdk_home_override=make_sdk(), config_digest="sha256:d", now=NOW)
+    assert lock.firmware["version"] == "5.0.0"
+    assert lock.firmware["version_code"] == (5 << 24)
+    assert lock.toolchain["vela"]["version"] == "5.0.0"
+    assert lock.targets["resolved"]["OPENMV_N6"]["geometry_source"] == "firmware"
+
+
+# --- ensure_sdk -------------------------------------------------------------
+
+def test_ensure_sdk_ok(make_firmware, make_sdk):
+    info = proj.ensure_sdk(make_firmware(), make_sdk(), install_sdk=False)
+    assert info.stamp_matches
+
+
+def test_ensure_sdk_missing_no_install(make_firmware, tmp_path):
+    with pytest.raises(ProjectError, match="not installed"):
+        proj.ensure_sdk(make_firmware(), tmp_path / "nope", install_sdk=False)
+
+
+def test_ensure_sdk_mismatch_no_install(make_firmware, make_sdk):
+    with pytest.raises(ProjectError, match="but the firmware wants"):
+        proj.ensure_sdk(make_firmware(), make_sdk(stamp="9.9.9"), install_sdk=False)
+
+
+def test_ensure_sdk_install_success(make_firmware, make_sdk, monkeypatch):
+    repo = make_firmware()
+    home = make_sdk()
+    # First resolve sees nothing; make sdk "creates" it (already created here).
+    state = {"made": False}
+
+    def fake_make(r):
+        state["made"] = True
+
+    monkeypatch.setattr(proj.gitrepo, "run_make_sdk", fake_make)
+    # Point at a home that doesn't exist yet, then have make create it by swapping.
+    missing = home.parent / "openmv-sdk-missing"
+    calls = {"n": 0}
+    real_resolve = proj.sdk_res.resolve_sdk
+
+    def fake_resolve(r, override):
+        calls["n"] += 1
+        # Return the good home on the second call (after make sdk).
+        return real_resolve(r, home if calls["n"] >= 2 else missing)
+
+    monkeypatch.setattr(proj.sdk_res, "resolve_sdk", fake_resolve)
+    info = proj.ensure_sdk(repo, missing, install_sdk=True)
+    assert state["made"] and info.stamp_matches
+
+
+def test_ensure_sdk_install_still_missing(make_firmware, tmp_path, monkeypatch):
+    monkeypatch.setattr(proj.gitrepo, "run_make_sdk", lambda r: None)
+    with pytest.raises(ProjectError) as ei:
+        proj.ensure_sdk(make_firmware(), tmp_path / "nope", install_sdk=True)
+    assert ei.value.exit_code == 1
+
+
+# --- create -----------------------------------------------------------------
+
+def test_create_writes_files(tmp_path, make_firmware, make_sdk):
+    root, (lock, warnings) = _create(tmp_path, make_firmware, make_sdk)
+    paths = proj.ProjectPaths(root)
+    assert paths.config.exists() and paths.lock.exists() and paths.local.exists()
+    assert paths.gitignore.exists() and paths.readme.exists()
+    # No machine path in the committed files.
+    assert "openmv-sdk" not in paths.config.read_text()
+    assert "openmv-sdk" not in paths.lock.read_text()
+    # AE3 conditional geometry warns.
+    assert any("conditional" in w for w in warnings)
+
+
+def test_create_not_git(tmp_path, make_sdk):
+    with pytest.raises(ProjectError, match="not a git repository"):
+        proj.create_project(
+            tmp_path / "p", firmware=tmp_path / "notrepo", boards=["OPENMV_N6"],
+            product=None, vendor=None, sdk_home_override=make_sdk(), install_sdk=False,
+            allow_dirty=True, force=False, now=NOW)
+
+
+def test_create_existing_no_force(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    with pytest.raises(ProjectError) as ei:
+        _create(tmp_path, make_firmware, make_sdk, repo=repo, root=root)
+    assert ei.value.exit_code == 1
+
+
+def test_create_force_overwrites(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    _, (lock, _) = _create(tmp_path, make_firmware, make_sdk, repo=repo, root=root, force=True)
+    assert lock.firmware["version"] == "5.0.0"
+
+
+def test_create_dirty_warns(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    (repo / "SDK_VERSION").write_text("1.6.0\n")  # uncommitted change -> dirty
+    root, (lock, warnings) = _create(tmp_path, make_firmware, make_sdk, repo=repo, allow_dirty=False)
+    assert lock.firmware["dirty"] is True
+    assert any("dirty" in w for w in warnings)
+
+
+# --- sync / status ----------------------------------------------------------
+
+def test_sync_rewrites_lock(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    lock, warnings = proj.sync_project(
+        root, firmware=repo, sdk_home_override=make_sdk(), install_sdk=False, allow_dirty=True, now=NOW)
+    assert lock.firmware["version"] == "5.0.0"
+
+
+def test_sync_dirty_warns(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    (repo / "SDK_VERSION").write_text("1.6.0\n")
+    _, warnings = proj.sync_project(
+        root, firmware=repo, sdk_home_override=make_sdk(), install_sdk=False, allow_dirty=False, now=NOW)
+    assert any("dirty" in w for w in warnings)
+
+
+def test_status_in_sync_then_drift(tmp_path, make_firmware, make_sdk, git_cmd):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    assert proj.status_project(root, firmware=repo, now=NOW) == []
+    # Change the firmware -> a new commit -> drift.
+    (repo / "newfile.txt").write_text("x")
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "commit", "-q", "-m", "second")
+    changes = proj.status_project(root, firmware=repo, now=NOW)
+    assert any("firmware.commit" in c for c in changes)
+
+
+def test_checkout_path_missing(tmp_path, make_firmware, make_sdk):
+    root, _ = _create(tmp_path, make_firmware, make_sdk)
+    proj.ProjectPaths(root).local.unlink()  # remove local.toml
+    with pytest.raises(ProjectError, match="no firmware checkout"):
+        proj.status_project(root, firmware=None, now=NOW)
+
+
+# --- setup ------------------------------------------------------------------
+
+def test_setup_clones_and_writes_local(tmp_path, make_firmware, make_sdk, monkeypatch):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    proj.ProjectPaths(root).local.unlink()
+
+    clones, subs = [], []
+    monkeypatch.setattr(proj.gitrepo, "is_git_repo", lambda d: False)
+    monkeypatch.setattr(proj.gitrepo, "clone", lambda r, d, commit=None: clones.append((r, d, commit)))
+    monkeypatch.setattr(proj.gitrepo, "submodule_update", lambda d: subs.append(d))
+    monkeypatch.setattr(proj, "ensure_sdk", lambda *a, **k: None)
+
+    dest = proj.setup_project(root, cache_override=str(tmp_path / "cache"),
+                              sdk_home_override=None, install_sdk=True)
+    assert clones and subs
+    assert proj.ProjectPaths(root).local.exists()
+    assert dest == clones[0][1]
+
+
+def test_setup_cache_hit_skips_clone(tmp_path, make_firmware, make_sdk, monkeypatch):
+    root, _ = _create(tmp_path, make_firmware, make_sdk)
+    clones = []
+    monkeypatch.setattr(proj.gitrepo, "is_git_repo", lambda d: True)
+    monkeypatch.setattr(proj.gitrepo, "clone", lambda *a, **k: clones.append(a))
+    monkeypatch.setattr(proj.gitrepo, "submodule_update", lambda d: None)
+    proj.setup_project(root, cache_override=str(tmp_path / "c"), sdk_home_override=None, install_sdk=False)
+    assert clones == []
+
+
+def test_setup_lock_no_remote(tmp_path, make_firmware, make_sdk):
+    root, _ = _create(tmp_path, make_firmware, make_sdk)
+    paths = proj.ProjectPaths(root)
+    locked = lock_mod.read(paths.lock)
+    locked.firmware["remote"] = None
+    lock_mod.write(paths.lock, locked)
+    with pytest.raises(ProjectError, match="no firmware remote/commit"):
+        proj.setup_project(root, cache_override=str(tmp_path / "c"), sdk_home_override=None, install_sdk=False)
+
+
+# --- load API ---------------------------------------------------------------
+
+def test_load_project(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    home = make_sdk(with_bins=True)
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, sdk_home_override=home)
+    p = proj.load_project(root)
+    assert p.firmware_path == repo.resolve()
+    assert p.sdk_home == home
+    assert p.vela_path.endswith("/bin/vela")
+    assert p.stedgeai_path.endswith("/linux/stedgeai")
+    assert p.mpy_cross_path is None  # not built
+    assert p.board("OPENMV_N6").front_size == (0x01800000 // 2)
+
+
+def test_load_project_default_sdk_home(tmp_path, make_firmware, make_sdk, monkeypatch):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    # Blank the sdk home in local.toml -> default ~/openmv-sdk-<ver>.
+    paths = proj.ProjectPaths(root)
+    paths.local.write_text(cfg.render_local(repo, None))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    p = proj.load_project(root)
+    assert p.sdk_home == tmp_path / "openmv-sdk-1.6.0"
+
+
+def test_load_project_unknown_board(tmp_path, make_firmware, make_sdk):
+    root, _ = _create(tmp_path, make_firmware, make_sdk)
+    with pytest.raises(ProjectError, match="not a target"):
+        proj.load_project(root).board("OPENMV4")
+
+
+def test_load_project_firmware_override(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    p = proj.load_project(root, firmware=repo)
+    assert p.firmware_path == repo.resolve()

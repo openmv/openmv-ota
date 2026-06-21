@@ -7,7 +7,7 @@ name = "openmv-ota"
 version = "0.0.0"
 description = "Secure over-the-air update tooling for OpenMV cameras (ROMFS OTA, with room for firmware/bootloader OTA)."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "OpenMV", email = "openmv@openmv.io" }]
 keywords = ["openmv", "ota", "romfs", "firmware", "update", "ed25519", "embedded"]
@@ -55,7 +55,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = "--cov=openmv_ota --cov-report=term-missing --cov-fail-under=100"
+addopts = "--cov=openmv_ota --cov-report=term-missing --cov-fail-under=100 --import-mode=importlib"
 
 [tool.coverage.run]
 source = ["openmv_ota"]

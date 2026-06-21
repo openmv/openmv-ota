@@ -1,0 +1,122 @@
+"""The committed config (``openmv-ota.toml``) and the gitignored local file
+(``openmv-ota.local.toml``).
+
+TOML is read with the standard library (``tomllib``, Python 3.11+). The small
+amount of TOML we *write* is rendered from a template string, so no TOML writer
+dependency is needed.
+"""
+
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from openmv_ota.romfs import boards as boards_mod
+
+from .errors import ProjectError
+
+CONFIG_NAME = "openmv-ota.toml"
+LOCAL_NAME = "openmv-ota.local.toml"
+
+
+@dataclass
+class OtaConfig:
+    name: str
+    vendor: str | None
+    boards: list[str]
+    overrides: dict[str, dict] = field(default_factory=dict)
+
+
+@dataclass
+class LocalConfig:
+    firmware_path: Path
+    sdk_home: Path | None = None
+
+
+def _loads(text: str, what: str) -> dict:
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise ProjectError("%s is not valid TOML: %s" % (what, e)) from None
+
+
+def load_config(path: Path) -> OtaConfig:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        raise ProjectError("no %s found (is this a project directory?)" % CONFIG_NAME) from None
+    data = _loads(text, CONFIG_NAME)
+
+    product = data.get("product", {})
+    targets = data.get("targets", {})
+    boards = targets.get("boards")
+    if not isinstance(boards, list) or not boards or not all(isinstance(b, str) for b in boards):
+        raise ProjectError("[targets].boards must be a non-empty list of board names")
+    validate_boards(boards)
+
+    overrides = {k: v for k, v in targets.items() if k != "boards" and isinstance(v, dict)}
+    return OtaConfig(
+        name=str(product.get("name") or path.parent.name),
+        vendor=product.get("vendor"),
+        boards=boards,
+        overrides=overrides,
+    )
+
+
+def validate_boards(boards: list[str]) -> None:
+    for name in boards:
+        try:
+            boards_mod.get_board(name)
+        except KeyError as e:
+            raise ProjectError(str(e)) from None
+
+
+def load_local(path: Path) -> LocalConfig | None:
+    """Load the gitignored local file, or ``None`` if it does not exist."""
+    if not path.exists():
+        return None
+    data = _loads(path.read_text(encoding="utf-8"), LOCAL_NAME)
+    fw = data.get("firmware", {})
+    fw_path = fw.get("path")
+    if not fw_path:
+        raise ProjectError("%s is missing [firmware].path" % LOCAL_NAME)
+    sdk_home = (data.get("sdk", {}) or {}).get("home") or None
+    return LocalConfig(
+        firmware_path=Path(fw_path),
+        sdk_home=Path(sdk_home) if sdk_home else None,
+    )
+
+
+def render_config(name: str, vendor: str | None, boards: list[str]) -> str:
+    board_list = ", ".join('"%s"' % b for b in boards)
+    vendor_line = ('vendor = "%s"\n' % vendor) if vendor else '# vendor = "Acme Robotics"\n'
+    return (
+        "# openmv-ota project config (committed, shared with your team / CI).\n"
+        "# No machine paths here - the firmware checkout path lives in\n"
+        "# openmv-ota.local.toml, which is gitignored.\n\n"
+        "[product]\n"
+        'name = "%s"\n' % name
+        + vendor_line
+        + "# support_period = \"5y\"\n"
+        "# security_contact = \"security@example.com\"\n"
+        "# disclosure_url = \"https://example.com/.well-known/security.txt\"\n\n"
+        "[targets]\n"
+        "boards = [%s]\n\n" % board_list
+        + "# Optional per-board overrides (win over firmware-resolved geometry):\n"
+        "# [targets.OPENMV_AE3]\n"
+        "# partition_size = 25165824\n"
+        "# board_id = 1234\n"
+    )
+
+
+def render_local(firmware_path: Path, sdk_home: Path | None) -> str:
+    home_line = ('home = "%s"\n' % sdk_home.as_posix()) if sdk_home else 'home = ""\n'
+    return (
+        "# Machine-local settings for openmv-ota (gitignored - never commit).\n\n"
+        "[firmware]\n"
+        'path = "%s"\n\n' % firmware_path.as_posix()
+        + "[sdk]\n"
+        "# Empty => ~/openmv-sdk-<SDK_VERSION>.\n"
+        + home_line
+    )
