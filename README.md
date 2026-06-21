@@ -9,17 +9,13 @@
 
 # OpenMV OTA
 
-Secure over-the-air update tooling for OpenMV cameras.
-
-The first subsystem is **ROMFS OTA**: a frozen `boot.py` plus host-side tooling
-that delivers signed, anti-rollback ROMFS updates with a golden-image fallback —
-MCUboot-grade defences against OTA-borne threats, implemented at the Python/ROMFS
-level on top of `vfs.rom_ioctl`. The package is named broadly (`openmv-ota`) so
-whole-firmware and bootloader OTA can be added as sibling subsystems later;
-each subsystem is its own CLI command group (`openmv-ota romfs …`).
+Tooling for building OpenMV ROMFS images and delivering them to cameras over the
+air. `openmv-ota romfs` builds the read-only `/rom` filesystem image; the
+over-the-air update tools deliver signed, anti-rollback updates with a
+golden-image fallback.
 
 See [openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md) for the
-full design — it is the source of truth for what this repo is building.
+OTA design.
 
 - [Status](#status)
 - [Installation](#installation)
@@ -29,17 +25,10 @@ full design — it is the source of truth for what this repo is building.
 
 ## Status
 
-Early development, built out concept-by-concept against the plan document.
-
-- **`openmv-ota romfs build` / `extract` — the core ROMFS image tool — is
-  implemented and tested** (100% coverage). It packs a directory into an OpenMV
-  ROMFS image with board-aware, per-extension alignment (so memory-mapped NPU
-  model blobs land on the right boundary), and unpacks images back to a
-  directory. The format is a faithful port of the OpenMV IDE's writer/reader and
-  reproduces real IDE-built images byte-for-byte.
-- The OTA layers (signing, the frozen `boot.py`, the `ed25519_verify` module,
-  the update server) are still stubs. Model compilation (mpy-cross / Vela /
-  ST Edge AI) is a planned layer on top of the core builder.
+The `openmv-ota romfs` image tool is implemented and tested. The over-the-air
+update tools — signing and slot composition, the frozen `boot.py`, the
+`ed25519_verify` module, model compilation, and the update server — are not yet
+built.
 
 ## Installation
 
@@ -57,20 +46,14 @@ pip install -e .
 
 ## Overview
 
-`openmv-ota` is built in two clearly separated layers. The lower layer is a
-generic image tool that has nothing to do with updates; the upper layer adds
-everything that makes an image updatable in the field.
+### ROMFS image tool
 
-### Layer 1 — the ROMFS image tool (generic, available now)
-
-`openmv-ota romfs` turns a directory into an OpenMV ROMFS image (the read-only
-`/rom` filesystem) and back. It is a **standalone utility with no knowledge of
-OTA, signing, or updates** — useful anywhere you'd build a ROMFS image, from the
-command line or CI.
+`openmv-ota romfs` builds an OpenMV ROMFS image from a directory and unpacks one
+back. A ROMFS image is the read-only filesystem the camera mounts at `/rom`.
 
 | Command | Purpose |
 |---|---|
-| `openmv-ota romfs build <dir> -o <img> --board <board>` | Pack a directory into a ROMFS image (board-aware alignment) |
+| `openmv-ota romfs build <dir> -o <img> --board <board>` | Pack a directory into a ROMFS image |
 | `openmv-ota romfs extract <img> -o <dir>` | Unpack a ROMFS image to a directory |
 | `openmv-ota romfs ls` / `cat` / `info` / `verify` | List, read a file from, summarise, or validate an image |
 | `openmv-ota romfs boards` | List supported boards / show a board's ROMFS config |
@@ -81,23 +64,16 @@ openmv-ota romfs ls app.romfs -l
 openmv-ota romfs extract app.romfs -o ./out
 ```
 
-`--board` supplies the defaults (alignment rules + partition capacity); per-type
-`--align EXT=N` flags override those on top. **Full reference:
-[docs/romfs.md](docs/romfs.md).**
+`--board` sets the alignment rules and partition capacity for a camera;
+`--align EXT=N` overrides the alignment for a file extension. See
+[docs/romfs.md](docs/romfs.md).
 
-### Layer 2 — the OTA layers (built on top, in progress)
+### OTA
 
-Everything that makes an image *updatable* is a separate set of tools that
-consume the image tool above — they are stubbed today:
-
-- signing + trailer/slot composition (factory & OTA images),
-- the frozen `boot.py` and the `ed25519_verify` firmware module,
-- model compilation (mpy-cross / Vela / ST Edge AI),
-- the update server and the on-device SDK (`import openmv_ota` on the camera).
-
-See [openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md) for the
-design. Comprehensive user-facing documentation will live in openmv-doc; the
-docs here are intentionally brief developer notes.
+The over-the-air update tools build on the image tool: signing and slot
+composition, the frozen `boot.py` and the `ed25519_verify` module, model
+compilation, the update server, and the on-device SDK. See
+[openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md).
 
 ## Contributing to the project
 

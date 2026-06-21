@@ -1,113 +1,90 @@
-# The `romfs` image tool
+# romfs
 
-`openmv-ota romfs` builds and inspects OpenMV ROMFS images — the read-only
-filesystem the firmware mounts at `/rom`. It is the generic, dependency-free
-foundation the OTA layers build on, but it stands on its own: use it anywhere
-you'd build a ROMFS image, from the command line or in CI.
+`openmv-ota romfs` builds an OpenMV ROMFS image from a directory and unpacks one
+back. A ROMFS image is the read-only filesystem the camera mounts at `/rom`.
 
-> These are brief developer notes. Comprehensive, user-facing documentation for
-> the whole stack will live in openmv-doc.
+## Building an image
 
-## Scope
-
-This tool is deliberately **generic**. It knows about the ROMFS container format
-and per-board memory alignment — nothing more.
-
-**It does:**
-
-- pack a directory tree into a ROMFS image, and unpack one back to a directory;
-- apply each board's per-extension alignment rules so memory-mapped assets land
-  on the right boundary;
-- list, read, summarise, and validate images.
-
-**It does not** (these are separate, higher-level layers — see
-[Relationship to the OTA layers](#relationship-to-the-ota-layers)):
-
-- sign images, write trailers, or compose factory/OTA slots;
-- compile `.py` with mpy-cross or convert models for the NPU (Vela / ST Edge AI);
-- know anything about update servers, versions, or rollback.
-
-Files are packed **verbatim**. Pre-convert `.py`/model assets (or let the IDE do
-it), then pack the result here.
-
-## Format
-
-The image format is a faithful port of the OpenMV IDE's reference writer/reader
-and reproduces real IDE-built images byte-for-byte. Output is deterministic:
-directory entries are visited in sorted order, so the same input always produces
-identical bytes (good for reproducible builds).
-
-### Why alignment matters
-
-OpenMV maps some ROMFS files in place (notably NPU model blobs), so their bytes
-must start on a specific boundary. Each board declares per-extension alignment
-rules — the N6 wants `.tflite` on 32-byte boundaries; most boards use 16. The
-tool tracks absolute offsets through nested directories so every payload lands
-correctly. `--board` applies the rules automatically; `romfs verify` checks them.
-
-## Commands
+`build` packs the contents of a directory into an image:
 
 ```bash
-# Pack a directory (its contents become the ROMFS root).
 openmv-ota romfs build ./app -o app.romfs --board OPENMV_N6
-
-# Unpack back to a directory.
-openmv-ota romfs extract app.romfs -o ./out
-
-# Inspect.
-openmv-ota romfs ls app.romfs -l         # sizes, offsets, suffixes
-openmv-ota romfs info app.romfs          # summary
-openmv-ota romfs cat app.romfs main.py   # one file's bytes to stdout
-openmv-ota romfs verify app.romfs --board OPENMV_N6   # parse + alignment check
-
-# Board config.
-openmv-ota romfs boards                   # list supported boards
-openmv-ota romfs boards OPENMV_AE3        # one board's partitions + rules
 ```
 
-Run `openmv-ota romfs boards` for the list of supported board names. Multi-
-partition boards (e.g. the AE3, which has separate OSPI and MRAM partitions) take
-`-p/--partition`.
+The directory's contents become the root of the image. Files are stored
+unchanged; compile `.py` files and convert models to their target format before
+packing.
 
-Use `-` as the image path to read from stdin or write to stdout, e.g.
-`openmv-ota romfs build ./app -o - --board OPENMV_N6 | openmv-ota romfs verify -`.
+`--board` sets the alignment rules and partition capacity for a camera. Run
+`openmv-ota romfs boards` for the list of board names, or pass one to see its
+partitions and rules:
 
-## `build` options
+```bash
+openmv-ota romfs boards
+openmv-ota romfs boards OPENMV_AE3
+```
+
+The same directory always produces the same image; entries are packed in sorted
+order.
+
+### Alignment
+
+Some files are mapped directly out of the image and must start on a specific
+byte boundary — most importantly the model blobs read by the NPU. Each board
+sets the required alignment per file extension; for example, the N6 aligns
+`.tflite` to 32 bytes, while most boards use 16. `--board` applies these
+automatically.
+
+Use `--align` to set or override the alignment for an extension:
+
+```bash
+openmv-ota romfs build ./app -o app.romfs --board OPENMV_N6 --align tflite=32
+```
+
+`--align` takes precedence over the board's rule for that extension. Extensions
+with no rule use `--default-alignment`, which is 4 bytes.
+
+### Options
 
 | Flag | Effect |
 |---|---|
-| `-b, --board NAME` | Apply the board's alignment rules and partition capacity. |
-| `-p, --partition N` | Select a partition on multi-partition boards. |
-| `--align EXT=N` | Override the alignment for one extension, on top of the board defaults (repeatable). Also `--alignment`. |
-| `--default-alignment N` | Fallback alignment for extensions with no rule (default 4). |
-| `--no-board-rules` | Ignore the board's rules; use only `--align`. |
-| `--exclude GLOB` | Skip entries matching GLOB (repeatable). |
-| `--no-default-excludes` | Keep `__pycache__`, `*.pyc`, `.git`, `.DS_Store`, … (excluded by default). |
+| `-b, --board NAME` | Use a camera's alignment rules and partition capacity. |
+| `-p, --partition N` | Select a partition on cameras that have more than one. |
+| `--align EXT=N` | Set the alignment for a file extension (repeatable). Also spelled `--alignment`. |
+| `--default-alignment N` | Alignment for extensions without a rule. Defaults to 4. |
+| `--no-board-rules` | Ignore the board's alignment rules and use only `--align`. |
+| `--exclude GLOB` | Skip entries whose name matches GLOB (repeatable). |
+| `--no-default-excludes` | Pack `__pycache__`, `*.pyc`, `.git`, `.DS_Store`, and similar, which are skipped by default. |
 | `--follow-symlinks` | Follow symlinks instead of skipping them. |
-| `--max-size BYTES` | Capacity to check against (default: the board partition size). Accepts `0x…` / `K`/`M`/`G`. |
-| `--allow-oversize` | Warn instead of failing when the image exceeds capacity. |
-| `-q, --quiet` | Suppress the summary. |
+| `--max-size BYTES` | Capacity to check against. Defaults to the partition size. Accepts `0x…` and `K`/`M`/`G` suffixes. |
+| `--allow-oversize` | Warn instead of failing when the image is larger than the capacity. |
+| `-q, --quiet` | Do not print the summary. |
 
-`--board` sets the defaults; per-type flags layer on top.
+## Unpacking an image
 
-## Board config source
+`extract` writes the image's contents to a directory:
 
-Board alignment rules and partition sizes are bundled in
-`src/openmv_ota/data/boards.json`, extracted from the OpenMV IDE's
-`share/qtcreator/firmware/settings.json`. Boards are fixed hardware, so this
-duplication is intentional and stable. The `mpy_args` and `npu` entries are
-carried through for the future model-compile layer and are unused by this tool.
+```bash
+openmv-ota romfs extract app.romfs -o ./out
+```
 
-## Relationship to the OTA layers
+## Inspecting an image
 
-This image tool is **Layer 1**. The OTA layers sit on top of it and are the only
-place higher-level concerns live:
+```bash
+openmv-ota romfs ls app.romfs -l         # contents, with sizes and offsets
+openmv-ota romfs cat app.romfs main.py   # write one file to stdout
+openmv-ota romfs info app.romfs          # summary
+openmv-ota romfs verify app.romfs --board OPENMV_N6
+```
 
-- **signing / slot composition** wraps a built image with a signed trailer and
-  arranges the FRONT/BACK slots;
-- **model compilation** converts assets *before* they are packed here;
-- **the update server + on-device SDK** deliver and install images.
+`verify` confirms the image parses and every file sits on its required boundary,
+and exits non-zero on a malformed image or a misaligned file.
 
-None of that leaks into this tool: `romfs build` always produces a plain,
-unsigned image. See
-[../openmv-romfs-ota-concept-plan.md](../openmv-romfs-ota-concept-plan.md).
+## Standard input and output
+
+Pass `-` as the image path to read from standard input or write to standard
+output:
+
+```bash
+openmv-ota romfs build ./app -o - --board OPENMV_N6 | openmv-ota romfs verify -
+```
