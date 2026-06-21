@@ -28,13 +28,14 @@ class ResolvedBoard:
     board_type: str | None
     arch: str
     mpy_args: list[str]
-    npu: str | None
+    npu: str | None                       # NPU type ("vela" | "stedgeai" | None)
     partition_index: int
     partition_size: int
     front_size: int
     alignment_rules: list[dict] = field(default_factory=list)
     board_id: int | None = None
     geometry_source: str = "bundled"
+    npu_config: dict | None = None        # full compiler config (args + file refs)
 
 
 def _front_size(partition_size: int) -> int:
@@ -86,7 +87,8 @@ def resolve_board(
     except LookupError as e:
         raise ProjectError(str(e)) from None
 
-    npu_type = part.npu.get("type") if isinstance(part.npu, dict) else None
+    npu_config = part.npu if isinstance(part.npu, dict) else None
+    npu_type = npu_config.get("type") if npu_config else None
     fw_lengths = _firmware_part_lengths(repo, name, part.index)
 
     if "partition_size" in override:
@@ -129,5 +131,6 @@ def resolve_board(
         alignment_rules=list(part.alignment_rules),
         board_id=board_id,
         geometry_source=source,
+        npu_config=npu_config,
     )
     return resolved, warnings

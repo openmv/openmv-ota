@@ -214,6 +214,9 @@ def test_board_geometry_from_firmware(make_firmware):
     assert rb.front_size == (0x01800000 // 2)
     assert rb.board_type == "N6"
     assert rb.npu == "stedgeai"
+    # The full compiler config (args + file refs) is carried for the compile layer.
+    assert rb.npu_config["type"] == "stedgeai"
+    assert any("--target" in a for a in rb.npu_config["args"])
     assert warnings == []
 
 
@@ -257,6 +260,7 @@ def test_board_no_firmware_header_uses_bundled(make_firmware):
     rb, _ = board_res.resolve_board(repo, "OPENMV4")
     assert rb.geometry_source == "bundled"
     assert rb.board_type is None
+    assert rb.npu is None and rb.npu_config is None  # board without an NPU
 
 
 def test_board_unparseable_firmware_token_falls_back(make_firmware):
