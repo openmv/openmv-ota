@@ -239,23 +239,42 @@ def sync_project(
     return lock, warnings
 
 
-def status_project(
-    root: Path,
-    *,
-    firmware: Path | None,
-    now: str,
-) -> list[str]:
-    """Return drift descriptions (empty == in sync)."""
-    paths = ProjectPaths(root)
+def _current_snapshot(paths: ProjectPaths, firmware: Path | None, now: str = "") -> lock_mod.Lock:
+    """Re-resolve the snapshot from the current checkout (``now`` is irrelevant —
+    ``generated_at`` is excluded from drift comparison)."""
     config = config_mod.load_config(paths.config)
-    locked = lock_mod.read(paths.lock)
     repo = _checkout_path(paths, firmware)
     config_text = paths.config.read_text(encoding="utf-8")
     current, _ = resolve_snapshot(
         repo, config, sdk_home_override=_local_sdk_home(paths),
         config_digest=_digest(config_text), now=now,
     )
-    return lock_mod.drift(locked, current)
+    return current
+
+
+def status_project(root: Path, *, firmware: Path | None, now: str = "") -> list[str]:
+    """Return drift descriptions (empty == in sync)."""
+    paths = ProjectPaths(root)
+    locked = lock_mod.read(paths.lock)
+    return lock_mod.drift(locked, _current_snapshot(paths, firmware, now))
+
+
+def verify_locked(root: Path, *, firmware: Path | None = None) -> list[str]:
+    """Return reasons the firmware no longer matches the lock (empty == verified).
+
+    Stricter than ``status``: any drift from the lock **and** a dirty working tree
+    are reported, because uncommitted changes are not captured by the pinned
+    commit. This is the guarantee that nothing has changed since the project was
+    pegged — the gate upper layers run before building images.
+    """
+    paths = ProjectPaths(root)
+    locked = lock_mod.read(paths.lock)
+    current = _current_snapshot(paths, firmware)
+    problems = lock_mod.drift(locked, current)
+    if current.firmware["dirty"]:
+        problems.insert(0, "firmware checkout is dirty; uncommitted changes are "
+                           "not captured by the pinned commit")
+    return problems
 
 
 def _checkout_path(paths: ProjectPaths, firmware: Path | None) -> Path:
@@ -334,12 +353,33 @@ class LoadedProject:
         return ResolvedBoard(**resolved[name])
 
 
-def load_project(root: str | Path, firmware: str | Path | None = None) -> LoadedProject:
-    """Load a project for downstream layers (model compile, romfs build, …)."""
+def load_project(
+    root: str | Path,
+    firmware: str | Path | None = None,
+    *,
+    verify: bool = True,
+) -> LoadedProject:
+    """Load a project for downstream layers (model compile, romfs build, …).
+
+    By default this **verifies** that the firmware checkout still matches the lock
+    and is clean, refusing to load otherwise — so a build can never run against a
+    drifted firmware. Pass ``verify=False`` to load without that check (reserved
+    for the future firmware-update path).
+    """
     paths = ProjectPaths(Path(root))
+    fw = Path(firmware) if firmware is not None else None
+    if verify:
+        problems = verify_locked(paths.root, firmware=fw)
+        if problems:
+            raise ProjectError(
+                "firmware no longer matches the lock; refusing to proceed:\n  - "
+                + "\n  - ".join(problems)
+                + "\nRun `openmv-ota project status` to inspect, or "
+                "`openmv-ota project sync` to re-peg."
+            )
     config = config_mod.load_config(paths.config)
     locked = lock_mod.read(paths.lock)
-    repo = _checkout_path(paths, Path(firmware) if firmware is not None else None)
+    repo = _checkout_path(paths, fw)
 
     sdk_home = _local_sdk_home(paths)
     if sdk_home is None:

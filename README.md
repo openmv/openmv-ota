@@ -81,6 +81,7 @@ versions match the firmware.
 | `openmv-ota project setup` | Reconstruct the pinned checkout and SDK from the lock |
 | `openmv-ota project show` | Print the resolved snapshot |
 | `openmv-ota project status` | Report drift between the lock and the checkout |
+| `openmv-ota project verify` | Fail if the firmware has changed since it was pegged |
 | `openmv-ota project sync` | Re-resolve and rewrite the lock |
 
 ```bash

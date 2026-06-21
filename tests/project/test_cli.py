@@ -146,3 +146,29 @@ def test_setup_cli_error(tmp_path, capsys):
     rc = main(["project", "setup", str(tmp_path)])
     assert rc == 2
     assert "no openmv-ota.lock.json" in capsys.readouterr().err
+
+
+def test_verify_cli_pass(tmp_path, make_firmware, make_sdk, capsys):
+    repo = make_firmware()
+    _, root, _ = _new(tmp_path, make_firmware, make_sdk, repo=repo)
+    capsys.readouterr()
+    assert main(["project", "verify", str(root), "-f", str(repo)]) == 0
+    assert "verified" in capsys.readouterr().out
+
+
+def test_verify_cli_fail(tmp_path, make_firmware, make_sdk, git_cmd, capsys):
+    repo = make_firmware()
+    _, root, _ = _new(tmp_path, make_firmware, make_sdk, repo=repo)
+    (repo / "x.txt").write_text("x")
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "commit", "-q", "-m", "c2")
+    capsys.readouterr()
+    rc = main(["project", "verify", str(root), "-f", str(repo)])
+    assert rc == 1
+    assert "verification failed" in capsys.readouterr().err
+
+
+def test_verify_cli_error(tmp_path, capsys):
+    rc = main(["project", "verify", str(tmp_path)])
+    assert rc == 2
+    assert "no openmv-ota.lock.json" in capsys.readouterr().err

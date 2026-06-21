@@ -63,6 +63,11 @@ def register(project_parser: argparse.ArgumentParser):
     p_status.add_argument("-q", "--quiet", action="store_true", help="exit code only")
     p_status.set_defaults(func=cmd_status, _command="project status")
 
+    p_verify = sub.add_parser("verify", help="fail if the firmware no longer matches the lock")
+    p_verify.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_verify.add_argument("-f", "--firmware", help="checkout path override")
+    p_verify.set_defaults(func=cmd_verify, _command="project verify")
+
     p_sync = sub.add_parser("sync", help="re-resolve and rewrite the lock")
     p_sync.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_sync.add_argument("-f", "--firmware", help="checkout path override")
@@ -145,6 +150,21 @@ def cmd_status(args: argparse.Namespace) -> int:
         print("drift detected:")
         for c in changes:
             print("  %s" % c)
+    return 1
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    try:
+        problems = proj.verify_locked(Path(args.dir), firmware=_path(args.firmware))
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if not problems:
+        print("verified: firmware matches the lock")
+        return 0
+    print("verification failed:", file=sys.stderr)
+    for p in problems:
+        print("  - %s" % p, file=sys.stderr)
     return 1
 
 

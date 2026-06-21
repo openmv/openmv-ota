@@ -64,16 +64,33 @@ It clones the remote at the locked commit into a local cache (override with
 openmv-ota project show ./my-product          # the resolved snapshot
 openmv-ota project show ./my-product --json   # the raw lock
 openmv-ota project status ./my-product        # drift between lock and checkout
+openmv-ota project verify ./my-product        # fail if anything has changed
 openmv-ota project sync ./my-product          # re-resolve and rewrite the lock
 ```
 
-`status` re-reads the current checkout and compares it to the lock. It exits 0
-when they match and non-zero when they differ, naming each changed field, so it
-works as a check in CI. `sync` rewrites the lock from the current checkout when
-you intend to move to a new firmware commit.
+`status` re-reads the current checkout and compares it to the lock, naming each
+changed field. `sync` rewrites the lock from the current checkout when you intend
+to move to a new firmware commit.
 
-`status` and `sync` find the checkout from `openmv-ota.local.toml`, or from
-`-f/--firmware`.
+`status`, `verify`, and `sync` find the checkout from `openmv-ota.local.toml`, or
+from `-f/--firmware`.
+
+## Freezing the firmware
+
+Once you build or release ROMFS images for a pegged firmware, the firmware must
+not change — the images depend on the exact toolchain versions and board geometry
+the project recorded. `verify` is the gate that enforces this:
+
+```bash
+openmv-ota project verify ./my-product
+```
+
+It exits 0 only when the checkout matches the lock in every recorded field **and**
+the working tree is clean; otherwise it exits non-zero and lists what changed.
+Uncommitted changes always fail, because the pinned commit does not capture them.
+Run it in CI and before each image build.
+
+Reading a project from Python verifies by default for the same reason — see below.
 
 ## What the lock records
 
@@ -96,13 +113,18 @@ and the source is recorded in `geometry_source`; set `partition_size` under a
 ## Reading a project from Python
 
 `load_project` returns the lock plus this machine's resolved firmware path, SDK
-home, and tool binary paths:
+home, and tool binary paths. It verifies that the checkout still matches the lock
+(and is clean) first, raising if it does not, so a build never runs against a
+changed firmware:
 
 ```python
 from openmv_ota.project import load_project
 
-p = load_project("./my-product")
+p = load_project("./my-product")  # raises if the firmware has drifted
 p.vela_path                       # path to the vela binary on this machine
 p.board("OPENMV_N6").front_size   # firmware-resolved FRONT partition size
 p.board("OPENMV_N6").alignment_rules
 ```
+
+Pass `load_project("./my-product", verify=False)` to skip the check (reserved for
+the firmware-update path, which does not yet exist).

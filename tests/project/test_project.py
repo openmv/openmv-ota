@@ -237,7 +237,8 @@ def test_load_project_default_sdk_home(tmp_path, make_firmware, make_sdk, monkey
     paths = proj.ProjectPaths(root)
     paths.local.write_text(cfg.render_local(repo, None))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    p = proj.load_project(root)
+    # verify=False: this test points at a missing default SDK on purpose.
+    p = proj.load_project(root, verify=False)
     assert p.sdk_home == tmp_path / "openmv-sdk-1.6.0"
 
 
@@ -252,3 +253,51 @@ def test_load_project_firmware_override(tmp_path, make_firmware, make_sdk):
     root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
     p = proj.load_project(root, firmware=repo)
     assert p.firmware_path == repo.resolve()
+
+
+# --- verification (nothing-changed guarantee) -------------------------------
+
+def test_verify_locked_clean(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    assert proj.verify_locked(root, firmware=repo) == []
+
+
+def test_verify_locked_drift_on_commit(tmp_path, make_firmware, make_sdk, git_cmd):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    (repo / "x.txt").write_text("x")
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "commit", "-q", "-m", "c2")
+    problems = proj.verify_locked(root, firmware=repo)
+    assert any("firmware.commit" in p for p in problems)
+
+
+def test_verify_locked_dirty_even_when_pegged_dirty(tmp_path, make_firmware, make_sdk):
+    # Pegged dirty (commit unchanged, dirty true->true => no drift), but verify
+    # must still refuse because uncommitted changes aren't captured by the commit.
+    repo = make_firmware()
+    (repo / "SDK_VERSION").write_text("1.6.0 ")  # uncommitted change before pegging
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, allow_dirty=True)
+    problems = proj.verify_locked(root, firmware=repo)
+    assert any("dirty" in p for p in problems)
+
+
+def test_load_project_verify_refuses_on_drift(tmp_path, make_firmware, make_sdk, git_cmd):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    (repo / "x.txt").write_text("x")
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "commit", "-q", "-m", "c2")
+    with pytest.raises(ProjectError, match="refusing to proceed"):
+        proj.load_project(root, firmware=repo)
+
+
+def test_load_project_verify_false_skips(tmp_path, make_firmware, make_sdk, git_cmd):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    (repo / "x.txt").write_text("x")
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "commit", "-q", "-m", "c2")
+    p = proj.load_project(root, firmware=repo, verify=False)
+    assert p.board("OPENMV_N6").front_size == (0x01800000 // 2)
