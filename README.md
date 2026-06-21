@@ -25,10 +25,10 @@ OTA design.
 
 ## Status
 
-The `openmv-ota romfs` image tool is implemented and tested. The over-the-air
-update tools — signing and slot composition, the frozen `boot.py`, the
-`ed25519_verify` module, model compilation, and the update server — are not yet
-built.
+The `openmv-ota romfs` image tool and `openmv-ota project` (firmware pegging) are
+implemented and tested. The remaining over-the-air update tools — model
+compilation, signing and slot composition, the frozen `boot.py`, the
+`ed25519_verify` module, and the update server — are not yet built.
 
 ## Installation
 
@@ -67,6 +67,30 @@ openmv-ota romfs extract app.romfs -o ./out
 `--board` sets the alignment rules and partition capacity for a camera;
 `--align EXT=N` overrides the alignment for a file extension. See
 [docs/romfs.md](docs/romfs.md).
+
+### Project
+
+`openmv-ota project` pegs an OTA project to a specific OpenMV firmware checkout
+and records the toolchain versions and per-board geometry that firmware implies.
+The project directory is committed and shared; build steps read it so their tool
+versions match the firmware.
+
+| Command | Purpose |
+|---|---|
+| `openmv-ota project new <dir> -f <openmv> -b <board>` | Create a project pegged to a firmware checkout |
+| `openmv-ota project setup` | Reconstruct the pinned checkout and SDK from the lock |
+| `openmv-ota project show` | Print the resolved snapshot |
+| `openmv-ota project status` | Report drift between the lock and the checkout |
+| `openmv-ota project sync` | Re-resolve and rewrite the lock |
+
+```bash
+openmv-ota project new ./my-product -f ~/openmv -b OPENMV_N6
+openmv-ota project show ./my-product
+```
+
+`openmv-ota.toml` and `openmv-ota.lock.json` are committed and carry the firmware
+identity, versions, and board geometry; `openmv-ota.local.toml` is gitignored and
+holds this machine's checkout path. See [docs/project.md](docs/project.md).
 
 ### OTA
 
