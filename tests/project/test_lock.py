@@ -34,6 +34,19 @@ def test_roundtrip(tmp_path):
     assert again.schema_version == lock_mod.LOCK_SCHEMA_VERSION
 
 
+def test_ota_roundtrips(tmp_path):
+    path = tmp_path / lock_mod.LOCK_NAME
+    lock_mod.write(path, _lock(ota=True))
+    again = lock_mod.read(path)
+    assert again.ota is True
+    assert again.to_dict()["ota"] is True
+
+
+def test_drift_ignores_ota_flag():
+    # The ota mode is guarded by config_digest, not compared field-by-field.
+    assert lock_mod.drift(_lock(), _lock(ota=True)) == []
+
+
 def test_read_missing(tmp_path):
     with pytest.raises(ProjectError, match="no openmv-ota.lock.json"):
         lock_mod.read(tmp_path / "openmv-ota.lock.json")

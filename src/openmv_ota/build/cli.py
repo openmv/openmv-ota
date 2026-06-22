@@ -42,7 +42,7 @@ def register(build_parser: argparse.ArgumentParser):
                    help="st edge ai level (default: 3 = max)")
     p.add_argument("-f", "--firmware", help="firmware checkout override")
     p.add_argument("--allow-oversize", action="store_true",
-                   help="warn instead of failing when an image exceeds the partition")
+                   help="warn instead of failing when an image exceeds its capacity")
     p.add_argument("--keep-build-dir", action="store_true",
                    help="keep the staging dir for inspection")
     p.set_defaults(func=cmd_romfs, _command="build romfs")
@@ -69,7 +69,7 @@ def cmd_romfs(args: argparse.Namespace) -> int:
 
     for r in results:
         pct = (r.size / r.capacity * 100) if r.capacity else 0
-        print("Built %s  (%d bytes, %.1f%% of partition)" % (r.output, r.size, pct))
+        print("Built %s  (%d bytes, %.1f%% of %s)" % (r.output, r.size, pct, r.bound))
         if r.build_dir is not None:
             print("  build dir kept: %s" % r.build_dir)
     return 0

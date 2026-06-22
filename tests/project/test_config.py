@@ -87,6 +87,21 @@ def test_render_config_roundtrips(tmp_path):
     p = _write(tmp_path / cfg.CONFIG_NAME, text)
     c = cfg.load_config(p)
     assert c.name == "prod" and c.vendor == "Acme" and c.boards == ["OPENMV_N6", "OPENMV_AE3"]
+    assert c.ota is False
+
+
+def test_render_config_non_ota_leaves_section_commented(tmp_path):
+    text = cfg.render_config("prod", None, ["OPENMV_N6"])
+    assert "# [ota]" in text
+    c = cfg.load_config(_write(tmp_path / cfg.CONFIG_NAME, text))
+    assert c.ota is False
+
+
+def test_render_config_ota_roundtrips(tmp_path):
+    text = cfg.render_config("prod", None, ["OPENMV_N6"], ota=True)
+    assert "[ota]\nenabled = true" in text
+    c = cfg.load_config(_write(tmp_path / cfg.CONFIG_NAME, text))
+    assert c.ota is True
 
 
 def test_render_config_no_vendor(tmp_path):

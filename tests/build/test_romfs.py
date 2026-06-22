@@ -108,6 +108,31 @@ def test_oversize(monkeypatch, make_project):
     assert res[0].output.exists()
 
 
+def test_ota_capacity_is_half(make_project):
+    from openmv_ota.project import load_project
+
+    root, repo, app = make_project(ota=True)
+    target = load_project(root, firmware=repo).board("OPENMV_N6")
+    results = build_mod.build_romfs(root, app=app, firmware=repo,
+                                    compile_py=False, convert_models=False)
+    r = results[0]
+    assert r.bound == "OTA slot"
+    assert r.capacity == target.front_size - build_mod.OTA_SLOT_OVERHEAD
+    assert r.capacity < target.partition_size
+
+
+def test_ota_image_over_slot_budget(monkeypatch, make_project):
+    from openmv_ota.project import load_project
+
+    root, repo, app = make_project(ota=True)
+    front = load_project(root, firmware=repo).board("OPENMV_N6").front_size
+    # Fits the whole partition, but overflows a half-partition OTA slot.
+    monkeypatch.setattr(build_mod, "build_image", lambda *a, **k: b"\x00" * (front - 0x1000))
+    with pytest.raises(BuildError, match="OTA slot"):
+        build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)
+
+
 def test_multi_partition_naming(make_project):
     root, repo, app = make_project(
         boards=("OPENMV_AE3",),

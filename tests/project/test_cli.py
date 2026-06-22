@@ -20,7 +20,17 @@ def test_new_success(tmp_path, make_firmware, make_sdk, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "firmware:    5.0.0" in out and "vela 5.0.0" in out
+    assert "mode:        single image" in out
     assert (root / "openmv-ota.toml").exists()
+
+
+def test_new_ota(tmp_path, make_firmware, make_sdk, capsys):
+    rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota")
+    assert rc == 0
+    assert "mode:        OTA" in capsys.readouterr().out
+    capsys.readouterr()
+    assert main(["project", "show", str(root)]) == 0
+    assert "mode:        OTA" in capsys.readouterr().out
 
 
 def test_new_not_git(tmp_path, make_sdk, capsys):

@@ -15,8 +15,13 @@ openmv-ota build romfs ./my-product
 For each target it compiles every `.py` to `.mpy` with the project's mpy-cross,
 converts NPU models with the project's Vela (AE3) or ST Edge AI (N6), packs the
 result into a ROMFS image with the board's alignment rules, and checks it against
-the partition size. The output is written to `<project>/build/<board>.romfs` (one
-per target; a board with more than one partition gets `<board>-p<index>.romfs`).
+the available capacity. The output is written to `<project>/build/<board>.romfs`
+(one per target; a board with more than one partition gets `<board>-p<index>.romfs`).
+
+The capacity is the whole partition for a single-image project, or half the
+partition less an 8 KiB status sector and trailer for an OTA project (`project new
+--ota`) — each OTA partition holds a regular image and a golden fallback. The build
+summary reports the percentage of whichever bound applies.
 
 The app source defaults to `<project>/app`; pass `--app` to use another directory.
 The project must match its lock and be clean — `build romfs` refuses to run

@@ -17,6 +17,18 @@ from .compile.models import MODEL_SUFFIXES, ModelContext, convert_model
 from .errors import BuildError
 from .staging import iter_files, stage_app
 
+# An OTA partition is split into two equal slots - a regular image and a golden
+# fallback - so an OTA image gets half the partition. Each slot also carries a
+# 4 KiB status sector and a 4 KiB trailer, leaving front_size - 8 KiB for the body.
+OTA_SLOT_OVERHEAD = 0x2000  # status (4 KiB) + trailer (4 KiB)
+
+
+def _capacity(project, target) -> tuple[int, str]:
+    """The usable image budget for a target and the name of what bounds it."""
+    if project.config.ota:
+        return target.front_size - OTA_SLOT_OVERHEAD, "OTA slot"
+    return target.partition_size, "ROMFS partition"
+
 
 @dataclass
 class BuildResult:
@@ -25,6 +37,7 @@ class BuildResult:
     output: Path
     size: int
     capacity: int
+    bound: str = "ROMFS partition"  # what capacity measures (partition, or OTA slot)
     build_dir: Path | None = None  # set when --keep-build-dir
 
 
@@ -105,19 +118,20 @@ def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, *, convert_models,
                     model.write_bytes(data)
 
         image = build_image(str(stage), t.alignment_rules)
-        if len(image) > t.partition_size and not allow_oversize:
+        capacity, bound = _capacity(p, t)
+        if len(image) > capacity and not allow_oversize:
             raise BuildError(
-                "%s image is %d bytes but the ROMFS partition holds %d (%d over); "
+                "%s image is %d bytes but the %s holds %d (%d over); "
                 "pass --allow-oversize"
-                % (t.name, len(image), t.partition_size, len(image) - t.partition_size),
+                % (t.name, len(image), bound, capacity, len(image) - capacity),
                 exit_code=1,
             )
 
         name = "%s-p%d" % (t.name, t.partition_index) if t.name in multi else t.name
         out_path = out_dir / (name + ".romfs")
         out_path.write_bytes(image)
-        return BuildResult(t.name, t.partition_index, out_path, len(image), t.partition_size,
-                           build_dir=tmp if keep_build_dir else None)
+        return BuildResult(t.name, t.partition_index, out_path, len(image), capacity,
+                           bound=bound, build_dir=tmp if keep_build_dir else None)
     finally:
         if not keep_build_dir:
             shutil.rmtree(tmp, ignore_errors=True)

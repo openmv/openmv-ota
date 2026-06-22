@@ -16,7 +16,8 @@ DEFAULT_APP = {
 @pytest.fixture
 def make_project(tmp_path, make_firmware, make_sdk):
     """Create a real pegged project + an app dir. Returns (project_dir, repo, app_dir)."""
-    def _make(boards=("OPENMV_N6",), app_files=None, with_mpy_cross=True, extra_config=""):
+    def _make(boards=("OPENMV_N6",), app_files=None, with_mpy_cross=True, extra_config="",
+              ota=False):
         from openmv_ota.project import project as proj
 
         repo = make_firmware(with_mpy_cross=with_mpy_cross)
@@ -25,6 +26,7 @@ def make_project(tmp_path, make_firmware, make_sdk):
         proj.create_project(
             root, firmware=repo, boards=list(boards), product=None, vendor=None,
             sdk_home_override=home, install_sdk=False, allow_dirty=True, force=False, now=NOW,
+            ota=ota,
         )
         if extra_config:
             cfg = proj.ProjectPaths(root).config

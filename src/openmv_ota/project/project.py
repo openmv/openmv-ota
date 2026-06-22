@@ -108,6 +108,7 @@ def resolve_snapshot(
         generated_by=GENERATED_BY,
         generated_at=now,
         config_digest=config_digest,
+        ota=config.ota,
         firmware={
             "version": ver.string,
             "version_parts": {"major": ver.major, "minor": ver.minor, "patch": ver.patch},
@@ -178,6 +179,7 @@ def create_project(
     allow_dirty: bool,
     force: bool,
     now: str,
+    ota: bool = False,
 ) -> tuple[lock_mod.Lock, list[str]]:
     repo = firmware.expanduser().resolve()
     if not gitrepo.is_git_repo(repo):
@@ -190,11 +192,11 @@ def create_project(
 
     config_mod.validate_boards(boards)
     name = product or root.resolve().name
-    config = OtaConfig(name=name, vendor=vendor, boards=boards, overrides={})
+    config = OtaConfig(name=name, vendor=vendor, boards=boards, ota=ota, overrides={})
 
     ensure_sdk(repo, sdk_home_override, install_sdk)
 
-    config_text = config_mod.render_config(name, vendor, boards)
+    config_text = config_mod.render_config(name, vendor, boards, ota=ota)
     digest = _digest(config_text)
     lock, warnings = resolve_snapshot(
         repo, config, sdk_home_override=sdk_home_override, config_digest=digest, now=now,

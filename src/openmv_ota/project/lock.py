@@ -32,6 +32,7 @@ class Lock:
     toolchain: dict
     submodules: list
     targets: dict
+    ota: bool = False
     schema_version: int = LOCK_SCHEMA_VERSION
 
     def to_dict(self) -> dict:
@@ -40,6 +41,7 @@ class Lock:
             "generated_by": self.generated_by,
             "generated_at": self.generated_at,
             "config_digest": self.config_digest,
+            "ota": self.ota,
             "firmware": self.firmware,
             "micropython": self.micropython,
             "sdk": self.sdk,
@@ -55,6 +57,7 @@ class Lock:
             generated_by=d.get("generated_by", ""),
             generated_at=d.get("generated_at", ""),
             config_digest=d.get("config_digest", ""),
+            ota=bool(d.get("ota", False)),
             firmware=d.get("firmware", {}),
             micropython=d.get("micropython", {}),
             sdk=d.get("sdk", {}),

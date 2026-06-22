@@ -138,6 +138,20 @@ def test_create_writes_files(tmp_path, make_firmware, make_sdk):
     assert any("conditional" in w for w in warnings)
 
 
+def test_create_default_not_ota(tmp_path, make_firmware, make_sdk):
+    root, (lock, _) = _create(tmp_path, make_firmware, make_sdk)
+    assert lock.ota is False
+    assert "# [ota]" in proj.ProjectPaths(root).config.read_text()
+
+
+def test_create_ota_project(tmp_path, make_firmware, make_sdk):
+    root, (lock, _) = _create(tmp_path, make_firmware, make_sdk, ota=True)
+    assert lock.ota is True
+    # The committed config records the mode, and the lock carries it for the build.
+    assert "[ota]\nenabled = true" in proj.ProjectPaths(root).config.read_text()
+    assert lock.to_dict()["ota"] is True
+
+
 def test_create_not_git(tmp_path, make_sdk):
     with pytest.raises(ProjectError, match="not a git repository"):
         proj.create_project(

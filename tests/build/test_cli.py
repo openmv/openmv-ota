@@ -12,7 +12,7 @@ def test_build_romfs_pack_only(make_project, capsys):
                "--no-compile-py", "--no-convert-models"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Built" in out and "OPENMV_N6.romfs" in out and "of partition" in out
+    assert "Built" in out and "OPENMV_N6.romfs" in out and "of ROMFS partition" in out
 
 
 def test_build_romfs_with_compile(monkeypatch, make_project):

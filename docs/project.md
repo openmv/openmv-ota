@@ -63,7 +63,21 @@ firmware checkout). Pass `--install-sdk` to run `make sdk` for you, or
 | `--sdk-home PATH` | SDK install directory (default `~/openmv-sdk-<version>`). |
 | `--install-sdk` | Run `make sdk` if the SDK is missing. |
 | `--allow-dirty` | Don't warn when the checkout has uncommitted changes. |
+| `--ota` | Over-the-air project: each partition is split into two halves. |
 | `--force` | Overwrite an existing project. |
+
+## OTA projects
+
+By default a project builds a single image that fills the whole ROMFS partition.
+Pass `--ota` to declare an over-the-air project instead. An OTA partition is split
+into two halves — a regular image and a golden fallback — so each image gets half
+the partition, less an 8 KiB status sector and trailer. `build romfs` enforces that
+halved budget for an OTA project and the full partition otherwise; `show` reports
+which mode a project is in.
+
+The mode is recorded as `[ota] enabled` in `openmv-ota.toml` (and mirrored into the
+lock). Changing it re-resolves the project, so set it at `new` time. Signing, the
+golden image, and the update server build on this in later layers.
 
 ## Reconstructing a checkout
 
@@ -117,9 +131,11 @@ Reading a project from Python verifies by default for the same reason — see be
 
 ## What the lock records
 
-`openmv-ota.toml` carries only what you choose (product metadata, target boards).
-Everything else is resolved into `openmv-ota.lock.json`:
+`openmv-ota.toml` carries only what you choose (product metadata, target boards,
+and whether the project is OTA). Everything else is resolved into
+`openmv-ota.lock.json`:
 
+- whether the project is OTA (which halves each partition's usable image budget);
 - the firmware version, git remote, commit, branch, `git describe`, and whether
   the checkout was dirty;
 - the MicroPython version, its commit, and the `.mpy` ABI version;

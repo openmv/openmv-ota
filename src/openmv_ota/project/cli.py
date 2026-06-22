@@ -41,6 +41,8 @@ def register(project_parser: argparse.ArgumentParser):
     p_new.add_argument("--sdk-home", help="SDK install dir (default ~/openmv-sdk-<SDK_VERSION>)")
     p_new.add_argument("--install-sdk", action="store_true", help="run `make sdk` if missing")
     p_new.add_argument("--allow-dirty", action="store_true", help="don't warn on a dirty checkout")
+    p_new.add_argument("--ota", action="store_true",
+                       help="over-the-air project: halve each partition for a regular + golden image")
     p_new.add_argument("--force", action="store_true", help="overwrite an existing project")
     p_new.set_defaults(func=cmd_new, _command="project new")
 
@@ -96,6 +98,7 @@ def cmd_new(args: argparse.Namespace) -> int:
             install_sdk=args.install_sdk,
             allow_dirty=args.allow_dirty,
             force=args.force,
+            ota=args.ota,
             now=_now(),
         )
     except ProjectError as e:
@@ -193,6 +196,8 @@ def _print_summary(lock: lock_mod.Lock) -> None:
     tc = lock.toolchain
     dirty = " (dirty)" if fw.get("dirty") else ""
     branch = fw.get("branch") or "detached"
+    print("  mode:        %s" % ("OTA (partition split into regular + golden)" if lock.ota
+                                 else "single image (fills the partition)"))
     print("  firmware:    %s  commit %s%s" % (fw.get("version"), (fw.get("commit") or "")[:12], dirty))
     print("               branch %s  describe %s" % (branch, fw.get("describe")))
     print("  micropython: %s  (.mpy abi %s.%s)"

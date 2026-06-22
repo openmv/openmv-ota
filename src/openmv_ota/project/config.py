@@ -25,6 +25,7 @@ class OtaConfig:
     name: str
     vendor: str | None
     boards: list[str]
+    ota: bool = False
     overrides: dict[str, dict] = field(default_factory=dict)
 
 
@@ -60,6 +61,7 @@ def load_config(path: Path) -> OtaConfig:
         name=str(product.get("name") or path.parent.name),
         vendor=product.get("vendor"),
         boards=boards,
+        ota=bool((data.get("ota", {}) or {}).get("enabled", False)),
         overrides=overrides,
     )
 
@@ -88,9 +90,21 @@ def load_local(path: Path) -> LocalConfig | None:
     )
 
 
-def render_config(name: str, vendor: str | None, boards: list[str]) -> str:
+def render_config(name: str, vendor: str | None, boards: list[str], ota: bool = False) -> str:
     board_list = ", ".join('"%s"' % b for b in boards)
     vendor_line = ('vendor = "%s"\n' % vendor) if vendor else '# vendor = "Acme Robotics"\n'
+    if ota:
+        ota_section = (
+            "[ota]\n"
+            "enabled = true            # split each partition into two halves\n"
+            "#                           (a regular image and a golden fallback)\n\n"
+        )
+    else:
+        ota_section = (
+            "# [ota]\n"
+            "# enabled = true          # opt in to over-the-air updates; halves the\n"
+            "#                           usable image size (regular + golden image)\n\n"
+        )
     return (
         "# openmv-ota project config (committed, shared with your team / CI).\n"
         "# No machine paths here - the firmware checkout path lives in\n"
@@ -101,7 +115,8 @@ def render_config(name: str, vendor: str | None, boards: list[str]) -> str:
         + "# support_period = \"5y\"\n"
         "# security_contact = \"security@example.com\"\n"
         "# disclosure_url = \"https://example.com/.well-known/security.txt\"\n\n"
-        "[targets]\n"
+        + ota_section
+        + "[targets]\n"
         "boards = [%s]\n\n" % board_list
         + "# Optional per-board settings:\n"
         "# [targets.OPENMV_AE3]\n"
