@@ -10,10 +10,12 @@ from __future__ import annotations
 from .algorithms import EDDSA, ES256, ES256K, ES384, ES512, AlgSpec, algorithm_for
 from .errors import OtaError
 from .keys import (
+    ProvisionedKeys,
     TrustedKey,
     generate_private_key,
     load_private_key_pem,
     private_key_pem,
+    provision_key_set,
     public_key_from_hex,
     public_point_hex,
     read_trusted_keys,
@@ -60,4 +62,6 @@ __all__ = [
     "TrustedKey",
     "read_trusted_keys",
     "write_trusted_keys",
+    "ProvisionedKeys",
+    "provision_key_set",
 ]

@@ -26,7 +26,7 @@ def make_project(tmp_path, make_firmware, make_sdk):
         proj.create_project(
             root, firmware=repo, boards=list(boards), product=None, vendor=None,
             sdk_home_override=home, install_sdk=False, allow_dirty=True, force=False, now=NOW,
-            ota=ota,
+            ota=ota, ota_keys=2, factory_keys=1,  # small pool: these tests don't exercise keys
         )
         if extra_config:
             cfg = proj.ProjectPaths(root).config

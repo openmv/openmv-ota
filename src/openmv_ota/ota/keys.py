@@ -116,3 +116,41 @@ def write_trusted_keys(path: Path, keys: list[TrustedKey]) -> None:
     """Write the trusted-key set (committed, public)."""
     doc = {"schema": TRUSTED_KEYS_SCHEMA, "keys": [k.to_dict() for k in keys]}
     Path(path).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+# --- provisioning -----------------------------------------------------------
+
+# key_id ranges, well-separated so role pools don't collide at realistic counts.
+FACTORY_KEY_ID_BASE = 0x0001
+OTA_KEY_ID_BASE = 0x0100
+
+
+@dataclass
+class ProvisionedKeys:
+    """A freshly provisioned key set: public entries + their private PEMs."""
+
+    trusted: list[TrustedKey]       # public set -> keys/trusted_keys.json
+    private_pems: dict[int, bytes]  # key_id -> PKCS#8 PEM (secured, gitignored)
+    signing_key_id: int             # the current OTA signer (first ota key)
+
+
+def provision_key_set(alg: AlgSpec, n_factory: int, n_ota: int) -> ProvisionedKeys:
+    """Generate the whole key set for a new OTA project: ``n_factory`` factory keys
+    + an ``n_ota`` OTA rotation pool, all on ``alg``'s curve. The device trusts the
+    public set; the current signer is the first OTA key."""
+    trusted: list[TrustedKey] = []
+    private_pems: dict[int, bytes] = {}
+
+    def _mint(key_id: int, role: str) -> None:
+        priv = generate_private_key(alg)
+        trusted.append(
+            TrustedKey(key_id, alg.cose_id, role, public_point_hex(priv.public_key()))
+        )
+        private_pems[key_id] = private_key_pem(priv)
+
+    for i in range(n_factory):
+        _mint(FACTORY_KEY_ID_BASE + i, "factory")
+    for i in range(n_ota):
+        _mint(OTA_KEY_ID_BASE + i, "ota")
+
+    return ProvisionedKeys(trusted, private_pems, OTA_KEY_ID_BASE)

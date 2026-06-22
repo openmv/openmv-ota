@@ -7,10 +7,13 @@ import pytest
 from openmv_ota.ota import ES256, ES384, ES512, algorithm_for
 from openmv_ota.ota.errors import OtaError
 from openmv_ota.ota.keys import (
+    FACTORY_KEY_ID_BASE,
+    OTA_KEY_ID_BASE,
     TrustedKey,
     generate_private_key,
     load_private_key_pem,
     private_key_pem,
+    provision_key_set,
     public_key_from_hex,
     public_point_hex,
     read_trusted_keys,
@@ -85,3 +88,29 @@ def test_read_trusted_keys_bad_json(tmp_path):
     path.write_text("{not json", encoding="utf-8")
     with pytest.raises(OtaError, match="not valid JSON"):
         read_trusted_keys(path)
+
+
+def test_provision_key_set():
+    alg = algorithm_for(ES256)
+    prov = provision_key_set(alg, n_factory=2, n_ota=3)
+
+    # 2 factory + 3 ota, with separated, sequential key_ids and correct roles.
+    assert [k.role for k in prov.trusted] == ["factory", "factory", "ota", "ota", "ota"]
+    assert [k.key_id for k in prov.trusted] == [
+        FACTORY_KEY_ID_BASE, FACTORY_KEY_ID_BASE + 1,
+        OTA_KEY_ID_BASE, OTA_KEY_ID_BASE + 1, OTA_KEY_ID_BASE + 2,
+    ]
+    assert all(k.alg == ES256 for k in prov.trusted)
+    assert prov.signing_key_id == OTA_KEY_ID_BASE
+    assert set(prov.private_pems) == {k.key_id for k in prov.trusted}
+
+
+def test_provisioned_private_keys_match_public_set():
+    alg = algorithm_for(ES256)
+    prov = provision_key_set(alg, n_factory=1, n_ota=1)
+    by_id = {k.key_id: k for k in prov.trusted}
+    region = b"provisioned-region"
+    for key_id, pem in prov.private_pems.items():
+        priv = load_private_key_pem(pem)
+        pub = public_key_from_hex(by_id[key_id].pubkey, alg)
+        assert verify_region(pub, region, sign_region(priv, region, alg), alg) is True

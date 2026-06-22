@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from openmv_ota import __version__
+from openmv_ota.ota.algorithms import ES256, algorithm_for
 
 from . import cache, config as config_mod, gitrepo, lock as lock_mod
 from .config import LOCAL_NAME, OtaConfig
@@ -59,6 +61,14 @@ class ProjectPaths:
     @property
     def readme(self) -> Path:
         return self.root / "README.md"
+
+    @property
+    def trusted_keys(self) -> Path:
+        return self.root / "keys" / "trusted_keys.json"
+
+    @property
+    def private_keys_dir(self) -> Path:
+        return self.root / "keys" / "private"
 
 
 # --- snapshot resolution ----------------------------------------------------
@@ -161,8 +171,13 @@ def ensure_sdk(repo: Path, override: Path | None, install_sdk: bool) -> sdk_res.
     return info
 
 
-def _digest(text: str) -> str:
-    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _digest(config: OtaConfig) -> str:
+    """Digest the *firmware-relevant* config — the fields that, if changed, would
+    invalidate the resolved lock. Excludes release state (``version``), metadata
+    (name/vendor), and cosmetic edits, so bumping the version never trips drift."""
+    relevant = {"boards": config.boards, "overrides": config.overrides, "ota": config.ota}
+    blob = json.dumps(relevant, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 # --- create -----------------------------------------------------------------
@@ -180,6 +195,10 @@ def create_project(
     force: bool,
     now: str,
     ota: bool = False,
+    sig_alg: int = ES256,
+    ota_keys: int = 32,
+    factory_keys: int = 8,
+    version: int = 1,
 ) -> tuple[lock_mod.Lock, list[str]]:
     repo = firmware.expanduser().resolve()
     if not gitrepo.is_git_repo(repo):
@@ -192,25 +211,72 @@ def create_project(
 
     config_mod.validate_boards(boards)
     name = product or root.resolve().name
-    config = OtaConfig(name=name, vendor=vendor, boards=boards, ota=ota, overrides={})
+    config = OtaConfig(name=name, vendor=vendor, boards=boards, ota=ota, version=version)
 
     ensure_sdk(repo, sdk_home_override, install_sdk)
 
-    config_text = config_mod.render_config(name, vendor, boards, ota=ota)
-    digest = _digest(config_text)
-    lock, warnings = resolve_snapshot(
+    warnings: list[str] = []
+    provisioned = None
+    if ota:
+        provisioned, w = _provision_keys(sig_alg, factory_keys, ota_keys)
+        config.signing_key_id = provisioned.signing_key_id
+        warnings += w
+
+    config_text = config_mod.render_config(
+        name, vendor, boards, ota=ota, version=version, signing_key_id=config.signing_key_id,
+    )
+    digest = _digest(config)
+    lock, w = resolve_snapshot(
         repo, config, sdk_home_override=sdk_home_override, config_digest=digest, now=now,
     )
+    warnings += w
     if lock.firmware["dirty"] and not allow_dirty:
         warnings.append("firmware checkout is dirty; the pinned commit does not "
                         "fully capture the build. Commit or pass --allow-dirty.")
 
     paths.config.write_text(config_text, encoding="utf-8")
     lock_mod.write(paths.lock, lock)
+    if provisioned is not None:
+        _write_keys(paths, provisioned)
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
     return lock, warnings
+
+
+OTA_KEYS_WARN_FLOOR = 4
+
+
+def _provision_keys(sig_alg: int, factory_keys: int, ota_keys: int):
+    """Generate the OTA project's key set (raises on a missing factory key)."""
+    if factory_keys < 1:
+        raise ProjectError(
+            "an OTA project needs at least one factory key (--factory-keys 0 leaves no "
+            "way to sign the golden image)", exit_code=1,
+        )
+    from openmv_ota.ota.keys import provision_key_set
+
+    prov = provision_key_set(algorithm_for(sig_alg), n_factory=factory_keys, n_ota=ota_keys)
+    warnings: list[str] = []
+    if ota_keys < OTA_KEYS_WARN_FLOOR:
+        warnings.append(
+            "--ota-keys %d is a very small rotation pool; you can't add keys later without "
+            "re-flashing firmware (the default is 32)" % ota_keys
+        )
+    return prov, warnings
+
+
+def _write_keys(paths: ProjectPaths, provisioned) -> None:
+    """Write the committed public set + the gitignored private PEMs."""
+    from openmv_ota.ota.keys import write_trusted_keys
+
+    paths.trusted_keys.parent.mkdir(parents=True, exist_ok=True)
+    write_trusted_keys(paths.trusted_keys, provisioned.trusted)
+    paths.private_keys_dir.mkdir(parents=True, exist_ok=True)
+    role_by_id = {k.key_id: k.role for k in provisioned.trusted}
+    for key_id, pem in provisioned.private_pems.items():
+        pem_path = paths.private_keys_dir / ("%s-%04x.pem" % (role_by_id[key_id], key_id))
+        pem_path.write_bytes(pem)
 
 
 def _write_local(paths: ProjectPaths, repo: Path, sdk_home_override: Path | None) -> None:
@@ -244,10 +310,9 @@ def sync_project(
     repo = _checkout_path(paths, firmware)
     ensure_sdk(repo, sdk_home_override, install_sdk)
 
-    config_text = paths.config.read_text(encoding="utf-8")
     lock, warnings = resolve_snapshot(
         repo, config, sdk_home_override=sdk_home_override,
-        config_digest=_digest(config_text), now=now,
+        config_digest=_digest(config), now=now,
     )
     if lock.firmware["dirty"] and not allow_dirty:
         warnings.append("firmware checkout is dirty; re-locked anyway.")
@@ -260,10 +325,9 @@ def _current_snapshot(paths: ProjectPaths, firmware: Path | None, now: str = "")
     ``generated_at`` is excluded from drift comparison)."""
     config = config_mod.load_config(paths.config)
     repo = _checkout_path(paths, firmware)
-    config_text = paths.config.read_text(encoding="utf-8")
     current, _ = resolve_snapshot(
         repo, config, sdk_home_override=_local_sdk_home(paths),
-        config_digest=_digest(config_text), now=now,
+        config_digest=_digest(config), now=now,
     )
     return current
 

@@ -98,10 +98,16 @@ def test_render_config_non_ota_leaves_section_commented(tmp_path):
 
 
 def test_render_config_ota_roundtrips(tmp_path):
-    text = cfg.render_config("prod", None, ["OPENMV_N6"], ota=True)
+    text = cfg.render_config("prod", None, ["OPENMV_N6"], ota=True, version=7, signing_key_id=256)
     assert "[ota]\nenabled = true" in text
     c = cfg.load_config(_write(tmp_path / cfg.CONFIG_NAME, text))
-    assert c.ota is True
+    assert c.ota is True and c.version == 7 and c.signing_key_id == 256
+
+
+def test_non_ota_config_has_default_release_state(tmp_path):
+    text = cfg.render_config("prod", None, ["OPENMV_N6"])
+    c = cfg.load_config(_write(tmp_path / cfg.CONFIG_NAME, text))
+    assert c.version == 1 and c.signing_key_id is None
 
 
 def test_render_config_no_vendor(tmp_path):

@@ -26,6 +26,8 @@ class OtaConfig:
     vendor: str | None
     boards: list[str]
     ota: bool = False
+    version: int = 1                    # OTA app release version (payload_version)
+    signing_key_id: int | None = None  # current OTA signing key
     overrides: dict[str, dict] = field(default_factory=dict)
 
 
@@ -57,11 +59,15 @@ def load_config(path: Path) -> OtaConfig:
     validate_boards(boards)
 
     overrides = {k: v for k, v in targets.items() if k != "boards" and isinstance(v, dict)}
+    ota = data.get("ota", {}) or {}
+    signing_key_id = ota.get("signing_key_id")
     return OtaConfig(
         name=str(product.get("name") or path.parent.name),
         vendor=product.get("vendor"),
         boards=boards,
-        ota=bool((data.get("ota", {}) or {}).get("enabled", False)),
+        ota=bool(ota.get("enabled", False)),
+        version=int(ota.get("version", 1)),
+        signing_key_id=int(signing_key_id) if signing_key_id is not None else None,
         overrides=overrides,
     )
 
@@ -90,14 +96,24 @@ def load_local(path: Path) -> LocalConfig | None:
     )
 
 
-def render_config(name: str, vendor: str | None, boards: list[str], ota: bool = False) -> str:
+def render_config(
+    name: str,
+    vendor: str | None,
+    boards: list[str],
+    ota: bool = False,
+    version: int = 1,
+    signing_key_id: int | None = None,
+) -> str:
     board_list = ", ".join('"%s"' % b for b in boards)
     vendor_line = ('vendor = "%s"\n' % vendor) if vendor else '# vendor = "Acme Robotics"\n'
     if ota:
         ota_section = (
             "[ota]\n"
-            "enabled = true            # split each partition into two halves\n"
-            "#                           (a regular image and a golden fallback)\n\n"
+            "enabled = true            # each partition holds a regular + golden image\n"
+            "version = %d              # app release version (payload_version); bump per release\n"
+            % version
+            + "signing_key_id = %d       # current OTA signing key (in keys/trusted_keys.json)\n\n"
+            % (signing_key_id or 0)
         )
     else:
         ota_section = (

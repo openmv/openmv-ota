@@ -145,11 +145,37 @@ def test_create_default_not_ota(tmp_path, make_firmware, make_sdk):
 
 
 def test_create_ota_project(tmp_path, make_firmware, make_sdk):
-    root, (lock, _) = _create(tmp_path, make_firmware, make_sdk, ota=True)
+    root, (lock, _) = _create(tmp_path, make_firmware, make_sdk, ota=True,
+                              factory_keys=2, ota_keys=3, version=5)
     assert lock.ota is True
-    # The committed config records the mode, and the lock carries it for the build.
-    assert "[ota]\nenabled = true" in proj.ProjectPaths(root).config.read_text()
     assert lock.to_dict()["ota"] is True
+    paths = proj.ProjectPaths(root)
+    assert "[ota]\nenabled = true" in paths.config.read_text()
+
+    # The committed config records release state; load_config round-trips it.
+    loaded = cfg.load_config(paths.config)
+    assert loaded.ota is True and loaded.version == 5
+    assert loaded.signing_key_id == 0x0100  # the first ota key is the current signer
+
+    # Public set is committed; private PEMs are written for every key, gitignored.
+    from openmv_ota.ota import read_trusted_keys
+    keys = read_trusted_keys(paths.trusted_keys)
+    assert sorted(k.role for k in keys) == ["factory", "factory", "ota", "ota", "ota"]
+    pems = sorted(p.name for p in paths.private_keys_dir.glob("*.pem"))
+    assert pems == ["factory-0001.pem", "factory-0002.pem",
+                    "ota-0100.pem", "ota-0101.pem", "ota-0102.pem"]
+    assert "keys/private/" in paths.gitignore.read_text()
+
+
+def test_create_ota_no_factory_key_errors(tmp_path, make_firmware, make_sdk):
+    with pytest.raises(ProjectError, match="at least one factory key"):
+        _create(tmp_path, make_firmware, make_sdk, ota=True, factory_keys=0, ota_keys=2)
+
+
+def test_create_ota_small_pool_warns(tmp_path, make_firmware, make_sdk):
+    _, (_, warnings) = _create(tmp_path, make_firmware, make_sdk, ota=True,
+                               factory_keys=1, ota_keys=2)
+    assert any("small rotation pool" in w for w in warnings)
 
 
 def test_create_not_git(tmp_path, make_sdk):

@@ -43,6 +43,14 @@ def register(project_parser: argparse.ArgumentParser):
     p_new.add_argument("--allow-dirty", action="store_true", help="don't warn on a dirty checkout")
     p_new.add_argument("--ota", action="store_true",
                        help="over-the-air project: halve each partition for a regular + golden image")
+    p_new.add_argument("--sig-alg", choices=("ES256", "ES384", "ES512"), default="ES256",
+                       help="OTA signature algorithm (default ES256 / P-256)")
+    p_new.add_argument("--ota-keys", type=int, default=32, metavar="N",
+                       help="OTA rotation-pool size to provision (default 32)")
+    p_new.add_argument("--factory-keys", type=int, default=8, metavar="N",
+                       help="factory-key reserve to provision, one per site (default 8)")
+    p_new.add_argument("--version", dest="ota_version", type=int, default=1, metavar="N",
+                       help="initial OTA app version / payload_version (default 1)")
     p_new.add_argument("--force", action="store_true", help="overwrite an existing project")
     p_new.set_defaults(func=cmd_new, _command="project new")
 
@@ -87,6 +95,9 @@ def _warn(warnings: list[str]) -> None:
 
 
 def cmd_new(args: argparse.Namespace) -> int:
+    from openmv_ota.ota.algorithms import ES256, ES384, ES512
+
+    sig_alg = {"ES256": ES256, "ES384": ES384, "ES512": ES512}[args.sig_alg]
     try:
         lock, warnings = proj.create_project(
             Path(args.dir),
@@ -99,6 +110,10 @@ def cmd_new(args: argparse.Namespace) -> int:
             allow_dirty=args.allow_dirty,
             force=args.force,
             ota=args.ota,
+            sig_alg=sig_alg,
+            ota_keys=args.ota_keys,
+            factory_keys=args.factory_keys,
+            version=args.ota_version,
             now=_now(),
         )
     except ProjectError as e:
@@ -106,6 +121,9 @@ def cmd_new(args: argparse.Namespace) -> int:
         return e.exit_code
     _warn(warnings)
     print("Created project in %s" % args.dir)
+    if args.ota:
+        print("Provisioned %d factory + %d ota keys -> keys/trusted_keys.json "
+              "(private keys gitignored in keys/private/)" % (args.factory_keys, args.ota_keys))
     _print_summary(lock)
     return 0
 
