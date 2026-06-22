@@ -15,6 +15,27 @@ A project is a directory you commit to git. It holds three files:
 
 The firmware checkout itself is referenced by path, not copied into the project.
 
+## Layout
+
+The project directory holds the settings alongside your MicroPython app:
+
+```
+my-product/
+├── openmv-ota.toml          # committed: product metadata + target boards
+├── openmv-ota.lock.json     # committed: the pegged snapshot
+├── openmv-ota.local.toml    # gitignored: this machine's firmware checkout path
+├── .gitignore
+├── README.md
+├── app/                     # your MicroPython app: main.py, lib/, models, …
+└── build/                   # gitignored: build output (one .romfs per target)
+```
+
+`new` writes the settings files, `.gitignore`, and `README.md`. You add `app/`
+with your code; `openmv-ota build romfs` compiles it and writes images to
+`build/`. Commit everything except `openmv-ota.local.toml` and `build/`, which the
+generated `.gitignore` already excludes. (`app/` and `build/` are the defaults;
+`build romfs` takes `--app` and `--output` to use other directories.)
+
 ## Creating a project
 
 `new` pegs a project to a local OpenMV checkout:

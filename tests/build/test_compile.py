@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,21 +45,87 @@ def test_compile_py_ok(monkeypatch, tmp_path):
         return _ok(cmd)
 
     monkeypatch.setattr(mpy.subprocess, "run", run)
-    mpy.compile_py("mpy-cross", ["-march=armv7emdp"], tmp_path / "a.py", tmp_path / "a.mpy")
+    mpy.compile_py(["mpy-cross"], ["-march=armv7emdp"], tmp_path / "a.py", tmp_path / "a.mpy")
     assert seen["cmd"] == ["mpy-cross", "-march=armv7emdp", "-o",
                            str(tmp_path / "a.mpy"), str(tmp_path / "a.py")]
+
+
+def test_compile_py_python_m_form(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(mpy.subprocess, "run", lambda cmd, **k: seen.update(cmd=cmd) or _ok(cmd))
+    mpy.compile_py([sys.executable, "-m", "mpy_cross"], [], tmp_path / "a.py", tmp_path / "a.mpy")
+    assert seen["cmd"][:3] == [sys.executable, "-m", "mpy_cross"]
 
 
 def test_compile_py_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(mpy.subprocess, "run", _fail)
     with pytest.raises(BuildError, match="mpy-cross failed"):
-        mpy.compile_py("mpy-cross", [], tmp_path / "a.py", tmp_path / "a.mpy")
+        mpy.compile_py(["mpy-cross"], [], tmp_path / "a.py", tmp_path / "a.mpy")
 
 
 def test_compile_py_not_found(monkeypatch, tmp_path):
     monkeypatch.setattr(mpy.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
     with pytest.raises(BuildError, match="mpy-cross not found"):
-        mpy.compile_py("mpy-cross", [], tmp_path / "a.py", tmp_path / "a.mpy")
+        mpy.compile_py(["mpy-cross"], [], tmp_path / "a.py", tmp_path / "a.mpy")
+
+
+# --- mpy-cross resolution ---------------------------------------------------
+
+def _proj(mpy_cross_path=None, version="1.28.0"):
+    return SimpleNamespace(
+        mpy_cross_path=mpy_cross_path,
+        lock=SimpleNamespace(
+            micropython={"version": version, "mpy_abi_version": 6, "mpy_sub_version": 3}),
+    )
+
+
+def test_resolve_mpy_cross_firmware_binary():
+    assert mpy.resolve_mpy_cross(_proj(mpy_cross_path="/b/mpy-cross")) == ["/b/mpy-cross"]
+
+
+def test_resolve_mpy_cross_pip_match(monkeypatch, capsys):
+    monkeypatch.setattr(mpy, "_has_pip_mpy_cross", lambda: True)
+    monkeypatch.setattr(mpy, "_pip_mpy_cross_version", lambda: "1.28.0")
+    assert mpy.resolve_mpy_cross(_proj()) == [sys.executable, "-m", "mpy_cross"]
+    assert capsys.readouterr().err == ""
+
+
+def test_resolve_mpy_cross_pip_unknown_version(monkeypatch, capsys):
+    monkeypatch.setattr(mpy, "_has_pip_mpy_cross", lambda: True)
+    monkeypatch.setattr(mpy, "_pip_mpy_cross_version", lambda: None)
+    assert mpy.resolve_mpy_cross(_proj()) == [sys.executable, "-m", "mpy_cross"]
+    assert capsys.readouterr().err == ""
+
+
+def test_resolve_mpy_cross_pip_mismatch_warns(monkeypatch, capsys):
+    monkeypatch.setattr(mpy, "_has_pip_mpy_cross", lambda: True)
+    monkeypatch.setattr(mpy, "_pip_mpy_cross_version", lambda: "1.25.0")
+    mpy.resolve_mpy_cross(_proj())
+    assert "may not match" in capsys.readouterr().err
+
+
+def test_resolve_mpy_cross_not_available(monkeypatch):
+    monkeypatch.setattr(mpy, "_has_pip_mpy_cross", lambda: False)
+    with pytest.raises(BuildError, match="pip install mpy-cross==1.28.0"):
+        mpy.resolve_mpy_cross(_proj())
+
+
+def test_has_pip_mpy_cross(monkeypatch):
+    monkeypatch.setattr(mpy.importlib.util, "find_spec", lambda n: object())
+    assert mpy._has_pip_mpy_cross() is True
+    monkeypatch.setattr(mpy.importlib.util, "find_spec", lambda n: None)
+    assert mpy._has_pip_mpy_cross() is False
+
+
+def test_pip_mpy_cross_version(monkeypatch):
+    monkeypatch.setattr(mpy.importlib.metadata, "version", lambda n: "1.28.0")
+    assert mpy._pip_mpy_cross_version() == "1.28.0"
+
+    def _raise(n):
+        raise mpy.importlib.metadata.PackageNotFoundError()
+
+    monkeypatch.setattr(mpy.importlib.metadata, "version", _raise)
+    assert mpy._pip_mpy_cross_version() is None
 
 
 # --- vela -------------------------------------------------------------------

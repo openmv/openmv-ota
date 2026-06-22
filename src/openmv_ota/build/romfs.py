@@ -59,10 +59,7 @@ def build_romfs(
     if not targets:
         raise BuildError("no matching targets in this project")
 
-    if compile_py and p.mpy_cross_path is None:
-        raise BuildError(
-            "mpy-cross is not built; build the firmware first, or pass --no-compile-py"
-        )
+    mpy_cmd = mpy.resolve_mpy_cross(p) if compile_py else None
 
     ctx = ModelContext(
         sdk_home=p.sdk_home, vela_path=p.vela_path, stedgeai_path=p.stedgeai_path,
@@ -73,8 +70,8 @@ def build_romfs(
     multi = {name for name, c in Counter(t.name for t in targets).items() if c > 1}
     out_dir.mkdir(parents=True, exist_ok=True)
     return [
-        _build_one(p, t, app_dir, out_dir, ctx, multi,
-                   compile_py=compile_py, convert_models=convert_models,
+        _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd,
+                   convert_models=convert_models,
                    mpy_extra=list(mpy_extra or []), allow_oversize=allow_oversize,
                    keep_build_dir=keep_build_dir)
         for t in targets
@@ -90,16 +87,15 @@ def _select_targets(targets, boards, partition):
     return sel
 
 
-def _build_one(p, t, app_dir, out_dir, ctx, multi, *, compile_py, convert_models,
+def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, *, convert_models,
                mpy_extra, allow_oversize, keep_build_dir) -> BuildResult:
     tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-build-"))
     try:
         stage = stage_app(app_dir, tmp / "app")
 
-        if compile_py:
+        if mpy_cmd is not None:
             for src in iter_files(stage, (".py",)):
-                mpy.compile_py(p.mpy_cross_path, t.mpy_args + mpy_extra, src,
-                               src.with_suffix(".mpy"))
+                mpy.compile_py(mpy_cmd, t.mpy_args + mpy_extra, src, src.with_suffix(".mpy"))
                 src.unlink()
 
         if convert_models and t.npu:

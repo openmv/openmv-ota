@@ -63,10 +63,24 @@ def test_no_npu_board_skips_conversion(monkeypatch, make_project):
     assert called["n"] == 0  # NiclaV has no NPU
 
 
-def test_mpy_cross_not_built(make_project):
+def test_mpy_cross_not_available(make_project, monkeypatch):
+    # No firmware-built binary and no pip mpy_cross -> error with the pip hint.
+    monkeypatch.setattr(build_mod.mpy, "_has_pip_mpy_cross", lambda: False)
     root, repo, app = make_project(with_mpy_cross=False)
-    with pytest.raises(BuildError, match="mpy-cross is not built"):
+    with pytest.raises(BuildError, match="pip install mpy-cross"):
         build_mod.build_romfs(root, app=app, firmware=repo, convert_models=False)
+
+
+def test_mpy_cross_via_pip(monkeypatch, make_project):
+    # No firmware binary, but pip mpy_cross is available -> uses python -m mpy_cross.
+    monkeypatch.setattr(build_mod.mpy, "_has_pip_mpy_cross", lambda: True)
+    monkeypatch.setattr(build_mod.mpy, "_pip_mpy_cross_version", lambda: "1.28.0")
+    seen = {}
+    monkeypatch.setattr(build_mod.mpy, "compile_py",
+                        lambda cmd, a, s, o: seen.update(cmd=cmd) or o.write_bytes(b"MPY"))
+    root, repo, app = make_project(with_mpy_cross=False)
+    build_mod.build_romfs(root, app=app, firmware=repo, convert_models=False)
+    assert seen["cmd"][1:] == ["-m", "mpy_cross"]
 
 
 def test_missing_app(make_project, tmp_path):

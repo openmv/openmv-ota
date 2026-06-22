@@ -33,8 +33,18 @@ converted for the board's NPU; a model that is already converted is packed
 unchanged. Pass `--no-compile-py` to pack `.py` as source, or
 `--no-convert-models` to pack models as-is.
 
-`build romfs` uses the mpy-cross binary the firmware build produced. If it is not
-present, build the firmware first or pass `--no-compile-py`.
+`build romfs` runs mpy-cross. It uses the binary the firmware build produced if
+present; otherwise it uses a pip-installed `mpy_cross` (`python -m mpy_cross`, as
+the IDE does), so no C compiler is needed — useful on Windows. The version to
+install matches the firmware's MicroPython version, which `openmv-ota project
+show` reports:
+
+```bash
+pip install mpy-cross==1.28.0    # use your firmware's MicroPython version
+```
+
+If neither is available, `build romfs` prints the exact command to run. Pass
+`--no-compile-py` to skip compilation entirely.
 
 ### Tool arguments
 
