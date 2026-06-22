@@ -20,10 +20,11 @@ classifiers = [
 ]
 
 # Runtime dependencies are added as each tool is built out (see the plan):
-#   signing/keys: cryptography, pyca-ed25519 backends, PKCS#11 (HSM)
-#   server:       a web framework + object-storage adapters
-#   sbom/cve:     cyclonedx, osv/nvd scanners
-dependencies = []
+#   server:   a web framework + object-storage adapters
+#   sbom/cve: cyclonedx, osv/nvd scanners
+dependencies = [
+    "cryptography>=42",  # ECDSA keygen + signing for OTA trailers
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov>=4", "ruff"]

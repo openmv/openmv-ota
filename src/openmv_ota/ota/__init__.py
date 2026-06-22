@@ -9,6 +9,17 @@ from __future__ import annotations
 
 from .algorithms import EDDSA, ES256, ES256K, ES384, ES512, AlgSpec, algorithm_for
 from .errors import OtaError
+from .keys import (
+    TrustedKey,
+    generate_private_key,
+    load_private_key_pem,
+    private_key_pem,
+    public_key_from_hex,
+    public_point_hex,
+    read_trusted_keys,
+    write_trusted_keys,
+)
+from .sign import sign_region, verify_region
 from .trailer import (
     HEADER_SIZE,
     HEADER_VERSION,
@@ -39,4 +50,14 @@ __all__ = [
     "HEADER_SIZE",
     "HEADER_VERSION",
     "TRAILER_SZ",
+    "sign_region",
+    "verify_region",
+    "generate_private_key",
+    "public_point_hex",
+    "public_key_from_hex",
+    "private_key_pem",
+    "load_private_key_pem",
+    "TrustedKey",
+    "read_trusted_keys",
+    "write_trusted_keys",
 ]
