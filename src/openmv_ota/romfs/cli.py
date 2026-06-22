@@ -1,7 +1,7 @@
 """CLI handlers for the ``openmv-ota romfs`` command group (core builder).
 
 Subcommands:
-    build     pack a directory into a ROMFS image (board-aware alignment)
+    pack      pack a directory into a ROMFS image, verbatim (board-aware alignment)
     extract   unpack a ROMFS image to a directory
     ls        list the contents of a ROMFS image
     cat       write one file's contents from a ROMFS image to stdout
@@ -100,34 +100,34 @@ def register(romfs_parser: argparse.ArgumentParser):
     callers can attach additional (OTA-layer) subcommands to the same group."""
     sub = romfs_parser.add_subparsers(dest="_subcommand")
 
-    p_build = sub.add_parser("build", help="pack a directory into a ROMFS image")
-    p_build.add_argument("src", help="source directory; its contents become the ROMFS root")
-    p_build.add_argument("-o", "--output", required=True,
+    p_pack = sub.add_parser("pack", help="pack a directory into a ROMFS image (verbatim)")
+    p_pack.add_argument("src", help="source directory; its contents become the ROMFS root")
+    p_pack.add_argument("-o", "--output", required=True,
                          help="output .romfs image path ('-' for stdout)")
-    p_build.add_argument("-b", "--board", help="board name (supplies alignment rules + size)")
-    p_build.add_argument("-p", "--partition", type=int, default=None,
+    p_pack.add_argument("-b", "--board", help="board name (supplies alignment rules + size)")
+    p_pack.add_argument("-p", "--partition", type=int, default=None,
                          help="partition index for multi-partition boards (default: first)")
-    p_build.add_argument("--alignment", "--align", action="append", type=_parse_align,
+    p_pack.add_argument("--alignment", "--align", action="append", type=_parse_align,
                          default=[], metavar="EXT=N", dest="align",
                          help="override the alignment for a file extension, on top of the "
                               "board defaults (repeatable), e.g. --align tflite=32")
-    p_build.add_argument("--default-alignment", type=int, default=None, metavar="N",
+    p_pack.add_argument("--default-alignment", type=int, default=None, metavar="N",
                          help="fallback alignment for extensions with no rule (default: 4)")
-    p_build.add_argument("--no-board-rules", action="store_true",
+    p_pack.add_argument("--no-board-rules", action="store_true",
                          help="ignore the board's alignment defaults; use only --align")
-    p_build.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+    p_pack.add_argument("--exclude", action="append", default=[], metavar="GLOB",
                          help="skip entries whose name matches GLOB (repeatable)")
-    p_build.add_argument("--no-default-excludes", action="store_true",
+    p_pack.add_argument("--no-default-excludes", action="store_true",
                          help="do not skip __pycache__/*.pyc/.git/.DS_Store/... by default")
-    p_build.add_argument("--follow-symlinks", action="store_true",
+    p_pack.add_argument("--follow-symlinks", action="store_true",
                          help="follow symlinks instead of skipping them")
-    p_build.add_argument("--max-size", type=_parse_size, default=None, metavar="BYTES",
+    p_pack.add_argument("--max-size", type=_parse_size, default=None, metavar="BYTES",
                          help="capacity to check against (default: the board partition size); "
                               "accepts 0x.. or K/M/G suffixes")
-    p_build.add_argument("--allow-oversize", action="store_true",
+    p_pack.add_argument("--allow-oversize", action="store_true",
                          help="warn instead of failing when the image exceeds capacity")
-    p_build.add_argument("-q", "--quiet", action="store_true", help="suppress the summary")
-    p_build.set_defaults(func=cmd_build, _command="romfs build")
+    p_pack.add_argument("-q", "--quiet", action="store_true", help="suppress the summary")
+    p_pack.set_defaults(func=cmd_pack, _command="romfs pack")
 
     p_extract = sub.add_parser("extract", help="unpack a ROMFS image to a directory")
     p_extract.add_argument("image", help="ROMFS image to unpack ('-' for stdin)")
@@ -192,7 +192,7 @@ def _excludes(args) -> list[str]:
 
 # --- subcommand implementations ---------------------------------------------
 
-def cmd_build(args: argparse.Namespace) -> int:
+def cmd_pack(args: argparse.Namespace) -> int:
     board, code = _resolve_board(args)
     if code:
         return code

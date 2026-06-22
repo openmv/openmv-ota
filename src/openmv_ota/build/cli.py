@@ -3,8 +3,8 @@
     romfs      compile + pack a romfs image from a project
     firmware   build firmware.bin (reserved; not implemented)
 
-Note: ``build romfs`` (firmware-aware, from a project) is distinct from
-``romfs build`` (low-level, packs a directory verbatim).
+Note: ``build romfs`` (firmware-aware, compiles from a project) is distinct from
+``romfs pack`` (low-level, packs a directory verbatim).
 """
 
 from __future__ import annotations

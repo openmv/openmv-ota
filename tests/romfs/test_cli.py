@@ -26,7 +26,7 @@ def test_build_extract_roundtrip_via_cli(tmp_path, capsys):
     _tree(str(src))
     img = tmp_path / "out.romfs"
 
-    rc = main(["romfs", "build", str(src), "-o", str(img), "--board", "OPENMV_N6"])
+    rc = main(["romfs", "pack", str(src), "-o", str(img), "--board", "OPENMV_N6"])
     assert rc == 0
     assert img.exists()
     out = capsys.readouterr().out
@@ -45,7 +45,7 @@ def test_build_oversize_fails(tmp_path, capsys):
     src.mkdir()
     (src / "big.bin").write_bytes(b"\x00" * 4096)
     img = tmp_path / "out.romfs"
-    rc = main(["romfs", "build", str(src), "-o", str(img),
+    rc = main(["romfs", "pack", str(src), "-o", str(img),
                "--board", "OPENMV_N6", "--max-size", "512"])
     assert rc == 1
     assert "error" in capsys.readouterr().err.lower()
@@ -56,7 +56,7 @@ def test_build_allow_oversize(tmp_path):
     src.mkdir()
     (src / "big.bin").write_bytes(b"\x00" * 4096)
     img = tmp_path / "out.romfs"
-    rc = main(["romfs", "build", str(src), "-o", str(img),
+    rc = main(["romfs", "pack", str(src), "-o", str(img),
                "--board", "OPENMV_N6", "--max-size", "512", "--allow-oversize"])
     assert rc == 0
     assert img.exists()
@@ -66,7 +66,7 @@ def test_build_unknown_board(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.py").write_text("a")
-    rc = main(["romfs", "build", str(src), "-o", str(tmp_path / "o.romfs"), "--board", "NOPE"])
+    rc = main(["romfs", "pack", str(src), "-o", str(tmp_path / "o.romfs"), "--board", "NOPE"])
     assert rc == 2
     assert "unknown board" in capsys.readouterr().err.lower()
 
@@ -76,7 +76,7 @@ def test_build_without_board_uses_explicit_align(tmp_path):
     src.mkdir()
     (src / "x.bin").write_bytes(b"\x00" * 10)
     img = tmp_path / "out.romfs"
-    rc = main(["romfs", "build", str(src), "-o", str(img), "--align", "bin=64"])
+    rc = main(["romfs", "pack", str(src), "-o", str(img), "--align", "bin=64"])
     assert rc == 0
 
 
@@ -85,7 +85,7 @@ def test_ls_and_info(tmp_path, capsys):
     src.mkdir()
     _tree(str(src))
     img = tmp_path / "out.romfs"
-    main(["romfs", "build", str(src), "-o", str(img), "--board", "OPENMV_N6", "-q"])
+    main(["romfs", "pack", str(src), "-o", str(img), "--board", "OPENMV_N6", "-q"])
 
     assert main(["romfs", "ls", str(img), "-l"]) == 0
     ls_out = capsys.readouterr().out
@@ -117,7 +117,7 @@ def test_extract_nonempty_dir_guard(tmp_path, capsys):
     src.mkdir()
     (src / "a.py").write_text("a")
     img = tmp_path / "out.romfs"
-    main(["romfs", "build", str(src), "-o", str(img), "-q"])
+    main(["romfs", "pack", str(src), "-o", str(img), "-q"])
 
     dest = tmp_path / "dest"
     dest.mkdir()
@@ -133,7 +133,7 @@ def test_build_to_stdout(tmp_path, capsysbinary):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.py").write_text("a")
-    assert main(["romfs", "build", str(src), "-o", "-", "--board", "OPENMV_N6"]) == 0
+    assert main(["romfs", "pack", str(src), "-o", "-", "--board", "OPENMV_N6"]) == 0
     out = capsysbinary.readouterr().out
     assert out[:3] == ROMFS_HEADER_MAGIC
 
@@ -143,7 +143,7 @@ def test_build_no_board_summary_defaults_only(tmp_path, capsys):
     src.mkdir()
     (src / "a.py").write_text("a")
     img = tmp_path / "o.romfs"
-    assert main(["romfs", "build", str(src), "-o", str(img)]) == 0
+    assert main(["romfs", "pack", str(src), "-o", str(img)]) == 0
     out = capsys.readouterr().out
     assert "defaults only" in out and "board:" not in out
 
@@ -152,7 +152,7 @@ def test_build_no_board_rules_without_board_errors(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.py").write_text("a")
-    rc = main(["romfs", "build", str(src), "-o", str(tmp_path / "o"), "--no-board-rules"])
+    rc = main(["romfs", "pack", str(src), "-o", str(tmp_path / "o"), "--no-board-rules"])
     assert rc == 2
     assert "needs a board" in capsys.readouterr().err.lower()
 
@@ -161,7 +161,7 @@ def test_build_bad_default_alignment(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.py").write_text("a")
-    rc = main(["romfs", "build", str(src), "-o", str(tmp_path / "o"),
+    rc = main(["romfs", "pack", str(src), "-o", str(tmp_path / "o"),
                "--default-alignment", "24"])
     assert rc == 2
     assert "power of two" in capsys.readouterr().err.lower()
@@ -171,7 +171,7 @@ def test_build_bad_partition_index(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.py").write_text("a")
-    rc = main(["romfs", "build", str(src), "-o", str(tmp_path / "o"),
+    rc = main(["romfs", "pack", str(src), "-o", str(tmp_path / "o"),
                "--board", "OPENMV_N6", "--partition", "9"])
     assert rc == 2
     assert "partition" in capsys.readouterr().err.lower()
@@ -182,7 +182,7 @@ def test_build_allow_oversize_warns(tmp_path, capsys):
     src.mkdir()
     (src / "big.bin").write_bytes(b"\x00" * 4096)
     img = tmp_path / "o.romfs"
-    rc = main(["romfs", "build", str(src), "-o", str(img),
+    rc = main(["romfs", "pack", str(src), "-o", str(img),
                "--board", "OPENMV_N6", "--max-size", "512", "--allow-oversize"])
     assert rc == 0
     assert "exceeds the capacity" in capsys.readouterr().err.lower()
@@ -192,7 +192,7 @@ def test_build_no_board_max_size_exceeded(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     (src / "big.bin").write_bytes(b"\x00" * 4096)
-    rc = main(["romfs", "build", str(src), "-o", str(tmp_path / "o"), "--max-size", "256"])
+    rc = main(["romfs", "pack", str(src), "-o", str(tmp_path / "o"), "--max-size", "256"])
     assert rc == 1
     assert "max-size" in capsys.readouterr().err.lower()
 
@@ -205,13 +205,13 @@ def test_build_no_default_excludes_keeps_pycache(tmp_path):
     (src / "main.py").write_text("m")
     img = tmp_path / "o.romfs"
     # Default: pycache excluded.
-    main(["romfs", "build", str(src), "-o", str(img), "-q"])
+    main(["romfs", "pack", str(src), "-o", str(img), "-q"])
     from openmv_ota.romfs.builder import read_image
     names = {p for p, e in read_image(img.read_bytes()).walk()}
     assert "__pycache__" not in names
     # With --no-default-excludes it is kept.
     img2 = tmp_path / "o2.romfs"
-    main(["romfs", "build", str(src), "-o", str(img2), "-q", "--no-default-excludes"])
+    main(["romfs", "pack", str(src), "-o", str(img2), "-q", "--no-default-excludes"])
     names2 = {p for p, e in read_image(img2.read_bytes()).walk()}
     assert "__pycache__" in names2
 
@@ -223,7 +223,7 @@ def _build_demo(tmp_path):
     src.mkdir()
     _tree(str(src))
     img = tmp_path / "out.romfs"
-    main(["romfs", "build", str(src), "-o", str(img), "-q"])
+    main(["romfs", "pack", str(src), "-o", str(img), "-q"])
     return img
 
 
@@ -302,7 +302,7 @@ def test_verify_with_board_rules(tmp_path, capsys):
     src.mkdir()
     (src / "model.tflite").write_bytes(b"\x33" * 100)
     img = tmp_path / "o.romfs"
-    main(["romfs", "build", str(src), "-o", str(img), "--board", "OPENMV_N6", "-q"])
+    main(["romfs", "pack", str(src), "-o", str(img), "--board", "OPENMV_N6", "-q"])
     assert main(["romfs", "verify", str(img), "--board", "OPENMV_N6"]) == 0
     assert "aligned" in capsys.readouterr().out
 
