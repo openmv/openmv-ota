@@ -32,9 +32,9 @@ openmv-ota build romfs ./my-product
 implies; `build romfs` compiles `./my-product/app` and writes a ROMFS image to
 `./my-product/build`. See [project.md](project.md) and [build.md](build.md).
 
-Compiling needs mpy-cross. If the firmware build hasn't produced it (for example
-on Windows, where building it is awkward), install the matching version — the one
-`openmv-ota project show` reports — with `pip install mpy-cross==<version>`.
+Compiling needs mpy-cross. `openmv-ota project setup` installs the matching
+version; if you skip setup, install it yourself with `pip install
+mpy-cross==<version>` (the version `openmv-ota project show` reports).
 
 Commit `openmv-ota.toml` and `openmv-ota.lock.json`. On another machine, run
 `openmv-ota project setup` to reconstruct the pinned checkout and SDK before

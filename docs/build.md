@@ -35,15 +35,15 @@ unchanged. Pass `--no-compile-py` to pack `.py` as source, or
 
 `build romfs` runs mpy-cross. It uses the binary the firmware build produced if
 present; otherwise it uses a pip-installed `mpy_cross` (`python -m mpy_cross`, as
-the IDE does), so no C compiler is needed — useful on Windows. The version to
-install matches the firmware's MicroPython version, which `openmv-ota project
-show` reports:
+the IDE does), so no C compiler is needed. `openmv-ota project setup` installs the
+matching version; you can also install it yourself — the version matches the
+firmware's MicroPython version, which `openmv-ota project show` reports:
 
 ```bash
 pip install mpy-cross==1.28.0    # use your firmware's MicroPython version
 ```
 
-If neither is available, `build romfs` prints the exact command to run. Pass
+If neither is available, `build romfs` prints the command to run. Pass
 `--no-compile-py` to skip compilation entirely.
 
 ### Tool arguments

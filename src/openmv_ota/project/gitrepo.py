@@ -8,6 +8,7 @@ repos while mocking only the heavy clone / build seams.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 from .errors import ProjectError
@@ -122,3 +123,10 @@ def run_make_sdk(repo: Path) -> None:
         subprocess.run([MAKE, "sdk"], cwd=str(repo), check=True)
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         raise ProjectError("make sdk failed: %s" % e, exit_code=1) from None
+
+
+def pip_install(spec: str) -> None:
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", spec], check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        raise ProjectError("pip install %s failed: %s" % (spec, e), exit_code=1) from None

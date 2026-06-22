@@ -143,3 +143,18 @@ def test_run_make_sdk_failure(monkeypatch, tmp_path):
     with pytest.raises(ProjectError) as ei:
         gitrepo.run_make_sdk(tmp_path)
     assert ei.value.exit_code == 1
+
+
+def test_pip_install(monkeypatch):
+    fake = _FakeRun()
+    monkeypatch.setattr(gitrepo.subprocess, "run", fake)
+    gitrepo.pip_install("mpy-cross==1.28.0")
+    assert fake.calls[0][0][1:] == ["-m", "pip", "install", "mpy-cross==1.28.0"]
+
+
+def test_pip_install_failure(monkeypatch):
+    monkeypatch.setattr(gitrepo.subprocess, "run",
+                        _FakeRun(fail=subprocess.CalledProcessError(1, "pip")))
+    with pytest.raises(ProjectError) as ei:
+        gitrepo.pip_install("mpy-cross==1.28.0")
+    assert ei.value.exit_code == 1

@@ -33,8 +33,8 @@ def resolve_mpy_cross(project) -> list[str]:
     """Return the command prefix to invoke mpy-cross for ``project``.
 
     Prefers the firmware-built binary (exact); else the pip-installed
-    ``mpy_cross`` (warning if its version doesn't match); else raises with the
-    exact ``pip install`` command to run.
+    ``mpy_cross`` (warning if its version doesn't match); else raises with how to
+    get it.
     """
     if project.mpy_cross_path:
         return [project.mpy_cross_path]
@@ -51,9 +51,9 @@ def resolve_mpy_cross(project) -> list[str]:
         return [sys.executable, "-m", "mpy_cross"]
 
     raise BuildError(
-        "mpy-cross is not available. Install the matching version with "
-        "`pip install mpy-cross==%s` (firmware MicroPython %s, .mpy ABI %s), or build "
-        "the firmware, or pass --no-compile-py." % (want, want, abi),
+        "mpy-cross is not available. Run `openmv-ota project setup` to install it, "
+        "or `pip install mpy-cross==%s` (firmware MicroPython %s, .mpy ABI %s), or "
+        "build the firmware, or pass --no-compile-py." % (want, want, abi),
         exit_code=1,
     )
 

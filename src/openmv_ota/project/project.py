@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -331,8 +333,28 @@ def setup_project(
 
     if install_sdk:
         ensure_sdk(dest, sdk_home_override, install_sdk=True)
+        _ensure_mpy_cross(locked.micropython.get("version"))
     _write_local(paths, dest, sdk_home_override)
     return dest
+
+
+def _mpy_cross_installed() -> bool:
+    return importlib.util.find_spec("mpy_cross") is not None
+
+
+def _ensure_mpy_cross(version: str | None) -> None:
+    """Best-effort: pip-install the matching mpy-cross unless it is already present.
+
+    A failure (e.g. that version not on PyPI) only warns — the user can build the
+    firmware to get mpy-cross, or install it manually.
+    """
+    if not version or _mpy_cross_installed():
+        return
+    try:
+        gitrepo.pip_install("mpy-cross==%s" % version)
+    except ProjectError as e:
+        print("warning: %s; build the firmware or `pip install mpy-cross==%s` to "
+              "compile .py files" % (e, version), file=sys.stderr)
 
 
 # --- load API (the contract upper layers consume) ---------------------------

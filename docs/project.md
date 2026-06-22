@@ -76,8 +76,10 @@ openmv-ota project setup ./my-product
 ```
 
 It clones the remote at the locked commit into a local cache (override with
-`--cache PATH` or `$OPENMV_OTA_CACHE`), checks out the submodules, and runs
-`make sdk`. Pass `--no-install-sdk` to skip the SDK build.
+`--cache PATH` or `$OPENMV_OTA_CACHE`), checks out the submodules, runs `make
+sdk`, and pip-installs the matching mpy-cross (the firmware's MicroPython version)
+so the machine is ready to build. Pass `--no-install-sdk` to skip the toolchain
+steps and only clone.
 
 ## Inspecting and updating
 

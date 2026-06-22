@@ -214,15 +214,18 @@ def test_setup_clones_and_writes_local(tmp_path, make_firmware, make_sdk, monkey
     root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
     proj.ProjectPaths(root).local.unlink()
 
-    clones, subs = [], []
+    clones, subs, installs = [], [], []
     monkeypatch.setattr(proj.gitrepo, "is_git_repo", lambda d: False)
     monkeypatch.setattr(proj.gitrepo, "clone", lambda r, d, commit=None: clones.append((r, d, commit)))
     monkeypatch.setattr(proj.gitrepo, "submodule_update", lambda d: subs.append(d))
     monkeypatch.setattr(proj, "ensure_sdk", lambda *a, **k: None)
+    monkeypatch.setattr(proj, "_mpy_cross_installed", lambda: False)
+    monkeypatch.setattr(proj.gitrepo, "pip_install", lambda spec: installs.append(spec))
 
     dest = proj.setup_project(root, cache_override=str(tmp_path / "cache"),
                               sdk_home_override=None, install_sdk=True)
     assert clones and subs
+    assert installs == ["mpy-cross==1.28.0"]  # setup provisions mpy-cross too
     assert proj.ProjectPaths(root).local.exists()
     assert dest == clones[0][1]
 
@@ -235,6 +238,36 @@ def test_setup_cache_hit_skips_clone(tmp_path, make_firmware, make_sdk, monkeypa
     monkeypatch.setattr(proj.gitrepo, "submodule_update", lambda d: None)
     proj.setup_project(root, cache_override=str(tmp_path / "c"), sdk_home_override=None, install_sdk=False)
     assert clones == []
+
+
+def test_ensure_mpy_cross_skips_when_present(monkeypatch):
+    monkeypatch.setattr(proj, "_mpy_cross_installed", lambda: True)
+    called = []
+    monkeypatch.setattr(proj.gitrepo, "pip_install", lambda s: called.append(s))
+    proj._ensure_mpy_cross("1.28.0")
+    assert called == []
+
+
+def test_ensure_mpy_cross_no_version(monkeypatch):
+    called = []
+    monkeypatch.setattr(proj.gitrepo, "pip_install", lambda s: called.append(s))
+    proj._ensure_mpy_cross(None)
+    assert called == []
+
+
+def test_ensure_mpy_cross_failure_warns(monkeypatch, capsys):
+    monkeypatch.setattr(proj, "_mpy_cross_installed", lambda: False)
+
+    def boom(spec):
+        raise ProjectError("not on PyPI")
+
+    monkeypatch.setattr(proj.gitrepo, "pip_install", boom)
+    proj._ensure_mpy_cross("9.9.9")
+    assert "warning" in capsys.readouterr().err
+
+
+def test_mpy_cross_installed_real():
+    assert proj._mpy_cross_installed() in (True, False)
 
 
 def test_setup_lock_no_remote(tmp_path, make_firmware, make_sdk):
