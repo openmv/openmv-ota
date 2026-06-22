@@ -48,18 +48,18 @@ pip install -e .
 
 ### ROMFS image tool
 
-`openmv-ota romfs` builds an OpenMV ROMFS image from a directory and unpacks one
+`openmv-ota romfs` packs a directory into an OpenMV ROMFS image and unpacks one
 back. A ROMFS image is the read-only filesystem the camera mounts at `/rom`.
 
 | Command | Purpose |
 |---|---|
-| `openmv-ota romfs build <dir> -o <img> --board <board>` | Pack a directory into a ROMFS image |
+| `openmv-ota romfs pack <dir> -o <img> --board <board>` | Pack a directory into a ROMFS image (verbatim) |
 | `openmv-ota romfs extract <img> -o <dir>` | Unpack a ROMFS image to a directory |
 | `openmv-ota romfs ls` / `cat` / `info` / `verify` | List, read a file from, summarise, or validate an image |
 | `openmv-ota romfs boards` | List supported boards / show a board's ROMFS config |
 
 ```bash
-openmv-ota romfs build ./app -o app.romfs --board OPENMV_N6
+openmv-ota romfs pack ./app -o app.romfs --board OPENMV_N6
 openmv-ota romfs ls app.romfs -l
 openmv-ota romfs extract app.romfs -o ./out
 ```
@@ -92,6 +92,19 @@ openmv-ota project show ./my-product
 `openmv-ota.toml` and `openmv-ota.lock.json` are committed and carry the firmware
 identity, versions, and board geometry; `openmv-ota.local.toml` is gitignored and
 holds this machine's checkout path. See [docs/project.md](docs/project.md).
+
+### Build
+
+`openmv-ota build romfs` compiles a project's app and packs a ROMFS image per
+target — `.py` to `.mpy` with the pegged mpy-cross, and NPU models with the pegged
+Vela / ST Edge AI. It needs only a project, not OTA.
+
+```bash
+openmv-ota build romfs ./my-product
+```
+
+This is distinct from `romfs pack`, which packs a directory verbatim with no
+compilation. See [docs/build.md](docs/build.md).
 
 ### OTA
 

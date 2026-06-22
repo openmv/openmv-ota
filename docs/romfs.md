@@ -1,19 +1,19 @@
 # romfs
 
-`openmv-ota romfs` builds an OpenMV ROMFS image from a directory and unpacks one
+`openmv-ota romfs` packs a directory into an OpenMV ROMFS image and unpacks one
 back. A ROMFS image is the read-only filesystem the camera mounts at `/rom`.
 
-## Building an image
+## Packing a directory
 
-`build` packs the contents of a directory into an image:
+`pack` writes the contents of a directory into an image:
 
 ```bash
-openmv-ota romfs build ./app -o app.romfs --board OPENMV_N6
+openmv-ota romfs pack ./app -o app.romfs --board OPENMV_N6
 ```
 
-The directory's contents become the root of the image. Files are stored
-unchanged; compile `.py` files and convert models to their target format before
-packing.
+The directory's contents become the root of the image. Files are packed
+unchanged. To compile `.py` files and convert NPU models automatically while
+packing, use `openmv-ota build romfs`, which works from a pegged project.
 
 `--board` sets the alignment rules and partition capacity for a camera. Run
 `openmv-ota romfs boards` for the list of board names, or pass one to see its
@@ -38,7 +38,7 @@ automatically.
 Use `--align` to set or override the alignment for an extension:
 
 ```bash
-openmv-ota romfs build ./app -o app.romfs --board OPENMV_N6 --align tflite=32
+openmv-ota romfs pack ./app -o app.romfs --board OPENMV_N6 --align tflite=32
 ```
 
 `--align` takes precedence over the board's rule for that extension. Extensions
@@ -86,5 +86,5 @@ Pass `-` as the image path to read from standard input or write to standard
 output:
 
 ```bash
-openmv-ota romfs build ./app -o - --board OPENMV_N6 | openmv-ota romfs verify -
+openmv-ota romfs pack ./app -o - --board OPENMV_N6 | openmv-ota romfs verify -
 ```

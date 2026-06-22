@@ -1,15 +1,37 @@
 # Getting started
 
-> Stub — written as the tools come online. For now this records the intended flow
-> (see the concept plan, "Distribution and packaging").
+Install the tools:
 
 ```bash
-pip install openmv-ota                                       # all tools, one install
-openmv-ota init                                              # scaffold a customer repo
-openmv-ota keys generate                                     # trusted_keys.json + keys
-openmv-ota romfs build-firmware -c config/firmware.yaml      # Tool 1
-openmv-ota romfs build --mode factory ... --version 1        # Tool 3 (factory image)
-openmv-ota romfs build --mode ota     ... --version 2        # Tool 3 (OTA release)
-openmv-ota romfs serve -c config/server.yaml                 # Tool 4 (local dev)
-openmv-ota romfs publish releases/v2.bin --server URL        # upload OTA release
+pip install openmv-ota
 ```
+
+## Pack a directory into a ROMFS image
+
+The quickest path needs no firmware checkout. Pack a directory of files into a
+ROMFS image for a board, then flash or inspect it:
+
+```bash
+openmv-ota romfs pack ./app -o app.romfs --board OPENMV_N6
+openmv-ota romfs ls app.romfs -l
+```
+
+Files are packed as-is. See [romfs.md](romfs.md).
+
+## Build from a project
+
+To compile the app the way the firmware expects — `.py` to `.mpy`, and NPU models
+for Vela / ST Edge AI — peg a project to a local OpenMV checkout, then build:
+
+```bash
+openmv-ota project new ./my-product -f ~/openmv -b OPENMV_N6
+openmv-ota build romfs ./my-product
+```
+
+`project new` records the firmware commit and the exact toolchain versions it
+implies; `build romfs` compiles `./my-product/app` and writes a ROMFS image to
+`./my-product/build`. See [project.md](project.md) and [build.md](build.md).
+
+Commit `openmv-ota.toml` and `openmv-ota.lock.json`. On another machine, run
+`openmv-ota project setup` to reconstruct the pinned checkout and SDK before
+building.

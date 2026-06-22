@@ -378,7 +378,7 @@ def load_project(
     *,
     verify: bool = True,
 ) -> LoadedProject:
-    """Load a project for downstream layers (model compile, romfs build, …).
+    """Load a project for downstream layers (model compile, build romfs, …).
 
     By default this **verifies** that the firmware checkout still matches the lock
     and is clean, refusing to load otherwise — so a build can never run against a
