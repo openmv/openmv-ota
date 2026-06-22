@@ -33,7 +33,7 @@ def test_build_extract_roundtrip_via_cli(tmp_path, capsys):
     assert "OPENMV_N6" in out and "alignment" in out
 
     dest = tmp_path / "unpacked"
-    rc = main(["romfs", "extract", str(img), "-o", str(dest)])
+    rc = main(["romfs", "unpack", str(img), "-o", str(dest)])
     assert rc == 0
     assert (dest / "main.py").read_text() == "print('x')"
     assert (dest / "lib" / "u.py").read_text() == "u"
@@ -122,9 +122,9 @@ def test_extract_nonempty_dir_guard(tmp_path, capsys):
     dest = tmp_path / "dest"
     dest.mkdir()
     (dest / "preexisting").write_text("x")
-    assert main(["romfs", "extract", str(img), "-o", str(dest)]) == 1
+    assert main(["romfs", "unpack", str(img), "-o", str(dest)]) == 1
     assert "not empty" in capsys.readouterr().err.lower()
-    assert main(["romfs", "extract", str(img), "-o", str(dest), "--force"]) == 0
+    assert main(["romfs", "unpack", str(img), "-o", str(dest), "--force"]) == 0
 
 
 # --- build: remaining branches ----------------------------------------------
@@ -282,7 +282,7 @@ def test_ls_short_and_extract_missing_file(tmp_path, capsys):
     assert main(["romfs", "ls", str(img)]) == 0
     assert "main.py" in capsys.readouterr().out
     # extract from a path that does not exist -> OSError -> exit 2
-    assert main(["romfs", "extract", str(tmp_path / "nope.romfs"), "-o", str(tmp_path / "d")]) == 2
+    assert main(["romfs", "unpack", str(tmp_path / "nope.romfs"), "-o", str(tmp_path / "d")]) == 2
     assert "error" in capsys.readouterr().err.lower()
 
 

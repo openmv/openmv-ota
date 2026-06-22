@@ -54,14 +54,14 @@ back. A ROMFS image is the read-only filesystem the camera mounts at `/rom`.
 | Command | Purpose |
 |---|---|
 | `openmv-ota romfs pack <dir> -o <img> --board <board>` | Pack a directory into a ROMFS image (verbatim) |
-| `openmv-ota romfs extract <img> -o <dir>` | Unpack a ROMFS image to a directory |
+| `openmv-ota romfs unpack <img> -o <dir>` | Unpack a ROMFS image to a directory |
 | `openmv-ota romfs ls` / `cat` / `info` / `verify` | List, read a file from, summarise, or validate an image |
 | `openmv-ota romfs boards` | List supported boards / show a board's ROMFS config |
 
 ```bash
 openmv-ota romfs pack ./app -o app.romfs --board OPENMV_N6
 openmv-ota romfs ls app.romfs -l
-openmv-ota romfs extract app.romfs -o ./out
+openmv-ota romfs unpack app.romfs -o ./out
 ```
 
 `--board` sets the alignment rules and partition capacity for a camera;

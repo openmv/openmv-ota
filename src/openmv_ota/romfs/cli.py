@@ -2,7 +2,7 @@
 
 Subcommands:
     pack      pack a directory into a ROMFS image, verbatim (board-aware alignment)
-    extract   unpack a ROMFS image to a directory
+    unpack    unpack a ROMFS image to a directory
     ls        list the contents of a ROMFS image
     cat       write one file's contents from a ROMFS image to stdout
     info      summarise a ROMFS image
@@ -129,12 +129,12 @@ def register(romfs_parser: argparse.ArgumentParser):
     p_pack.add_argument("-q", "--quiet", action="store_true", help="suppress the summary")
     p_pack.set_defaults(func=cmd_pack, _command="romfs pack")
 
-    p_extract = sub.add_parser("extract", help="unpack a ROMFS image to a directory")
-    p_extract.add_argument("image", help="ROMFS image to unpack ('-' for stdin)")
-    p_extract.add_argument("-o", "--output", required=True, help="destination directory")
-    p_extract.add_argument("--force", action="store_true",
-                           help="extract even if the destination is not empty")
-    p_extract.set_defaults(func=cmd_extract, _command="romfs extract")
+    p_unpack = sub.add_parser("unpack", help="unpack a ROMFS image to a directory")
+    p_unpack.add_argument("image", help="ROMFS image to unpack ('-' for stdin)")
+    p_unpack.add_argument("-o", "--output", required=True, help="destination directory")
+    p_unpack.add_argument("--force", action="store_true",
+                           help="unpack even if the destination is not empty")
+    p_unpack.set_defaults(func=cmd_unpack, _command="romfs unpack")
 
     p_ls = sub.add_parser("ls", help="list the contents of a ROMFS image")
     p_ls.add_argument("image", help="ROMFS image to list ('-' for stdin)")
@@ -276,7 +276,7 @@ def _print_build_summary(board, result, out) -> None:
         print("  alignment:  (defaults only)")
 
 
-def cmd_extract(args: argparse.Namespace) -> int:
+def cmd_unpack(args: argparse.Namespace) -> int:
     reader, _data, code = _open_reader(args.image)
     if reader is None:
         return code

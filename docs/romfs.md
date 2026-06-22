@@ -62,10 +62,10 @@ with no rule use `--default-alignment`, which is 4 bytes.
 
 ## Unpacking an image
 
-`extract` writes the image's contents to a directory:
+`unpack` writes the image's contents to a directory:
 
 ```bash
-openmv-ota romfs extract app.romfs -o ./out
+openmv-ota romfs unpack app.romfs -o ./out
 ```
 
 ## Inspecting an image
