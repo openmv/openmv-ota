@@ -17,6 +17,8 @@ converts NPU models with the project's Vela (AE3) or ST Edge AI (N6), packs the
 result into a ROMFS image with the board's alignment rules, and checks it against
 the available capacity. The output is written to `<project>/build/<board>.romfs`
 (one per target; a board with more than one partition gets `<board>-p<index>.romfs`).
+An OTA project additionally writes a signed `<board>.trailer` per target (see
+[OTA signing](#ota-signing) below).
 
 Every image also gets a generated, read-only `system.json` at `/rom/system.json` —
 board identity (`board`, `board_id`, `board_name`, `product`), the app version, and
@@ -62,10 +64,17 @@ verifiable, anti-rollback OTA image rather than a bare ROMFS body. No extra flag
   `system.json`** so host tools can read the image's identity without mounting the
   ROMFS. `min_platform_version` is the pegged firmware's version code.
 
-The resulting image is `body ‖ trailer`, where the trailer is padded with `0xFF`
-to one flash erase block. The build summary reports the body size against the OTA-slot
-budget (the trailer and status sector are accounted for in the budget, not in the
-reported body size). See [trailer.md](trailer.md) for the on-flash format.
+An OTA build writes **two files** per target: `<board>.romfs` (the ROMFS body,
+identical to a non-OTA build) and `<board>.trailer` (the standalone signed
+trailer). They're kept separate because on-device they go to different places — the
+body to the start of the slot, the trailer to the slot's last erase block — and
+because the trailer carries a copy of `system.json`, so the update server reads an
+image's version / `board_id` / signature straight from `<board>.trailer` without
+touching the body. Every trailer field is final and signed, including `pad_size`
+(the `0xFF` gap to the status sector, computed from the slot geometry) and the
+crc32. The build summary reports the body size against the OTA-slot budget (the
+trailer and status sectors are accounted for in the budget). See
+[trailer.md](trailer.md) for the on-flash format.
 
 `build romfs` fails the build (exit 1) if the OTA signing context is incomplete:
 a missing or unreadable `app/settings.json`, a missing or non-semver

@@ -243,6 +243,16 @@ def _set_board_id(root, value):
     cfg.write_text(re.sub(r"board_id   = \d+", "board_id   = %d" % value, cfg.read_text(), count=1))
 
 
+def test_ota_build_emits_two_files(make_project):
+    # OTA build writes the body (.romfs) and a separate signed .trailer; non-OTA
+    # writes only the body.
+    root, repo, app = _build_ota(make_project)
+    r = build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)[0]
+    assert r.output.name == "OPENMV_N6.romfs" and r.output.exists()
+    assert r.trailer.name == "OPENMV_N6.trailer" and r.trailer.exists()
+
+
 def test_ota_build_signs_and_verifies(make_project):
     import hashlib
 
@@ -250,17 +260,16 @@ def test_ota_build_signs_and_verifies(make_project):
         algorithm_for, parse_trailer, public_key_from_hex, read_trusted_keys,
         signed_region, verify_region,
     )
-    from openmv_ota.ota.trailer import TRAILER_SZ
     from openmv_ota.ota.version import encode_app_version
     from openmv_ota.project import ProjectPaths
 
     root, repo, app = _build_ota(make_project)
     _set_board_id(root, 999)  # config-only identity, no drift
-    out = build_mod.build_romfs(root, app=app, firmware=repo,
-                                compile_py=False, convert_models=False)[0].output
+    r = build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)[0]
 
-    data = out.read_bytes()
-    body, sector = data[:-TRAILER_SZ], data[-TRAILER_SZ:]
+    body = r.output.read_bytes()         # .romfs is the bare body, no trailer appended
+    sector = r.trailer.read_bytes()      # the standalone signed trailer
     t = parse_trailer(sector)
     assert t.payload_version == encode_app_version("1.2.3")
     assert t.board_id == 999
@@ -276,34 +285,46 @@ def test_ota_build_signs_and_verifies(make_project):
     assert verify_region(pub, signed_region(sector), t.signature, alg) is True
 
 
+def test_ota_trailer_pad_size_is_correct_and_signed(make_project):
+    # pad_size is computed from the slot geometry and lands in the signed region:
+    # body_size + pad_size == the status-sector offset (front_size - 2 blocks).
+    from openmv_ota.ota import geometry, parse_trailer
+    from openmv_ota.project import load_project
+
+    root, repo, app = _build_ota(make_project)
+    target = load_project(root, firmware=repo).board("OPENMV_N6")
+    r = build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)[0]
+    t = parse_trailer(r.trailer.read_bytes())
+    overhead = geometry.slot_overhead(target.erase_size)
+    assert t.body_size == r.size
+    assert t.body_size + t.pad_size == target.front_size - overhead
+
+
 def test_ota_trailer_meta_mirrors_system_json(make_project):
     import json
 
     from openmv_ota.ota import parse_trailer
-    from openmv_ota.ota.trailer import TRAILER_SZ
 
     root, repo, app = _build_ota(make_project)
     _set_board_id(root, 42)
-    out = build_mod.build_romfs(root, app=app, firmware=repo,
-                                compile_py=False, convert_models=False)[0].output
-    data = out.read_bytes()
-    body, sector = data[:-TRAILER_SZ], data[-TRAILER_SZ:]
-    info = json.loads(_read_file(body, "system.json"))
+    r = build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)[0]
+    info = json.loads(_read_file(r.output.read_bytes(), "system.json"))
     # The trailer carries a verbatim copy of the ROMFS system.json.
-    assert parse_trailer(sector).meta == info
+    assert parse_trailer(r.trailer.read_bytes()).meta == info
     assert info["ota"] is True and info["board_id"] == 42 and info["app_version"] == "1.2.3"
 
 
 def test_ota_build_sets_rollback_floor(make_project):
     from openmv_ota.ota import parse_trailer
-    from openmv_ota.ota.trailer import TRAILER_SZ
     from openmv_ota.ota.version import encode_app_version
 
     root, repo, app = _build_ota(
         make_project, settings='{"app_version": "2.5.0", "rollback_floor": "2.0.0"}\n')
-    out = build_mod.build_romfs(root, app=app, firmware=repo,
-                                compile_py=False, convert_models=False)[0].output
-    t = parse_trailer(out.read_bytes()[-TRAILER_SZ:])
+    r = build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)[0]
+    t = parse_trailer(r.trailer.read_bytes())
     assert t.payload_version_floor == encode_app_version("2.0.0")
     assert t.payload_version == encode_app_version("2.5.0")
 

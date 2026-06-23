@@ -154,16 +154,22 @@ def _build_system_info(p, t, app_version, vendor: str) -> dict:
     }
 
 
-def _attach_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, block: int) -> bytes:
-    """Stamp + sign a trailer for ``body`` and return ``body || trailer-sector``. The
-    trailer's metadata is the same ``system_info`` dict packed into the ROMFS, and the
-    sector is padded with 0xFF to one flash erase ``block``."""
+def _build_trailer(signer: _OtaSigner, p, t, body: bytes, system_info: dict) -> bytes:
+    """Build + sign the complete trailer for ``body`` and return its packed bytes
+    (``header || meta || signature || crc32``). Every field is final and calculated —
+    notably ``pad_size`` (the 0xFF gap to the slot's status sector, signed) and the
+    crc32 — so the trailer is a self-contained, verifiable artifact. The device writes
+    these bytes to the slot's last erase block; the 0xFF that fills the rest of that
+    block comes from the erase, not from this file."""
     from openmv_ota.ota import Trailer, pack_trailer, signed_region
     from openmv_ota.ota.sign import sign_region
 
+    # body @ 0, then 0xFF up to the status sector at (front_size - 2 blocks). With
+    # --allow-oversize the body can exceed a slot, so clamp (pad is then meaningless).
+    pad_size = max(0, t.front_size - geometry.slot_overhead(t.erase_size) - len(body))
     trailer = Trailer(
         body_size=len(body),
-        pad_size=0,  # the real slot padding is set later by slot composition
+        pad_size=pad_size,
         meta=system_info,
         board_id=int(system_info["board_id"]),
         min_platform_version=int(p.lock.firmware.get("version_code", 0)),
@@ -174,9 +180,7 @@ def _attach_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, block
         body_sha256=hashlib.sha256(body).digest(),
     )
     trailer.signature = sign_region(signer.private_key, signed_region(trailer), signer.alg)
-    trailer_bytes = pack_trailer(trailer)
-    sector = trailer_bytes + b"\xff" * (block - len(trailer_bytes))
-    return body + sector
+    return pack_trailer(trailer)
 
 
 def _capacity(project, target) -> tuple[int, str]:
@@ -191,10 +195,11 @@ def _capacity(project, target) -> tuple[int, str]:
 class BuildResult:
     target: str
     partition_index: int
-    output: Path
+    output: Path                   # the ROMFS body (<board>.romfs)
     size: int
     capacity: int
     bound: str = "ROMFS partition"  # what capacity measures (partition, or OTA slot)
+    trailer: Path | None = None    # the signed trailer (<board>.trailer), OTA only
     build_dir: Path | None = None  # set when --keep-build-dir
 
 
@@ -298,20 +303,22 @@ def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, app_vers
             )
 
         body_size = len(body)
+        name = "%s-p%d" % (t.name, t.partition_index) if t.name in multi else t.name
+        out_path = out_dir / (name + ".romfs")
+        out_path.write_bytes(body)  # the ROMFS body, OTA or not
+
+        trailer_path = None
         if ota_signer is not None:
             if system_info["board_id"] == 0:
                 print("warning: %s has board_id 0 (unset); the cross-flash guard is off - "
                       "set board_id under [targets.%s] in openmv-ota.toml"
                       % (t.name, t.name), file=sys.stderr)
-            image = _attach_trailer(ota_signer, p, body, system_info,
-                                    geometry.ota_block(t.erase_size))
-        else:
-            image = body
-        name = "%s-p%d" % (t.name, t.partition_index) if t.name in multi else t.name
-        out_path = out_dir / (name + ".romfs")
-        out_path.write_bytes(image)
+            trailer_path = out_dir / (name + ".trailer")
+            trailer_path.write_bytes(_build_trailer(ota_signer, p, t, body, system_info))
+
         return BuildResult(t.name, t.partition_index, out_path, body_size, capacity,
-                           bound=bound, build_dir=tmp if keep_build_dir else None)
+                           bound=bound, trailer=trailer_path,
+                           build_dir=tmp if keep_build_dir else None)
     finally:
         if not keep_build_dir:
             shutil.rmtree(tmp, ignore_errors=True)

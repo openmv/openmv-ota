@@ -70,6 +70,8 @@ def cmd_romfs(args: argparse.Namespace) -> int:
     for r in results:
         pct = (r.size / r.capacity * 100) if r.capacity else 0
         print("Built %s  (%d bytes, %.1f%% of %s)" % (r.output, r.size, pct, r.bound))
+        if r.trailer is not None:
+            print("  signed trailer: %s" % r.trailer)
         if r.build_dir is not None:
             print("  build dir kept: %s" % r.build_dir)
     return 0

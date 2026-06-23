@@ -41,6 +41,15 @@ def test_build_romfs_keep_build_dir(make_project, capsys):
     assert "build dir kept" in capsys.readouterr().out
 
 
+def test_build_romfs_ota_reports_trailer(make_project, capsys):
+    files = {"main.py": "print(1)\n", "settings.json": '{"app_version": "1.0.0"}\n'}
+    root, repo, app = make_project(ota=True, app_files=files)
+    rc = main(["build", "romfs", str(root), "--app", str(app), "-f", str(repo),
+               "--no-compile-py", "--no-convert-models"])
+    assert rc == 0
+    assert "signed trailer" in capsys.readouterr().out
+
+
 def test_build_firmware_stub(capsys):
     assert main(["build", "firmware"]) == 2
     assert "not implemented" in capsys.readouterr().err
