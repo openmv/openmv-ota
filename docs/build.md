@@ -132,3 +132,41 @@ Optimisation differs per tool: Vela takes a mode, ST Edge AI takes a level.
 | `-f, --firmware PATH` | Firmware checkout override. |
 | `--allow-oversize` | Warn instead of failing when an image exceeds the partition. |
 | `--keep-build-dir` | Keep the staging directory for inspection. |
+
+## Inspecting and verifying an OTA image
+
+Two read-only commands operate on a built OTA image (`<board>.romfs` +
+`<board>.trailer`). They live under `build` because they validate build outputs.
+
+### build inspect
+
+```bash
+openmv-ota build inspect build/OPENMV_N6.trailer
+openmv-ota build inspect build/OPENMV_N6.trailer --json
+```
+
+Decodes the signed trailer and prints it: product / board / `board_id` /
+`board_name`, the app version (and the `payload_version` / `rollback_floor` /
+`min_platform_version` it encodes, shown as semver), the signing key and
+algorithm, the body size + SHA-256, and a provenance line (firmware / MicroPython
+/ toolchain). `--json` dumps the full structure, including the complete metadata
+blob, for scripting. It does no crypto — it just reads the trailer.
+
+### build verify
+
+```bash
+openmv-ota build verify build/OPENMV_N6.romfs build/OPENMV_N6.trailer
+```
+
+The host-side **authenticity + integrity** gate — the mirror of what the device's
+`boot.py` checks, for use in CI or before publishing. It confirms the trailer
+parses, the signing `key_id` is in the trusted set **and not revoked**, the
+algorithm matches, the **signature verifies** over the signed region, and the body
+matches the signed size + SHA-256. Exit 0 on success, 1 on a verification failure
+(with the reason), 2 on a bad argument. Trusted keys come from `--trusted-keys`
+(default `keys/trusted_keys.json`), so running it from a project root just works.
+
+It deliberately does **not** check the device-relative fields — `board_id` against
+a device, `payload_version` anti-rollback against the installed image,
+`min_platform_version` against the running firmware — because those need a device,
+not a host. Those remain `boot.py`'s job.

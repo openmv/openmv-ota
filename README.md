@@ -105,9 +105,14 @@ holds this machine's checkout path.
 `openmv-ota build romfs` compiles a project's app and packs a ROMFS image per
 target — `.py` to `.mpy` with the pegged mpy-cross, and NPU models with the pegged
 Vela / ST Edge AI. For an OTA project it also signs and attaches the trailer.
+`build inspect` decodes a signed trailer; `build verify` checks a built image's
+signature + body hash against the trusted keys (a CI / pre-publish gate).
 
 ```bash
 openmv-ota build romfs ./my-product
+openmv-ota build inspect ./my-product/build/OPENMV_N6.trailer
+openmv-ota build verify  ./my-product/build/OPENMV_N6.romfs \
+                         ./my-product/build/OPENMV_N6.trailer
 ```
 
 This is distinct from `romfs pack`, which packs a directory verbatim with no

@@ -33,3 +33,13 @@ def encode_app_version(version: str) -> int:
     """Encode a semver into the uint32 ``payload_version``."""
     major, minor, patch = parse_semver(version)
     return (major << 24) | (minor << 16) | (patch << 8)
+
+
+def decode_app_version(code: int) -> str:
+    """Decode a uint32 ``payload_version`` / ``min_platform_version`` back to a
+    ``MAJOR.MINOR.PATCH`` string (with a trailing ``.build`` only if non-zero), for
+    display by ``build inspect``."""
+    major, minor, patch, build = (
+        (code >> 24) & 0xFF, (code >> 16) & 0xFF, (code >> 8) & 0xFF, code & 0xFF)
+    base = "%d.%d.%d" % (major, minor, patch)
+    return base + (".%d" % build if build else "")

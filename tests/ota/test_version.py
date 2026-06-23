@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from openmv_ota.ota.errors import OtaError
-from openmv_ota.ota.version import encode_app_version, parse_semver
+from openmv_ota.ota.version import decode_app_version, encode_app_version, parse_semver
 
 
 def test_parse_semver():
@@ -26,3 +26,11 @@ def test_encode_app_version():
     # Monotonic: a later semver encodes to a larger uint32.
     assert encode_app_version("1.2.4") > encode_app_version("1.2.3")
     assert encode_app_version("2.0.0") > encode_app_version("1.99.99")
+
+
+def test_decode_app_version():
+    assert decode_app_version(encode_app_version("2.5.0")) == "2.5.0"
+    assert decode_app_version(5 << 24) == "5.0.0"
+    assert decode_app_version(0) == "0.0.0"
+    # the low build byte renders only when non-zero
+    assert decode_app_version((1 << 24) | (2 << 16) | (3 << 8) | 4) == "1.2.3.4"

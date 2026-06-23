@@ -2,6 +2,8 @@
 
     romfs      compile + pack a romfs image from a project
     firmware   build firmware.bin (reserved; not implemented)
+    inspect    decode + print a signed OTA trailer
+    verify     verify a built OTA image (signature + body hash)
 
 Note: ``build romfs`` (firmware-aware, compiles from a project) is distinct from
 ``romfs pack`` (low-level, packs a directory verbatim).
@@ -10,7 +12,9 @@ Note: ``build romfs`` (firmware-aware, compiles from a project) is distinct from
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
 from . import romfs as build_mod
 from .errors import BuildError
@@ -49,6 +53,18 @@ def register(build_parser: argparse.ArgumentParser):
 
     p_fw = sub.add_parser("firmware", help="build firmware.bin (not implemented yet)")
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
+
+    p_ins = sub.add_parser("inspect", help="decode + print a signed OTA trailer")
+    p_ins.add_argument("trailer", help="path to a <board>.trailer file")
+    p_ins.add_argument("--json", action="store_true", help="machine-readable dump")
+    p_ins.set_defaults(func=cmd_inspect, _command="build inspect")
+
+    p_ver = sub.add_parser("verify", help="verify a built OTA image (signature + body hash)")
+    p_ver.add_argument("romfs", help="the <board>.romfs body")
+    p_ver.add_argument("trailer", help="the <board>.trailer")
+    p_ver.add_argument("--trusted-keys", default="keys/trusted_keys.json",
+                       help="trusted_keys.json (default: keys/trusted_keys.json)")
+    p_ver.set_defaults(func=cmd_verify, _command="build verify")
     return sub
 
 
@@ -80,3 +96,97 @@ def cmd_romfs(args: argparse.Namespace) -> int:
 def cmd_firmware(args: argparse.Namespace) -> int:
     print("build firmware: not implemented yet", file=sys.stderr)
     return 2
+
+
+def _trailer_summary(t) -> dict:
+    """A flat, JSON-friendly view of a parsed trailer (versions decoded to semver)."""
+    from openmv_ota.ota import algorithm_for
+    from openmv_ota.ota.version import decode_app_version
+
+    meta = t.meta if isinstance(t.meta, dict) else {}
+    return {
+        "kind": "ROMFS app",
+        "header_version": t.header_version,
+        "product": meta.get("product"),
+        "board": meta.get("board"),
+        "board_id": t.board_id,
+        "board_name": meta.get("board_name"),
+        "vendor": meta.get("vendor"),
+        "app_version": meta.get("app_version"),
+        "payload_version": decode_app_version(t.payload_version),
+        "rollback_floor": decode_app_version(t.payload_version_floor) if t.payload_version_floor
+        else "none",
+        "min_platform_version": decode_app_version(t.min_platform_version)
+        if t.min_platform_version else "none",
+        "key_id": "0x%04x" % t.key_id,
+        "sig_alg": algorithm_for(t.sig_alg).name,
+        "body_size": t.body_size,
+        "pad_size": t.pad_size,
+        "body_sha256": t.body_sha256.hex(),
+        "signature_size": len(t.signature),
+        "meta": meta,
+    }
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    from openmv_ota.ota import parse_trailer
+    from openmv_ota.ota.errors import OtaError
+
+    try:
+        data = Path(args.trailer).read_bytes()
+    except OSError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
+    try:
+        t = parse_trailer(data)
+    except OtaError as e:
+        print("error: not a valid trailer: %s" % e, file=sys.stderr)
+        return 2
+
+    s = _trailer_summary(t)
+    if args.json:
+        print(json.dumps(s, indent=2))
+        return 0
+    print("OTA trailer (%s, header v%d)" % (s["kind"], s["header_version"]))
+    print("  product:        %s" % s["product"])
+    print("  board:          %s  (id %d)" % (s["board"], s["board_id"]))
+    print("  board_name:     %s" % s["board_name"])
+    print("  app_version:    %s  (payload_version %s)" % (s["app_version"], s["payload_version"]))
+    print("  rollback_floor: %s" % s["rollback_floor"])
+    print("  min_platform:   %s" % s["min_platform_version"])
+    print("  signed by:      key %s  (%s, %d-byte sig)"
+          % (s["key_id"], s["sig_alg"], s["signature_size"]))
+    print("  body:           %d bytes, sha256 %s" % (s["body_size"], s["body_sha256"]))
+    print("  pad_size:       %d" % s["pad_size"])
+    fw, tc = s["meta"].get("firmware", {}), s["meta"].get("toolchain", {})
+    print("  provenance:     firmware %s (%s), micropython %s"
+          % (fw.get("version"), (fw.get("commit") or "")[:12], s["meta"].get("micropython")))
+    print("                  mpy-cross %s, vela %s, stedgeai %s, sdk %s"
+          % (tc.get("mpy_cross"), tc.get("vela"), tc.get("stedgeai"), tc.get("sdk")))
+    print("  (full meta: --json)")
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    from openmv_ota.ota import read_trusted_keys
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.verify import verify_image
+
+    try:
+        body = Path(args.romfs).read_bytes()
+        trailer = Path(args.trailer).read_bytes()
+    except OSError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
+    try:
+        trusted = read_trusted_keys(Path(args.trusted_keys))
+    except OtaError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
+
+    ok, reason = verify_image(body, trailer, trusted)
+    if ok:
+        print("verified: %s" % reason)
+        return 0
+    print("verification FAILED: %s" % reason, file=sys.stderr)
+    return 1
