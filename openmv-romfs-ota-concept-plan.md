@@ -1,4 +1,31 @@
-# mboot-style boot.py + ROMFS self-update — concept plan (v7)
+# mboot-style boot.py + ROMFS self-update — concept plan (v8)
+
+> **Amendments since v7 (reconciled with the implemented host tooling).** The
+> host side — `openmv-ota romfs` / `project` / `build romfs` — is built and
+> tested; the on-device side (boot.py, the verify shim, slot composition, the
+> update server) is not yet. Where this plan and the shipped tools disagree, the
+> tools and their docs in [docs/](docs/) win. Key changes from v7, each detailed
+> in the section it touches:
+>
+> - **Signatures: ECDSA over the NIST P-curves, not ed25519.** Named by IANA COSE
+>   algorithm id (ES256 / P-256 default; ES384/ES512), verified on-device by the
+>   **mbedtls already in firmware** — no custom `ed25519_verify` C module. See
+>   *Signing* and [docs/trailer.md](docs/trailer.md).
+> - **Trailer is a hybrid format, not one fixed 256-byte struct.** A small fixed
+>   80-byte trust-header + a length-delimited JSON metadata blob + the signature +
+>   a crc32; the signed region is `header ‖ json`. boot.py parses only the header.
+>   See *Trailer* below.
+> - **Sizing is per-board, from the flash erase block** (`erase_size` in the board
+>   config), not a fixed 4 KiB. Trailer/status are one erase block each (floored to
+>   4 KiB); boards whose ROMFS is a single large internal-flash sector (OpenMV2/3/4)
+>   are detected as **not OTA-capable**. See *Sizing*.
+> - **Tooling is one CLI, `openmv-ota`** (`romfs` / `project` / `build`), with a
+>   firmware-pegged *project* (lock + config) rather than the four separate
+>   `openmv-ota build-*` tools. See *Build tooling*.
+> - **New, generated `/rom/system.json`** carries board identity + provenance for
+>   the app (OTA or not); the trailer's JSON is a verbatim copy of it.
+> - **`board_id` is auto-assigned** (deterministic, per product+board);
+>   anti-rollback floor comes from `app/settings.json` `rollback_floor`.
 
 ## Context
 
@@ -18,8 +45,8 @@ ROMFS images carry no native checksum, signature, version, or commit marker — 
 - No persistent state outside the partition itself. No RTC backup. No `/flash` markers.
 - Pure Python in boot.py and the updater for everything *except* primitives that have a C-backed module in firmware. C-backed primitives we use:
   - `hashlib.sha256` and `binascii.crc32` — already in stock MicroPython, fair game.
-  - **`ed25519_verify` — a new C module added to the openmv firmware**, derived from [pmvr/micropython-curve25519](https://github.com/pmvr/micropython-curve25519). That repo wraps Curve25519/X25519 (Montgomery form, key exchange) — we reuse its field-arithmetic kernel and add Edwards-curve point operations + the EdDSA verify routine on top. ~1–2 weeks of work plus hardening (RFC 8032 known-answer vectors + Project Wycheproof's ed25519 corpus: low-order points, malleability, non-canonical encodings, malleable S; parser fuzzing for malformed inputs). Independent of mbedtls compilation flags — works regardless of which TLS primitives a given port has compiled in. Verify cost <100 ms.
-- boot.py: ioctl + computation only. No watchdog, no machine state, no port-specific calls beyond `vfs.rom_ioctl`. SHA-256, CRC32, and ed25519 verify all delegate to C-backed firmware modules.
+  - **ECDSA verify over a thin shim on the firmware's mbedtls** (~v3.6.2), which already compiles in ECDSA + the NIST P-curves (secp256r1/384r1/521r1) + SHA-256/384/512 on every board (it's what TLS uses). Default ES256 / P-256 rides the most-exercised path. The shim reads a raw `R‖S` signature + an uncompressed public point, no DER. This replaces the v7 plan's bespoke `ed25519_verify` C module: ed25519 is *not* enabled in firmware's mbedtls, so using it would have meant vendoring a curve library — ECDSA reuses an already-audited, already-compiled primitive. Verify cost is a few ms. (Hardening: RFC 6979 / FIPS 186 test vectors + Wycheproof's ECDSA corpus — invalid `R`/`S`, `s > n`, point-not-on-curve, malformed encodings.)
+- boot.py: ioctl + computation only. No watchdog, no machine state, no port-specific calls beyond `vfs.rom_ioctl`. SHA-256, CRC32, and ECDSA verify all delegate to C-backed firmware modules.
 
 ## What `vfs.rom_ioctl` does on each board (verified)
 
@@ -47,63 +74,97 @@ romfs_base ───────────────────────
 ```
 ┌──────────────── slot (FRONT_SIZE or BACK_SIZE) ──────────────────┐
 │ ROMFS body     │ padding (0xFF) │  STATUS sector  │ TRAILER sector│
-│ offset 0       │                │  size − 8 KiB   │ size − 4 KiB  │
-│ image_size B   │                │  4 KiB          │ 4 KiB         │
+│ offset 0       │                │  one erase block│ one erase blk │
+│ image_size B   │                │  (4 KiB on NOR) │ (4 KiB on NOR)│
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-`image_size ≤ SLOT_SIZE − 8 KiB`.
+The STATUS and TRAILER are **one flash erase block each** so they can be rewritten
+without disturbing the body. That block is the partition's erase size, floored to
+4 KiB (`erase_size` in the board config; 4 KiB on every OTA-capable board, since
+their ROMFS lives in external NOR/OSPI or MRAM). So `image_size ≤ SLOT_SIZE −
+2·block`, and a partition whose slot can't fit a body after two control blocks is
+**not OTA-capable** (see *Sizing*). The host computes all of this in
+[`openmv_ota.ota.geometry`](src/openmv_ota/ota/geometry.py).
 
 ### Trailer (immutable, written last during update)
 
-```c
-struct slot_trailer {                     // 4 KiB sector; 256 bytes used, rest 0xFF
-    // --- Signed region: bytes [0:128] -----------------------------------------
-    uint32_t magic;                       // 0x4F4D5246 = "OMRF"
-    uint32_t schema_version;              // start at 1
-    uint32_t image_size;                  // bytes of body
-    uint32_t image_version;               // monotonic build counter / OTA epoch
-    uint32_t board_id;                    // sanity check; reject mismatched images
-    uint32_t key_id;                      // identifies which signing key was used
-    uint8_t  sig_alg;                     // 1 = ed25519. Reserved for future algs.
-    uint8_t  pad[3];
-    uint32_t flags;                       // reserved bitfield
-    uint8_t  sha256[32];                  // SHA-256(body[0..image_size])
-    // Provenance / compatibility / fleet metadata (signed):
-    uint64_t build_timestamp;             // Unix seconds at sign time; 0 if unused
-    uint32_t firmware_version;            // minimum openmv firmware required: see encoding below
-    uint32_t min_required_image_version;  // future-floor: next update must be >= this
-    uint8_t  build_commit_hash[32];       // full git commit hash (SHA-1 = 20 bytes + 12 zero pad; SHA-256 = 32 bytes)
-    uint8_t  reserved_signed[12];         // future signed fields without schema bump
-    // --- End signed region (signature covers bytes [0:128]) -------------------
-    uint8_t  signature[64];               // ed25519 signature over bytes [0:128]
-    uint8_t  reserved_unsigned[60];       // future unsigned fields (rare; mostly unused)
-    uint32_t crc32;                       // over bytes [0:252]; protects torn write
-};
+> **This supersedes v7's single 256-byte struct.** The trailer is now a *hybrid*
+> format: a small fixed trust-header (only the fields boot.py enforces) + a
+> length-delimited JSON metadata blob (rich provenance) + the signature + a crc32.
+> [docs/trailer.md](docs/trailer.md) and
+> [`openmv_ota.ota.trailer`](src/openmv_ota/ota/trailer.py) are the byte-level
+> source of truth; the summary here just records the design.
+
+```
+[ header (80) ][ json_meta (meta_size) ][ signature (sig_size) ][ crc32 (4) ]
+└──────── signed region: header ‖ meta ────────┘
+└──────────────── crc32 region: everything before the crc ────────────────┘
 ```
 
-**Signature scope** (pinned for `sig_alg = 1` ed25519): the signed bytes are the entire 128-byte prefix of the trailer (`magic` through `reserved_signed`). Everything that matters for trust or compatibility — body integrity (`sha256`), identity (`board_id`, `key_id`), version (`image_version`, `min_required_image_version`), algorithm (`sig_alg`), build provenance (`build_timestamp`, `firmware_version`, `mp_version`, `build_commit_hash`) — is covered. Any tamper of any signed field breaks the signature.
+The trailer occupies one flash erase block (padded with `0xFF`). The **signed
+region is `header ‖ meta`** — the signer signs those bytes and the verifier hashes
+the identical *stored* bytes, so there's no JSON-canonicalisation trap. The
+signature and crc sit outside it. `meta_size` / `sig_size` live in the *signed*
+header, so the framing a verifier trusts comes from authenticated fields.
 
-**Signed metadata semantics** (boot.py enforces, app reads):
-- `build_timestamp` (u64, Unix seconds): when the image was signed. Boot.py doesn't check (no RTC), but the app exposes it via telemetry / fleet management for audit ("which build is each device running, when was it released"). The app can refuse-to-run if absurdly old, per its own policy.
-- `firmware_version` (u32, encoded as `(major << 24) | (minor << 16) | (patch << 8) | build`): the **minimum** openmv firmware version this image requires. Each component 0–255; gives 256 major releases of headroom (currently 4.x.y; this is comfortable). The `build` byte distinguishes CI builds within the same release. Boot.py compares to its own build-time constant `OPENMV_FIRMWARE_VER`; rejects if `image.firmware_version > OPENMV_FIRMWARE_VER` — i.e. the image requires firmware newer than what's running. Since openmv firmware pins a specific MicroPython version, this implicitly checks MP compatibility too — no separate `mp_version` field needed.
-- `build_commit_hash` (32 bytes): the full git commit SHA that produced this image. Pads SHA-1 (20 bytes) with 12 zero bytes; accommodates SHA-256 (32 bytes) directly for the Git-SHA-256 future. Not enforced by boot.py; exposed to the app and the transparency log for SBOM cross-reference, CVE response ("is this device running a build affected by CVE-XXXX?"), and fleet inventory.
-- `min_required_image_version` (u32): a "future floor" the image asserts. The **updater** uses this when deciding whether to accept a new image: `new.image_version >= max(back.image_version, current_front.min_required_image_version, current_front.image_version)`. Lets a specific image declare "any future update must be at least version N" — useful for hard CVE cutoffs. Defaults to 0 (no extra floor).
+**Fixed header (80 bytes, little-endian), in order:** `magic` (`OMVR` = ROMFS app,
+`OMVF` = firmware reserved — the magic doubles as the payload-kind discriminator),
+`header_version`, `body_size`, `pad_size`, `meta_size`, `sig_size`, `board_id`,
+`min_platform_version`, `payload_version`, `payload_version_floor`, `key_id`,
+`sig_alg` (int32 COSE id), `body_sha256` (32 B). Every header field and all the
+JSON are authenticated; only `signature` and `crc32` are outside the signed region.
 
-Fields left at 0 are treated as "unset" — defaults to permissive (no constraint).
+Field semantics (boot.py enforces, app reads via the JSON / `/rom/system.json`):
+- `body_sha256` — SHA-256 of the `body_size` body bytes. The hinge: verifying the
+  signature over the header + recomputing this hash transitively authenticates the
+  large body from a small signed footer.
+- `payload_version` (u32, `(major<<24)|(minor<<16)|(patch<<8)|build`) — the
+  **monotonic anti-rollback counter / OTA epoch**. boot.py rejects FRONT if
+  `payload_version < BACK.payload_version`; the updater enforces a floor too.
+  Sourced from `app_version` in `app/settings.json`.
+- `payload_version_floor` (u32) — a forward floor this image asserts: every later
+  update must be `>=` it (hard CVE cutoff). The updater folds it into
+  `new.payload_version >= max(back.payload_version, front.payload_version,
+  front.payload_version_floor)`. `0` = no extra floor. Sourced from
+  `rollback_floor` in `app/settings.json`.
+- `min_platform_version` (u32, same encoding) — minimum *platform* (for a ROMFS app,
+  the OpenMV base firmware, which pins MicroPython) the payload needs. boot.py
+  rejects `min_platform_version > the running platform`. Derived from the project's
+  pegged firmware. `0` = no constraint.
+- `board_id` (u32) — cross-flash guard; the device rejects an image whose `board_id`
+  ≠ its own. **Auto-assigned** by the host (deterministic, per product+board), so
+  vendors never invent the number; `0` = unset (check skipped). See
+  [docs/project.md](docs/project.md).
+- `key_id` (u32) — selects which baked-in trusted key verifies this image; absent /
+  revoked ⇒ reject without verifying. A selector, not trust (COSE `kid`), but it
+  sits inside the signed region so it can't be repointed.
+- `sig_alg` (int32) — IANA COSE algorithm id (`-7` ES256, `-35` ES384, `-36` ES512).
+  Signed, so the algorithm can't be downgraded. `int32` because COSE ids are negative.
+- `header_version` — version of *this fixed layout only*; boot.py hard-rejects an
+  unknown version (forward-incompatible by design). Additive provenance goes in the
+  JSON instead, so this rarely bumps. (Replaces v7's `schema_version`; `sig_alg`
+  still gives independent algorithm agility.)
+- `pad_size` — `0xFF` bytes between the body and the status/trailer blocks;
+  `body_size + pad_size` = where the status block begins, so the slot is
+  self-describing across boards with different erase geometry.
 
-The trailer is written **once** per update, **after** the body has been streamed and verified. Becoming-valid is the body-write commit. Erased only by the next full slot erase.
+**JSON metadata** (length `meta_size`, deterministic `sort_keys` UTF-8): a **verbatim
+copy of the image's `/rom/system.json`** — product / board / `board_id` / app
+version / firmware-MicroPython-toolchain provenance. boot.py never parses it (the
+trust path stays parser-free); the app reads identity from `/rom/system.json`, and
+host tools (the update server, an `inspect`) read the same data from the trailer
+without mounting the ROMFS. Build provenance (commit hashes, tool versions, build
+time) lives here and can grow without a `header_version` bump.
 
-**Schema evolution policy.** `schema_version` lets us bump the trailer schema in future firmware releases. Rules:
-- Boot.py rejects trailers with `schema_version > MAX_SUPPORTED` — forward-incompatible by design (safer than partially parsing an unknown schema).
-- Boot.py may support multiple older schema versions if it needs to verify factory-time BACK signed against an older schema while accepting a newer FRONT.
-- The `reserved[124]` block lets us add fields *without* a schema bump if the addition is purely additive (new field, old parsers ignore it). Use a schema bump only when changing semantics or sizes of existing fields.
-- `sig_alg` gives independent algorithm agility — schema can stay at v1 while crypto rotates from ed25519 to a future PQ algorithm.
+The trailer is written **once** per update, **after** the body has been streamed and
+verified. Becoming-valid is the body-write commit. Erased only by the next full slot
+erase.
 
 ### Status sector (mutable, three progressive markers)
 
 ```c
-struct slot_status {             // 4 KiB sector. All bytes start at 0xFF after erase.
+struct slot_status {             // one erase block. All bytes start at 0xFF after erase.
     uint8_t  pending_marker[16];   // updater writes a fixed pattern after the trailer
     uint8_t  tried_marker[16];     // boot.py writes a fixed pattern on first trial boot
     uint8_t  confirmed_marker[16]; // app writes a fixed pattern after self-test passes
@@ -111,7 +172,7 @@ struct slot_status {             // 4 KiB sector. All bytes start at 0xFF after 
 };
 ```
 
-Each marker is a 16-byte 1→0 monotonic transition (works on raw flash with no erase). Reading any byte that isn't 0xFF or the canonical pattern means "ambiguous → treat as not-set." That handles bit-rot defensively.
+Each marker is a 16-byte 1→0 monotonic transition (works on raw flash with no erase). Reading any byte that isn't 0xFF or the canonical pattern means "ambiguous → treat as not-set." That handles bit-rot defensively. (On AE3-MRAM, which has no erase and is byte-writable, the status block is reserved a full floored 4 KiB and the updater writes explicit `0xFF` stripes instead of relying on an erase — see *Per-board notes*.)
 
 No tick array, no `failed` marker. The state `pending+tried+!confirmed` **is** the failure indicator. One trial; if the app doesn't confirm, the next boot rejects the slot and BACK takes over.
 
@@ -119,8 +180,18 @@ The fixed patterns can be e.g. `0xA1*16`, `0xA2*16`, `0xA3*16` — choose three 
 
 ## boot.py (pure ioctl + computation, ~40 lines)
 
+> **The code block below is the v7 sketch and parses the old fixed struct** (byte
+> offsets, `ed25519_verify`, `schema_version`). The *flow* — slot select → verify →
+> body-hash → compatibility → anti-rollback → status state machine, fall back to
+> BACK — is unchanged and is captured accurately in *What boot.py decides* after
+> the block. The real boot.py will parse the **hybrid** trailer (header + JSON, per
+> [docs/trailer.md](docs/trailer.md)), verify with the **ECDSA-over-mbedtls** shim
+> over the signed region `header ‖ meta`, and read sizes (`TRAILER_SZ`/`STATUS_SZ`)
+> as one erase block from build-time board constants. Read the offsets/`ed25519`
+> here as illustrative, not normative.
+
 ```python
-# boot.py — frozen module in firmware. ioctl + computation only.
+# boot.py — frozen module in firmware. ioctl + computation only. (v7 sketch.)
 import vfs, os, sys, struct, binascii, hashlib
 
 FRONT_SIZE     = ...
@@ -286,12 +357,12 @@ sys.path.append('/rom/lib')
 ```
 
 What boot.py decides, in order:
-1. Trailer magic + `schema_version <= MAX_SCHEMA_VERSION` + CRC + size sanity.
-2. `sig_alg` supported + `key_id` is in `TRUSTED_KEYS` (revocation check).
-3. Signature verify over the 128-byte signed prefix.
-4. Body SHA-256 matches `trailer.sha256` (C-backed `hashlib.sha256`, fed memoryview chunks; tens of ms per MiB).
-5. Compatibility: `image.firmware_version <= OPENMV_FIRMWARE_VER` (don't mount images built for newer firmware than what's running). Implicitly covers MicroPython compatibility since openmv firmware version pins a specific MP version.
-6. For FRONT: `image_version >= back.image_version` (anti-rollback against the factory floor).
+1. Trailer `magic == OMVR` + known `header_version` + CRC + size sanity.
+2. `sig_alg` supported (a COSE id in the registry) + `key_id` is in `TRUSTED_KEYS` (revocation check).
+3. Signature verify (ECDSA via mbedtls) over the signed region `header ‖ meta`.
+4. Body SHA-256 matches `trailer.body_sha256` (C-backed `hashlib.sha256`, fed memoryview chunks; tens of ms per MiB).
+5. Compatibility: `image.min_platform_version <= OPENMV_FIRMWARE_VER` (don't mount images built for a newer base than what's running). Implicitly covers MicroPython compatibility since the openmv firmware version pins a specific MP version.
+6. For FRONT: `payload_version >= back.payload_version` (anti-rollback against the factory floor; the updater also enforces `payload_version_floor`).
 7. For FRONT: status state machine
    - `pending && tried && confirmed` → mount (post-OTA confirmed).
    - `pending && !tried && !confirmed` → write `tried`, mount (one-shot trial).
@@ -300,7 +371,7 @@ What boot.py decides, in order:
    - any other → reject.
 8. For BACK: status must be exactly factory state (`confirmed` only, `pending` and `tried` both 0xFF). Otherwise reject.
 9. If FRONT failed, repeat 1–5 + 8 on BACK. On FRONT rejection, boot.py records the failure reason in module-level `last_failure_reason` for the app to read after boot completes — boot.py doesn't write to UART/REPL because those aren't initialised yet in the frozen-module boot path.
-10. Expose telemetry hooks for the app: `boot.last_slot`, `boot.last_image_version`, `boot.last_image_version_back`, `boot.last_build_timestamp`, `boot.last_build_commit`, `boot.last_failure_reason`. The app reads these for fleet reporting, rollback UX, and CVE response.
+10. Expose telemetry hooks for the app: `boot.last_slot`, `boot.last_payload_version`, `boot.last_payload_version_back`, the mounted image's provenance (from its `/rom/system.json`), and `boot.last_failure_reason`. The app reads these for fleet reporting, rollback UX, and CVE response.
 
 If both fail → exception → REPL. Recovery via DFU (out of scope per threat model).
 
@@ -308,12 +379,17 @@ Why no boot.py watchdog: the user has full control to power-cycle. A hung trial 
 
 ## Application-side updater (in `/rom`)
 
+> Same caveat as boot.py: the sketch below reads the v7 fixed-offset trailer
+> (`image_version` at offset 12, etc.). The real updater reads `payload_version` /
+> `payload_version_floor` from the **hybrid** trailer and pads the trailer to one
+> erase block; the streaming / read-back / commit-order *flow* is unchanged.
+
 ```python
-# romfs_update.py
+# romfs_update.py  (v7 sketch; offsets illustrative)
 import vfs, hashlib, struct, binascii, machine
 
-TRAILER_SZ     = 4096
-STATUS_SZ      = 4096
+TRAILER_SZ     = 4096    # one erase block, from board config
+STATUS_SZ      = 4096    # one erase block, from board config
 FRONT_SIZE     = ...
 MAX_IMAGE      = FRONT_SIZE - STATUS_SZ - TRAILER_SZ
 PENDING_MARK   = b"\xA1" * 16
@@ -398,20 +474,51 @@ The app's responsibility list:
 
 ### Signing
 
-The customer (firmware developer / fleet operator) owns all keys. We ship the tooling — keygen, image-sign, factory-provisioning — and define the trailer format. We never see or store private keys.
+> **Crypto changed from v7's ed25519 to ECDSA over the NIST P-curves.** ed25519 is
+> not enabled in firmware's mbedtls; ECDSA + secp256r1/384r1/521r1 + SHA-256/384/512
+> already are (TLS uses them), so verify reuses an audited, already-compiled
+> primitive instead of a bespoke `ed25519_verify` C module. Algorithms are named by
+> IANA COSE id. The host signer is built on the `cryptography` library; see
+> [`openmv_ota.ota.sign`](src/openmv_ota/ota/sign.py) /
+> [`keys`](src/openmv_ota/ota/keys.py) and [docs/trailer.md](docs/trailer.md).
 
-- Generate ed25519 keypairs offline (the tool we ship runs `openssl genpkey -algorithm ed25519` or equivalent). Private key stays on the customer's HSM / air-gapped signing machine; public key + `key_id` is committed to `keys/trusted_keys.json` in the firmware source tree.
-- The build system reads `keys/trusted_keys.json` and substitutes the `TRUSTED_KEYS` map into the frozen `boot.py` at firmware-compile time. Soft cap of ~16 entries (verify is O(1) by `key_id`, so unused entries cost only flash — 36 bytes each).
-- `key_id` is a 32-bit value chosen by the customer (sequential numbers, dates, fingerprints, whatever scheme makes sense for their key-management process). The trailer carries the `key_id` of whichever key signed the image; boot.py looks up that single key for verification.
-- The build process signs the canonical signed bytes (`magic` through `sha256` of the trailer) and embeds the 64-byte signature plus `key_id` into the trailer.
-- Verification: new C module in openmv firmware (`ed25519_verify`), derived from [pmvr/micropython-curve25519](https://github.com/pmvr/micropython-curve25519) — reuse its field-arithmetic kernel and add Edwards-curve point operations + EdDSA verify on top. Independent of mbedtls TLS configuration. Verify cost <100 ms.
+The customer (firmware developer / fleet operator) owns all keys. We ship the
+tooling — keygen, provisioning, image-sign — and define the trailer format. We
+never see or store private keys.
 
-Hardening **requirements** for the C module (not just "nice to have"):
-- **Known-answer tests**: all RFC 8032 ed25519 test vectors pass.
-- **Negative tests**: Project Wycheproof's ed25519 corpus — low-order points, malleability, non-canonical encodings, malleable S, all-zero R, all-zero S, signatures with `S >= L`, etc. — all rejected.
-- **Parser fuzzing**: malformed inputs (truncated pubkey, oversized signature, garbage bytes) fail safely with no crashes or out-of-bounds reads.
-- **Constant-time scalar multiplication**: required. The verification key is public so timing leaks here are less catastrophic than for signing, but constant-time math is the standard, prevents implementation-bug categories that have historically bitten ECDSA libraries, and is cheap to get right if you start with it.
-- **No dynamic allocation on the verify path**: pre-allocate working buffers. Avoids surprises around heap fragmentation during boot.
+- **ECDSA, COSE-named.** Default **ES256 / P-256** (`sig_alg = -7`); ES384/ES512
+  available. Signatures are stored raw `R‖S` (host converts DER→raw); public keys
+  are the uncompressed EC point (`04 || X || Y`) in hex, which the device's mbedtls
+  reads directly via `mbedtls_ecp_point_read_binary`. The signer signs the trailer's
+  **signed region** (`header ‖ meta`), not a fixed 128-byte prefix.
+- **Provision the whole key set once, at `project new --ota`.** A device trusts
+  exactly the public keys baked into its firmware and you can't add one without
+  re-flashing, so the host generates the full set up front into
+  `keys/trusted_keys.json` (committed) + gitignored private PEMs. Two roles:
+  **factory** keys (per manufacturing site; sign the golden BACK image; default 8
+  reserve) and an **ota** rotation pool (default 32; over-the-air updates rotate
+  through these). The v7 "emergency revocation" / "special-purpose" roles were
+  dropped after threat-model review — revocation is `key_id` falling out of the
+  baked set at the next firmware build.
+- **`key_id`** is assigned by the tooling from well-separated ranges (factory
+  `0x0001+`, ota `0x0100+`). The trailer carries the `key_id` that signed it; boot.py
+  looks up that one key in its baked-in `TRUSTED_KEYS` (absent ⇒ reject) and reads
+  `sig_alg` for the curve + hash. The build firmware step substitutes the trusted
+  set + a thin ECDSA-over-mbedtls verify shim into the firmware (no openmv fork —
+  injected via `USER_C_MODULES`).
+- **`trusted_keys.json` schema**: `{"schema":1,"keys":[{key_id, alg (COSE id), role,
+  pubkey (hex point)}, …]}`.
+
+Hardening **requirements** for the device verify shim:
+- **Known-answer + negative tests**: FIPS 186 / RFC 6979 ECDSA vectors pass; the
+  Project Wycheproof ECDSA corpus is rejected — `r`/`s` out of range, `s > n`,
+  point-not-on-curve, non-canonical / truncated / oversized encodings, all-zero `r`
+  or `s`.
+- **Parser safety**: malformed signature / point inputs fail closed with no crashes
+  or out-of-bounds reads; the shim does no dynamic allocation on the verify path.
+- Reusing mbedtls means the curve arithmetic is already constant-time and audited —
+  the shim is just raw-`R‖S` → MPI marshalling + `mbedtls_ecdsa_verify` over the
+  SHA digest of the signed region.
 
 **Important lifecycle reality:** `TRUSTED_KEYS` is baked into the frozen `boot.py`, which lives in the firmware binary. **Rotating *in* a new key is OTA-only; removing a key from `TRUSTED_KEYS` requires a firmware update.** This sounds like a hole, but the threat model around it is what matters:
 
@@ -455,9 +562,10 @@ The leaked or rotated key is now functionally dead. `boot.py` still trusts it, b
 
 ### Per-board notes
 
-- **STM32H7 / N6 / AE3-OSPI**: code paths above work as written.
-- **AE3-MRAM**: erase no-op. Updater must explicitly write 0xFF stripes to the status sector after the no-op erase if the underlying MRAM contents aren't already in a known state. (Worth verifying experimentally.)
+- **STM32H7 / N6 / AE3-OSPI**: code paths above work as written (4 KiB NOR erase blocks).
+- **AE3-MRAM**: erase no-op. Updater must explicitly write 0xFF stripes to the status sector after the no-op erase if the underlying MRAM contents aren't already in a known state. (Worth verifying experimentally.) Its 16-byte physical sector is floored to a 4 KiB logical block for the trailer/status (see *Sizing*).
 - **RT1062**: `rom_ioctl(3,...)` returns `-EINVAL`. Updater detects and falls through to `mimxrt.Flash` blockdev: `Flash.ioctl(BLOCK_ERASE, n)` per front-slot block, then `Flash.writeblocks(n, chunk, off)` for body / trailer / pending. Boot.py reads via `memoryview(rom_ioctl(2, 0))` (Flash blockdev exposes a buffer interface). Optionally add WRITE_PREPARE/WRITE cases to `mimxrt_flash.c::mp_vfs_rom_ioctl` so RT1062 matches the others — small port-side patch.
+- **OpenMV2 / 3 / 4** (internal-flash ROMFS, single large sector): **not OTA-capable** — the host refuses `--ota` for them. They build single non-OTA images.
 
 ## Initial / factory state
 
@@ -480,7 +588,12 @@ status_bytes  = b"\xff"*16          # pending     — NOT set
 
 BACK is signed by the factory key, written once at manufacturing, and never touched again. FRONT ships from the factory in factory state too (mountable without a trial). On the first OTA, FRONT moves into the trial state machine.
 
-The factory provisioning tool sets the trailer fields appropriately: `build_timestamp` to manufacturing time, `mp_version`/`firmware_version` to whatever this build supports, `build_commit_hash` to the git SHA of the factory build, `min_required_image_version` to 0 (no extra floor), and `key_id` to `K_factory`'s id. These are all signed.
+The factory provisioning tool sets the trailer fields appropriately: `board_id` to
+the product id, `min_platform_version` to the pegged firmware, `payload_version` to
+the factory app version, `payload_version_floor` to 0 (no extra floor), `key_id` to
+a **factory** key, and the JSON meta (the `/rom/system.json` copy) to the factory
+build's provenance — firmware / MicroPython / toolchain versions, commit, build
+time. All signed.
 
 **Important:** boot.py's FRONT branch rejects the factory state (`confirmed-only, no pending`) by design — that combination is only valid for BACK. So at first boot from an OTA-untouched device, boot.py mounts BACK directly. To make initial-ship FRONT mountable, the factory tool can write FRONT identically to BACK but the **factory writes BOTH `pending` and `tried` and `confirmed`** so it lands in the post-OTA-confirmed state from FRONT's perspective. That asymmetry is fine: BACK = factory shape, FRONT = post-OTA-confirmed shape.
 
@@ -509,23 +622,40 @@ The factory provisioning tool sets the trailer fields appropriately: `build_time
 
 ## Sizing
 
-`FRONT_SIZE = BACK_SIZE = partition_size / 2`, rounded down to a multiple of 4 KiB. Each slot loses 8 KiB to status + trailer.
+`FRONT_SIZE = BACK_SIZE = partition_size / 2`, rounded **down to the flash erase
+block** so FRONT can be erased without disturbing BACK. Each slot loses two erase
+blocks to its status + trailer sectors. The block is the partition's `erase_size`
+floored to 4 KiB (`MIN_OTA_BLOCK`) — 4 KiB on every OTA-capable board (external
+NOR/OSPI; AE3-MRAM's 16-byte sector floored to 4 KiB so growing the trailer JSON
+can't reshape a deployed layout). See [`openmv_ota.ota.geometry`](src/openmv_ota/ota/geometry.py).
 
-Per-board values come from the openmv board JSON build settings: each `boards/<BOARD>/board.json` (or equivalent) declares its ROMFS partition size, and the build system substitutes the resulting `PARTITION_SIZE` and `FRONT_SIZE` into the frozen `boot.py` (and exposes them to the updater) at firmware-compile time. No runtime introspection of the partition needed — these are constants per build.
+**Not every board is OTA-capable.** Each partition carries its `erase_size`
+(bundled in [`data/boards.json`](src/openmv_ota/data/boards.json), read off the
+firmware's flash backend). A board whose ROMFS is a single large internal-flash
+sector — **OpenMV2 (128 K), OpenMV3 (256 K), OpenMV4 (128 K)** — has `erase_size`
+== the whole partition, so a slot rounds to 0: there's no room for two slots plus
+control blocks. `openmv-ota project new --ota` detects this from the geometry alone
+and **errors with "not OTA-capable"**; those boards still build a single non-OTA
+image filling the partition. OTA-capable: OpenMV4P/PT, RT1062, N6, AE3 (both
+cores), Portenta/Giga/Nicla.
+
+Per-board values are resolved into the project lock at `project new` time and
+substituted into the frozen `boot.py` / updater at firmware-build time — constants
+per build, no runtime introspection.
 
 ## What lives where
 
 | Concern | Location |
 |---|---|
 | Pick which slot to mount | boot.py |
-| Verify trailer magic, schema, CRC, sizes | boot.py |
-| Verify signature, key_id, sig_alg | boot.py |
-| Verify body SHA-256 against signed `trailer.sha256` | boot.py |
-| Verify firmware_version compatibility | boot.py |
-| Anti-rollback floor (FRONT vs back.image_version) | boot.py |
+| Verify trailer magic, header_version, CRC, sizes | boot.py |
+| Verify signature, key_id, sig_alg (ECDSA via mbedtls) | boot.py |
+| Verify body SHA-256 against signed `trailer.body_sha256` | boot.py |
+| Verify min_platform_version compatibility | boot.py |
+| Anti-rollback floor (FRONT vs back.payload_version) | boot.py |
 | Tried marker write on first trial boot | boot.py |
-| Expose telemetry (last_slot, last_image_version, last_build_timestamp, last_build_commit, last_failure_reason) | boot.py module-level |
-| Anti-rollback floor (`max(back, front_if_valid, front.min_required_image_version)`) | updater |
+| Expose telemetry (last_slot, last_payload_version, provenance, last_failure_reason) | boot.py module-level |
+| Anti-rollback floor (`max(back, front_if_valid, front.payload_version_floor)`) | updater |
 | Body streaming, SHA compute, trailer compose & write, pending write | updater |
 | `confirm()` after self-test | app (in main.py) |
 | Watchdog arming (any flavour) | app — first thing in main.py |
@@ -534,10 +664,29 @@ Per-board values come from the openmv board JSON build settings: each `boards/<B
 | Update authorization, rate limiting, audit logging | app |
 | Fleet telemetry / CVE response queries | app (reads boot.py telemetry hooks) |
 | Vulnerability disclosure / SBOM / support period | vendor process (tooling generates artefacts) |
-| SBOM generation, deterministic builds, hash transparency log | build tooling (openmv-romfs-ota repo) |
+| SBOM generation, deterministic builds, hash transparency log | build tooling (openmv-ota repo) |
 | Factory provisioning of both slots | offline host tool |
 
-## Build tooling and process requirements (the `openmv-romfs-ota` repo)
+## Build tooling and process requirements (the `openmv-ota` repo)
+
+> **Reconciliation with the implemented CLI.** v7 imagined four separate
+> `openmv-ota build-*` tools. The shipped design is **one `openmv-ota` CLI** built
+> around a firmware-pegged *project* (a committed lock + config; `openmv-ota
+> project new/setup/show/status/sync`). Mapping:
+>
+> | v7 tool | Implemented |
+> |---|---|
+> | Tool 3 `build-romfs` | **`openmv-ota build romfs`** — compiles the app + packs the image; for an OTA project also signs + attaches the trailer. Plus `openmv-ota romfs` for verbatim pack/unpack/inspect. **Built.** |
+> | Tool 1 `build-firmware` | `openmv-ota build firmware` — bake `boot.py` + `TRUSTED_KEYS` + the ECDSA-over-mbedtls verify shim into firmware. **Reserved (not built).** |
+> | Tool 4 `serve` | the update server. **Not built.** |
+> | Tool 2 app-side SDK | the on-device `openmv_ota` package (trial-confirm, poll, install). **Not built.** |
+>
+> Keys, identity, versioning, and provenance are handled as we've now implemented
+> them: provision-once `keys/` (factory + ota roles), auto-assigned `board_id`,
+> `app/settings.json` (`app_version` + `rollback_floor`), generated
+> `/rom/system.json`. The factory-image / slot-composition (`ota factory`) and the
+> server are the main unbuilt pieces. Read the tool descriptions below as the
+> *intent*; [docs/](docs/) describes what exists.
 
 The repo that clones openmv firmware and injects this OTA design ships the following artefacts alongside the runtime code. These exist to satisfy CRA-style audit/disclosure requirements without burdening boot.py with runtime complexity.
 
@@ -551,7 +700,7 @@ The repo that clones openmv firmware and injects this OTA design ships the follo
 
 **Vulnerability disclosure policy template**: documentation template customers fill in with their security contact, disclosure timeline, scope, etc. Goes in their public-facing site and is referenced by `security.txt`.
 
-**CRA conformity assessment checklist**: a customer-facing document mapping the openmv-romfs-ota stack onto each CRA Annex I essential security requirement, showing what's provided by this stack and what the customer must add (app-level concerns, support-period commitment, etc.). Customers include it in their technical documentation when self-certifying.
+**CRA conformity assessment checklist**: a customer-facing document mapping the openmv-ota stack onto each CRA Annex I essential security requirement, showing what's provided by this stack and what the customer must add (app-level concerns, support-period commitment, etc.). Customers include it in their technical documentation when self-certifying.
 
 **HSM-aware signing tooling**: the keygen / image-sign scripts support HSM backends (YubiHSM, AWS CloudHSM, PKCS#11 in general) with a software-keyfile fallback for development. Private keys never leave the HSM. Documented as the recommended path for production keys.
 
@@ -559,9 +708,9 @@ The repo that clones openmv firmware and injects this OTA design ships the follo
 
 **Factory provisioning tool**: command-line tool that takes a ROMFS body + factory signing key + board.json → produces a flashable BACK+FRONT pair, written to the device over DFU. Used at manufacturing time, never in the field.
 
-## openmv-romfs-ota repo: tool deliverables and packaging
+## openmv-ota repo: tool deliverables and packaging
 
-The `openmv-romfs-ota` repo ships four cooperating tools plus shared assets. They're packaged together (one `pip install openmv-romfs-ota` installs everything) so the customer doesn't have to wrangle dependencies between them.
+The `openmv-ota` repo ships four cooperating tools plus shared assets. They're packaged together (one `pip install openmv-ota` installs everything) so the customer doesn't have to wrangle dependencies between them.
 
 ### Bootstrap dependencies (the "untangling" question)
 
@@ -580,7 +729,7 @@ What needs to be **consistent** across tools is small and explicit — two files
 
 Pin one canonical location per file, every tool reads from there.
 
-### Tool 1: Firmware builder (`openmv-romfs-ota build-firmware`)
+### Tool 1: Firmware builder (`openmv-ota build firmware`)
 
 Takes: openmv repo URL + commit hash + board target + `board.json` + `trusted_keys.json` + customer metadata (product name, vendor, support period, security contact).
 
@@ -597,15 +746,15 @@ What it does internally:
 2. Reads `board.json` → derives sizing constants and `OPENMV_FIRMWARE_VER`.
 3. Reads `trusted_keys.json` → generates the `TRUSTED_KEYS` map.
 4. Renders `templates/boot.py.in` → frozen `boot.py` with all constants and keys substituted.
-5. Copies the `ed25519_verify` C module into `ports/<port>/modules/` of the openmv tree.
-6. Patches the firmware Makefile/CMake to add the ed25519 module and freeze our `boot.py`.
+5. Injects the thin **ECDSA-over-mbedtls verify shim** as a user C module (via `USER_C_MODULES`, no openmv fork).
+6. Patches the firmware Makefile/CMake to add the shim and freeze our `boot.py`.
 7. Invokes the openmv firmware build for the target board (which builds mboot + MicroPython + frozen modules into `firmware.bin`).
 8. Generates audit artefacts in the output directory.
 9. Scans the SBOM against NVD/OSV CVE databases; warns or fails on findings per customer policy.
 
 ### Tool 2: App-side SDK (bundled inside the tool installation, not separately installed)
 
-The SDK is a set of Python files (~10 files) shipped *inside* the `openmv-romfs-ota` Python package as data files. The ROMFS builder (Tool 3) pulls them from the installed location and copies them into the customer's ROMFS at build time. The customer never copies or imports SDK files directly into their repo — they just write their app against the documented API and let the build process bundle the SDK in.
+The SDK is a set of Python files (~10 files) shipped *inside* the `openmv-ota` Python package as data files. The ROMFS builder (Tool 3) pulls them from the installed location and copies them into the customer's ROMFS at build time. The customer never copies or imports SDK files directly into their repo — they just write their app against the documented API and let the build process bundle the SDK in.
 
 Customer's app — entire OTA integration is ~20 lines:
 
@@ -649,7 +798,7 @@ SDK module breakdown:
 - `openmv_romfs_ota/cert.pem` — pinned server cert (per-deployment; customer overrides during build)
 - Internal helpers for RT1062's blockdev fallback and AE3-MRAM's no-erase path
 
-### Tool 3: ROMFS builder (`openmv-romfs-ota build-romfs`)
+### Tool 3: ROMFS builder (`openmv-ota build romfs`)
 
 Two modes, same underlying logic:
 
@@ -668,7 +817,7 @@ What it does:
 6. For OTA mode: just the single signed slot.
 7. Appends `(version, sha256, build_commit_hash, build_timestamp, key_id, board_id)` to `releases/transparency-log.jsonl`.
 
-### Tool 4: Update server (`openmv-romfs-ota serve` + the deployable backend)
+### Tool 4: Update server (`openmv-ota serve` + the deployable backend)
 
 **Stateless API + object storage** so it scales horizontally and runs on basically any platform (Render, Fly.io, Cloud Run, AWS, self-hosted).
 
@@ -694,22 +843,22 @@ Rollout features worth including:
 
 ### Distribution and packaging
 
-**One `pip install openmv-romfs-ota`** installs all four tools as CLI commands:
+**One `pip install openmv-ota`** installs all four tools as CLI commands:
 
 ```
-$ pip install openmv-romfs-ota
-$ openmv-romfs-ota init                                       # Scaffolds the customer's repo layout
-$ openmv-romfs-ota keys generate                              # Creates trusted_keys.json + HSM-bound keys
-$ openmv-romfs-ota build-firmware -c config/firmware.yaml     # Tool 1
-$ openmv-romfs-ota build-romfs --mode factory ... --version 1 # Tool 3 (factory image)
-$ openmv-romfs-ota build-romfs --mode ota     ... --version 2 # Tool 3 (OTA release)
-$ openmv-romfs-ota serve -c config/server.yaml                # Tool 4 (local dev)
-$ openmv-romfs-ota publish releases/v2.bin --server URL       # Upload OTA release
+$ pip install openmv-ota
+$ openmv-ota init                                       # Scaffolds the customer's repo layout
+$ openmv-ota keys generate                              # Creates trusted_keys.json + HSM-bound keys
+$ openmv-ota build firmware -c config/firmware.yaml     # Tool 1
+$ openmv-ota build romfs --mode factory ... --version 1 # Tool 3 (factory image)
+$ openmv-ota build romfs --mode ota     ... --version 2 # Tool 3 (OTA release)
+$ openmv-ota serve -c config/server.yaml                # Tool 4 (local dev)
+$ openmv-ota publish releases/v2.bin --server URL       # Upload OTA release
 ```
 
-The SDK files (Tool 2) ship inside the Python package as data files. Tool 3 reads them from the installed location at build time and bundles them into the ROMFS. The customer never installs, copies, or version-pins the SDK separately — its version is determined by which `openmv-romfs-ota` version they installed. `pip install openmv-romfs-ota==2.3.1` pins everything together for reproducibility.
+The SDK files (Tool 2) ship inside the Python package as data files. Tool 3 reads them from the installed location at build time and bundles them into the ROMFS. The customer never installs, copies, or version-pins the SDK separately — its version is determined by which `openmv-ota` version they installed. `pip install openmv-ota==2.3.1` pins everything together for reproducibility.
 
-### Customer repo layout (separate from the openmv-romfs-ota tools)
+### Customer repo layout (separate from the openmv-ota tools)
 
 Customer keeps their app and configuration in their own repo:
 
@@ -722,7 +871,7 @@ my-product/                          # Customer's repo
 ├── config/
 │   ├── firmware.yaml                # Tool 1 settings (openmv commit, board, etc.)
 │   ├── server.yaml                  # Tool 4 settings
-│   └── board.json                   # Or symlinked from openmv-romfs-ota's boards/
+│   └── board.json                   # Or symlinked from openmv-ota's boards/
 ├── keys/
 │   ├── trusted_keys.json            # Public keys + key_ids (committed)
 │   └── .gitignore                   # Private keys: HSM-bound, never committed
@@ -741,12 +890,17 @@ my-product/                          # Customer's repo
 └── README.md
 ```
 
-Customer's CI invokes the tools; tools read from `config/`, `keys/`, `boards/` (or `board.json`); outputs go to `releases/`. The openmv-romfs-ota tools never write to the customer's repo outside `releases/` (and the transparency log).
+Customer's CI invokes the tools; tools read from `config/`, `keys/`, `boards/` (or `board.json`); outputs go to `releases/`. The openmv-ota tools never write to the customer's repo outside `releases/` (and the transparency log).
 
-### Suggested openmv-romfs-ota repo layout (the tools repo)
+### Suggested openmv-ota repo layout (the tools repo)
+
+> v7 proposal; the **implemented** layout differs — host code is
+> `src/openmv_ota/{romfs,ota,project,build}/` with `data/boards.json` and `docs/`.
+> The `firmware_build` / `update_server` / on-device `sdk` subtrees below are the
+> unbuilt pieces (the `ecdsa_verify` shim replaces the old `ed25519_verify`).
 
 ```
-openmv-romfs-ota/
+openmv-ota/
 ├── README.md
 ├── pyproject.toml                     # Single Python package
 ├── docs/
@@ -767,8 +921,8 @@ openmv-romfs-ota/
 │   ├── firmware_build/                # Tool 1
 │   │   ├── build.py
 │   │   ├── templates/boot.py.in
-│   │   └── ed25519_verify/            # C module source
-│   │       ├── ed25519_verify.c
+│   │   └── ecdsa_verify/              # ECDSA-over-mbedtls verify shim (user C module)
+│   │       ├── ecdsa_verify.c
 │   │       ├── micropython.mk
 │   │       └── tests/
 │   ├── romfs_build/                   # Tool 3
@@ -784,7 +938,7 @@ openmv-romfs-ota/
 │   │       ├── fly.toml
 │   │       └── docker-compose.yml
 │   └── sdk/                           # Tool 2 — bundled as package data
-│       ├── openmv_romfs_ota/
+│       ├── openmv_ota/
 │       │   ├── __init__.py
 │       │   ├── _update.py
 │       │   ├── _client.py
@@ -806,15 +960,15 @@ openmv-romfs-ota/
 │   └── eu-doc.md.template
 │
 └── tests/
-    ├── ed25519_kat/                   # RFC 8032 known-answer tests
-    ├── wycheproof/                    # Negative-test corpus
+    ├── ecdsa_kat/                     # FIPS 186 / RFC 6979 known-answer tests
+    ├── wycheproof/                    # Negative-test corpus (ECDSA)
     ├── boot_py_adversarial/           # Boot.py state-machine tests
     └── integration/                   # End-to-end build → flash → OTA
 ```
 
 ### Two open questions worth deciding before building
 
-**1. Is the SDK exposed for customers to pin separately?** Default model: SDK version = tool version, customer pins via `pip install openmv-romfs-ota==X.Y.Z`. Alternative: SDK gets its own version, customer can mix-and-match (e.g. older SDK + newer tools). The latter is more flexible but harder to test. Recommend single-version-locked unless a real use case for mixing emerges.
+**1. Is the SDK exposed for customers to pin separately?** Default model: SDK version = tool version, customer pins via `pip install openmv-ota==X.Y.Z`. Alternative: SDK gets its own version, customer can mix-and-match (e.g. older SDK + newer tools). The latter is more flexible but harder to test. Recommend single-version-locked unless a real use case for mixing emerges.
 
 **2. How opinionated is the update server about deployment?** Three options: (a) fully opinionated — one Docker image, customer just deploys it; (b) lightly opinionated — scaffolding + adapters for common storage backends (S3, R2, GCS); (c) pure library — customer builds their own backend. Recommend **(b) lightly opinionated** — one well-tested implementation with adapters for S3-compatible storage and a few hosting platforms, plus a "bring-your-own-backend" interface for sophisticated customers.
 
@@ -831,7 +985,7 @@ This stack supports each relevant requirement as follows:
 | 1(2)(a) Free of known exploitable vulnerabilities at placing on market | Build pipeline scans SBOM against NVD/OSV, fails on critical CVEs |
 | 1(2)(b) Secure by default configuration | Documented in the conformity assessment template; customer applies |
 | 1(2)(c) Security updates throughout support period | OTA mechanism in this plan; vendor commits to a support period |
-| 1(2)(d) Protection against unauthorised access | ed25519 signatures + anti-rollback + golden-image fallback |
+| 1(2)(d) Protection against unauthorised access | ECDSA (P-256) signatures + anti-rollback + golden-image fallback |
 | 1(2)(e) Confidentiality of stored data | **Out of scope** — customer must add encryption if applicable. Documented as explicit non-goal. |
 | 1(2)(f) Integrity of stored data | Signature + SHA-256 + CRC32 for ROMFS; customer covers /flash and /sdcard |
 | 1(2)(g) Data minimisation | Customer (app design); we provide guidance |
@@ -904,22 +1058,29 @@ Pure Python in boot.py cannot defend against any of these — and the user has e
 
 ## Open questions
 
-Answered:
-- **Sizing**: 50/50, partitioned from per-board JSON build settings.
-- **`FRONT_SIZE` surface**: build-time substitution from the board JSON into the frozen `boot.py`. No runtime introspection.
-- **Trailer `reserved[124]`**: leave it as raw reserved bytes; no extra fields needed. API-mismatch failures surface as runtime crashes, which is acceptable.
-- **Factory key vs. OTA key**: separate keys, separate `key_id`s. Customer manages both.
+Answered (and now implemented host-side):
+- **Sizing**: 50/50, FRONT aligned down to the per-board flash erase block (4 KiB on OTA-capable boards); two control blocks per slot. Boards whose ROMFS is one big internal-flash sector are detected as not OTA-capable. `erase_size` is bundled in `data/boards.json` and resolved into the lock.
+- **`FRONT_SIZE` surface**: resolved into the project lock at `project new`; substituted into the frozen `boot.py` at firmware-build time. No runtime introspection.
+- **Trailer extensibility**: handled by the JSON metadata blob (additive, signed, app-readable) + `header_version` for trust-path changes. No fixed `reserved` block.
+- **Factory key vs. OTA key**: separate roles + `key_id` ranges, provisioned once at `project new --ota` into `keys/trusted_keys.json` + private PEMs.
 - **`confirm()` policy**: app calls it on first-boot success per its own definition of "successful."
-- **Crypto**: new `ed25519_verify` C module added to openmv firmware, derived from pmvr/micropython-curve25519's field-arithmetic kernel + new Edwards-curve and EdDSA verify on top. `hashlib.sha256` and `binascii.crc32` come from the C-backed firmware modules already present.
+- **Crypto**: ECDSA over the NIST P-curves (COSE-named; ES256/P-256 default), verified by a thin shim over the firmware's existing mbedtls. No bespoke ed25519 module. `hashlib.sha256` / `binascii.crc32` are the C-backed firmware modules already present.
+- **Metadata encoding**: JSON (the trust path doesn't parse it; the app has stdlib `json`). Same bytes packed into `/rom/system.json` and copied into the trailer.
 
-Still worth deciding before implementing:
-1. **JSON schemas** — two files:
-    - `boards/<BOARD>/board.json` — per-board sizing. Suggested keys: `romfs_partition_size`, derived `romfs_front_size = romfs_partition_size // 2 & ~0xFFF`.
-    - `keys/trusted_keys.json` — fleet-wide trusted key list. Suggested shape: `[{key_id: 0x..., pubkey_hex: "...", role: "factory|ota|dev|partner-foo", notes: "..."}]`. The build system flattens this into the `TRUSTED_KEYS` map in the frozen `boot.py`. Adding or removing keys is a firmware-release operation.
-3. **Tooling we ship to the customer** — at minimum: keygen wrapper, image-signer (takes ROMFS body + signing key + version + board_id → writes a flashable slot image), factory-provisioning binary (writes BACK + FRONT slots over DFU). Worth a separate planning pass before building.
+Still worth deciding before implementing the on-device side:
+1. **Status-sector format on AE3-MRAM** — the no-erase, byte-writable case (explicit `0xFF` stripes); confirm experimentally.
+2. **Update-server deployment opinionatedness** — see the two questions above (lean: lightly opinionated, S3-compatible adapters).
+3. **`ota factory` slot composition** — exact on-flash factory-image layout (BACK confirmed-only; FRONT post-OTA-confirmed) and the DFU provisioning flow.
 
 ## Critical files / references
 
+Implemented host-side (this repo) — the authoritative format/geometry/keys:
+- [src/openmv_ota/ota/trailer.py](src/openmv_ota/ota/trailer.py) — trailer codec (byte-layout SSOT); [docs/trailer.md](docs/trailer.md)
+- [src/openmv_ota/ota/algorithms.py](src/openmv_ota/ota/algorithms.py) — COSE algorithm registry · [sign.py](src/openmv_ota/ota/sign.py) · [keys.py](src/openmv_ota/ota/keys.py) · [geometry.py](src/openmv_ota/ota/geometry.py)
+- [src/openmv_ota/build/romfs.py](src/openmv_ota/build/romfs.py) — `build romfs` (compile + pack + sign) · [src/openmv_ota/project/](src/openmv_ota/project/) — pegged project / lock · [data/boards.json](src/openmv_ota/data/boards.json) — per-board sizes + `erase_size`
+- Docs: [project.md](docs/project.md) · [build.md](docs/build.md) · [architecture.md](docs/architecture.md)
+
+Firmware-side (the on-device pieces, not yet built):
 - [lib/micropython/ports/stm32/vfs_rom_ioctl.c](lib/micropython/ports/stm32/vfs_rom_ioctl.c)
 - [lib/micropython/ports/alif/vfs_rom_ioctl.c](lib/micropython/ports/alif/vfs_rom_ioctl.c)
 - [lib/micropython/ports/mimxrt/mimxrt_flash.c](lib/micropython/ports/mimxrt/mimxrt_flash.c)
