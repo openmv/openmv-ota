@@ -169,6 +169,18 @@ def test_create_ota_project(tmp_path, make_firmware, make_sdk):
     assert "keys/private/" in paths.gitignore.read_text()
 
 
+def test_editing_board_identity_does_not_drift(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True,
+                      factory_keys=1, ota_keys=2)
+    paths = proj.ProjectPaths(root)
+    # The user sets the scaffolded product id (identity, not firmware geometry).
+    text = paths.config.read_text().replace("board_id   = 0", "board_id   = 12345")
+    paths.config.write_text(text, encoding="utf-8")
+    # No drift: identity lives in config, not the firmware-resolved lock.
+    assert proj.status_project(root, firmware=repo) == []
+
+
 def test_create_ota_no_factory_key_errors(tmp_path, make_firmware, make_sdk):
     with pytest.raises(ProjectError, match="at least one factory key"):
         _create(tmp_path, make_firmware, make_sdk, ota=True, factory_keys=0, ota_keys=2)

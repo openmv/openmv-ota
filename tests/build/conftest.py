@@ -36,7 +36,9 @@ def make_project(tmp_path, make_firmware, make_sdk):
 
         app = tmp_path / "appsrc"
         app.mkdir()
-        files = DEFAULT_APP if app_files is None else app_files
+        files = dict(DEFAULT_APP if app_files is None else app_files)
+        if ota and "settings.json" not in files:
+            files["settings.json"] = '{"app_version": "1.0.0", "vendor": "Acme"}\n'
         for rel, content in files.items():
             f = app / rel
             f.parent.mkdir(parents=True, exist_ok=True)

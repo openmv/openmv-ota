@@ -116,7 +116,7 @@ def resolve_snapshot(
                 "partitions" % name
             )
         for idx in parts:
-            per = {k: v for k, v in override.items() if k in ("board_id", "partition_size")}
+            per = {k: v for k, v in override.items() if k in ("partition_size",)}
             rb, w = resolve_board(repo, name, int(idx), per)
             warnings.extend(w)
             resolved.append(asdict(rb))
@@ -179,11 +179,23 @@ def ensure_sdk(repo: Path, override: Path | None, install_sdk: bool) -> sdk_res.
     return info
 
 
+# Per-board override keys that are pure identity (not firmware-resolved geometry):
+# editing them must not invalidate the lock, so they're excluded from the digest and
+# read straight from the config by the build.
+_IDENTITY_OVERRIDE_KEYS = ("board_id", "board_name")
+
+
 def _digest(config: OtaConfig) -> str:
     """Digest the *firmware-relevant* config — the fields that, if changed, would
-    invalidate the resolved lock. Excludes release state (``version``), metadata
-    (name/vendor), and cosmetic edits, so bumping the version never trips drift."""
-    relevant = {"boards": config.boards, "overrides": config.overrides, "ota": config.ota}
+    invalidate the resolved lock. Excludes release/identity state (``version``,
+    ``board_id``, ``board_name``), metadata (name/vendor), and cosmetic edits, so
+    setting a product id or bumping the version never trips drift."""
+    geometry = {
+        board: {k: v for k, v in ov.items() if k not in _IDENTITY_OVERRIDE_KEYS}
+        for board, ov in config.overrides.items()
+    }
+    geometry = {board: ov for board, ov in geometry.items() if ov}  # drop now-empty entries
+    relevant = {"boards": config.boards, "overrides": geometry, "ota": config.ota}
     blob = json.dumps(relevant, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

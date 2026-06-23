@@ -229,9 +229,9 @@ def test_board_geometry_conditional_falls_back(make_firmware):
 
 def test_board_geometry_override(make_firmware):
     repo = make_firmware()
-    rb, _ = board_res.resolve_board(repo, "OPENMV_N6", override={"partition_size": 4096, "board_id": 7})
+    rb, _ = board_res.resolve_board(repo, "OPENMV_N6", override={"partition_size": 4096})
     assert rb.geometry_source == "override"
-    assert rb.partition_size == 4096 and rb.board_id == 7
+    assert rb.partition_size == 4096
 
 
 def test_board_firmware_differs_from_bundled_warns(make_firmware):

@@ -177,3 +177,93 @@ def test_drift_refuses(make_project, git_cmd):
     git_cmd(repo, "commit", "-q", "-m", "drift")
     with pytest.raises(BuildError, match="refusing to proceed"):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+# --- OTA trailer signing ----------------------------------------------------
+
+def _build_ota(make_project, **over):
+    settings = over.pop("settings", '{"app_version": "1.2.3", "vendor": "Acme"}\n')
+    files = {"main.py": "print(1)\n", "settings.json": settings}
+    root, repo, app = make_project(ota=True, app_files=files, **over)
+    return root, repo, app
+
+
+def _set_board_id(root, value):
+    from openmv_ota.project import ProjectPaths
+    cfg = ProjectPaths(root).config
+    cfg.write_text(cfg.read_text().replace("board_id   = 0", "board_id   = %d" % value))
+
+
+def test_ota_build_signs_and_verifies(make_project):
+    import hashlib
+
+    from openmv_ota.ota import (
+        algorithm_for, parse_trailer, public_key_from_hex, read_trusted_keys,
+        signed_region, verify_region,
+    )
+    from openmv_ota.ota.trailer import TRAILER_SZ
+    from openmv_ota.ota.version import encode_app_version
+    from openmv_ota.project import ProjectPaths
+
+    root, repo, app = _build_ota(make_project)
+    _set_board_id(root, 999)  # config-only identity, no drift
+    out = build_mod.build_romfs(root, app=app, firmware=repo,
+                                compile_py=False, convert_models=False)[0].output
+
+    data = out.read_bytes()
+    body, sector = data[:-TRAILER_SZ], data[-TRAILER_SZ:]
+    t = parse_trailer(sector)
+    assert t.payload_version == encode_app_version("1.2.3")
+    assert t.board_id == 999
+    assert t.body_sha256 == hashlib.sha256(body).digest()
+    assert t.meta["vendor"] == "Acme" and t.meta["app_version"] == "1.2.3"
+    assert t.meta["firmware"]["version"] == "5.0.0"
+
+    # The signature verifies against the project's committed trusted public key.
+    entry = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
+                 if k.key_id == t.key_id)
+    alg = algorithm_for(entry.alg)
+    pub = public_key_from_hex(entry.pubkey, alg)
+    assert verify_region(pub, signed_region(sector), t.signature, alg) is True
+
+
+def test_ota_build_warns_on_unset_board_id(make_project, capsys):
+    root, repo, app = _build_ota(make_project)  # board_id left at scaffolded 0
+    build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+    assert "board_id 0" in capsys.readouterr().err
+
+
+def test_ota_build_missing_settings(make_project):
+    root, repo, app = _build_ota(make_project)
+    (app / "settings.json").unlink()
+    with pytest.raises(BuildError, match="needs a readable"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+def test_ota_build_missing_app_version(make_project):
+    root, repo, app = _build_ota(make_project, settings='{"vendor": "x"}\n')
+    with pytest.raises(BuildError, match="missing app_version"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+def test_ota_build_bad_semver(make_project):
+    root, repo, app = _build_ota(make_project, settings='{"app_version": "1.2"}\n')
+    with pytest.raises(BuildError, match="invalid app version"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+def test_ota_build_missing_private_key(make_project):
+    from openmv_ota.project import ProjectPaths
+    root, repo, app = _build_ota(make_project)
+    (ProjectPaths(root).private_keys_dir / "ota-0100.pem").unlink()
+    with pytest.raises(BuildError, match="private signing key"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+def test_ota_build_unknown_signing_key(make_project):
+    from openmv_ota.project import ProjectPaths
+    root, repo, app = _build_ota(make_project)
+    cfg = ProjectPaths(root).config
+    cfg.write_text(cfg.read_text().replace("signing_key_id = 256", "signing_key_id = 9999"))
+    with pytest.raises(BuildError, match="not in keys/trusted_keys.json"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)

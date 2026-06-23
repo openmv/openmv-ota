@@ -12,6 +12,6 @@ paths.
 
 from __future__ import annotations
 
-from .project import LoadedProject, load_project
+from .project import LoadedProject, ProjectPaths, load_project
 
-__all__ = ["LoadedProject", "load_project"]
+__all__ = ["LoadedProject", "ProjectPaths", "load_project"]

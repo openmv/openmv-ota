@@ -33,7 +33,6 @@ class ResolvedBoard:
     partition_size: int
     front_size: int
     alignment_rules: list[dict] = field(default_factory=list)
-    board_id: int | None = None
     geometry_source: str = "bundled"
     npu_config: dict | None = None        # full compiler config (args + file refs)
 
@@ -117,8 +116,6 @@ def resolve_board(
             "[targets.%s] partition_size" % (name, name)
         )
 
-    board_id = int(override["board_id"]) if "board_id" in override else None
-
     resolved = ResolvedBoard(
         name=name,
         board_type=_board_type(repo, name),
@@ -129,7 +126,6 @@ def resolve_board(
         partition_size=size,
         front_size=_front_size(size),
         alignment_rules=list(part.alignment_rules),
-        board_id=board_id,
         geometry_source=source,
         npu_config=npu_config,
     )
