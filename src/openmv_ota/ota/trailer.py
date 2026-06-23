@@ -150,7 +150,7 @@ def pack_trailer(t: Trailer) -> bytes:
 
 def parse_trailer(data: bytes) -> Trailer:
     """Decode and validate a trailer. Raises ``OtaError`` on any malformation —
-    bad magic, unknown ``header_version``, unknown/reserved algorithm, a
+    bad magic, unknown ``header_version``, an unsupported algorithm, a
     ``sig_size`` that disagrees with the algorithm, truncation, or a bad CRC."""
     if len(data) < HEADER_SIZE:
         raise OtaError("trailer too small: %d < %d header bytes" % (len(data), HEADER_SIZE))

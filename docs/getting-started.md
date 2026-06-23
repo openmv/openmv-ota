@@ -39,3 +39,18 @@ mpy-cross==<version>` (the version `openmv-ota project show` reports).
 Commit `openmv-ota.toml` and `openmv-ota.lock.json`. On another machine, run
 `openmv-ota project setup` to reconstruct the pinned checkout and SDK before
 building.
+
+## Build a signed OTA image
+
+Add `--ota` to declare an over-the-air project. `new --ota` also provisions the
+signing keys and scaffolds an `app/`, so `build romfs` produces a signed,
+anti-rollback image with a golden fallback:
+
+```bash
+openmv-ota project new ./my-product -f ~/openmv -b OPENMV_N6 --ota
+# bump your version in app/settings.json (board_id is auto-assigned)
+openmv-ota build romfs ./my-product
+```
+
+See [project.md](project.md) for the keys and identity an OTA project provisions,
+and [trailer.md](trailer.md) for the signed image format.

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openmv_ota.project import load_project
+from openmv_ota.project.config import derive_board_id
 from openmv_ota.project.errors import ProjectError
 from openmv_ota.project.project import ProjectPaths
 from openmv_ota.romfs.builder import build_image
@@ -33,6 +34,7 @@ class _OtaSigner:
 
     app_version: str
     payload_version: int
+    payload_version_floor: int
     vendor: str
     key_id: int
     sig_alg: int        # COSE id
@@ -63,6 +65,20 @@ def _load_ota_signer(p, app_dir: Path) -> _OtaSigner:
     except OtaError as e:
         raise BuildError(str(e), exit_code=1) from None
 
+    # rollback_floor: an anti-rollback floor (the oldest version ever allowed back).
+    # Optional; defaults to 0 (no floor). Must not exceed the image's own version.
+    floor_str = settings.get("rollback_floor")
+    payload_version_floor = 0
+    if floor_str:
+        try:
+            payload_version_floor = encode_app_version(floor_str)
+        except OtaError as e:
+            raise BuildError("invalid rollback_floor: %s" % e, exit_code=1) from None
+        if payload_version_floor > payload_version:
+            raise BuildError(
+                "rollback_floor %s can't exceed app_version %s in %s"
+                % (floor_str, app_version, settings_path), exit_code=1)
+
     key_id = p.config.signing_key_id
     entry = next((k for k in trusted if k.key_id == key_id), None)
     if entry is None:
@@ -75,47 +91,88 @@ def _load_ota_signer(p, app_dir: Path) -> _OtaSigner:
             "private signing key %s not found - only the signing machine has it; "
             "build the body without signing elsewhere, or provision the key here" % pem_path,
             exit_code=1) from None
-    return _OtaSigner(app_version, payload_version, str(settings.get("vendor", "")),
-                      key_id, entry.alg, algorithm_for(entry.alg), private_key)
+    return _OtaSigner(app_version, payload_version, payload_version_floor,
+                      str(settings.get("vendor", "")), key_id, entry.alg,
+                      algorithm_for(entry.alg), private_key)
 
 
-def _attach_trailer(signer: _OtaSigner, p, t, body: bytes) -> bytes:
-    """Stamp + sign a trailer for ``body`` and return ``body || trailer-sector``."""
+def _warn_board_id_collisions(config) -> None:
+    """Warn if two different boards were given the same board_id - the cross-flash
+    guard can't tell them apart. Auto-assigned ids are distinct, so this only fires
+    on a manual edit. (board_id 0 is "unset" and skipped.)"""
+    seen: dict[int, str] = {}
+    for name, ov in config.overrides.items():
+        bid = int(ov.get("board_id", 0))
+        if bid == 0:
+            continue
+        if bid in seen:
+            print("warning: board_id %d is shared by %s and %s; the cross-flash guard "
+                  "can't tell them apart - give each board a distinct board_id"
+                  % (bid, seen[bid], name), file=sys.stderr)
+        else:
+            seen[bid] = name
+
+
+def _read_settings(app_dir: Path) -> dict:
+    """Best-effort read of ``app/settings.json`` (app_version, vendor). Returns ``{}``
+    when absent or unreadable - a non-OTA build doesn't require it; the OTA path
+    validates it strictly via :func:`_load_ota_signer`."""
+    try:
+        return json.loads((app_dir / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _build_system_info(p, t, app_version, vendor: str) -> dict:
+    """The derived system/identity info for a target. Written into the ROMFS as
+    ``system.json`` (read by the app, OTA or not) and mirrored verbatim into the OTA
+    trailer's metadata (so host tools can read it without a ROMFS reader). Composed
+    from the lock (provenance) + config (per-board identity); never user-edited.
+    ``board_id`` comes from the config when pinned (OTA projects pin it explicitly,
+    so it's frozen for the cross-flash guard) and is otherwise auto-derived so even
+    a non-OTA image carries a stable product id. ``board_name`` defaults to the
+    product name."""
+    override = p.config.overrides.get(t.name, {})
+    product = p.config.name
+    bid = override.get("board_id")
+    board_id = int(bid) if bid is not None else derive_board_id(product, t.name)
+    return {
+        "product": product,
+        "board": t.name,
+        "board_id": board_id,
+        "board_name": str(override.get("board_name") or product),
+        "app_version": app_version,
+        "vendor": vendor,
+        "ota": p.config.ota,
+        "firmware": {
+            "version": p.lock.firmware.get("version"),
+            "commit": p.lock.firmware.get("commit"),
+        },
+        "micropython": p.lock.micropython.get("version"),
+        "toolchain": {
+            "mpy_cross": p.lock.toolchain.get("mpy_cross", {}).get("version"),
+            "vela": p.lock.toolchain.get("vela", {}).get("version"),
+            "stedgeai": p.lock.toolchain.get("stedgeai", {}).get("version"),
+            "sdk": p.lock.sdk.get("version"),
+        },
+    }
+
+
+def _attach_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict) -> bytes:
+    """Stamp + sign a trailer for ``body`` and return ``body || trailer-sector``. The
+    trailer's metadata is the same ``system_info`` dict packed into the ROMFS."""
     from openmv_ota.ota import Trailer, pack_trailer, signed_region
     from openmv_ota.ota.sign import sign_region
     from openmv_ota.ota.trailer import TRAILER_SZ
 
-    override = p.config.overrides.get(t.name, {})
-    board_id = int(override.get("board_id", 0))
-    if board_id == 0:
-        print("warning: %s has board_id 0 (unset); the cross-flash guard is off - set "
-              "board_id under [targets.%s] in openmv-ota.toml" % (t.name, t.name), file=sys.stderr)
-
     trailer = Trailer(
         body_size=len(body),
         pad_size=0,  # the real slot padding is set later by slot composition
-        meta={
-            "product": p.config.name,
-            "vendor": signer.vendor,
-            "board": t.name,
-            "board_name": str(override.get("board_name", t.name)),
-            "app_version": signer.app_version,
-            "firmware": {
-                "version": p.lock.firmware.get("version"),
-                "commit": p.lock.firmware.get("commit"),
-            },
-            "micropython": p.lock.micropython.get("version"),
-            "toolchain": {
-                "mpy_cross": p.lock.toolchain.get("mpy_cross", {}).get("version"),
-                "vela": p.lock.toolchain.get("vela", {}).get("version"),
-                "stedgeai": p.lock.toolchain.get("stedgeai", {}).get("version"),
-                "sdk": p.lock.sdk.get("version"),
-            },
-        },
-        board_id=board_id,
+        meta=system_info,
+        board_id=int(system_info["board_id"]),
         min_platform_version=int(p.lock.firmware.get("version_code", 0)),
         payload_version=signer.payload_version,
-        payload_version_floor=0,
+        payload_version_floor=signer.payload_version_floor,
         key_id=signer.key_id,
         sig_alg=signer.sig_alg,
         body_sha256=hashlib.sha256(body).digest(),
@@ -170,6 +227,7 @@ def build_romfs(
 
     app_dir = Path(app) if app else project / "app"
     out_dir = Path(output) if output else project / "build"
+    _warn_board_id_collisions(p.config)
 
     targets = _select_targets(p.targets, boards, partition)
     if not targets:
@@ -177,6 +235,11 @@ def build_romfs(
 
     mpy_cmd = mpy.resolve_mpy_cross(p) if compile_py else None
     ota_signer = _load_ota_signer(p, app_dir) if p.config.ota else None
+    if ota_signer is not None:
+        app_version, vendor = ota_signer.app_version, ota_signer.vendor
+    else:
+        settings = _read_settings(app_dir)
+        app_version, vendor = settings.get("app_version"), str(settings.get("vendor", ""))
 
     ctx = ModelContext(
         sdk_home=p.sdk_home, vela_path=p.vela_path, stedgeai_path=p.stedgeai_path,
@@ -187,7 +250,7 @@ def build_romfs(
     multi = {name for name, c in Counter(t.name for t in targets).items() if c > 1}
     out_dir.mkdir(parents=True, exist_ok=True)
     return [
-        _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer,
+        _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, app_version, vendor,
                    convert_models=convert_models,
                    mpy_extra=list(mpy_extra or []), allow_oversize=allow_oversize,
                    keep_build_dir=keep_build_dir)
@@ -204,8 +267,8 @@ def _select_targets(targets, boards, partition):
     return sel
 
 
-def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, *, convert_models,
-               mpy_extra, allow_oversize, keep_build_dir) -> BuildResult:
+def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, app_version, vendor, *,
+               convert_models, mpy_extra, allow_oversize, keep_build_dir) -> BuildResult:
     tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-build-"))
     try:
         stage = stage_app(app_dir, tmp / "app")
@@ -221,6 +284,12 @@ def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, *, conve
                 if data is not None:
                     model.write_bytes(data)
 
+        # Generate the read-only system.json (board identity + provenance) into the
+        # staged app, so every image - OTA or not - carries it at /rom/system.json.
+        system_info = _build_system_info(p, t, app_version, vendor)
+        (stage / "system.json").write_text(
+            json.dumps(system_info, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
         body = build_image(str(stage), t.alignment_rules)
         capacity, bound = _capacity(p, t)
         if len(body) > capacity and not allow_oversize:
@@ -232,7 +301,14 @@ def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, *, conve
             )
 
         body_size = len(body)
-        image = _attach_trailer(ota_signer, p, t, body) if ota_signer is not None else body
+        if ota_signer is not None:
+            if system_info["board_id"] == 0:
+                print("warning: %s has board_id 0 (unset); the cross-flash guard is off - "
+                      "set board_id under [targets.%s] in openmv-ota.toml"
+                      % (t.name, t.name), file=sys.stderr)
+            image = _attach_trailer(ota_signer, p, body, system_info)
+        else:
+            image = body
         name = "%s-p%d" % (t.name, t.partition_index) if t.name in multi else t.name
         out_path = out_dir / (name + ".romfs")
         out_path.write_bytes(image)

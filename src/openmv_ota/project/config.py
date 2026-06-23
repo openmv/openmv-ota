@@ -8,6 +8,7 @@ dependency is needed.
 
 from __future__ import annotations
 
+import binascii
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,6 +101,32 @@ def load_local(path: Path) -> LocalConfig | None:
     )
 
 
+def derive_board_id(product: str, board: str) -> int:
+    """A stable, auto-assigned product id for a target, so the user never has to
+    invent or track a number. Seeded deterministically from ``product:board`` —
+    distinct per board within a project, and reproducible (two machines, or a lost
+    config, regenerate the same value). It is written into the config once at
+    ``new`` and is the cross-flash guard, so keep it stable once devices ship; it
+    stays overridable. Never 0 (0 means "unset")."""
+    bid = binascii.crc32(("%s:%s" % (product, board)).encode("utf-8")) & 0xFFFFFFFF
+    return bid or 1
+
+
+def _render_target(product: str, board: str) -> str:
+    """An active ``[targets.<board>]`` section with an auto-assigned board_id and a
+    board_name that defaults to the product (aligned comments)."""
+    bid = str(derive_board_id(product, board))
+    name_val = '"%s"' % product
+    w = max(len(bid), len(name_val))
+    return (
+        "[targets.%s]\n" % board
+        + "board_id   = %s%s  # stable product id (auto-assigned; keep it once devices ship)\n"
+        % (bid, " " * (w - len(bid)))
+        + "board_name = %s%s  # human label; defaults to the product name, rename freely\n\n"
+        % (name_val, " " * (w - len(name_val)))
+    )
+
+
 def render_config(
     name: str,
     vendor: str | None,
@@ -124,23 +151,23 @@ def render_config(
             "#                           usable image size (regular + golden image)\n\n"
         )
     if ota:
-        # Active per-board sections: the user fills in board_id (and renames board_name).
-        targets = "[targets]\nboards = [%s]\n\n" % board_list
-        for b in boards:
-            targets += (
-                "[targets.%s]\n" % b
-                + "board_id   = 0           # set your numeric product id (0 = unset -> build warns)\n"
-                + 'board_name = "%s"%s # human product name (meta only; rename to your product)\n\n'
-                % (b, " " * max(0, 18 - len(b)))
-            )
+        # Active per-board sections with an auto-assigned board_id (the cross-flash
+        # guard); the user can rename board_name and override board_id.
+        targets = (
+            "[targets]\nboards = [%s]\n\n" % board_list
+            + "".join(_render_target(name, b) for b in boards)
+            + "# A board's table can also set partitions = [0, 1] (target multiple ROMFS\n"
+            "# partitions, e.g. AE3's two cores; default [0]) or partition_size = N\n"
+            "# (override the firmware partition geometry, single-partition only).\n"
+        )
     else:
         targets = (
             "[targets]\nboards = [%s]\n\n" % board_list
-            + "# Optional per-board settings:\n"
+            + "# Optional per-board settings (add one table per board to configure):\n"
             "# [targets.OPENMV_AE3]\n"
             "# partitions = [0, 1]       # target both cores (HP + HE); default [0]\n"
-            "# board_id = 1234           # applies to all the board's partitions\n"
             "# partition_size = 25165824 # override geometry (single-partition only)\n"
+            "# board_id   = 1234         # product id in /rom/system.json (auto-set in OTA mode)\n"
         )
     return (
         "# openmv-ota project config (committed, shared with your team / CI).\n"

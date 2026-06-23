@@ -8,7 +8,6 @@ import struct
 import pytest
 
 from openmv_ota.ota import (
-    EDDSA,
     ES256,
     ES384,
     ES512,
@@ -141,9 +140,9 @@ def test_pack_bad_body_sha_length():
         pack_trailer(_trailer(body_sha256=b"\x00" * 10))
 
 
-def test_pack_reserved_algorithm():
-    with pytest.raises(OtaError, match="reserved"):
-        pack_trailer(_trailer(sig_alg=EDDSA, signature=b"\x00" * 64))
+def test_pack_unsupported_algorithm():
+    with pytest.raises(OtaError, match="unknown COSE algorithm id 999"):
+        pack_trailer(_trailer(sig_alg=999, signature=b"\x00" * 64))
 
 
 def test_pack_oversize():
@@ -172,11 +171,6 @@ def test_parse_bad_header_version():
 def test_parse_unknown_algorithm():
     with pytest.raises(OtaError, match="unknown COSE algorithm id 999"):
         parse_trailer(_assemble(sig_alg=999))
-
-
-def test_parse_reserved_algorithm():
-    with pytest.raises(OtaError, match="reserved"):
-        parse_trailer(_assemble(sig_alg=EDDSA))
 
 
 def test_parse_sig_size_mismatch():

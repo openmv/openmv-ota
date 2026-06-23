@@ -7,7 +7,7 @@ and ``algorithms.py`` is the COSE signature-algorithm registry.
 
 from __future__ import annotations
 
-from .algorithms import EDDSA, ES256, ES256K, ES384, ES512, AlgSpec, algorithm_for
+from .algorithms import ES256, ES384, ES512, AlgSpec, algorithm_for
 from .errors import OtaError
 from .keys import (
     ProvisionedKeys,
@@ -41,8 +41,6 @@ __all__ = [
     "ES256",
     "ES384",
     "ES512",
-    "ES256K",
-    "EDDSA",
     "Trailer",
     "pack_trailer",
     "parse_trailer",

@@ -25,10 +25,11 @@ OTA design.
 
 ## Status
 
-The `openmv-ota romfs` image tool and `openmv-ota project` (firmware pegging) are
-implemented and tested. The remaining over-the-air update tools — model
-compilation, signing and slot composition, the frozen `boot.py`, the
-`ed25519_verify` module, and the update server — are not yet built.
+The `openmv-ota romfs` image tool, `openmv-ota project` (firmware pegging), and
+`openmv-ota build romfs` (app compile + ROMFS pack, with OTA trailer signing) are
+implemented and tested. The remaining over-the-air update tools — slot
+composition, the frozen `boot.py`, the on-device ECDSA verify module, and the
+update server — are not yet built.
 
 ## Installation
 
@@ -89,28 +90,34 @@ openmv-ota project new ./my-product -f ~/openmv -b OPENMV_N6
 openmv-ota project show ./my-product
 ```
 
+Add `--ota` to `project new` to make it an over-the-air project: it splits each
+partition into a runtime + golden image, provisions the signing keys, and
+scaffolds the app, so `build romfs` can emit a signed image. See
+[docs/project.md](docs/project.md).
+
 `openmv-ota.toml` and `openmv-ota.lock.json` are committed and carry the firmware
 identity, versions, and board geometry; `openmv-ota.local.toml` is gitignored and
-holds this machine's checkout path. See [docs/project.md](docs/project.md).
+holds this machine's checkout path.
 
 ### Build
 
 `openmv-ota build romfs` compiles a project's app and packs a ROMFS image per
 target — `.py` to `.mpy` with the pegged mpy-cross, and NPU models with the pegged
-Vela / ST Edge AI. It needs only a project, not OTA.
+Vela / ST Edge AI. For an OTA project it also signs and attaches the trailer.
 
 ```bash
 openmv-ota build romfs ./my-product
 ```
 
 This is distinct from `romfs pack`, which packs a directory verbatim with no
-compilation. See [docs/build.md](docs/build.md).
+compilation. See [docs/build.md](docs/build.md) and, for the signed image format,
+[docs/trailer.md](docs/trailer.md).
 
 ### OTA
 
-The over-the-air update tools build on the image tool: signing and slot
-composition, the frozen `boot.py` and the `ed25519_verify` module, model
-compilation, the update server, and the on-device SDK. See
+`project new --ota` and `build romfs` (above) already produce the signed,
+anti-rollback image. The remaining pieces — slot composition, the frozen
+`boot.py` and on-device ECDSA verify, and the update server — build on this; see
 [openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md).
 
 ## Contributing to the project

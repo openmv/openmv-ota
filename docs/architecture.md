@@ -11,8 +11,10 @@
   `vfs.rom_ioctl` erase — FRONT can be erased alone, BACK only by a full wipe —
   gives a golden image for free.
 - Each slot: body + 0xFF padding + 4 KiB **status** sector + 4 KiB **trailer**.
-- The trailer carries an ed25519 signature over a 128-byte signed prefix, a
-  SHA-256 of the body, version/identity/provenance metadata, and a CRC32.
+- The trailer carries an ECDSA signature (COSE algorithm ids — ES256/P-256 by
+  default, verified on-device by mbedtls) over a signed `header ‖ JSON-meta`
+  region, a SHA-256 of the body, version/identity/provenance metadata, and a
+  CRC32. See [trailer.md](trailer.md).
 - A frozen, pure `boot.py` (ioctl + computation only) picks the slot: verify
   trailer → signature → body SHA → compatibility → anti-rollback → status state
   machine. On any FRONT failure it falls back to BACK.

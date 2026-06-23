@@ -28,6 +28,7 @@ DEFAULT_EXCLUDES = (
     "*.pyc",
     "*.pyo",
     ".git",
+    ".gitkeep",
     ".svn",
     ".hg",
     ".DS_Store",

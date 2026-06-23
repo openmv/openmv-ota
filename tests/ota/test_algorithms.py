@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from openmv_ota.ota import EDDSA, ES256, ES256K, ES384, ES512, algorithm_for
+from openmv_ota.ota import ES256, ES384, ES512, algorithm_for
 from openmv_ota.ota.errors import OtaError
 
 
@@ -20,12 +20,8 @@ def test_supported_specs():
 
 
 def test_unknown_id_raises():
+    # Any id outside the P-curve set is rejected (e.g. ES256K -47, EdDSA -8).
     with pytest.raises(OtaError, match="unknown COSE algorithm id 999"):
         algorithm_for(999)
-
-
-def test_reserved_ids_raise():
-    with pytest.raises(OtaError, match="reserved / not supported"):
-        algorithm_for(EDDSA)
-    with pytest.raises(OtaError, match="ES256K.*reserved"):
-        algorithm_for(ES256K)
+    with pytest.raises(OtaError, match="unknown COSE algorithm id -47"):
+        algorithm_for(-47)

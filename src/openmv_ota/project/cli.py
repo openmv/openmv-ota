@@ -118,11 +118,12 @@ def cmd_new(args: argparse.Namespace) -> int:
         return e.exit_code
     _warn(warnings)
     print("Created project in %s" % args.dir)
+    print("Scaffolded app/ (main.py, settings.json with your app version).")
     if args.ota:
         print("Provisioned %d factory + %d ota keys -> keys/trusted_keys.json "
               "(private keys gitignored in keys/private/)" % (args.factory_keys, args.ota_keys))
-        print("Scaffolded app/ (settings.json, main.py). Next: set board_id per board in "
-              "openmv-ota.toml, and your app version in app/settings.json.")
+        print("Next: set board_id per board in openmv-ota.toml, and your app "
+              "version in app/settings.json.")
     _print_summary(lock)
     return 0
 

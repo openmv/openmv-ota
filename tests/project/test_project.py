@@ -138,6 +138,34 @@ def test_create_writes_files(tmp_path, make_firmware, make_sdk):
     assert any("conditional" in w for w in warnings)
 
 
+def test_create_scaffolds_app_even_without_ota(tmp_path, make_firmware, make_sdk):
+    # Every project (OTA or not) gets a starter app/: main.py + settings.json.
+    import json
+    root, _ = _create(tmp_path, make_firmware, make_sdk, app_version="3.4.5")
+    paths = proj.ProjectPaths(root)
+    assert (paths.app_dir / "main.py").exists()
+    settings = json.loads(paths.app_settings.read_text())
+    assert settings["app_version"] == "3.4.5" and "vendor" in settings
+    # A lib/ dir for the app's own modules, kept in git by a .gitkeep.
+    assert (paths.app_dir / "lib").is_dir()
+    assert (paths.app_dir / "lib" / ".gitkeep").exists()
+    # No keys are provisioned for a non-OTA project.
+    assert not paths.private_keys_dir.exists()
+
+
+def test_create_preserves_existing_app(tmp_path, make_firmware, make_sdk):
+    # Re-running new --force never clobbers a user's app.
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    paths = proj.ProjectPaths(root)
+    (paths.app_dir / "main.py").write_text("print('mine')\n")
+    paths.app_settings.write_text('{"app_version": "9.9.9"}\n')
+    _create(tmp_path, make_firmware, make_sdk, repo=repo, root=root, force=True)
+    import json
+    assert (paths.app_dir / "main.py").read_text() == "print('mine')\n"
+    assert json.loads(paths.app_settings.read_text())["app_version"] == "9.9.9"
+
+
 def test_create_default_not_ota(tmp_path, make_firmware, make_sdk):
     root, (lock, _) = _create(tmp_path, make_firmware, make_sdk)
     assert lock.ota is False
@@ -157,6 +185,7 @@ def test_create_ota_project(tmp_path, make_firmware, make_sdk):
     import json
     settings = json.loads(paths.app_settings.read_text())
     assert settings["app_version"] == "2.1.0" and "vendor" in settings
+    assert settings["rollback_floor"] == "2.1.0"  # starts equal to the version
     assert (paths.app_dir / "main.py").exists()
 
     # Public set is committed; private PEMs are written for every key, gitignored.
@@ -170,12 +199,13 @@ def test_create_ota_project(tmp_path, make_firmware, make_sdk):
 
 
 def test_editing_board_identity_does_not_drift(tmp_path, make_firmware, make_sdk):
+    import re
     repo = make_firmware()
     root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True,
                       factory_keys=1, ota_keys=2)
     paths = proj.ProjectPaths(root)
-    # The user sets the scaffolded product id (identity, not firmware geometry).
-    text = paths.config.read_text().replace("board_id   = 0", "board_id   = 12345")
+    # Override the auto-assigned product id (identity, not firmware geometry).
+    text = re.sub(r"board_id   = \d+", "board_id   = 12345", paths.config.read_text(), count=1)
     paths.config.write_text(text, encoding="utf-8")
     # No drift: identity lives in config, not the firmware-resolved lock.
     assert proj.status_project(root, firmware=repo) == []

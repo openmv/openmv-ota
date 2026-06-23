@@ -261,7 +261,7 @@ def create_project(
     lock_mod.write(paths.lock, lock)
     if provisioned is not None:
         _write_keys(paths, provisioned)
-        _scaffold_app(paths, app_version)
+    _scaffold_app(paths, app_version)  # every project gets a starter app/ (OTA or not)
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
@@ -305,7 +305,9 @@ def _write_keys(paths: ProjectPaths, provisioned) -> None:
 
 _APP_MAIN = """\
 # main.py - your OpenMV app. Replace this with your code.
-# Your app's version + settings live in settings.json (read on-device and at build time).
+# Your app's version + settings live in settings.json, readable on-device
+# (and read at build time to stamp an OTA image's version).
+# Put shared modules you import (e.g. helpers.py) in lib/.
 import time
 
 while True:
@@ -314,16 +316,27 @@ while True:
 
 
 def _scaffold_app(paths: ProjectPaths, app_version: str) -> None:
-    """Scaffold a starter ``app/`` for an OTA project: the user-editable settings
-    file (version + vendor) and a placeholder ``main.py``. Existing files are left
-    alone, so re-running ``new --force`` never clobbers the user's app."""
+    """Scaffold a starter ``app/`` for any project: the user-editable settings file
+    (version + vendor), a placeholder ``main.py``, and a ``lib/`` directory for the
+    app's own importable modules. Useful for every project — the app reads its own
+    settings on-device — and for OTA the build also reads the version from here.
+    Existing files are left alone, so re-running ``new --force`` never clobbers the
+    user's app."""
     paths.app_dir.mkdir(parents=True, exist_ok=True)
     if not paths.app_settings.exists():
-        settings = {"app_version": app_version, "vendor": ""}
+        # rollback_floor starts equal to the version (no real constraint yet); see the
+        # docs - raise it only to forbid downgrades past a critical fix, never per release.
+        settings = {"app_version": app_version, "vendor": "", "rollback_floor": app_version}
         paths.app_settings.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     main_py = paths.app_dir / "main.py"
     if not main_py.exists():
         main_py.write_text(_APP_MAIN, encoding="utf-8")
+    lib_dir = paths.app_dir / "lib"
+    if not lib_dir.exists():
+        # A starter directory for the app's own library modules. The .gitkeep keeps
+        # the empty dir in git; it is excluded from packed images (DEFAULT_EXCLUDES).
+        lib_dir.mkdir(parents=True)
+        (lib_dir / ".gitkeep").write_text("", encoding="utf-8")
 
 
 def _write_local(paths: ProjectPaths, repo: Path, sdk_home_override: Path | None) -> None:

@@ -18,6 +18,13 @@ result into a ROMFS image with the board's alignment rules, and checks it agains
 the available capacity. The output is written to `<project>/build/<board>.romfs`
 (one per target; a board with more than one partition gets `<board>-p<index>.romfs`).
 
+Every image also gets a generated, read-only `system.json` at `/rom/system.json` —
+board identity (`board`, `board_id`, `board_name`, `product`), the app version, and
+build provenance (firmware / MicroPython / toolchain versions) — composed from the
+lock and the per-board config. It gives the app one consistent way to read its own
+identity and provenance, the same in a non-OTA and an OTA build. See
+[project.md](project.md#systemjson-generated-read-only).
+
 The capacity is the whole partition for a single-image project, or half the
 partition less an 8 KiB status sector and trailer for an OTA project (`project new
 --ota`) — each OTA partition holds a regular image and a golden fallback. The build
@@ -30,6 +37,42 @@ see the difference, or `openmv-ota project sync` to re-peg).
 
 This is distinct from `openmv-ota romfs pack`, which packs a directory verbatim
 with no compilation.
+
+### OTA signing
+
+For an OTA project (`project new --ota`), `build romfs` does more than pack the
+body: it stamps and signs a **trailer** onto each image, so the output is a
+verifiable, anti-rollback OTA image rather than a bare ROMFS body. No extra flags
+— the signing context comes from the project:
+
+- **App version → payload version.** The app version is read from
+  `app/settings.json` (`{"app_version": "1.0.0", …}`) — the single source of truth
+  both the on-device app and the build read. The semver is encoded into the
+  trailer's `payload_version` as `(major<<24)|(minor<<16)|(patch<<8)`, the
+  monotonic anti-rollback counter. Bump it in `settings.json` for each release.
+- **Signed with the project's current OTA key.** The signer is
+  `[ota].signing_key_id` from `openmv-ota.toml`; its private key is loaded from
+  `keys/private/ota-<id>.pem`, and the trailer records `key_id` + the COSE
+  algorithm so the device selects the matching trusted public key.
+- **Per-board identity + provenance stamped in.** `board_id` / `board_name` come
+  from each `[targets.<BOARD>]` table; the firmware / MicroPython / toolchain / SDK
+  versions and commit come from the lock. These are exactly the `system.json`
+  fields, and the trailer's JSON metadata carries a **verbatim copy of
+  `system.json`** so host tools can read the image's identity without mounting the
+  ROMFS. `min_platform_version` is the pegged firmware's version code.
+
+The resulting image is `body ‖ trailer`, where the trailer is padded with `0xFF`
+to a 4 KiB sector. The build summary reports the body size against the OTA-slot
+budget (the trailer and status sector are accounted for in the budget, not in the
+reported body size). See [trailer.md](trailer.md) for the on-flash format.
+
+`build romfs` fails the build (exit 1) if the OTA signing context is incomplete:
+a missing or unreadable `app/settings.json`, a missing or non-semver
+`app_version`, a `signing_key_id` that isn't in `keys/trusted_keys.json`, or a
+missing private key (only the signing machine has `keys/private/`). It *warns*
+(but still builds) if a target's `board_id` is `0` — which only happens if you
+override the auto-assigned id to `0`, turning the cross-flash guard off — or if two
+boards share the same `board_id` (the guard can't tell them apart).
 
 ### Compiling
 

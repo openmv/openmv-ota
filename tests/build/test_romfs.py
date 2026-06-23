@@ -13,6 +13,10 @@ def _names(image_path):
     return {p for p, e in read_image(image_path.read_bytes()).walk()}
 
 
+def _read_file(body: bytes, name: str) -> bytes:
+    return next(e.data for p, e in read_image(body).walk() if p == name)
+
+
 def _fake_compile(mpy_cross, args, src, out):
     out.write_bytes(b"MPY:" + src.read_bytes())
 
@@ -24,6 +28,48 @@ def test_pack_only(make_project):
     assert len(results) == 1
     names = _names(results[0].output)
     assert "main.py" in names and "lib/util.py" in names and "net.tflite" in names
+
+
+def test_system_json_packed_for_non_ota(make_project):
+    import json
+    root, repo, app = make_project(
+        app_files={"main.py": "print(1)\n",
+                   "settings.json": '{"app_version": "2.0.0", "vendor": "Acme"}\n'},
+        extra_config='\n[targets.OPENMV_N6]\nboard_id = 7\nboard_name = "Widget"\n',
+    )
+    out = build_mod.build_romfs(root, app=app, firmware=repo,
+                                compile_py=False, convert_models=False)[0].output
+    info = json.loads(_read_file(out.read_bytes(), "system.json"))
+    assert info["ota"] is False
+    assert info["board"] == "OPENMV_N6" and info["board_id"] == 7
+    assert info["board_name"] == "Widget"
+    assert info["app_version"] == "2.0.0" and info["vendor"] == "Acme"
+    assert info["firmware"]["version"] == "5.0.0"
+
+
+def test_system_json_board_id_derived_for_non_ota(make_project):
+    # With no board_id pinned in config, a non-OTA image still gets a stable,
+    # auto-derived board_id in system.json.
+    import json
+
+    from openmv_ota.project.config import derive_board_id
+    root, repo, app = make_project()
+    info = json.loads(_read_file(
+        build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)[0].output.read_bytes(),
+        "system.json"))
+    assert info["board_id"] == derive_board_id(info["product"], "OPENMV_N6") != 0
+
+
+def test_board_name_defaults_to_product(make_project):
+    # With no board_name set, system.json's board_name is the product name.
+    import json
+    root, repo, app = make_project(product="Gadget")
+    info = json.loads(_read_file(
+        build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)[0].output.read_bytes(),
+        "system.json"))
+    assert info["product"] == "Gadget" and info["board_name"] == "Gadget"
 
 
 def test_compiles_all_py(monkeypatch, make_project):
@@ -165,7 +211,8 @@ def test_default_app_and_output_dirs(monkeypatch, make_project):
     # No --app/--output: defaults to <project>/app and <project>/build.
     root, repo, app = make_project()
     import shutil
-    shutil.copytree(app, root / "app")
+    # `new` scaffolds a starter app/ for every project, so merge over it.
+    shutil.copytree(app, root / "app", dirs_exist_ok=True)
     results = build_mod.build_romfs(root, firmware=repo, compile_py=False, convert_models=False)
     assert results[0].output == root / "build" / "OPENMV_N6.romfs"
 
@@ -189,9 +236,10 @@ def _build_ota(make_project, **over):
 
 
 def _set_board_id(root, value):
+    import re
     from openmv_ota.project import ProjectPaths
     cfg = ProjectPaths(root).config
-    cfg.write_text(cfg.read_text().replace("board_id   = 0", "board_id   = %d" % value))
+    cfg.write_text(re.sub(r"board_id   = \d+", "board_id   = %d" % value, cfg.read_text(), count=1))
 
 
 def test_ota_build_signs_and_verifies(make_project):
@@ -227,10 +275,70 @@ def test_ota_build_signs_and_verifies(make_project):
     assert verify_region(pub, signed_region(sector), t.signature, alg) is True
 
 
+def test_ota_trailer_meta_mirrors_system_json(make_project):
+    import json
+
+    from openmv_ota.ota import parse_trailer
+    from openmv_ota.ota.trailer import TRAILER_SZ
+
+    root, repo, app = _build_ota(make_project)
+    _set_board_id(root, 42)
+    out = build_mod.build_romfs(root, app=app, firmware=repo,
+                                compile_py=False, convert_models=False)[0].output
+    data = out.read_bytes()
+    body, sector = data[:-TRAILER_SZ], data[-TRAILER_SZ:]
+    info = json.loads(_read_file(body, "system.json"))
+    # The trailer carries a verbatim copy of the ROMFS system.json.
+    assert parse_trailer(sector).meta == info
+    assert info["ota"] is True and info["board_id"] == 42 and info["app_version"] == "1.2.3"
+
+
+def test_ota_build_sets_rollback_floor(make_project):
+    from openmv_ota.ota import parse_trailer
+    from openmv_ota.ota.trailer import TRAILER_SZ
+    from openmv_ota.ota.version import encode_app_version
+
+    root, repo, app = _build_ota(
+        make_project, settings='{"app_version": "2.5.0", "rollback_floor": "2.0.0"}\n')
+    out = build_mod.build_romfs(root, app=app, firmware=repo,
+                                compile_py=False, convert_models=False)[0].output
+    t = parse_trailer(out.read_bytes()[-TRAILER_SZ:])
+    assert t.payload_version_floor == encode_app_version("2.0.0")
+    assert t.payload_version == encode_app_version("2.5.0")
+
+
+def test_ota_build_floor_above_version_errors(make_project):
+    root, repo, app = _build_ota(
+        make_project, settings='{"app_version": "2.0.0", "rollback_floor": "3.0.0"}\n')
+    with pytest.raises(BuildError, match="rollback_floor 3.0.0 can't exceed app_version"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+def test_ota_build_bad_floor_semver(make_project):
+    root, repo, app = _build_ota(
+        make_project, settings='{"app_version": "2.0.0", "rollback_floor": "2.0"}\n')
+    with pytest.raises(BuildError, match="invalid rollback_floor"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
 def test_ota_build_warns_on_unset_board_id(make_project, capsys):
-    root, repo, app = _build_ota(make_project)  # board_id left at scaffolded 0
+    root, repo, app = _build_ota(make_project)
+    _set_board_id(root, 0)  # explicitly clear the auto-assigned id
     build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
     assert "board_id 0" in capsys.readouterr().err
+
+
+def test_build_warns_on_board_id_collision(capsys):
+    from openmv_ota.build.romfs import _warn_board_id_collisions
+    from openmv_ota.project.config import OtaConfig
+
+    cfg = OtaConfig(
+        name="p", vendor=None, boards=["A", "B", "C"],
+        overrides={"A": {"board_id": 5}, "B": {"board_id": 5}, "C": {"board_id": 0}},
+    )
+    _warn_board_id_collisions(cfg)
+    err = capsys.readouterr().err
+    assert "board_id 5 is shared by A and B" in err
 
 
 def test_ota_build_missing_settings(make_project):

@@ -112,6 +112,7 @@ def test_excludes(tmp_path):
 def test_default_excludes_constant_covers_pycache():
     assert "__pycache__" in b.DEFAULT_EXCLUDES
     assert "*.pyc" in b.DEFAULT_EXCLUDES
+    assert ".gitkeep" in b.DEFAULT_EXCLUDES  # the lib/ dir-keeper never ships in an image
 
 
 def test_default_alignment(tmp_path):
