@@ -146,16 +146,18 @@ def test_create_default_not_ota(tmp_path, make_firmware, make_sdk):
 
 def test_create_ota_project(tmp_path, make_firmware, make_sdk):
     root, (lock, _) = _create(tmp_path, make_firmware, make_sdk, ota=True,
-                              factory_keys=2, ota_keys=3, version=5)
+                              factory_keys=2, ota_keys=3, app_version="2.1.0")
     assert lock.ota is True
     assert lock.to_dict()["ota"] is True
     paths = proj.ProjectPaths(root)
     assert "[ota]\nenabled = true" in paths.config.read_text()
+    assert cfg.load_config(paths.config).signing_key_id == 0x0100  # first ota key is the signer
 
-    # The committed config records release state; load_config round-trips it.
-    loaded = cfg.load_config(paths.config)
-    assert loaded.ota is True and loaded.version == 5
-    assert loaded.signing_key_id == 0x0100  # the first ota key is the current signer
+    # The app version lives in the scaffolded, user-editable settings.json.
+    import json
+    settings = json.loads(paths.app_settings.read_text())
+    assert settings["app_version"] == "2.1.0" and "vendor" in settings
+    assert (paths.app_dir / "main.py").exists()
 
     # Public set is committed; private PEMs are written for every key, gitignored.
     from openmv_ota.ota import read_trusted_keys

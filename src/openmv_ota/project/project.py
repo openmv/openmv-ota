@@ -70,6 +70,14 @@ class ProjectPaths:
     def private_keys_dir(self) -> Path:
         return self.root / "keys" / "private"
 
+    @property
+    def app_dir(self) -> Path:
+        return self.root / "app"
+
+    @property
+    def app_settings(self) -> Path:
+        return self.root / "app" / "settings.json"
+
 
 # --- snapshot resolution ----------------------------------------------------
 
@@ -198,7 +206,7 @@ def create_project(
     sig_alg: int = ES256,
     ota_keys: int = 32,
     factory_keys: int = 8,
-    version: int = 1,
+    app_version: str = "1.0.0",
 ) -> tuple[lock_mod.Lock, list[str]]:
     repo = firmware.expanduser().resolve()
     if not gitrepo.is_git_repo(repo):
@@ -211,20 +219,23 @@ def create_project(
 
     config_mod.validate_boards(boards)
     name = product or root.resolve().name
-    config = OtaConfig(name=name, vendor=vendor, boards=boards, ota=ota, version=version)
 
     ensure_sdk(repo, sdk_home_override, install_sdk)
 
     warnings: list[str] = []
     provisioned = None
+    signing_key_id = None
     if ota:
         provisioned, w = _provision_keys(sig_alg, factory_keys, ota_keys)
-        config.signing_key_id = provisioned.signing_key_id
+        signing_key_id = provisioned.signing_key_id
         warnings += w
 
     config_text = config_mod.render_config(
-        name, vendor, boards, ota=ota, version=version, signing_key_id=config.signing_key_id,
+        name, vendor, boards, ota=ota, signing_key_id=signing_key_id,
     )
+    # Parse the rendered text so the digest/resolve see exactly what lands on disk
+    # (incl. the scaffolded per-board sections) — otherwise `verify` would see drift.
+    config = config_mod.parse_config(config_text, name)
     digest = _digest(config)
     lock, w = resolve_snapshot(
         repo, config, sdk_home_override=sdk_home_override, config_digest=digest, now=now,
@@ -238,6 +249,7 @@ def create_project(
     lock_mod.write(paths.lock, lock)
     if provisioned is not None:
         _write_keys(paths, provisioned)
+        _scaffold_app(paths, app_version)
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
@@ -277,6 +289,29 @@ def _write_keys(paths: ProjectPaths, provisioned) -> None:
     for key_id, pem in provisioned.private_pems.items():
         pem_path = paths.private_keys_dir / ("%s-%04x.pem" % (role_by_id[key_id], key_id))
         pem_path.write_bytes(pem)
+
+
+_APP_MAIN = """\
+# main.py - your OpenMV app. Replace this with your code.
+# Your app's version + settings live in settings.json (read on-device and at build time).
+import time
+
+while True:
+    time.sleep_ms(1000)
+"""
+
+
+def _scaffold_app(paths: ProjectPaths, app_version: str) -> None:
+    """Scaffold a starter ``app/`` for an OTA project: the user-editable settings
+    file (version + vendor) and a placeholder ``main.py``. Existing files are left
+    alone, so re-running ``new --force`` never clobbers the user's app."""
+    paths.app_dir.mkdir(parents=True, exist_ok=True)
+    if not paths.app_settings.exists():
+        settings = {"app_version": app_version, "vendor": ""}
+        paths.app_settings.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    main_py = paths.app_dir / "main.py"
+    if not main_py.exists():
+        main_py.write_text(_APP_MAIN, encoding="utf-8")
 
 
 def _write_local(paths: ProjectPaths, repo: Path, sdk_home_override: Path | None) -> None:

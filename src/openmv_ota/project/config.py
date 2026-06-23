@@ -26,7 +26,6 @@ class OtaConfig:
     vendor: str | None
     boards: list[str]
     ota: bool = False
-    version: int = 1                    # OTA app release version (payload_version)
     signing_key_id: int | None = None  # current OTA signing key
     overrides: dict[str, dict] = field(default_factory=dict)
 
@@ -49,6 +48,12 @@ def load_config(path: Path) -> OtaConfig:
         text = path.read_text(encoding="utf-8")
     except OSError:
         raise ProjectError("no %s found (is this a project directory?)" % CONFIG_NAME) from None
+    return parse_config(text, path.parent.name)
+
+
+def parse_config(text: str, default_name: str) -> OtaConfig:
+    """Parse config TOML text. Used by ``load_config`` and at ``new`` time, so the
+    object the digest/resolve see is exactly what was rendered to disk."""
     data = _loads(text, CONFIG_NAME)
 
     product = data.get("product", {})
@@ -62,11 +67,10 @@ def load_config(path: Path) -> OtaConfig:
     ota = data.get("ota", {}) or {}
     signing_key_id = ota.get("signing_key_id")
     return OtaConfig(
-        name=str(product.get("name") or path.parent.name),
+        name=str(product.get("name") or default_name),
         vendor=product.get("vendor"),
         boards=boards,
         ota=bool(ota.get("enabled", False)),
-        version=int(ota.get("version", 1)),
         signing_key_id=int(signing_key_id) if signing_key_id is not None else None,
         overrides=overrides,
     )
@@ -101,7 +105,6 @@ def render_config(
     vendor: str | None,
     boards: list[str],
     ota: bool = False,
-    version: int = 1,
     signing_key_id: int | None = None,
 ) -> str:
     board_list = ", ".join('"%s"' % b for b in boards)
@@ -110,9 +113,8 @@ def render_config(
         ota_section = (
             "[ota]\n"
             "enabled = true            # each partition holds a regular + golden image\n"
-            "version = %d              # app release version (payload_version); bump per release\n"
-            % version
-            + "signing_key_id = %d       # current OTA signing key (in keys/trusted_keys.json)\n\n"
+            "signing_key_id = %d       # current OTA signing key (in keys/trusted_keys.json)\n"
+            "#                           (the app version lives in app/settings.json)\n\n"
             % (signing_key_id or 0)
         )
     else:
@@ -120,6 +122,25 @@ def render_config(
             "# [ota]\n"
             "# enabled = true          # opt in to over-the-air updates; halves the\n"
             "#                           usable image size (regular + golden image)\n\n"
+        )
+    if ota:
+        # Active per-board sections: the user fills in board_id (and renames board_name).
+        targets = "[targets]\nboards = [%s]\n\n" % board_list
+        for b in boards:
+            targets += (
+                "[targets.%s]\n" % b
+                + "board_id   = 0           # set your numeric product id (0 = unset -> build warns)\n"
+                + 'board_name = "%s"%s # human product name (meta only; rename to your product)\n\n'
+                % (b, " " * max(0, 18 - len(b)))
+            )
+    else:
+        targets = (
+            "[targets]\nboards = [%s]\n\n" % board_list
+            + "# Optional per-board settings:\n"
+            "# [targets.OPENMV_AE3]\n"
+            "# partitions = [0, 1]       # target both cores (HP + HE); default [0]\n"
+            "# board_id = 1234           # applies to all the board's partitions\n"
+            "# partition_size = 25165824 # override geometry (single-partition only)\n"
         )
     return (
         "# openmv-ota project config (committed, shared with your team / CI).\n"
@@ -132,13 +153,7 @@ def render_config(
         "# security_contact = \"security@example.com\"\n"
         "# disclosure_url = \"https://example.com/.well-known/security.txt\"\n\n"
         + ota_section
-        + "[targets]\n"
-        "boards = [%s]\n\n" % board_list
-        + "# Optional per-board settings:\n"
-        "# [targets.OPENMV_AE3]\n"
-        "# partitions = [0, 1]       # target both cores (HP + HE); default [0]\n"
-        "# board_id = 1234           # applies to all the board's partitions\n"
-        "# partition_size = 25165824 # override geometry (single-partition only)\n"
+        + targets
     )
 
 

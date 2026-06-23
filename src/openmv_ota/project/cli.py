@@ -49,8 +49,6 @@ def register(project_parser: argparse.ArgumentParser):
                        help="OTA rotation-pool size to provision (default 32)")
     p_new.add_argument("--factory-keys", type=int, default=8, metavar="N",
                        help="factory-key reserve to provision, one per site (default 8)")
-    p_new.add_argument("--version", dest="ota_version", type=int, default=1, metavar="N",
-                       help="initial OTA app version / payload_version (default 1)")
     p_new.add_argument("--force", action="store_true", help="overwrite an existing project")
     p_new.set_defaults(func=cmd_new, _command="project new")
 
@@ -113,7 +111,6 @@ def cmd_new(args: argparse.Namespace) -> int:
             sig_alg=sig_alg,
             ota_keys=args.ota_keys,
             factory_keys=args.factory_keys,
-            version=args.ota_version,
             now=_now(),
         )
     except ProjectError as e:
@@ -124,6 +121,8 @@ def cmd_new(args: argparse.Namespace) -> int:
     if args.ota:
         print("Provisioned %d factory + %d ota keys -> keys/trusted_keys.json "
               "(private keys gitignored in keys/private/)" % (args.factory_keys, args.ota_keys))
+        print("Scaffolded app/ (settings.json, main.py). Next: set board_id per board in "
+              "openmv-ota.toml, and your app version in app/settings.json.")
     _print_summary(lock)
     return 0
 
