@@ -84,6 +84,7 @@ versions match the firmware.
 | `openmv-ota project status` | Report drift between the lock and the checkout |
 | `openmv-ota project verify` | Fail if the firmware has changed since it was pegged |
 | `openmv-ota project sync` | Re-resolve and rewrite the lock |
+| `openmv-ota project keys status/rotate/revoke` | Manage the OTA signing keys (OTA projects) |
 
 ```bash
 openmv-ota project new ./my-product -f ~/openmv -b OPENMV_N6
