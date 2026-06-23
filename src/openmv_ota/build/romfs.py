@@ -79,6 +79,10 @@ def _load_ota_signer(p, app_dir: Path) -> _OtaSigner:
     entry = next((k for k in trusted if k.key_id == key_id), None)
     if entry is None:
         raise BuildError("signing key %s is not in keys/trusted_keys.json" % key_id, exit_code=1)
+    if entry.revoked:
+        raise BuildError(
+            "signing key 0x%04x is revoked; run `openmv-ota project keys rotate` to move "
+            "to the next key" % key_id, exit_code=1)
     pem_path = ProjectPaths(p.root).private_keys_dir / ("ota-%04x.pem" % key_id)
     try:
         private_key = load_private_key_pem(pem_path.read_bytes())

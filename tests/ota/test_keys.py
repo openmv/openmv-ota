@@ -66,6 +66,11 @@ def test_load_private_key_pem_rejects_garbage():
 def test_trusted_key_dict_round_trip():
     k = TrustedKey(key_id=0x10, alg=ES256, role="ota", pubkey="04abcd")
     assert TrustedKey.from_dict(k.to_dict()) == k
+    # revoked round-trips, and an old entry without the field defaults to not-revoked.
+    r = TrustedKey(key_id=0x11, alg=ES256, role="ota", pubkey="04ef", revoked=True)
+    assert TrustedKey.from_dict(r.to_dict()) == r and r.to_dict()["revoked"] is True
+    legacy = {"key_id": 1, "alg": ES256, "role": "ota", "pubkey": "04"}
+    assert TrustedKey.from_dict(legacy).revoked is False
 
 
 def test_trusted_keys_file_round_trip(tmp_path):

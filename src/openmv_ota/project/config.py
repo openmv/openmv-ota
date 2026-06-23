@@ -9,6 +9,7 @@ dependency is needed.
 from __future__ import annotations
 
 import binascii
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -182,6 +183,18 @@ def render_config(
         + ota_section
         + targets
     )
+
+
+def set_signing_key_id(path: Path, new_id: int) -> None:
+    """Update ``[ota].signing_key_id`` in-place in the config file, preserving the
+    rest of the text (comments, formatting). Raises if the key isn't present."""
+    text = path.read_text(encoding="utf-8")
+    new_text, n = re.subn(
+        r"signing_key_id\s*=\s*\d+", "signing_key_id = %d" % new_id, text, count=1
+    )
+    if n == 0:
+        raise ProjectError("could not find signing_key_id in %s" % path.name)
+    path.write_text(new_text, encoding="utf-8")
 
 
 def render_local(firmware_path: Path, sdk_home: Path | None) -> str:

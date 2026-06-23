@@ -84,6 +84,27 @@ def register(project_parser: argparse.ArgumentParser):
     p_sync.add_argument("--allow-dirty", action="store_true", help="don't warn on a dirty checkout")
     p_sync.set_defaults(func=cmd_sync, _command="project sync")
 
+    p_keys = sub.add_parser("keys", help="OTA signing-key status / rotation / revocation")
+    keys_sub = p_keys.add_subparsers(dest="_keys_action", required=True)
+
+    p_ks = keys_sub.add_parser("status", help="show the signing key + pool usage")
+    p_ks.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_ks.set_defaults(func=cmd_keys_status, _command="project keys status")
+
+    p_kr = keys_sub.add_parser("rotate", help="advance to the next OTA signing key")
+    p_kr.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kr.set_defaults(func=cmd_keys_rotate, _command="project keys rotate")
+
+    p_krev = keys_sub.add_parser("revoke", help="mark a compromised key revoked (reversible)")
+    p_krev.add_argument("key_id", type=lambda s: int(s, 0), help="key id (e.g. 0x0100 or 256)")
+    p_krev.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_krev.set_defaults(func=cmd_keys_revoke, _command="project keys revoke")
+
+    p_kun = keys_sub.add_parser("unrevoke", help="clear a key's revoked flag")
+    p_kun.add_argument("key_id", type=lambda s: int(s, 0), help="key id (e.g. 0x0100 or 256)")
+    p_kun.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kun.set_defaults(func=cmd_keys_unrevoke, _command="project keys unrevoke")
+
     return sub
 
 
@@ -205,6 +226,70 @@ def cmd_sync(args: argparse.Namespace) -> int:
     _warn(warnings)
     print("Re-locked %s" % args.dir)
     _print_summary(lock)
+    return 0
+
+
+def cmd_keys_status(args: argparse.Namespace) -> int:
+    from . import keys as keys_mod
+    try:
+        st = keys_mod.key_status(Path(args.dir))
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    flag = "  (REVOKED - rotate before building)" if st.signer_revoked else ""
+    print("signing key:  ota 0x%04x  (#%d of %d, %s)%s"
+          % (st.signing_key_id, st.retired + 1, len(st.ota_ids), st.alg_name, flag))
+    print("ota pool:     %d retired, %d remaining, %d revoked"
+          % (st.retired, st.remaining, st.revoked))
+    print("factory keys: %d" % len(st.factory_ids))
+    print("private keys: %d of %d present on this machine" % (st.private_present, st.private_total))
+    return 0
+
+
+def cmd_keys_rotate(args: argparse.Namespace) -> int:
+    from . import keys as keys_mod
+    try:
+        old, new, warnings = keys_mod.rotate_signing_key(Path(args.dir))
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    _warn(warnings)
+    print("Rotated OTA signing key: 0x%04x -> 0x%04x" % (old, new))
+    print("Commit openmv-ota.toml to record the rotation.")
+    return 0
+
+
+def cmd_keys_revoke(args: argparse.Namespace) -> int:
+    from . import keys as keys_mod
+    try:
+        key, changed, is_signer = keys_mod.revoke_key(Path(args.dir), args.key_id)
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if not changed:
+        print("Key 0x%04x is already revoked." % key.key_id)
+        return 0
+    print("Revoked key 0x%04x (%s)." % (key.key_id, key.role))
+    print("  Takes effect on the next firmware build; already-fielded devices keep")
+    print("  trusting it until they update. Commit keys/trusted_keys.json.")
+    print("  Undo with: openmv-ota project keys unrevoke 0x%04x" % key.key_id)
+    if is_signer:
+        print("warning: this was the current signing key - run "
+              "`openmv-ota project keys rotate` before building.", file=sys.stderr)
+    return 0
+
+
+def cmd_keys_unrevoke(args: argparse.Namespace) -> int:
+    from . import keys as keys_mod
+    try:
+        key, changed = keys_mod.unrevoke_key(Path(args.dir), args.key_id)
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if changed:
+        print("Unrevoked key 0x%04x (%s). Commit keys/trusted_keys.json." % (key.key_id, key.role))
+    else:
+        print("Key 0x%04x is not revoked." % key.key_id)
     return 0
 
 

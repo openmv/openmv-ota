@@ -182,3 +182,66 @@ def test_verify_cli_error(tmp_path, capsys):
     rc = main(["project", "verify", str(tmp_path)])
     assert rc == 2
     assert "no openmv-ota.lock.json" in capsys.readouterr().err
+
+
+def _new_ota(tmp_path, make_firmware, make_sdk, capsys):
+    rc, root, repo = _new(tmp_path, make_firmware, make_sdk, "--ota",
+                          "--ota-keys", "4", "--factory-keys", "2")
+    assert rc == 0
+    capsys.readouterr()  # drain `new` output
+    return root, repo
+
+
+def test_keys_status(tmp_path, make_firmware, make_sdk, capsys):
+    root, _ = _new_ota(tmp_path, make_firmware, make_sdk, capsys)
+    assert main(["project", "keys", "status", str(root)]) == 0
+    out = capsys.readouterr().out
+    assert "signing key:" in out and "ota pool:" in out
+
+
+def test_keys_rotate(tmp_path, make_firmware, make_sdk, capsys):
+    root, _ = _new_ota(tmp_path, make_firmware, make_sdk, capsys)
+    assert main(["project", "keys", "rotate", str(root)]) == 0
+    assert "0x0100 -> 0x0101" in capsys.readouterr().out
+
+
+def test_keys_revoke_unrevoke(tmp_path, make_firmware, make_sdk, capsys):
+    root, _ = _new_ota(tmp_path, make_firmware, make_sdk, capsys)
+    assert main(["project", "keys", "revoke", "0x0102", str(root)]) == 0
+    assert "Revoked key 0x0102" in capsys.readouterr().out
+    assert main(["project", "keys", "unrevoke", "0x0102", str(root)]) == 0
+    assert "Unrevoked key 0x0102" in capsys.readouterr().out
+
+
+def test_keys_revoke_current_signer_warns(tmp_path, make_firmware, make_sdk, capsys):
+    root, _ = _new_ota(tmp_path, make_firmware, make_sdk, capsys)
+    assert main(["project", "keys", "revoke", "0x0100", str(root)]) == 0
+    assert "current signing key" in capsys.readouterr().err
+
+
+def test_keys_status_non_ota_errors(tmp_path, make_firmware, make_sdk, capsys):
+    rc, root, _ = _new(tmp_path, make_firmware, make_sdk)  # non-OTA project
+    assert rc == 0
+    capsys.readouterr()
+    assert main(["project", "keys", "status", str(root)]) != 0
+    assert "not an OTA project" in capsys.readouterr().err
+
+
+def test_keys_mutations_require_ota(tmp_path, make_firmware, make_sdk, capsys):
+    rc, root, _ = _new(tmp_path, make_firmware, make_sdk)  # non-OTA
+    assert rc == 0
+    capsys.readouterr()
+    assert main(["project", "keys", "rotate", str(root)]) != 0
+    assert main(["project", "keys", "revoke", "0x0100", str(root)]) != 0
+    assert main(["project", "keys", "unrevoke", "0x0100", str(root)]) != 0
+    assert "not an OTA project" in capsys.readouterr().err
+
+
+def test_keys_revoke_idempotent_and_unrevoke_noop(tmp_path, make_firmware, make_sdk, capsys):
+    root, _ = _new_ota(tmp_path, make_firmware, make_sdk, capsys)
+    assert main(["project", "keys", "revoke", "0x0102", str(root)]) == 0
+    capsys.readouterr()
+    assert main(["project", "keys", "revoke", "0x0102", str(root)]) == 0  # again
+    assert "already revoked" in capsys.readouterr().out
+    assert main(["project", "keys", "unrevoke", "0x0103", str(root)]) == 0  # never revoked
+    assert "is not revoked" in capsys.readouterr().out

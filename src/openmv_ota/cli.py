@@ -29,10 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="scaffold a customer repo layout")
     p_init.set_defaults(func=_not_implemented, _command="init")
 
-    p_keys = sub.add_parser("keys", help="key management")
-    keys_sub = p_keys.add_subparsers(dest="_subcommand")
-    p_keys_gen = keys_sub.add_parser("generate", help="create trusted_keys.json + keys")
-    p_keys_gen.set_defaults(func=_not_implemented, _command="keys generate")
+    # OTA signing keys are provisioned by `project new --ota` and managed via
+    # `project keys` (status / rotate / revoke / unrevoke).
 
     p_romfs = sub.add_parser("romfs", help="ROMFS image tool (pack/inspect a directory)")
     from openmv_ota.romfs import cli as romfs_cli

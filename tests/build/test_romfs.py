@@ -390,6 +390,14 @@ def test_ota_build_missing_private_key(make_project):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
 
 
+def test_ota_build_refuses_revoked_signing_key(make_project):
+    from openmv_ota.project import keys as keys_mod
+    root, repo, app = _build_ota(make_project)
+    keys_mod.revoke_key(root, 0x0100)  # revoke the current signing key
+    with pytest.raises(BuildError, match="is revoked"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
 def test_ota_build_unknown_signing_key(make_project):
     from openmv_ota.project import ProjectPaths
     root, repo, app = _build_ota(make_project)

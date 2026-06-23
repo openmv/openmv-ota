@@ -300,6 +300,36 @@ the rotation pool is your entire future supply of OTA keys. `--ota-keys` below 4
 warns. See [trailer.md](trailer.md) for the signature algorithms and the
 `key_id` / `sig_alg` fields.
 
+### Managing keys (`project keys`)
+
+```bash
+openmv-ota project keys status   # current signer, pool usage, revoked count
+openmv-ota project keys rotate   # advance to the next OTA key
+openmv-ota project keys revoke 0x0100     # mark a compromised key (reversible)
+openmv-ota project keys unrevoke 0x0100
+```
+
+- **`status`** reports the current signing key + algorithm, how far through the
+  pool you are (`#3 of 32`), how many keys are retired / remaining / revoked, the
+  factory-key count, and how many private PEMs are on this machine (so you know if
+  you're on the signing machine).
+
+- **`rotate`** advances `[ota].signing_key_id` to the next key in the
+  pre-provisioned pool — it doesn't mint a key. Old releases keep verifying (their
+  key stays trusted); rotation just limits how much any one key signs. It errors
+  when the pool is exhausted (you'd need a firmware reflash with a new set). Commit
+  `openmv-ota.toml` — git is your rotation log.
+
+- **`revoke`** is the rare exception, for a **compromised** private key (HSM
+  breach, leaked CI secret). For normal hygiene you just rotate; revoke is for "an
+  attacker has this key and could forge images." It sets `revoked` on the key in
+  `keys/trusted_keys.json` (kept, never deleted), so `build romfs` refuses to sign
+  with it and `rotate` skips it. It's deliberately **not** auto-applied to fielded
+  devices: the device-side reject-list is baked by a firmware build, so a revoked
+  key only stops being trusted once a device updates. It's reversible with
+  `unrevoke` (for a fat-fingered id or false alarm). Revoking the current signer
+  doesn't move it — `build romfs` will refuse until you `rotate`.
+
 ### Board identity
 
 `board_id` is a `uint32` that names a product (the cross-flash guard), and

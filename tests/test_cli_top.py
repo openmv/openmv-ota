@@ -22,11 +22,6 @@ def test_unimplemented_init(capsys):
     assert "not implemented" in capsys.readouterr().err.lower()
 
 
-def test_keys_generate_unimplemented(capsys):
-    assert main(["keys", "generate"]) == 2
-    assert "not implemented" in capsys.readouterr().err.lower()
-
-
 def test_build_parser_is_constructable():
     parser = build_parser()
     args = parser.parse_args(["romfs", "boards"])

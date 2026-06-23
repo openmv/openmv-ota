@@ -87,17 +87,21 @@ class TrustedKey:
     """One public key in the committed trusted-key set."""
 
     key_id: int
-    alg: int        # COSE algorithm id
-    role: str       # "ota" | "factory" | "emergency" | ...
-    pubkey: str     # uncompressed EC point, hex
+    alg: int            # COSE algorithm id
+    role: str           # "ota" | "factory"
+    pubkey: str         # uncompressed EC point, hex
+    revoked: bool = False  # kept in the set (never deleted) but rejected; honored by
+    #                        the firmware build's device reject-list and the host signer
 
     def to_dict(self) -> dict:
-        return {"key_id": self.key_id, "alg": self.alg, "role": self.role, "pubkey": self.pubkey}
+        return {"key_id": self.key_id, "alg": self.alg, "role": self.role,
+                "pubkey": self.pubkey, "revoked": self.revoked}
 
     @classmethod
     def from_dict(cls, d: dict) -> "TrustedKey":
         return cls(
-            key_id=int(d["key_id"]), alg=int(d["alg"]), role=str(d["role"]), pubkey=str(d["pubkey"])
+            key_id=int(d["key_id"]), alg=int(d["alg"]), role=str(d["role"]),
+            pubkey=str(d["pubkey"]), revoked=bool(d.get("revoked", False)),
         )
 
 
