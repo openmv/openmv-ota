@@ -10,7 +10,10 @@
   image) and **BACK** (immutable, factory-written golden image). The asymmetry of
   `vfs.rom_ioctl` erase — FRONT can be erased alone, BACK only by a full wipe —
   gives a golden image for free.
-- Each slot: body + 0xFF padding + 4 KiB **status** sector + 4 KiB **trailer**.
+- Each slot: body + 0xFF padding + a **status** sector + a **trailer**, each one
+  flash erase block (4 KiB on OTA-capable boards). A board whose ROMFS is a single
+  large internal-flash sector (OpenMV2/3/4) can't be split into slots and isn't
+  OTA-capable.
 - The trailer carries an ECDSA signature (COSE algorithm ids — ES256/P-256 by
   default, verified on-device by mbedtls) over a signed `header ‖ JSON-meta`
   region, a SHA-256 of the body, version/identity/provenance metadata, and a

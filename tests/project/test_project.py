@@ -216,6 +216,29 @@ def test_create_ota_no_factory_key_errors(tmp_path, make_firmware, make_sdk):
         _create(tmp_path, make_firmware, make_sdk, ota=True, factory_keys=0, ota_keys=2)
 
 
+def test_create_ota_rejects_non_capable_board(tmp_path, make_firmware, make_sdk):
+    # OpenMV4's romfs is a single 128K internal-flash sector -> can't host OTA.
+    with pytest.raises(ProjectError, match="not OTA-capable"):
+        _create(tmp_path, make_firmware, make_sdk, ota=True, boards=["OPENMV4"],
+                factory_keys=1, ota_keys=2)
+
+
+def test_create_non_ota_allows_non_capable_board(tmp_path, make_firmware, make_sdk):
+    # The same board builds fine as a single (non-OTA) image filling the partition.
+    root, (lock, _) = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV4"])
+    assert lock.ota is False
+
+
+def test_sync_ota_project_rechecks_capability(tmp_path, make_firmware, make_sdk):
+    # Re-locking an OTA project re-runs the capability check (capable boards -> ok).
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True,
+                      factory_keys=1, ota_keys=2)
+    lock, _ = proj.sync_project(root, firmware=repo, sdk_home_override=make_sdk(),
+                                install_sdk=False, allow_dirty=True, now=NOW)
+    assert lock.ota is True
+
+
 def test_create_ota_small_pool_warns(tmp_path, make_firmware, make_sdk):
     _, (_, warnings) = _create(tmp_path, make_firmware, make_sdk, ota=True,
                                factory_keys=1, ota_keys=2)

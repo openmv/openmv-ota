@@ -155,6 +155,7 @@ def test_oversize(monkeypatch, make_project):
 
 
 def test_ota_capacity_is_half(make_project):
+    from openmv_ota.ota import geometry
     from openmv_ota.project import load_project
 
     root, repo, app = make_project(ota=True)
@@ -163,7 +164,7 @@ def test_ota_capacity_is_half(make_project):
                                     compile_py=False, convert_models=False)
     r = results[0]
     assert r.bound == "OTA slot"
-    assert r.capacity == target.front_size - build_mod.OTA_SLOT_OVERHEAD
+    assert r.capacity == target.front_size - geometry.slot_overhead(target.erase_size)
     assert r.capacity < target.partition_size
 
 

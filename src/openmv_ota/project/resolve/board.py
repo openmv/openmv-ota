@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from openmv_ota.ota import geometry
 from openmv_ota.romfs import boards as boards_mod
 
 from ..errors import ProjectError
@@ -31,14 +32,11 @@ class ResolvedBoard:
     npu: str | None                       # NPU type ("vela" | "stedgeai" | None)
     partition_index: int
     partition_size: int
-    front_size: int
+    erase_size: int                       # flash erase block of the partition's backing store
+    front_size: int                       # FRONT slot size (half the partition, block-aligned)
     alignment_rules: list[dict] = field(default_factory=list)
     geometry_source: str = "bundled"
     npu_config: dict | None = None        # full compiler config (args + file refs)
-
-
-def _front_size(partition_size: int) -> int:
-    return (partition_size // 2) & ~0xFFF
 
 
 def _firmware_part_lengths(repo: Path, board: str, index: int) -> list[int]:
@@ -124,7 +122,8 @@ def resolve_board(
         npu=npu_type,
         partition_index=part.index,
         partition_size=size,
-        front_size=_front_size(size),
+        erase_size=part.erase_size,
+        front_size=geometry.front_size(size, part.erase_size),
         alignment_rules=list(part.alignment_rules),
         geometry_source=source,
         npu_config=npu_config,

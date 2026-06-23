@@ -11,6 +11,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from openmv_ota.ota import geometry
 from openmv_ota.project import load_project
 from openmv_ota.project.config import derive_board_id
 from openmv_ota.project.errors import ProjectError
@@ -21,11 +22,6 @@ from .compile import mpy
 from .compile.models import MODEL_SUFFIXES, ModelContext, convert_model
 from .errors import BuildError
 from .staging import iter_files, stage_app
-
-# An OTA partition is split into two equal slots - a regular image and a golden
-# fallback - so an OTA image gets half the partition. Each slot also carries a
-# 4 KiB status sector and a 4 KiB trailer, leaving front_size - 8 KiB for the body.
-OTA_SLOT_OVERHEAD = 0x2000  # status (4 KiB) + trailer (4 KiB)
 
 
 @dataclass
@@ -158,12 +154,12 @@ def _build_system_info(p, t, app_version, vendor: str) -> dict:
     }
 
 
-def _attach_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict) -> bytes:
+def _attach_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, block: int) -> bytes:
     """Stamp + sign a trailer for ``body`` and return ``body || trailer-sector``. The
-    trailer's metadata is the same ``system_info`` dict packed into the ROMFS."""
+    trailer's metadata is the same ``system_info`` dict packed into the ROMFS, and the
+    sector is padded with 0xFF to one flash erase ``block``."""
     from openmv_ota.ota import Trailer, pack_trailer, signed_region
     from openmv_ota.ota.sign import sign_region
-    from openmv_ota.ota.trailer import TRAILER_SZ
 
     trailer = Trailer(
         body_size=len(body),
@@ -179,14 +175,15 @@ def _attach_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict) -> by
     )
     trailer.signature = sign_region(signer.private_key, signed_region(trailer), signer.alg)
     trailer_bytes = pack_trailer(trailer)
-    sector = trailer_bytes + b"\xff" * (TRAILER_SZ - len(trailer_bytes))
+    sector = trailer_bytes + b"\xff" * (block - len(trailer_bytes))
     return body + sector
 
 
 def _capacity(project, target) -> tuple[int, str]:
-    """The usable image budget for a target and the name of what bounds it."""
+    """The usable image budget for a target and the name of what bounds it. An OTA
+    image gets a slot (half the partition) less its status + trailer sectors."""
     if project.config.ota:
-        return target.front_size - OTA_SLOT_OVERHEAD, "OTA slot"
+        return target.front_size - geometry.slot_overhead(target.erase_size), "OTA slot"
     return target.partition_size, "ROMFS partition"
 
 
@@ -306,7 +303,8 @@ def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, app_vers
                 print("warning: %s has board_id 0 (unset); the cross-flash guard is off - "
                       "set board_id under [targets.%s] in openmv-ota.toml"
                       % (t.name, t.name), file=sys.stderr)
-            image = _attach_trailer(ota_signer, p, body, system_info)
+            image = _attach_trailer(ota_signer, p, body, system_info,
+                                    geometry.ota_block(t.erase_size))
         else:
             image = body
         name = "%s-p%d" % (t.name, t.partition_index) if t.name in multi else t.name

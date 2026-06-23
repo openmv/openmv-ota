@@ -211,7 +211,8 @@ def test_board_geometry_from_firmware(make_firmware):
     rb, warnings = board_res.resolve_board(repo, "OPENMV_N6")
     assert rb.geometry_source == "firmware"
     assert rb.partition_size == 0x01800000
-    assert rb.front_size == (0x01800000 // 2)
+    assert rb.erase_size == 4096                      # external XSPI NOR
+    assert rb.front_size == (0x01800000 // 2)         # half, 4 KiB-aligned
     assert rb.board_type == "N6"
     assert rb.npu == "stedgeai"
     # The full compiler config (args + file refs) is carried for the compile layer.

@@ -147,7 +147,7 @@ def test_pack_unsupported_algorithm():
 
 def test_pack_oversize():
     big = _trailer(meta={"blob": "A" * 4100})
-    with pytest.raises(OtaError, match="exceeds the 4096-byte sector"):
+    with pytest.raises(OtaError, match="over the 4096-byte limit"):
         pack_trailer(big)
 
 

@@ -201,11 +201,19 @@ project is ready to build a signed image with one command.
 ### What `--ota` changes
 
 - **Partition split.** Each partition is split into two halves — a regular image
-  and a golden fallback — so each image gets half the partition, less an 8 KiB
-  status sector and trailer. `build romfs` enforces that halved budget for an OTA
-  project and the full partition otherwise; `show` reports which mode a project is
-  in. The mode is recorded as `[ota] enabled` in `openmv-ota.toml` and mirrored
-  into the lock; changing it re-resolves the project, so set it at `new` time.
+  and a golden fallback — so each image gets half the partition, less a status
+  sector and a trailer (one flash erase block each — 8 KiB on OTA-capable boards).
+  `build romfs` enforces that halved budget for an OTA project and the full
+  partition otherwise; `show` reports which mode a project is in. The mode is
+  recorded as `[ota] enabled` in `openmv-ota.toml` and mirrored into the lock;
+  changing it re-resolves the project, so set it at `new` time.
+
+  Not every board can do this. A board whose ROMFS lives in a single large
+  internal-flash sector — OpenMV2/3/4, where the erase block *is* the whole
+  partition — has no room to split into two updatable slots, so `new --ota` errors
+  with *"not OTA-capable"*. These boards still build a single (non-OTA) image that
+  fills the partition. OTA-capable boards keep their ROMFS in external NOR/OSPI
+  flash (4 KiB erase blocks) or MRAM.
 
 - **Keys provisioned.** A device trusts exactly the public keys baked into its
   firmware, and you cannot add a trusted key later without re-flashing. So `new
@@ -383,7 +391,7 @@ and whether the project is OTA). Everything else is resolved into
 - per target (each board, and each of its targeted partitions): the arch and
   mpy-cross flags, the NPU type and its full compiler config (Vela / ST Edge AI
   arguments and config-file references), the alignment rules, and the partition
-  and FRONT sizes.
+  size, flash erase block, and FRONT slot size.
 
 Partition sizes come from the firmware's `boards/<BOARD>/board_config.h`. When a
 board's size is build-variant conditional, the bundled default is used instead

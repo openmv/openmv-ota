@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-board ROMFS config extracted from OpenMV IDE share/qtcreator/firmware/settings.json. Source of truth for alignment rules + partition sizes. npu/mpy_args are carried for the future model-compile layer and unused by the core builder.",
+  "_comment": "Per-board ROMFS config extracted from OpenMV IDE share/qtcreator/firmware/settings.json. Source of truth for alignment rules + partition sizes. erase_size is the flash erase block of the partition's backing store (internal flash sector, external NOR 4K subsector, or MRAM 16B), used for OTA slot geometry; npu/mpy_args are carried for the future model-compile layer.",
   "_source_firmware_version": "4.8.1",
   "boards": {
     "OPENMV2": {
@@ -13,6 +13,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 131072,
+          "erase_size": 131072,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -42,6 +43,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 262144,
+          "erase_size": 262144,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -71,6 +73,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 131072,
+          "erase_size": 131072,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -100,6 +103,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 8388608,
+          "erase_size": 4096,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -129,6 +133,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 8388608,
+          "erase_size": 4096,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -158,6 +163,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 8388608,
+          "erase_size": 4096,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -187,6 +193,7 @@
           "name": "High Performance Core",
           "index": 0,
           "size": 25165824,
+          "erase_size": 4096,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -216,6 +223,7 @@
           "name": "High Efficiency Core",
           "index": 1,
           "size": 1048576,
+          "erase_size": 16,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -254,6 +262,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 25165824,
+          "erase_size": 4096,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -295,6 +304,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 4194304,
+          "erase_size": 4096,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -324,6 +334,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 4194304,
+          "erase_size": 4096,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -353,6 +364,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 4194304,
+          "erase_size": 4096,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -382,6 +394,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 0,
+          "erase_size": 4096,
           "alignment_rules": [
             {
               "extension": "tflite",
@@ -411,6 +424,7 @@
           "name": "ROMFS",
           "index": 0,
           "size": 0,
+          "erase_size": 4096,
           "alignment_rules": [
             {
               "extension": "tflite",

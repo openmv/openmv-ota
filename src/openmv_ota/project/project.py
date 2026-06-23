@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from openmv_ota import __version__
+from openmv_ota.ota import geometry
 from openmv_ota.ota.algorithms import ES256, algorithm_for
 
 from . import cache, config as config_mod, gitrepo, lock as lock_mod
@@ -185,6 +186,30 @@ def ensure_sdk(repo: Path, override: Path | None, install_sdk: bool) -> sdk_res.
 _IDENTITY_OVERRIDE_KEYS = ("board_id", "board_name")
 
 
+def _ensure_ota_capable(lock: lock_mod.Lock) -> None:
+    """Raise if any resolved target's ROMFS partition is too small to host OTA — i.e.
+    a slot has no room for a body after its status + trailer sectors. This is the
+    case for boards whose ROMFS is a single large internal-flash sector (the erase
+    block is the whole partition), so the math itself proves OTA is impossible."""
+    bad = [rb for rb in lock.targets.get("resolved", [])
+           if not geometry.is_ota_capable(rb["partition_size"], rb["erase_size"])]
+    if not bad:
+        return
+    lines = [
+        "%s (partition %d): %d-byte ROMFS, %d-byte erase block -> a slot is %d bytes, "
+        "below the %d-byte status+trailer overhead"
+        % (rb["name"], rb["partition_index"], rb["partition_size"], rb["erase_size"],
+           geometry.front_size(rb["partition_size"], rb["erase_size"]),
+           geometry.slot_overhead(rb["erase_size"]))
+        for rb in bad
+    ]
+    raise ProjectError(
+        "not OTA-capable: the ROMFS partition can't be split into two updatable "
+        "slots:\n  - " + "\n  - ".join(lines)
+        + "\nThis board keeps its ROMFS in a single large flash sector; build without "
+        "--ota (a single image that fills the partition).", exit_code=1)
+
+
 def _digest(config: OtaConfig) -> str:
     """Digest the *firmware-relevant* config — the fields that, if changed, would
     invalidate the resolved lock. Excludes release/identity state (``version``,
@@ -253,6 +278,8 @@ def create_project(
         repo, config, sdk_home_override=sdk_home_override, config_digest=digest, now=now,
     )
     warnings += w
+    if config.ota:
+        _ensure_ota_capable(lock)  # fail before writing anything for an impossible board
     if lock.firmware["dirty"] and not allow_dirty:
         warnings.append("firmware checkout is dirty; the pinned commit does not "
                         "fully capture the build. Commit or pass --allow-dirty.")
@@ -374,6 +401,8 @@ def sync_project(
         repo, config, sdk_home_override=sdk_home_override,
         config_digest=_digest(config), now=now,
     )
+    if config.ota:
+        _ensure_ota_capable(lock)
     if lock.firmware["dirty"] and not allow_dirty:
         warnings.append("firmware checkout is dirty; re-locked anyway.")
     lock_mod.write(paths.lock, lock)

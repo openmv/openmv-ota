@@ -245,8 +245,8 @@ def test_stedgeai_convert_not_found(monkeypatch, tmp_path):
 
 def _target(npu, npu_config):
     return ResolvedBoard(name="B", board_type=None, arch="", mpy_args=[], npu=npu,
-                         partition_index=0, partition_size=1000, front_size=500,
-                         npu_config=npu_config)
+                         partition_index=0, partition_size=1000, erase_size=4096,
+                         front_size=500, npu_config=npu_config)
 
 
 def _ctx(tmp_path, **over):

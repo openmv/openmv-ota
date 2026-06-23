@@ -45,7 +45,12 @@ MAGIC_ROMFS_APP = b"OMVR"   # ROMFS application image
 MAGIC_FIRMWARE = b"OMVF"    # firmware image (reserved; a future payload kind)
 
 HEADER_VERSION = 1
-TRAILER_SZ = 4096           # the trailer occupies one 4 KiB flash sector
+# Maximum packed trailer size. The trailer is padded out to one flash erase block
+# by the build (4 KiB on every OTA-capable board; see openmv_ota.ota.geometry), so
+# this caps the trailer content at the smallest such block, guaranteeing it fits in
+# one block on any board. It is NOT a fixed on-flash size: the padded sector is the
+# board's erase block, which is >= this on boards with larger blocks.
+TRAILER_SZ = 4096
 CRC_SIZE = 4
 
 # Fixed trust-header. The single signed field (sig_alg) is the lone "i".
@@ -144,7 +149,9 @@ def pack_trailer(t: Trailer) -> bytes:
     crc = binascii.crc32(body) & 0xFFFFFFFF
     out = body + struct.pack("<I", crc)
     if len(out) > TRAILER_SZ:
-        raise OtaError("trailer is %d bytes, exceeds the %d-byte sector" % (len(out), TRAILER_SZ))
+        raise OtaError(
+            "trailer is %d bytes, over the %d-byte limit (one erase block)"
+            % (len(out), TRAILER_SZ))
     return out
 
 

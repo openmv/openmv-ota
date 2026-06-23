@@ -28,8 +28,11 @@ whole picture.)
 
 ## Layout
 
-The trailer occupies one 4 KiB flash sector (`TRAILER_SZ = 4096`), laid out
-little-endian:
+The trailer occupies one flash erase block — 4 KiB on every OTA-capable board
+(external NOR / OSPI; AE3's byte-writable MRAM is floored to 4 KiB so growing the
+metadata can't reshape the layout). Boards whose ROMFS is a single large
+internal-flash sector can't host OTA at all (see
+[project.md](project.md#ota-projects)). Laid out little-endian:
 
 ```
 [ header (80) ][ json_meta (meta_size) ][ signature (sig_size) ][ crc32 (4) ]
@@ -45,7 +48,7 @@ little-endian:
   CRC is torn-write detection only (a cheap pre-reject), not authenticity.
 - `meta_size` and `sig_size` live *inside* the signed header, so the framing a
   verifier trusts comes from authenticated fields — never from the flexible blob.
-- `build romfs` pads the trailer with `0xFF` to fill the 4 KiB sector.
+- `build romfs` pads the trailer with `0xFF` to fill one erase block.
 
 ## Header fields
 

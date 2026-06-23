@@ -18,6 +18,7 @@ def test_n6_partition_and_alignment():
     p = b.partition()
     assert p.index == 0
     assert p.size == 25165824  # 24 MiB
+    assert p.erase_size == 4096  # external XSPI NOR
     rules = {r["extension"]: r["alignment"] for r in p.alignment_rules}
     assert rules["tflite"] == 32  # N6 uses 32-byte alignment
 
@@ -27,6 +28,14 @@ def test_ae3_has_two_partitions():
     assert len(b.partitions) == 2
     assert {p.index for p in b.partitions} == {0, 1}
     assert b.partition(1).size == 1048576  # 1 MiB MRAM (HE core)
+    assert b.partition(0).erase_size == 4096  # OSPI NOR
+    assert b.partition(1).erase_size == 16    # MRAM (byte-writable)
+
+
+def test_internal_flash_boards_have_large_erase():
+    # Single-sector internal flash -> not OTA-capable (proven by geometry).
+    assert boards_mod.get_board("OPENMV4").partition().erase_size == 131072
+    assert boards_mod.get_board("OPENMV3").partition().erase_size == 262144
 
 
 def test_partition_bad_index():

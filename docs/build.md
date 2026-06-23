@@ -26,7 +26,8 @@ identity and provenance, the same in a non-OTA and an OTA build. See
 [project.md](project.md#systemjson-generated-read-only).
 
 The capacity is the whole partition for a single-image project, or half the
-partition less an 8 KiB status sector and trailer for an OTA project (`project new
+partition less two flash erase blocks (a status sector + a trailer; 8 KiB on
+OTA-capable boards) for an OTA project (`project new
 --ota`) — each OTA partition holds a regular image and a golden fallback. The build
 summary reports the percentage of whichever bound applies.
 
@@ -62,7 +63,7 @@ verifiable, anti-rollback OTA image rather than a bare ROMFS body. No extra flag
   ROMFS. `min_platform_version` is the pegged firmware's version code.
 
 The resulting image is `body ‖ trailer`, where the trailer is padded with `0xFF`
-to a 4 KiB sector. The build summary reports the body size against the OTA-slot
+to one flash erase block. The build summary reports the body size against the OTA-slot
 budget (the trailer and status sector are accounted for in the budget, not in the
 reported body size). See [trailer.md](trailer.md) for the on-flash format.
 
