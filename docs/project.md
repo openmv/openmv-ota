@@ -53,9 +53,11 @@ It reads the checkout and the installed SDK, writes the three files, and a
 `.gitignore`. Commit `openmv-ota.toml` and `openmv-ota.lock.json`; the
 `.gitignore` keeps `openmv-ota.local.toml` out of the repository.
 
-`new` expects the OpenMV SDK to be installed already (run `make sdk` in the
-firmware checkout). Pass `--install-sdk` to run `make sdk` for you, or
-`--sdk-home PATH` to point at an SDK in a non-default location.
+`new` expects the OpenMV SDK to be installed already. Pass `--install-sdk` to
+download and install it (a pure-Python download + verify + extract of the
+pinned bundle to `~/openmv-sdk-<version>` — no `make` required, which is what
+lets the firmware build work on Windows), or `--sdk-home PATH` to point at an
+SDK in a non-default location.
 
 ### Options
 
@@ -66,7 +68,7 @@ firmware checkout). Pass `--install-sdk` to run `make sdk` for you, or
 | `--product NAME` | Product name (defaults to the directory name). |
 | `--vendor NAME` | Vendor name. |
 | `--sdk-home PATH` | SDK install directory (default `~/openmv-sdk-<version>`). |
-| `--install-sdk` | Run `make sdk` if the SDK is missing. |
+| `--install-sdk` | Download + install the SDK if it is missing. |
 | `--allow-dirty` | Don't warn when the checkout has uncommitted changes. |
 | `--ota` | Over-the-air project: split each partition and provision signing keys. |
 | `--sig-alg {ES256,ES384,ES512}` | OTA signature algorithm (default `ES256` / P-256). |

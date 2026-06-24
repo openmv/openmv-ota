@@ -95,21 +95,21 @@ def test_ensure_sdk_mismatch_no_install(make_firmware, make_sdk):
 def test_ensure_sdk_install_success(make_firmware, make_sdk, monkeypatch):
     repo = make_firmware()
     home = make_sdk()
-    # First resolve sees nothing; make sdk "creates" it (already created here).
+    # First resolve sees nothing; the install "creates" it (already created here).
     state = {"made": False}
 
-    def fake_make(r):
+    def fake_install(version, dest, **kw):
         state["made"] = True
 
-    monkeypatch.setattr(proj.gitrepo, "run_make_sdk", fake_make)
-    # Point at a home that doesn't exist yet, then have make create it by swapping.
+    monkeypatch.setattr(proj.sdk_install, "install_sdk", fake_install)
+    # Point at a home that doesn't exist yet, then have install create it by swapping.
     missing = home.parent / "openmv-sdk-missing"
     calls = {"n": 0}
     real_resolve = proj.sdk_res.resolve_sdk
 
     def fake_resolve(r, override):
         calls["n"] += 1
-        # Return the good home on the second call (after make sdk).
+        # Return the good home on the second call (after install).
         return real_resolve(r, home if calls["n"] >= 2 else missing)
 
     monkeypatch.setattr(proj.sdk_res, "resolve_sdk", fake_resolve)
@@ -118,7 +118,7 @@ def test_ensure_sdk_install_success(make_firmware, make_sdk, monkeypatch):
 
 
 def test_ensure_sdk_install_still_missing(make_firmware, tmp_path, monkeypatch):
-    monkeypatch.setattr(proj.gitrepo, "run_make_sdk", lambda r: None)
+    monkeypatch.setattr(proj.sdk_install, "install_sdk", lambda *a, **k: None)
     with pytest.raises(ProjectError) as ei:
         proj.ensure_sdk(make_firmware(), tmp_path / "nope", install_sdk=True)
     assert ei.value.exit_code == 1

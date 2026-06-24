@@ -15,7 +15,6 @@ from .errors import ProjectError
 
 # Binary names, overridable for tests.
 GIT = "git"
-MAKE = "make"
 
 
 def run_git(repo: Path, *args: str, check: bool = True) -> str | None:
@@ -116,13 +115,6 @@ def submodule_update(repo: Path) -> None:
         )
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         raise ProjectError("git submodule update failed: %s" % e, exit_code=1) from None
-
-
-def run_make_sdk(repo: Path) -> None:
-    try:
-        subprocess.run([MAKE, "sdk"], cwd=str(repo), check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError) as e:
-        raise ProjectError("make sdk failed: %s" % e, exit_code=1) from None
 
 
 def pip_install(spec: str) -> None:

@@ -130,21 +130,6 @@ def test_submodule_update_failure(monkeypatch, tmp_path):
         gitrepo.submodule_update(tmp_path)
 
 
-def test_run_make_sdk(monkeypatch, tmp_path):
-    fake = _FakeRun()
-    monkeypatch.setattr(gitrepo.subprocess, "run", fake)
-    gitrepo.run_make_sdk(tmp_path)
-    assert fake.calls[0][0] == [gitrepo.MAKE, "sdk"]
-
-
-def test_run_make_sdk_failure(monkeypatch, tmp_path):
-    monkeypatch.setattr(gitrepo.subprocess, "run",
-                        _FakeRun(fail=subprocess.CalledProcessError(2, "make")))
-    with pytest.raises(ProjectError) as ei:
-        gitrepo.run_make_sdk(tmp_path)
-    assert ei.value.exit_code == 1
-
-
 def test_pip_install(monkeypatch):
     fake = _FakeRun()
     monkeypatch.setattr(gitrepo.subprocess, "run", fake)

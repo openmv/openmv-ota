@@ -13,7 +13,7 @@ from openmv_ota import __version__
 from openmv_ota.ota import geometry
 from openmv_ota.ota.algorithms import ES256, algorithm_for
 
-from . import cache, config as config_mod, gitrepo, lock as lock_mod
+from . import cache, config as config_mod, gitrepo, lock as lock_mod, sdk_install
 from .config import LOCAL_NAME, OtaConfig
 from .errors import ProjectError
 from .resolve import firmware as fw_res
@@ -158,25 +158,29 @@ def resolve_snapshot(
 
 
 def ensure_sdk(repo: Path, override: Path | None, install_sdk: bool) -> sdk_res.SdkInfo:
-    """Verify the SDK is installed and matches; optionally run ``make sdk``."""
+    """Verify the SDK is installed and matches; optionally download + install it.
+
+    The install is pure Python (download + verify + extract; see
+    :mod:`openmv_ota.project.sdk_install`), so it needs no ``make`` -- which matters
+    because the SDK it installs is what *provides* ``make`` for the firmware build."""
     info = sdk_res.resolve_sdk(repo, override)
     if info.installed and info.stamp_matches:
         return info
     if not install_sdk:
         if not info.installed:
             raise ProjectError(
-                "OpenMV SDK %s not installed at %s; run `make sdk` in the firmware "
-                "repo, or pass --install-sdk (or --sdk-home)."
+                "OpenMV SDK %s not installed at %s; pass --install-sdk to download it "
+                "(or --sdk-home to point at an existing install)."
                 % (info.declared_version, info.home)
             )
         raise ProjectError(
             "OpenMV SDK at %s is version %s but the firmware wants %s; reinstall "
             "or pass --install-sdk." % (info.home, info.stamp_version, info.declared_version)
         )
-    gitrepo.run_make_sdk(repo)
+    sdk_install.install_sdk(info.declared_version, info.home)
     info = sdk_res.resolve_sdk(repo, override)
     if not (info.installed and info.stamp_matches):
-        raise ProjectError("SDK still not correct at %s after `make sdk`" % info.home, exit_code=1)
+        raise ProjectError("SDK still not correct at %s after install" % info.home, exit_code=1)
     return info
 
 

@@ -39,7 +39,7 @@ def register(project_parser: argparse.ArgumentParser):
     p_new.add_argument("--product", help="product name (defaults to the directory name)")
     p_new.add_argument("--vendor", help="vendor name")
     p_new.add_argument("--sdk-home", help="SDK install dir (default ~/openmv-sdk-<SDK_VERSION>)")
-    p_new.add_argument("--install-sdk", action="store_true", help="run `make sdk` if missing")
+    p_new.add_argument("--install-sdk", action="store_true", help="download + install the SDK if missing")
     p_new.add_argument("--allow-dirty", action="store_true", help="don't warn on a dirty checkout")
     p_new.add_argument("--ota", action="store_true",
                        help="over-the-air project: halve each partition for a regular + golden image")
@@ -57,7 +57,7 @@ def register(project_parser: argparse.ArgumentParser):
     p_setup.add_argument("--cache", help="clone cache dir (default: $OPENMV_OTA_CACHE / platform)")
     p_setup.add_argument("--sdk-home", help="SDK install dir override")
     p_setup.add_argument("--no-install-sdk", dest="install_sdk", action="store_false",
-                         default=True, help="don't run `make sdk` after cloning")
+                         default=True, help="don't download + install the SDK after cloning")
     p_setup.set_defaults(func=cmd_setup, _command="project setup")
 
     p_show = sub.add_parser("show", help="print the resolved snapshot")
@@ -80,7 +80,7 @@ def register(project_parser: argparse.ArgumentParser):
     p_sync.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_sync.add_argument("-f", "--firmware", help="checkout path override")
     p_sync.add_argument("--sdk-home", help="SDK install dir override")
-    p_sync.add_argument("--install-sdk", action="store_true", help="run `make sdk` if missing")
+    p_sync.add_argument("--install-sdk", action="store_true", help="download + install the SDK if missing")
     p_sync.add_argument("--allow-dirty", action="store_true", help="don't warn on a dirty checkout")
     p_sync.set_defaults(func=cmd_sync, _command="project sync")
 
