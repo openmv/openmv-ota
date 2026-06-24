@@ -65,6 +65,34 @@ def register(build_parser: argparse.ArgumentParser):
     p_ver.add_argument("--trusted-keys", default="keys/trusted_keys.json",
                        help="trusted_keys.json (default: keys/trusted_keys.json)")
     p_ver.set_defaults(func=cmd_verify, _command="build verify")
+
+    p_fac = sub.add_parser("factory-romfs", help="compose the dual-slot factory ROMFS image")
+    p_fac.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
+    p_fac.add_argument("--app", help="app source dir (default: <project>/app)")
+    p_fac.add_argument("-o", "--output", help="output dir (default: <project>/build)")
+    p_fac.add_argument("-b", "--board", action="append", metavar="NAME",
+                       help="only build this board (repeatable; default: all targets)")
+    p_fac.add_argument("-p", "--partition", type=int, help="only build this partition")
+    p_fac.add_argument("--no-compile-py", dest="compile_py", action="store_false",
+                       help="pack .py as source (skip mpy-cross)")
+    p_fac.add_argument("--no-convert-models", dest="convert_models", action="store_false",
+                       help="pack models as-is (skip vela/stedgeai)")
+    p_fac.add_argument("--mpy-arg", action="append", default=[], metavar="ARG",
+                       help="extra mpy-cross arg (repeatable)")
+    p_fac.add_argument("--vela-arg", action="append", default=[], metavar="ARG",
+                       help="extra vela arg (repeatable)")
+    p_fac.add_argument("--stedgeai-arg", action="append", default=[], metavar="ARG",
+                       help="extra stedgeai arg (repeatable)")
+    p_fac.add_argument("--vela-optimise", choices=["Performance", "Size"], default="Performance",
+                       help="vela optimisation (default: Performance)")
+    p_fac.add_argument("--stedgeai-optimization", type=int, choices=[0, 1, 2, 3], default=3,
+                       help="st edge ai level (default: 3 = max)")
+    p_fac.add_argument("-f", "--firmware", help="firmware checkout override")
+    p_fac.add_argument("--factory-key", type=lambda s: int(s, 0), metavar="ID",
+                       help="factory key id to sign with (default 0x0001)")
+    p_fac.add_argument("--keep-build-dir", action="store_true",
+                       help="keep the staging dir for inspection")
+    p_fac.set_defaults(func=cmd_factory_romfs, _command="build factory-romfs")
     return sub
 
 
@@ -88,6 +116,30 @@ def cmd_romfs(args: argparse.Namespace) -> int:
         kind = "signed OTA bundle" if r.ota else "image"
         print("Built %s  (%s, %d-byte body, %.1f%% of %s)"
               % (r.output, kind, r.size, pct, r.bound))
+        if r.build_dir is not None:
+            print("  build dir kept: %s" % r.build_dir)
+    return 0
+
+
+def cmd_factory_romfs(args: argparse.Namespace) -> int:
+    try:
+        results = build_mod.build_factory_romfs(
+            args.project, app=args.app, output=args.output, boards=args.board,
+            partition=args.partition, compile_py=args.compile_py,
+            convert_models=args.convert_models, mpy_extra=args.mpy_arg,
+            vela_extra=args.vela_arg, stedgeai_extra=args.stedgeai_arg,
+            vela_optimise=args.vela_optimise,
+            stedgeai_optimization=args.stedgeai_optimization, firmware=args.firmware,
+            factory_key=args.factory_key, keep_build_dir=args.keep_build_dir,
+        )
+    except BuildError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+
+    for r in results:
+        pct = (r.size / r.capacity * 100) if r.capacity else 0
+        print("Built %s  (factory image, %d-byte body, %.1f%% of %s)"
+              % (r.output, r.size, pct, r.bound))
         if r.build_dir is not None:
             print("  build dir kept: %s" % r.build_dir)
     return 0
@@ -135,7 +187,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     path = Path(args.image)
     try:
         if bundle.is_bundle(path):
-            _body, trailer_bytes, _manifest = bundle.read_bundle(path)
+            _body, trailer_bytes = bundle.read_bundle(path)
         else:
             trailer_bytes = path.read_bytes()
     except (OSError, OtaError) as e:
@@ -181,7 +233,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         if args.trailer is not None:
             body, trailer = image.read_bytes(), Path(args.trailer).read_bytes()
         elif bundle.is_bundle(image):
-            body, trailer, _manifest = bundle.read_bundle(image)
+            body, trailer = bundle.read_bundle(image)
         else:
             print("error: %s is not a .zip bundle; pass `<romfs.img> <trailer.bin>` or a "
                   "bundle" % image, file=sys.stderr)

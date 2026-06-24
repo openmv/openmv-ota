@@ -273,13 +273,16 @@ P-256 by default; ES384/ES512 raise the curve and signature size):
 
 | Role | id range | Default count | Purpose |
 |---|---|---|---|
-| `factory` | `0x0001`+ | 8 (`--factory-keys`) | One per manufacturing site; signs the golden image flashed at the factory. |
+| `factory` | `0x0001`+ | 8 (`--factory-keys`) | One per manufacturing run; *you* sign the factory image with it and ship the manufacturer the finished binary. A distinct id per run is for **attribution** (telling which run cut an image) and `revoke`, not key isolation. |
 | `ota` | `0x0100`+ | 32 (`--ota-keys`) | The rotation pool; over-the-air updates are signed with one of these, rotated over the product's life. |
 
 The two ranges are well-separated so the pools never collide at realistic counts.
 The current signer is the first OTA key (`0x0100`), recorded as `signing_key_id`.
 `build romfs` signs with that key, and a trailer records *which* key signed
-(`key_id`) so the device picks the matching public key.
+(`key_id`) so the device picks the matching public key. Both roles' private keys
+stay on your signing machine — a manufacturer receives the signed
+`<board>-factory.img`, never a key (see [build.md](build.md#signed-with-a-factory-key)
+and [threat-model.md](threat-model.md)).
 
 `keys/trusted_keys.json` is the committed public set the firmware build will bake
 into its `TRUSTED_KEYS` table. Each entry is a key id, its COSE algorithm, its

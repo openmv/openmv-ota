@@ -105,14 +105,17 @@ holds this machine's checkout path.
 `openmv-ota build romfs` compiles a project's app and packs a ROMFS image per
 target — `.py` to `.mpy` with the pegged mpy-cross, and NPU models with the pegged
 Vela / ST Edge AI. A non-OTA build writes `<board>.img`; an OTA build writes a
-signed `<board>.zip` bundle (body + trailer + manifest). `build inspect` decodes a
-bundle's trailer; `build verify` checks its signature + body hash against the
-trusted keys (a CI / pre-publish gate).
+signed `<board>.zip` bundle (body + trailer, where the trailer is the manifest).
+`build factory-romfs` composes the whole factory partition image — both slots
+(mutable FRONT + golden BACK), factory-signed — as `<board>-factory.img`. `build
+inspect` decodes a bundle's trailer; `build verify` checks its signature + body
+hash against the trusted keys (a CI / pre-publish gate).
 
 ```bash
-openmv-ota build romfs   ./my-product
-openmv-ota build inspect ./my-product/build/OPENMV_N6.zip
-openmv-ota build verify  ./my-product/build/OPENMV_N6.zip
+openmv-ota build romfs         ./my-product
+openmv-ota build factory-romfs ./my-product
+openmv-ota build inspect       ./my-product/build/OPENMV_N6.zip
+openmv-ota build verify        ./my-product/build/OPENMV_N6.zip
 ```
 
 This is distinct from `romfs pack`, which packs a directory verbatim with no
@@ -121,9 +124,10 @@ compilation. See [docs/build.md](docs/build.md) and, for the signed image format
 
 ### OTA
 
-`project new --ota` and `build romfs` (above) already produce the signed,
-anti-rollback image. The remaining pieces — slot composition, the frozen
-`boot.py` and on-device ECDSA verify, and the update server — build on this; see
+`project new --ota`, `build romfs`, and `build factory-romfs` (above) already
+produce the signed, anti-rollback OTA payload and the dual-slot factory partition
+image. The remaining pieces — the frozen `boot.py` and on-device ECDSA verify, and
+the update server — build on this; see
 [openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md).
 
 ## Contributing to the project

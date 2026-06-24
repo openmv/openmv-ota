@@ -1,7 +1,9 @@
 # build
 
 `openmv-ota build` compiles a project's app and produces deployable images.
-`build romfs` is available now; `build firmware` is reserved.
+`build romfs` (an OTA payload) and `build factory-romfs` (the full dual-slot
+partition image flashed at the factory) are available now; `build firmware` is
+reserved.
 
 ## build romfs
 
@@ -64,23 +66,23 @@ verifiable, anti-rollback OTA image rather than a bare ROMFS body. No extra flag
   `system.json`** so host tools can read the image's identity without mounting the
   ROMFS. `min_platform_version` is the pegged firmware's version code.
 
-An OTA build writes a single **bundle**, `<board>.zip`, containing three entries:
+An OTA build writes a single **bundle**, `<board>.zip`, containing two entries:
 
 | Entry | What |
 |---|---|
 | `romfs.img` | the ROMFS body (mounted at `/rom`, written to the slot start) |
 | `trailer.bin` | the signed trailer (written to the slot's last erase block) |
-| `manifest.json` | a plaintext copy of `system.json` (codec-free indexing) |
 
 One file is easier to flash / upload / track, but the pieces stay separate
-*entries* — a zip is random-access, so the update server reads `manifest.json` or
-`trailer.bin` (version / `board_id` / signature) without touching the multi-MB
-body. The device never gets the zip (it can't hold the body in RAM to unzip): a
-server unbundles and streams the body + trailer separately, exactly as they're
-placed on-flash. Every trailer field is final and signed, including `pad_size` (the
-`0xFF` gap to the status sector, computed from the slot geometry) and the crc32.
-The build summary reports the body size against the OTA-slot budget. See
-[trailer.md](trailer.md) for the on-flash format.
+*entries* — a zip is random-access, so the update server reads `trailer.bin`
+(version / `board_id` / signature, including its verbatim copy of `system.json`)
+without touching the multi-MB body. The trailer *is* the manifest, so there is no
+separate `manifest.json` to keep in sync. The device never gets the zip (it can't
+hold the body in RAM to unzip): a server unbundles and streams the body + trailer
+separately, exactly as they're placed on-flash. Every trailer field is final and
+signed, including `pad_size` (the `0xFF` gap to the status sector, computed from the
+slot geometry) and the crc32. The build summary reports the body size against the
+OTA-slot budget. See [trailer.md](trailer.md) for the on-flash format.
 
 `build romfs` fails the build (exit 1) if the OTA signing context is incomplete:
 a missing or unreadable `app/settings.json`, a missing or non-semver
@@ -138,6 +140,74 @@ Optimisation differs per tool: Vela takes a mode, ST Edge AI takes a level.
 | `-f, --firmware PATH` | Firmware checkout override. |
 | `--allow-oversize` | Warn instead of failing when an image exceeds the partition. |
 | `--keep-build-dir` | Keep the staging directory for inspection. |
+
+## build factory-romfs
+
+`build romfs` produces an OTA *payload* — the body + trailer a server streams to a
+device that is already running. `build factory-romfs` produces the **whole ROMFS
+partition image flashed at the factory**: the complete on-flash layout a board
+needs before it has ever taken an update.
+
+```bash
+openmv-ota build factory-romfs ./my-product
+```
+
+The output is `<project>/build/<board>-factory.img`, sized to the exact partition
+and ready to write at the partition's offset. It composes the same compiled body
+into the partition's two slots:
+
+| Slot | Contents | Status sector | Role |
+|---|---|---|---|
+| **FRONT** | body + pad + status + trailer | `pending` + `tried` + `confirmed` | the mutable slot OTA writes to; ships already-confirmed so the first boot mounts it |
+| **BACK** | body + pad + status + trailer | `confirmed` only | the golden fallback, never overwritten by OTA |
+
+The partition is split in half (the FRONT half aligned down to the flash erase
+block); each slot ends with a one-block **status sector** and a one-block
+**trailer**, with `0xFF` padding filling the gap between the body and those two
+blocks. Both slots carry the same body but their own trailer, each signed
+independently with the recorded `pad_size`.
+
+The two status sectors are what make the slots distinguishable on a fresh board.
+FRONT ships in the post-OTA *confirmed* state — `pending`, `tried`, and `confirmed`
+markers all set — so the device's `boot.py` mounts it on the very first boot
+without a trial cycle. BACK carries only `confirmed`: that is the golden-slot
+shape, and `boot.py` will not mount a *FRONT* in that shape (a confirmed-only
+FRONT means a torn or invalid initial flash), so the markers also encode which slot
+is which.
+
+### Signed with a factory key
+
+A factory image is signed with a **factory** key, not an OTA key. The signer
+defaults to factory key `0x0001`; pass `--factory-key` to select another
+(`--factory-key 0x0002`). The key must be a `factory`-role entry in
+`keys/trusted_keys.json` and have its private key in
+`keys/private/factory-<id>.pem`; signing with an `ota`-role key is refused.
+
+**A factory key is *yours*, not the factory's.** You hold it, you sign with it, and
+you ship the manufacturer the finished `<board>-factory.img` — a flat binary they
+write to flash. They never receive a private key, the project, or this tool; a
+contract manufacturer is a flashing station, not a build host. **Never hand a
+private key (`keys/private/*.pem`) to anyone.** If a third party genuinely must
+sign on their own hardware, sign through a service or HSM where the key never
+leaves your control rather than copying a `.pem` to their machine.
+
+Given that, the per-site `factory_key` id is for **attribution, not key
+isolation** — distinct ids let you tell which production run cut a given image, and
+let you `revoke` one run's key without touching the others. It is *not* an
+anti-overproduction control: a manufacturer holding a signed image can reflash it
+onto any number of boards, and a per-site key does nothing to stop that. Metering
+how many devices are built is the job of per-device registration (each unit gets a
+unique id-bound credential at flash time), which is separate from image signing.
+Factory keys, like OTA keys, are assigned and `revoke`-able but **not rotated** —
+you retire a compromised run's id, you don't roll a live one.
+
+Everything else — compilation, model conversion, per-board identity and
+provenance, the `system.json` copy in each trailer, the drift check — is identical
+to `build romfs`. The capacity check is against a single factory slot (half the
+partition less the two erase blocks); an app that doesn't fit a slot fails the
+build. `build factory-romfs` requires an OTA project (`project new --ota`); on a
+non-OTA project it errors. It takes the same compilation / board / output flags as
+`build romfs`, plus `--factory-key`.
 
 ## Inspecting and verifying an OTA image
 

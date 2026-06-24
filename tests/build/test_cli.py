@@ -146,8 +146,7 @@ def _make_bundle(tmp_path):
     from openmv_ota.ota import bundle
     romfs, trailer, keys = _make_image_files(tmp_path)
     z = tmp_path / "OPENMV_N6.zip"
-    manifest = {"product": "p", "board": "OPENMV_N6", "app_version": "1.2.3"}
-    bundle.write_bundle(z, romfs.read_bytes(), trailer.read_bytes(), manifest)
+    bundle.write_bundle(z, romfs.read_bytes(), trailer.read_bytes())
     return z, keys
 
 
@@ -176,3 +175,22 @@ def test_build_verify_single_arg_not_a_bundle(tmp_path, capsys):
     romfs, _trailer, keys = _make_image_files(tmp_path)  # a loose body, not a zip
     rc = main(["build", "verify", str(romfs), "--trusted-keys", str(keys)])
     assert rc == 2 and "not a .zip bundle" in capsys.readouterr().err
+
+
+def test_build_factory_romfs(make_project, capsys):
+    files = {"main.py": "print(1)\n", "settings.json": '{"app_version": "1.0.0"}\n'}
+    root, repo, app = make_project(ota=True, app_files=files)
+    rc = main(["build", "factory-romfs", str(root), "--app", str(app), "-f", str(repo),
+               "--no-compile-py", "--no-convert-models", "--keep-build-dir"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "OPENMV_N6-factory.img" in out and "factory image" in out
+    assert "build dir kept" in out
+
+
+def test_build_factory_romfs_non_ota_errors(make_project, capsys):
+    root, repo, app = make_project()  # non-OTA
+    rc = main(["build", "factory-romfs", str(root), "--app", str(app), "-f", str(repo),
+               "--no-compile-py", "--no-convert-models"])
+    assert rc != 0
+    assert "needs an OTA project" in capsys.readouterr().err

@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-cov>=4", "ruff"]
+dev = ["pytest>=7", "pytest-cov>=4", "pytest-xdist>=3", "ruff"]
 server = []
 hsm = []
 
@@ -57,7 +57,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = "--cov=openmv_ota --cov-report=term-missing --cov-fail-under=100 --import-mode=importlib"
+addopts = "-n auto --dist worksteal --cov=openmv_ota --cov-report=term-missing --cov-fail-under=100 --import-mode=importlib"
 # Default norecursedirs excludes "build"; we have a tests/build/ dir to collect.
 norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}"]
 

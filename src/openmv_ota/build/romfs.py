@@ -38,9 +38,11 @@ class _OtaSigner:
     private_key: object  # loaded private key
 
 
-def _load_ota_signer(p, app_dir: Path) -> _OtaSigner:
-    """Resolve the OTA signing context: the app version from ``app/settings.json``
-    and the project's current signing key + its private PEM."""
+def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str) -> _OtaSigner:
+    """Resolve a signing context: the app version + rollback floor from
+    ``app/settings.json``, plus the trusted key ``key_id`` (which must have role
+    ``require_role`` and not be revoked) and its private PEM. Shared by ``build
+    romfs`` (the OTA signing key) and ``build factory-romfs`` (a factory key)."""
     from openmv_ota.ota import algorithm_for, read_trusted_keys
     from openmv_ota.ota.errors import OtaError
     from openmv_ota.ota.keys import load_private_key_pem
@@ -75,21 +77,23 @@ def _load_ota_signer(p, app_dir: Path) -> _OtaSigner:
                 "rollback_floor %s can't exceed app_version %s in %s"
                 % (floor_str, app_version, settings_path), exit_code=1)
 
-    key_id = p.config.signing_key_id
     entry = next((k for k in trusted if k.key_id == key_id), None)
     if entry is None:
-        raise BuildError("signing key %s is not in keys/trusted_keys.json" % key_id, exit_code=1)
+        raise BuildError("key 0x%04x is not in keys/trusted_keys.json" % key_id, exit_code=1)
+    if entry.role != require_role:
+        raise BuildError("key 0x%04x is a %s key, not a %s key"
+                         % (key_id, entry.role, require_role), exit_code=1)
     if entry.revoked:
-        raise BuildError(
-            "signing key 0x%04x is revoked; run `openmv-ota project keys rotate` to move "
-            "to the next key" % key_id, exit_code=1)
-    pem_path = ProjectPaths(p.root).private_keys_dir / ("ota-%04x.pem" % key_id)
+        hint = ("; run `openmv-ota project keys rotate` to move to the next key"
+                if require_role == "ota" else "")
+        raise BuildError("%s key 0x%04x is revoked%s" % (require_role, key_id, hint), exit_code=1)
+    pem_path = ProjectPaths(p.root).private_keys_dir / ("%s-%04x.pem" % (entry.role, key_id))
     try:
         private_key = load_private_key_pem(pem_path.read_bytes())
     except OSError:
         raise BuildError(
-            "private signing key %s not found - only the signing machine has it; "
-            "build the body without signing elsewhere, or provision the key here" % pem_path,
+            "private key %s not found - only the signing machine has it; build the body "
+            "without signing elsewhere, or provision the key here" % pem_path,
             exit_code=1) from None
     return _OtaSigner(app_version, payload_version, payload_version_floor,
                       str(settings.get("vendor", "")), key_id, entry.alg,
@@ -158,19 +162,16 @@ def _build_system_info(p, t, app_version, vendor: str) -> dict:
     }
 
 
-def _build_trailer(signer: _OtaSigner, p, t, body: bytes, system_info: dict) -> bytes:
+def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_size: int) -> bytes:
     """Build + sign the complete trailer for ``body`` and return its packed bytes
     (``header || meta || signature || crc32``). Every field is final and calculated —
-    notably ``pad_size`` (the 0xFF gap to the slot's status sector, signed) and the
+    notably ``pad_size`` (the 0xFF gap to this slot's status sector, signed) and the
     crc32 — so the trailer is a self-contained, verifiable artifact. The device writes
     these bytes to the slot's last erase block; the 0xFF that fills the rest of that
     block comes from the erase, not from this file."""
     from openmv_ota.ota import Trailer, pack_trailer, signed_region
     from openmv_ota.ota.sign import sign_region
 
-    # body @ 0, then 0xFF up to the status sector at (front_size - 2 blocks). With
-    # --allow-oversize the body can exceed a slot, so clamp (pad is then meaningless).
-    pad_size = max(0, t.front_size - geometry.slot_overhead(t.erase_size) - len(body))
     trailer = Trailer(
         body_size=len(body),
         pad_size=pad_size,
@@ -240,7 +241,8 @@ def build_romfs(
         raise BuildError("no matching targets in this project")
 
     mpy_cmd = mpy.resolve_mpy_cross(p) if compile_py else None
-    ota_signer = _load_ota_signer(p, app_dir) if p.config.ota else None
+    ota_signer = (_load_signer(p, app_dir, p.config.signing_key_id, require_role="ota")
+                  if p.config.ota else None)
     if ota_signer is not None:
         app_version, vendor = ota_signer.app_version, ota_signer.vendor
     else:
@@ -273,57 +275,181 @@ def _select_targets(targets, boards, partition):
     return sel
 
 
+def _target_name(t, multi: set) -> str:
+    return "%s-p%d" % (t.name, t.partition_index) if t.name in multi else t.name
+
+
+def _warn_unset_board_id(t, system_info: dict) -> None:
+    if system_info["board_id"] == 0:
+        print("warning: %s has board_id 0 (unset); the cross-flash guard is off - set "
+              "board_id under [targets.%s] in openmv-ota.toml" % (t.name, t.name),
+              file=sys.stderr)
+
+
+def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_models, mpy_extra):
+    """Stage + compile + convert + system.json + pack. Returns ``(body, system_info,
+    tmp_dir)``; the caller is responsible for removing ``tmp_dir``."""
+    tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-build-"))
+    stage = stage_app(app_dir, tmp / "app")
+
+    if mpy_cmd is not None:
+        for src in iter_files(stage, (".py",)):
+            mpy.compile_py(mpy_cmd, t.mpy_args + mpy_extra, src, src.with_suffix(".mpy"))
+            src.unlink()
+
+    if convert_models and t.npu:
+        for model in iter_files(stage, MODEL_SUFFIXES):
+            data = convert_model(t, ctx, model)
+            if data is not None:
+                model.write_bytes(data)
+
+    # The read-only system.json (board identity + provenance) goes into the staged
+    # app, so every image - OTA or not - carries it at /rom/system.json.
+    system_info = _build_system_info(p, t, app_version, vendor)
+    (stage / "system.json").write_text(
+        json.dumps(system_info, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    body = build_image(str(stage), t.alignment_rules)
+    return body, system_info, tmp
+
+
 def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, app_version, vendor, *,
                convert_models, mpy_extra, allow_oversize, keep_build_dir) -> BuildResult:
-    tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-build-"))
+    body, system_info, tmp = _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor,
+                                         convert_models=convert_models, mpy_extra=mpy_extra)
     try:
-        stage = stage_app(app_dir, tmp / "app")
-
-        if mpy_cmd is not None:
-            for src in iter_files(stage, (".py",)):
-                mpy.compile_py(mpy_cmd, t.mpy_args + mpy_extra, src, src.with_suffix(".mpy"))
-                src.unlink()
-
-        if convert_models and t.npu:
-            for model in iter_files(stage, MODEL_SUFFIXES):
-                data = convert_model(t, ctx, model)
-                if data is not None:
-                    model.write_bytes(data)
-
-        # Generate the read-only system.json (board identity + provenance) into the
-        # staged app, so every image - OTA or not - carries it at /rom/system.json.
-        system_info = _build_system_info(p, t, app_version, vendor)
-        (stage / "system.json").write_text(
-            json.dumps(system_info, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-        body = build_image(str(stage), t.alignment_rules)
         capacity, bound = _capacity(p, t)
         if len(body) > capacity and not allow_oversize:
             raise BuildError(
-                "%s image is %d bytes but the %s holds %d (%d over); "
-                "pass --allow-oversize"
-                % (t.name, len(body), bound, capacity, len(body) - capacity),
-                exit_code=1,
-            )
+                "%s image is %d bytes but the %s holds %d (%d over); pass --allow-oversize"
+                % (t.name, len(body), bound, capacity, len(body) - capacity), exit_code=1)
 
-        body_size = len(body)
-        name = "%s-p%d" % (t.name, t.partition_index) if t.name in multi else t.name
-
+        name = _target_name(t, multi)
         if ota_signer is not None:
             from openmv_ota.ota import bundle
-            if system_info["board_id"] == 0:
-                print("warning: %s has board_id 0 (unset); the cross-flash guard is off - "
-                      "set board_id under [targets.%s] in openmv-ota.toml"
-                      % (t.name, t.name), file=sys.stderr)
-            trailer_bytes = _build_trailer(ota_signer, p, t, body, system_info)
-            out_path = out_dir / (name + ".zip")  # body + trailer + manifest, one file
-            bundle.write_bundle(out_path, body, trailer_bytes, system_info)
+            _warn_unset_board_id(t, system_info)
+            pad_size = max(0, capacity - len(body))  # 0xFF gap to the FRONT status sector
+            trailer_bytes = _build_trailer(ota_signer, p, body, system_info, pad_size)
+            out_path = out_dir / (name + ".zip")  # body + trailer, one file
+            bundle.write_bundle(out_path, body, trailer_bytes)
         else:
             out_path = out_dir / (name + ".img")  # just the ROMFS body
             out_path.write_bytes(body)
 
-        return BuildResult(t.name, t.partition_index, out_path, body_size, capacity,
+        return BuildResult(t.name, t.partition_index, out_path, len(body), capacity,
                            bound=bound, ota=ota_signer is not None,
+                           build_dir=tmp if keep_build_dir else None)
+    finally:
+        if not keep_build_dir:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+# --- factory image (dual-slot golden + initial FRONT) -----------------------
+
+def build_factory_romfs(
+    project: str | Path,
+    *,
+    app: str | Path | None = None,
+    output: str | Path | None = None,
+    boards: list[str] | None = None,
+    partition: int | None = None,
+    compile_py: bool = True,
+    convert_models: bool = True,
+    mpy_extra: list[str] | None = None,
+    vela_extra: list[str] | None = None,
+    stedgeai_extra: list[str] | None = None,
+    vela_optimise: str = "Performance",
+    stedgeai_optimization: int = 3,
+    firmware: str | Path | None = None,
+    factory_key: int | None = None,
+    keep_build_dir: bool = False,
+) -> list[BuildResult]:
+    """Compose the factory ROMFS partition image per target: golden BACK + initial
+    FRONT, both factory-signed, with status sectors and padding. One
+    ``<board>-factory.img`` per target."""
+    from openmv_ota.ota.keys import FACTORY_KEY_ID_BASE
+
+    project = Path(project)
+    try:
+        p = load_project(project, firmware=firmware)
+    except ProjectError as e:
+        raise BuildError(str(e), exit_code=e.exit_code) from None
+    if not p.config.ota:
+        raise BuildError("factory-romfs needs an OTA project (create with "
+                         "`openmv-ota project new --ota`)", exit_code=1)
+
+    app_dir = Path(app) if app else project / "app"
+    out_dir = Path(output) if output else project / "build"
+    _warn_board_id_collisions(p.config)
+
+    targets = _select_targets(p.targets, boards, partition)
+    if not targets:
+        raise BuildError("no matching targets in this project")
+
+    mpy_cmd = mpy.resolve_mpy_cross(p) if compile_py else None
+    key_id = factory_key if factory_key is not None else FACTORY_KEY_ID_BASE
+    signer = _load_signer(p, app_dir, key_id, require_role="factory")
+    ctx = ModelContext(
+        sdk_home=p.sdk_home, vela_path=p.vela_path, stedgeai_path=p.stedgeai_path,
+        vela_optimise=vela_optimise, stedgeai_optimization=stedgeai_optimization,
+        vela_extra=list(vela_extra or []), stedgeai_extra=list(stedgeai_extra or []),
+    )
+
+    multi = {name for name, c in Counter(t.name for t in targets).items() if c > 1}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return [
+        _factory_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, signer,
+                     signer.app_version, signer.vendor, convert_models=convert_models,
+                     mpy_extra=list(mpy_extra or []), keep_build_dir=keep_build_dir)
+        for t in targets
+    ]
+
+
+def _compose_slot(body: bytes, pad: int, status_sector: bytes, trailer_bytes: bytes,
+                  block: int, slot_size: int) -> bytes:
+    """One slot: ``body || 0xFF pad || status block || trailer block`` == slot_size."""
+    trailer_block = trailer_bytes + b"\xff" * (block - len(trailer_bytes))
+    slot = body + b"\xff" * pad + status_sector + trailer_block
+    assert len(slot) == slot_size, (len(slot), slot_size)
+    return slot
+
+
+def _factory_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, signer, app_version, vendor, *,
+                 convert_models, mpy_extra, keep_build_dir) -> BuildResult:
+    from openmv_ota.ota import status
+
+    body, system_info, tmp = _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor,
+                                         convert_models=convert_models, mpy_extra=mpy_extra)
+    try:
+        block = geometry.ota_block(t.erase_size)
+        front_size = t.front_size
+        back_size = t.partition_size - front_size
+        front_cap = front_size - 2 * block
+        back_cap = back_size - 2 * block
+        if len(body) > front_cap:  # the smaller slot bounds it
+            raise BuildError(
+                "%s image is %d bytes but a factory slot holds %d (%d over)"
+                % (t.name, len(body), front_cap, len(body) - front_cap), exit_code=1)
+        _warn_unset_board_id(t, system_info)
+
+        # FRONT: mountable at first boot (post-OTA-confirmed shape).
+        front_pad = front_cap - len(body)
+        front = _compose_slot(
+            body, front_pad,
+            status.build_status_sector(block, pending=True, tried=True, confirmed=True),
+            _build_trailer(signer, p, body, system_info, front_pad), block, front_size)
+        # BACK: golden / factory state (confirmed only), never trialed.
+        back_pad = back_cap - len(body)
+        back = _compose_slot(
+            body, back_pad,
+            status.build_status_sector(block, pending=False, tried=False, confirmed=True),
+            _build_trailer(signer, p, body, system_info, back_pad), block, back_size)
+
+        name = _target_name(t, multi)
+        out_path = out_dir / (name + "-factory.img")
+        out_path.write_bytes(front + back)
+        return BuildResult(t.name, t.partition_index, out_path, len(body), front_cap,
+                           bound="factory slot", ota=True,
                            build_dir=tmp if keep_build_dir else None)
     finally:
         if not keep_build_dir:

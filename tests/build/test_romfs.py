@@ -244,20 +244,19 @@ def _set_board_id(root, value):
 
 
 def _read_bundle(result):
-    """(body, trailer_bytes, manifest) from an OTA build's <board>.zip."""
+    """(body, trailer_bytes) from an OTA build's <board>.zip."""
     from openmv_ota.ota import bundle
     return bundle.read_bundle(result.output)
 
 
 def test_ota_build_emits_bundle(make_project):
-    # OTA build writes one <board>.zip with romfs.img + trailer.bin + manifest.json.
+    # OTA build writes one <board>.zip with romfs.img + trailer.bin.
     import zipfile
     root, repo, app = _build_ota(make_project)
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
     assert r.output.name == "OPENMV_N6.zip" and r.ota
-    assert set(zipfile.ZipFile(r.output).namelist()) == {"romfs.img", "trailer.bin",
-                                                          "manifest.json"}
+    assert set(zipfile.ZipFile(r.output).namelist()) == {"romfs.img", "trailer.bin"}
 
 
 def test_ota_build_signs_and_verifies(make_project):
@@ -275,14 +274,13 @@ def test_ota_build_signs_and_verifies(make_project):
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
 
-    body, trailer_bytes, manifest = _read_bundle(r)
+    body, trailer_bytes = _read_bundle(r)
     t = parse_trailer(trailer_bytes)
     assert t.payload_version == encode_app_version("1.2.3")
     assert t.board_id == 999
     assert t.body_sha256 == hashlib.sha256(body).digest()
     assert t.meta["vendor"] == "Acme" and t.meta["app_version"] == "1.2.3"
     assert t.meta["firmware"]["version"] == "5.0.0"
-    assert manifest == t.meta  # the plaintext manifest mirrors the signed meta
 
     # The signature verifies against the project's committed trusted public key.
     entry = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
@@ -317,7 +315,7 @@ def test_ota_trailer_meta_mirrors_system_json(make_project):
     _set_board_id(root, 42)
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
-    body, trailer_bytes, _manifest = _read_bundle(r)
+    body, trailer_bytes = _read_bundle(r)
     info = json.loads(_read_file(body, "system.json"))
     # The trailer carries a verbatim copy of the ROMFS system.json.
     assert parse_trailer(trailer_bytes).meta == info
@@ -394,7 +392,7 @@ def test_ota_build_missing_private_key(make_project):
     from openmv_ota.project import ProjectPaths
     root, repo, app = _build_ota(make_project)
     (ProjectPaths(root).private_keys_dir / "ota-0100.pem").unlink()
-    with pytest.raises(BuildError, match="private signing key"):
+    with pytest.raises(BuildError, match="private key .* not found"):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
 
 
@@ -413,3 +411,111 @@ def test_ota_build_unknown_signing_key(make_project):
     cfg.write_text(cfg.read_text().replace("signing_key_id = 256", "signing_key_id = 9999"))
     with pytest.raises(BuildError, match="not in keys/trusted_keys.json"):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+# --- factory image (dual-slot golden + initial FRONT) -----------------------
+
+def test_factory_build_composes_dual_slot(make_project):
+    from openmv_ota.ota import geometry, parse_trailer, status
+    from openmv_ota.project import load_project
+
+    root, repo, app = _build_ota(make_project)
+    _set_board_id(root, 7)
+    target = load_project(root, firmware=repo).board("OPENMV_N6")
+    r = build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                      compile_py=False, convert_models=False)[0]
+    assert r.output.name == "OPENMV_N6-factory.img" and r.bound == "factory slot"
+    img = r.output.read_bytes()
+    assert len(img) == target.partition_size  # the whole partition
+
+    block = geometry.ota_block(target.erase_size)
+    front, part = target.front_size, target.partition_size
+    # both slots carry the same golden body, factory-signed
+    assert parse_trailer(img[front - block:]).board_id == 7        # FRONT trailer
+    assert parse_trailer(img[part - block:]).board_id == 7         # BACK trailer
+
+    fs = img[front - 2 * block: front - block]                     # FRONT status sector
+    bs = img[part - 2 * block: part - block]                       # BACK status sector
+    assert (fs[0:16], fs[16:32], fs[32:48]) == (status.PENDING, status.TRIED, status.CONFIRMED)
+    assert (bs[0:16], bs[16:32], bs[32:48]) == (b"\xff" * 16, b"\xff" * 16, status.CONFIRMED)
+
+
+def test_factory_signed_by_factory_key(make_project):
+    from openmv_ota.ota import (
+        algorithm_for, geometry, parse_trailer, public_key_from_hex, read_trusted_keys,
+        signed_region, verify_region,
+    )
+    from openmv_ota.project import ProjectPaths, load_project
+
+    root, repo, app = _build_ota(make_project)
+    target = load_project(root, firmware=repo).board("OPENMV_N6")
+    r = build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                      compile_py=False, convert_models=False)[0]
+    block = geometry.ota_block(target.erase_size)
+    sector = r.output.read_bytes()[target.partition_size - block:]  # BACK trailer
+    t = parse_trailer(sector)
+    entry = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
+                 if k.key_id == t.key_id)
+    assert entry.role == "factory"
+    alg = algorithm_for(entry.alg)
+    pub = public_key_from_hex(entry.pubkey, alg)
+    assert verify_region(pub, signed_region(sector), t.signature, alg) is True
+
+
+def test_factory_keep_build_dir(make_project):
+    root, repo, app = _build_ota(make_project)
+    r = build_mod.build_factory_romfs(root, app=app, firmware=repo, compile_py=False,
+                                      convert_models=False, keep_build_dir=True)[0]
+    assert r.build_dir is not None and r.build_dir.exists()
+
+
+def test_factory_requires_ota_project(make_project):
+    root, repo, app = make_project()  # non-OTA
+    with pytest.raises(BuildError, match="needs an OTA project"):
+        build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                      compile_py=False, convert_models=False)
+
+
+def test_factory_no_matching_targets(make_project):
+    root, repo, app = _build_ota(make_project)
+    with pytest.raises(BuildError, match="no matching targets"):
+        build_mod.build_factory_romfs(root, app=app, firmware=repo, partition=99,
+                                      compile_py=False, convert_models=False)
+
+
+def test_factory_drift_refuses(make_project, git_cmd):
+    root, repo, app = _build_ota(make_project)
+    (repo / "newfile.txt").write_text("x")
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "commit", "-q", "-m", "drift")
+    with pytest.raises(BuildError, match="refusing to proceed"):
+        build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                      compile_py=False, convert_models=False)
+
+
+def test_factory_unknown_key(make_project):
+    root, repo, app = _build_ota(make_project)
+    with pytest.raises(BuildError, match="not in keys/trusted_keys.json"):
+        build_mod.build_factory_romfs(root, app=app, firmware=repo, factory_key=0x9999,
+                                      compile_py=False, convert_models=False)
+
+
+def test_factory_rejects_ota_key(make_project):
+    # 0x0100 is an OTA key, not a factory key.
+    root, repo, app = _build_ota(make_project)
+    with pytest.raises(BuildError, match="not a factory key"):
+        build_mod.build_factory_romfs(root, app=app, firmware=repo, factory_key=0x0100,
+                                      compile_py=False, convert_models=False)
+
+
+def test_factory_body_too_big(monkeypatch, make_project):
+    from openmv_ota.ota import geometry
+    from openmv_ota.project import load_project
+
+    root, repo, app = _build_ota(make_project)
+    target = load_project(root, firmware=repo).board("OPENMV_N6")
+    front_cap = target.front_size - geometry.slot_overhead(target.erase_size)
+    monkeypatch.setattr(build_mod, "build_image", lambda *a, **k: b"\x00" * (front_cap + 1))
+    with pytest.raises(BuildError, match="factory slot holds"):
+        build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                      compile_py=False, convert_models=False)
