@@ -7,7 +7,19 @@ on **Linux and macOS**, in two jobs.
 
 Installs the package with dev extras and runs `pytest`, which is configured
 (`pyproject.toml`) to fail under **100% coverage**. Runs on `ubuntu-latest` and
-`macos-latest`.
+`macos-latest`. This includes the device `boot.py` logic, which is pure and fully
+host-tested (the hardware `_main` wiring is the only excluded part).
+
+## `cshim` — the ECDSA verify C shim
+
+Compiles the shim's pure-C core (`device/ecdsa_verify.c`) against the firmware's
+*own* mbedtls (3.6.2) and exercises it on the host: the host `cryptography`
+(OpenSSL) signs and the shim's mbedtls verifies — proving the two agree — plus
+tamper / wrong-key / wrong-length / unknown-alg / off-curve negatives, with `gcov`
+asserting **100% line coverage of the core**. It fetches only the mbedtls submodule
+chain (not the whole firmware); crypto is OS-independent, so Linux is enough. The
+MicroPython `mp_obj` glue is the only untested part — that lands in the QEMU
+device test.
 
 ## `build` — every board, end to end
 

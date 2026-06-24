@@ -14,11 +14,13 @@
 // SHA-256/384/512 -- the same primitives TLS uses), so there is no bespoke crypto.
 // The openmv build auto-compiles every modules/*.c, so `openmv-ota build firmware`
 // just drops this file into modules/ for an OTA firmware (and removes it after).
-// Any malformed input returns False rather than raising.
+//
+// The crypto core ``omv_ecdsa_verify`` is pure C (no MicroPython), so it is
+// host-tested against this exact mbedtls (test_ecdsa_verify_c); the MicroPython
+// binding below is compiled out of that host build via OMV_ECDSA_VERIFY_HOST_TEST.
 
+#include <stddef.h>
 #include <stdint.h>
-#include "py/runtime.h"
-#include "py/obj.h"
 
 #include "mbedtls/ecdsa.h"
 #include "mbedtls/ecp.h"
@@ -41,7 +43,7 @@ static const alg_spec_t ALGS[] = {
 };
 
 static const alg_spec_t *alg_lookup(int cose_id) {
-    for (size_t i = 0; i < MP_ARRAY_SIZE(ALGS); i++) {
+    for (size_t i = 0; i < sizeof(ALGS) / sizeof(ALGS[0]); i++) {
         if (ALGS[i].cose_id == cose_id) {
             return &ALGS[i];
         }
@@ -49,25 +51,21 @@ static const alg_spec_t *alg_lookup(int cose_id) {
     return NULL;
 }
 
-static mp_obj_t mod_ecdsa_verify(size_t n_args, const mp_obj_t *args) {
-    (void)n_args;
-    const alg_spec_t *spec = alg_lookup((int)mp_obj_get_int(args[0]));
-
-    mp_buffer_info_t pub, sig, msg;
-    mp_get_buffer_raise(args[1], &pub, MP_BUFFER_READ);
-    mp_get_buffer_raise(args[2], &sig, MP_BUFFER_READ);
-    mp_get_buffer_raise(args[3], &msg, MP_BUFFER_READ);
-
-    // Reject before touching crypto: unknown alg or wrong fixed-width inputs.
-    if (spec == NULL || pub.len != spec->pub_len || sig.len != spec->sig_len) {
-        return mp_const_false;
+// Verify a raw R||S ECDSA signature: 1 = valid, 0 = invalid or malformed. Pure C
+// (no MicroPython), so it is exercised directly by the host test. Any unknown alg
+// or wrong-width input is rejected before any crypto runs.
+int omv_ecdsa_verify(int cose_id,
+                     const uint8_t *pub, size_t pub_len,
+                     const uint8_t *sig, size_t sig_len,
+                     const uint8_t *msg, size_t msg_len) {
+    const alg_spec_t *spec = alg_lookup(cose_id);
+    if (spec == NULL || pub_len != spec->pub_len || sig_len != spec->sig_len) {
+        return 0;
     }
 
     uint8_t hash[64];   // big enough for SHA-512
     const mbedtls_md_info_t *md = mbedtls_md_info_from_type(spec->md_type);
-    if (md == NULL || mbedtls_md(md, (const uint8_t *)msg.buf, msg.len, hash) != 0) {
-        return mp_const_false;
-    }
+    size_t half = spec->sig_len / 2;
 
     mbedtls_ecp_group grp;
     mbedtls_ecp_point Q;
@@ -77,19 +75,37 @@ static mp_obj_t mod_ecdsa_verify(size_t n_args, const mp_obj_t *args) {
     mbedtls_mpi_init(&r);
     mbedtls_mpi_init(&s);
 
-    const uint8_t *raw = (const uint8_t *)sig.buf;
-    size_t half = spec->sig_len / 2;
-    int ok = (mbedtls_ecp_group_load(&grp, spec->grp_id) == 0) &&
-             (mbedtls_ecp_point_read_binary(&grp, &Q, (const uint8_t *)pub.buf, pub.len) == 0) &&
-             (mbedtls_ecp_check_pubkey(&grp, &Q) == 0) &&
-             (mbedtls_mpi_read_binary(&r, raw, half) == 0) &&
-             (mbedtls_mpi_read_binary(&s, raw + half, half) == 0) &&
-             (mbedtls_ecdsa_verify(&grp, hash, spec->hash_len, &Q, &r, &s) == 0);
+    int ok = md != NULL &&
+             mbedtls_md(md, msg, msg_len, hash) == 0 &&
+             mbedtls_ecp_group_load(&grp, spec->grp_id) == 0 &&
+             mbedtls_ecp_point_read_binary(&grp, &Q, pub, pub_len) == 0 &&
+             mbedtls_ecp_check_pubkey(&grp, &Q) == 0 &&
+             mbedtls_mpi_read_binary(&r, sig, half) == 0 &&
+             mbedtls_mpi_read_binary(&s, sig + half, half) == 0 &&
+             mbedtls_ecdsa_verify(&grp, hash, spec->hash_len, &Q, &r, &s) == 0;
 
     mbedtls_mpi_free(&r);
     mbedtls_mpi_free(&s);
     mbedtls_ecp_point_free(&Q);
     mbedtls_ecp_group_free(&grp);
+    return ok;
+}
+
+#ifndef OMV_ECDSA_VERIFY_HOST_TEST   // MicroPython binding (compiled in the firmware)
+
+#include "py/runtime.h"
+#include "py/obj.h"
+
+static mp_obj_t mod_ecdsa_verify(size_t n_args, const mp_obj_t *args) {
+    (void)n_args;
+    mp_buffer_info_t pub, sig, msg;
+    mp_get_buffer_raise(args[1], &pub, MP_BUFFER_READ);
+    mp_get_buffer_raise(args[2], &sig, MP_BUFFER_READ);
+    mp_get_buffer_raise(args[3], &msg, MP_BUFFER_READ);
+    int ok = omv_ecdsa_verify((int)mp_obj_get_int(args[0]),
+                              (const uint8_t *)pub.buf, pub.len,
+                              (const uint8_t *)sig.buf, sig.len,
+                              (const uint8_t *)msg.buf, msg.len);
     return ok ? mp_const_true : mp_const_false;
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(ecdsa_verify_obj, 4, 4, mod_ecdsa_verify);
@@ -105,3 +121,5 @@ const mp_obj_module_t ecdsa_verify_module = {
     .globals = (mp_obj_dict_t *)&ecdsa_verify_globals,
 };
 MP_REGISTER_MODULE(MP_QSTR_ecdsa_verify, ecdsa_verify_module);
+
+#endif // OMV_ECDSA_VERIFY_HOST_TEST

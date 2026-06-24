@@ -39,6 +39,36 @@ jobs:
         run: pytest
 
   # ---------------------------------------------------------------------------
+  # 1b) The ECDSA verify C shim, compiled against the firmware's own mbedtls and
+  #     exercised on the host (host signs / mbedtls verifies + gcov 100% of core).
+  #     Needs only the mbedtls source, so it fetches that submodule chain, not the
+  #     whole firmware. Crypto is OS-independent, so Linux is enough.
+  # ---------------------------------------------------------------------------
+  cshim:
+    name: ecdsa C shim (host mbedtls)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (editable, with dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Fetch the firmware's mbedtls source
+        run: |
+          git clone --depth 1 https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"
+          git -C "$RUNNER_TEMP/openmv" submodule update --init lib/micropython
+          git -C "$RUNNER_TEMP/openmv/lib/micropython" submodule update --init lib/mbedtls
+
+      - name: Run the C-shim test (mbedtls + gcov)
+        env:
+          OPENMV_FW: ${{ runner.temp }}/openmv
+        run: pytest tests/build/test_ecdsa_verify_c.py -o addopts="" -q
+
+  # ---------------------------------------------------------------------------
   # 2) Exercise the tool end to end on every board, on Linux and macOS:
   #    `project new` pegs the project, `--install-sdk` fetches the OpenMV SDK
   #    (pure-Python download), and the firmware build uses the toolchain bundled
