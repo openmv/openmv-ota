@@ -442,6 +442,36 @@
           "npu": null
         }
       ]
+    },
+    "MPS2_AN500": {
+      "display_name": "Arm MPS2-AN500 (Cortex-M7, QEMU)",
+      "arch": "MPS2_AN500 QEMU",
+      "mpy_args": [
+        "-march=armv7emsp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 4194304,
+          "erase_size": 4096,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 32
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
     }
   }
 }

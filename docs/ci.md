@@ -21,6 +21,32 @@ chain (not the whole firmware); crypto is OS-independent, so Linux is enough. Th
 MicroPython `mp_obj` glue is the only untested part — that lands in the QEMU
 device test.
 
+## `qemu` — boot.py on real MicroPython
+
+Runs the **real** frozen `boot.py` on actual MicroPython under `qemu-system-arm`
+(an MPS2-AN500), covering what host unit tests can't: that boot.py behaves the
+same on MicroPython, and that the real `vfs.rom_ioctl` read + `vfs.VfsRom` mount +
+FRONT/BACK slot selection work on-device. [`ci/qemu_boot_test.py`](../ci/qemu_boot_test.py)
+drives the device over the QEMU serial REPL via the firmware's bundled `mpremote`
+(pasting a script — no filesystem mount) and checks three scenarios:
+
+1. **All boot paths** — `evaluate_slot`/`parse_trailer` exercised for every reject
+   reason (`magic`/`crc`/`key`/`sig`/`board`/`compat`/`size`/`body-sha`/`rollback`/
+   `trial-failed`/`forged-confirm`/`status`/`back-not-factory`) and the valid cases,
+   mirroring the host suite but on MicroPython.
+2. **Real mount → FRONT** — a partitioned romfs (FRONT + BACK, distinct markers) is
+   loaded into the emulated XIP region; `OtaBoot.run` reads it via `vfs.rom_ioctl`
+   and mounts FRONT.
+3. **Corrupt FRONT → BACK** — a broken FRONT body falls back to the golden BACK slot.
+
+The signature step uses an injected `verify` because the qemu port doesn't build
+mbedtls yet (the ECDSA core is covered by `cshim`); enabling mbedtls on the qemu
+port for real on-device crypto is a planned follow-up. The job builds the
+MPS2_AN500 firmware with the tool (`project new` + `build firmware`, no `--ota`)
+and needs `qemu-system-arm` + `pyserial`/`platformdirs` (mpremote's deps). Run it
+locally with `python ci/qemu_boot_test.py --firmware /path/to/openmv` (with a built
+MPS2_AN500 checkout).
+
 ## `build` — every board, end to end
 
 A matrix of **(os × board)** that builds each board's firmware / romfs /

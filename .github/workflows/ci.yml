@@ -69,6 +69,50 @@ jobs:
         run: pytest tests/build/test_ecdsa_verify_c.py -o addopts="" -q
 
   # ---------------------------------------------------------------------------
+  # 1c) Run the real boot.py on actual MicroPython under QEMU (MPS2-AN500):
+  #     every boot path (each reject reason + valid) plus the real vfs.rom_ioctl
+  #     mount + FRONT/BACK slot selection. This covers what host tests can't --
+  #     boot.py on MicroPython and the on-device mount. (mbedtls isn't built for
+  #     the qemu port yet, so the signature step uses an injected verify; the
+  #     ECDSA C core is covered by the 100%-gcov host test above.)
+  # ---------------------------------------------------------------------------
+  qemu:
+    name: boot.py on MicroPython (QEMU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install openmv-ota + mpremote deps
+        run: pip install -e ".[dev]" pyserial platformdirs
+
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-arm
+
+      - name: Check out openmv firmware (latest) + submodules
+        run: |
+          git clone https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"
+          git -C "$RUNNER_TEMP/openmv" checkout "$OPENMV_REF"
+          git -C "$RUNNER_TEMP/openmv" submodule update --init --recursive
+
+      - name: Use the SDK's bundled make
+        run: |
+          SDK_VERSION="$(cat "$RUNNER_TEMP/openmv/SDK_VERSION")"
+          echo "$HOME/openmv-sdk-$SDK_VERSION/make" >> "$GITHUB_PATH"
+
+      - name: Build the MPS2_AN500 firmware (the tool installs the SDK)
+        run: |
+          openmv-ota project new "$RUNNER_TEMP/mps2" -f "$RUNNER_TEMP/openmv" \
+            -b MPS2_AN500 --install-sdk
+          openmv-ota build firmware "$RUNNER_TEMP/mps2" -b MPS2_AN500
+
+      - name: Run the QEMU boot test
+        run: python ci/qemu_boot_test.py --firmware "$RUNNER_TEMP/openmv"
+
+  # ---------------------------------------------------------------------------
   # 2) Exercise the tool end to end on every board, on Linux and macOS:
   #    `project new` pegs the project, `--install-sdk` fetches the OpenMV SDK
   #    (pure-Python download), and the firmware build uses the toolchain bundled
