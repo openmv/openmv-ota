@@ -1,24 +1,24 @@
-"""On-device OTA boot logic -- pure, MicroPython-compatible.
+"""The frozen OTA ``boot.py`` -- the module openmv runs at boot.
 
-Frozen into the openmv firmware as the OTA boot core. It selects the FRONT
-(mutable runtime) or BACK (golden) ROMFS slot, verifies the slot's signed trailer
-(ECDSA over the firmware's mbedtls, via an injected ``verify``), checks integrity
-/ cross-flash / compatibility / anti-rollback, runs the trial-boot status state
+This is the file the firmware build freezes into the image as ``boot.py``; on the
+camera it runs after the board's stock ``_boot.py``. It selects the FRONT (mutable
+runtime) or BACK (golden) ROMFS slot, verifies the slot's signed trailer (ECDSA
+over the firmware's mbedtls, via an injected ``verify``), checks integrity /
+cross-flash / compatibility / anti-rollback, runs the trial-boot status state
 machine, and mounts the chosen slot.
+
+The decision logic (``parse_trailer`` / ``evaluate_slot`` / ``OtaBoot``) is pure
+and host-testable -- all flash I/O is injected. The **device entry** at the bottom
+(``_main``) wires in ``vfs`` + the ECDSA C module + a build-generated ``_ota_config``
+and auto-runs; on the host (and in tests) those imports are absent, so the module
+stays inert and importable. So one file is both the camera's ``boot.py`` and a unit
+under test -- there is no separate logic module on the device.
 
 The on-flash format mirrors :mod:`openmv_ota.ota.trailer`, :mod:`openmv_ota.ota.status`,
 and :mod:`openmv_ota.ota.geometry`. This module cannot import them (it runs under
-MicroPython), so the constants are duplicated here and ``test_ota_boot`` pins them
-against the originals so they can't drift.
-
-All I/O is injected so the decision logic is testable on the host:
-
-    read(offset, size)               -> bytes-like   flash; an XIP memoryview on device
-    verify(alg, pubkey, sig, msg)    -> bool         ECDSA-over-mbedtls shim
-    mount(body)                      -> None         vfs.mount(vfs.VfsRom(body), '/rom')
-    write_marker(abs_offset, marker) -> None         FRONT one-shot 'tried' write
-
-Only struct/binascii/hashlib are imported -- all present in CPython and MicroPython.
+MicroPython), so the constants are duplicated here and ``test_device_boot`` pins
+them against the originals so they can't drift. Only struct/binascii/hashlib are
+imported -- all present in CPython and MicroPython.
 """
 
 import binascii
@@ -229,3 +229,61 @@ class OtaBoot:
                 return "BACK", t, str(front_err)
             except OtaReject as back_err:
                 raise OtaReject("no-slot:%s/%s" % (front_err, back_err))
+
+
+# --- Telemetry the app reads after boot completes ---------------------------
+# boot.py can't write to UART/REPL (not initialised yet in the frozen boot path),
+# so it records the outcome here for the app to read once it's running.
+
+last_slot = None              # 'FRONT' or 'BACK'
+last_payload_version = 0      # the mounted image's payload_version
+last_failure_reason = None    # the FRONT rejection reason, if BACK was used
+
+
+# --- Device entry -----------------------------------------------------------
+# Wires vfs + the ECDSA C module + the build-generated _ota_config into OtaBoot
+# and runs. Device-only: on the host these imports are absent, so the module is
+# inert and the logic above stays importable for tests.
+
+def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
+    import os
+    import sys
+
+    import vfs
+    from ecdsa_verify import verify     # the C module dropped into openmv/modules/
+
+    mem = memoryview(vfs.rom_ioctl(2, 0))            # the partition's XIP mapping
+
+    def read(off, size):
+        return mem[off:off + size]
+
+    def mount(body):
+        vfs.mount(vfs.VfsRom(body), "/rom")
+
+    def write_marker(off, marker):
+        vfs.rom_ioctl(4, 0, off, marker)
+
+    try:
+        vfs.umount("/rom")           # drop mp_init's whole-partition auto-mount
+    except OSError:
+        pass
+
+    slot, trailer, front_reason = OtaBoot(
+        read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
+        cfg.OTA_BLOCK, cfg.BOARD_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
+
+    global last_slot, last_payload_version, last_failure_reason
+    last_slot, last_payload_version, last_failure_reason = (
+        slot, trailer.payload_version, front_reason)
+
+    os.chdir("/rom")
+    sys.path.append("/rom")
+    sys.path.append("/rom/lib")
+
+
+try:                                   # the build generates _ota_config beside boot.py
+    import _ota_config as _cfg
+except ImportError:                    # host / tests: stay inert and importable
+    _cfg = None
+if _cfg is not None:
+    _main(_cfg)  # pragma: no cover

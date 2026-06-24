@@ -1,9 +1,10 @@
-"""Host tests for the device OTA boot core (``openmv_ota.build.device.ota_boot``).
+"""Host tests for the device ``boot.py`` (``openmv_ota.build.device.boot``).
 
 Fixtures are built with the real host ``ota`` modules, so every trailer is a
 genuine ES256-signed trailer in the on-flash format. The injected ``verify``
 mirrors the device's ECDSA-over-mbedtls shim by verifying the same raw ``R||S``
-signature against the uncompressed public point.
+signature against the uncompressed public point. Importing the module is inert
+(the device ``_main`` only runs when the build-generated ``_ota_config`` is present).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import hashlib
 
 import pytest
 
-from openmv_ota.build.device import ota_boot as B
+from openmv_ota.build.device import boot as B
 from openmv_ota.ota import keys, sign
 from openmv_ota.ota import status as host_status
 from openmv_ota.ota import trailer as host_trailer
