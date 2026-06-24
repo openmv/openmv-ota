@@ -51,9 +51,43 @@ def test_build_romfs_ota_reports_bundle(make_project, capsys):
     assert "OPENMV_N6.zip" in out and "signed OTA bundle" in out
 
 
-def test_build_firmware_stub(capsys):
-    assert main(["build", "firmware"]) == 2
-    assert "not implemented" in capsys.readouterr().err
+def _fake_firmware_make(monkeypatch):
+    """Patch firmware._run_make to emit a stm32 firmware.bin on the build call."""
+    from pathlib import Path
+
+    from openmv_ota.build import firmware as fw
+
+    def fake(repo, args):
+        if "clean" in args:
+            return
+        target = next(a.split("=", 1)[1] for a in args if a.startswith("TARGET="))
+        f = Path(repo) / "build" / target / "bin" / "firmware.bin"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"FW")
+
+    monkeypatch.setattr(fw, "_run_make", fake)
+
+
+def test_build_firmware_cli(make_project, monkeypatch, capsys):
+    _fake_firmware_make(monkeypatch)
+    root, repo, _app = make_project()
+    assert main(["build", "firmware", str(root), "-f", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "OPENMV_N6.bin" in out and "firmware" in out
+
+
+def test_build_firmware_cli_ota_keep(make_project, monkeypatch, capsys):
+    _fake_firmware_make(monkeypatch)
+    root, repo, _app = make_project(ota=True)
+    assert main(["build", "firmware", str(root), "-f", str(repo), "--keep-build-dir"]) == 0
+    out = capsys.readouterr().out
+    assert "OTA firmware" in out and "wrapper dir kept" in out
+
+
+def test_build_firmware_cli_error(make_project, capsys):
+    root, repo, _app = make_project()
+    rc = main(["build", "firmware", str(root), "-f", str(repo), "-b", "OPENMV_AE3"])
+    assert rc != 0 and "no matching boards" in capsys.readouterr().err
 
 
 def _make_image_files(tmp_path):

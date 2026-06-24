@@ -1,7 +1,7 @@
 """CLI handlers for the ``openmv-ota build`` command group.
 
     romfs      compile + pack a romfs image from a project
-    firmware   build firmware.bin (reserved; not implemented)
+    firmware   build firmware per board (OTA projects freeze a boot.py)
     inspect    decode + print a signed OTA trailer
     verify     verify a built OTA image (signature + body hash)
 
@@ -51,7 +51,18 @@ def register(build_parser: argparse.ArgumentParser):
                    help="keep the staging dir for inspection")
     p.set_defaults(func=cmd_romfs, _command="build romfs")
 
-    p_fw = sub.add_parser("firmware", help="build firmware.bin (not implemented yet)")
+    p_fw = sub.add_parser("firmware", help="build firmware per board (OTA projects freeze boot.py)")
+    p_fw.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
+    p_fw.add_argument("-o", "--output", help="output dir (default: <project>/build)")
+    p_fw.add_argument("-b", "--board", action="append", metavar="NAME",
+                      help="only build this board (repeatable; default: all boards)")
+    p_fw.add_argument("-j", "--jobs", type=int, metavar="N",
+                      help="parallel make jobs (default: CPU count)")
+    p_fw.add_argument("--incremental", action="store_true",
+                      help="skip the clean rebuild (faster; only when the tree is known good)")
+    p_fw.add_argument("-f", "--firmware", help="firmware checkout override")
+    p_fw.add_argument("--keep-build-dir", action="store_true",
+                      help="keep the generated wrapper manifest dir (OTA builds) for inspection")
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
 
     p_ins = sub.add_parser("inspect", help="decode + print an OTA image's trailer")
@@ -146,8 +157,23 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
 
 
 def cmd_firmware(args: argparse.Namespace) -> int:
-    print("build firmware: not implemented yet", file=sys.stderr)
-    return 2
+    from . import firmware as firmware_mod
+
+    try:
+        results = firmware_mod.build_firmware(
+            args.project, output=args.output, boards=args.board, firmware=args.firmware,
+            jobs=args.jobs, incremental=args.incremental, keep_build_dir=args.keep_build_dir,
+        )
+    except BuildError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+
+    for r in results:
+        kind = "OTA firmware" if r.ota else "firmware"
+        print("Built %s  (%s)" % (", ".join(o.name for o in r.outputs), kind))
+        if r.build_dir is not None:
+            print("  wrapper dir kept: %s" % r.build_dir)
+    return 0
 
 
 def _trailer_summary(t) -> dict:

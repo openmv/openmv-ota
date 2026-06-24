@@ -1,9 +1,9 @@
 # build
 
 `openmv-ota build` compiles a project's app and produces deployable images.
-`build romfs` (an OTA payload) and `build factory-romfs` (the full dual-slot
-partition image flashed at the factory) are available now; `build firmware` is
-reserved.
+`build romfs` (an OTA payload), `build factory-romfs` (the full dual-slot
+partition image flashed at the factory), and `build firmware` (the device
+firmware, with an OTA boot script frozen in for OTA projects) are available now.
 
 ## build romfs
 
@@ -208,6 +208,55 @@ partition less the two erase blocks); an app that doesn't fit a slot fails the
 build. `build factory-romfs` requires an OTA project (`project new --ota`); on a
 non-OTA project it errors. It takes the same compilation / board / output flags as
 `build romfs`, plus `--factory-key`.
+
+## build firmware
+
+`build firmware` builds the device firmware for each board by running the firmware
+repo's own `make` in the pegged checkout, so the result is byte-for-byte what the
+firmware build produces:
+
+```bash
+openmv-ota build firmware ./my-product
+```
+
+For each board it runs `make TARGET=<board>` and copies the result into
+`<project>/build/`: `<board>.bin` for an stm32 board (the bootloader-combined
+`openmv.bin` if the board builds one), or a per-core `<board>-M55_HP.bin` /
+`<board>-M55_HE.bin` for an Alif board (its `firmware.toc` is written by the
+bootloader and is not collected). Firmware is built per board, not per partition,
+so a board with multiple ROMFS partitions still builds one firmware.
+
+The behavior follows the project's OTA flag automatically — there is no separate
+option:
+
+- **Non-OTA project:** just builds the firmware.
+- **OTA project:** additionally freezes an OTA **`boot.py`** into the image. It does
+  this without copying anything into or editing the firmware tree: it generates a
+  temporary *wrapper manifest* that `include`s the board's own manifest and adds the
+  boot script, and points the build at it with `make FROZEN_MANIFEST=<wrapper>`. The
+  frozen `boot.py` runs after the board's stock `_boot.py` (the stock boot is left
+  untouched). *(The boot script is currently a placeholder; the on-device
+  trailer-parse, signature/SHA verification, and FRONT/BACK slot selection land in a
+  later step.)*
+
+The build is **clean by default** (`make clean` then build). A stale `build/<board>`
+tree fails at link with a misleading `__cyg_profile_func_enter` error — imlib is
+compiled with `-finstrument-functions` — that has nothing to do with anything we
+inject, so a clean build avoids it. Pass `--incremental` to skip the clean for fast
+iteration when the tree is known good.
+
+Building firmware needs a firmware toolchain (`make` plus the board's cross
+compiler); `build firmware` shells out to it and reports a non-zero exit if it is
+missing or the build fails.
+
+| Flag | Effect |
+|---|---|
+| `-b, --board NAME` | Build only this board (repeatable; default: all boards). |
+| `-o, --output DIR` | Output directory (default: `<project>/build`). |
+| `-j, --jobs N` | Parallel make jobs (default: CPU count). |
+| `--incremental` | Skip the clean rebuild (only when the tree is known good). |
+| `-f, --firmware PATH` | Firmware checkout override. |
+| `--keep-build-dir` | Keep the generated wrapper manifest dir (OTA builds) for inspection. |
 
 ## Inspecting and verifying an OTA image
 

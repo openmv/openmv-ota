@@ -108,12 +108,16 @@ Vela / ST Edge AI. A non-OTA build writes `<board>.img`; an OTA build writes a
 signed `<board>.zip` bundle (body + trailer, where the trailer is the manifest).
 `build factory-romfs` composes the whole factory partition image — both slots
 (mutable FRONT + golden BACK), factory-signed — as `<board>-factory.img`. `build
-inspect` decodes a bundle's trailer; `build verify` checks its signature + body
-hash against the trusted keys (a CI / pre-publish gate).
+firmware` builds the device firmware per board by running the firmware repo's own
+`make`; for an OTA project it also freezes an OTA `boot.py` into the image (via a
+generated wrapper manifest, no edits to the firmware tree). `build inspect` decodes
+a bundle's trailer; `build verify` checks its signature + body hash against the
+trusted keys (a CI / pre-publish gate).
 
 ```bash
 openmv-ota build romfs         ./my-product
 openmv-ota build factory-romfs ./my-product
+openmv-ota build firmware      ./my-product
 openmv-ota build inspect       ./my-product/build/OPENMV_N6.zip
 openmv-ota build verify        ./my-product/build/OPENMV_N6.zip
 ```
