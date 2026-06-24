@@ -12,6 +12,12 @@ The build is **clean by default**: a stale ``build/<board>`` tree fails at link
 with a misleading ``__cyg_profile_func_enter`` error (imlib is compiled with
 ``-finstrument-functions``), unrelated to anything we inject. ``--incremental``
 skips the clean for fast iteration when the tree is known good.
+
+Before the board build we build the host ``mpy-cross`` on its own (see
+``_ensure_mpy_cross``) when the tree hasn't already: the board build would build
+it as a side effect, but the openmv Makefile exports the board's ARM ``CFLAGS``,
+which leak into that host sub-build and break a from-scratch ``mpy-cross`` -- so a
+clean checkout could never build firmware without this step.
 """
 
 from __future__ import annotations
@@ -99,6 +105,7 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
             build_args.append("FROZEN_MANIFEST=%s" % (tmp / "manifest.py").as_posix())
         if not incremental:
             _run_make(repo, ["TARGET=%s" % name, "clean"])
+        _ensure_mpy_cross(repo)
         _run_make(repo, build_args)
         outputs = _collect_outputs(repo, name, out_dir)
         return FirmwareResult(name, outputs, ota=ota,
@@ -147,6 +154,35 @@ def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:
 def _copy(src: Path, dst: Path) -> Path:
     shutil.copy2(src, dst)
     return dst
+
+
+def _ensure_mpy_cross(repo: Path) -> None:
+    """Build the host ``mpy-cross`` on its own if the firmware tree hasn't yet.
+
+    ``make TARGET=<board>`` builds ``mpy-cross`` as a side effect, but the openmv
+    Makefile ``export``s the board's ARM ``CFLAGS``, which leak into that host
+    sub-build and make a *from-scratch* ``mpy-cross`` fail to compile -- the host
+    compiler rejects ``-mcpu=cortex-m7`` and friends. Building it here in its own
+    ``make`` invocation, where no board CFLAGS are in scope, sidesteps the leak; the
+    board build then reuses the binary instead of rebuilding it. A tree that already
+    has ``mpy-cross`` built (or that isn't micropython-based) is left untouched.
+    """
+    mpy_dir = repo / "lib" / "micropython" / "mpy-cross"
+    if not mpy_dir.is_dir() or (mpy_dir / "build" / "mpy-cross").exists():
+        return
+    # Strip compiler-flag vars so nothing in our environment leaks into this host
+    # build either (the board-CFLAGS leak above is the openmv Makefile's doing, but
+    # an inherited CFLAGS would break it just the same).
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CFLAGS", "CXXFLAGS", "CPPFLAGS")}
+    try:
+        subprocess.run([MAKE, "-C", str(mpy_dir)], check=True, env=env)
+    except FileNotFoundError:
+        raise BuildError("make not found - a firmware build toolchain is required",
+                         exit_code=1) from None
+    except subprocess.CalledProcessError as e:
+        raise BuildError("mpy-cross build failed (make -C %s): exit %d"
+                         % (mpy_dir, e.returncode), exit_code=1) from None
 
 
 def _run_make(repo: Path, args: list[str]) -> None:

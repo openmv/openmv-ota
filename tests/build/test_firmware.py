@@ -141,6 +141,64 @@ def test_build_firmware_refuses_on_drift(make_project, git_cmd, monkeypatch):
         fw.build_firmware(root, firmware=repo)
 
 
+def _mpy_cross_dir(repo: Path) -> Path:
+    d = repo / "lib" / "micropython" / "mpy-cross"
+    d.mkdir(parents=True)
+    return d
+
+
+def test_ensure_mpy_cross_absent_is_noop(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+    fw._ensure_mpy_cross(tmp_path)            # no lib/micropython/mpy-cross tree
+    assert calls == []
+
+
+def test_ensure_mpy_cross_already_built_is_noop(tmp_path, monkeypatch):
+    built = _mpy_cross_dir(tmp_path) / "build" / "mpy-cross"
+    built.parent.mkdir()
+    built.write_text("binary")
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+    fw._ensure_mpy_cross(tmp_path)
+    assert calls == []
+
+
+def test_ensure_mpy_cross_builds_with_clean_env(tmp_path, monkeypatch):
+    d = _mpy_cross_dir(tmp_path)
+    monkeypatch.setenv("CFLAGS", "-mcpu=cortex-m7 -mthumb")  # the leak we must drop
+    monkeypatch.setenv("CXXFLAGS", "-mthumb")
+    seen = {}
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: seen.update(cmd=cmd, kw=kw))
+    fw._ensure_mpy_cross(tmp_path)
+    assert seen["cmd"] == [fw.MAKE, "-C", str(d)] and seen["kw"]["check"] is True
+    env = seen["kw"]["env"]
+    assert "CFLAGS" not in env and "CXXFLAGS" not in env   # compiler flags stripped
+    assert "PATH" in env                                   # the rest of the env kept
+
+
+def test_ensure_mpy_cross_make_not_found(tmp_path, monkeypatch):
+    _mpy_cross_dir(tmp_path)
+
+    def boom(*a, **k):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(BuildError, match="make not found"):
+        fw._ensure_mpy_cross(tmp_path)
+
+
+def test_ensure_mpy_cross_build_failure(tmp_path, monkeypatch):
+    _mpy_cross_dir(tmp_path)
+
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(2, ["make"])
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(BuildError, match="mpy-cross build failed"):
+        fw._ensure_mpy_cross(tmp_path)
+
+
 def test_run_make_success(tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: seen.update(cmd=cmd, kw=kw))
