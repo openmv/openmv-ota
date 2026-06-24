@@ -20,7 +20,7 @@ persistent counters outside the partition.
 **Key custody (operational, assumed not enforced by tooling):** private signing
 keys (`keys/private/*.pem`, both `ota` and `factory` roles) never leave the party
 that owns them. A contract manufacturer receives the *signed binary*
-(`<board>-factory.img`) and flashes it — never a private key, the project, or this
+(`<board>-factory-romfs.img`) and flashes it — never a private key, the project, or this
 tool. If a third party must sign on their own hardware, do it through a service or
 HSM where the key never materialises on their machine, not by copying a `.pem`. The
 public halves in `trusted_keys.json` are not secret and ship on every device. A

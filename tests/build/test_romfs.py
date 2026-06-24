@@ -188,7 +188,7 @@ def test_multi_partition_naming(make_project):
     results = build_mod.build_romfs(root, app=app, firmware=repo,
                                     compile_py=False, convert_models=False)
     outs = {r.output.name for r in results}
-    assert outs == {"OPENMV_AE3-p0.img", "OPENMV_AE3-p1.img"}
+    assert outs == {"OPENMV_AE3-p0-romfs.img", "OPENMV_AE3-p1-romfs.img"}
 
 
 def test_board_partition_filters(make_project):
@@ -215,7 +215,7 @@ def test_default_app_and_output_dirs(monkeypatch, make_project):
     # `new` scaffolds a starter app/ for every project, so merge over it.
     shutil.copytree(app, root / "app", dirs_exist_ok=True)
     results = build_mod.build_romfs(root, firmware=repo, compile_py=False, convert_models=False)
-    assert results[0].output == root / "build" / "OPENMV_N6.img"
+    assert results[0].output == root / "build" / "OPENMV_N6-romfs.img"
 
 
 def test_drift_refuses(make_project, git_cmd):
@@ -244,18 +244,18 @@ def _set_board_id(root, value):
 
 
 def _read_bundle(result):
-    """(body, trailer_bytes) from an OTA build's <board>.zip."""
+    """(body, trailer_bytes) from an OTA build's <board>-romfs.zip."""
     from openmv_ota.ota import bundle
     return bundle.read_bundle(result.output)
 
 
 def test_ota_build_emits_bundle(make_project):
-    # OTA build writes one <board>.zip with romfs.img + trailer.bin.
+    # OTA build writes one <board>-romfs.zip with romfs.img + trailer.bin.
     import zipfile
     root, repo, app = _build_ota(make_project)
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
-    assert r.output.name == "OPENMV_N6.zip" and r.ota
+    assert r.output.name == "OPENMV_N6-romfs.zip" and r.ota
     assert set(zipfile.ZipFile(r.output).namelist()) == {"romfs.img", "trailer.bin"}
 
 
@@ -424,7 +424,7 @@ def test_factory_build_composes_dual_slot(make_project):
     target = load_project(root, firmware=repo).board("OPENMV_N6")
     r = build_mod.build_factory_romfs(root, app=app, firmware=repo,
                                       compile_py=False, convert_models=False)[0]
-    assert r.output.name == "OPENMV_N6-factory.img" and r.bound == "factory slot"
+    assert r.output.name == "OPENMV_N6-factory-romfs.img" and r.bound == "factory slot"
     img = r.output.read_bytes()
     assert len(img) == target.partition_size  # the whole partition
 

@@ -200,7 +200,7 @@ def _capacity(project, target) -> tuple[int, str]:
 class BuildResult:
     target: str
     partition_index: int
-    output: Path                   # <board>.img (non-OTA) or <board>.zip bundle (OTA)
+    output: Path                   # <board>-romfs.img (non-OTA) or <board>-romfs.zip bundle (OTA)
     size: int
     capacity: int
     bound: str = "ROMFS partition"  # what capacity measures (partition, or OTA slot)
@@ -330,10 +330,10 @@ def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, app_vers
             _warn_unset_board_id(t, system_info)
             pad_size = max(0, capacity - len(body))  # 0xFF gap to the FRONT status sector
             trailer_bytes = _build_trailer(ota_signer, p, body, system_info, pad_size)
-            out_path = out_dir / (name + ".zip")  # body + trailer, one file
+            out_path = out_dir / (name + "-romfs.zip")  # body + trailer, one file
             bundle.write_bundle(out_path, body, trailer_bytes)
         else:
-            out_path = out_dir / (name + ".img")  # just the ROMFS body
+            out_path = out_dir / (name + "-romfs.img")  # just the ROMFS body
             out_path.write_bytes(body)
 
         return BuildResult(t.name, t.partition_index, out_path, len(body), capacity,
@@ -366,7 +366,7 @@ def build_factory_romfs(
 ) -> list[BuildResult]:
     """Compose the factory ROMFS partition image per target: golden BACK + initial
     FRONT, both factory-signed, with status sectors and padding. One
-    ``<board>-factory.img`` per target."""
+    ``<board>-factory-romfs.img`` per target."""
     from openmv_ota.ota.keys import FACTORY_KEY_ID_BASE
 
     project = Path(project)
@@ -446,7 +446,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, signer, app_versio
             _build_trailer(signer, p, body, system_info, back_pad), block, back_size)
 
         name = _target_name(t, multi)
-        out_path = out_dir / (name + "-factory.img")
+        out_path = out_dir / (name + "-factory-romfs.img")
         out_path.write_bytes(front + back)
         return BuildResult(t.name, t.partition_index, out_path, len(body), front_cap,
                            bound="factory slot", ota=True,

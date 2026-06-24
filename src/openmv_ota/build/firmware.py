@@ -132,9 +132,11 @@ def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:
     bdir = repo / "build" / name / "bin"
     collected: list[Path] = []
     for src in sorted(bdir.glob("firmware*.bin")):
-        # firmware.bin -> <board>.bin; firmware_M55_HP.bin -> <board>-M55_HP.bin.
+        # firmware.bin -> <board>-firmware.bin;
+        # firmware_M55_HP.bin -> <board>-firmware-M55_HP.bin.
         suffix = src.stem[len("firmware"):].lstrip("_")
-        dst_name = "%s-%s.bin" % (name, suffix) if suffix else "%s.bin" % name
+        dst_name = "%s-firmware-%s.bin" % (name, suffix) if suffix \
+            else "%s-firmware.bin" % name
         collected.append(_copy(src, out_dir / dst_name))
     if not collected:
         raise BuildError("firmware build produced no image for %s (looked for "

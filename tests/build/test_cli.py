@@ -12,7 +12,7 @@ def test_build_romfs_pack_only(make_project, capsys):
                "--no-compile-py", "--no-convert-models"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Built" in out and "OPENMV_N6.img" in out and "of ROMFS partition" in out
+    assert "Built" in out and "OPENMV_N6-romfs.img" in out and "of ROMFS partition" in out
 
 
 def test_build_romfs_with_compile(monkeypatch, make_project):
@@ -48,7 +48,7 @@ def test_build_romfs_ota_reports_bundle(make_project, capsys):
                "--no-compile-py", "--no-convert-models"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "OPENMV_N6.zip" in out and "signed OTA bundle" in out
+    assert "OPENMV_N6-romfs.zip" in out and "signed OTA bundle" in out
 
 
 def _fake_firmware_make(monkeypatch):
@@ -73,7 +73,7 @@ def test_build_firmware_cli(make_project, monkeypatch, capsys):
     root, repo, _app = make_project()
     assert main(["build", "firmware", str(root), "-f", str(repo)]) == 0
     out = capsys.readouterr().out
-    assert "OPENMV_N6.bin" in out and "firmware" in out
+    assert "OPENMV_N6-firmware.bin" in out and "firmware" in out
 
 
 def test_build_firmware_cli_ota_keep(make_project, monkeypatch, capsys):
@@ -176,7 +176,7 @@ def test_build_verify_missing_romfs(tmp_path, capsys):
 
 
 def _make_bundle(tmp_path):
-    """A signed <board>.zip bundle + its trusted_keys.json."""
+    """A signed <board>-romfs.zip bundle + its trusted_keys.json."""
     from openmv_ota.ota import bundle
     romfs, trailer, keys = _make_image_files(tmp_path)
     z = tmp_path / "OPENMV_N6.zip"
@@ -218,7 +218,7 @@ def test_build_factory_romfs(make_project, capsys):
                "--no-compile-py", "--no-convert-models", "--keep-build-dir"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "OPENMV_N6-factory.img" in out and "factory image" in out
+    assert "OPENMV_N6-factory-romfs.img" in out and "factory image" in out
     assert "build dir kept" in out
 
 

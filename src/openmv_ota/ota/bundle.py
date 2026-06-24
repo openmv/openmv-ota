@@ -25,7 +25,7 @@ TRAILER = "trailer.bin"
 
 
 def write_bundle(path: Path, body: bytes, trailer_bytes: bytes) -> None:
-    """Write a ``<board>.zip`` bundle."""
+    """Write a ``<board>-romfs.zip`` bundle."""
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(ROMFS, body)
         z.writestr(TRAILER, trailer_bytes)

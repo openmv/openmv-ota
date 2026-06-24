@@ -108,12 +108,12 @@ holds this machine's checkout path.
 
 `openmv-ota build romfs` compiles a project's app and packs a ROMFS image per
 target — `.py` to `.mpy` with the pegged mpy-cross, and NPU models with the pegged
-Vela / ST Edge AI. A non-OTA build writes `<board>.img`; an OTA build writes a
-signed `<board>.zip` bundle (body + trailer, where the trailer is the manifest).
+Vela / ST Edge AI. A non-OTA build writes `<board>-romfs.img`; an OTA build writes a
+signed `<board>-romfs.zip` bundle (body + trailer, where the trailer is the manifest).
 `build factory-romfs` composes the whole factory partition image — both slots
-(mutable FRONT + golden BACK), factory-signed — as `<board>-factory.img`. `build
-firmware` builds the device firmware per board by running the firmware repo's own
-`make`; for an OTA project it also freezes an OTA `boot.py` into the image (via a
+(mutable FRONT + golden BACK), factory-signed — as `<board>-factory-romfs.img`. `build
+firmware` builds the device firmware per board (`<board>-firmware.bin`) by running the
+firmware repo's own `make`; for an OTA project it also freezes an OTA `boot.py` into the image (via a
 generated wrapper manifest, no edits to the firmware tree). `build inspect` decodes
 a bundle's trailer; `build verify` checks its signature + body hash against the
 trusted keys (a CI / pre-publish gate).

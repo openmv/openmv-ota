@@ -18,9 +18,9 @@ For each target it compiles every `.py` to `.mpy` with the project's mpy-cross,
 converts NPU models with the project's Vela (AE3) or ST Edge AI (N6), packs the
 result into a ROMFS image with the board's alignment rules, and checks it against
 the available capacity. For a **non-OTA** project the output is the ROMFS body,
-`<project>/build/<board>.img` (one per target; a board with more than one partition
-gets `<board>-p<index>.img`). An **OTA** project instead writes a signed bundle,
-`<board>.zip` (see [OTA signing](#ota-signing) below).
+`<project>/build/<board>-romfs.img` (one per target; a board with more than one
+partition gets `<board>-p<index>-romfs.img`). An **OTA** project instead writes a
+signed bundle, `<board>-romfs.zip` (see [OTA signing](#ota-signing) below).
 
 Every image also gets a generated, read-only `system.json` at `/rom/system.json` —
 board identity (`board`, `board_id`, `board_name`, `product`), the app version, and
@@ -66,7 +66,7 @@ verifiable, anti-rollback OTA image rather than a bare ROMFS body. No extra flag
   `system.json`** so host tools can read the image's identity without mounting the
   ROMFS. `min_platform_version` is the pegged firmware's version code.
 
-An OTA build writes a single **bundle**, `<board>.zip`, containing two entries:
+An OTA build writes a single **bundle**, `<board>-romfs.zip`, containing two entries:
 
 | Entry | What |
 |---|---|
@@ -152,7 +152,7 @@ needs before it has ever taken an update.
 openmv-ota build factory-romfs ./my-product
 ```
 
-The output is `<project>/build/<board>-factory.img`, sized to the exact partition
+The output is `<project>/build/<board>-factory-romfs.img`, sized to the exact partition
 and ready to write at the partition's offset. It composes the same compiled body
 into the partition's two slots:
 
@@ -184,7 +184,7 @@ defaults to factory key `0x0001`; pass `--factory-key` to select another
 `keys/private/factory-<id>.pem`; signing with an `ota`-role key is refused.
 
 **A factory key is *yours*, not the factory's.** You hold it, you sign with it, and
-you ship the manufacturer the finished `<board>-factory.img` — a flat binary they
+you ship the manufacturer the finished `<board>-factory-romfs.img` — a flat binary they
 write to flash. They never receive a private key, the project, or this tool; a
 contract manufacturer is a flashing station, not a build host. **Never hand a
 private key (`keys/private/*.pem`) to anyone.** If a third party genuinely must
@@ -221,9 +221,9 @@ openmv-ota build firmware ./my-product
 
 For each board it runs `make TARGET=<board>` and copies the result into
 `<project>/build/`. Both ports name their images `firmware*.bin`: an stm32 board
-emits a single `firmware.bin`, collected as `<board>.bin`; an Alif board emits a
-per-core `firmware_M55_HP.bin` / `firmware_M55_HE.bin`, collected as
-`<board>-M55_HP.bin` / `<board>-M55_HE.bin`. The bootloader-combined `openmv.bin`
+emits a single `firmware.bin`, collected as `<board>-firmware.bin`; an Alif board
+emits a per-core `firmware_M55_HP.bin` / `firmware_M55_HE.bin`, collected as
+`<board>-firmware-M55_HP.bin` / `<board>-firmware-M55_HE.bin`. The bootloader-combined `openmv.bin`
 and the bootloader-written `firmware.toc` are deliberately not collected — only the
 firmware image is. Firmware is built per board, not per partition, so a board with
 multiple ROMFS partitions still builds one firmware.
@@ -262,15 +262,15 @@ missing or the build fails.
 
 ## Inspecting and verifying an OTA image
 
-Two read-only commands operate on a built OTA image. They take the `<board>.zip`
+Two read-only commands operate on a built OTA image. They take the `<board>-romfs.zip`
 bundle directly, or the loose `romfs.img` / `trailer.bin` (e.g. if you've
 unzipped). They live under `build` because they validate build outputs.
 
 ### build inspect
 
 ```bash
-openmv-ota build inspect build/OPENMV_N6.zip
-openmv-ota build inspect build/OPENMV_N6.zip --json
+openmv-ota build inspect build/OPENMV_N6-romfs.zip
+openmv-ota build inspect build/OPENMV_N6-romfs.zip --json
 ```
 
 Decodes the signed trailer and prints it: product / board / `board_id` /
@@ -283,7 +283,7 @@ blob, for scripting. It does no crypto — it just reads the trailer.
 ### build verify
 
 ```bash
-openmv-ota build verify build/OPENMV_N6.zip
+openmv-ota build verify build/OPENMV_N6-romfs.zip
 ```
 
 The host-side **authenticity + integrity** gate — the mirror of what the device's

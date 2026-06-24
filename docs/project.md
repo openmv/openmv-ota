@@ -283,7 +283,7 @@ The current signer is the first OTA key (`0x0100`), recorded as `signing_key_id`
 `build romfs` signs with that key, and a trailer records *which* key signed
 (`key_id`) so the device picks the matching public key. Both roles' private keys
 stay on your signing machine — a manufacturer receives the signed
-`<board>-factory.img`, never a key (see [build.md](build.md#signed-with-a-factory-key)
+`<board>-factory-romfs.img`, never a key (see [build.md](build.md#signed-with-a-factory-key)
 and [threat-model.md](threat-model.md)).
 
 `keys/trusted_keys.json` is the committed public set the firmware build will bake

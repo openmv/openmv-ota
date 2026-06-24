@@ -40,7 +40,7 @@ def test_build_firmware_non_ota(make_project, monkeypatch):
     assert len(results) == 1
     r = results[0]
     assert r.board == "OPENMV_N6" and r.ota is False and r.build_dir is None
-    assert [o.name for o in r.outputs] == ["OPENMV_N6.bin"]
+    assert [o.name for o in r.outputs] == ["OPENMV_N6-firmware.bin"]
     assert r.outputs[0].read_bytes() == b"FW"
     # clean then build (default), build carries the TARGET + -j
     assert fake.calls[0] == ["TARGET=OPENMV_N6", "clean"]
@@ -64,7 +64,7 @@ def test_build_firmware_ignores_openmv_bin(make_project, monkeypatch):
     monkeypatch.setattr(fw, "_run_make", fake)
     root, repo, _app = make_project()
     r = fw.build_firmware(root, firmware=repo)[0]
-    assert [o.name for o in r.outputs] == ["OPENMV_N6.bin"]
+    assert [o.name for o in r.outputs] == ["OPENMV_N6-firmware.bin"]
 
 
 def test_build_firmware_openmv_bin_only_is_no_image(make_project, monkeypatch):
@@ -81,7 +81,7 @@ def test_build_firmware_alif_per_core(make_project, monkeypatch):
     root, repo, _app = make_project(boards=("OPENMV_AE3",))
     r = fw.build_firmware(root, firmware=repo)[0]
     # both cores collected, the bootloader-written .toc ignored
-    assert sorted(o.name for o in r.outputs) == ["OPENMV_AE3-M55_HE.bin", "OPENMV_AE3-M55_HP.bin"]
+    assert sorted(o.name for o in r.outputs) == ["OPENMV_AE3-firmware-M55_HE.bin", "OPENMV_AE3-firmware-M55_HP.bin"]
 
 
 def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
