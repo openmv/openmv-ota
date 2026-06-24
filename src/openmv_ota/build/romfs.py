@@ -199,11 +199,11 @@ def _capacity(project, target) -> tuple[int, str]:
 class BuildResult:
     target: str
     partition_index: int
-    output: Path                   # the ROMFS body (<board>.romfs)
+    output: Path                   # <board>.img (non-OTA) or <board>.zip bundle (OTA)
     size: int
     capacity: int
     bound: str = "ROMFS partition"  # what capacity measures (partition, or OTA slot)
-    trailer: Path | None = None    # the signed trailer (<board>.trailer), OTA only
+    ota: bool = False              # output is a signed .zip bundle
     build_dir: Path | None = None  # set when --keep-build-dir
 
 
@@ -308,20 +308,22 @@ def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, app_vers
 
         body_size = len(body)
         name = "%s-p%d" % (t.name, t.partition_index) if t.name in multi else t.name
-        out_path = out_dir / (name + ".romfs")
-        out_path.write_bytes(body)  # the ROMFS body, OTA or not
 
-        trailer_path = None
         if ota_signer is not None:
+            from openmv_ota.ota import bundle
             if system_info["board_id"] == 0:
                 print("warning: %s has board_id 0 (unset); the cross-flash guard is off - "
                       "set board_id under [targets.%s] in openmv-ota.toml"
                       % (t.name, t.name), file=sys.stderr)
-            trailer_path = out_dir / (name + ".trailer")
-            trailer_path.write_bytes(_build_trailer(ota_signer, p, t, body, system_info))
+            trailer_bytes = _build_trailer(ota_signer, p, t, body, system_info)
+            out_path = out_dir / (name + ".zip")  # body + trailer + manifest, one file
+            bundle.write_bundle(out_path, body, trailer_bytes, system_info)
+        else:
+            out_path = out_dir / (name + ".img")  # just the ROMFS body
+            out_path.write_bytes(body)
 
         return BuildResult(t.name, t.partition_index, out_path, body_size, capacity,
-                           bound=bound, trailer=trailer_path,
+                           bound=bound, ota=ota_signer is not None,
                            build_dir=tmp if keep_build_dir else None)
     finally:
         if not keep_build_dir:

@@ -15,10 +15,10 @@ openmv-ota build romfs ./my-product
 For each target it compiles every `.py` to `.mpy` with the project's mpy-cross,
 converts NPU models with the project's Vela (AE3) or ST Edge AI (N6), packs the
 result into a ROMFS image with the board's alignment rules, and checks it against
-the available capacity. The output is written to `<project>/build/<board>.romfs`
-(one per target; a board with more than one partition gets `<board>-p<index>.romfs`).
-An OTA project additionally writes a signed `<board>.trailer` per target (see
-[OTA signing](#ota-signing) below).
+the available capacity. For a **non-OTA** project the output is the ROMFS body,
+`<project>/build/<board>.img` (one per target; a board with more than one partition
+gets `<board>-p<index>.img`). An **OTA** project instead writes a signed bundle,
+`<board>.zip` (see [OTA signing](#ota-signing) below).
 
 Every image also gets a generated, read-only `system.json` at `/rom/system.json` —
 board identity (`board`, `board_id`, `board_name`, `product`), the app version, and
@@ -64,16 +64,22 @@ verifiable, anti-rollback OTA image rather than a bare ROMFS body. No extra flag
   `system.json`** so host tools can read the image's identity without mounting the
   ROMFS. `min_platform_version` is the pegged firmware's version code.
 
-An OTA build writes **two files** per target: `<board>.romfs` (the ROMFS body,
-identical to a non-OTA build) and `<board>.trailer` (the standalone signed
-trailer). They're kept separate because on-device they go to different places — the
-body to the start of the slot, the trailer to the slot's last erase block — and
-because the trailer carries a copy of `system.json`, so the update server reads an
-image's version / `board_id` / signature straight from `<board>.trailer` without
-touching the body. Every trailer field is final and signed, including `pad_size`
-(the `0xFF` gap to the status sector, computed from the slot geometry) and the
-crc32. The build summary reports the body size against the OTA-slot budget (the
-trailer and status sectors are accounted for in the budget). See
+An OTA build writes a single **bundle**, `<board>.zip`, containing three entries:
+
+| Entry | What |
+|---|---|
+| `romfs.img` | the ROMFS body (mounted at `/rom`, written to the slot start) |
+| `trailer.bin` | the signed trailer (written to the slot's last erase block) |
+| `manifest.json` | a plaintext copy of `system.json` (codec-free indexing) |
+
+One file is easier to flash / upload / track, but the pieces stay separate
+*entries* — a zip is random-access, so the update server reads `manifest.json` or
+`trailer.bin` (version / `board_id` / signature) without touching the multi-MB
+body. The device never gets the zip (it can't hold the body in RAM to unzip): a
+server unbundles and streams the body + trailer separately, exactly as they're
+placed on-flash. Every trailer field is final and signed, including `pad_size` (the
+`0xFF` gap to the status sector, computed from the slot geometry) and the crc32.
+The build summary reports the body size against the OTA-slot budget. See
 [trailer.md](trailer.md) for the on-flash format.
 
 `build romfs` fails the build (exit 1) if the OTA signing context is incomplete:
@@ -135,14 +141,15 @@ Optimisation differs per tool: Vela takes a mode, ST Edge AI takes a level.
 
 ## Inspecting and verifying an OTA image
 
-Two read-only commands operate on a built OTA image (`<board>.romfs` +
-`<board>.trailer`). They live under `build` because they validate build outputs.
+Two read-only commands operate on a built OTA image. They take the `<board>.zip`
+bundle directly, or the loose `romfs.img` / `trailer.bin` (e.g. if you've
+unzipped). They live under `build` because they validate build outputs.
 
 ### build inspect
 
 ```bash
-openmv-ota build inspect build/OPENMV_N6.trailer
-openmv-ota build inspect build/OPENMV_N6.trailer --json
+openmv-ota build inspect build/OPENMV_N6.zip
+openmv-ota build inspect build/OPENMV_N6.zip --json
 ```
 
 Decodes the signed trailer and prints it: product / board / `board_id` /
@@ -155,7 +162,7 @@ blob, for scripting. It does no crypto — it just reads the trailer.
 ### build verify
 
 ```bash
-openmv-ota build verify build/OPENMV_N6.romfs build/OPENMV_N6.trailer
+openmv-ota build verify build/OPENMV_N6.zip
 ```
 
 The host-side **authenticity + integrity** gate — the mirror of what the device's
@@ -163,8 +170,9 @@ The host-side **authenticity + integrity** gate — the mirror of what the devic
 parses, the signing `key_id` is in the trusted set **and not revoked**, the
 algorithm matches, the **signature verifies** over the signed region, and the body
 matches the signed size + SHA-256. Exit 0 on success, 1 on a verification failure
-(with the reason), 2 on a bad argument. Trusted keys come from `--trusted-keys`
-(default `keys/trusted_keys.json`), so running it from a project root just works.
+(with the reason), 2 on a bad argument. Pass the `.zip` (one argument) or the loose
+`romfs.img trailer.bin` (two). Trusted keys come from `--trusted-keys` (default
+`keys/trusted_keys.json`), so running it from a project root just works.
 
 It deliberately does **not** check the device-relative fields — `board_id` against
 a device, `payload_version` anti-rollback against the installed image,

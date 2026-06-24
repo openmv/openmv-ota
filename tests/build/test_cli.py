@@ -12,7 +12,7 @@ def test_build_romfs_pack_only(make_project, capsys):
                "--no-compile-py", "--no-convert-models"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Built" in out and "OPENMV_N6.romfs" in out and "of ROMFS partition" in out
+    assert "Built" in out and "OPENMV_N6.img" in out and "of ROMFS partition" in out
 
 
 def test_build_romfs_with_compile(monkeypatch, make_project):
@@ -41,13 +41,14 @@ def test_build_romfs_keep_build_dir(make_project, capsys):
     assert "build dir kept" in capsys.readouterr().out
 
 
-def test_build_romfs_ota_reports_trailer(make_project, capsys):
+def test_build_romfs_ota_reports_bundle(make_project, capsys):
     files = {"main.py": "print(1)\n", "settings.json": '{"app_version": "1.0.0"}\n'}
     root, repo, app = make_project(ota=True, app_files=files)
     rc = main(["build", "romfs", str(root), "--app", str(app), "-f", str(repo),
                "--no-compile-py", "--no-convert-models"])
     assert rc == 0
-    assert "signed trailer" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "OPENMV_N6.zip" in out and "signed OTA bundle" in out
 
 
 def test_build_firmware_stub(capsys):
@@ -138,3 +139,40 @@ def test_build_verify_missing_romfs(tmp_path, capsys):
     rc = main(["build", "verify", str(tmp_path / "nope.romfs"), str(trailer),
                "--trusted-keys", str(keys)])
     assert rc == 2 and "error:" in capsys.readouterr().err
+
+
+def _make_bundle(tmp_path):
+    """A signed <board>.zip bundle + its trusted_keys.json."""
+    from openmv_ota.ota import bundle
+    romfs, trailer, keys = _make_image_files(tmp_path)
+    z = tmp_path / "OPENMV_N6.zip"
+    manifest = {"product": "p", "board": "OPENMV_N6", "app_version": "1.2.3"}
+    bundle.write_bundle(z, romfs.read_bytes(), trailer.read_bytes(), manifest)
+    return z, keys
+
+
+def test_build_inspect_bundle(tmp_path, capsys):
+    z, _keys = _make_bundle(tmp_path)
+    assert main(["build", "inspect", str(z)]) == 0
+    assert "ES256" in capsys.readouterr().out
+
+
+def test_build_inspect_bad_bundle(tmp_path, capsys):
+    import zipfile
+    z = tmp_path / "bad.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("hello.txt", "x")  # a zip, but not our bundle
+    assert main(["build", "inspect", str(z)]) == 2
+    assert "not an OTA bundle" in capsys.readouterr().err
+
+
+def test_build_verify_bundle(tmp_path, capsys):
+    z, keys = _make_bundle(tmp_path)
+    assert main(["build", "verify", str(z), "--trusted-keys", str(keys)]) == 0
+    assert "verified" in capsys.readouterr().out
+
+
+def test_build_verify_single_arg_not_a_bundle(tmp_path, capsys):
+    romfs, _trailer, keys = _make_image_files(tmp_path)  # a loose body, not a zip
+    rc = main(["build", "verify", str(romfs), "--trusted-keys", str(keys)])
+    assert rc == 2 and "not a .zip bundle" in capsys.readouterr().err

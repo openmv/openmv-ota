@@ -54,14 +54,14 @@ def register(build_parser: argparse.ArgumentParser):
     p_fw = sub.add_parser("firmware", help="build firmware.bin (not implemented yet)")
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
 
-    p_ins = sub.add_parser("inspect", help="decode + print a signed OTA trailer")
-    p_ins.add_argument("trailer", help="path to a <board>.trailer file")
+    p_ins = sub.add_parser("inspect", help="decode + print an OTA image's trailer")
+    p_ins.add_argument("image", help="a <board>.zip bundle or a trailer.bin")
     p_ins.add_argument("--json", action="store_true", help="machine-readable dump")
     p_ins.set_defaults(func=cmd_inspect, _command="build inspect")
 
-    p_ver = sub.add_parser("verify", help="verify a built OTA image (signature + body hash)")
-    p_ver.add_argument("romfs", help="the <board>.romfs body")
-    p_ver.add_argument("trailer", help="the <board>.trailer")
+    p_ver = sub.add_parser("verify", help="verify an OTA image (signature + body hash)")
+    p_ver.add_argument("image", help="a <board>.zip bundle, or the romfs.img body")
+    p_ver.add_argument("trailer", nargs="?", help="trailer.bin (omit when image is a .zip)")
     p_ver.add_argument("--trusted-keys", default="keys/trusted_keys.json",
                        help="trusted_keys.json (default: keys/trusted_keys.json)")
     p_ver.set_defaults(func=cmd_verify, _command="build verify")
@@ -85,9 +85,9 @@ def cmd_romfs(args: argparse.Namespace) -> int:
 
     for r in results:
         pct = (r.size / r.capacity * 100) if r.capacity else 0
-        print("Built %s  (%d bytes, %.1f%% of %s)" % (r.output, r.size, pct, r.bound))
-        if r.trailer is not None:
-            print("  signed trailer: %s" % r.trailer)
+        kind = "signed OTA bundle" if r.ota else "image"
+        print("Built %s  (%s, %d-byte body, %.1f%% of %s)"
+              % (r.output, kind, r.size, pct, r.bound))
         if r.build_dir is not None:
             print("  build dir kept: %s" % r.build_dir)
     return 0
@@ -129,16 +129,20 @@ def _trailer_summary(t) -> dict:
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
-    from openmv_ota.ota import parse_trailer
+    from openmv_ota.ota import bundle, parse_trailer
     from openmv_ota.ota.errors import OtaError
 
+    path = Path(args.image)
     try:
-        data = Path(args.trailer).read_bytes()
-    except OSError as e:
+        if bundle.is_bundle(path):
+            _body, trailer_bytes, _manifest = bundle.read_bundle(path)
+        else:
+            trailer_bytes = path.read_bytes()
+    except (OSError, OtaError) as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
     try:
-        t = parse_trailer(data)
+        t = parse_trailer(trailer_bytes)
     except OtaError as e:
         print("error: not a valid trailer: %s" % e, file=sys.stderr)
         return 2
@@ -168,14 +172,21 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    from openmv_ota.ota import read_trusted_keys
+    from openmv_ota.ota import bundle, read_trusted_keys
     from openmv_ota.ota.errors import OtaError
     from openmv_ota.ota.verify import verify_image
 
+    image = Path(args.image)
     try:
-        body = Path(args.romfs).read_bytes()
-        trailer = Path(args.trailer).read_bytes()
-    except OSError as e:
+        if args.trailer is not None:
+            body, trailer = image.read_bytes(), Path(args.trailer).read_bytes()
+        elif bundle.is_bundle(image):
+            body, trailer, _manifest = bundle.read_bundle(image)
+        else:
+            print("error: %s is not a .zip bundle; pass `<romfs.img> <trailer.bin>` or a "
+                  "bundle" % image, file=sys.stderr)
+            return 2
+    except (OSError, OtaError) as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
     try:

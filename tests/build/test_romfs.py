@@ -188,7 +188,7 @@ def test_multi_partition_naming(make_project):
     results = build_mod.build_romfs(root, app=app, firmware=repo,
                                     compile_py=False, convert_models=False)
     outs = {r.output.name for r in results}
-    assert outs == {"OPENMV_AE3-p0.romfs", "OPENMV_AE3-p1.romfs"}
+    assert outs == {"OPENMV_AE3-p0.img", "OPENMV_AE3-p1.img"}
 
 
 def test_board_partition_filters(make_project):
@@ -215,7 +215,7 @@ def test_default_app_and_output_dirs(monkeypatch, make_project):
     # `new` scaffolds a starter app/ for every project, so merge over it.
     shutil.copytree(app, root / "app", dirs_exist_ok=True)
     results = build_mod.build_romfs(root, firmware=repo, compile_py=False, convert_models=False)
-    assert results[0].output == root / "build" / "OPENMV_N6.romfs"
+    assert results[0].output == root / "build" / "OPENMV_N6.img"
 
 
 def test_drift_refuses(make_project, git_cmd):
@@ -243,14 +243,21 @@ def _set_board_id(root, value):
     cfg.write_text(re.sub(r"board_id   = \d+", "board_id   = %d" % value, cfg.read_text(), count=1))
 
 
-def test_ota_build_emits_two_files(make_project):
-    # OTA build writes the body (.romfs) and a separate signed .trailer; non-OTA
-    # writes only the body.
+def _read_bundle(result):
+    """(body, trailer_bytes, manifest) from an OTA build's <board>.zip."""
+    from openmv_ota.ota import bundle
+    return bundle.read_bundle(result.output)
+
+
+def test_ota_build_emits_bundle(make_project):
+    # OTA build writes one <board>.zip with romfs.img + trailer.bin + manifest.json.
+    import zipfile
     root, repo, app = _build_ota(make_project)
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
-    assert r.output.name == "OPENMV_N6.romfs" and r.output.exists()
-    assert r.trailer.name == "OPENMV_N6.trailer" and r.trailer.exists()
+    assert r.output.name == "OPENMV_N6.zip" and r.ota
+    assert set(zipfile.ZipFile(r.output).namelist()) == {"romfs.img", "trailer.bin",
+                                                          "manifest.json"}
 
 
 def test_ota_build_signs_and_verifies(make_project):
@@ -268,21 +275,21 @@ def test_ota_build_signs_and_verifies(make_project):
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
 
-    body = r.output.read_bytes()         # .romfs is the bare body, no trailer appended
-    sector = r.trailer.read_bytes()      # the standalone signed trailer
-    t = parse_trailer(sector)
+    body, trailer_bytes, manifest = _read_bundle(r)
+    t = parse_trailer(trailer_bytes)
     assert t.payload_version == encode_app_version("1.2.3")
     assert t.board_id == 999
     assert t.body_sha256 == hashlib.sha256(body).digest()
     assert t.meta["vendor"] == "Acme" and t.meta["app_version"] == "1.2.3"
     assert t.meta["firmware"]["version"] == "5.0.0"
+    assert manifest == t.meta  # the plaintext manifest mirrors the signed meta
 
     # The signature verifies against the project's committed trusted public key.
     entry = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
                  if k.key_id == t.key_id)
     alg = algorithm_for(entry.alg)
     pub = public_key_from_hex(entry.pubkey, alg)
-    assert verify_region(pub, signed_region(sector), t.signature, alg) is True
+    assert verify_region(pub, signed_region(trailer_bytes), t.signature, alg) is True
 
 
 def test_ota_trailer_pad_size_is_correct_and_signed(make_project):
@@ -295,7 +302,7 @@ def test_ota_trailer_pad_size_is_correct_and_signed(make_project):
     target = load_project(root, firmware=repo).board("OPENMV_N6")
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
-    t = parse_trailer(r.trailer.read_bytes())
+    t = parse_trailer(_read_bundle(r)[1])
     overhead = geometry.slot_overhead(target.erase_size)
     assert t.body_size == r.size
     assert t.body_size + t.pad_size == target.front_size - overhead
@@ -310,9 +317,10 @@ def test_ota_trailer_meta_mirrors_system_json(make_project):
     _set_board_id(root, 42)
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
-    info = json.loads(_read_file(r.output.read_bytes(), "system.json"))
+    body, trailer_bytes, _manifest = _read_bundle(r)
+    info = json.loads(_read_file(body, "system.json"))
     # The trailer carries a verbatim copy of the ROMFS system.json.
-    assert parse_trailer(r.trailer.read_bytes()).meta == info
+    assert parse_trailer(trailer_bytes).meta == info
     assert info["ota"] is True and info["board_id"] == 42 and info["app_version"] == "1.2.3"
 
 
@@ -324,7 +332,7 @@ def test_ota_build_sets_rollback_floor(make_project):
         make_project, settings='{"app_version": "2.5.0", "rollback_floor": "2.0.0"}\n')
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
-    t = parse_trailer(r.trailer.read_bytes())
+    t = parse_trailer(_read_bundle(r)[1])
     assert t.payload_version_floor == encode_app_version("2.0.0")
     assert t.payload_version == encode_app_version("2.5.0")
 
