@@ -206,9 +206,20 @@ def test_resolve_mpy_cross(make_firmware, make_sdk):
 
 # --- board ------------------------------------------------------------------
 
+def test_mbedtls_supported(tmp_path):
+    # No board_config.mk -> assumed supported (mbedtls may be enabled elsewhere).
+    assert board_res._mbedtls_supported(tmp_path, "NOBOARD") is True
+    for board, val, expect in (("Z", "0", False), ("Y", "1", True)):
+        d = tmp_path / "boards" / board
+        d.mkdir(parents=True)
+        (d / "board_config.mk").write_text("CPU=x\nMICROPY_SSL_MBEDTLS = %s\nFOO=1\n" % val)
+        assert board_res._mbedtls_supported(tmp_path, board) is expect
+
+
 def test_board_geometry_from_firmware(make_firmware):
     repo = make_firmware()
     rb, warnings = board_res.resolve_board(repo, "OPENMV_N6")
+    assert rb.mbedtls is True                          # no board_config.mk -> default True
     assert rb.geometry_source == "firmware"
     assert rb.partition_size == 0x01800000
     assert rb.erase_size == 4096                      # external XSPI NOR

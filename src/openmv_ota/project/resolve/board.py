@@ -37,6 +37,7 @@ class ResolvedBoard:
     alignment_rules: list[dict] = field(default_factory=list)
     geometry_source: str = "bundled"
     npu_config: dict | None = None        # full compiler config (args + file refs)
+    mbedtls: bool = True                   # firmware builds mbedtls (OTA verify needs it)
 
 
 def _firmware_part_lengths(repo: Path, board: str, index: int) -> list[int]:
@@ -63,6 +64,20 @@ def _board_type(repo: Path, board: str) -> str | None:
         return None
     defines = parse_defines(header.read_text(encoding="utf-8", errors="replace"), ["OMV_BOARD_TYPE"])
     return defines.get("OMV_BOARD_TYPE")
+
+
+def _mbedtls_supported(repo: Path, board: str) -> bool:
+    """Whether the firmware builds mbedtls for this board, read from
+    ``board_config.mk`` (``MICROPY_SSL_MBEDTLS``). The OTA boot.py verifies image
+    signatures with an mbedtls-backed C module, so a board without it can't run OTA
+    (the emulator boards MPS2/MPS3 set it to 0). Only an explicit ``0`` disables it;
+    a missing line means the board enables mbedtls elsewhere (e.g. the Alif port)."""
+    mk = repo / "boards" / board / "board_config.mk"
+    if not mk.exists():
+        return True
+    m = re.search(r"^\s*MICROPY_SSL_MBEDTLS\s*=\s*(\d+)",
+                  mk.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
+    return not (m and m.group(1) == "0")
 
 
 def resolve_board(
@@ -127,5 +142,6 @@ def resolve_board(
         alignment_rules=list(part.alignment_rules),
         geometry_source=source,
         npu_config=npu_config,
+        mbedtls=_mbedtls_supported(repo, name),
     )
     return resolved, warnings

@@ -2,9 +2,10 @@
 """QEMU integration test for the device OTA ``boot.py``.
 
 Runs the **real** frozen ``boot.py`` source on actual MicroPython, under
-``qemu-system-arm`` emulating an MPS2-AN500, and checks the parts the host unit
-tests can't reach: that boot.py behaves identically on MicroPython, and that the
-real ``vfs.rom_ioctl`` read + ``vfs.VfsRom`` mount + slot selection work on-device.
+``qemu-system-arm`` (the MPS2-AN500 Cortex-M7 and MPS3-AN547 Cortex-M55 boards),
+and checks the parts the host unit tests can't reach: that boot.py behaves the
+same on MicroPython (on both architectures), and that the real ``vfs.rom_ioctl``
+read + ``vfs.VfsRom`` mount + slot selection work on-device.
 
 Two kinds of check, both driven over the QEMU serial REPL via the firmware's
 bundled ``mpremote`` (``run`` a pasted script -- no filesystem mount needed):
@@ -18,10 +19,11 @@ bundled ``mpremote`` (``run`` a pasted script -- no filesystem mount needed):
    mounts the chosen slot. Valid -> FRONT; a corrupted FRONT body -> BACK.
 
 Usage:
-    qemu_boot_test.py --firmware /path/to/openmv   # a built MPS2_AN500 checkout
+    qemu_boot_test.py --firmware /path/to/openmv [--board MPS2_AN500 ...]
 
-It needs ``build/MPS2_AN500/bin/firmware.elf`` in the checkout (build it with
-``make TARGET=MPS2_AN500``) and ``qemu-system-arm`` on PATH. Exit 0 iff all pass.
+Each requested board needs ``build/<board>/bin/firmware.elf`` in the checkout
+(``make TARGET=<board>``); boards without one are skipped. Needs
+``qemu-system-arm``. Exit 0 iff all run checks pass.
 """
 
 from __future__ import annotations
@@ -41,14 +43,18 @@ from openmv_ota.ota import trailer as host_trailer
 from openmv_ota.ota.algorithms import ES256, algorithm_for
 from openmv_ota.romfs.builder import build_image
 
-BOOT_PY = Path(__file__).resolve().parent.parent / "src" / "openmv_ota" / "build" / "device" / "boot.py"
-ROMFS_ORIGIN = 0x60C00000          # MPS2_AN500 OMV_ROMFS_PART0_ORIGIN
-PART = 4194304                     # OMV_ROMFS_PART0_LENGTH (4 MiB)
-FRONT = 2097152                    # half, block-aligned
+BOOT_PY = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
+           / "build" / "device" / "boot.py")
 BLOCK = 4096
-BOARD = 0x1234
+BOARD = 0x1234            # the trailer board_id the path cases use (a test value)
 PLAT = 5 << 24
 V1 = 1 << 24
+
+# Per-board: qemu machine, romfs XIP origin, and partition + FRONT slot sizes.
+BOARDS = {
+    "MPS2_AN500": dict(machine="mps2-an500", origin=0x60C00000, part=4194304, front=2097152),
+    "MPS3_AN547": dict(machine="mps3-an547", origin=0x62000000, part=33554432, front=16777216),
+}
 
 
 # --- host-side fixture builders --------------------------------------------
@@ -69,7 +75,8 @@ def _status(p, tr, c):
 
 
 def _path_cases():
-    """(label, body, status, trailer, is_front, floor, board, plat, verify_ret, expected)."""
+    """(label, body, status, trailer, is_front, floor, board, plat, verify_ret, expected).
+    Board-independent: exercises evaluate_slot/parse_trailer with in-memory bytes."""
     b = b"app" * 40
     tb = _trailer(b)
     bad_crc = tb[:-1] + bytes([tb[-1] ^ 0xFF])
@@ -100,7 +107,7 @@ def _vfsrom(marker: str) -> bytes:
     """A mountable VfsRom body carrying a one-file marker + a system.json."""
     src = Path(tempfile.mkdtemp(prefix="omv-qemu-rom-"))
     (src / "slot_marker.txt").write_text(marker)
-    (src / "system.json").write_text('{"board":"MPS2_AN500","ota":true}\n')
+    (src / "system.json").write_text('{"board":"qemu","ota":true}\n')
     img = build_image(str(src))
     shutil.rmtree(src, ignore_errors=True)
     return img
@@ -114,15 +121,11 @@ def _slot(body: bytes, status: bytes, trailer: bytes, slot_size: int) -> bytes:
     return bytes(out)
 
 
-def _partition(corrupt_front=False) -> bytes:
+def _partition(part: int, front: int, corrupt_front=False) -> bytes:
     """A FRONT (confirmed) + BACK (golden) romfs partition with mountable bodies."""
-    front_body = _vfsrom("SLOT=FRONT")
-    back_body = _vfsrom("SLOT=BACK")
-    front = _slot(front_body, _status(1, 1, 1),
-                  _trailer(front_body, board=0, key_id=0x100), FRONT)
-    back = _slot(back_body, _status(0, 0, 1),
-                 _trailer(back_body, board=0, key_id=0x100), PART - FRONT)
-    img = bytearray(front + back)
+    fb, bb = _vfsrom("SLOT=FRONT"), _vfsrom("SLOT=BACK")
+    img = bytearray(_slot(fb, _status(1, 1, 1), _trailer(fb, board=0), front)
+                    + _slot(bb, _status(0, 0, 1), _trailer(bb, board=0), part - front))
     if corrupt_front:
         img[0] ^= 0xFF                       # break FRONT body SHA -> fall back to BACK
     return bytes(img)
@@ -154,11 +157,11 @@ print("RESULT", "PASS" if _fail == 0 else "FAIL", str(_n - _fail) + "/" + str(_n
     return BOOT_PY.read_text() + "\n" + runner
 
 
-def _mount_script() -> str:
+def _mount_script(part: int, front: int) -> str:
     runner = '''
-import os, vfs, binascii
-mem = memoryview(vfs.rom_ioctl(2, 0))
-def _read(off, size): return mem[off:off + size]
+import os, vfs, binascii, uctypes
+_base = uctypes.addressof(vfs.rom_ioctl(2, 0))   # mirror boot.py's _main read seam
+def _read(off, size): return uctypes.bytearray_at(_base + off, size)
 def _mnt(body):
     try: vfs.umount("/rom")
     except Exception: pass
@@ -168,28 +171,30 @@ slot, tr, reason = OtaBoot(_read, (lambda a, p, s, m: True), _mnt, (lambda o, m:
                           %d, %d, %d, 0, _T, 0x7fffffff).run()
 mk = open("/rom/slot_marker.txt").read().strip()
 print("SLOT", slot, "REASON", reason, "MARKER", mk)
-''' % (PART, FRONT, BLOCK)
+''' % (part, front, BLOCK)
     return BOOT_PY.read_text() + "\n" + runner
 
 
 # --- qemu orchestration -----------------------------------------------------
 
-def _run_scenario(fw: Path, mpremote: Path, romfs: bytes, script: str, timeout=90) -> str:
-    """Boot MPS2 under qemu with ``romfs`` loaded, paste ``script`` over the serial
-    REPL via mpremote, and return its stdout."""
-    elf = fw / "build" / "MPS2_AN500" / "bin" / "firmware.elf"
+def _run_scenario(fw: Path, mpremote: Path, board: str, romfs: bytes, script: str,
+                  timeout=120) -> str:
+    """Boot ``board`` under qemu with ``romfs`` loaded, paste ``script`` over the
+    serial REPL via mpremote, and return its stdout."""
+    geom = BOARDS[board]
+    elf = fw / "build" / board / "bin" / "firmware.elf"
     tmp = Path(tempfile.mkdtemp(prefix="omv-qemu-"))
     (tmp / "romfs0.img").write_bytes(romfs)
     (tmp / "run.py").write_text(script)
     qserial = tmp / "qserial.txt"
     qemu = subprocess.Popen(
-        ["qemu-system-arm", "-machine", "mps2-an500", "-display", "none",
+        ["qemu-system-arm", "-machine", geom["machine"], "-display", "none",
          "-monitor", "null", "-semihosting",
-         "-device", "loader,file=%s,addr=0x%X,force-raw=on" % (tmp / "romfs0.img", ROMFS_ORIGIN),
+         "-device", "loader,file=%s,addr=0x%X,force-raw=on" % (tmp / "romfs0.img", geom["origin"]),
          "-serial", "pty", "-kernel", str(elf)],
         stdin=subprocess.DEVNULL, stdout=open(qserial, "wb"), stderr=subprocess.STDOUT)
     try:
-        pts = _await_pts(qserial, qemu, deadline=time.monotonic() + 30)
+        pts = _await_pts(qserial, qemu, deadline=time.monotonic() + 40)
         out = subprocess.run(
             [sys.executable, str(mpremote), "connect", pts, "run", str(tmp / "run.py")],
             capture_output=True, text=True, timeout=timeout)
@@ -217,18 +222,18 @@ def _await_pts(qserial: Path, qemu, deadline) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--firmware", required=True, help="openmv checkout with MPS2_AN500 built")
+    ap.add_argument("--firmware", required=True, help="openmv checkout with the board(s) built")
+    ap.add_argument("--board", choices=list(BOARDS), action="append",
+                    help="board(s) to test (default: every board with a built firmware)")
     args = ap.parse_args(argv)
     fw = Path(args.firmware).resolve()
     mpremote = fw / "lib" / "micropython" / "tools" / "mpremote" / "mpremote.py"
-    if not (fw / "build" / "MPS2_AN500" / "bin" / "firmware.elf").exists():
-        print("error: build MPS2_AN500 first (make TARGET=MPS2_AN500)", file=sys.stderr)
-        return 2
     if not shutil.which("qemu-system-arm"):
         print("error: qemu-system-arm not found", file=sys.stderr)
         return 2
 
     ok = True
+    ran = 0
 
     def section(title, out, predicate):
         nonlocal ok
@@ -237,15 +242,29 @@ def main(argv=None) -> int:
         print("\n=== %s : %s ===" % (title, "PASS" if good else "FAIL"))
         print(out.strip())
 
-    section("boot paths (MicroPython)", _run_scenario(fw, mpremote, _partition(), _paths_script()),
-            lambda o: "RESULT PASS" in o)
-    section("real mount -> FRONT", _run_scenario(fw, mpremote, _partition(), _mount_script()),
-            lambda o: "SLOT FRONT REASON None MARKER SLOT=FRONT" in o)
-    section("corrupt FRONT -> BACK fallback",
-            _run_scenario(fw, mpremote, _partition(corrupt_front=True), _mount_script()),
-            lambda o: "SLOT BACK REASON body-sha" in o)
+    for board in (args.board or list(BOARDS)):
+        if not (fw / "build" / board / "bin" / "firmware.elf").exists():
+            print("\n--- %s: no firmware.elf, skipping (build with make TARGET=%s) ---"
+                  % (board, board))
+            continue
+        ran += 1
+        geom = BOARDS[board]
+        part, front = geom["part"], geom["front"]
+        section("%s boot paths" % board,
+                _run_scenario(fw, mpremote, board, _partition(part, front), _paths_script()),
+                lambda o: "RESULT PASS" in o)
+        section("%s real mount -> FRONT" % board,
+                _run_scenario(fw, mpremote, board, _partition(part, front), _mount_script(part, front)),
+                lambda o: "SLOT FRONT REASON None MARKER SLOT=FRONT" in o)
+        section("%s corrupt FRONT -> BACK" % board,
+                _run_scenario(fw, mpremote, board, _partition(part, front, corrupt_front=True),
+                              _mount_script(part, front)),
+                lambda o: "SLOT BACK REASON body-sha" in o)
 
     print("\n" + "=" * 50)
+    if ran == 0:
+        print("QEMU boot test: no firmware built for any requested board", file=sys.stderr)
+        return 2
     print("QEMU boot test:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

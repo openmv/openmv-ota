@@ -229,6 +229,29 @@ def test_create_non_ota_allows_non_capable_board(tmp_path, make_firmware, make_s
     assert lock.ota is False
 
 
+def test_create_ota_rejects_no_mbedtls_board(tmp_path, make_firmware, make_sdk):
+    # MPS2_AN500 is OTA-capable by geometry but builds without mbedtls
+    # (MICROPY_SSL_MBEDTLS = 0), so the device couldn't verify image signatures.
+    repo = make_firmware()
+    mk = repo / "boards" / "MPS2_AN500" / "board_config.mk"
+    mk.parent.mkdir(parents=True, exist_ok=True)
+    mk.write_text("CPU=cortex-m7\nMICROPY_SSL_MBEDTLS = 0\n")
+    with pytest.raises(ProjectError, match="without mbedtls"):
+        _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True,
+                boards=["MPS2_AN500"], factory_keys=1, ota_keys=2)
+
+
+def test_create_non_ota_allows_no_mbedtls_board(tmp_path, make_firmware, make_sdk):
+    # Without --ota the same board is fine (no on-device verify needed).
+    repo = make_firmware()
+    mk = repo / "boards" / "MPS2_AN500" / "board_config.mk"
+    mk.parent.mkdir(parents=True, exist_ok=True)
+    mk.write_text("MICROPY_SSL_MBEDTLS = 0\n")
+    root, (lock, _) = _create(tmp_path, make_firmware, make_sdk, repo=repo,
+                              boards=["MPS2_AN500"])
+    assert lock.ota is False
+
+
 def test_sync_ota_project_rechecks_capability(tmp_path, make_firmware, make_sdk):
     # Re-locking an OTA project re-runs the capability check (capable boards -> ok).
     repo = make_firmware()

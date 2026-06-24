@@ -472,6 +472,36 @@
           "npu": null
         }
       ]
+    },
+    "MPS3_AN547": {
+      "display_name": "Arm MPS3-AN547 (Cortex-M55, QEMU)",
+      "arch": "MPS3_AN547 QEMU",
+      "mpy_args": [
+        "-march=armv7emdp"
+      ],
+      "partitions": [
+        {
+          "name": "ROMFS",
+          "index": 0,
+          "size": 33554432,
+          "erase_size": 4096,
+          "alignment_rules": [
+            {
+              "extension": "tflite",
+              "alignment": 32
+            },
+            {
+              "extension": "lite",
+              "alignment": 16
+            },
+            {
+              "extension": "bin",
+              "alignment": 16
+            }
+          ],
+          "npu": null
+        }
+      ]
     }
   }
 }

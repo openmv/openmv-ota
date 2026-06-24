@@ -103,13 +103,14 @@ jobs:
           SDK_VERSION="$(cat "$RUNNER_TEMP/openmv/SDK_VERSION")"
           echo "$HOME/openmv-sdk-$SDK_VERSION/make" >> "$GITHUB_PATH"
 
-      - name: Build the MPS2_AN500 firmware (the tool installs the SDK)
+      - name: Build the MPS2_AN500 + MPS3_AN547 firmware (the tool installs the SDK)
         run: |
-          openmv-ota project new "$RUNNER_TEMP/mps2" -f "$RUNNER_TEMP/openmv" \
-            -b MPS2_AN500 --install-sdk
-          openmv-ota build firmware "$RUNNER_TEMP/mps2" -b MPS2_AN500
+          openmv-ota project new "$RUNNER_TEMP/mps" -f "$RUNNER_TEMP/openmv" \
+            -b MPS2_AN500 -b MPS3_AN547 --install-sdk
+          openmv-ota build firmware "$RUNNER_TEMP/mps" -b MPS2_AN500
+          openmv-ota build firmware "$RUNNER_TEMP/mps" -b MPS3_AN547
 
-      - name: Run the QEMU boot test
+      - name: Run the QEMU boot test (both emulator boards)
         run: python ci/qemu_boot_test.py --firmware "$RUNNER_TEMP/openmv"
 
   # ---------------------------------------------------------------------------

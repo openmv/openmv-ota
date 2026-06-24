@@ -249,13 +249,20 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     import os
     import sys
 
+    import uctypes
     import vfs
     from ecdsa_verify import verify     # the C module dropped into openmv/modules/
 
-    mem = memoryview(vfs.rom_ioctl(2, 0))            # the partition's XIP mapping
+    # Read the XIP'd partition at each slot's *absolute* address via uctypes rather
+    # than slicing one whole-partition memoryview: a memoryview's offset field is
+    # 24-bit on 32-bit MicroPython, so mem[off:] overflows ("memoryview offset too
+    # large") for any off >= 16 MiB -- which is the BACK slot on the 24 MiB N6/AE3
+    # partitions. bytearray_at aliases the address with an internal offset of 0, so
+    # the body's own [:body_size] slices below stay small regardless of the slot.
+    base = uctypes.addressof(vfs.rom_ioctl(2, 0))    # the partition's XIP base address
 
     def read(off, size):
-        return mem[off:off + size]
+        return uctypes.bytearray_at(base + off, size)
 
     def mount(body):
         vfs.mount(vfs.VfsRom(body), "/rom")

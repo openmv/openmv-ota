@@ -24,9 +24,15 @@ device test.
 ## `qemu` — boot.py on real MicroPython
 
 Runs the **real** frozen `boot.py` on actual MicroPython under `qemu-system-arm`
-(an MPS2-AN500), covering what host unit tests can't: that boot.py behaves the
-same on MicroPython, and that the real `vfs.rom_ioctl` read + `vfs.VfsRom` mount +
-FRONT/BACK slot selection work on-device. [`ci/qemu_boot_test.py`](../ci/qemu_boot_test.py)
+on **two** machines — an MPS2-AN500 (Cortex-M7, a 4 MiB partition) and an
+MPS3-AN547 (Cortex-M55, a 32 MiB partition) — covering what host unit tests can't:
+that boot.py behaves the same on MicroPython, and that the real `vfs.rom_ioctl`
+read + `vfs.VfsRom` mount + FRONT/BACK slot selection work on-device. The large
+MPS3 partition specifically exercises the BACK slot **past the 16 MiB mark** — on
+32-bit MicroPython a `memoryview`'s offset field is only 24-bit, so boot.py reads
+each slot at its absolute XIP address via `uctypes.bytearray_at` rather than
+slicing one whole-partition memoryview (which would overflow on the 24 MiB N6/AE3
+partitions). [`ci/qemu_boot_test.py`](../ci/qemu_boot_test.py)
 drives the device over the QEMU serial REPL via the firmware's bundled `mpremote`
 (pasting a script — no filesystem mount) and checks three scenarios:
 
@@ -41,11 +47,13 @@ drives the device over the QEMU serial REPL via the firmware's bundled `mpremote
 
 The signature step uses an injected `verify` because the qemu port doesn't build
 mbedtls yet (the ECDSA core is covered by `cshim`); enabling mbedtls on the qemu
-port for real on-device crypto is a planned follow-up. The job builds the
-MPS2_AN500 firmware with the tool (`project new` + `build firmware`, no `--ota`)
-and needs `qemu-system-arm` + `pyserial`/`platformdirs` (mpremote's deps). Run it
-locally with `python ci/qemu_boot_test.py --firmware /path/to/openmv` (with a built
-MPS2_AN500 checkout).
+port for real on-device crypto is a planned follow-up. The emulator boards don't
+build mbedtls, so the tool refuses `project new --ota` for them (*not OTA-capable:
+… build firmware without mbedtls*) — the job builds plain firmware (`project new` +
+`build firmware`, no `--ota`) for both boards and needs `qemu-system-arm` +
+`pyserial`/`platformdirs` (mpremote's deps). Run it locally with
+`python ci/qemu_boot_test.py --firmware /path/to/openmv` (with both boards built;
+add `--board MPS3_AN547` to restrict to one).
 
 ## `build` — every board, end to end
 

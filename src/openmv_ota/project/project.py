@@ -214,6 +214,21 @@ def _ensure_ota_capable(lock: lock_mod.Lock) -> None:
         "--ota (a single image that fills the partition).", exit_code=1)
 
 
+def _ensure_ota_mbedtls(lock: lock_mod.Lock) -> None:
+    """Raise if any target board's firmware is built without mbedtls. The device OTA
+    ``boot.py`` verifies image signatures with an mbedtls-backed C module, so a board
+    that doesn't compile mbedtls can't run OTA -- e.g. the QEMU/FVP emulator boards
+    (MPS2/MPS3), which build with ``MICROPY_SSL_MBEDTLS = 0``."""
+    bad = sorted({rb["name"] for rb in lock.targets.get("resolved", [])
+                  if not rb.get("mbedtls", True)})
+    if not bad:
+        return
+    raise ProjectError(
+        "not OTA-capable: %s build firmware without mbedtls, which the OTA boot.py "
+        "needs to verify image signatures on-device. Build without --ota (a single "
+        "image that fills the partition)." % ", ".join(bad), exit_code=1)
+
+
 def _digest(config: OtaConfig) -> str:
     """Digest the *firmware-relevant* config — the fields that, if changed, would
     invalidate the resolved lock. Excludes release/identity state (``version``,
@@ -284,6 +299,7 @@ def create_project(
     warnings += w
     if config.ota:
         _ensure_ota_capable(lock)  # fail before writing anything for an impossible board
+        _ensure_ota_mbedtls(lock)
     if lock.firmware["dirty"] and not allow_dirty:
         warnings.append("firmware checkout is dirty; the pinned commit does not "
                         "fully capture the build. Commit or pass --allow-dirty.")
@@ -407,6 +423,7 @@ def sync_project(
     )
     if config.ota:
         _ensure_ota_capable(lock)
+        _ensure_ota_mbedtls(lock)
     if lock.firmware["dirty"] and not allow_dirty:
         warnings.append("firmware checkout is dirty; re-locked anyway.")
     lock_mod.write(paths.lock, lock)
