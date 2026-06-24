@@ -26,6 +26,7 @@ from pathlib import Path
 from openmv_ota import __version__
 
 from .errors import ProjectError
+from .resolve.sdk import SDK_STAMP_FILE
 
 SDK_BASE_URL = "https://download.openmv.io/sdk"
 # The CDN serving the bundles rejects the default ``Python-urllib`` agent with 403;
@@ -34,6 +35,13 @@ _USER_AGENT = "openmv-ota/%s" % __version__
 
 # CPU name (lowercased ``platform.machine()``) -> the token used in bundle names.
 _ARCH = {"x86_64": "x86_64", "amd64": "x86_64", "arm64": "arm64", "aarch64": "arm64"}
+
+# TEMPORARY (remove once the firmware pins SDK_VERSION >= 1.7.0): the published
+# 1.6.0 *Windows* bundle is missing the arm-none-eabi-gcc compiler driver (it ships
+# binutils + clang only); 1.7.0 added it. Until the firmware bumps its SDK_VERSION,
+# transparently fetch the fixed bundle on Windows and stamp it as the requested
+# version so the firmware build (which looks for ~/openmv-sdk-<requested>) is happy.
+_WINDOWS_BUNDLE_SHIM = {"1.6.0": "1.7.0"}
 
 
 def sdk_platform() -> str:
@@ -53,7 +61,11 @@ def install_sdk(version: str, dest: Path, *, base_url: str = SDK_BASE_URL,
     """Download, sha256-verify, and extract the SDK ``version`` bundle into ``dest``
     (the ``~/openmv-sdk-<version>`` layout the firmware build expects). Raises
     :class:`ProjectError` on any download / checksum / extraction failure."""
-    name = "openmv-sdk-%s-%s.tar.xz" % (version, plat or sdk_platform())
+    plat = plat or sdk_platform()
+    bundle_version = version
+    if plat.startswith("windows-"):
+        bundle_version = _WINDOWS_BUNDLE_SHIM.get(version, version)
+    name = "openmv-sdk-%s-%s.tar.xz" % (bundle_version, plat)
     url = "%s/%s" % (base_url, name)
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -68,6 +80,9 @@ def install_sdk(version: str, dest: Path, *, base_url: str = SDK_BASE_URL,
                 "OpenMV SDK checksum mismatch for %s (expected %s, got %s)"
                 % (name, expected, actual), exit_code=1)
         _extract_strip1(archive, dest)
+        if bundle_version != version:
+            # Stamp it as the requested version so resolve_sdk / the firmware match.
+            (dest / SDK_STAMP_FILE).write_text(version, encoding="utf-8")
 
 
 def _open(url: str):
