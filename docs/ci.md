@@ -17,18 +17,30 @@ factory-romfs and verifies the outputs. The whole point is that nobody can say
 or asserted to fail *cleanly* (a single structural error, never a traceback or a
 wall of `make` output).
 
-The per-board logic lives in [`ci/build_boards.py`](../ci/build_boards.py), which
-derives each board's capability from the bundled board data + the OTA geometry
-rules — the same source the tool uses — and asserts the expected outcome:
+The per-board logic is a **black-box** bash driver,
+[`ci/build_boards.sh`](../ci/build_boards.sh): it invokes only the installed
+`openmv-ota` CLI (plus standard unix tools — `unzip`, `awk`, `wc`) exactly as a
+pip-installed user would. Nothing in CI imports the Python package. Each board's
+expected capability is a fixed table in the script (known board → known
+behaviour), and the driver asserts the CLI's outcome:
 
 | Class | Boards (examples) | What is asserted |
 |---|---|---|
-| **full** (OTA-capable) | N6, AE3, 4P, PT, RT1060, Portenta, Giga, Nicla | `project new --ota`; build firmware + romfs + factory-romfs; `inspect` + `verify` the OTA bundle; a corrupted body must **fail** verify; both factory slots verify (FRONT confirmed-shape, BACK golden). |
+| **full** (OTA-capable) | N6, AE3, 4P, PT, RT1060, Portenta, Giga, Nicla | `project new --ota`; build firmware + romfs + factory-romfs; `inspect` + `verify` the OTA bundle (as a `.zip` and as loose `romfs.img`/`trailer.bin`); a corrupted body must **fail** verify; the factory image is the full partition. |
 | **classic** (romfs, not OTA-capable) | OPENMV2 / 3 / 4 | `project new`; build firmware + single-image romfs; `project new --ota` must fail cleanly (*not OTA-capable*); `factory-romfs` must fail cleanly (*needs an OTA project*). |
 | **noromfs** (no ROMFS partition) | Arduino Nano 33 BLE / RP2040 | `project new` must fail cleanly (*no partition size*). |
 
-Boards in the **noromfs** class never invoke `make` — the tool refuses to create
-a project for them, structurally, so there is no firmware build to attempt.
+Every expected failure is asserted to be a clean tool error — non-zero exit, an
+`error:` line, and **no Python traceback** — so a board the tool can't serve says
+so structurally instead of exploding. Boards in the **noromfs** class never invoke
+`make`: the tool refuses to create a project for them.
+
+Crypto-verifying a *factory* image's two slots isn't done in CI: there is no CLI
+for it (a pip user couldn't do it either), and reproducing the slot geometry in the
+script would mean coupling CI to the tool's internals. The factory signing path is
+covered instead by the OTA bundle's `verify` (same body, same signer) and the
+100%-coverage unit tests; CI confirms the factory image builds and is the full
+partition size.
 
 ### Toolchain — the SDK provides it
 
@@ -47,13 +59,20 @@ is the SDK's own `make` (the top-level `make` the tool shells out to).
 ## Running the board driver locally
 
 ```bash
-pip install -e ".[dev]"
-python ci/build_boards.py --firmware /path/to/openmv          # all boards
-python ci/build_boards.py --firmware /path/to/openmv \
-    --boards OPENMV_N6 OPENMV4 --no-firmware                  # fast subset
+pip install .                                                  # as a user would
+ci/build_boards.sh /path/to/openmv OPENMV_N6 OPENMV4 ARDUINO_NANO_33_BLE_SENSE
+
+# fast (skip the firmware compile); romfs/factory still build
+NO_FIRMWARE=1 ci/build_boards.sh /path/to/openmv OPENMV_N6
 ```
 
-`--no-firmware` skips the slow firmware compile (romfs/factory still build, using
-the firmware tree's `mpy-cross` if present, else a pip-installed `mpy_cross`).
-`--install-sdk` forwards to `project new` to download the SDK if it is missing.
+Boards are positional arguments (one or more). Environment toggles:
+
+| Var | Effect |
+|---|---|
+| `NO_FIRMWARE=1` | skip the slow firmware compile (romfs/factory still build, using the firmware tree's `mpy-cross` if present, else a pip-installed `mpy_cross`). |
+| `INSTALL_SDK=1` | pass `--install-sdk` to `project new` (download the SDK if missing). |
+| `WORKDIR=DIR` | where projects are created (default: a temp dir). |
+| `OPENMV_OTA_BIN` | the CLI to invoke (default: `openmv-ota`). |
+
 Exit code is 0 iff every check passed.

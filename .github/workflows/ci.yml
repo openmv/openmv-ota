@@ -94,9 +94,7 @@ jobs:
           echo "$HOME/openmv-sdk-$SDK_VERSION/make" >> "$GITHUB_PATH"
 
       - name: Build + verify ${{ matrix.board }} (tool installs the SDK)
-        run: |
-          python ci/build_boards.py \
-            --firmware "$RUNNER_TEMP/openmv" \
-            --boards "${{ matrix.board }}" \
-            --workdir "$RUNNER_TEMP/projects" \
-            --install-sdk
+        env:
+          INSTALL_SDK: "1"
+          WORKDIR: ${{ runner.temp }}/projects
+        run: bash ci/build_boards.sh "$RUNNER_TEMP/openmv" "${{ matrix.board }}"
