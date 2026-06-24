@@ -46,8 +46,10 @@ partition size.
 
 The whole point is to exercise the tool's own bootstrap, so the build jobs install
 **no external toolchain**. They clone `openmv/openmv` (latest; `OPENMV_REF` at the
-top of the workflow, default `master`), and `openmv-ota project new --install-sdk`
-fetches the matching OpenMV SDK as a pure-Python download. The firmware build then
+top of the workflow, default `master`) **with `--recursive` submodules** (the board
+build needs micropython's nested submodules — lwip, mbedtls, mynewt-nimble,
+cyw43-driver — not just openmv's direct ones), and `openmv-ota project new
+--install-sdk` fetches the matching OpenMV SDK as a pure-Python download. The firmware build then
 uses the compiler, `vela`, `stedgeai`, and the ST signing tool **bundled inside
 that SDK** — the firmware Makefile prepends the SDK's `gcc/bin`, `python/bin`,
 `stcubeprog/bin`, etc. to `PATH` automatically, so the only thing CI adds to `PATH`

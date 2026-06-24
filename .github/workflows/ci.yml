@@ -81,7 +81,9 @@ jobs:
         run: |
           git clone https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"
           git -C "$RUNNER_TEMP/openmv" checkout "$OPENMV_REF"
-          git -C "$RUNNER_TEMP/openmv" submodule update --init --depth 1
+          # --recursive: the board build needs micropython's *nested* submodules
+          # (lwip, mbedtls, mynewt-nimble, cyw43-driver, ...), not just openmv's.
+          git -C "$RUNNER_TEMP/openmv" submodule update --init --recursive --depth 1
 
       - name: Use the SDK's bundled toolchain
         run: |
