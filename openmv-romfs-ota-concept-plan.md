@@ -853,7 +853,7 @@ $ openmv-ota build firmware -c config/firmware.yaml     # Tool 1
 $ openmv-ota build romfs --mode factory ... --version 1 # Tool 3 (factory image)
 $ openmv-ota build romfs --mode ota     ... --version 2 # Tool 3 (OTA release)
 $ openmv-ota serve -c config/server.yaml                # Tool 4 (local dev)
-$ openmv-ota publish releases/v2.bin --server URL       # Upload OTA release
+$ openmv-ota publish releases/v2-romfs.zip --server URL # Upload OTA release
 ```
 
 The SDK files (Tool 2) ship inside the Python package as data files. Tool 3 reads them from the installed location at build time and bundles them into the ROMFS. The customer never installs, copies, or version-pins the SDK separately — its version is determined by which `openmv-ota` version they installed. `pip install openmv-ota==2.3.1` pins everything together for reproducibility.
@@ -876,9 +876,9 @@ my-product/                          # Customer's repo
 │   ├── trusted_keys.json            # Public keys + key_ids (committed)
 │   └── .gitignore                   # Private keys: HSM-bound, never committed
 ├── releases/                        # Output: signed ROMFS images
-│   ├── v1-factory.bin               # Golden image (manufacturing)
-│   ├── v2.bin                       # First OTA release
-│   ├── v3.bin                       # Second OTA release
+│   ├── v1-factory-romfs.img         # Golden image (manufacturing)
+│   ├── v2-romfs.zip                 # First OTA release
+│   ├── v3-romfs.zip                 # Second OTA release
 │   └── transparency-log.jsonl       # Append-only release log
 ├── compliance/                      # Customer-filled-in templates
 │   ├── security.txt
