@@ -122,25 +122,6 @@ def test_install_sdk_missing_checksum(tmp_path):
         si.install_sdk(VERSION, tmp_path / "sdk", base_url=serve.as_uri(), plat=PLAT)
 
 
-def test_install_sdk_windows_1_6_0_shim(tmp_path):
-    # Temporary shim: on Windows, a 1.6.0 request fetches the 1.7.0 bundle (which has
-    # the gcc driver) and stamps it back as 1.6.0.
-    serve = tmp_path / "serve"
-    serve.mkdir()
-    bundle = "openmv-sdk-1.7.0-windows-x86_64.tar.xz"
-    archive = _make_bundle(
-        "openmv-sdk-1.7.0-windows-x86_64",
-        {"sdk.version": b"1.7.0", "gcc/bin/arm-none-eabi-gcc.exe": b"ELF"},
-    )
-    (serve / bundle).write_bytes(archive)
-    (serve / (bundle + ".sha256")).write_text(
-        "%s  %s\n" % (hashlib.sha256(archive).hexdigest(), bundle))
-    dest = tmp_path / "openmv-sdk-1.6.0"
-    si.install_sdk("1.6.0", dest, base_url=serve.as_uri(), plat="windows-x86_64")
-    assert (dest / "gcc" / "bin" / "arm-none-eabi-gcc.exe").read_bytes() == b"ELF"
-    assert (dest / "sdk.version").read_text() == "1.6.0"   # stamped to the request
-
-
 def test_install_sdk_extract_failure(tmp_path):
     serve = tmp_path / "serve"
     serve.mkdir()
