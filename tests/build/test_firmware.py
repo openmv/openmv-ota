@@ -57,17 +57,26 @@ def test_build_firmware_incremental_skips_clean(make_project, monkeypatch):
     assert "-j4" in fake.calls[0]
 
 
-def test_build_firmware_bootloader_image(make_project, monkeypatch):
-    # No firmware.bin, only the bootloader-combined openmv.bin.
-    fake = _fake_make(["bin/openmv.bin"])
+def test_build_firmware_ignores_openmv_bin(make_project, monkeypatch):
+    # The bootloader-combined openmv.bin is deliberately not collected; only
+    # firmware.bin is. firmware.bin present -> openmv.bin alongside is ignored.
+    fake = _fake_make(["bin/firmware.bin", "bin/openmv.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)
     root, repo, _app = make_project()
     r = fw.build_firmware(root, firmware=repo)[0]
     assert [o.name for o in r.outputs] == ["OPENMV_N6.bin"]
 
 
+def test_build_firmware_openmv_bin_only_is_no_image(make_project, monkeypatch):
+    # openmv.bin without a firmware.bin counts as no firmware image at all.
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/openmv.bin"]))
+    root, repo, _app = make_project()
+    with pytest.raises(BuildError, match="produced no image"):
+        fw.build_firmware(root, firmware=repo)
+
+
 def test_build_firmware_alif_per_core(make_project, monkeypatch):
-    fake = _fake_make(["FIRMWARE_M55_HP.bin", "FIRMWARE_M55_HE.bin", "firmware.toc"])
+    fake = _fake_make(["bin/firmware_M55_HP.bin", "bin/firmware_M55_HE.bin", "bin/firmware.toc"])
     monkeypatch.setattr(fw, "_run_make", fake)
     root, repo, _app = make_project(boards=("OPENMV_AE3",))
     r = fw.build_firmware(root, firmware=repo)[0]

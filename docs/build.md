@@ -220,11 +220,13 @@ openmv-ota build firmware ./my-product
 ```
 
 For each board it runs `make TARGET=<board>` and copies the result into
-`<project>/build/`: `<board>.bin` for an stm32 board (the bootloader-combined
-`openmv.bin` if the board builds one), or a per-core `<board>-M55_HP.bin` /
-`<board>-M55_HE.bin` for an Alif board (its `firmware.toc` is written by the
-bootloader and is not collected). Firmware is built per board, not per partition,
-so a board with multiple ROMFS partitions still builds one firmware.
+`<project>/build/`. Both ports name their images `firmware*.bin`: an stm32 board
+emits a single `firmware.bin`, collected as `<board>.bin`; an Alif board emits a
+per-core `firmware_M55_HP.bin` / `firmware_M55_HE.bin`, collected as
+`<board>-M55_HP.bin` / `<board>-M55_HE.bin`. The bootloader-combined `openmv.bin`
+and the bootloader-written `firmware.toc` are deliberately not collected — only the
+firmware image is. Firmware is built per board, not per partition, so a board with
+multiple ROMFS partitions still builds one firmware.
 
 The behavior follows the project's OTA flag automatically — there is no separate
 option:

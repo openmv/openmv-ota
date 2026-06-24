@@ -124,24 +124,21 @@ def _write_wrapper_manifest(repo: Path, name: str) -> Path:
 
 
 def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:
-    """Copy the firmware image(s) the build produced into ``out_dir``. stm32 emits
-    one ``firmware.bin`` (or ``openmv.bin`` with a bootloader); Alif emits a per-core
-    ``FIRMWARE_M55_HP/HE.bin`` (its ``firmware.toc`` is bootloader-written -- ignored)."""
-    bdir = repo / "build" / name
+    """Copy the firmware image(s) the build produced into ``out_dir``. Both ports
+    name their images ``firmware*.bin`` in ``build/<board>/bin``: stm32 emits a
+    single ``firmware.bin``; Alif emits a per-core ``firmware_M55_HP.bin`` /
+    ``firmware_M55_HE.bin``. The bootloader-combined ``openmv.bin`` and the
+    bootloader-written ``firmware.toc`` are deliberately not collected."""
+    bdir = repo / "build" / name / "bin"
     collected: list[Path] = []
-    for rel, dst_name in (("bin/firmware.bin", "%s.bin" % name),
-                          ("bin/openmv.bin", "%s.bin" % name)):
-        src = bdir / rel
-        if src.exists():
-            collected.append(_copy(src, out_dir / dst_name))
-            break
-    for core in ("M55_HP", "M55_HE"):
-        src = bdir / ("FIRMWARE_%s.bin" % core)
-        if src.exists():
-            collected.append(_copy(src, out_dir / ("%s-%s.bin" % (name, core))))
+    for src in sorted(bdir.glob("firmware*.bin")):
+        # firmware.bin -> <board>.bin; firmware_M55_HP.bin -> <board>-M55_HP.bin.
+        suffix = src.stem[len("firmware"):].lstrip("_")
+        dst_name = "%s-%s.bin" % (name, suffix) if suffix else "%s.bin" % name
+        collected.append(_copy(src, out_dir / dst_name))
     if not collected:
-        raise BuildError("firmware build produced no image for %s (looked in %s)"
-                         % (name, bdir), exit_code=1)
+        raise BuildError("firmware build produced no image for %s (looked for "
+                         "firmware*.bin in %s)" % (name, bdir), exit_code=1)
     return collected
 
 
