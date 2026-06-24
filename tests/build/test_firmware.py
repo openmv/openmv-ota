@@ -88,25 +88,61 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)
     root, repo, _app = make_project(ota=True)
-    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)
-    r = r[0]
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
     assert r.ota is True and r.build_dir is not None
     # FROZEN_MANIFEST was pointed at our wrapper
     frozen = [a for a in fake.calls[1] if a.startswith("FROZEN_MANIFEST=")]
     assert len(frozen) == 1 and frozen[0].endswith("manifest.py")
-    # wrapper includes the board manifest + freezes boot.py; boot.py exists
+    # wrapper includes the board manifest + freezes BOTH boot.py and _ota_config.py
     manifest = (r.build_dir / "manifest.py").read_text()
     assert "include(" in manifest and "boards/OPENMV_N6/manifest.py" in manifest
-    assert 'freeze(' in manifest and "boot.py" in manifest
-    assert (r.build_dir / "boot.py").exists()
+    assert 'freeze(' in manifest and "boot.py" in manifest and "_ota_config.py" in manifest
+    # the real boot.py (not a placeholder) + the generated config are present
+    assert "OtaBoot" in (r.build_dir / "boot.py").read_text()
+    cfg = (r.build_dir / "_ota_config.py").read_text()
+    assert "TRUSTED_KEYS" in cfg and "PARTITION_SIZE" in cfg and "BOARD_ID" in cfg
+
+
+def test_ota_config_values(make_project, monkeypatch):
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+    ns = {}
+    exec((r.build_dir / "_ota_config.py").read_text(), ns)  # noqa: S102 (generated code)
+    assert ns["PARTITION_SIZE"] > 0 and 0 < ns["FRONT_SIZE"] < ns["PARTITION_SIZE"]
+    assert ns["OTA_BLOCK"] == 4096
+    assert isinstance(ns["BOARD_ID"], int) and ns["BOARD_ID"] != 0   # OTA pins it
+    assert isinstance(ns["PLATFORM_VERSION"], int)
+    keys = ns["TRUSTED_KEYS"]
+    assert isinstance(keys, dict) and len(keys) == 3   # 2 ota + 1 factory provisioned
+    for kid, pub in keys.items():
+        assert isinstance(kid, int) and isinstance(pub, bytes) and pub[0] == 0x04
+
+
+def test_ota_config_excludes_revoked_keys(make_project, monkeypatch):
+    from openmv_ota.ota.keys import read_trusted_keys, write_trusted_keys
+    from openmv_ota.project.project import ProjectPaths
+
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)
+    tk = ProjectPaths(root).trusted_keys
+    keys = read_trusted_keys(tk)
+    keys[0].revoked = True
+    write_trusted_keys(tk, keys)
+
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+    ns = {}
+    exec((r.build_dir / "_ota_config.py").read_text(), ns)  # noqa: S102
+    assert keys[0].key_id not in ns["TRUSTED_KEYS"]
+    assert len(ns["TRUSTED_KEYS"]) == len(keys) - 1
 
 
 def test_build_firmware_ota_cleans_wrapper(make_project, monkeypatch):
     captured = {}
     real_writer = fw._write_wrapper_manifest
 
-    def spy(repo, name):
-        d = real_writer(repo, name)
+    def spy(p, repo, name):
+        d = real_writer(p, repo, name)
         captured["dir"] = d
         return d
 
@@ -115,6 +151,40 @@ def test_build_firmware_ota_cleans_wrapper(make_project, monkeypatch):
     root, repo, _app = make_project(ota=True)
     fw.build_firmware(root, firmware=repo)  # no keep -> wrapper dir removed
     assert not captured["dir"].exists()
+
+
+def test_install_verify_module_drops_and_is_idempotent(tmp_path):
+    repo = tmp_path / "fw"
+    repo.mkdir()
+    dst = fw._install_verify_module(repo)
+    assert dst == repo / "modules" / "ecdsa_verify.c" and dst.exists()
+    assert "mbedtls_ecdsa_verify" in dst.read_text()
+    assert fw._install_verify_module(repo) is None   # already present -> not clobbered
+
+
+def test_build_firmware_ota_compiles_then_removes_c_module(make_project, monkeypatch):
+    root, repo, _app = make_project(ota=True)
+    cmod = repo / "modules" / "ecdsa_verify.c"
+    seen = {}
+
+    def make_spy(rp, args):
+        if "clean" not in args:                       # the build call
+            seen["present"] = cmod.exists()           # module was dropped in before build
+            f = repo / "build" / "OPENMV_N6" / "bin" / "firmware.bin"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"FW")
+
+    monkeypatch.setattr(fw, "_run_make", make_spy)
+    fw.build_firmware(root, firmware=repo)
+    assert seen.get("present") is True                # auto-compiled during the build
+    assert not cmod.exists()                          # removed afterwards (tree restored)
+
+
+def test_build_firmware_non_ota_no_c_module(make_project, monkeypatch):
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project()                 # non-OTA: no module, no config
+    fw.build_firmware(root, firmware=repo)
+    assert not (repo / "modules" / "ecdsa_verify.c").exists()
 
 
 def test_build_firmware_no_image_errors(make_project, monkeypatch):

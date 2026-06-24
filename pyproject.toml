@@ -47,6 +47,7 @@ where = ["src"]
 "openmv_ota" = [
     "data/*.json",
     "data/firmware/**/*",
+    "build/device/*.c",          # the ECDSA verify C module dropped into modules/
     "romfs/sdk/**/*",
     "romfs/update_server/deploy/*",
 ]

@@ -3,10 +3,14 @@ OTA project inject a frozen ``boot.py`` via a wrapper manifest.
 
 ``build firmware`` runs the firmware's own build (``make TARGET=<board>``) in the
 pegged checkout, so the result is byte-for-byte what the firmware repo produces.
-For a non-OTA project that is the whole job. For an OTA project it additionally
-freezes an OTA ``boot.py`` into the image by pointing ``FROZEN_MANIFEST`` at a
-generated wrapper manifest that includes the board's own manifest and adds the
-boot script -- no files are copied into or edited in the firmware tree.
+For a non-OTA project that is the whole job. For an OTA project it additionally:
+
+* freezes the OTA ``boot.py`` (``device/boot.py``) plus a generated
+  ``_ota_config.py`` (trusted keys + geometry + ids), by pointing
+  ``FROZEN_MANIFEST`` at a wrapper manifest that includes the board's own manifest
+  and freezes both -- nothing is copied into or edited in the firmware tree; and
+* drops the ECDSA verify C module (``device/ecdsa_verify.c``) into the firmware's
+  ``modules/`` dir so the openmv build auto-compiles it, removing it again after.
 
 The build is **clean by default**: a stale ``build/<board>`` tree fails at link
 with a misleading ``__cyg_profile_func_enter`` error (imlib is compiled with
@@ -36,14 +40,11 @@ from .errors import BuildError
 
 MAKE = "make"
 
-# Placeholder frozen boot script. The real trailer-parse + signature/SHA verify +
-# status state machine + FRONT/BACK slot selection lands in a later step; this just
-# proves the injection path and runs after the stock frozen ``_boot.py``.
-_BOOT_PLACEHOLDER = (
-    "# boot.py - frozen OTA boot hook (placeholder).\n"
-    "# Runs after the board's stock _boot.py. The real OTA slot-selection +\n"
-    "# signature verification logic is injected here in a later step.\n"
-)
+# The device sources the OTA firmware build freezes / compiles in.
+_DEVICE_DIR = Path(__file__).parent / "device"
+_BOOT_PY = _DEVICE_DIR / "boot.py"
+_VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
+_VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 
 
 @dataclass
@@ -98,11 +99,13 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
                keep_build_dir) -> FirmwareResult:
     ota = p.config.ota
     tmp: Path | None = None
+    cmod: Path | None = None
     try:
         build_args = ["TARGET=%s" % name, "-j%d" % (jobs or os.cpu_count() or 1)]
         if ota:
-            tmp = _write_wrapper_manifest(repo, name)
+            tmp = _write_wrapper_manifest(p, repo, name)
             build_args.append("FROZEN_MANIFEST=%s" % (tmp / "manifest.py").as_posix())
+            cmod = _install_verify_module(repo)
         if not incremental:
             _run_make(repo, ["TARGET=%s" % name, "clean"])
         _ensure_mpy_cross(repo)
@@ -111,23 +114,72 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
         return FirmwareResult(name, outputs, ota=ota,
                               build_dir=tmp if (ota and keep_build_dir) else None)
     finally:
+        if cmod is not None:                       # restore the firmware tree
+            cmod.unlink(missing_ok=True)
         if tmp is not None and not (ota and keep_build_dir):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _write_wrapper_manifest(repo: Path, name: str) -> Path:
-    """A temp dir holding the OTA ``boot.py`` and a wrapper ``manifest.py`` that
-    includes the board's own manifest and freezes the boot script. Returns the
-    temp dir (the caller removes it)."""
+def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
+    """A temp dir holding the OTA ``boot.py``, its generated ``_ota_config.py``, and
+    a wrapper ``manifest.py`` that includes the board's own manifest and freezes both.
+    Returns the temp dir (the caller removes it)."""
     tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-fw-"))
-    (tmp / "boot.py").write_text(_BOOT_PLACEHOLDER, encoding="utf-8")
+    shutil.copy2(_BOOT_PY, tmp / "boot.py")
+    (tmp / "_ota_config.py").write_text(_render_ota_config(p, name), encoding="utf-8")
     board_manifest = repo / "boards" / name / "manifest.py"
     (tmp / "manifest.py").write_text(
         'include("%s")\n' % board_manifest.as_posix()
-        + 'freeze("%s", "boot.py")\n' % tmp.as_posix(),
+        + 'freeze("%s", "boot.py")\n' % tmp.as_posix()
+        + 'freeze("%s", "_ota_config.py")\n' % tmp.as_posix(),
         encoding="utf-8",
     )
     return tmp
+
+
+def _render_ota_config(p, name: str) -> str:
+    """Generate ``_ota_config.py`` -- the build-time constants the frozen ``boot.py``
+    reads: the partition geometry, this device's ``board_id`` + the running firmware's
+    platform version (both exactly as the romfs build stamps them into trailers), and
+    the trusted public keys (revoked keys are dropped, so the device stops trusting
+    them after this firmware update)."""
+    from openmv_ota.ota import geometry
+    from openmv_ota.ota.keys import read_trusted_keys
+    from openmv_ota.project.config import derive_board_id
+    from openmv_ota.project.project import ProjectPaths
+
+    t = p.board(name)
+    override = p.config.overrides.get(name, {})
+    bid = override.get("board_id")
+    board_id = int(bid) if bid is not None else derive_board_id(p.config.name, name)
+
+    keys = "".join(
+        "    0x%x: %r,\n" % (k.key_id, bytes.fromhex(k.pubkey))
+        for k in read_trusted_keys(ProjectPaths(p.root).trusted_keys) if not k.revoked
+    )
+    return (
+        "# Generated by `openmv-ota build firmware` -- do not edit.\n"
+        "# Build-time constants the frozen boot.py reads.\n"
+        "PARTITION_SIZE = %d\n" % t.partition_size
+        + "FRONT_SIZE = %d\n" % t.front_size
+        + "OTA_BLOCK = %d\n" % geometry.ota_block(t.erase_size)
+        + "BOARD_ID = %d\n" % board_id
+        + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
+        + "TRUSTED_KEYS = {\n%s}\n" % keys
+    )
+
+
+def _install_verify_module(repo: Path) -> Path | None:
+    """Drop the ECDSA verify C module into the firmware's ``modules/`` dir so the
+    openmv build auto-compiles it (it globs ``modules/*.c``). Returns the installed
+    path for the caller to remove after the build, or None if a file is already
+    there (left intact rather than clobbered)."""
+    dst = repo / "modules" / _VERIFY_MODULE
+    if dst.exists():
+        return None
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(_VERIFY_C, dst)
+    return dst
 
 
 def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:
