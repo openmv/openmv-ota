@@ -83,7 +83,9 @@ jobs:
           git -C "$RUNNER_TEMP/openmv" checkout "$OPENMV_REF"
           # --recursive: the board build needs micropython's *nested* submodules
           # (lwip, mbedtls, mynewt-nimble, cyw43-driver, ...), not just openmv's.
-          git -C "$RUNNER_TEMP/openmv" submodule update --init --recursive --depth 1
+          # Full (not --depth 1): shallow recursive can't always fetch a submodule's
+          # pinned commit when it isn't the remote's branch tip.
+          git -C "$RUNNER_TEMP/openmv" submodule update --init --recursive
 
       - name: Use the SDK's bundled toolchain
         run: |
