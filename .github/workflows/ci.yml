@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# openmv latest. Set to a tag/40-char SHA to pin the firmware for reproducibility.
+env:
+  OPENMV_REF: master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) Unit tests + 100% coverage gate, on Linux and macOS.
+  # ---------------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (editable, with dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Run tests (pytest enforces --cov-fail-under=100)
+        run: pytest
+
+  # ---------------------------------------------------------------------------
+  # 2) Exercise the tool end to end on every board, on Linux and macOS:
+  #    `project new` pegs the project, `--install-sdk` fetches the OpenMV SDK
+  #    (pure-Python download), and the firmware build uses the toolchain bundled
+  #    *inside that SDK* -- no external arm-gcc / make is installed here. Boards
+  #    the tool can't serve must fail cleanly (asserted by the driver).
+  # ---------------------------------------------------------------------------
+  build:
+    name: build ${{ matrix.board }} (${{ matrix.os }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        board:
+          - OPENMV2
+          - OPENMV3
+          - OPENMV4
+          - OPENMV4P
+          - OPENMVPT
+          - OPENMV_RT1060
+          - OPENMV_AE3
+          - OPENMV_N6
+          - ARDUINO_PORTENTA_H7
+          - ARDUINO_GIGA
+          - ARDUINO_NICLA_VISION
+          - ARDUINO_NANO_33_BLE_SENSE
+          - ARDUINO_NANO_RP2040_CONNECT
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install openmv-ota
+        run: pip install -e .
+
+      - name: Check out openmv firmware (latest) + submodules
+        run: |
+          git clone https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"
+          git -C "$RUNNER_TEMP/openmv" checkout "$OPENMV_REF"
+          git -C "$RUNNER_TEMP/openmv" submodule update --init --depth 1
+
+      - name: Use the SDK's bundled toolchain
+        run: |
+          # The firmware Makefile prepends the SDK's gcc / vela / stedgeai /
+          # signing-tool dirs to PATH itself; only the top-level `make` it shells
+          # out to needs finding here, so add the SDK's bundled make. The SDK is
+          # installed by `project new --install-sdk` in the next step (a PATH
+          # entry for a dir that exists by the time make runs is fine).
+          SDK_VERSION="$(cat "$RUNNER_TEMP/openmv/SDK_VERSION")"
+          echo "$HOME/openmv-sdk-$SDK_VERSION/make" >> "$GITHUB_PATH"
+
+      - name: Build + verify ${{ matrix.board }} (tool installs the SDK)
+        run: |
+          python ci/build_boards.py \
+            --firmware "$RUNNER_TEMP/openmv" \
+            --boards "${{ matrix.board }}" \
+            --workdir "$RUNNER_TEMP/projects" \
+            --install-sdk

@@ -2,7 +2,7 @@
   <img src="docs/under-construction.svg" width="100%" alt="Under Construction — this project is a work in progress">
 </p>
 
-[![GitHub Build](https://github.com/openmv/openmv-ota/actions/workflows/main.yml/badge.svg)](https://github.com/openmv/openmv-ota/actions/workflows/main.yml)
+[![CI](https://github.com/openmv/openmv-ota/actions/workflows/ci.yml/badge.svg)](https://github.com/openmv/openmv-ota/actions/workflows/ci.yml)
 [![GitHub license](https://img.shields.io/github/license/openmv/openmv-ota?label=license%20%E2%9A%96)](https://github.com/openmv/openmv-ota/blob/master/LICENSE)
 ![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/openmv/openmv-ota?sort=semver)
 [![GitHub forks](https://img.shields.io/github/forks/openmv/openmv-ota?color=green)](https://github.com/openmv/openmv-ota/network)
