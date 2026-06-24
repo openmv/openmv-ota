@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "OpenMV", email = "openmv@openmv.io" }]
-keywords = ["openmv", "ota", "romfs", "firmware", "update", "ed25519", "embedded"]
+keywords = ["openmv", "ota", "romfs", "firmware", "update", "ecdsa", "embedded"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "License :: OSI Approved :: MIT License",
@@ -43,14 +43,11 @@ openmv-ota = "openmv_ota.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-# The on-device SDK and C module ship as package data, bundled into the ROMFS
-# (SDK) or copied into the firmware tree (ed25519_verify) at build time.
+# The on-device SDK ships as package data, bundled into the ROMFS at build time.
 "openmv_ota" = [
     "data/*.json",
     "data/firmware/**/*",
     "romfs/sdk/**/*",
-    "romfs/firmware_build/templates/*",
-    "romfs/firmware_build/ed25519_verify/**/*",
     "romfs/update_server/deploy/*",
 ]
 
@@ -66,8 +63,6 @@ source = ["openmv_ota"]
 omit = [
     # OTA-layer subsystems are stubs until later; the core romfs builder is
     # what this first tool ships, and it is held to 100%.
-    "*/romfs/firmware_build/*",
-    "*/romfs/romfs_build/*",
     "*/romfs/update_server/*",
     "*/romfs/sdk/*",
 ]
