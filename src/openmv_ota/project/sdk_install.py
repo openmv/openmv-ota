@@ -23,9 +23,14 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from openmv_ota import __version__
+
 from .errors import ProjectError
 
 SDK_BASE_URL = "https://download.openmv.io/sdk"
+# The CDN serving the bundles rejects the default ``Python-urllib`` agent with 403;
+# any explicit User-Agent is accepted (the firmware's shell installer uses wget's).
+_USER_AGENT = "openmv-ota/%s" % __version__
 
 # CPU name (lowercased ``platform.machine()``) -> the token used in bundle names.
 _ARCH = {"x86_64": "x86_64", "amd64": "x86_64", "arm64": "arm64", "aarch64": "arm64"}
@@ -65,9 +70,14 @@ def install_sdk(version: str, dest: Path, *, base_url: str = SDK_BASE_URL,
         _extract_strip1(archive, dest)
 
 
+def _open(url: str):
+    return urllib.request.urlopen(
+        urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}))
+
+
 def _download(url: str, dest: Path) -> None:
     try:
-        with urllib.request.urlopen(url) as resp, open(dest, "wb") as f:
+        with _open(url) as resp, open(dest, "wb") as f:
             shutil.copyfileobj(resp, f)
     except OSError as e:
         raise ProjectError("OpenMV SDK download failed (%s): %s" % (url, e),
@@ -76,7 +86,7 @@ def _download(url: str, dest: Path) -> None:
 
 def _fetch_text(url: str) -> str:
     try:
-        with urllib.request.urlopen(url) as resp:
+        with _open(url) as resp:
             return resp.read().decode("utf-8")
     except OSError as e:
         raise ProjectError("could not fetch %s: %s" % (url, e), exit_code=1) from None
