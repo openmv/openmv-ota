@@ -77,6 +77,16 @@ jobs:
       - name: Install openmv-ota
         run: pip install -e .
 
+      # The firmware build calls GNU `realpath --relative-to` / `stat -c%s`; macOS
+      # ships the BSD versions, which reject those flags. The SDK provides the
+      # compiler toolchain but not GNU coreutils, so install them and put their
+      # un-prefixed (realpath/stat/readlink/...) front of PATH.
+      - name: Install GNU coreutils (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install coreutils
+          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+
       - name: Check out openmv firmware (latest) + submodules
         run: |
           git clone https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"

@@ -55,6 +55,11 @@ that SDK** — the firmware Makefile prepends the SDK's `gcc/bin`, `python/bin`,
 `stcubeprog/bin`, etc. to `PATH` automatically, so the only thing CI adds to `PATH`
 is the SDK's own `make` (the top-level `make` the tool shells out to).
 
+On **macOS** the build jobs also `brew install coreutils`: the firmware build calls
+GNU `realpath`/`stat` (and the Alif port's `stat -c%s`), and macOS ships the BSD
+variants that reject those flags. The SDK provides the compiler toolchain but not
+GNU coreutils, so its `gnubin` is put on `PATH`.
+
 > Set `OPENMV_REF` to a tag or 40-char SHA to pin the firmware for reproducibility;
 > it defaults to `master` (latest).
 
