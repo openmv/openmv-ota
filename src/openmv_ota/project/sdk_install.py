@@ -109,6 +109,13 @@ def _extract_strip1(archive: Path, dest: Path) -> None:
         if not tail:
             return None                      # the top-level dir entry itself
         member.name = tail
+        # A hard link's target is an archive-root-relative member name (e.g. gcc's
+        # ``ld`` -> ``ld.bfd``), so it carries the same top-level dir and must be
+        # stripped too, or the data filter can't resolve it. A *sym* link's target
+        # is relative to the link itself, so it is left untouched.
+        if member.islnk():
+            _lhead, _lsep, ltail = member.linkname.partition("/")
+            member.linkname = ltail
         return tarfile.data_filter(member, path)
 
     try:

@@ -17,8 +17,15 @@ PLAT = "linux-x86_64"
 NAME = "openmv-sdk-%s-%s.tar.xz" % (VERSION, PLAT)
 
 
-def _make_bundle(top: str, members: dict[str, bytes]) -> bytes:
-    """A .tar.xz whose single top-level dir is ``top`` (so strip-1 removes it)."""
+def _make_bundle(top: str, members: dict[str, bytes],
+                 hardlinks: dict[str, str] | None = None,
+                 symlinks: dict[str, str] | None = None) -> bytes:
+    """A .tar.xz whose single top-level dir is ``top`` (so strip-1 removes it).
+
+    ``hardlinks`` maps a member path to a target member path (both ``top``-relative;
+    the archive stores the target as ``top/<target>``, like a real SDK's ``ld`` ->
+    ``ld.bfd``). ``symlinks`` maps a member path to a *link-relative* target.
+    """
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:xz") as tf:
         top_dir = tarfile.TarInfo(top)        # the bare top-level dir entry (strip-1 drops it)
@@ -29,6 +36,16 @@ def _make_bundle(top: str, members: dict[str, bytes]) -> bytes:
             info = tarfile.TarInfo("%s/%s" % (top, rel))
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
+        for rel, target in (hardlinks or {}).items():
+            info = tarfile.TarInfo("%s/%s" % (top, rel))
+            info.type = tarfile.LNKTYPE
+            info.linkname = "%s/%s" % (top, target)   # archive-root-relative
+            tf.addfile(info)
+        for rel, target in (symlinks or {}).items():
+            info = tarfile.TarInfo("%s/%s" % (top, rel))
+            info.type = tarfile.SYMTYPE
+            info.linkname = target                    # relative to the link itself
+            tf.addfile(info)
     return buf.getvalue()
 
 
@@ -83,6 +100,27 @@ def test_install_sdk_success(tmp_path):
     # strip-1 removed the top dir: files land directly under dest
     assert (dest / "sdk.version").read_text() == VERSION
     assert (dest / "gcc" / "bin" / "arm-none-eabi-gcc").read_bytes() == b"ELF"
+
+
+def test_install_sdk_with_hardlinks_and_symlinks(tmp_path):
+    """The real SDK's gcc ships hard links (``ld`` -> ``ld.bfd``); strip-1 must
+    rewrite a hard link's archive-relative target too, or extraction blows up with
+    'linkname ... not found'. Symlinks (link-relative target) must be left alone."""
+    serve = tmp_path / "serve"
+    serve.mkdir()
+    archive = _make_bundle(
+        "openmv-sdk-%s-%s" % (VERSION, PLAT),
+        {"sdk.version": VERSION.encode(), "gcc/arm-none-eabi/bin/ld.bfd": b"ELF"},
+        hardlinks={"gcc/arm-none-eabi/bin/ld": "gcc/arm-none-eabi/bin/ld.bfd"},
+        symlinks={"gcc/arm-none-eabi/bin/cc": "ld.bfd"},
+    )
+    base = _publish(serve, archive)
+    dest = tmp_path / "sdk"
+    si.install_sdk(VERSION, dest, base_url=base, plat=PLAT)
+    binp = dest / "gcc" / "arm-none-eabi" / "bin"
+    assert (binp / "ld.bfd").read_bytes() == b"ELF"
+    assert (binp / "ld").read_bytes() == b"ELF"        # hard link resolved
+    assert (binp / "cc").is_symlink() and (binp / "cc").readlink().name == "ld.bfd"
 
 
 def test_install_sdk_uses_host_platform(tmp_path, monkeypatch):
