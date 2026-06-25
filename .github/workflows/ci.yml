@@ -70,7 +70,9 @@ jobs:
           # --recursive: mbedtls 3.6 generates sources (psa_crypto_driver_wrappers.h)
           # via its own `framework` submodule, so a non-recursive init can't build.
           git -C "$RUNNER_TEMP/openmv/lib/micropython" submodule update --init --recursive lib/mbedtls
-          pip install jinja2   # the mbedtls source generation needs it
+          # The source generation needs jinja2 + jsonschema; install mbedtls's own
+          # authoritative build requirements rather than guessing package names.
+          pip install -r "$RUNNER_TEMP/openmv/lib/micropython/lib/mbedtls/scripts/basic.requirements.txt"
 
       - name: Run the C-shim test (mbedtls + gcov)
         env:
