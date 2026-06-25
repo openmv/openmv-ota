@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+
 from openmv_ota.build import romfs as build_mod
 from openmv_ota.build.errors import BuildError
 from openmv_ota.romfs.builder import read_image
@@ -191,6 +193,27 @@ def test_multi_partition_builds_both_role_named(make_project):
     assert outs == {"OPENMV_AE3-romfs.img", "OPENMV_AE3-coprocessor-romfs.img"}
     copro = next(r for r in results if r.partition_index == 1)
     assert copro.output.name == "OPENMV_AE3-coprocessor-romfs.img" and not copro.ota
+
+
+def test_ota_build_romfs_ae3_main_zip_coprocessor_plain(make_project):
+    # In an OTA project the main partition is a signed .zip bundle, but the coprocessor
+    # is still a plain .img -- the helper core can't verify, so it's never OTA.
+    root, repo, app = make_project(boards=("OPENMV_AE3",), ota=True)
+    results = build_mod.build_romfs(root, app=app, firmware=repo,
+                                    compile_py=False, convert_models=False)
+    by_idx = {r.partition_index: r for r in results}
+    assert by_idx[0].output.name == "OPENMV_AE3-romfs.zip" and by_idx[0].ota
+    assert by_idx[1].output.name == "OPENMV_AE3-coprocessor-romfs.img" and not by_idx[1].ota
+
+
+def test_coprocessor_missing_app_dir_errors(make_project):
+    # If a multi-core board's app-coprocessor/ is gone, the build fails cleanly rather
+    # than silently skipping the helper partition.
+    root, repo, app = make_project(boards=("OPENMV_AE3",))
+    shutil.rmtree(root / "app-coprocessor")
+    with pytest.raises(BuildError, match="app directory not found"):
+        build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)
 
 
 def test_keep_build_dir(make_project):

@@ -138,6 +138,39 @@ verify_factory_size() {  # proj  board  img
   fi
 }
 
+# True if BOARD has a coprocessor (slaved second-core) partition, per `project show`.
+has_coprocessor() {  # proj  board
+  $OTA project show "$1" 2>/dev/null | awk -v b="$2" '$1 == b && /coprocessor/ { f = 1 } END { exit !f }'
+}
+
+# Size of the coprocessor partition (the `part[N] coprocessor ...` line). Empty if none.
+copro_part_size() {  # proj  board
+  $OTA project show "$1" 2>/dev/null | awk -v b="$2" '
+    $1 == b && /coprocessor/ { for (i = 1; i <= NF; i++) if ($i ~ /^part\[/) {
+                for (j = i + 1; j <= NF; j++) if ($j ~ /^[0-9]+$/) { print $j; exit } } }'
+}
+
+# A coprocessor image must be a *plain* romfs (no trailer/zip) that fits its partition.
+verify_coprocessor() {  # proj  board  img
+  local csize isize
+  expect_file "coprocessor romfs written (<board>-coprocessor-romfs.img)" "$3"
+  [ -f "$3" ] || return 0
+  if [ "$(head -c2 "$3")" = "PK" ]; then   # an OTA .zip bundle starts with "PK"
+    fail "coprocessor image is a plain romfs (not an OTA bundle)" "starts with PK (zip)"
+  else
+    pass "coprocessor image is a plain romfs (not an OTA bundle)"
+  fi
+  csize="$(copro_part_size "$1" "$2")"
+  isize="$(wc -c < "$3" | tr -d ' ')"
+  if [ -n "$csize" ] && [ "$isize" -le "$csize" ]; then
+    pass "coprocessor image fits its partition ($isize <= $csize bytes)"
+  elif [ -n "$csize" ]; then
+    fail "coprocessor image fits its partition" "image=$isize, partition=$csize"
+  else
+    echo "  [skip] coprocessor partition-size check (couldn't parse 'project show')"
+  fi
+}
+
 do_full() {  # board  work
   local board="$1" work="$2" proj="$2/ota" keys
   expect_success "project new --ota" \
@@ -155,6 +188,13 @@ do_full() {  # board  work
   expect_success "build inspect decodes the bundle" $OTA build inspect "$zip"
   expect_success "build verify (bundle)" $OTA build verify "$zip" --trusted-keys "$keys"
 
+  # Multi-core boards (e.g. AE3) also build a plain coprocessor romfs from
+  # app-coprocessor/ for the slaved second core, alongside the main OTA bundle.
+  local cimg="$proj/build/$board-coprocessor-romfs.img"
+  if has_coprocessor "$proj" "$board"; then
+    verify_coprocessor "$proj" "$board" "$cimg"
+  fi
+
   local ud="$work/unzip"; rm -rf "$ud"; mkdir -p "$ud"
   expect_success "unzip bundle -> romfs.img + trailer.bin" unzip -o "$zip" -d "$ud"
   expect_success "build verify (loose body + trailer)" \
@@ -163,10 +203,15 @@ do_full() {  # board  work
   expect_verify_reject "build verify REJECTS a corrupted body (exit 1)" \
     $OTA build verify "$ud/romfs.img" "$ud/trailer.bin" --trusted-keys "$keys"
 
+  rm -f "$cimg"   # so the next check proves factory-romfs regenerates it too
   expect_success "build factory-romfs" $OTA build factory-romfs "$proj" -b "$board"
   local img="$proj/build/$board-factory-romfs.img"
   expect_file "factory image written (<board>-factory-romfs.img)" "$img"
   [ -f "$img" ] && verify_factory_size "$proj" "$board" "$img"
+  # factory-romfs also emits the plain coprocessor image (it has no golden/trial form).
+  if has_coprocessor "$proj" "$board"; then
+    verify_coprocessor "$proj" "$board" "$cimg"
+  fi
 }
 
 do_classic() {  # board  work
