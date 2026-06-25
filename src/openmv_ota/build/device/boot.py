@@ -251,7 +251,14 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
 
     import uctypes
     import vfs
-    from ecdsa_verify import verify     # the C module dropped into openmv/modules/
+
+    try:
+        from ecdsa_verify import verify   # the C module dropped into openmv/modules/
+    except ImportError:
+        # A core that doesn't build mbedtls can't verify signatures, so it never runs
+        # OTA: e.g. the Alif AE3 M55_HE helper core, which is slaved to the main core
+        # and has its romfs written by it. Leave mp_init's stock /rom mount in place.
+        return
 
     # Read the XIP'd partition at each slot's *absolute* address via uctypes rather
     # than slicing one whole-partition memoryview: a memoryview's offset field is

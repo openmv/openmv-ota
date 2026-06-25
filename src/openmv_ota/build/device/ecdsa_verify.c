@@ -22,6 +22,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Compiled only where mbedtls is available: the host coverage test (which brings
+// its own mbedtls via OMV_ECDSA_VERIFY_HOST_TEST) and firmware cores that build
+// mbedtls. On a core without it -- e.g. the Alif AE3 M55_HE helper core, which is
+// slaved to the main core and never runs OTA -- the mbedtls headers/lib aren't on
+// the include path, so this whole unit must be empty. boot.py then finds no
+// ecdsa_verify module, treats the core as non-OTA, and keeps the stock romfs mount.
+#if defined(OMV_ECDSA_VERIFY_HOST_TEST) || (defined(MICROPY_SSL_MBEDTLS) && MICROPY_SSL_MBEDTLS)
+
 #include "mbedtls/ecdsa.h"
 #include "mbedtls/ecp.h"
 #include "mbedtls/md.h"
@@ -122,4 +130,6 @@ const mp_obj_module_t ecdsa_verify_module = {
 };
 MP_REGISTER_MODULE(MP_QSTR_ecdsa_verify, ecdsa_verify_module);
 
-#endif // OMV_ECDSA_VERIFY_HOST_TEST
+#endif // !OMV_ECDSA_VERIFY_HOST_TEST (MicroPython binding)
+
+#endif // OMV_ECDSA_VERIFY_HOST_TEST || MICROPY_SSL_MBEDTLS

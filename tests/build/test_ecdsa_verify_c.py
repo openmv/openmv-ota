@@ -29,9 +29,15 @@ from openmv_ota.ota.algorithms import ES256, ES384, ES512, algorithm_for
 _FW = os.environ.get("OPENMV_FW")
 _MBEDTLS = Path(_FW) / "lib" / "micropython" / "lib" / "mbedtls" if _FW else None
 _HAVE_CC = bool(shutil.which("gcc") and shutil.which("gcov"))
+_HAVE_MBEDTLS = bool(_MBEDTLS and (_MBEDTLS / "include" / "mbedtls" / "ecdsa.h").exists())
 
-pytestmark = pytest.mark.skipif(
-    not (_HAVE_CC and _MBEDTLS and (_MBEDTLS / "include" / "mbedtls" / "ecdsa.h").exists()),
+# The whole file needs a compiler. The full crypto/coverage test additionally needs
+# the firmware's mbedtls (set OPENMV_FW); the "compiles without mbedtls" guard test
+# does not -- it deliberately builds the module with no mbedtls at all.
+pytestmark = pytest.mark.skipif(not shutil.which("gcc"), reason="needs gcc to compile the shim")
+
+_NEEDS_MBEDTLS = pytest.mark.skipif(
+    not (_HAVE_CC and _HAVE_MBEDTLS),
     reason="set OPENMV_FW to an openmv checkout (for mbedtls) and have gcc/gcov to run",
 )
 
@@ -104,6 +110,7 @@ def _vectors():
     return rows
 
 
+@_NEEDS_MBEDTLS
 def test_ecdsa_verify_c_shim(tmp_path):
     lib = _MBEDTLS / "library" / "libmbedcrypto.a"
     if not lib.exists():       # build the firmware's mbedtls for the host (once)
@@ -132,3 +139,21 @@ def test_ecdsa_verify_c_shim(tmp_path):
     m = re.search(r"Lines executed:([\d.]+)% of \d+", gcov.stdout)
     assert m, gcov.stdout + gcov.stderr
     assert m.group(1) == "100.00", "core not fully covered:\n" + gcov.stdout
+
+
+def test_ecdsa_verify_c_empty_without_mbedtls(tmp_path):
+    """A core that doesn't build mbedtls (e.g. the AE3 M55_HE helper core) compiles
+    this module with no mbedtls define and no mbedtls on the include path. The guard
+    must make it an empty translation unit so the build doesn't break -- regression
+    test for the AE3 dual-core compile failure."""
+    src = tmp_path / "ecdsa_verify.c"
+    shutil.copy2(fw._VERIFY_C, src)
+    obj = tmp_path / "ecdsa_verify.o"
+    r = subprocess.run(
+        ["gcc", "-c", "-O0", "-Wall", "-Werror", str(src), "-o", str(obj)],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, "no-mbedtls build must succeed:\n" + r.stderr
+    nm = subprocess.run(["nm", str(obj)], capture_output=True, text=True)
+    assert "omv_ecdsa_verify" not in nm.stdout, "module not compiled out:\n" + nm.stdout
+    assert "ecdsa_verify_module" not in nm.stdout, "binding not compiled out:\n" + nm.stdout
