@@ -320,6 +320,8 @@ def create_project(
     _scaffold_app(paths, app_version)  # every project gets a starter app/ (OTA or not)
     if _boards_have_coprocessor(boards):  # a slaved second core (e.g. AE3's M55_HE)
         _scaffold_coprocessor(paths, app_version)
+    if config.ota:  # the device OTA runtime lib (status/confirm/sync) for the app to use
+        _scaffold_runtime_lib(paths, boards)
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
@@ -437,6 +439,59 @@ def _scaffold_coprocessor(paths: ProjectPaths, app_version: str) -> None:
     if not lib_dir.exists():
         lib_dir.mkdir(parents=True)
         (lib_dir / ".gitkeep").write_text("", encoding="utf-8")
+
+
+# The device-side OTA runtime library source (status/confirm/sync), shipped with
+# the tool and scaffolded into an OTA project's app/lib/openmv_ota/.
+_RUNTIME_LIB_SRC = Path(__file__).resolve().parents[1] / "build" / "device" / "openmv_ota"
+
+
+def _coprocessor_partitions(boards: list[str]) -> list[dict]:
+    """Distinct coprocessor partitions across the project's boards, as
+    ``{"index", "name"}`` -- the targets sync() writes (deduped by index)."""
+    out: list[dict] = []
+    seen: set[int] = set()
+    for name in boards:
+        for part in boards_mod.get_board(name).partitions:
+            if part.role == "coprocessor" and part.index not in seen:
+                seen.add(part.index)
+                out.append({"index": part.index, "name": part.name})
+    return out
+
+
+def _empty_romfs() -> bytes:
+    """A valid, empty ROMFS image -- the placeholder coprocessor resource the build
+    replaces with the real image, so the scaffolded app layout is always valid."""
+    import tempfile
+
+    from openmv_ota.romfs.builder import build_image
+    with tempfile.TemporaryDirectory() as empty:
+        return build_image(empty)
+
+
+def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str]) -> None:
+    """Scaffold ``app/lib/openmv_ota/`` -- the device OTA runtime helpers
+    (status/confirm/sync) -- into an OTA project. For coprocessor boards also seed
+    ``data/coprocessor.romfs`` (a placeholder the build swaps for the real image) and
+    ``data/resources.json`` (the sync() manifest). Existing files are left alone."""
+    dst = paths.app_dir / "lib" / "openmv_ota"
+    dst.mkdir(parents=True, exist_ok=True)
+    for src in sorted(_RUNTIME_LIB_SRC.glob("*.py")):
+        out = dst / src.name
+        if not out.exists():
+            out.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    copro = _coprocessor_partitions(boards)
+    if copro:
+        data = dst / "data"
+        data.mkdir(exist_ok=True)
+        romfs = data / "coprocessor.romfs"
+        if not romfs.exists():
+            romfs.write_bytes(_empty_romfs())
+        manifest = data / "resources.json"
+        if not manifest.exists():
+            entries = [{"file": "coprocessor.romfs", "handler": "partition",
+                        "partition": p["index"], "name": p["name"]} for p in copro]
+            manifest.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
 
 
 def _write_local(paths: ProjectPaths, repo: Path, sdk_home_override: Path | None) -> None:

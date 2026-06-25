@@ -174,6 +174,32 @@ def test_create_no_coprocessor_folder_for_single_core(tmp_path, make_firmware, m
     assert not proj.ProjectPaths(root).coprocessor_app_dir.exists()
 
 
+def test_create_ota_scaffolds_runtime_lib_with_coprocessor_data(tmp_path, make_firmware, make_sdk):
+    # An OTA project gets the device runtime lib; a coprocessor board (AE3, in the
+    # default set) also gets the sync() resource manifest + a valid placeholder romfs.
+    import json
+
+    from openmv_ota.romfs.builder import read_image
+    root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, ota_keys=2, factory_keys=1)
+    lib = proj.ProjectPaths(root).app_dir / "lib" / "openmv_ota"
+    assert (lib / "__init__.py").exists()
+    res = json.loads((lib / "data" / "resources.json").read_text())
+    assert res[0]["handler"] == "partition" and res[0]["partition"] == 1
+    read_image((lib / "data" / "coprocessor.romfs").read_bytes())   # valid romfs, no raise
+
+
+def test_create_ota_runtime_lib_no_data_without_coprocessor(tmp_path, make_firmware, make_sdk):
+    root, _ = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV_N6"],
+                      ota=True, ota_keys=2, factory_keys=1)
+    lib = proj.ProjectPaths(root).app_dir / "lib" / "openmv_ota"
+    assert (lib / "__init__.py").exists() and not (lib / "data").exists()
+
+
+def test_create_non_ota_no_runtime_lib(tmp_path, make_firmware, make_sdk):
+    root, _ = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV_N6"])
+    assert not (proj.ProjectPaths(root).app_dir / "lib" / "openmv_ota").exists()
+
+
 def test_create_preserves_existing_app(tmp_path, make_firmware, make_sdk):
     # Re-running new --force never clobbers a user's app.
     repo = make_firmware()
