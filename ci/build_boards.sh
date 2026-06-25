@@ -105,11 +105,14 @@ expect_verify_reject() {  # label  cmd...
 $LAST_OUT"
 }
 
-# partition_size for a board, parsed from `project show` text (the line is e.g.
-# "OPENMV_N6   part[0] 25165824  front 12582912 ..."). Empty if it can't be read.
+# partition_size for a board's first (main) partition, parsed from `project show`
+# text (the line is e.g. "OPENMV_N6  part[0] main  25165824  front 12582912 ...").
+# Takes the first all-numeric field after `part[` so it's robust to the role column.
+# Empty if it can't be read.
 part_size() {  # proj  board
   $OTA project show "$1" 2>/dev/null | awk -v b="$2" '
-    $1 == b { for (i = 1; i <= NF; i++) if ($i ~ /^part\[/) { print $(i + 1); exit } }'
+    $1 == b { for (i = 1; i <= NF; i++) if ($i ~ /^part\[/) {
+                for (j = i + 1; j <= NF; j++) if ($j ~ /^[0-9]+$/) { print $j; exit } } }'
 }
 
 build_firmware() {  # proj  board

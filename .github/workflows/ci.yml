@@ -67,7 +67,10 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"
           git -C "$RUNNER_TEMP/openmv" submodule update --init lib/micropython
-          git -C "$RUNNER_TEMP/openmv/lib/micropython" submodule update --init lib/mbedtls
+          # --recursive: mbedtls 3.6 generates sources (psa_crypto_driver_wrappers.h)
+          # via its own `framework` submodule, so a non-recursive init can't build.
+          git -C "$RUNNER_TEMP/openmv/lib/micropython" submodule update --init --recursive lib/mbedtls
+          pip install jinja2   # the mbedtls source generation needs it
 
       - name: Run the C-shim test (mbedtls + gcov)
         env:

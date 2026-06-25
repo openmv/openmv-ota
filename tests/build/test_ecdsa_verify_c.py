@@ -114,8 +114,12 @@ def _vectors():
 def test_ecdsa_verify_c_shim(tmp_path):
     lib = _MBEDTLS / "library" / "libmbedcrypto.a"
     if not lib.exists():       # build the firmware's mbedtls for the host (once)
-        subprocess.run(["make", "-C", str(_MBEDTLS / "library"), "libmbedcrypto.a"],
-                       check=True, capture_output=True)
+        r = subprocess.run(["make", "-C", str(_MBEDTLS / "library"), "libmbedcrypto.a"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:  # surface why -- mbedtls 3.6 needs its `framework`
+            raise AssertionError(  # submodule (+ jinja2) to generate sources
+                "host mbedtls build failed (need the mbedtls 'framework' submodule and "
+                "jinja2):\n" + r.stdout + r.stderr)
 
     shutil.copy2(fw._VERIFY_C, tmp_path / "ecdsa_verify.c")
     (tmp_path / "harness.c").write_text(_HARNESS_C)
