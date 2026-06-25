@@ -175,6 +175,49 @@ print("SLOT", slot, "REASON", reason, "MARKER", mk)
     return BOOT_PY.read_text() + "\n" + runner
 
 
+# --- openmv_ota runtime library (status/confirm/sync) -----------------------
+
+_RUNTIME_LIB = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
+                / "build" / "device" / "openmv_ota" / "__init__.py")
+
+
+def _runtime_partition(part: int, front: int) -> bytes:
+    """A partition whose FRONT body is a romfs carrying the real openmv_ota runtime
+    lib + a matching _ota_config + a sync() resource, with the FRONT status sector
+    crafted as an un-confirmed one-shot trial (pending + tried)."""
+    src = Path(tempfile.mkdtemp(prefix="omv-qemu-rt-"))
+    (src / "lib" / "openmv_ota" / "data").mkdir(parents=True)
+    (src / "lib" / "openmv_ota" / "__init__.py").write_text(_RUNTIME_LIB.read_text())
+    (src / "lib" / "openmv_ota" / "data" / "resources.json").write_text(
+        '[{"file":"coprocessor.romfs","handler":"partition","partition":0,"name":"probe"}]')
+    (src / "lib" / "openmv_ota" / "data" / "coprocessor.romfs").write_bytes(b"COPRO-IMAGE")
+    (src / "_ota_config.py").write_text(
+        "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nOTA_BLOCK=%d\n"
+        "BOARD_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
+    body = build_image(str(src))
+    shutil.rmtree(src, ignore_errors=True)
+    img = bytearray(b"\xff" * part)
+    img[0:len(body)] = body
+    so = front - 2 * BLOCK                         # FRONT status sector offset
+    img[so:so + 16] = host_status.PENDING          # craft an un-confirmed trial
+    img[so + 16:so + 32] = host_status.TRIED
+    return bytes(img)
+
+
+def _runtime_script() -> str:
+    # mp_init auto-mounts the partition's romfs at /rom and adds /rom/lib to sys.path,
+    # so the lib + _ota_config import directly.
+    return '''
+import openmv_ota as o
+s = o.status()
+c = o.confirm()
+applied = o.sync()
+ok = s["trial"] and c and ("probe" in applied)
+print("RT trial=%s confirm=%s synced=%s" % (s["trial"], c, ",".join(applied)))
+print("RTRESULT", "PASS" if ok else "FAIL")
+'''
+
+
 # --- qemu orchestration -----------------------------------------------------
 
 def _run_scenario(fw: Path, mpremote: Path, board: str, romfs: bytes, script: str,
@@ -260,6 +303,10 @@ def main(argv=None) -> int:
                 _run_scenario(fw, mpremote, board, _partition(part, front, corrupt_front=True),
                               _mount_script(part, front)),
                 lambda o: "SLOT BACK REASON body-sha" in o)
+        section("%s openmv_ota runtime (status/confirm/sync)" % board,
+                _run_scenario(fw, mpremote, board, _runtime_partition(part, front),
+                              _runtime_script()),
+                lambda o: "RTRESULT PASS" in o)
 
     print("\n" + "=" * 50)
     if ran == 0:
