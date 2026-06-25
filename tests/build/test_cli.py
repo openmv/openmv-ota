@@ -228,3 +228,71 @@ def test_build_factory_romfs_non_ota_errors(make_project, capsys):
                "--no-compile-py", "--no-convert-models"])
     assert rc != 0
     assert "needs an OTA project" in capsys.readouterr().err
+
+
+# --- inspect / verify on a factory (dual-slot partition) image --------------
+
+def _build_factory_image(make_project, capsys):
+    """Build a real factory image; return (img_path, trusted_keys_path). Flushes the
+    build's stdout from capsys so the caller reads only the inspect/verify output."""
+    files = {"main.py": "print(1)\n", "settings.json": '{"app_version": "1.0.0"}\n'}
+    root, repo, app = make_project(ota=True, app_files=files)
+    assert main(["build", "factory-romfs", str(root), "--app", str(app), "-f", str(repo),
+                 "--no-compile-py", "--no-convert-models"]) == 0
+    capsys.readouterr()
+    return root / "build" / "OPENMV_N6-factory-romfs.img", root / "keys" / "trusted_keys.json"
+
+
+def test_build_inspect_factory(make_project, capsys):
+    img, _keys = _build_factory_image(make_project, capsys)
+    assert main(["build", "inspect", str(img)]) == 0
+    out = capsys.readouterr().out
+    assert "== FRONT slot ==" in out and "== BACK slot ==" in out and out.count("app_version") == 2
+
+
+def test_build_inspect_factory_json(make_project, capsys):
+    import json
+    img, _keys = _build_factory_image(make_project, capsys)
+    assert main(["build", "inspect", str(img), "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert set(data) == {"FRONT", "BACK"} and data["FRONT"]["app_version"] == "1.0.0"
+
+
+def test_build_verify_factory_ok(make_project, capsys):
+    img, keys = _build_factory_image(make_project, capsys)
+    assert main(["build", "verify", str(img), "--trusted-keys", str(keys)]) == 0
+    out = capsys.readouterr().out
+    assert "FRONT: verified" in out and "BACK: verified" in out
+
+
+def test_build_verify_factory_corrupted_slot(make_project, capsys):
+    img, keys = _build_factory_image(make_project, capsys)
+    data = bytearray(img.read_bytes())
+    data[0] ^= 0xFF             # corrupt the FRONT slot's body (BACK stays intact)
+    img.write_bytes(data)
+    assert main(["build", "verify", str(img), "--trusted-keys", str(keys)]) == 1
+    cap = capsys.readouterr()
+    assert "FRONT: verification FAILED" in cap.err and "BACK: verified" in cap.out
+
+
+# --- partition trailer scanning (unit) --------------------------------------
+
+def test_find_trailers_skips_invalid_magic():
+    from openmv_ota.ota import partition
+    img = bytearray(8192)
+    img[0:4] = b"OMVR"         # the magic, but not a valid trailer (zero header after)
+    assert partition.find_trailers(bytes(img)) == []
+
+
+def test_slots_empty_for_unsigned_image():
+    from openmv_ota.ota import partition
+    assert partition.slots(b"\x00" * 4096) == []
+
+
+def test_slots_single_trailer(tmp_path):
+    from openmv_ota.ota import partition
+    romfs, trailer, _keys = _make_image_files(tmp_path)
+    body, tb = romfs.read_bytes(), trailer.read_bytes()
+    img = body + b"\xff" * (4096 - len(body)) + tb   # body in block 0, trailer at 4096
+    sl = partition.slots(img)
+    assert len(sl) == 1 and sl[0][0] == "image" and sl[0][1] == body

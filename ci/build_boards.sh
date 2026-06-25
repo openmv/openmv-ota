@@ -207,7 +207,17 @@ do_full() {  # board  work
   expect_success "build factory-romfs" $OTA build factory-romfs "$proj" -b "$board"
   local img="$proj/build/$board-factory-romfs.img"
   expect_file "factory image written (<board>-factory-romfs.img)" "$img"
-  [ -f "$img" ] && verify_factory_size "$proj" "$board" "$img"
+  if [ -f "$img" ]; then
+    verify_factory_size "$proj" "$board" "$img"
+    # The factory image is signed too: inspect decodes both slots, verify checks both.
+    expect_success "build inspect (factory FRONT+BACK)" $OTA build inspect "$img"
+    expect_success "build verify (factory image, both slots)" \
+      $OTA build verify "$img" --trusted-keys "$keys"
+    local fbad="$work/factory-corrupt.img"; cp "$img" "$fbad"
+    dd if=/dev/zero of="$fbad" bs=1 seek=0 count=32 conv=notrunc 2>/dev/null  # wreck FRONT body
+    expect_verify_reject "build verify REJECTS a corrupted factory slot (exit 1)" \
+      $OTA build verify "$fbad" --trusted-keys "$keys"
+  fi
   # factory-romfs also emits the plain coprocessor image (it has no golden/trial form).
   if has_coprocessor "$proj" "$board"; then
     verify_coprocessor "$proj" "$board" "$cimg"

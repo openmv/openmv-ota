@@ -263,15 +263,20 @@ missing or the build fails.
 
 ## Inspecting and verifying an OTA image
 
-Two read-only commands operate on a built OTA image. They take the `<board>-romfs.zip`
-bundle directly, or the loose `romfs.img` / `trailer.bin` (e.g. if you've
-unzipped). They live under `build` because they validate build outputs.
+Two read-only commands operate on a built image. They accept the `<board>-romfs.zip`
+bundle directly, the loose `romfs.img` / `trailer.bin` (e.g. if you've unzipped),
+**or the `<board>-factory-romfs.img`** — the factory image is a dual-slot partition,
+so both commands locate each slot's trailer (by scanning block-aligned offsets and
+CRC-validating) and report/verify **FRONT and BACK** independently. (A plain
+coprocessor romfs has no trailer, so it has nothing to inspect or verify.) They
+live under `build` because they validate build outputs.
 
 ### build inspect
 
 ```bash
 openmv-ota build inspect build/OPENMV_N6-romfs.zip
 openmv-ota build inspect build/OPENMV_N6-romfs.zip --json
+openmv-ota build inspect build/OPENMV_N6-factory-romfs.img   # prints the FRONT + BACK slots
 ```
 
 Decodes the signed trailer and prints it: product / board / `board_id` /
@@ -292,9 +297,12 @@ The host-side **authenticity + integrity** gate — the mirror of what the devic
 parses, the signing `key_id` is in the trusted set **and not revoked**, the
 algorithm matches, the **signature verifies** over the signed region, and the body
 matches the signed size + SHA-256. Exit 0 on success, 1 on a verification failure
-(with the reason), 2 on a bad argument. Pass the `.zip` (one argument) or the loose
-`romfs.img trailer.bin` (two). Trusted keys come from `--trusted-keys` (default
-`keys/trusted_keys.json`), so running it from a project root just works.
+(with the reason), 2 on a bad argument. Pass the `.zip` (one argument), the loose
+`romfs.img trailer.bin` (two), or a `<board>-factory-romfs.img` — for a factory
+image every slot is verified and the command fails if **any** slot fails (each
+slot's verdict is printed with a `FRONT:` / `BACK:` prefix). Trusted keys come from
+`--trusted-keys` (default `keys/trusted_keys.json`), so running it from a project
+root just works.
 
 It deliberately does **not** check the device-relative fields — `board_id` against
 a device, `payload_version` anti-rollback against the installed image,

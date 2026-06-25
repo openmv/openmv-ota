@@ -64,13 +64,15 @@ def register(build_parser: argparse.ArgumentParser):
                       help="keep the generated wrapper manifest dir (OTA builds) for inspection")
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
 
-    p_ins = sub.add_parser("inspect", help="decode + print an OTA image's trailer")
-    p_ins.add_argument("image", help="a <board>.zip bundle or a trailer.bin")
+    p_ins = sub.add_parser("inspect", help="decode + print an OTA image's trailer(s)")
+    p_ins.add_argument("image", help="a <board>-romfs.zip bundle, a trailer.bin, or a "
+                                     "factory/partition .img (decodes every slot)")
     p_ins.add_argument("--json", action="store_true", help="machine-readable dump")
     p_ins.set_defaults(func=cmd_inspect, _command="build inspect")
 
     p_ver = sub.add_parser("verify", help="verify an OTA image (signature + body hash)")
-    p_ver.add_argument("image", help="a <board>.zip bundle, or the romfs.img body")
+    p_ver.add_argument("image", help="a <board>-romfs.zip bundle, a factory/partition "
+                                     ".img (verifies every slot), or the romfs.img body")
     p_ver.add_argument("trailer", nargs="?", help="trailer.bin (omit when image is a .zip)")
     p_ver.add_argument("--trusted-keys", default="keys/trusted_keys.json",
                        help="trusted_keys.json (default: keys/trusted_keys.json)")
@@ -204,29 +206,7 @@ def _trailer_summary(t) -> dict:
     }
 
 
-def cmd_inspect(args: argparse.Namespace) -> int:
-    from openmv_ota.ota import bundle, parse_trailer
-    from openmv_ota.ota.errors import OtaError
-
-    path = Path(args.image)
-    try:
-        if bundle.is_bundle(path):
-            _body, trailer_bytes = bundle.read_bundle(path)
-        else:
-            trailer_bytes = path.read_bytes()
-    except (OSError, OtaError) as e:
-        print("error: %s" % e, file=sys.stderr)
-        return 2
-    try:
-        t = parse_trailer(trailer_bytes)
-    except OtaError as e:
-        print("error: not a valid trailer: %s" % e, file=sys.stderr)
-        return 2
-
-    s = _trailer_summary(t)
-    if args.json:
-        print(json.dumps(s, indent=2))
-        return 0
+def _print_trailer(s: dict) -> None:
     print("OTA trailer (%s, header v%d)" % (s["kind"], s["header_version"]))
     print("  product:        %s" % s["product"])
     print("  board:          %s  (id %d)" % (s["board"], s["board_id"]))
@@ -243,37 +223,82 @@ def cmd_inspect(args: argparse.Namespace) -> int:
           % (fw.get("version"), (fw.get("commit") or "")[:12], s["meta"].get("micropython")))
     print("                  mpy-cross %s, vela %s, stedgeai %s, sdk %s"
           % (tc.get("mpy_cross"), tc.get("vela"), tc.get("stedgeai"), tc.get("sdk")))
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    from openmv_ota.ota import bundle, parse_trailer, partition
+    from openmv_ota.ota.errors import OtaError
+
+    path = Path(args.image)
+    try:
+        is_b = bundle.is_bundle(path)
+        trailer_bytes = bundle.read_bundle(path)[1] if is_b else None
+        data = None if is_b else path.read_bytes()
+    except (OSError, OtaError) as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
+    try:
+        if is_b:
+            entries = [("image", parse_trailer(trailer_bytes))]
+        else:
+            found = partition.find_trailers(data)
+            # A factory/partition image has FRONT + BACK; a loose trailer.bin has one
+            # trailer at offset 0; anything else falls back to "parse the whole file".
+            entries = ([(lbl, t) for lbl, (_off, t) in
+                        zip(partition.slot_labels(len(found)), found)]
+                       if found else [("image", parse_trailer(data))])
+    except OtaError as e:
+        print("error: not a valid trailer: %s" % e, file=sys.stderr)
+        return 2
+
+    if args.json:
+        out = ({lbl: _trailer_summary(t) for lbl, t in entries}
+               if len(entries) > 1 else _trailer_summary(entries[0][1]))
+        print(json.dumps(out, indent=2))
+        return 0
+    for lbl, t in entries:
+        if len(entries) > 1:
+            print("== %s slot ==" % lbl)
+        _print_trailer(_trailer_summary(t))
     print("  (full meta: --json)")
     return 0
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    from openmv_ota.ota import bundle, read_trusted_keys
+    from openmv_ota.ota import bundle, partition, read_trusted_keys
     from openmv_ota.ota.errors import OtaError
     from openmv_ota.ota.verify import verify_image
 
     image = Path(args.image)
     try:
-        if args.trailer is not None:
-            body, trailer = image.read_bytes(), Path(args.trailer).read_bytes()
-        elif bundle.is_bundle(image):
-            body, trailer = bundle.read_bundle(image)
-        else:
-            print("error: %s is not a .zip bundle; pass `<romfs.img> <trailer.bin>` or a "
-                  "bundle" % image, file=sys.stderr)
-            return 2
-    except (OSError, OtaError) as e:
-        print("error: %s" % e, file=sys.stderr)
-        return 2
-    try:
         trusted = read_trusted_keys(Path(args.trusted_keys))
     except OtaError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
+    try:
+        if args.trailer is not None:                       # loose body + trailer
+            pairs = [("image", image.read_bytes(), Path(args.trailer).read_bytes())]
+        elif bundle.is_bundle(image):                      # one .zip bundle
+            body, trailer = bundle.read_bundle(image)
+            pairs = [("image", body, trailer)]
+        else:                                              # a factory/partition .img
+            pairs = partition.slots(image.read_bytes())
+            if not pairs:
+                print("error: %s is not a .zip bundle, a factory/partition image, or a "
+                      "signed body; pass `<romfs.img> <trailer.bin>` or a bundle"
+                      % image, file=sys.stderr)
+                return 2
+    except (OSError, OtaError) as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
 
-    ok, reason = verify_image(body, trailer, trusted)
-    if ok:
-        print("verified: %s" % reason)
-        return 0
-    print("verification FAILED: %s" % reason, file=sys.stderr)
-    return 1
+    all_ok = True
+    for label, body, trailer in pairs:
+        tag = ("%s: " % label) if len(pairs) > 1 else ""
+        ok, reason = verify_image(body, trailer, trusted)
+        if ok:
+            print("%sverified: %s" % (tag, reason))
+        else:
+            print("%sverification FAILED: %s" % (tag, reason), file=sys.stderr)
+            all_ok = False
+    return 0 if all_ok else 1
