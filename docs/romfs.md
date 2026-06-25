@@ -73,7 +73,7 @@ openmv-ota romfs unpack app.romfs -o ./out
 ```bash
 openmv-ota romfs ls app.romfs -l         # contents, with sizes and offsets
 openmv-ota romfs cat app.romfs main.py   # write one file to stdout
-openmv-ota romfs info app.romfs          # summary
+openmv-ota romfs inspect app.romfs       # summary
 openmv-ota romfs verify app.romfs --board OPENMV_N6
 ```
 

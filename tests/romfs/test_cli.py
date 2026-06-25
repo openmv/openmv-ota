@@ -91,7 +91,7 @@ def test_ls_and_info(tmp_path, capsys):
     ls_out = capsys.readouterr().out
     assert "model.tflite" in ls_out and "lib/" in ls_out
 
-    assert main(["romfs", "info", str(img)]) == 0
+    assert main(["romfs", "inspect", str(img)]) == 0
     info_out = capsys.readouterr().out
     assert "files:" in info_out and "D2 CD 31" in info_out
 
@@ -261,7 +261,7 @@ def test_cat_invalid_image(tmp_path, capsys):
 def test_info_invalid_image(tmp_path, capsys):
     bad = tmp_path / "bad.romfs"
     bad.write_bytes(b"nope")
-    assert main(["romfs", "info", str(bad)]) == 1
+    assert main(["romfs", "inspect", str(bad)]) == 1
     assert "not a valid" in capsys.readouterr().err.lower()
 
 
@@ -271,11 +271,11 @@ def test_info_reports_trailing_data(tmp_path, capsys):
     img = _build_demo(tmp_path)
     withtrailer = tmp_path / "with_trailer.romfs"
     withtrailer.write_bytes(img.read_bytes() + b"\xaa" * 512)
-    assert main(["romfs", "info", str(withtrailer)]) == 0
+    assert main(["romfs", "inspect", str(withtrailer)]) == 0
     out = capsys.readouterr().out
     assert "romfs size:" in out and "512 trailing" in out
     # the plain image (no trailing bytes) omits the romfs-size line
-    assert main(["romfs", "info", str(img)]) == 0
+    assert main(["romfs", "inspect", str(img)]) == 0
     assert "romfs size:" not in capsys.readouterr().out
 
 
@@ -286,7 +286,7 @@ def test_info_from_stdin(tmp_path, monkeypatch, capsys):
     img = _build_demo(tmp_path)
     monkeypatch.setattr(romfs_cli.sys, "stdin",
                         types.SimpleNamespace(buffer=io.BytesIO(img.read_bytes())))
-    assert main(["romfs", "info", "-"]) == 0
+    assert main(["romfs", "inspect", "-"]) == 0
     out = capsys.readouterr().out
     assert "<stdin>" in out and "files:" in out
 

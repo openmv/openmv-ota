@@ -5,7 +5,7 @@ Subcommands:
     unpack    unpack a ROMFS image to a directory
     ls        list the contents of a ROMFS image
     cat       write one file's contents from a ROMFS image to stdout
-    info      summarise a ROMFS image
+    inspect   summarise a ROMFS image
     verify    check an image parses and its payloads are correctly aligned
     boards    list known boards / show one board's ROMFS config
 
@@ -147,9 +147,9 @@ def register(romfs_parser: argparse.ArgumentParser):
     p_cat.add_argument("path", help="path of the file inside the image")
     p_cat.set_defaults(func=cmd_cat, _command="romfs cat")
 
-    p_info = sub.add_parser("info", help="summarise a ROMFS image")
+    p_info = sub.add_parser("inspect", help="summarise a ROMFS image")
     p_info.add_argument("image", help="ROMFS image to inspect ('-' for stdin)")
-    p_info.set_defaults(func=cmd_info, _command="romfs info")
+    p_info.set_defaults(func=cmd_inspect, _command="romfs inspect")
 
     p_verify = sub.add_parser("verify", help="check an image parses and is aligned")
     p_verify.add_argument("image", help="ROMFS image to verify ('-' for stdin)")
@@ -327,7 +327,7 @@ def cmd_cat(args: argparse.Namespace) -> int:
     return 1
 
 
-def cmd_info(args: argparse.Namespace) -> int:
+def cmd_inspect(args: argparse.Namespace) -> int:
     reader, data, code = _open_reader(args.image)
     if reader is None:
         return code

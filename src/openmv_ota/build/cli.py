@@ -219,7 +219,7 @@ def _romfs_summary(data: bytes) -> str | None:
     except RomfsError:
         return None
     return ("unsigned ROMFS image: %d file(s), %d bytes, no OTA trailer "
-            "(use `openmv-ota romfs info/ls` to inspect its contents)" % (files, len(data)))
+            "(use `openmv-ota romfs inspect/ls` to inspect its contents)" % (files, len(data)))
 
 
 def _print_trailer(s: dict) -> None:
