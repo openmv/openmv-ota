@@ -206,6 +206,22 @@ def _trailer_summary(t) -> dict:
     }
 
 
+def _romfs_summary(data: bytes) -> str | None:
+    """If ``data`` is a valid (unsigned) ROMFS image, a one-line description; else
+    ``None``. Lets inspect/verify handle a plain ``<board>-romfs.img`` (or a
+    coprocessor image) gracefully instead of calling it a bad trailer."""
+    from openmv_ota.romfs.builder import read_image
+    from openmv_ota.romfs.container import RomfsError
+
+    try:
+        reader = read_image(data)
+        files = sum(1 for _, e in reader.walk() if not e.is_dir)
+    except RomfsError:
+        return None
+    return ("unsigned ROMFS image: %d file(s), %d bytes, no OTA trailer "
+            "(use `openmv-ota romfs info/ls` to inspect its contents)" % (files, len(data)))
+
+
 def _print_trailer(s: dict) -> None:
     print("OTA trailer (%s, header v%d)" % (s["kind"], s["header_version"]))
     print("  product:        %s" % s["product"])
@@ -237,18 +253,24 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     except (OSError, OtaError) as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
+    # A factory/partition image has FRONT + BACK trailers; a bundle/trailer.bin has
+    # one; a plain romfs has none -- report that gracefully rather than as an error.
+    found = [] if is_b else partition.find_trailers(data)
+    if not is_b and not found:
+        summary = _romfs_summary(data)   # a plain, unsigned romfs (no trailer to decode)
+        if summary is not None:
+            print("%s\n  %s" % (args.image, summary))
+            return 0
     try:
         if is_b:
             entries = [("image", parse_trailer(trailer_bytes))]
+        elif found:
+            entries = [(lbl, t) for lbl, (_off, t) in
+                       zip(partition.slot_labels(len(found)), found)]
         else:
-            found = partition.find_trailers(data)
-            # A factory/partition image has FRONT + BACK; a loose trailer.bin has one
-            # trailer at offset 0; anything else falls back to "parse the whole file".
-            entries = ([(lbl, t) for lbl, (_off, t) in
-                        zip(partition.slot_labels(len(found)), found)]
-                       if found else [("image", parse_trailer(data))])
+            entries = [("image", parse_trailer(data))]   # a bare trailer.bin, else raises
     except OtaError as e:
-        print("error: not a valid trailer: %s" % e, file=sys.stderr)
+        print("error: not a valid OTA trailer, image, or ROMFS image: %s" % e, file=sys.stderr)
         return 2
 
     if args.json:
@@ -282,11 +304,16 @@ def cmd_verify(args: argparse.Namespace) -> int:
             body, trailer = bundle.read_bundle(image)
             pairs = [("image", body, trailer)]
         else:                                              # a factory/partition .img
-            pairs = partition.slots(image.read_bytes())
+            data = image.read_bytes()
+            pairs = partition.slots(data)
             if not pairs:
-                print("error: %s is not a .zip bundle, a factory/partition image, or a "
-                      "signed body; pass `<romfs.img> <trailer.bin>` or a bundle"
-                      % image, file=sys.stderr)
+                if _romfs_summary(data) is not None:       # a plain, unsigned romfs
+                    print("error: %s is an unsigned ROMFS image -- it has no trailer to "
+                          "verify" % image, file=sys.stderr)
+                else:
+                    print("error: %s is not a .zip bundle, a factory/partition image, or a "
+                          "signed body; pass `<romfs.img> <trailer.bin>` or a bundle"
+                          % image, file=sys.stderr)
                 return 2
     except (OSError, OtaError) as e:
         print("error: %s" % e, file=sys.stderr)

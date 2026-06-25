@@ -267,9 +267,11 @@ Two read-only commands operate on a built image. They accept the `<board>-romfs.
 bundle directly, the loose `romfs.img` / `trailer.bin` (e.g. if you've unzipped),
 **or the `<board>-factory-romfs.img`** — the factory image is a dual-slot partition,
 so both commands locate each slot's trailer (by scanning block-aligned offsets and
-CRC-validating) and report/verify **FRONT and BACK** independently. (A plain
-coprocessor romfs has no trailer, so it has nothing to inspect or verify.) They
-live under `build` because they validate build outputs.
+CRC-validating) and report/verify **FRONT and BACK** independently. A plain,
+**unsigned** romfs (a non-OTA `<board>-romfs.img` or a `<board>-coprocessor-romfs.img`)
+has no trailer: `inspect` reports it as such (and exits 0), while `verify` says there
+is nothing to verify (and exits non-zero, so it's never mistaken for "verified").
+They live under `build` because they validate build outputs.
 
 ### build inspect
 

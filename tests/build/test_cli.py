@@ -140,7 +140,7 @@ def test_build_inspect_bad_trailer(tmp_path, capsys):
     bad = tmp_path / "bad.trailer"
     bad.write_bytes(b"garbage-not-a-trailer")
     assert main(["build", "inspect", str(bad)]) == 2
-    assert "not a valid trailer" in capsys.readouterr().err
+    assert "not a valid" in capsys.readouterr().err
 
 
 def test_build_inspect_missing_file(tmp_path, capsys):
@@ -296,3 +296,29 @@ def test_slots_single_trailer(tmp_path):
     img = body + b"\xff" * (4096 - len(body)) + tb   # body in block 0, trailer at 4096
     sl = partition.slots(img)
     assert len(sl) == 1 and sl[0][0] == "image" and sl[0][1] == body
+
+
+# --- a plain, unsigned romfs is handled gracefully (no trailer) --------------
+
+def _plain_romfs(tmp_path):
+    """A valid, unsigned ROMFS image (no OTA trailer), as `build romfs` makes for a
+    non-OTA project or a coprocessor partition."""
+    from openmv_ota.romfs.builder import build_image
+    src = tmp_path / "rsrc"
+    src.mkdir()
+    (src / "main.py").write_text("print(1)\n")
+    img = tmp_path / "plain-romfs.img"
+    img.write_bytes(build_image(str(src)))
+    return img
+
+
+def test_build_inspect_unsigned_romfs(tmp_path, capsys):
+    assert main(["build", "inspect", str(_plain_romfs(tmp_path))]) == 0
+    assert "unsigned ROMFS image" in capsys.readouterr().out
+
+
+def test_build_verify_unsigned_romfs(tmp_path, capsys):
+    _r, _t, keys = _make_image_files(tmp_path)   # a valid trusted_keys.json
+    img = _plain_romfs(tmp_path)
+    assert main(["build", "verify", str(img), "--trusted-keys", str(keys)]) == 2
+    assert "unsigned ROMFS image" in capsys.readouterr().err
