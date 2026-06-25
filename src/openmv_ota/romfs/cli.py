@@ -342,6 +342,9 @@ def cmd_info(args: argparse.Namespace) -> int:
     name = "<stdin>" if args.image == "-" else args.image
     print("%s" % name)
     print("  image size:   %s (%d bytes)" % (_human(len(data)), len(data)))
+    if reader.romfs_size != len(data):   # a trailer / slot pad / second slot follows
+        print("  romfs size:   %s (%d bytes; %d trailing byte(s) ignored)"
+              % (_human(reader.romfs_size), reader.romfs_size, len(data) - reader.romfs_size))
     print("  files:        %d  (payload %s)" % (files, _human(total)))
     print("  directories:  %d" % dirs)
     print("  magic:        OK (D2 CD 31)")

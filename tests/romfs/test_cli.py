@@ -265,6 +265,20 @@ def test_info_invalid_image(tmp_path, capsys):
     assert "not a valid" in capsys.readouterr().err.lower()
 
 
+def test_info_reports_trailing_data(tmp_path, capsys):
+    # A romfs with bytes appended (an OTA trailer, slot pad, a second slot) reads fine,
+    # and info shows the romfs's true size + how many trailing bytes were ignored.
+    img = _build_demo(tmp_path)
+    withtrailer = tmp_path / "with_trailer.romfs"
+    withtrailer.write_bytes(img.read_bytes() + b"\xaa" * 512)
+    assert main(["romfs", "info", str(withtrailer)]) == 0
+    out = capsys.readouterr().out
+    assert "romfs size:" in out and "512 trailing" in out
+    # the plain image (no trailing bytes) omits the romfs-size line
+    assert main(["romfs", "info", str(img)]) == 0
+    assert "romfs size:" not in capsys.readouterr().out
+
+
 # --- stdin plumbing ----------------------------------------------------------
 
 def test_info_from_stdin(tmp_path, monkeypatch, capsys):

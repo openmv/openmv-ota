@@ -239,6 +239,10 @@ class VfsRomReader:
         _, pos = self._decode_uint(pos)          # header kind (== magic)
         size, pos = self._decode_uint(pos)       # root payload size
         root_end = min(pos + size, self._end)
+        # The romfs is one self-sized outer record, so its true length is the root
+        # payload's end -- bytes past it (an OTA trailer, slot pad/status, a second
+        # slot) are not part of the image and are ignored.
+        self.romfs_size = root_end
         self.entries = self._parse_dir(pos, root_end)
 
     # -- primitives --
