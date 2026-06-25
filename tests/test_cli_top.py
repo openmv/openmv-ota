@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from openmv_ota import __version__
 from openmv_ota.cli import build_parser, main
 
@@ -16,10 +18,11 @@ def test_no_command_prints_help(capsys):
     assert "usage" in capsys.readouterr().out.lower()
 
 
-def test_unimplemented_init(capsys):
-    # `init` is registered but not implemented yet.
-    assert main(["init"]) == 2
-    assert "not implemented" in capsys.readouterr().err.lower()
+def test_unknown_command_rejected(capsys):
+    # The removed `init` stub (and any other unknown verb) is rejected by argparse.
+    with pytest.raises(SystemExit):
+        main(["init"])
+    assert "invalid choice" in capsys.readouterr().err.lower()
 
 
 def test_build_parser_is_constructable():

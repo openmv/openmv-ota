@@ -2,32 +2,20 @@
 
 Commands are namespaced by subsystem:
 
-    openmv-ota romfs …      pack / inspect a ROMFS image from a directory
     openmv-ota project …    peg a project to a firmware checkout + toolchain
-    openmv-ota build romfs  compile a project's app + pack a romfs image
-
-    (future) openmv-ota build firmware   build firmware.bin
-    (future) openmv-ota ota …            signing / slots / update server
+    openmv-ota build …      compile + sign romfs / factory / firmware images
+    openmv-ota romfs …      low-level pack / inspect of a ROMFS image directory
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
-
-
-def _not_implemented(args: argparse.Namespace) -> int:
-    print(f"openmv-ota: '{args._command}' is not implemented yet.", file=sys.stderr)
-    return 2
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="openmv-ota", description=__doc__)
     parser.add_argument("--version", action="store_true", help="print version and exit")
     sub = parser.add_subparsers(dest="_command")
-
-    p_init = sub.add_parser("init", help="scaffold a customer repo layout")
-    p_init.set_defaults(func=_not_implemented, _command="init")
 
     # OTA signing keys are provisioned by `project new --ota` and managed via
     # `project keys` (status / rotate / revoke / unrevoke).
