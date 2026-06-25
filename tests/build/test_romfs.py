@@ -206,6 +206,41 @@ def test_ota_build_romfs_ae3_main_zip_coprocessor_plain(make_project):
     assert by_idx[1].output.name == "OPENMV_AE3-coprocessor-romfs.img" and not by_idx[1].ota
 
 
+def test_build_nests_coprocessor_into_main(make_project):
+    # An OTA AE3 build nests the real coprocessor romfs into the main's runtime lib
+    # (so sync() can write it on-device), with a board-specific resources.json. Build
+    # from the scaffolded project app/ (no --app override) so lib/openmv_ota/ is staged.
+    import json
+
+    from openmv_ota.ota import bundle
+    from openmv_ota.romfs.builder import read_image
+    root, repo, _ = make_project(boards=("OPENMV_AE3",), ota=True)
+    results = build_mod.build_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    main = next(r for r in results if r.partition_index == 0)
+    copro = next(r for r in results if r.partition_index == 1)
+    body, _trailer = bundle.read_bundle(main.output)
+    files = {p: e for p, e in read_image(body).walk()}
+    # nested image is the *real* coprocessor romfs, not the empty placeholder
+    assert files["lib/openmv_ota/data/coprocessor.romfs"].data == copro.output.read_bytes()
+    manifest = json.loads(files["lib/openmv_ota/data/resources.json"].data)
+    assert manifest[0]["partition"] == 1 and manifest[0]["name"] == "High Efficiency Core"
+
+
+def test_build_strips_runtime_data_for_plain_board_in_shared_app(make_project):
+    # AE3 + N6 OTA project: the shared app/ has lib/openmv_ota/data/ (scaffolded for
+    # AE3). Building N6 must ship the lib but strip data/ so sync() no-ops on the
+    # board that has no coprocessor partition.
+    from openmv_ota.ota import bundle
+    from openmv_ota.romfs.builder import read_image
+    root, repo, _ = make_project(boards=("OPENMV_N6", "OPENMV_AE3"), ota=True)
+    results = build_mod.build_romfs(root, firmware=repo, boards=["OPENMV_N6"],
+                                    compile_py=False, convert_models=False)
+    body, _ = bundle.read_bundle(results[0].output)
+    paths = {p for p, _ in read_image(body).walk()}
+    assert "lib/openmv_ota/__init__.py" in paths
+    assert not any("openmv_ota/data" in p for p in paths)
+
+
 def test_coprocessor_missing_app_dir_errors(make_project):
     # If a multi-core board's app-coprocessor/ is gone, the build fails cleanly rather
     # than silently skipping the helper partition.

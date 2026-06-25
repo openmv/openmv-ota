@@ -15,6 +15,7 @@ from openmv_ota.project import load_project
 from openmv_ota.project.config import derive_board_id
 from openmv_ota.project.errors import ProjectError
 from openmv_ota.project.project import COPROCESSOR_APP, ProjectPaths
+from openmv_ota.romfs import boards as boards_mod
 from openmv_ota.romfs.builder import build_image
 
 from .compile import mpy
@@ -256,18 +257,22 @@ def build_romfs(
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    mains = [t for t in targets if t.role == "main"]
+    coprocs = [t for t in targets if t.role != "main"]
     results = []
-    for t in targets:
-        if t.role == "main":
-            results.append(_build_one(
-                p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, vendor,
-                convert_models=convert_models, mpy_extra=list(mpy_extra or []),
-                allow_oversize=allow_oversize, keep_build_dir=keep_build_dir))
-        else:  # coprocessor: always a plain romfs, built from app-coprocessor/
-            results.append(_coprocessor_one(
-                p, t, copro_dir, out_dir, ctx, mpy_cmd,
-                convert_models=convert_models, mpy_extra=list(mpy_extra or []),
-                allow_oversize=allow_oversize, keep_build_dir=keep_build_dir))
+    # Coprocessors first: their plain romfs (built from app-coprocessor/) is what the
+    # following main build nests into the runtime lib for sync() to write at runtime.
+    for t in coprocs:
+        results.append(_coprocessor_one(
+            p, t, copro_dir, out_dir, ctx, mpy_cmd,
+            convert_models=convert_models, mpy_extra=list(mpy_extra or []),
+            allow_oversize=allow_oversize, keep_build_dir=keep_build_dir))
+    for t in mains:
+        inject = _runtime_inject(out_dir, t.name, [c for c in coprocs if c.name == t.name])
+        results.append(_build_one(
+            p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, vendor,
+            convert_models=convert_models, mpy_extra=list(mpy_extra or []),
+            allow_oversize=allow_oversize, keep_build_dir=keep_build_dir, inject=inject))
     return results
 
 
@@ -291,11 +296,16 @@ def _warn_unset_board_id(t, system_info: dict) -> None:
               file=sys.stderr)
 
 
-def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_models, mpy_extra):
+def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_models, mpy_extra,
+                inject=None):
     """Stage + compile + convert + system.json + pack. Returns ``(body, system_info,
-    tmp_dir)``; the caller is responsible for removing ``tmp_dir``."""
+    tmp_dir)``; the caller is responsible for removing ``tmp_dir``. ``inject(stage)``,
+    if given, runs right after staging (before compile) -- used by a main build to nest
+    the coprocessor romfs into the staged runtime lib."""
     tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-build-"))
     stage = stage_app(app_dir, tmp / "app")
+    if inject is not None:
+        inject(stage)
 
     if mpy_cmd is not None:
         for src in iter_files(stage, (".py",)):
@@ -318,6 +328,35 @@ def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_mod
     return body, system_info, tmp
 
 
+def _partition_name(t) -> str:
+    """Human name of a target's partition (e.g. 'High Efficiency Core')."""
+    return boards_mod.get_board(t.name).partition(t.partition_index).name
+
+
+def _runtime_inject(out_dir, board, copro_targets):
+    """An ``inject(stage)`` for a *main* build: nest the board's coprocessor romfs into
+    the staged runtime lib (``lib/openmv_ota/data/``) and write its sync() manifest, or
+    strip that ``data/`` when the board has no coprocessor (so the on-device sync()
+    finds nothing -- important when one app/ serves both a coprocessor and a plain
+    board). A no-op for a non-OTA project (no runtime lib staged)."""
+    def inject(stage):
+        lib = stage / "lib" / "openmv_ota"
+        if not lib.is_dir():
+            return                                   # not an OTA project
+        data = lib / "data"
+        if not copro_targets:
+            shutil.rmtree(data, ignore_errors=True)  # plain board -> nothing to sync
+            return
+        data.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(out_dir / ("%s-coprocessor-romfs.img" % board), data / "coprocessor.romfs")
+        entries = [{"file": "coprocessor.romfs", "handler": "partition",
+                    "partition": c.partition_index, "name": _partition_name(c)}
+                   for c in copro_targets]
+        (data / "resources.json").write_text(json.dumps(entries, indent=2) + "\n",
+                                             encoding="utf-8")
+    return inject
+
+
 def _coprocessor_one(p, t, copro_dir, out_dir, ctx, mpy_cmd, *,
                      convert_models, mpy_extra, allow_oversize, keep_build_dir) -> BuildResult:
     """A coprocessor partition is never OTA: build a plain romfs that fills the whole
@@ -332,9 +371,10 @@ def _coprocessor_one(p, t, copro_dir, out_dir, ctx, mpy_cmd, *,
 
 
 def _build_one(p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, vendor, *,
-               convert_models, mpy_extra, allow_oversize, keep_build_dir) -> BuildResult:
+               convert_models, mpy_extra, allow_oversize, keep_build_dir, inject=None) -> BuildResult:
     body, system_info, tmp = _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor,
-                                         convert_models=convert_models, mpy_extra=mpy_extra)
+                                         convert_models=convert_models, mpy_extra=mpy_extra,
+                                         inject=inject)
     try:
         capacity, bound = _capacity(p, t)
         if len(body) > capacity and not allow_oversize:
@@ -416,18 +456,20 @@ def build_factory_romfs(
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    mains = [t for t in targets if t.role == "main"]
+    coprocs = [t for t in targets if t.role != "main"]
     results = []
-    for t in targets:
-        if t.role == "main":
-            results.append(_factory_one(
-                p, t, app_dir, out_dir, ctx, mpy_cmd, signer,
-                signer.app_version, signer.vendor, convert_models=convert_models,
-                mpy_extra=list(mpy_extra or []), keep_build_dir=keep_build_dir))
-        else:  # coprocessor: a plain romfs, same as a regular build
-            results.append(_coprocessor_one(
-                p, t, copro_dir, out_dir, ctx, mpy_cmd,
-                convert_models=convert_models, mpy_extra=list(mpy_extra or []),
-                allow_oversize=False, keep_build_dir=keep_build_dir))
+    for t in coprocs:  # plain romfs first; the main factory image nests it (same bytes)
+        results.append(_coprocessor_one(
+            p, t, copro_dir, out_dir, ctx, mpy_cmd,
+            convert_models=convert_models, mpy_extra=list(mpy_extra or []),
+            allow_oversize=False, keep_build_dir=keep_build_dir))
+    for t in mains:
+        inject = _runtime_inject(out_dir, t.name, [c for c in coprocs if c.name == t.name])
+        results.append(_factory_one(
+            p, t, app_dir, out_dir, ctx, mpy_cmd, signer,
+            signer.app_version, signer.vendor, convert_models=convert_models,
+            mpy_extra=list(mpy_extra or []), keep_build_dir=keep_build_dir, inject=inject))
     return results
 
 
@@ -441,11 +483,12 @@ def _compose_slot(body: bytes, pad: int, status_sector: bytes, trailer_bytes: by
 
 
 def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vendor, *,
-                 convert_models, mpy_extra, keep_build_dir) -> BuildResult:
+                 convert_models, mpy_extra, keep_build_dir, inject=None) -> BuildResult:
     from openmv_ota.ota import status
 
     body, system_info, tmp = _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor,
-                                         convert_models=convert_models, mpy_extra=mpy_extra)
+                                         convert_models=convert_models, mpy_extra=mpy_extra,
+                                         inject=inject)
     try:
         block = geometry.ota_block(t.erase_size)
         front_size = t.front_size
