@@ -112,6 +112,29 @@ def test_boards_list_and_detail(capsys):
     assert "tflite=32" in detail
 
 
+def test_boards_detail_multipartition_shows_roles(capsys):
+    # A dual-core board lists both partitions with their role (main vs the slaved
+    # coprocessor), so the low-level tool reflects the same layout the project does.
+    assert main(["romfs", "boards", "OPENMV_AE3"]) == 0
+    out = capsys.readouterr().out
+    assert "partition [0]" in out and "(main)" in out
+    assert "partition [1]" in out and "(coprocessor)" in out
+
+
+def test_pack_and_verify_second_partition(tmp_path, capsys):
+    # Packing/verifying against the coprocessor partition uses that partition's
+    # geometry (HE = 1 MiB), distinct from the default partition 0 (HP = 24 MiB).
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "main.py").write_text("print(1)")
+    img = tmp_path / "he.romfs"
+    assert main(["romfs", "pack", str(src), "-o", str(img),
+                 "--board", "OPENMV_AE3", "--partition", "1"]) == 0
+    assert "[1] High Efficiency Core" in capsys.readouterr().out
+    assert main(["romfs", "verify", str(img), "--board", "OPENMV_AE3", "--partition", "1"]) == 0
+    assert "aligned" in capsys.readouterr().out
+
+
 def test_extract_nonempty_dir_guard(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()

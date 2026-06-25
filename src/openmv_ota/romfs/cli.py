@@ -402,14 +402,14 @@ def cmd_boards(args: argparse.Namespace) -> int:
         print("%s - %s" % (b.name, b.display_name))
         print("  arch:     %s" % b.arch)
         if b.mpy_args:
-            print("  mpy_args: %s   (used by the future compile layer)" % " ".join(b.mpy_args))
+            print("  mpy_args: %s   (used by `build romfs` when compiling .py)" % " ".join(b.mpy_args))
         for p in b.partitions:
             rules = ", ".join("%s=%d" % (r["extension"], r["alignment"])
                               for r in p.alignment_rules) or "(none)"
-            print("  partition [%d] %-22s size %-9s align %s"
-                  % (p.index, p.name, _human(p.size), rules))
+            print("  partition [%d] %-22s %-13s size %-9s align %s"
+                  % (p.index, p.name, "(%s)" % p.role, _human(p.size), rules))
             if p.npu:
-                print("                 npu: %s   (future model-compile layer)"
+                print("                 npu: %s   (used by `build romfs` to convert models)"
                       % p.npu.get("type"))
         return 0
 
