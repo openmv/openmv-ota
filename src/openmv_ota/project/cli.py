@@ -140,6 +140,9 @@ def cmd_new(args: argparse.Namespace) -> int:
     _warn(warnings)
     print("Created project in %s" % args.dir)
     print("Scaffolded app/ (main.py, settings.json with your app version).")
+    if any(rb.get("role") == "coprocessor" for rb in lock.targets.get("resolved", [])):
+        print("Scaffolded app-coprocessor/ for the helper core (plain romfs, written "
+              "by the main core).")
     if args.ota:
         print("Provisioned %d factory + %d ota keys -> keys/trusted_keys.json "
               "(private keys gitignored in keys/private/)" % (args.factory_keys, args.ota_keys))
@@ -312,6 +315,11 @@ def _print_summary(lock: lock_mod.Lock) -> None:
              tc.get("stedgeai", {}).get("version")))
     for rb in lock.targets.get("resolved", []):
         npu = rb.get("npu") or "-"
-        print("  %-18s part[%d] %s  front %s  npu %s  (%s)"
-              % (rb.get("name"), rb.get("partition_index"), rb.get("partition_size"),
-                 rb.get("front_size"), npu, rb.get("geometry_source")))
+        role = rb.get("role", "main")
+        # The main partition shows its OTA front-slot size; a coprocessor partition is
+        # a plain romfs (no slots), so front size doesn't apply.
+        geom = ("front %s" % rb.get("front_size") if role == "main"
+                else "plain romfs (slaved)")
+        print("  %-18s part[%d] %-11s %s  %s  npu %s  (%s)"
+              % (rb.get("name"), rb.get("partition_index"), role, rb.get("partition_size"),
+                 geom, npu, rb.get("geometry_source")))

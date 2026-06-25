@@ -27,6 +27,7 @@ my-product/
 ├── .gitignore
 ├── README.md
 ├── app/                     # your MicroPython app: main.py, settings.json, lib/, models, …
+├── app-coprocessor/         # multi-core boards only: the slaved helper core's app
 ├── keys/                    # OTA only: trusted_keys.json (committed) + private/ (gitignored)
 └── build/                   # gitignored: build output (one .romfs per target)
 ```
@@ -122,6 +123,11 @@ your own rollbacks** — so move it deliberately. It must stay `<= app_version`
 
 `new` only writes `main.py` and `settings.json` if they are absent, so re-running
 `new --force` never clobbers your app.
+
+For a **multi-core board** (e.g. AE3), `new` also scaffolds a second folder,
+`app-coprocessor/`, holding the slaved helper core's app. It has the same shape
+(`main.py`, `settings.json`, `lib/`) but is always built as a *plain* romfs, never
+OTA — see [Multi-core boards](#multi-core-boards-a-coprocessor-partition).
 
 ### `system.json` (generated, read-only)
 
@@ -439,25 +445,34 @@ those is drift you must `sync`. Pure-identity fields (`board_id`, `board_name`)
 and metadata (product / vendor name, app version) are deliberately **excluded**,
 so editing a product id or bumping your app version never invalidates the lock.
 
-## Boards with multiple partitions
+## Multi-core boards (a coprocessor partition)
 
-A board can have more than one ROMFS partition, each its own image. The AE3 has
-two: the high-performance core (partition 0, OSPI) and the high-efficiency core
-(partition 1, MRAM), with different sizes and different NPU configs. A target
-defaults to partition 0; list the partitions to build images for both:
+Some boards have a second core with its own ROMFS partition. The AE3 is dual-core:
+the **main** high-performance core (partition 0, OSPI, 24 MiB) runs OTA, and a
+**coprocessor** high-efficiency core (partition 1, MRAM, 1 MiB) is *slaved* to it —
+it's booted by the main core, and its romfs is written by the main core. Each
+partition carries a **role** (`main` or `coprocessor`).
 
-```toml
-[targets]
-boards = ["OPENMV_AE3"]
+There is nothing to configure: the coprocessor is slaved, so the tool **always
+builds every partition automatically**. You don't list partitions and there's no
+`--partition` flag. The main partition is built from `app/` (OTA-wrapped in an OTA
+project); the coprocessor partition is built from a second folder, **`app-coprocessor/`**,
+as a *plain* romfs (never OTA — the helper core has no mbedtls and can't verify
+signatures). `project new` scaffolds `app-coprocessor/` automatically when a selected
+board has a coprocessor partition.
 
-[targets.OPENMV_AE3]
-partitions = [0, 1]
-```
+Outputs are named by role: the main partition keeps the bare board name
+(`OPENMV_AE3-romfs.img` / `-factory-romfs.img`), and the coprocessor partition is
+suffixed (`OPENMV_AE3-coprocessor-romfs.img`). The coprocessor image is the same
+plain romfs from both `build romfs` and `build factory-romfs` — it's the image the
+main core writes into the helper's slot.
 
-Each partition is resolved independently — its own size, FRONT size, alignment
-rules, and NPU compiler config — and appears as a separate entry under
-`targets.resolved`. From Python, select one with `board(name, partition)`, or
-iterate `targets`.
+Each partition is resolved independently — its own size, alignment rules, NPU config,
+and role — and appears as a separate entry under `targets.resolved`. From Python,
+select one with `board(name, partition)`, or iterate `targets`.
+
+> A `partition_size` override (under `[targets.<board>]`) applies only to the main
+> partition; the coprocessor always keeps its firmware geometry.
 
 ## Reading a project from Python
 

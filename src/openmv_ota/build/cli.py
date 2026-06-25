@@ -29,7 +29,6 @@ def register(build_parser: argparse.ArgumentParser):
     p.add_argument("-o", "--output", help="output dir (default: <project>/build)")
     p.add_argument("-b", "--board", action="append", metavar="NAME",
                    help="only build this board (repeatable; default: all targets)")
-    p.add_argument("-p", "--partition", type=int, help="only build this partition")
     p.add_argument("--no-compile-py", dest="compile_py", action="store_false",
                    help="pack .py as source (skip mpy-cross)")
     p.add_argument("--no-convert-models", dest="convert_models", action="store_false",
@@ -83,7 +82,6 @@ def register(build_parser: argparse.ArgumentParser):
     p_fac.add_argument("-o", "--output", help="output dir (default: <project>/build)")
     p_fac.add_argument("-b", "--board", action="append", metavar="NAME",
                        help="only build this board (repeatable; default: all targets)")
-    p_fac.add_argument("-p", "--partition", type=int, help="only build this partition")
     p_fac.add_argument("--no-compile-py", dest="compile_py", action="store_false",
                        help="pack .py as source (skip mpy-cross)")
     p_fac.add_argument("--no-convert-models", dest="convert_models", action="store_false",
@@ -111,7 +109,7 @@ def cmd_romfs(args: argparse.Namespace) -> int:
     try:
         results = build_mod.build_romfs(
             args.project, app=args.app, output=args.output, boards=args.board,
-            partition=args.partition, compile_py=args.compile_py,
+            compile_py=args.compile_py,
             convert_models=args.convert_models, mpy_extra=args.mpy_arg,
             vela_extra=args.vela_arg, stedgeai_extra=args.stedgeai_arg,
             vela_optimise=args.vela_optimise,
@@ -136,7 +134,7 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
     try:
         results = build_mod.build_factory_romfs(
             args.project, app=args.app, output=args.output, boards=args.board,
-            partition=args.partition, compile_py=args.compile_py,
+            compile_py=args.compile_py,
             convert_models=args.convert_models, mpy_extra=args.mpy_arg,
             vela_extra=args.vela_arg, stedgeai_extra=args.stedgeai_arg,
             vela_optimise=args.vela_optimise,

@@ -12,6 +12,7 @@ from pathlib import Path
 from openmv_ota import __version__
 from openmv_ota.ota import geometry
 from openmv_ota.ota.algorithms import ES256, algorithm_for
+from openmv_ota.romfs import boards as boards_mod
 
 from . import cache, config as config_mod, gitrepo, lock as lock_mod, sdk_install
 from .config import LOCAL_NAME, OtaConfig
@@ -23,6 +24,10 @@ from .resolve.board import ResolvedBoard, resolve_board
 from .resolve.submodules import resolve_submodules
 
 GENERATED_BY = "openmv-ota %s" % __version__
+
+# The project folder holding a coprocessor core's app (a slaved second partition,
+# e.g. AE3's M55_HE). Built as a plain romfs and written by the main core.
+COPROCESSOR_APP = "app-coprocessor"
 
 _GITIGNORE = """\
 # openmv-ota: machine-local settings (never commit)
@@ -79,6 +84,10 @@ class ProjectPaths:
     def app_settings(self) -> Path:
         return self.root / "app" / "settings.json"
 
+    @property
+    def coprocessor_app_dir(self) -> Path:
+        return self.root / COPROCESSOR_APP
+
 
 # --- snapshot resolution ----------------------------------------------------
 
@@ -106,19 +115,18 @@ def resolve_snapshot(
     resolved: list[dict] = []
     for name in config.boards:
         override = config.overrides.get(name, {})
-        parts = override.get("partitions")
-        if parts is None:
-            parts = [override.get("partition", 0)]
-        elif not isinstance(parts, list) or not all(isinstance(i, int) for i in parts):
-            raise ProjectError("[targets.%s].partitions must be a list of integers" % name)
-        if len(parts) > 1 and "partition_size" in override:
-            raise ProjectError(
-                "[targets.%s]: partition_size cannot be set when targeting multiple "
-                "partitions" % name
-            )
-        for idx in parts:
-            per = {k: v for k, v in override.items() if k in ("partition_size",)}
-            rb, w = resolve_board(repo, name, int(idx), per)
+        try:
+            bcfg = boards_mod.get_board(name)
+        except KeyError as e:
+            raise ProjectError(str(e)) from None
+        # Every partition the board declares is a target -- there is nothing to
+        # configure per partition: a coprocessor partition is slaved to the main one
+        # (the main core owns it), so the tool always builds them all. A
+        # ``partition_size`` override only makes sense for the main OTA partition.
+        for part in bcfg.partitions:
+            per = ({k: v for k, v in override.items() if k in ("partition_size",)}
+                   if part.role == "main" else {})
+            rb, w = resolve_board(repo, name, part.index, per)
             warnings.extend(w)
             resolved.append(asdict(rb))
     resolved.sort(key=lambda r: (r["name"], r["partition_index"]))
@@ -196,7 +204,8 @@ def _ensure_ota_capable(lock: lock_mod.Lock) -> None:
     case for boards whose ROMFS is a single large internal-flash sector (the erase
     block is the whole partition), so the math itself proves OTA is impossible."""
     bad = [rb for rb in lock.targets.get("resolved", [])
-           if not geometry.is_ota_capable(rb["partition_size"], rb["erase_size"])]
+           if rb.get("role", "main") == "main"
+           and not geometry.is_ota_capable(rb["partition_size"], rb["erase_size"])]
     if not bad:
         return
     lines = [
@@ -309,6 +318,8 @@ def create_project(
     if provisioned is not None:
         _write_keys(paths, provisioned)
     _scaffold_app(paths, app_version)  # every project gets a starter app/ (OTA or not)
+    if _boards_have_coprocessor(boards):  # a slaved second core (e.g. AE3's M55_HE)
+        _scaffold_coprocessor(paths, app_version)
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
@@ -382,6 +393,48 @@ def _scaffold_app(paths: ProjectPaths, app_version: str) -> None:
     if not lib_dir.exists():
         # A starter directory for the app's own library modules. The .gitkeep keeps
         # the empty dir in git; it is excluded from packed images (DEFAULT_EXCLUDES).
+        lib_dir.mkdir(parents=True)
+        (lib_dir / ".gitkeep").write_text("", encoding="utf-8")
+
+
+_COPROCESSOR_MAIN = """\
+# main.py - the coprocessor core's app (e.g. the AE3 M55_HE helper core).
+# This partition is a *plain* romfs written by the main core; it is never OTA-updated
+# on its own. Put its code + models here; `openmv-ota build romfs` packs them into
+# <board>-coprocessor-romfs.img automatically (no per-partition config needed).
+import time
+
+while True:
+    time.sleep_ms(1000)
+"""
+
+
+def _boards_have_coprocessor(boards: list[str]) -> bool:
+    """True if any selected board has a coprocessor (slaved second) partition."""
+    return any(
+        part.role == "coprocessor"
+        for name in boards
+        for part in boards_mod.get_board(name).partitions
+    )
+
+
+def _scaffold_coprocessor(paths: ProjectPaths, app_version: str) -> None:
+    """Scaffold ``app-coprocessor/`` for boards with a slaved second core. It's a plain
+    romfs (no OTA), so there's no rollback/version constraint -- just a starter
+    ``main.py``, a ``settings.json`` (version + vendor stamped into /rom/system.json),
+    and a ``lib/``. Existing files are left alone."""
+    d = paths.coprocessor_app_dir
+    d.mkdir(parents=True, exist_ok=True)
+    settings = d / "settings.json"
+    if not settings.exists():
+        settings.write_text(
+            json.dumps({"app_version": app_version, "vendor": ""}, indent=2) + "\n",
+            encoding="utf-8")
+    main_py = d / "main.py"
+    if not main_py.exists():
+        main_py.write_text(_COPROCESSOR_MAIN, encoding="utf-8")
+    lib_dir = d / "lib"
+    if not lib_dir.exists():
         lib_dir.mkdir(parents=True)
         (lib_dir / ".gitkeep").write_text("", encoding="utf-8")
 

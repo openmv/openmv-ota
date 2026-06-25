@@ -7,7 +7,6 @@ import json
 import shutil
 import sys
 import tempfile
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,7 +14,7 @@ from openmv_ota.ota import geometry
 from openmv_ota.project import load_project
 from openmv_ota.project.config import derive_board_id
 from openmv_ota.project.errors import ProjectError
-from openmv_ota.project.project import ProjectPaths
+from openmv_ota.project.project import COPROCESSOR_APP, ProjectPaths
 from openmv_ota.romfs.builder import build_image
 
 from .compile import mpy
@@ -189,9 +188,10 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_si
 
 
 def _capacity(project, target) -> tuple[int, str]:
-    """The usable image budget for a target and the name of what bounds it. An OTA
-    image gets a slot (half the partition) less its status + trailer sectors."""
-    if project.config.ota:
+    """The usable image budget for a target and the name of what bounds it. A *main*
+    OTA partition gets a slot (half the partition) less its status + trailer sectors;
+    a coprocessor partition is always a plain romfs that fills the whole partition."""
+    if project.config.ota and target.role == "main":
         return target.front_size - geometry.slot_overhead(target.erase_size), "OTA slot"
     return target.partition_size, "ROMFS partition"
 
@@ -214,7 +214,6 @@ def build_romfs(
     app: str | Path | None = None,
     output: str | Path | None = None,
     boards: list[str] | None = None,
-    partition: int | None = None,
     compile_py: bool = True,
     convert_models: bool = True,
     mpy_extra: list[str] | None = None,
@@ -233,10 +232,11 @@ def build_romfs(
         raise BuildError(str(e), exit_code=e.exit_code) from None
 
     app_dir = Path(app) if app else project / "app"
+    copro_dir = project / COPROCESSOR_APP
     out_dir = Path(output) if output else project / "build"
     _warn_board_id_collisions(p.config)
 
-    targets = _select_targets(p.targets, boards, partition)
+    targets = _select_targets(p.targets, boards)
     if not targets:
         raise BuildError("no matching targets in this project")
 
@@ -255,28 +255,33 @@ def build_romfs(
         vela_extra=list(vela_extra or []), stedgeai_extra=list(stedgeai_extra or []),
     )
 
-    multi = {name for name, c in Counter(t.name for t in targets).items() if c > 1}
     out_dir.mkdir(parents=True, exist_ok=True)
-    return [
-        _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, app_version, vendor,
-                   convert_models=convert_models,
-                   mpy_extra=list(mpy_extra or []), allow_oversize=allow_oversize,
-                   keep_build_dir=keep_build_dir)
-        for t in targets
-    ]
+    results = []
+    for t in targets:
+        if t.role == "main":
+            results.append(_build_one(
+                p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, vendor,
+                convert_models=convert_models, mpy_extra=list(mpy_extra or []),
+                allow_oversize=allow_oversize, keep_build_dir=keep_build_dir))
+        else:  # coprocessor: always a plain romfs, built from app-coprocessor/
+            results.append(_coprocessor_one(
+                p, t, copro_dir, out_dir, ctx, mpy_cmd,
+                convert_models=convert_models, mpy_extra=list(mpy_extra or []),
+                allow_oversize=allow_oversize, keep_build_dir=keep_build_dir))
+    return results
 
 
-def _select_targets(targets, boards, partition):
+def _select_targets(targets, boards):
     sel = list(targets)
     if boards:
         sel = [t for t in sel if t.name in boards]
-    if partition is not None:
-        sel = [t for t in sel if t.partition_index == partition]
     return sel
 
 
-def _target_name(t, multi: set) -> str:
-    return "%s-p%d" % (t.name, t.partition_index) if t.name in multi else t.name
+def _target_name(t) -> str:
+    """Output basename. The main partition keeps the bare board name; a coprocessor
+    partition is suffixed with its role (e.g. ``OPENMV_AE3-coprocessor``)."""
+    return t.name if t.role == "main" else "%s-%s" % (t.name, t.role)
 
 
 def _warn_unset_board_id(t, system_info: dict) -> None:
@@ -313,7 +318,20 @@ def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_mod
     return body, system_info, tmp
 
 
-def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, app_version, vendor, *,
+def _coprocessor_one(p, t, copro_dir, out_dir, ctx, mpy_cmd, *,
+                     convert_models, mpy_extra, allow_oversize, keep_build_dir) -> BuildResult:
+    """A coprocessor partition is never OTA: build a plain romfs that fills the whole
+    partition, from ``app-coprocessor/`` (its own version/vendor, no signing). This is
+    the image the main core writes into the helper core's slot."""
+    settings = _read_settings(copro_dir)
+    return _build_one(
+        p, t, copro_dir, out_dir, ctx, mpy_cmd, None,
+        settings.get("app_version"), str(settings.get("vendor", "")),
+        convert_models=convert_models, mpy_extra=mpy_extra,
+        allow_oversize=allow_oversize, keep_build_dir=keep_build_dir)
+
+
+def _build_one(p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, vendor, *,
                convert_models, mpy_extra, allow_oversize, keep_build_dir) -> BuildResult:
     body, system_info, tmp = _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor,
                                          convert_models=convert_models, mpy_extra=mpy_extra)
@@ -324,7 +342,7 @@ def _build_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, ota_signer, app_vers
                 "%s image is %d bytes but the %s holds %d (%d over); pass --allow-oversize"
                 % (t.name, len(body), bound, capacity, len(body) - capacity), exit_code=1)
 
-        name = _target_name(t, multi)
+        name = _target_name(t)
         if ota_signer is not None:
             from openmv_ota.ota import bundle
             _warn_unset_board_id(t, system_info)
@@ -352,7 +370,6 @@ def build_factory_romfs(
     app: str | Path | None = None,
     output: str | Path | None = None,
     boards: list[str] | None = None,
-    partition: int | None = None,
     compile_py: bool = True,
     convert_models: bool = True,
     mpy_extra: list[str] | None = None,
@@ -366,7 +383,9 @@ def build_factory_romfs(
 ) -> list[BuildResult]:
     """Compose the factory ROMFS partition image per target: golden BACK + initial
     FRONT, both factory-signed, with status sectors and padding. One
-    ``<board>-factory-romfs.img`` per target."""
+    ``<board>-factory-romfs.img`` per main partition. Coprocessor partitions have no
+    golden/trial concept, so they get the same plain ``<board>-coprocessor-romfs.img``
+    as a regular build -- the image the main core writes into the helper slot."""
     from openmv_ota.ota.keys import FACTORY_KEY_ID_BASE
 
     project = Path(project)
@@ -379,10 +398,11 @@ def build_factory_romfs(
                          "`openmv-ota project new --ota`)", exit_code=1)
 
     app_dir = Path(app) if app else project / "app"
+    copro_dir = project / COPROCESSOR_APP
     out_dir = Path(output) if output else project / "build"
     _warn_board_id_collisions(p.config)
 
-    targets = _select_targets(p.targets, boards, partition)
+    targets = _select_targets(p.targets, boards)
     if not targets:
         raise BuildError("no matching targets in this project")
 
@@ -395,14 +415,20 @@ def build_factory_romfs(
         vela_extra=list(vela_extra or []), stedgeai_extra=list(stedgeai_extra or []),
     )
 
-    multi = {name for name, c in Counter(t.name for t in targets).items() if c > 1}
     out_dir.mkdir(parents=True, exist_ok=True)
-    return [
-        _factory_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, signer,
-                     signer.app_version, signer.vendor, convert_models=convert_models,
-                     mpy_extra=list(mpy_extra or []), keep_build_dir=keep_build_dir)
-        for t in targets
-    ]
+    results = []
+    for t in targets:
+        if t.role == "main":
+            results.append(_factory_one(
+                p, t, app_dir, out_dir, ctx, mpy_cmd, signer,
+                signer.app_version, signer.vendor, convert_models=convert_models,
+                mpy_extra=list(mpy_extra or []), keep_build_dir=keep_build_dir))
+        else:  # coprocessor: a plain romfs, same as a regular build
+            results.append(_coprocessor_one(
+                p, t, copro_dir, out_dir, ctx, mpy_cmd,
+                convert_models=convert_models, mpy_extra=list(mpy_extra or []),
+                allow_oversize=False, keep_build_dir=keep_build_dir))
+    return results
 
 
 def _compose_slot(body: bytes, pad: int, status_sector: bytes, trailer_bytes: bytes,
@@ -414,7 +440,7 @@ def _compose_slot(body: bytes, pad: int, status_sector: bytes, trailer_bytes: by
     return slot
 
 
-def _factory_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, signer, app_version, vendor, *,
+def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vendor, *,
                  convert_models, mpy_extra, keep_build_dir) -> BuildResult:
     from openmv_ota.ota import status
 
@@ -445,7 +471,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, multi, mpy_cmd, signer, app_versio
             status.build_status_sector(block, pending=False, tried=False, confirmed=True),
             _build_trailer(signer, p, body, system_info, back_pad), block, back_size)
 
-        name = _target_name(t, multi)
+        name = _target_name(t)
         out_path = out_dir / (name + "-factory-romfs.img")
         out_path.write_bytes(front + back)
         return BuildResult(t.name, t.partition_index, out_path, len(body), front_cap,

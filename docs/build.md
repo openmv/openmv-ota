@@ -18,9 +18,11 @@ For each target it compiles every `.py` to `.mpy` with the project's mpy-cross,
 converts NPU models with the project's Vela (AE3) or ST Edge AI (N6), packs the
 result into a ROMFS image with the board's alignment rules, and checks it against
 the available capacity. For a **non-OTA** project the output is the ROMFS body,
-`<project>/build/<board>-romfs.img` (one per target; a board with more than one
-partition gets `<board>-p<index>-romfs.img`). An **OTA** project instead writes a
-signed bundle, `<board>-romfs.zip` (see [OTA signing](#ota-signing) below).
+`<project>/build/<board>-romfs.img`. An **OTA** project instead writes a signed
+bundle, `<board>-romfs.zip` (see [OTA signing](#ota-signing) below). A multi-core
+board also builds its coprocessor partition as a plain
+`<board>-coprocessor-romfs.img` (always, from `app-coprocessor/` — see
+[Multi-core boards](project.md#multi-core-boards-a-coprocessor-partition)).
 
 Every image also gets a generated, read-only `system.json` at `/rom/system.json` —
 board identity (`board`, `board_id`, `board_name`, `product`), the app version, and
@@ -127,8 +129,7 @@ Optimisation differs per tool: Vela takes a mode, ST Edge AI takes a level.
 | Flag | Effect |
 |---|---|
 | `-b, --board NAME` | Build only this board (repeatable; default: all targets). |
-| `-p, --partition N` | Build only this partition. |
-| `--app DIR` | App source directory (default: `<project>/app`). |
+| `--app DIR` | Main app source directory (default: `<project>/app`). A coprocessor partition always builds from `<project>/app-coprocessor`. |
 | `-o, --output DIR` | Output directory (default: `<project>/build`). |
 | `--no-compile-py` | Pack `.py` as source instead of compiling. |
 | `--no-convert-models` | Pack models as-is instead of converting. |

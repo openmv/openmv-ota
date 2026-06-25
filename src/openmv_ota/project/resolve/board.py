@@ -38,6 +38,8 @@ class ResolvedBoard:
     geometry_source: str = "bundled"
     npu_config: dict | None = None        # full compiler config (args + file refs)
     mbedtls: bool = True                   # firmware builds mbedtls (OTA verify needs it)
+    role: str = "main"                     # "main" (OTA app) or "coprocessor" (slaved,
+                                           # plain romfs written by the main core)
 
 
 def _firmware_part_lengths(repo: Path, board: str, index: int) -> list[int]:
@@ -143,5 +145,6 @@ def resolve_board(
         geometry_source=source,
         npu_config=npu_config,
         mbedtls=_mbedtls_supported(repo, name),
+        role=part.role,
     )
     return resolved, warnings

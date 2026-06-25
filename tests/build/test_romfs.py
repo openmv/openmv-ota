@@ -180,25 +180,17 @@ def test_ota_image_over_slot_budget(monkeypatch, make_project):
                               compile_py=False, convert_models=False)
 
 
-def test_multi_partition_naming(make_project):
-    root, repo, app = make_project(
-        boards=("OPENMV_AE3",),
-        extra_config="\n[targets.OPENMV_AE3]\npartitions = [0, 1]\n",
-    )
+def test_multi_partition_builds_both_role_named(make_project):
+    # A multi-core board builds every partition automatically: the main partition keeps
+    # the bare board name; the coprocessor (slaved) gets a -coprocessor suffix and is
+    # always a plain romfs. (app-coprocessor/ is scaffolded by project new.)
+    root, repo, app = make_project(boards=("OPENMV_AE3",))
     results = build_mod.build_romfs(root, app=app, firmware=repo,
                                     compile_py=False, convert_models=False)
     outs = {r.output.name for r in results}
-    assert outs == {"OPENMV_AE3-p0-romfs.img", "OPENMV_AE3-p1-romfs.img"}
-
-
-def test_board_partition_filters(make_project):
-    root, repo, app = make_project(
-        boards=("OPENMV_AE3",),
-        extra_config="\n[targets.OPENMV_AE3]\npartitions = [0, 1]\n",
-    )
-    results = build_mod.build_romfs(root, app=app, firmware=repo, partition=1,
-                                    compile_py=False, convert_models=False)
-    assert len(results) == 1 and results[0].partition_index == 1
+    assert outs == {"OPENMV_AE3-romfs.img", "OPENMV_AE3-coprocessor-romfs.img"}
+    copro = next(r for r in results if r.partition_index == 1)
+    assert copro.output.name == "OPENMV_AE3-coprocessor-romfs.img" and not copro.ota
 
 
 def test_keep_build_dir(make_project):
@@ -479,8 +471,19 @@ def test_factory_requires_ota_project(make_project):
 def test_factory_no_matching_targets(make_project):
     root, repo, app = _build_ota(make_project)
     with pytest.raises(BuildError, match="no matching targets"):
-        build_mod.build_factory_romfs(root, app=app, firmware=repo, partition=99,
+        build_mod.build_factory_romfs(root, app=app, firmware=repo, boards=["OPENMV_NOPE"],
                                       compile_py=False, convert_models=False)
+
+
+def test_factory_coprocessor_is_plain(make_project):
+    # An OTA multi-core board: the main partition gets a dual-slot factory image, but the
+    # coprocessor (slaved) has no golden/trial concept -- it's the same plain romfs.
+    root, repo, app = make_project(boards=("OPENMV_AE3",), ota=True)
+    results = build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                            compile_py=False, convert_models=False)
+    by_idx = {r.partition_index: r for r in results}
+    assert by_idx[0].output.name == "OPENMV_AE3-factory-romfs.img"
+    assert by_idx[1].output.name == "OPENMV_AE3-coprocessor-romfs.img" and not by_idx[1].ota
 
 
 def test_factory_drift_refuses(make_project, git_cmd):

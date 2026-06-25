@@ -45,32 +45,37 @@ def test_resolve_snapshot_fields(make_firmware, make_sdk):
 
 
 def test_resolve_snapshot_ae3_dual_partition(make_firmware, make_sdk):
-    config = cfg.OtaConfig(name="p", vendor=None, boards=["OPENMV_AE3"],
-                           overrides={"OPENMV_AE3": {"partitions": [0, 1]}})
+    # A multi-core board resolves *every* partition automatically -- no per-partition
+    # config: the coprocessor is slaved to the main core.
+    config = cfg.OtaConfig(name="p", vendor=None, boards=["OPENMV_AE3"], overrides={})
     lock, _ = proj.resolve_snapshot(
         make_firmware(), config, sdk_home_override=make_sdk(), config_digest="d", now=NOW)
     resolved = lock.targets["resolved"]
     assert [r["partition_index"] for r in resolved] == [0, 1]
-    # Each core has its own geometry and its own NPU compiler config.
+    # Each core has its own geometry, role, and NPU compiler config.
     hp = next(r for r in resolved if r["partition_index"] == 0)
     he = next(r for r in resolved if r["partition_index"] == 1)
+    assert hp["role"] == "main" and he["role"] == "coprocessor"
     assert hp["partition_size"] == 25165824 and he["partition_size"] == 1048576
     assert any("ethos-u55-256" in a for a in hp["npu_config"]["args"])
     assert any("ethos-u55-128" in a for a in he["npu_config"]["args"])
 
 
-def test_resolve_snapshot_bad_partitions(make_firmware, make_sdk):
+def test_resolve_snapshot_partition_size_override_main_only(make_firmware, make_sdk):
+    # partition_size overrides only the main partition; the coprocessor keeps its own
+    # firmware geometry (there is no per-partition config -- the helper is slaved).
     config = cfg.OtaConfig(name="p", vendor=None, boards=["OPENMV_AE3"],
-                           overrides={"OPENMV_AE3": {"partitions": "nope"}})
-    with pytest.raises(ProjectError, match="must be a list of integers"):
-        proj.resolve_snapshot(make_firmware(), config, sdk_home_override=make_sdk(),
-                              config_digest="d", now=NOW)
+                           overrides={"OPENMV_AE3": {"partition_size": 12345678}})
+    lock, _ = proj.resolve_snapshot(make_firmware(), config, sdk_home_override=make_sdk(),
+                                    config_digest="d", now=NOW)
+    resolved = {r["partition_index"]: r for r in lock.targets["resolved"]}
+    assert resolved[0]["role"] == "main" and resolved[0]["partition_size"] == 12345678
+    assert resolved[1]["role"] == "coprocessor" and resolved[1]["partition_size"] == 1048576
 
 
-def test_resolve_snapshot_partition_size_with_multi(make_firmware, make_sdk):
-    config = cfg.OtaConfig(name="p", vendor=None, boards=["OPENMV_AE3"],
-                           overrides={"OPENMV_AE3": {"partitions": [0, 1], "partition_size": 99}})
-    with pytest.raises(ProjectError, match="cannot be set when targeting multiple"):
+def test_resolve_snapshot_unknown_board(make_firmware, make_sdk):
+    config = cfg.OtaConfig(name="p", vendor=None, boards=["NOPE"], overrides={})
+    with pytest.raises(ProjectError, match="unknown board"):
         proj.resolve_snapshot(make_firmware(), config, sdk_home_override=make_sdk(),
                               config_digest="d", now=NOW)
 
@@ -151,6 +156,22 @@ def test_create_scaffolds_app_even_without_ota(tmp_path, make_firmware, make_sdk
     assert (paths.app_dir / "lib" / ".gitkeep").exists()
     # No keys are provisioned for a non-OTA project.
     assert not paths.private_keys_dir.exists()
+
+
+def test_create_scaffolds_coprocessor_for_multicore_board(tmp_path, make_firmware, make_sdk):
+    # A board with a slaved second core (AE3's M55_HE) gets an app-coprocessor/ folder;
+    # _create targets N6 + AE3, so it must appear.
+    import json
+    root, _ = _create(tmp_path, make_firmware, make_sdk, app_version="2.0.0")
+    d = proj.ProjectPaths(root).coprocessor_app_dir
+    assert d.is_dir() and (d / "main.py").exists()
+    assert json.loads((d / "settings.json").read_text())["app_version"] == "2.0.0"
+    assert (d / "lib" / ".gitkeep").exists()
+
+
+def test_create_no_coprocessor_folder_for_single_core(tmp_path, make_firmware, make_sdk):
+    root, _ = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV_N6"])
+    assert not proj.ProjectPaths(root).coprocessor_app_dir.exists()
 
 
 def test_create_preserves_existing_app(tmp_path, make_firmware, make_sdk):

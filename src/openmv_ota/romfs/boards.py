@@ -21,6 +21,9 @@ class Partition:
     index: int
     size: int
     erase_size: int = 0  # flash erase block of the backing store (0 = unknown)
+    role: str = "main"   # "main" (the OTA app partition) or "coprocessor" (a slaved
+                         # secondary core's partition, e.g. AE3's M55_HE: never OTA,
+                         # always a plain romfs the main core writes)
     alignment_rules: list[dict[str, Any]] = field(default_factory=list)
     npu: dict[str, Any] | None = None
 
@@ -65,6 +68,7 @@ def load_boards() -> dict[str, BoardConfig]:
                 index=int(p.get("index", 0)),
                 size=int(p.get("size", 0)),
                 erase_size=int(p.get("erase_size", 0)),
+                role=p.get("role", "main"),
                 alignment_rules=list(p.get("alignment_rules", [])),
                 npu=p.get("npu"),
             )

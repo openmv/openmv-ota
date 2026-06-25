@@ -157,17 +157,16 @@ def render_config(
         targets = (
             "[targets]\nboards = [%s]\n\n" % board_list
             + "".join(_render_target(name, b) for b in boards)
-            + "# A board's table can also set partitions = [0, 1] (target multiple ROMFS\n"
-            "# partitions, e.g. AE3's two cores; default [0]) or partition_size = N\n"
-            "# (override the firmware partition geometry, single-partition only).\n"
+            + "# A board's table can also set partition_size = N to override the firmware\n"
+            "# partition geometry. Multi-core boards (e.g. AE3) build every partition\n"
+            "# automatically -- the coprocessor core's romfs is built from app-coprocessor/.\n"
         )
     else:
         targets = (
             "[targets]\nboards = [%s]\n\n" % board_list
             + "# Optional per-board settings (add one table per board to configure):\n"
             "# [targets.OPENMV_AE3]\n"
-            "# partitions = [0, 1]       # target both cores (HP + HE); default [0]\n"
-            "# partition_size = 25165824 # override geometry (single-partition only)\n"
+            "# partition_size = 25165824 # override the main partition geometry\n"
             "# board_id   = 1234         # product id in /rom/system.json (auto-set in OTA mode)\n"
         )
     return (
