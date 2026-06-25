@@ -135,7 +135,10 @@ _HANDLERS = {"partition": _apply_partition}   # resource "handler" -> applier
 
 
 def _data_path(name):  # pragma: no cover
-    return __path__[0] + "/data/" + name
+    # __file__ is the package's __init__.py (a full path on MicroPython); the data
+    # files sit beside it under data/. (MicroPython's __path__ is a str, not a list,
+    # so derive the dir from __file__ instead.)
+    return __file__.rsplit("/", 1)[0] + "/data/" + name
 
 
 def sync():  # pragma: no cover
@@ -144,6 +147,7 @@ def sync():  # pragma: no cover
     partition. Idempotent (only writes on a difference); a no-op when nothing is
     bundled. Returns the names applied. Call early, before the helper core is used."""
     import json
+    import uctypes
     import vfs
     try:
         manifest = json.load(open(_data_path("resources.json")))
@@ -153,8 +157,10 @@ def sync():  # pragma: no cover
         entry["bytes"] = open(_data_path(entry["file"]), "rb").read()
 
     def current_of(entry):
-        whole = bytes(vfs.rom_ioctl(2, entry["partition"]))
-        return whole[:len(entry["bytes"])]
+        # Read only the bytes we compare -- NOT bytes(rom_ioctl(2, ...)), which would
+        # copy the entire (multi-MB) partition into RAM.
+        base = uctypes.addressof(vfs.rom_ioctl(2, entry["partition"]))
+        return bytes(uctypes.bytearray_at(base, len(entry["bytes"])))
 
     applied = []
     for entry in _resources_to_apply(manifest, current_of):
