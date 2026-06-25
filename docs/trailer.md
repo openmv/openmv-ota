@@ -22,9 +22,9 @@ format described here.
 
 This page is that on-flash format; the codec —
 [src/openmv_ota/ota/trailer.py](../src/openmv_ota/ota/trailer.py) — is its source
-of truth. (`boot.py`, the slot layout, and the on-device verifier are later layers
-that consume this format; the [architecture](architecture.md) page sketches the
-whole picture.)
+of truth. (`boot.py`, the slot layout, and the on-device verifier are the higher
+layers that consume this format; the [architecture](architecture.md) page sketches
+the whole picture.)
 
 ## Layout
 
@@ -149,8 +149,8 @@ not the megabytes. On the device, `boot.py`:
 
 The CRC is checked first as a cheap torn-write reject; it is not a trust check.
 The trusted public keys come only from the firmware's baked-in set — an embedded
-public key is never trusted. (`boot.py` and the mbedtls verify shim are later
-layers; this page documents the format they consume.)
+public key is never trusted. (`boot.py` and the mbedtls verify shim are the layers
+above; this page documents the format they consume.)
 
 ## See also
 

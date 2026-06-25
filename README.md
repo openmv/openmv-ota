@@ -30,11 +30,13 @@ OTA design.
 
 ## Status
 
-The `openmv-ota romfs` image tool, `openmv-ota project` (firmware pegging), and
-`openmv-ota build romfs` (app compile + ROMFS pack, with OTA trailer signing) are
-implemented and tested. The remaining over-the-air update tools — slot
-composition, the frozen `boot.py`, the on-device ECDSA verify module, and the
-update server — are not yet built.
+The `openmv-ota romfs` image tool, `openmv-ota project` (firmware pegging + key
+management), and `openmv-ota build` (app compile, signed ROMFS + dual-slot factory
+images, firmware builds, inspect/verify) are implemented and tested. That includes
+the frozen `boot.py` slot selection — exercised on real MicroPython under QEMU — and
+the on-device ECDSA verify module, checked against the firmware's own mbedtls. The
+remaining over-the-air pieces — the on-device updater that applies an image, and the
+update server it talks to — are not yet built.
 
 ## Installation
 
@@ -115,16 +117,19 @@ signed `<board>-romfs.zip` bundle (body + trailer, where the trailer is the mani
 (mutable FRONT + golden BACK), factory-signed — as `<board>-factory-romfs.img`. `build
 firmware` builds the device firmware per board (`<board>-firmware.bin`) by running the
 firmware repo's own `make`; for an OTA project it also freezes an OTA `boot.py` into the image (via a
-generated wrapper manifest, no edits to the firmware tree). `build inspect` decodes
-a bundle's trailer; `build verify` checks its signature + body hash against the
-trusted keys (a CI / pre-publish gate).
+generated wrapper manifest, no edits to the firmware tree). On a multi-core board (the
+AE3) the slaved helper core's partition is built too, as a plain
+`<board>-coprocessor-romfs.img`. `build inspect` decodes the trailer(s) of a bundle, a
+factory image (FRONT + BACK), or a loose trailer; `build verify` checks the signature +
+body hash against the trusted keys for each (a CI / pre-publish gate). Both report a
+plain, unsigned romfs as such instead of erroring.
 
 ```bash
 openmv-ota build romfs         ./my-product
 openmv-ota build factory-romfs ./my-product
 openmv-ota build firmware      ./my-product
-openmv-ota build inspect       ./my-product/build/OPENMV_N6.zip
-openmv-ota build verify        ./my-product/build/OPENMV_N6.zip
+openmv-ota build inspect       ./my-product/build/OPENMV_N6-romfs.zip
+openmv-ota build verify        ./my-product/build/OPENMV_N6-romfs.zip
 ```
 
 This is distinct from `romfs pack`, which packs a directory verbatim with no
@@ -133,10 +138,11 @@ compilation. See [docs/build.md](docs/build.md) and, for the signed image format
 
 ### OTA
 
-`project new --ota`, `build romfs`, and `build factory-romfs` (above) already
-produce the signed, anti-rollback OTA payload and the dual-slot factory partition
-image. The remaining pieces — the frozen `boot.py` and on-device ECDSA verify, and
-the update server — build on this; see
+`project new --ota`, `build romfs`, and `build factory-romfs` (above) produce the
+signed, anti-rollback OTA payload and the dual-slot factory partition image, and
+`build firmware` freezes the slot-selecting `boot.py` + on-device ECDSA verify into
+an OTA firmware. The remaining piece — the on-device updater that downloads and
+applies an image, and the update server it talks to — builds on this; see
 [openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md).
 
 ## Contributing to the project

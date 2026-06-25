@@ -16,10 +16,14 @@ Compiles the shim's pure-C core (`device/ecdsa_verify.c`) against the firmware's
 *own* mbedtls (3.6.2) and exercises it on the host: the host `cryptography`
 (OpenSSL) signs and the shim's mbedtls verifies — proving the two agree — plus
 tamper / wrong-key / wrong-length / unknown-alg / off-curve negatives, with `gcov`
-asserting **100% line coverage of the core**. It fetches only the mbedtls submodule
-chain (not the whole firmware); crypto is OS-independent, so Linux is enough. The
-MicroPython `mp_obj` glue is the only untested part — that lands in the QEMU
-device test.
+asserting **100% line coverage of the core**. It fetches the mbedtls submodule chain
+**recursively** — mbedtls 3.6 generates sources (e.g. `psa_crypto_driver_wrappers.h`)
+via its own `framework` submodule — and installs mbedtls's own build requirements
+(`scripts/basic.requirements.txt`, i.e. jinja2 + jsonschema) so `make libmbedcrypto.a`
+can run; not the whole firmware, and crypto is OS-independent, so Linux is enough. A
+separate test also compiles the shim with **no** mbedtls to prove the guard makes it
+an empty unit (the AE3 M55_HE helper-core case). The MicroPython `mp_obj` glue is the
+only untested part — that lands in the QEMU device test.
 
 ## `qemu` — boot.py on real MicroPython
 
@@ -72,7 +76,7 @@ behaviour), and the driver asserts the CLI's outcome:
 
 | Class | Boards (examples) | What is asserted |
 |---|---|---|
-| **full** (OTA-capable) | N6, AE3, 4P, PT, RT1060, Portenta, Giga, Nicla | `project new --ota`; build firmware + romfs + factory-romfs; `inspect` + `verify` the OTA bundle (as a `.zip` and as loose `romfs.img`/`trailer.bin`); a corrupted body must **fail** verify; the factory image is the full partition. |
+| **full** (OTA-capable) | N6, AE3, 4P, PT, RT1060, Portenta, Giga, Nicla | `project new --ota`; build firmware + romfs + factory-romfs; `inspect` + `verify` the OTA bundle (as a `.zip` and as loose `romfs.img`/`trailer.bin`) **and the factory image** (both FRONT + BACK slots); a corrupted body **and** a corrupted factory slot must **fail** verify; the factory image is the full partition. A multi-core board (AE3) also builds + checks its plain `coprocessor-romfs.img`. |
 | **classic** (romfs, not OTA-capable) | OPENMV2 / 3 / 4 | `project new`; build firmware + single-image romfs; `project new --ota` must fail cleanly (*not OTA-capable*); `factory-romfs` must fail cleanly (*needs an OTA project*). |
 | **noromfs** (no ROMFS partition) | Arduino Nano 33 BLE / RP2040 | `project new` must fail cleanly (*no partition size*). |
 
@@ -81,12 +85,11 @@ Every expected failure is asserted to be a clean tool error — non-zero exit, a
 so structurally instead of exploding. Boards in the **noromfs** class never invoke
 `make`: the tool refuses to create a project for them.
 
-Crypto-verifying a *factory* image's two slots isn't done in CI: there is no CLI
-for it (a pip user couldn't do it either), and reproducing the slot geometry in the
-script would mean coupling CI to the tool's internals. The factory signing path is
-covered instead by the OTA bundle's `verify` (same body, same signer) and the
-100%-coverage unit tests; CI confirms the factory image builds and is the full
-partition size.
+The factory image is crypto-verified too: `build inspect`/`build verify` understand
+the dual-slot partition layout (they locate each slot's trailer by scanning
+block-aligned offsets), so CI verifies **both** the FRONT and BACK slots through the
+CLI and confirms a corrupted factory slot is rejected — no coupling to the tool's
+internals, just the same `openmv-ota` a pip user runs.
 
 ### Toolchain — the SDK provides it
 
