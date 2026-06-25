@@ -21,8 +21,12 @@ the available capacity. For a **non-OTA** project the output is the ROMFS body,
 `<project>/build/<board>-romfs.img`. An **OTA** project instead writes a signed
 bundle, `<board>-romfs.zip` (see [OTA signing](#ota-signing) below). A multi-core
 board also builds its coprocessor partition as a plain
-`<board>-coprocessor-romfs.img` (always, from `app-coprocessor/` — see
-[Multi-core boards](project.md#multi-core-boards-a-coprocessor-partition)).
+`<board>-coprocessor-romfs.img` (always, from `app-coprocessor/`), and for an OTA
+project **nests** that image inside the main one (at
+`/rom/lib/openmv_ota/data/coprocessor.romfs`) so the on-device
+[`openmv_ota.sync()`](project.md#the-device-runtime-library-openmv_ota) can write it
+into the helper partition — see
+[Multi-core boards](project.md#multi-core-boards-a-coprocessor-partition).
 
 Every image also gets a generated, read-only `system.json` at `/rom/system.json` —
 board identity (`board`, `board_id`, `board_name`, `product`), the app version, and

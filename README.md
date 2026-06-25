@@ -33,10 +33,11 @@ OTA design.
 The `openmv-ota romfs` image tool, `openmv-ota project` (firmware pegging + key
 management), and `openmv-ota build` (app compile, signed ROMFS + dual-slot factory
 images, firmware builds, inspect/verify) are implemented and tested. That includes
-the frozen `boot.py` slot selection — exercised on real MicroPython under QEMU — and
-the on-device ECDSA verify module, checked against the firmware's own mbedtls. The
-remaining over-the-air pieces — the on-device updater that applies an image, and the
-update server it talks to — are not yet built.
+the frozen `boot.py` slot selection — exercised on real MicroPython under QEMU — the
+on-device ECDSA verify module, checked against the firmware's own mbedtls, and the
+`openmv_ota` device runtime library (`status`/`confirm`/`sync`) an OTA project
+scaffolds into the app. The remaining over-the-air pieces — the on-device updater that
+*downloads and stages* an image, and the update server it talks to — are not yet built.
 
 ## Installation
 
@@ -141,8 +142,11 @@ compilation. See [docs/build.md](docs/build.md) and, for the signed image format
 `project new --ota`, `build romfs`, and `build factory-romfs` (above) produce the
 signed, anti-rollback OTA payload and the dual-slot factory partition image, and
 `build firmware` freezes the slot-selecting `boot.py` + on-device ECDSA verify into
-an OTA firmware. The remaining piece — the on-device updater that downloads and
-applies an image, and the update server it talks to — builds on this; see
+an OTA firmware, and `project new --ota` scaffolds the `openmv_ota` device runtime
+library (`status`/`confirm`/`sync`) into the app — so on-device the app can complete a
+trial (`confirm()`) and write a multi-core helper's partition (`sync()`). The remaining
+piece — the on-device updater that downloads and stages an image, and the update server
+it talks to — builds on this; see
 [openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md).
 
 ## Contributing to the project

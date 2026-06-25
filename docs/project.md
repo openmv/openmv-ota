@@ -243,6 +243,7 @@ and the starter `app/`), `new --ota` creates the keys and extends the config:
 ```
 my-product/
 ├── openmv-ota.toml          # gains an [ota] section + per-board [targets.*] tables
+├── app/lib/openmv_ota/      # the device OTA runtime library (status/confirm/sync)
 └── keys/
     ├── trusted_keys.json    # committed: the public key set baked into firmware
     └── private/             # GITIGNORED: the private signing keys (PKCS#8 PEM)
@@ -273,6 +274,40 @@ and each target board gets an active table for its identity (see
 board_id   = 3064072142  # stable product id (auto-assigned; keep it once devices ship)
 board_name = "my-product"  # human label; defaults to the product name, rename freely
 ```
+
+### The device runtime library (`openmv_ota`)
+
+`new --ota` also scaffolds `app/lib/openmv_ota/` — the device-side OTA helpers your
+app imports on the camera (`build romfs` compiles + packs them to `/rom/lib`). It
+exposes three calls:
+
+- **`status()`** — what the running FRONT image's trial looks like, read-only:
+  `{"pending", "tried", "confirmed", "trial"}`. `trial` is `True` when you've booted a
+  freshly-updated image that hasn't been kept yet.
+- **`confirm()`** — keep the running image. Writes the `confirmed` marker **iff** it's
+  an un-confirmed trial, else a no-op; idempotent, returns whether it just confirmed.
+  Call it **after your app has validated itself healthy** — not blindly at boot, or you
+  defeat rollback (a freshly-updated image that never confirms is rolled back to the
+  golden one on the next boot).
+- **`sync()`** — apply any **bundled resources** (`data/resources.json`) whose target
+  partition differs from the bundled copy; idempotent, returns the names applied. On a
+  multi-core board this is how the main core writes the helper core's romfs (see
+  [Multi-core boards](#multi-core-boards-a-coprocessor-partition)); a board with no
+  bundled resources gets a `sync()` that does nothing. Call it **early**, before the
+  helper core is used.
+
+```python
+import openmv_ota
+openmv_ota.sync()                      # top of main.py: helper partition == this image
+# ... run your app; once you've confirmed it's healthy:
+openmv_ota.confirm()                   # keep the update (no-op if not a trial)
+if openmv_ota.status()["trial"]:
+    ...                                # e.g. still on trial -- run extra self-checks
+```
+
+The library is yours once scaffolded — it's plain Python under `app/`, so you can read
+and extend it. The `data/` folder holds the bundled binary resources (kept out of the
+`.py`); the build fills it per board.
 
 ### Keys
 
@@ -473,6 +508,17 @@ select one with `board(name, partition)`, or iterate `targets`.
 
 > A `partition_size` override (under `[targets.<board>]`) applies only to the main
 > partition; the coprocessor always keeps its firmware geometry.
+
+**Writing the helper partition at runtime.** For an OTA project, `build romfs` also
+**nests** the coprocessor image inside the main one, at
+`/rom/lib/openmv_ota/data/coprocessor.romfs`, with a `resources.json` manifest. So an
+OTA update to the main carries the matching helper image, and your app calls
+[`openmv_ota.sync()`](#the-device-runtime-library-openmv_ota) early in `main.py` to
+write it into the helper partition (only when it differs). Because the nested image
+travels *with* the main, `sync()` always writes the helper image that matches the main
+that's actually running — so it stays consistent even across a rollback to the golden
+image. (The standalone `-coprocessor-romfs.img` is for flashing the helper partition
+directly at the factory; the nested copy is byte-identical.)
 
 ## Reading a project from Python
 

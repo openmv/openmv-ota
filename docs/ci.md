@@ -38,7 +38,7 @@ each slot at its absolute XIP address via `uctypes.bytearray_at` rather than
 slicing one whole-partition memoryview (which would overflow on the 24 MiB N6/AE3
 partitions). [`ci/qemu_boot_test.py`](../ci/qemu_boot_test.py)
 drives the device over the QEMU serial REPL via the firmware's bundled `mpremote`
-(pasting a script — no filesystem mount) and checks three scenarios:
+(pasting a script — no filesystem mount) and checks four scenarios:
 
 1. **All boot paths** — `evaluate_slot`/`parse_trailer` exercised for every reject
    reason (`magic`/`crc`/`key`/`sig`/`board`/`compat`/`size`/`body-sha`/`rollback`/
@@ -48,6 +48,14 @@ drives the device over the QEMU serial REPL via the firmware's bundled `mpremote
    loaded into the emulated XIP region; `OtaBoot.run` reads it via `vfs.rom_ioctl`
    and mounts FRONT.
 3. **Corrupt FRONT → BACK** — a broken FRONT body falls back to the golden BACK slot.
+4. **`openmv_ota` runtime lib** — a romfs carrying the real `app/lib/openmv_ota/`
+   runtime helpers + a matching `_ota_config`, with the FRONT status sector crafted as
+   an un-confirmed trial: `status()` reads the trial, `confirm()` decides to keep it,
+   and `sync()` finds + plans its bundled resource. This covers the lib's device wiring
+   (the read/decision/plan paths + `__file__`-based data resolution) that host tests
+   can't reach. The flash *writes* no-op on the qemu port (read-only `rom_ioctl`), the
+   same reason scenario 2's `write_marker` is stubbed; the writes use the same
+   `rom_ioctl` API as `boot.py` and are covered by the host logic tests.
 
 The signature step uses an injected `verify` because the qemu port doesn't build
 mbedtls yet (the ECDSA core is covered by `cshim`); enabling mbedtls on the qemu
