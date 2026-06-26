@@ -144,9 +144,10 @@ signed, anti-rollback OTA payload and the dual-slot factory partition image, and
 `build firmware` freezes the slot-selecting `boot.py` + on-device ECDSA verify into
 an OTA firmware, and `project new --ota` scaffolds the `openmv_ota` device runtime
 library (`status`/`confirm`/`sync`) into the app — so on-device the app can complete a
-trial (`confirm()`) and write a multi-core helper's partition (`sync()`). The remaining
-piece — the on-device updater that downloads and stages an image, and the update server
-it talks to — builds on this; see
+trial (`confirm()`) and write a multi-core helper's partition (`sync()`); see
+[docs/runtime.md](docs/runtime.md) for the on-device side (boot.py + `openmv_ota`). The
+remaining piece — the on-device updater that downloads and stages an image, and the
+update server it talks to — builds on this; see
 [openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md).
 
 ## Contributing to the project

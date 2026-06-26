@@ -277,43 +277,22 @@ board_name = "my-product"  # human label; defaults to the product name, rename f
 
 ### The device runtime library (`openmv_ota`)
 
-`new --ota` also scaffolds `app/lib/openmv_ota/` — the device-side OTA helpers your
-app imports on the camera (`build romfs` compiles + packs them to `/rom/lib`). It
-exposes three calls:
-
-- **`status()`** — what the running FRONT image's trial looks like, read-only:
-  `{"pending", "tried", "confirmed", "trial"}`. `trial` is `True` when you've booted a
-  freshly-updated image that hasn't been kept yet.
-- **`confirm()`** — keep the running image. Writes the `confirmed` marker **iff** it's
-  an un-confirmed trial, else a no-op; idempotent, returns whether it just confirmed.
-  Call it **after your app has validated itself healthy** — not blindly at boot, or you
-  defeat rollback (a freshly-updated image that never confirms is rolled back to the
-  golden one on the next boot).
-- **`sync()`** — apply any **bundled resources** (`data/resources.json`) whose target
-  partition differs from the bundled copy; idempotent, returns the names applied. On a
-  multi-core board this is how the main core writes the helper core's romfs (see
-  [Multi-core boards](#multi-core-boards-a-coprocessor-partition)); a board with no
-  bundled resources gets a `sync()` that does nothing. Call it **early**, before the
-  helper core is used.
-
-Both `confirm()` and `sync()` **verify their flash writes** (read back and compare) and
-**raise `OSError`** if a write is rejected or doesn't take — so a failed update surfaces
-rather than passing silently; wrap them in `try`/`except` if you want to react. (boot.py
-itself applies the same care to arming a trial: if it can't record the trial it falls
-back to the golden image rather than running an untracked one.)
+`new --ota` also scaffolds `app/lib/openmv_ota/` — the device-side OTA helpers your app
+imports on the camera (`build romfs` compiles + packs them to `/rom/lib`). The short
+version: call **`confirm()`** once your app is healthy (so a new update is kept rather
+than rolled back on the next boot), **`sync()`** early (to apply bundled resources like
+a helper core's romfs), and **`status()`** to inspect the trial state:
 
 ```python
 import openmv_ota
-openmv_ota.sync()                      # top of main.py: helper partition == this image
-# ... run your app; once you've confirmed it's healthy:
-openmv_ota.confirm()                   # keep the update (no-op if not a trial)
-if openmv_ota.status()["trial"]:
-    ...                                # e.g. still on trial -- run extra self-checks
+openmv_ota.sync()        # bring bundled resources up to date with this image
+# ... once your app has validated itself healthy:
+openmv_ota.confirm()     # keep the update (no-op if it isn't a trial)
 ```
 
-The library is yours once scaffolded — it's plain Python under `app/`, so you can read
-and extend it. The `data/` folder holds the bundled binary resources (kept out of the
-`.py`); the build fills it per board.
+It's plain Python you own and can extend. For the full picture — the trial/rollback
+lifecycle, the API semantics, the bundled-resource (`sync()`) mechanism, and the
+on-device safety properties — see **[the on-device runtime](runtime.md)**.
 
 ### Keys
 
