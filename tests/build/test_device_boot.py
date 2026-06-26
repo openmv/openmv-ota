@@ -127,50 +127,51 @@ def _eval(trailer_bytes, body, status, *, is_front=True, floor=0, board_id=BOARD
                            trusted if trusted is not None else {}, platform, verify)
 
 
-def test_evaluate_front_confirmed_mounts():
+# --- evaluate_slot: the FULL trial-marker truth table ----------------------
+# Every (pending, tried, confirmed) combination for a FRONT slot and what
+# evaluate_slot does with it -- "arm" = mount + write 'tried' (one-shot trial),
+# "mount" = mount an already-settled image, anything else = the OtaReject reason.
+# Exhaustive on purpose: this is the source of truth for the trial state machine.
+_FRONT_MARKERS = [
+    (False, False, False, "status"),          # blank / erased
+    (False, False, True,  "forged-confirm"),  # BACK's golden shape forged onto FRONT
+    (False, True,  False, "status"),           # tried set with no pending
+    (False, True,  True,  "status"),           # confirmed+tried with no pending
+    (True,  False, False, "arm"),              # fresh staged image -> one-shot trial
+    (True,  False, True,  "status"),           # confirmed but never tried
+    (True,  True,  False, "trial-failed"),     # trialed but never confirmed
+    (True,  True,  True,  "mount"),            # post-OTA confirmed
+]
+
+
+@pytest.mark.parametrize(("pending", "tried", "confirmed", "expect"), _FRONT_MARKERS)
+def test_evaluate_front_every_marker_combination(pending, tried, confirmed, expect):
     priv, pub = _key()
     body = b"app" * 40
-    t, write_tried = _eval(_trailer(priv, 0x100, body), body,
-                           _status(True, True, True), trusted={0x100: pub})
-    assert write_tried is False and t.body_size == len(body)
+    args = (_trailer(priv, 0x100, body), body, _status(pending, tried, confirmed))
+    if expect in ("arm", "mount"):
+        t, write_tried = _eval(*args, trusted={0x100: pub})
+        assert write_tried is (expect == "arm") and t.body_size == len(body)
+    else:
+        with pytest.raises(B.OtaReject, match=expect):
+            _eval(*args, trusted={0x100: pub})
 
 
-def test_evaluate_front_first_trial_arms_tried():
-    priv, pub = _key()
-    body = b"app" * 40
-    _t, write_tried = _eval(_trailer(priv, 0x100, body), body,
-                            _status(True, False, False), trusted={0x100: pub})
-    assert write_tried is True
-
-
-@pytest.mark.parametrize(("pending", "tried", "confirmed", "reason"), [
-    (True, True, False, "trial-failed"),       # tried but never confirmed
-    (False, False, True, "forged-confirm"),    # BACK shape on FRONT
-    (False, False, False, "status"),           # nothing set
-    (True, False, True, "status"),             # pending+confirmed, no tried
+@pytest.mark.parametrize(("pending", "tried", "confirmed"), [
+    (p, tr, c) for p in (False, True) for tr in (False, True) for c in (False, True)
 ])
-def test_evaluate_front_status_rejections(pending, tried, confirmed, reason):
-    priv, pub = _key()
-    body = b"app" * 40
-    with pytest.raises(B.OtaReject, match=reason):
-        _eval(_trailer(priv, 0x100, body), body, _status(pending, tried, confirmed),
-              trusted={0x100: pub})
-
-
-def test_evaluate_back_factory_shape_mounts():
+def test_evaluate_back_every_marker_combination(pending, tried, confirmed):
+    # BACK mounts ONLY in the golden factory shape (confirmed, nothing else); every
+    # other of the eight combinations is rejected as not-factory.
     priv, pub = _key()
     body = b"golden" * 20
-    t, write_tried = _eval(_trailer(priv, 0x1, body), body, _status(False, False, True),
-                           is_front=False, trusted={0x1: pub})
-    assert write_tried is False and t.key_id == 0x1
-
-
-def test_evaluate_back_non_factory_rejected():
-    priv, pub = _key()
-    body = b"golden" * 20
-    with pytest.raises(B.OtaReject, match="back-not-factory"):
-        _eval(_trailer(priv, 0x1, body), body, _status(True, True, True),
-              is_front=False, trusted={0x1: pub})
+    args = (_trailer(priv, 0x1, body), body, _status(pending, tried, confirmed))
+    if (pending, tried, confirmed) == (False, False, True):
+        t, write_tried = _eval(*args, is_front=False, trusted={0x1: pub})
+        assert write_tried is False and t.key_id == 0x1
+    else:
+        with pytest.raises(B.OtaReject, match="back-not-factory"):
+            _eval(*args, is_front=False, trusted={0x1: pub})
 
 
 def test_evaluate_unknown_or_revoked_key():
@@ -332,6 +333,29 @@ def test_run_falls_back_to_back_when_arming_tried_fails():
     slot, t, reason = dev.boot({0x100: pub, 0x1: pub})
     assert slot == "BACK" and reason == "trial-arm"
     assert dev.mounted == [bb] and t.key_id == 0x1
+
+
+def test_run_trial_failed_front_rolls_back_to_golden():
+    # The core rollback: a FRONT trialed but never confirmed (pending+tried+!confirmed)
+    # is rejected, and boot.py mounts the golden BACK image.
+    priv, pub = _key()
+    fb, bb = b"trialimg" * 4, b"goldimg" * 4
+    dev = _Dev(_partition(_front(priv, 0x100, fb, _status(True, True, False)),
+                          _back(priv, 0x1, bb)))
+    slot, t, reason = dev.boot({0x100: pub, 0x1: pub})
+    assert slot == "BACK" and reason == "trial-failed"
+    assert dev.mounted == [bb] and t.key_id == 0x1
+
+
+def test_run_no_slot_when_both_fail():
+    # FRONT and BACK both signed by an untrusted key -> neither verifies -> no-slot.
+    priv, pub = _key()
+    other, _ = _key()
+    fb, bb = b"frontimg" * 4, b"backimg" * 4
+    dev = _Dev(_partition(_front(other, 0x100, fb, _status(True, True, True)),
+                          _back(other, 0x1, bb)))
+    with pytest.raises(B.OtaReject, match="no-slot"):
+        dev.boot({0x100: pub, 0x1: pub})
 
 
 def test_run_front_rollback_floored_by_back():

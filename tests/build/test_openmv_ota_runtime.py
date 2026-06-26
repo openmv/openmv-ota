@@ -10,6 +10,8 @@ QEMU, not here.
 
 from __future__ import annotations
 
+import pytest
+
 from openmv_ota.build.device import openmv_ota as rt
 from openmv_ota.ota import status as host_status
 
@@ -40,15 +42,18 @@ def test_status_of_unconfirmed_trial():
     assert rt._needs_confirm(_sector(True, True, False)) is True
 
 
-def test_should_confirm_only_on_a_front_trial():
-    trial = _sector(True, True, False)
-    assert rt._should_confirm("FRONT", trial) is True
-    # the guard: a trial we *fell back from* (running BACK) must NOT be confirmed, or
-    # we'd resurrect the bad FRONT image on the next boot
-    assert rt._should_confirm("BACK", trial) is False
-    assert rt._should_confirm(None, trial) is False
-    # on FRONT but already confirmed / not a trial -> nothing to do
-    assert rt._should_confirm("FRONT", _sector(True, True, True)) is False
+# confirm() acts only when we booted FRONT *and* it's an un-confirmed trial. The slot
+# guard is the safety bit -- see the BACK rows.
+@pytest.mark.parametrize(("slot", "pending", "tried", "confirmed", "expect"), [
+    ("FRONT", True,  True,  False, True),    # booted FRONT, un-confirmed trial -> confirm
+    ("BACK",  True,  True,  False, False),   # fell back from a failed trial -> do NOT
+    (None,    True,  True,  False, False),   # unknown slot -> never confirm
+    ("FRONT", True,  True,  True,  False),   # already confirmed
+    ("FRONT", True,  False, False, False),   # pending only, not a trial yet
+    ("FRONT", False, False, False, False),   # nothing set
+])
+def test_should_confirm(slot, pending, tried, confirmed, expect):
+    assert rt._should_confirm(slot, _sector(pending, tried, confirmed)) is expect
 
 
 def test_status_of_pending_only_is_not_a_trial():
