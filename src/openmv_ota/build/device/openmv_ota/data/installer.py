@@ -341,7 +341,7 @@ def _select_rep(body, delta_capable, golden_payload_version):
     best = None
     for rep in body.get("representations", []):
         fmt = rep.get("format")
-        if fmt == "bsdiff":
+        if fmt == _DELTA_FORMAT:
             if not delta_capable or rep.get("base_payload_version") != golden_payload_version:
                 continue
         elif fmt != "full":
@@ -360,6 +360,91 @@ def _golden_floor(trailer):
     if fields[0] != _TRAILER_MAGIC:
         return 0
     return fields[8]                              # payload_version (9th header field)
+
+
+# --- pure: delta apply (mirror of openmv_ota.ota.delta, pinned by tests) -----
+# A selected delta is reconstructed against the golden BACK slot: copy exact runs from
+# BACK + insert literals from the patch. Pure bytearray slices -- no per-byte arithmetic,
+# so it runs on every board (no ulab/C). The result is still verified by sha256 (here) +
+# the signed trailer (on boot), so the patch is never trusted.
+
+_DELTA_FORMAT = "ocdl"                            # manifest representation["format"]
+_DELTA_MAGIC = b"OCDL"
+
+
+def _uvarint(buf, pos):
+    result = shift = 0
+    while True:
+        b = buf[pos]
+        pos += 1
+        result |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return result, pos
+        shift += 7
+
+
+def _svarint(buf, pos):
+    zz, pos = _uvarint(buf, pos)
+    return ((zz >> 1) if not (zz & 1) else -((zz + 1) >> 1)), pos
+
+
+def _delta_chunks(patch, old_read, chunk):
+    """Yield the reconstructed image in pieces from an OCDL ``patch`` (whole, in RAM --
+    deltas are small) + the golden base via ``old_read(off, n)`` (the XIP'd BACK slot).
+    Mirror of openmv_ota.ota.delta.apply_delta, but streamed (the target is never
+    materialised). Raises OSError on a bad patch (-> caller reboots to golden)."""
+    if len(patch) < 4 or patch[:4] != _DELTA_MAGIC:
+        raise OSError("bad delta magic")
+    _, pos = _uvarint(patch, 4)                   # skip target_size
+    old = 0
+    end = len(patch)
+    while pos < end:
+        insert_len, pos = _uvarint(patch, pos)
+        copy_len, pos = _uvarint(patch, pos)
+        seek, pos = _svarint(patch, pos)
+        if insert_len:
+            yield patch[pos:pos + insert_len]
+            pos += insert_len
+        old += seek
+        o = old
+        left = copy_len
+        while left:
+            m = left if left < chunk else chunk
+            yield old_read(o, m)
+            o += m
+            left -= m
+        old += copy_len
+
+
+class _GenReader:
+    """Adapt a generator of byte pieces to the ``read(n)`` source ``_install_stream``
+    pulls from -- buffers just enough to serve each request."""
+
+    def __init__(self, gen):
+        self._gen = gen
+        self._buf = b""
+
+    def read(self, n):
+        while len(self._buf) < n:
+            try:
+                self._buf += bytes(next(self._gen))
+            except StopIteration:
+                break
+        out, self._buf = self._buf[:n], self._buf[n:]
+        return out
+
+
+def _read_decompressed(dio, cap):
+    """Read a whole decompressed stream (a delta patch) into RAM, capped at ``cap`` (a
+    patch larger than a full image is bogus)."""
+    out = b""
+    while True:
+        d = dio.read(_CHUNK)
+        if not d:
+            return out
+        out += d
+        if len(out) > cap:
+            raise OSError("delta larger than a full image")
 
 
 # --- pure: the flash write (host-testable; all I/O injected) -----------------
@@ -527,8 +612,9 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     reason = _update_reject(body_dict, cfg.BOARD_ID, cfg.PLATFORM_VERSION, floor)
     if reason is not None:
         raise OSError("manifest rejected (%s)" % reason)
-    # No on-device delta applier yet -> only the full representation is usable.
-    rep = _select_rep(body_dict, False, floor)
+    # The delta applier is pure Python (no ulab/C), so every board is delta-capable; the
+    # delta is used only when its base matches this device's golden (BACK) version.
+    rep = _select_rep(body_dict, True, floor)
     if rep is None:
         raise OSError("manifest has no usable representation")
     return rep["url"], rep.get("format"), body_dict.get("sha256")
@@ -583,14 +669,25 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     if log:
         log.info("install: downloading %s (%s)" % (image_url, fmt))
     sock, body = _open(image_url, ca_pem, socket, ssl)
+    dio = deflate.DeflateIO(body, deflate.GZIP)
+    if fmt == _DELTA_FORMAT:
+        # Delta: the (small) patch is decompressed whole into RAM, then the image is
+        # reconstructed by copying exact runs from the golden BACK slot + inserting the
+        # patch literals -- streamed into FRONT, never materialised.
+        patch = _read_decompressed(dio, front_size)
+
+        def _old_read(off, n):
+            return uctypes.bytearray_at(base + front_size + off, n)   # BACK slot at front_size
+        source = _GenReader(_delta_chunks(patch, _old_read, _CHUNK)).read
+    else:
+        source = dio.read
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
     # failure reboots into the golden image instead of propagating.
     if log:
         log.info("install: erasing + writing FRONT (%d bytes)" % front_size)
     try:
-        dio = deflate.DeflateIO(body, deflate.GZIP)
-        _install_stream(dio.read, erase, write, readback, front_size, block, feed,
+        _install_stream(source, erase, write, readback, front_size, block, feed,
                         progress, expect_sha)
     except Exception as e:
         sock.close()

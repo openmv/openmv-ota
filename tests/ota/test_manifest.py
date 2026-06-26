@@ -237,7 +237,7 @@ def test_accept_board_id_zero_disables_check():
 # --- select_representation --------------------------------------------------
 
 _FULL = {"format": "full", "url": "https://x/full.gz", "size": 900000}
-_DELTA = {"format": "bsdiff", "url": "https://x/d.gz", "size": 40000,
+_DELTA = {"format": "ocdl", "url": "https://x/d.gz", "size": 40000,
           "base_payload_version": encode_app_version("1.0.0")}
 
 

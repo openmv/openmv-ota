@@ -55,6 +55,7 @@ from .errors import OtaError
 MAGIC = b"OMVM"            # OTA update manifest (cf. OMVR image / OMVF firmware)
 HEADER_VERSION = 1
 SCHEMA = 1
+DELTA_FORMAT = "ocdl"      # representation["format"] for an openmv_ota.ota.delta patch
 
 # magic, header_version, body_size, sig_size, key_id, sig_alg (the lone signed "i").
 HEADER_STRUCT = "<4sIIIIi"
@@ -187,7 +188,7 @@ def select_representation(body, delta_capable, golden_payload_version):
     best = None
     for rep in body.get("representations", []):
         fmt = rep.get("format")
-        if fmt == "bsdiff":
+        if fmt == DELTA_FORMAT:
             if not delta_capable or rep.get("base_payload_version") != golden_payload_version:
                 continue
         elif fmt != "full":

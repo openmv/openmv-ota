@@ -458,7 +458,7 @@ def test_select_rep_mirrors_host(capable, golden):
     from openmv_ota.ota.manifest import select_representation
     body = {"representations": [
         {"format": "full", "url": "https://x/f.gz", "size": 900},
-        {"format": "bsdiff", "url": "https://x/d.gz", "size": 40, "base_payload_version": 100},
+        {"format": "ocdl", "url": "https://x/d.gz", "size": 40, "base_payload_version": 100},
         {"format": "lzma", "url": "https://x/w.gz", "size": 1},
     ]}
     assert (inst("_select_rep")(body, capable, golden)
@@ -467,7 +467,7 @@ def test_select_rep_mirrors_host(capable, golden):
 
 def test_select_rep_none_when_nothing_usable():
     body = {"representations": [
-        {"format": "bsdiff", "url": "https://x/d.gz", "size": 40, "base_payload_version": 1}]}
+        {"format": "ocdl", "url": "https://x/d.gz", "size": 40, "base_payload_version": 1}]}
     assert inst("_select_rep")(body, False, 0) is None
 
 
@@ -490,6 +490,62 @@ def test_golden_floor_mirrors_trailer():
     assert inst("_golden_floor")(trailer) == pv            # reads payload_version
     assert inst("_golden_floor")(b"\x00" * 4) == 0         # too short -> floor 0
     assert inst("_golden_floor")(b"XXXX" + trailer[4:]) == 0  # bad magic -> floor 0
+
+
+# --- delta apply: device streaming mirror of ota.delta.apply_delta -----------
+
+def _old_read_of(base):
+    return lambda off, n: base[off:off + n]
+
+
+def test_delta_format_pinned_to_host():
+    from openmv_ota.ota.manifest import DELTA_FORMAT
+    assert inst("_DELTA_FORMAT") == DELTA_FORMAT
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_delta_chunks_mirror_host_apply(seed):
+    from openmv_ota.ota.delta import apply_delta, make_delta
+    base = bytes((i * 31 + seed) & 0xFF for i in range(8000))
+    target = base[:3000] + b"INSERTED-NEW-BYTES" + base[3200:] + b"tail" * 50
+    patch = make_delta(base, target)
+    # the device generator, collected, equals the host reference reconstruction
+    pieces = list(inst("_delta_chunks")(patch, _old_read_of(base), 256))
+    assert b"".join(bytes(p) for p in pieces) == apply_delta(base, patch) == target
+
+
+def test_gen_reader_serves_read_n():
+    from openmv_ota.ota.delta import make_delta
+    base = bytes(range(256)) * 30
+    target = base[:2000] + b"X" * 40 + base[2000:]
+    patch = make_delta(base, target)
+    rd = inst("_GenReader")(inst("_delta_chunks")(patch, _old_read_of(base), 512))
+    out = b""
+    while True:
+        d = rd.read(100)
+        if not d:
+            break
+        out += d
+    assert out == target
+
+
+def test_delta_chunks_bad_magic():
+    with pytest.raises(OSError, match="bad delta"):
+        list(inst("_delta_chunks")(b"NOPE\x00\x00", _old_read_of(b""), 64))
+
+
+def test_read_decompressed_caps():
+    class _Dio:
+        def __init__(self, data):
+            self.data, self.pos = data, 0
+
+        def read(self, n):
+            out = self.data[self.pos:self.pos + n]
+            self.pos += len(out)
+            return out
+    assert inst("_read_decompressed")(_Dio(b"abc" * 100), 100000) == b"abc" * 100
+    with pytest.raises(OSError, match="larger than"):
+        inst("_read_decompressed")(_Dio(b"x" * 9000), 1000)
 
 
 # --- _read_all (the manifest is read into RAM, not streamed) -----------------
