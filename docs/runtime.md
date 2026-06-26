@@ -202,6 +202,38 @@ Two properties make this safe for sensitive resources (keys, fuses):
   `partition` handler streams the compare and the write a chunk at a time (and reads the
   erase back as all-`0xFF`), so even a ~1 MB image is never held in RAM whole.
 
+## Debug logging
+
+On-device OTA failures are otherwise invisible — `boot.py` runs before the REPL is up,
+and `install()` reboots, so neither can `print()` anywhere you'll see. So there's an
+opt-in logger: `device/log.py`, scaffolded into your project and frozen by `build
+firmware` as **`_ota_log`** (frozen so `boot.py` can use it before `/rom` mounts). It's
+shared by `boot.py`, the installer, and the runtime lib, and re-exported as
+**`openmv_ota.log(tag, msg)`** so your app can log to the same place.
+
+It's **off by default** — `log()` is a no-op, so production builds pay nothing. To debug
+on hardware, edit `device/log.py` and rebuild firmware:
+
+```python
+ENABLED = True         # master switch
+UART    = 3            # your board's machine.UART id (the port differs per board)
+BAUD    = 115200
+# or leave UART = None to print() to the USB REPL, or repoint _sink() at a file/socket.
+```
+
+Lines are kernel-style — `[ seconds.ms ] tag: message`:
+
+```
+[    0.412] boot: FRONT rejected (body-sha) -> mounted BACK (payload 1)
+[    3.118] install: downloading https://…/N6-v2.img.gz
+[    9.002] install: installed + armed; rebooting into the trial
+```
+
+`boot.py` logs the mounted slot and any reject reason; the installer logs each phase
+(download / erase+write / done / failure); `confirm()`/`sync()` log their actions. The
+`machine.UART` object is created once and cached. Because the logger is *yours*, "send
+logs somewhere" is just editing `_sink()`.
+
 ## Safety properties at a glance
 
 | Property | How |

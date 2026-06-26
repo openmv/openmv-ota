@@ -83,7 +83,9 @@ drives the device over the QEMU serial REPL via the firmware's bundled `mpremote
    is decompressed on-device and compared), and the `_install_stream` erase/write/
    read-back/arm loop over a fake flash. This pins the one genuinely device-specific
    risk — that a pure-Python stream subclassing `io.IOBase` feeds `DeflateIO` correctly
-   under MicroPython — which CPython host tests can't. The real `socket`/`ssl`/
+   under MicroPython — which CPython host tests can't. It also checks the **`_ota_log`
+   logger** on-device: `_format` produces the kernel-style line, and a live `log()` call
+   (UART unset → REPL) prints `[    1.340] qemu: live-log`. The real `socket`/`ssl`/
    `rom_ioctl` wiring stays QEMU-unreachable (no network, read-only `rom_ioctl`) and is
    covered by the host logic tests.
 

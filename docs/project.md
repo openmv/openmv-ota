@@ -247,6 +247,8 @@ my-product/
 │   └── data/
 │       ├── installer.py     # the installer, shipped as source (exec'd into RAM)
 │       └── ca.pem           # TLS root bundle for downloads (fetched fresh at `new`)
+├── device/
+│   └── log.py               # OTA debug logger, frozen as _ota_log (off by default)
 └── keys/
     ├── trusted_keys.json    # committed: the public key set baked into firmware
     └── private/             # GITIGNORED: the private signing keys (PKCS#8 PEM)
@@ -304,10 +306,15 @@ after `build romfs`: it renders each board's signed bundle into a gzipped full
 FRONT-slot image (`<board>-ota.img.gz`) to host on a server. The signed bundle stays
 the source of truth; the image is a regenerable rendering of it.
 
+For debugging on hardware, `new --ota` also scaffolds **`device/log.py`** — an opt-in
+UART logger (frozen as `_ota_log`, off by default) shared by `boot.py`, the installer,
+and this lib, and exposed as `openmv_ota.log(tag, msg)` for your app. Edit it to enable
++ pick your board's UART, then rebuild firmware.
+
 The runtime lib is plain Python you own and can extend. For the full picture — the
 trial/rollback lifecycle, the API semantics, `install()`/TLS/cert handling, the
-bundled-resource (`sync()`) mechanism, and the on-device safety properties — see
-**[the on-device runtime](runtime.md)**.
+bundled-resource (`sync()`) mechanism, debug logging, and the on-device safety
+properties — see **[the on-device runtime](runtime.md)**.
 
 ### Keys
 
