@@ -121,10 +121,12 @@ def _slot(body: bytes, status: bytes, trailer: bytes, slot_size: int) -> bytes:
     return bytes(out)
 
 
-def _partition(part: int, front: int, corrupt_front=False) -> bytes:
-    """A FRONT (confirmed) + BACK (golden) romfs partition with mountable bodies."""
+def _partition(part: int, front: int, corrupt_front=False, front_status=None) -> bytes:
+    """A FRONT + BACK (golden) romfs partition with mountable bodies. FRONT defaults to
+    the confirmed shape; pass ``front_status`` (e.g. pending-only) to exercise arming."""
     fb, bb = _vfsrom("SLOT=FRONT"), _vfsrom("SLOT=BACK")
-    img = bytearray(_slot(fb, _status(1, 1, 1), _trailer(fb, board=0), front)
+    fs = front_status if front_status is not None else _status(1, 1, 1)
+    img = bytearray(_slot(fb, fs, _trailer(fb, board=0), front)
                     + _slot(bb, _status(0, 0, 1), _trailer(bb, board=0), part - front))
     if corrupt_front:
         img[0] ^= 0xFF                       # break FRONT body SHA -> fall back to BACK
@@ -168,6 +170,30 @@ def _mnt(body):
     vfs.mount(vfs.VfsRom(body), "/rom")
 _T = {0x100: binascii.unhexlify("04" + "00" * 64)}
 slot, tr, reason = OtaBoot(_read, (lambda a, p, s, m: True), _mnt, (lambda o, m: None),
+                          %d, %d, %d, 0, _T, 0x7fffffff).run()
+mk = open("/rom/slot_marker.txt").read().strip()
+print("SLOT", slot, "REASON", reason, "MARKER", mk)
+''' % (part, front, BLOCK)
+    return BOOT_PY.read_text() + "\n" + runner
+
+
+def _arm_fail_script(part: int, front: int) -> str:
+    # Like _mount_script but with the *real* verified write_marker (rom_ioctl + read
+    # back). On the read-only qemu port arming 'tried' fails, so Option B must fall
+    # back to the golden BACK image with reason 'trial-arm'.
+    runner = '''
+import vfs, binascii, uctypes
+_base = uctypes.addressof(vfs.rom_ioctl(2, 0))
+def _read(off, size): return uctypes.bytearray_at(_base + off, size)
+def _mnt(body):
+    try: vfs.umount("/rom")
+    except Exception: pass
+    vfs.mount(vfs.VfsRom(body), "/rom")
+def _wm(off, marker):
+    if vfs.rom_ioctl(4, 0, off, marker) < 0: raise OSError("write failed")
+    if _read(off, len(marker)) != marker: raise OSError("verify failed")
+_T = {0x100: binascii.unhexlify("04" + "00" * 64)}
+slot, tr, reason = OtaBoot(_read, (lambda a, p, s, m: True), _mnt, _wm,
                           %d, %d, %d, 0, _T, 0x7fffffff).run()
 mk = open("/rom/slot_marker.txt").read().strip()
 print("SLOT", slot, "REASON", reason, "MARKER", mk)
@@ -313,6 +339,11 @@ def main(argv=None) -> int:
                 _run_scenario(fw, mpremote, board, _partition(part, front, corrupt_front=True),
                               _mount_script(part, front)),
                 lambda o: "SLOT BACK REASON body-sha" in o)
+        section("%s arm 'tried' fails -> BACK" % board,
+                _run_scenario(fw, mpremote, board,
+                              _partition(part, front, front_status=_status(1, 0, 0)),
+                              _arm_fail_script(part, front)),
+                lambda o: "SLOT BACK REASON trial-arm" in o)
         section("%s openmv_ota runtime (status/confirm/sync)" % board,
                 _run_scenario(fw, mpremote, board, _runtime_partition(part, front),
                               _runtime_script()),

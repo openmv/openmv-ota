@@ -87,6 +87,13 @@ def _streams_equal(file_chunks, read_target):
     return True
 
 
+def _check_readback(actual, expected):
+    """Raise OSError if a write/erase read-back differs from what it should be -- the
+    extra check that the flash actually took the operation, beyond a success return."""
+    if actual != expected:
+        raise OSError("flash verify failed")
+
+
 # --- device entry points ----------------------------------------------------
 # Thin wrappers that wire the real vfs/uctypes/_ota_config to the pure logic
 # above. Device-only (need MicroPython + a frozen _ota_config), so they're
@@ -128,6 +135,23 @@ def _file_chunks(path):  # pragma: no cover
         f.close()
 
 
+def _write_verified(part_index, off, data):  # pragma: no cover
+    """WRITE then read back and verify -- raises OSError on a bad rc or a read-back
+    mismatch, so a failed/partial flash write never passes silently."""
+    _rom_write(4, part_index, off, data)
+    _check_readback(_read_at(part_index, off, len(data)), data)
+
+
+def _verify_erased(part_index, total):  # pragma: no cover
+    """Read back a just-erased region (streamed, a chunk at a time) and raise unless it
+    is all 0xFF."""
+    off = 0
+    while off < total:
+        n = _CHUNK if total - off >= _CHUNK else total - off
+        _check_readback(_read_at(part_index, off, n), b"\xff" * n)
+        off += n
+
+
 def status():  # pragma: no cover
     """The running FRONT image's trial state: a dict with ``pending`` / ``tried`` /
     ``confirmed`` / ``trial`` (``trial`` == an un-confirmed one-shot trial)."""
@@ -146,7 +170,7 @@ def confirm():  # pragma: no cover
     off = _front_status_offset(_ota_config)
     if not _needs_confirm(_read_at(0, off, 3 * MARKER_SIZE)):
         return False
-    _rom_write(4, 0, off + _CONFIRMED_OFF, CONFIRMED)
+    _write_verified(0, off + _CONFIRMED_OFF, CONFIRMED)
     return True
 
 
@@ -169,11 +193,12 @@ def _apply_partition(part_index, path):  # pragma: no cover
     size = os.stat(path)[6]
     total = (size + _CHUNK - 1) // _CHUNK * _CHUNK
     _rom_write(3, part_index, total)                  # WRITE_PREPARE: erase the region
+    _verify_erased(part_index, total)                 # read back -> confirm all 0xFF
     off = 0
     for chunk in _file_chunks(path):
         if len(chunk) < _CHUNK:
             chunk = chunk + b"\xff" * (_CHUNK - len(chunk))
-        _rom_write(4, part_index, off, chunk)         # WRITE one block
+        _write_verified(part_index, off, chunk)       # WRITE one block + verify
         off += _CHUNK
 
 

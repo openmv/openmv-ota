@@ -38,7 +38,7 @@ each slot at its absolute XIP address via `uctypes.bytearray_at` rather than
 slicing one whole-partition memoryview (which would overflow on the 24 MiB N6/AE3
 partitions). [`ci/qemu_boot_test.py`](../ci/qemu_boot_test.py)
 drives the device over the QEMU serial REPL via the firmware's bundled `mpremote`
-(pasting a script — no filesystem mount) and checks four scenarios:
+(pasting a script — no filesystem mount) and checks five scenarios:
 
 1. **All boot paths** — `evaluate_slot`/`parse_trailer` exercised for every reject
    reason (`magic`/`crc`/`key`/`sig`/`board`/`compat`/`size`/`body-sha`/`rollback`/
@@ -48,7 +48,10 @@ drives the device over the QEMU serial REPL via the firmware's bundled `mpremote
    loaded into the emulated XIP region; `OtaBoot.run` reads it via `vfs.rom_ioctl`
    and mounts FRONT.
 3. **Corrupt FRONT → BACK** — a broken FRONT body falls back to the golden BACK slot.
-4. **`openmv_ota` runtime lib** — a romfs carrying the real `app/lib/openmv_ota/`
+4. **Arm `tried` fails → BACK** — a pending FRONT with the *real* verified `write_marker`:
+   the read-only qemu port rejects the write, so boot.py can't record the trial and falls
+   back to the golden image (`reason trial-arm`) rather than running an untracked FRONT.
+5. **`openmv_ota` runtime lib** — a romfs carrying the real `app/lib/openmv_ota/`
    runtime helpers + a matching `_ota_config`, with the FRONT status sector crafted as
    an un-confirmed trial: `status()` reads the trial, `confirm()` decides to keep it,
    and `sync()` finds + plans its bundled resource. This covers the lib's device wiring

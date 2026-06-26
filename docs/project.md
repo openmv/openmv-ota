@@ -296,6 +296,12 @@ exposes three calls:
   bundled resources gets a `sync()` that does nothing. Call it **early**, before the
   helper core is used.
 
+Both `confirm()` and `sync()` **verify their flash writes** (read back and compare) and
+**raise `OSError`** if a write is rejected or doesn't take — so a failed update surfaces
+rather than passing silently; wrap them in `try`/`except` if you want to react. (boot.py
+itself applies the same care to arming a trial: if it can't record the trial it falls
+back to the golden image rather than running an untracked one.)
+
 ```python
 import openmv_ota
 openmv_ota.sync()                      # top of main.py: helper partition == this image

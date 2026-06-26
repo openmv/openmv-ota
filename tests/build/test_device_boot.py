@@ -317,6 +317,23 @@ def test_run_falls_back_to_back_on_front_failure():
     assert dev.mounted == [bb] and t.key_id == 0x1
 
 
+def test_run_falls_back_to_back_when_arming_tried_fails():
+    # If the 'tried' marker can't be written/verified, the trial can't be recorded, so
+    # boot.py must not run the untracked FRONT -- it falls back to the golden BACK.
+    priv, pub = _key()
+    fb, bb = b"trialimg" * 4, b"backimg" * 4
+    dev = _Dev(_partition(_front(priv, 0x100, fb, _status(True, False, False)),
+                          _back(priv, 0x1, bb)))
+
+    def _boom(off, marker):
+        raise OSError("flash write failed")
+    dev.write_marker = _boom
+
+    slot, t, reason = dev.boot({0x100: pub, 0x1: pub})
+    assert slot == "BACK" and reason == "trial-arm"
+    assert dev.mounted == [bb] and t.key_id == 0x1
+
+
 def test_run_front_rollback_floored_by_back():
     priv, pub = _key()
     fb, bb = b"oldfront" * 4, b"newback" * 4

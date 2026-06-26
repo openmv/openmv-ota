@@ -73,3 +73,14 @@ def test_streams_equal_mismatch():
 def test_streams_equal_offset_tracking():
     # a later chunk differing is still caught (offset advances per chunk)
     assert rt._streams_equal([b"ab", b"cd", b"ef"], _target(b"abcdXf")) is False
+
+
+def test_check_readback_ok():
+    rt._check_readback(b"\xff\xff", b"\xff\xff")          # match -> no raise
+    rt._check_readback(bytearray(b"abc"), b"abc")         # bytearray vs bytes, by value
+
+
+def test_check_readback_mismatch_raises():
+    import pytest
+    with pytest.raises(OSError):
+        rt._check_readback(b"\xff\x00", b"\xff\xff")      # erase/write didn't take

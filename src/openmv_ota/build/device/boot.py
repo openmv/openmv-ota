@@ -210,7 +210,13 @@ class OtaBoot:
         if write_tried:
             # Arm 'tried' *before* mounting: if the trial image hangs, the next boot
             # sees pending+tried+!confirmed and rejects FRONT, falling back to BACK.
-            self.write_marker(offset + slot_size - 2 * blk + _TRIED_OFF, TRIED)
+            try:
+                self.write_marker(offset + slot_size - 2 * blk + _TRIED_OFF, TRIED)
+            except OSError:
+                # The arm write failed/can't be verified. Running FRONT now would be an
+                # untracked trial -- if it hung, the next boot couldn't tell to recover.
+                # So don't trust it; fall back to the golden image instead.
+                raise OtaReject("trial-arm")
         self.mount(memoryview(body)[:t.body_size])
         return t
 
@@ -275,10 +281,13 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         vfs.mount(vfs.VfsRom(body), "/rom")
 
     def write_marker(off, marker):
-        # Best-effort by design (unlike the app-level openmv_ota.confirm()/sync(),
-        # which raise on a failed write): if arming 'tried' fails we must NOT abort the
-        # boot -- the worst case is the next boot re-trials FRONT, never a brick.
-        vfs.rom_ioctl(4, 0, off, marker)
+        # Write, then read back and verify. A rejected (negative rc) or silently failed
+        # write raises OSError, which _try_slot turns into a fall-back to BACK -- we
+        # never run a trial we couldn't record.
+        if vfs.rom_ioctl(4, 0, off, marker) < 0:
+            raise OSError("rom_ioctl write failed")
+        if read(off, len(marker)) != marker:
+            raise OSError("marker write verify failed")
 
     try:
         vfs.umount("/rom")           # drop mp_init's whole-partition auto-mount
