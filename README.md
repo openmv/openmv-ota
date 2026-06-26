@@ -120,15 +120,19 @@ firmware` builds the device firmware per board (`<board>-firmware.bin`) by runni
 firmware repo's own `make`; for an OTA project it also freezes an OTA `boot.py` into the image (via a
 generated wrapper manifest, no edits to the firmware tree). On a multi-core board (the
 AE3) the slaved helper core's partition is built too, as a plain
-`<board>-coprocessor-romfs.img`. `build inspect` decodes the trailer(s) of a bundle, a
-factory image (FRONT + BACK), or a loose trailer; `build verify` checks the signature +
-body hash against the trusted keys for each (a CI / pre-publish gate). Both report a
-plain, unsigned romfs as such instead of erroring.
+`<board>-coprocessor-romfs.img`. `build ota-image` renders a built
+bundle into the gzipped FRONT-slot image a server hosts for over-the-air download
+(`<board>-ota.img.gz`), which the device's `openmv_ota.install(url)` streams in. `build
+inspect` decodes the trailer(s) of a bundle, a factory image (FRONT + BACK), or a loose
+trailer; `build verify` checks the signature + body hash against the trusted keys for
+each (a CI / pre-publish gate). Both report a plain, unsigned romfs as such instead of
+erroring.
 
 ```bash
 openmv-ota build romfs         ./my-product
 openmv-ota build factory-romfs ./my-product
 openmv-ota build firmware      ./my-product
+openmv-ota build ota-image     ./my-product
 openmv-ota build inspect       ./my-product/build/OPENMV_N6-romfs.zip
 openmv-ota build verify        ./my-product/build/OPENMV_N6-romfs.zip
 ```

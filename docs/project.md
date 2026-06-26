@@ -243,7 +243,10 @@ and the starter `app/`), `new --ota` creates the keys and extends the config:
 ```
 my-product/
 ├── openmv-ota.toml          # gains an [ota] section + per-board [targets.*] tables
-├── app/lib/openmv_ota/      # the device OTA runtime library (status/confirm/sync)
+├── app/lib/openmv_ota/      # the device OTA runtime library (status/confirm/sync/install)
+│   └── data/
+│       ├── installer.py     # the installer, shipped as source (exec'd into RAM)
+│       └── ca.pem           # TLS root bundle for downloads (fetched fresh at `new`)
 └── keys/
     ├── trusted_keys.json    # committed: the public key set baked into firmware
     └── private/             # GITIGNORED: the private signing keys (PKCS#8 PEM)
@@ -290,9 +293,21 @@ openmv_ota.sync()        # bring bundled resources up to date with this image
 openmv_ota.confirm()     # keep the update (no-op if it isn't a trial)
 ```
 
-It's plain Python you own and can extend. For the full picture — the trial/rollback
-lifecycle, the API semantics, the bundled-resource (`sync()`) mechanism, and the
-on-device safety properties — see **[the on-device runtime](runtime.md)**.
+It also exposes **`install(url)`** — download a new image over HTTPS and install it.
+The installer ships as source in `data/installer.py` (so the device can `exec` it into
+RAM while it overwrites the slot it runs from), and `data/ca.pem` is the TLS trust
+store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step needs
+network, like the SDK download), and you can replace it with your provider's roots.
+
+To produce the artifact `install()` downloads, run **`openmv-ota build ota-image`**
+after `build romfs`: it renders each board's signed bundle into a gzipped full
+FRONT-slot image (`<board>-ota.img.gz`) to host on a server. The signed bundle stays
+the source of truth; the image is a regenerable rendering of it.
+
+The runtime lib is plain Python you own and can extend. For the full picture — the
+trial/rollback lifecycle, the API semantics, `install()`/TLS/cert handling, the
+bundled-resource (`sync()`) mechanism, and the on-device safety properties — see
+**[the on-device runtime](runtime.md)**.
 
 ### Keys
 

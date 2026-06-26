@@ -86,6 +86,9 @@ extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes
   differs from the bundled copy. Idempotent, returns the names applied; a no-op when
   nothing is bundled. Call it **early**, before a resource's consumer is used (e.g.
   before the helper core runs).
+- **`install(url, ca=None)`** — download a gzipped FRONT-slot image over HTTPS and
+  install it (see [Installing an update](#installing-an-update-install) below). Does
+  **not** return on success — it reboots into the new image's trial.
 
 ```python
 import openmv_ota
@@ -104,6 +107,61 @@ Both `confirm()` and `sync()` **read their flash writes back and compare** (not 
 trust the return code) and **raise `OSError`** if a write is rejected or doesn't take,
 so a failed update surfaces instead of passing silently — wrap them in `try`/`except`
 if you want to react.
+
+## Installing an update (`install()`)
+
+`install(url, ca=None)` is the on-device piece that fetches a new image and writes it
+into the FRONT slot. Something else decides *what* to install and hands it a URL (how
+that URL is obtained is out of scope here); `install()` just downloads it and lays it
+down. It:
+
+1. Opens an **HTTPS** connection (plaintext HTTP is refused), verifying the server
+   against `ca` with `CERT_REQUIRED` + SNI, sends the GET, and reads the response
+   headers — all **before** erasing anything.
+2. Erases the FRONT slot, then **streams** the gzipped image straight in: decompress a
+   chunk → write it → **read it back and compare** → repeat, skipping already-erased
+   `0xFF` runs. A ~1 MB image is never held in RAM. Handles `Content-Length`, chunked,
+   and close-delimited responses, and follows redirects.
+3. Writes the `pending` marker **last**, only after the whole image verified, then
+   reboots into the one-shot trial (the same mechanism as above — your app then calls
+   `confirm()` once healthy).
+
+**It does not return on success — it reboots.** Two consequences:
+
+- **Call it last.** The new image overwrites the FRONT slot the running app executes
+  from, so once the erase starts the app can't continue. Bring the network up, do any
+  teardown, *then* call `install()`. (The installer itself runs from RAM — `install()`
+  reads `data/installer.py` and `exec`s it — so erasing the slot doesn't pull it out
+  from under itself.)
+- **Failure is safe.** A pre-flight failure (bad URL, DNS, TLS, HTTP status) raises
+  **before** the erase, with `/rom` intact, so you can catch it and retry without a
+  reboot. A failure *after* the erase reboots into the golden **BACK** image — boot.py
+  rejects the half-written FRONT (bad signature/hash), and `status()` then reports the
+  fallback so you know the update failed.
+
+```python
+import network, openmv_ota
+# ... bring up WiFi / Ethernet / WiFi-HaLow, then:
+try:
+    openmv_ota.install("https://downloads.example.com/fw/OPENMV_N6-v2.img.gz")
+    # unreachable on success — the device reboots into the trial
+except OSError as e:
+    print("update download failed, still running the current image:", e)
+```
+
+**TLS trust.** `ca` is the PEM trust store: `None` (the default) reads the bundled
+`data/ca.pem`, `bytes` are used directly, a `str` is a path. `project new` downloads a
+fresh Mozilla root bundle into `data/ca.pem` so common public CAs (incl. the ones
+Cloudflare R2 rotates among) verify out of the box; replace it with your own provider's
+roots for a tighter trust store. Broad CA trust is acceptable here because **the
+signature, not TLS, is the integrity boundary** — a TLS MITM still can't forge a
+validly-signed image (it lacks your signing key); the worst it can do is serve a stale
+signed image, which the anti-rollback floor blocks, or deny the download.
+
+**The image.** The artifact `install()` consumes is a gzipped full FRONT-slot image,
+produced by `openmv-ota build ota-image` from a built bundle (see
+[the build docs](project.md)). It's a pure rendering of the signed body+trailer for one
+slot geometry — the signed bundle stays the source of truth.
 
 ## Bundled resources — applying romfs data to the device
 
@@ -151,5 +209,6 @@ Two properties make this safe for sensitive resources (keys, fuses):
 | Never strand the device | `boot.py` falls back to the golden BACK image on any FRONT failure, including a trial it can't record |
 | Auto-rollback of a bad update | one-shot trial: an image that never `confirm()`s is rejected on the next boot |
 | Writes can't fail silently | every on-device write is read back and verified; failures raise `OSError` |
-| Bounded memory | slot bodies are `uctypes` views (no copy); SHA, resource compare, and resource write all stream a chunk at a time |
+| Bounded memory | slot bodies are `uctypes` views (no copy); SHA, resource compare, and the download/install all stream a chunk at a time |
 | Trustworthy resources | bundled resources live in the signed ROMFS body and are applied only from a verified image |
+| Safe install | `install()` downloads over verified HTTPS, read-back-verifies every write, arms `pending` only after the whole image checks out, and reboots into golden BACK on any post-erase failure; the image signature (not TLS) is the integrity boundary |

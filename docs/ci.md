@@ -52,7 +52,7 @@ each slot at its absolute XIP address via `uctypes.bytearray_at` rather than
 slicing one whole-partition memoryview (which would overflow on the 24 MiB N6/AE3
 partitions). [`ci/qemu_boot_test.py`](../ci/qemu_boot_test.py)
 drives the device over the QEMU serial REPL via the firmware's bundled `mpremote`
-(pasting a script — no filesystem mount) and checks five scenarios:
+(pasting a script — no filesystem mount) and checks six scenarios:
 
 1. **All boot paths** — `evaluate_slot`/`parse_trailer` exercised for every reject
    reason (`magic`/`crc`/`key`/`sig`/`board`/`compat`/`size`/`body-sha`/`rollback`/
@@ -76,6 +76,16 @@ drives the device over the QEMU serial REPL via the firmware's bundled `mpremote
    qemu port (read-only `rom_ioctl`), the same reason scenario 2's `write_marker` is
    stubbed; the writes use the same `rom_ioctl` API as `boot.py` and are covered by the
    host logic tests.
+6. **`openmv_ota` installer** — the installer source (`data/installer.py`) is `exec`'d
+   into RAM exactly as `install()` does on-device, then its logic is exercised on real
+   MicroPython: `_parse_url`/`_is_blank`/`_chunk_size`, the `_Body` de-framing, the
+   **`io.IOBase` + `deflate.DeflateIO` gzip-decompress chain** (a host-built gzip stream
+   is decompressed on-device and compared), and the `_install_stream` erase/write/
+   read-back/arm loop over a fake flash. This pins the one genuinely device-specific
+   risk — that a pure-Python stream subclassing `io.IOBase` feeds `DeflateIO` correctly
+   under MicroPython — which CPython host tests can't. The real `socket`/`ssl`/
+   `rom_ioctl` wiring stays QEMU-unreachable (no network, read-only `rom_ioctl`) and is
+   covered by the host logic tests.
 
 The signature step uses an injected `verify` because the qemu port doesn't build
 mbedtls yet (the ECDSA core is covered by `cshim`); enabling mbedtls on the qemu
