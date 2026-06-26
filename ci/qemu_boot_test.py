@@ -266,6 +266,119 @@ print("RTRESULT", "PASS" if ok else "FAIL")
 '''
 
 
+# --- openmv_ota installer (exec-into-RAM + DeflateIO + write loop) -----------
+
+_INSTALLER = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
+              / "build" / "device" / "openmv_ota" / "data" / "installer.py")
+
+
+def _installer_partition(part: int, front: int) -> bytes:
+    """A partition whose FRONT romfs carries the runtime lib + the installer *source*
+    (data/installer.py) + a fake ca.pem + a matching _ota_config -- enough to exec the
+    installer into RAM and exercise its logic on real MicroPython."""
+    src = Path(tempfile.mkdtemp(prefix="omv-qemu-inst-"))
+    data = src / "lib" / "openmv_ota" / "data"
+    data.mkdir(parents=True)
+    (src / "lib" / "openmv_ota" / "__init__.py").write_text(_RUNTIME_LIB.read_text())
+    (data / "installer.py").write_text(_INSTALLER.read_text())
+    (data / "ca.pem").write_text("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n")
+    (src / "_ota_config.py").write_text(
+        "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nOTA_BLOCK=%d\n"
+        "BOARD_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
+    body = build_image(str(src))
+    shutil.rmtree(src, ignore_errors=True)
+    img = bytearray(b"\xff" * part)
+    img[0:len(body)] = body
+    return bytes(img)
+
+
+# Exec the installer source (as install() does on-device) and exercise the parts host
+# tests can't reach on MicroPython: the io.IOBase + deflate.DeflateIO decompress chain,
+# the chunked/content-length body de-framing, and the erase/write/arm loop over a fake
+# flash. __GZ__/__PAYLOAD__ are substituted with bytes literals (avoids %-escaping).
+_INSTALLER_SCRIPT_TMPL = '''
+ns = {}
+exec(open("/rom/lib/openmv_ota/data/installer.py").read(), ns)
+P = ns
+
+
+def recv_of(*pieces):
+    box = list(pieces)
+
+    def recv(n):
+        return box.pop(0) if box else b""
+    return recv
+
+
+host, port, path = P["_parse_url"]("https://h.io:8443/o.img.gz?x=1")
+url_ok = host == "h.io" and port == 8443 and path == "/o.img.gz?x=1"
+blank_ok = P["_is_blank"](b"\\xff\\xff") and not P["_is_blank"](b"\\xff\\x00")
+chunk_ok = P["_chunk_size"](b"1a;ext\\r\\n") == 0x1a
+
+b = P["_make_body"](P["_Reader"](recv_of(b"HELLOworld")), {b"content-length": b"5"})
+buf = bytearray(8)
+n = b.readinto(buf)
+body_ok = bytes(buf[:n]) == b"HELLO"
+
+import deflate
+GZ = __GZ__
+b2 = P["_make_body"](P["_Reader"](recv_of(GZ)), {b"content-length": str(len(GZ)).encode()})
+dio = deflate.DeflateIO(b2, deflate.GZIP)
+out = b""
+while True:
+    c = dio.read(64)
+    if not c:
+        break
+    out += c
+deflate_ok = out == __PAYLOAD__
+
+BLOCK = 4096
+FRONT = 3 * BLOCK
+mem = bytearray(b"\\x00" * FRONT)
+
+
+def erase(total):
+    mem[:total] = b"\\xff" * total
+
+
+def write(off, d):
+    mem[off:off + len(d)] = d
+
+
+def readback(off, m):
+    return bytes(mem[off:off + m])
+
+
+def reader_of(d):
+    box = [d]
+
+    def read(m):
+        r = box[0][:m]
+        box[0] = box[0][m:]
+        return r
+    return read
+
+
+img = bytearray(b"\\xff" * FRONT)
+img[0:4] = b"DATA"
+P["_install_stream"](reader_of(bytes(img)), erase, write, readback, FRONT, BLOCK)
+so = FRONT - 2 * BLOCK
+install_ok = mem[0:4] == b"DATA" and bytes(mem[so:so + 16]) == P["PENDING"]
+
+ok = url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok
+print("INST", "url=" + str(url_ok), "deflate=" + str(deflate_ok), "install=" + str(install_ok))
+print("INSTRESULT", "PASS" if ok else "FAIL")
+'''
+
+
+def _installer_script() -> str:
+    import gzip
+    payload = b"openmv-ota installer payload " * 40
+    gz = gzip.compress(payload, mtime=0)
+    return (_INSTALLER_SCRIPT_TMPL
+            .replace("__GZ__", repr(gz)).replace("__PAYLOAD__", repr(payload)))
+
+
 # --- qemu orchestration -----------------------------------------------------
 
 def _run_scenario(fw: Path, mpremote: Path, board: str, romfs: bytes, script: str,
@@ -360,6 +473,10 @@ def main(argv=None) -> int:
                 _run_scenario(fw, mpremote, board, _runtime_partition(part, front),
                               _runtime_script()),
                 lambda o: "RTRESULT PASS" in o)
+        section("%s openmv_ota installer (exec + DeflateIO + write loop)" % board,
+                _run_scenario(fw, mpremote, board, _installer_partition(part, front),
+                              _installer_script()),
+                lambda o: "INSTRESULT PASS" in o)
 
     print("\n" + "=" * 50)
     if ran == 0:
