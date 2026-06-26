@@ -206,33 +206,41 @@ Two properties make this safe for sensitive resources (keys, fuses):
 
 On-device OTA failures are otherwise invisible — `boot.py` runs before the REPL is up,
 and `install()` reboots, so neither can `print()` anywhere you'll see. So there's an
-opt-in logger: `device/log.py`, scaffolded into your project and frozen by `build
-firmware` as **`_ota_log`** (frozen so `boot.py` can use it before `/rom` mounts). It's
-shared by `boot.py`, the installer, and the runtime lib, and re-exported as
-**`openmv_ota.log(tag, msg)`** so your app can log to the same place.
+opt-in logger built on the **standard `logging` module** (frozen on every OpenMV board
+via the board manifest's `require("logging")`). `boot.py`, the installer, and the runtime
+lib all log to the `openmv_ota` logger; your app uses the same standard tree:
 
-It's **off by default** — `log()` is a no-op, so production builds pay nothing. To debug
-on hardware, edit `device/log.py` and rebuild firmware:
+```python
+import logging
+logging.getLogger("openmv_ota").info("hi")     # or: openmv_ota.log.info("hi")
+```
+
+The configuration lives in `device/log.py`, scaffolded into your project and frozen by
+`build firmware` as **`_ota_log`** (frozen so `boot.py` can use it before `/rom` mounts).
+It's **off by default** (the logger's level is set above `CRITICAL`, so nothing emits and
+nothing leaks to the REPL). To debug on hardware, edit it and rebuild firmware:
 
 ```python
 ENABLED = True         # master switch
 UART    = 3            # your board's machine.UART id (the port differs per board)
-BAUD    = 115200
-# or leave UART = None to print() to the USB REPL, or repoint _sink() at a file/socket.
+BAUD    = 115200       # UART = None -> log to the USB REPL instead
+LEVEL   = logging.INFO # show this level and above
 ```
 
-Lines are kernel-style — `[ seconds.ms ] tag: message`:
+Output is kernel-style. It prefers **wall-clock UTC from the RTC** — which is set by the
+time the installer runs, because TLS cert validation requires it (`ntptime.settime()`) —
+and falls back to **monotonic uptime** before the clock is set (e.g. in `boot.py`):
 
 ```
-[    0.412] boot: FRONT rejected (body-sha) -> mounted BACK (payload 1)
-[    3.118] install: downloading https://…/N6-v2.img.gz
-[    9.002] install: installed + armed; rebooting into the trial
+[   12.345] INFO openmv_ota: boot: mounted FRONT (payload 1)              (RTC unset)
+[2026-06-25 12:34:56] WARNING openmv_ota: install: FAILED after erase     (RTC set)
 ```
 
 `boot.py` logs the mounted slot and any reject reason; the installer logs each phase
-(download / erase+write / done / failure); `confirm()`/`sync()` log their actions. The
-`machine.UART` object is created once and cached. Because the logger is *yours*, "send
-logs somewhere" is just editing `_sink()`.
+(download / erase+write / done / failure); `confirm()`/`sync()` log their actions. Any
+`machine.UART` is created once and kept by the handler. Because `device/log.py` is
+*yours*, sending logs elsewhere (a file, a socket) is just editing its handler — the
+levels, filtering, and API are the standard `logging` ones.
 
 ## Safety properties at a glance
 

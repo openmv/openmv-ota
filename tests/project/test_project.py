@@ -263,7 +263,7 @@ def test_create_ota_scaffolds_device_log(tmp_path, make_firmware, make_sdk):
     log = root / "device" / "log.py"
     assert log.exists()
     txt = log.read_text()
-    assert "ENABLED" in txt and "def log(" in txt
+    assert "ENABLED" in txt and 'getLogger("openmv_ota")' in txt
 
 
 def test_create_non_ota_no_device_log(tmp_path, make_firmware, make_sdk):

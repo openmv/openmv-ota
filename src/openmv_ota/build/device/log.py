@@ -1,48 +1,78 @@
-"""OTA debug logging -- frozen into the firmware as ``_ota_log``.
+"""OTA logging config -- frozen into the firmware as ``_ota_log``.
 
-Scaffolded into a project at ``device/log.py``; ``build firmware`` freezes it (as
-``_ota_log``) so it's reachable from ``boot.py`` *before* ``/rom`` is mounted, and the
-installer and the ``openmv_ota`` runtime lib import it too. Your app can use it as well:
-``openmv_ota.log("myapp", "...")`` (or ``import _ota_log``).
+Built on the standard ``logging`` module (frozen on every OpenMV board via the board
+manifest's ``require("logging")``), so the OTA code and your app share one logger tree:
 
-It's **yours to edit**. Logging is OFF by default (``log()`` is a no-op, ~zero cost).
-To debug on hardware: set ``ENABLED = True``, set ``UART`` to your board's
-``machine.UART`` id (the port differs per board), and rebuild firmware. Or repoint
-``_sink`` at anything -- ``print()`` to the USB REPL, a file, a socket.
+    import logging
+    logging.getLogger("openmv_ota").info("hi")     # or openmv_ota.log.info("hi")
 
-Lines are kernel-style: ``[   SS.mmm] tag: message`` (seconds.ms since boot).
+``boot.py``, the installer, and the ``openmv_ota`` runtime lib all log to the
+``openmv_ota`` logger; importing this module (which the build freezes as ``_ota_log``)
+configures it. Records carry a level; the output is timestamped:
+
+    [2026-06-25 12:34:56] WARNING openmv_ota: install: FAILED after erase   (RTC set)
+    [   12.345] INFO openmv_ota: boot: mounted FRONT                        (RTC unset)
+
+It prefers **wall-clock UTC from the RTC** -- which is set by the time the installer
+runs, since TLS cert validation requires it (``ntptime.settime()``; see the OpenMV TLS
+prerequisites). Before the clock is set (e.g. in ``boot.py``, pre-NTP) it falls back to
+**monotonic uptime** ``[ seconds.ms ]``. The stock ``logging`` formatter can do neither
+(its ``asctime`` needs ``time.strftime``, absent on these ports), hence the small custom
+formatter below.
+
+It's **off by default** (the logger's level is set above CRITICAL, so nothing emits and
+nothing leaks to the REPL). To debug on hardware, edit the config block below -- set
+``ENABLED = True`` and ``UART`` to your board's ``machine.UART`` id -- and rebuild
+firmware. Or change ``_configure`` to log to a file/socket/the REPL.
 """
 
-ENABLED = False        # master switch; False -> log() does nothing
-UART = None            # machine.UART id for the default _sink; None -> print() to REPL
+import logging
+import time
+
+# --- edit to enable -----------------------------------------------------------
+ENABLED = False        # master switch
+UART = None            # your board's machine.UART id; None -> the USB REPL (sys.stdout)
 BAUD = 115200
+LEVEL = logging.INFO   # emit this level and above when enabled
+# -----------------------------------------------------------------------------
 
-_uart = None
-
-
-def _format(ticks_ms, tag, msg):
-    """One kernel-style log line from a ms timestamp, a subsystem tag, and a message.
-    Pure (no I/O) so it's host-testable; the device bits live in _sink/log."""
-    return "[%5d.%03d] %s: %s\r\n" % (ticks_ms // 1000, ticks_ms % 1000, tag, msg)
+log = logging.getLogger("openmv_ota")
+log.setLevel(logging.CRITICAL + 1)     # OFF: nothing passes isEnabledFor by default
 
 
-def _sink(line):  # pragma: no cover  (device I/O -- edit to send logs elsewhere)
-    """Write a formatted line out. Default: the configured UART, or the REPL/USB if no
-    UART is set. Replace the body to log to a file, a socket, etc."""
-    global _uart
+def _stamp(localtime, ticks_ms):
+    """The timestamp field: wall-clock UTC when the RTC is set (year >= 2023), else
+    monotonic uptime seconds.ms. Pure (takes the time values) so it's host-testable."""
+    if localtime[0] >= 2023:
+        return "%04d-%02d-%02d %02d:%02d:%02d" % (
+            localtime[0], localtime[1], localtime[2], localtime[3], localtime[4], localtime[5])
+    return "%5d.%03d" % (ticks_ms // 1000, ticks_ms % 1000)
+
+
+def _format(stamp, levelname, name, msg):
+    """One log line from a preformatted timestamp + the record fields. Pure."""
+    return "[%s] %s %s: %s" % (stamp, levelname, name, msg)
+
+
+class _OtaFormatter(logging.Formatter):  # pragma: no cover  (device record API + clock)
+    def format(self, record):
+        return _format(_stamp(time.localtime(), time.ticks_ms()),
+                       record.levelname, record.name, record.message)
+
+
+def _configure():  # pragma: no cover  (device: handler/UART; runs only when enabled)
     if UART is None:
-        print(line, end="")
-        return
-    if _uart is None:
+        import sys
+        stream = sys.stdout
+    else:
         import machine
-        _uart = machine.UART(UART, BAUD)
-    _uart.write(line)
+        stream = machine.UART(UART, BAUD)   # created once, kept by the handler
+    handler = logging.StreamHandler(stream)
+    handler.terminator = "\r\n"
+    handler.setFormatter(_OtaFormatter())
+    log.addHandler(handler)
+    log.setLevel(LEVEL)
 
 
-def log(tag, msg):  # pragma: no cover  (calls time + _sink)
-    """Emit one structured log line when logging is enabled, else a no-op. Safe to call
-    from anywhere -- boot, the installer, the runtime lib, or your app."""
-    if not ENABLED:
-        return
-    import time
-    _sink(_format(time.ticks_ms(), tag, msg))
+if ENABLED:  # pragma: no cover  (enabling is a manual edit + firmware rebuild)
+    _configure()

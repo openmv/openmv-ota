@@ -28,14 +28,30 @@ wire the real ``vfs``/``uctypes``/``_ota_config``.
 
 import hashlib
 
-# Re-export the frozen logger so the app can ``openmv_ota.log(tag, msg)`` and the lib's
-# own device paths can log. Absent on the host (and on a firmware built without the
-# frozen _ota_log), where it degrades to a no-op.
+# Re-export the frozen OTA logger so the app can ``openmv_ota.log.info("...")`` (it's the
+# standard ``logging.getLogger("openmv_ota")``) and the lib's own device paths can log.
+# Absent on the host (and on a firmware built without the frozen _ota_log) -> a null
+# logger, so callers never need to guard.
 try:
     from _ota_log import log
 except ImportError:
-    def log(tag, msg):
-        pass
+    class _NullLog:
+        def debug(self, msg, *a):
+            pass
+
+        def info(self, msg, *a):
+            pass
+
+        def warning(self, msg, *a):
+            pass
+
+        def error(self, msg, *a):
+            pass
+
+        def critical(self, msg, *a):
+            pass
+
+    log = _NullLog()
 
 # --- Status markers (mirror of openmv_ota.ota.status / boot.py) --------------
 
@@ -225,7 +241,7 @@ def confirm():  # pragma: no cover
     if not _should_confirm(slot, _read_at(0, off, 3 * MARKER_SIZE)):
         return False
     _write_verified(0, off + _CONFIRMED_OFF, CONFIRMED)
-    log("ota", "confirmed running FRONT image")
+    log.info("confirm: kept running FRONT image")
     return True
 
 
@@ -299,7 +315,7 @@ def sync():  # pragma: no cover
         apply(entry, path)
         applied.append(entry.get("name", entry["file"]))
     if applied:
-        log("ota", "synced resource(s): " + ", ".join(applied))
+        log.info("sync: applied resource(s): " + ", ".join(applied))
     return applied
 
 

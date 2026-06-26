@@ -274,10 +274,12 @@ _LOG = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
         / "build" / "device" / "log.py")
 
 
-def _installer_partition(part: int, front: int) -> bytes:
+def _installer_partition(fw: Path, part: int, front: int) -> bytes:
     """A partition whose FRONT romfs carries the runtime lib + the installer *source*
     (data/installer.py) + a fake ca.pem + a matching _ota_config -- enough to exec the
-    installer into RAM and exercise its logic on real MicroPython."""
+    installer into RAM and exercise its logic on real MicroPython. Also ships _ota_log +
+    the real micropython-lib logging.py (the emulator boards don't freeze logging, but
+    real OpenMV boards do), so the logging-based logger can be exercised too."""
     src = Path(tempfile.mkdtemp(prefix="omv-qemu-inst-"))
     data = src / "lib" / "openmv_ota" / "data"
     data.mkdir(parents=True)
@@ -285,6 +287,9 @@ def _installer_partition(part: int, front: int) -> bytes:
     (data / "installer.py").write_text(_INSTALLER.read_text())
     (data / "ca.pem").write_text("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n")
     (src / "_ota_log.py").write_text(_LOG.read_text())   # importable from /rom for this test
+    logging_lib = (fw / "lib" / "micropython" / "lib" / "micropython-lib"
+                   / "python-stdlib" / "logging" / "logging.py")
+    (src / "logging.py").write_text(logging_lib.read_text())
     (src / "_ota_config.py").write_text(
         "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nOTA_BLOCK=%d\n"
         "BOARD_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
@@ -300,6 +305,25 @@ def _installer_partition(part: int, front: int) -> bytes:
 # the chunked/content-length body de-framing, and the erase/write/arm loop over a fake
 # flash. __GZ__/__PAYLOAD__ are substituted with bytes literals (avoids %-escaping).
 _INSTALLER_SCRIPT_TMPL = '''
+import sys
+
+
+class _FakeTime:                                # the qemu port has no RTC (no time.time);
+    @staticmethod                               # fake it so the logging emit path can run
+    def time():
+        return 1782000000
+
+    @staticmethod
+    def localtime(t=None):
+        return (2026, 6, 25, 12, 34, 56, 2, 176)
+
+    @staticmethod
+    def ticks_ms():
+        return 12345
+
+
+sys.modules["time"] = _FakeTime                 # before _ota_log/logging import time
+
 ns = {}
 exec(open("/rom/lib/openmv_ota/data/installer.py").read(), ns)
 P = ns
@@ -368,13 +392,28 @@ P["_install_stream"](reader_of(bytes(img)), erase, write, readback, FRONT, BLOCK
 so = FRONT - 2 * BLOCK
 install_ok = mem[0:4] == b"DATA" and bytes(mem[so:so + 16]) == P["PENDING"]
 
-import _ota_log
-fmt_ok = _ota_log._format(12345, "boot", "x") == "[   12.345] boot: x\\r\\n"
-_ota_log.ENABLED = True
-_ota_log.log("qemu", "live-log")              # exercises log()+_sink()+time on-device
+import _ota_log                                 # imports logging + configures the logger
+import logging
+import io
+fmt_ok = (_ota_log._format("12.345", "INFO", "openmv_ota", "x")
+          == "[12.345] INFO openmv_ota: x"
+          and _ota_log._stamp((2026, 6, 25, 12, 34, 56, 0, 0), 0) == "2026-06-25 12:34:56"
+          and _ota_log._stamp((2000, 1, 1, 0, 0, 0, 0, 0), 12345) == "   12.345")
+# Full emit path through the real micropython-lib logging.py + our _OtaFormatter (with
+# the RTC set via _FakeTime -> wall-clock stamp), captured to a buffer.
+buf = io.StringIO()
+_h = logging.StreamHandler(buf)
+_h.terminator = "\\r\\n"
+_h.setFormatter(_ota_log._OtaFormatter())
+_ota_log.log.addHandler(_h)
+_ota_log.log.setLevel(logging.INFO)
+_ota_log.log.warning("qemu: live-log")
+emit_ok = buf.getvalue() == "[2026-06-25 12:34:56] WARNING openmv_ota: qemu: live-log\\r\\n"
 
-ok = url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok and fmt_ok
-print("INST", "url=" + str(url_ok), "deflate=" + str(deflate_ok), "install=" + str(install_ok), "log=" + str(fmt_ok))
+ok = (url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok
+      and fmt_ok and emit_ok)
+print("INST", "url=" + str(url_ok), "deflate=" + str(deflate_ok),
+      "install=" + str(install_ok), "log=" + str(fmt_ok), "emit=" + str(emit_ok))
 print("INSTRESULT", "PASS" if ok else "FAIL")
 '''
 
@@ -482,7 +521,7 @@ def main(argv=None) -> int:
                               _runtime_script()),
                 lambda o: "RTRESULT PASS" in o)
         section("%s openmv_ota installer (exec + DeflateIO + write loop)" % board,
-                _run_scenario(fw, mpremote, board, _installer_partition(part, front),
+                _run_scenario(fw, mpremote, board, _installer_partition(fw, part, front),
                               _installer_script()),
                 lambda o: "INSTRESULT PASS" in o)
 

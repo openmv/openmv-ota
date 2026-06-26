@@ -1,8 +1,8 @@
-"""Host tests for the device OTA logger (device/log.py, frozen as _ota_log).
+"""Host tests for the device OTA logging config (device/log.py, frozen as _ota_log).
 
-Loaded as a file module (under the openmv_ota name) so coverage measures it; the UART
-I/O (``_sink``/``log``) is device-only (``pragma: no cover``), the line formatting is
-pure and checked here.
+Loaded as a file module (under the openmv_ota name) so coverage measures it. The pure
+timestamp/line formatting is checked here; the logging-record formatter, the UART/handler
+setup, and the enable block are device-only (``pragma: no cover``).
 """
 
 import importlib.util
@@ -14,15 +14,25 @@ _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
 
-def test_format_kernel_style():
-    assert _mod._format(0, "boot", "hi") == "[    0.000] boot: hi\r\n"
-    assert _mod._format(12345, "ota", "writing FRONT") == "[   12.345] ota: writing FRONT\r\n"
-    assert _mod._format(1, "x", "y") == "[    0.001] x: y\r\n"
-    assert _mod._format(3600000, "t", "z") == "[ 3600.000] t: z\r\n"
+def test_stamp_wallclock_when_rtc_set():
+    # The RTC is set (year >= 2023) by the time the installer runs (TLS needs it).
+    assert _mod._stamp((2026, 6, 25, 12, 34, 56, 0, 0), 999) == "2026-06-25 12:34:56"
+    assert _mod._stamp((2023, 1, 2, 3, 4, 5, 0, 0), 0) == "2023-01-02 03:04:05"
 
 
-def test_log_disabled_is_noop():
-    # Off by default -> log() returns before importing time / touching a UART, so it's
-    # safe even on the host (where time.ticks_ms doesn't exist).
-    assert _mod.ENABLED is False
-    assert _mod.log("tag", "msg") is None
+def test_stamp_uptime_when_rtc_unset():
+    # Before NTP (e.g. in boot.py) the RTC reads the MicroPython epoch -> uptime instead.
+    assert _mod._stamp((2000, 1, 1, 0, 0, 0, 0, 0), 12345) == "   12.345"
+    assert _mod._stamp((2022, 12, 31, 0, 0, 0, 0, 0), 1) == "    0.001"
+
+
+def test_format():
+    assert _mod._format("12.345", "INFO", "openmv_ota", "hi") == "[12.345] INFO openmv_ota: hi"
+    assert (_mod._format("2026-06-25 12:34:56", "WARNING", "openmv_ota", "x")
+            == "[2026-06-25 12:34:56] WARNING openmv_ota: x")
+
+
+def test_logger_is_off_by_default():
+    # No handler + level above CRITICAL == silent until the user enables it.
+    import logging
+    assert _mod.log.level > logging.CRITICAL

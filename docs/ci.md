@@ -84,8 +84,11 @@ drives the device over the QEMU serial REPL via the firmware's bundled `mpremote
    read-back/arm loop over a fake flash. This pins the one genuinely device-specific
    risk — that a pure-Python stream subclassing `io.IOBase` feeds `DeflateIO` correctly
    under MicroPython — which CPython host tests can't. It also checks the **`_ota_log`
-   logger** on-device: `_format` produces the kernel-style line, and a live `log()` call
-   (UART unset → REPL) prints `[    1.340] qemu: live-log`. The real `socket`/`ssl`/
+   logger** on-device: it ships the real micropython-lib `logging.py` (the emulator
+   boards don't freeze it; real OpenMV boards do), injects a fake `time` (the qemu port
+   has no RTC), and drives a `logging.warning(...)` through the real logger + the custom
+   `_OtaFormatter`, asserting the exact line `[2026-06-25 12:34:56] WARNING openmv_ota:
+   qemu: live-log`. The real `socket`/`ssl`/
    `rom_ioctl` wiring stays QEMU-unreachable (no network, read-only `rom_ioctl`) and is
    covered by the host logic tests.
 

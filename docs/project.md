@@ -307,9 +307,10 @@ FRONT-slot image (`<board>-ota.img.gz`) to host on a server. The signed bundle s
 the source of truth; the image is a regenerable rendering of it.
 
 For debugging on hardware, `new --ota` also scaffolds **`device/log.py`** — an opt-in
-UART logger (frozen as `_ota_log`, off by default) shared by `boot.py`, the installer,
-and this lib, and exposed as `openmv_ota.log(tag, msg)` for your app. Edit it to enable
-+ pick your board's UART, then rebuild firmware.
+logger built on the standard `logging` module (frozen as `_ota_log`, off by default)
+shared by `boot.py`, the installer, and this lib, and exposed as `openmv_ota.log` (the
+`logging.getLogger("openmv_ota")` logger) for your app. Edit it to enable + pick your
+board's UART, then rebuild firmware.
 
 The runtime lib is plain Python you own and can extend. For the full picture — the
 trial/rollback lifecycle, the API semantics, `install()`/TLS/cert handling, the

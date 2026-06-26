@@ -344,7 +344,7 @@ def run(url, ca_pem, cfg):  # pragma: no cover
     import uctypes
     import vfs
 
-    log = _ota_log.log if _ota_log is not None else (lambda tag, msg: None)
+    log = _ota_log.log if _ota_log is not None else None
     front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # FRONT partition XIP base
 
@@ -363,19 +363,23 @@ def run(url, ca_pem, cfg):  # pragma: no cover
 
     # Pre-erase: connect + verify TLS + read response headers. Errors here raise to
     # the app (the FRONT slot is untouched).
-    log("install", "downloading %s" % url)
+    if log:
+        log.info("install: downloading %s" % url)
     sock, body = _open(url, ca_pem, socket, ssl)
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
     # failure reboots into the golden image instead of propagating.
-    log("install", "connected; erasing + writing FRONT (%d bytes)" % front_size)
+    if log:
+        log.info("install: connected; erasing + writing FRONT (%d bytes)" % front_size)
     try:
         dio = deflate.DeflateIO(body, deflate.GZIP)
         _install_stream(dio.read, erase, write, readback, front_size, block)
     except Exception as e:
         sock.close()
-        log("install", "FAILED after erase (%s); rebooting to golden BACK" % e)
+        if log:
+            log.error("install: FAILED after erase (%s); rebooting to golden BACK" % e)
         machine.reset()
     sock.close()
-    log("install", "installed + armed; rebooting into the trial")
+    if log:
+        log.info("install: installed + armed; rebooting into the trial")
     machine.reset()
