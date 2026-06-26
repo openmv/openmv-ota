@@ -609,3 +609,101 @@ def build_ota_image(
         results.append(OtaImageResult(t.name, t.partition_index, out_path,
                                       len(image), len(gz)))
     return results
+
+
+# --- signed update manifest (the descriptor the device fetches first) --------
+
+@dataclass
+class OtaManifestResult:
+    target: str
+    partition_index: int
+    output: Path        # <board>-manifest.bin
+    manifest_size: int
+    key_id: int
+
+
+def build_manifest(
+    project: str | Path,
+    *,
+    url_base: str,
+    output: str | Path | None = None,
+    app: str | Path | None = None,
+    boards: list[str] | None = None,
+    firmware: str | Path | None = None,
+) -> list[OtaManifestResult]:
+    """Build + sign an update manifest per OTA main target from the already-built
+    ``<board>-ota.img.gz`` artifacts -- the descriptor a device's ``install()`` fetches
+    *before* it downloads/erases. Each manifest names the reconstructed image's size +
+    sha256 and the representations that produce it (today the full image; the delta is
+    added by the delta tooling), and binds board_id / payload_version / min_platform from
+    the image's own signed trailer. Signed with the project's OTA key, exactly like the
+    image. ``url_base`` is the absolute ``https://`` directory the artifacts are hosted
+    under -- a representation's URL is ``url_base/<artifact filename>``. Run ``build
+    ota-image`` first."""
+    import gzip
+
+    from openmv_ota.ota import bundle
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.manifest import SCHEMA, Manifest, pack_manifest, signed_region
+    from openmv_ota.ota.sign import sign_region
+    from openmv_ota.ota.trailer import parse_trailer
+    from openmv_ota.ota.version import decode_app_version
+
+    if not url_base.startswith("https://"):
+        raise BuildError("manifest --url-base must be an absolute https:// URL", exit_code=1)
+
+    project = Path(project)
+    try:
+        p = load_project(project, firmware=firmware)
+    except ProjectError as e:
+        raise BuildError(str(e), exit_code=e.exit_code) from None
+    if not p.config.ota:
+        raise BuildError("manifest needs an OTA project (create with "
+                         "`openmv-ota project new --ota`)", exit_code=1)
+
+    app_dir = Path(app) if app else project / "app"
+    signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota")
+
+    out_dir = Path(output) if output else project / "build"
+    targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
+    if not targets:
+        raise BuildError("no matching main targets in this project")
+
+    base = url_base.rstrip("/")
+    results = []
+    for t in targets:
+        name = _target_name(t)
+        img_path = out_dir / (name + "-ota.img.gz")
+        if not img_path.exists():
+            raise BuildError("%s not found - run `openmv-ota build ota-image` first"
+                             % img_path, exit_code=1)
+        image = gzip.decompress(img_path.read_bytes())
+
+        try:
+            _body, trailer_bytes = bundle.read_bundle(out_dir / (name + "-romfs.zip"))
+            tr = parse_trailer(trailer_bytes)
+        except OtaError as e:
+            raise BuildError(str(e), exit_code=1) from None
+
+        body = {
+            "schema": SCHEMA,
+            "board_id": tr.board_id,
+            "product": tr.meta.get("product", p.config.name),
+            "version": decode_app_version(tr.payload_version),
+            "payload_version": tr.payload_version,
+            "min_platform_version": tr.min_platform_version,
+            "size": len(image),
+            "sha256": hashlib.sha256(image).hexdigest(),
+            "representations": [
+                {"format": "full", "url": "%s/%s" % (base, img_path.name),
+                 "size": img_path.stat().st_size},
+            ],
+        }
+        m = Manifest(body=body, key_id=signer.key_id, sig_alg=signer.sig_alg)
+        m.signature = sign_region(signer.private_key, signed_region(m), signer.alg)
+        raw = pack_manifest(m)
+        out_path = out_dir / (name + "-manifest.bin")
+        out_path.write_bytes(raw)
+        results.append(OtaManifestResult(t.name, t.partition_index, out_path,
+                                         len(raw), signer.key_id))
+    return results

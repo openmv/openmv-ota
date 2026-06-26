@@ -74,6 +74,17 @@ def register(build_parser: argparse.ArgumentParser):
     p_img.add_argument("-f", "--firmware", help="firmware checkout override")
     p_img.set_defaults(func=cmd_ota_image, _command="build ota-image")
 
+    p_man = sub.add_parser("manifest",
+                           help="build + sign the update manifest(s) install() fetches first")
+    p_man.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
+    p_man.add_argument("-u", "--url-base", required=True, metavar="URL",
+                       help="absolute https:// dir the artifacts are hosted under")
+    p_man.add_argument("-o", "--output", help="output dir (default: <project>/build)")
+    p_man.add_argument("-b", "--board", action="append", metavar="NAME",
+                       help="only build this board (repeatable; default: all targets)")
+    p_man.add_argument("-f", "--firmware", help="firmware checkout override")
+    p_man.set_defaults(func=cmd_manifest, _command="build manifest")
+
     p_ins = sub.add_parser("inspect", help="decode + print an OTA image's trailer(s)")
     p_ins.add_argument("image", help="a <board>-romfs.zip bundle, a trailer.bin, or a "
                                      "factory/partition .img (decodes every slot)")
@@ -179,6 +190,22 @@ def cmd_ota_image(args: argparse.Namespace) -> int:
         ratio = (r.gz_size / r.image_size * 100) if r.image_size else 0
         print("Built %s  (OTA download image, %d-byte slot -> %d gzipped, %.1f%%)"
               % (r.output, r.image_size, r.gz_size, ratio))
+    return 0
+
+
+def cmd_manifest(args: argparse.Namespace) -> int:
+    try:
+        results = build_mod.build_manifest(
+            args.project, url_base=args.url_base, output=args.output,
+            boards=args.board, firmware=args.firmware,
+        )
+    except BuildError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+
+    for r in results:
+        print("Built %s  (signed manifest, %d bytes, key 0x%04x)"
+              % (r.output, r.manifest_size, r.key_id))
     return 0
 
 

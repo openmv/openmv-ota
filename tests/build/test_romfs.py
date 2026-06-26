@@ -675,3 +675,90 @@ def test_build_ota_image_bad_project_errors(make_project, tmp_path):
     root, _repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
     with pytest.raises(BuildError):                       # firmware override isn't a git repo
         build_mod.build_ota_image(root, firmware=tmp_path / "not-a-repo")
+
+
+# --- build_manifest (the signed update descriptor) ---------------------------
+
+_URL = "https://dl.example.io/fw"
+
+
+def _build_n6_ota_artifacts(make_project):
+    root, repo = _build_n6_ota_bundle(make_project)
+    build_mod.build_ota_image(root, firmware=repo)        # produces the .img.gz
+    return root, repo
+
+
+def test_build_manifest_roundtrip(make_project):
+    import gzip
+    import hashlib
+
+    from openmv_ota.ota import parse_trailer
+    from openmv_ota.ota.keys import read_trusted_keys
+    from openmv_ota.ota.manifest import parse_manifest, select_representation
+    from openmv_ota.ota.verify import verify_manifest
+    from openmv_ota.project.project import ProjectPaths
+    root, repo = _build_n6_ota_artifacts(make_project)
+
+    results = build_mod.build_manifest(root, url_base=_URL, firmware=repo)
+    assert len(results) == 1 and results[0].output.name == "OPENMV_N6-manifest.bin"
+
+    raw = results[0].output.read_bytes()
+    trusted = read_trusted_keys(ProjectPaths(root).trusted_keys)
+    ok, _reason = verify_manifest(raw, trusted)            # signed by the project OTA key
+    assert ok
+
+    img = root / "build" / "OPENMV_N6-ota.img.gz"
+    image = gzip.decompress(img.read_bytes())
+    body = parse_manifest(raw).body
+    assert body["sha256"] == hashlib.sha256(image).hexdigest()
+    assert body["size"] == len(image)
+
+    # board_id / payload_version are taken from the image's own signed trailer
+    from openmv_ota.ota import bundle as _bundle
+    _b, trailer = _bundle.read_bundle(root / "build" / "OPENMV_N6-romfs.zip")
+    expect = parse_trailer(trailer)
+    assert body["board_id"] == expect.board_id
+    assert body["payload_version"] == expect.payload_version
+
+    rep = select_representation(body, delta_capable=False, golden_payload_version=0)
+    assert rep["format"] == "full"
+    assert rep["url"] == _URL + "/OPENMV_N6-ota.img.gz"
+    assert rep["size"] == img.stat().st_size
+
+
+def test_build_manifest_requires_https_url(make_project):
+    root, repo = _build_n6_ota_artifacts(make_project)
+    with pytest.raises(BuildError, match="https://"):
+        build_mod.build_manifest(root, url_base="http://insecure/fw", firmware=repo)
+
+
+def test_build_manifest_non_ota_errors(make_project):
+    root, repo, _ = make_project(boards=("OPENMV_N6",))   # not an OTA project
+    with pytest.raises(BuildError, match="needs an OTA project"):
+        build_mod.build_manifest(root, url_base=_URL, firmware=repo)
+
+
+def test_build_manifest_missing_image_errors(make_project):
+    root, repo = _build_n6_ota_bundle(make_project)        # bundle built, but no ota-image
+    with pytest.raises(BuildError, match="run `openmv-ota build ota-image`"):
+        build_mod.build_manifest(root, url_base=_URL, firmware=repo)
+
+
+def test_build_manifest_no_targets_errors(make_project):
+    root, repo = _build_n6_ota_artifacts(make_project)
+    with pytest.raises(BuildError, match="no matching"):
+        build_mod.build_manifest(root, url_base=_URL, firmware=repo, boards=["NOPE"])
+
+
+def test_build_manifest_bad_bundle_errors(make_project):
+    # the image exists but the bundle it reads board_id/version from is corrupt
+    root, repo = _build_n6_ota_artifacts(make_project)
+    (root / "build" / "OPENMV_N6-romfs.zip").write_bytes(b"not a zip")
+    with pytest.raises(BuildError):
+        build_mod.build_manifest(root, url_base=_URL, firmware=repo)
+
+
+def test_build_manifest_bad_project_errors(make_project, tmp_path):
+    root, _repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    with pytest.raises(BuildError):
+        build_mod.build_manifest(root, url_base=_URL, firmware=tmp_path / "not-a-repo")
