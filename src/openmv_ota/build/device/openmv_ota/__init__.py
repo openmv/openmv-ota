@@ -174,22 +174,31 @@ def confirm():  # pragma: no cover
     return True
 
 
-def _partition_matches(part_index, path):  # pragma: no cover
-    """Stream-compare the file at ``path`` to the start of partition ``part_index``,
-    copying neither whole image into RAM (the partition via a uctypes view, the file
-    one chunk at a time)."""
+# A resource handler is a ``(matches, apply)`` pair, both taking ``(entry, path)`` --
+# ``entry`` is the resources.json record (so each handler reads its own args) and
+# ``path`` is the bundled data file. ``matches`` is the idempotence check ("already
+# applied?"); ``apply`` does the write. sync() is handler-agnostic, so a future
+# resource kind (keys, fuses, ...) is just another entry in _HANDLERS -- no partition
+# assumptions baked into the loop.
+
+def _partition_matches(entry, path):  # pragma: no cover
+    """matches() for the ``partition`` handler: stream-compare the file to the start of
+    partition ``entry["partition"]`` (the partition via a uctypes view, the file one
+    chunk at a time -- neither whole image in RAM)."""
     import uctypes
     import vfs
-    base = uctypes.addressof(vfs.rom_ioctl(2, part_index))
+    base = uctypes.addressof(vfs.rom_ioctl(2, entry["partition"]))
     return _streams_equal(_file_chunks(path),
                           lambda off, n: uctypes.bytearray_at(base + off, n))
 
 
-def _apply_partition(part_index, path):  # pragma: no cover
-    """Erase + program partition ``part_index`` with the file at ``path``, streamed in
-    _CHUNK blocks (never the whole image in RAM). The final block is 0xFF-padded to a
-    full chunk -- matching the erased flash, and ignored since the romfs is self-sized."""
+def _partition_apply(entry, path):  # pragma: no cover
+    """apply() for the ``partition`` handler: erase + program partition
+    ``entry["partition"]`` with the file, streamed in _CHUNK blocks (never the whole
+    image in RAM). The final block is 0xFF-padded to a full chunk -- matching the erased
+    flash, and ignored since the romfs is self-sized."""
     import os
+    part_index = entry["partition"]
     size = os.stat(path)[6]
     total = (size + _CHUNK - 1) // _CHUNK * _CHUNK
     _rom_write(3, part_index, total)                  # WRITE_PREPARE: erase the region
@@ -202,7 +211,8 @@ def _apply_partition(part_index, path):  # pragma: no cover
         off += _CHUNK
 
 
-_HANDLERS = {"partition": _apply_partition}   # resource "handler" -> applier(part, path)
+# resource kind -> (matches, apply); add new kinds here without touching sync().
+_HANDLERS = {"partition": (_partition_matches, _partition_apply)}
 
 
 def _data_path(name):  # pragma: no cover
@@ -214,10 +224,12 @@ def _data_path(name):  # pragma: no cover
 
 def sync():  # pragma: no cover
     """Apply bundled resources (``data/resources.json``) whose target differs from the
-    bundled copy -- e.g. write the coprocessor romfs into the helper core's partition.
-    Streamed (compare then write) so a multi-MB image is never fully in RAM; idempotent
-    (writes only on a difference); a no-op when nothing is bundled. Returns the names
-    applied; raises OSError if a write fails. Call early, before the helper core runs."""
+    bundled copy -- today the coprocessor romfs into the helper core's partition, but the
+    loop is handler-agnostic (a resource's ``handler`` selects a (matches, apply) pair,
+    so future kinds like keys/fuses just add a handler). Streamed (compare then write) so
+    a multi-MB image is never fully in RAM; idempotent (applies only on a difference); a
+    no-op when nothing is bundled. Returns the names applied; raises OSError if a write
+    fails. Call early, before the helper core runs."""
     import json
     try:
         manifest = json.load(open(_data_path("resources.json")))
@@ -226,8 +238,9 @@ def sync():  # pragma: no cover
     applied = []
     for entry in manifest:
         path = _data_path(entry["file"])
-        if _partition_matches(entry["partition"], path):
+        matches, apply = _HANDLERS[entry["handler"]]
+        if matches(entry, path):
             continue
-        _HANDLERS[entry["handler"]](entry["partition"], path)
+        apply(entry, path)
         applied.append(entry.get("name", entry["file"]))
     return applied
