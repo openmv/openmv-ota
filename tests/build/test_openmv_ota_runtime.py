@@ -56,6 +56,12 @@ def test_should_confirm(slot, pending, tried, confirmed, expect):
     assert rt._should_confirm(slot, _sector(pending, tried, confirmed)) is expect
 
 
+def test_log_reexport_is_a_noop_on_host():
+    # _ota_log is absent off-device, so openmv_ota.log degrades to a no-op (the app can
+    # still call it unconditionally).
+    assert rt.log("app", "hello") is None
+
+
 def test_status_of_pending_only_is_not_a_trial():
     # staged but not yet trial-booted (boot.py hasn't armed 'tried') -> nothing to confirm
     s = rt._status_of(_sector(True, False, False))

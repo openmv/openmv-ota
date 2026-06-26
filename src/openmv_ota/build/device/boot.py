@@ -25,6 +25,11 @@ import binascii
 import hashlib
 import struct
 
+try:                                   # the firmware freezes _ota_log beside boot.py
+    import _ota_log
+except ImportError:                    # host / tests / a build without logging
+    _ota_log = None
+
 # --- Trailer format (mirror of openmv_ota.ota.trailer) ----------------------
 
 MAGIC = b"OMVR"                         # ROMFS application image
@@ -296,9 +301,20 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     except OSError:
         pass
 
-    slot, trailer, front_reason = OtaBoot(
-        read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
-        cfg.OTA_BLOCK, cfg.BOARD_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
+    try:
+        slot, trailer, front_reason = OtaBoot(
+            read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
+            cfg.OTA_BLOCK, cfg.BOARD_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
+    except OtaReject as e:
+        if _ota_log is not None:
+            _ota_log.log("boot", "no bootable slot: %s" % e)
+        raise
+    if _ota_log is not None:
+        if front_reason is None:
+            _ota_log.log("boot", "mounted %s (payload %d)" % (slot, trailer.payload_version))
+        else:
+            _ota_log.log("boot", "FRONT rejected (%s) -> mounted %s (payload %d)"
+                         % (front_reason, slot, trailer.payload_version))
 
     global last_slot, last_payload_version, last_failure_reason
     last_slot, last_payload_version, last_failure_reason = (
