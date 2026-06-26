@@ -82,24 +82,19 @@ extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes
   once healthy), returns whether it just confirmed. The FRONT-slot guard matters: if you
   fell back to BACK because a trial failed, FRONT still looks like an un-confirmed trial,
   so confirming it from BACK would resurrect the bad image — `confirm()` refuses to.
-- **`sync(on_progress=None)`** — apply any **bundled resources** (see below) whose
-  on-device target differs from the bundled copy. A flash erase + chunked write of a whole
-  partition, so **not quick** — it feeds the watchdog (`openmv_wdt`) the same minimal way
-  `install()` does (`relax()` around the erase, `feed()` per chunk, including the
-  already-applied re-read). Idempotent, returns the names applied; a no-op when nothing is
-  bundled. Call it **early**, before a resource's consumer is used (e.g. before the helper
-  core runs).
+- **`sync()`** — apply any **bundled resources** (see below) whose on-device target
+  differs from the bundled copy. A flash erase + chunked write of a whole partition, so
+  **not quick** — it feeds the watchdog (`openmv_wdt`) the same minimal way `install()`
+  does (`relax()` around the erase, `feed()` per chunk, including the already-applied
+  re-read). Idempotent, returns the names applied; a no-op when nothing is bundled. Call
+  it **early**, before a resource's consumer is used (e.g. before the helper core runs).
 - **`install(url, ca=None)`** — download a gzipped FRONT-slot image over HTTPS and install
   it (see [Installing an update](#installing-an-update-install) below). Does **not** return
   on success — it reboots into the new image's trial.
 
 Both report their progress, **logged at every 10% step** (`install: 40% (…)`,
-`coprocessor: 70% (…)`), so an enabled logger shows movement through the long flash write
-without a line per 4 KiB chunk. `sync()` additionally takes an optional
-**`on_progress(done, total)`** callback (wire it to a screen/LED for a progress bar) —
-`install()` does **not**, because it erases the partition the app and this library run
-from: any callback would live in the slot being erased and crash when called. The
-installer logs its progress from RAM via the frozen logger instead.
+`sync coprocessor: 70% (…)`), so an enabled logger shows movement through the long flash
+write without a line per 4 KiB chunk.
 
 ```python
 import openmv_ota

@@ -162,20 +162,16 @@ def _check_readback(actual, expected):
 
 
 class _Progress:
-    """Throttled progress reporter for ``sync()``'s chunked write. Forwards each
-    ``(done, total)`` to the app's callback (if it passed one) and logs at every new 10%
+    """Throttled progress reporter for ``sync()``'s chunked write: logs at every new 10%
     step -- so a multi-second sync shows movement without a log line per 4 KiB chunk.
     ``label`` is the resource name. (``install()`` can't use this: it erases the partition
     this lib lives in, so it logs from its own RAM-resident reporter in installer.py.)"""
 
-    def __init__(self, label, cb=None):
+    def __init__(self, label):
         self._label = label
-        self._cb = cb
         self._step = -1
 
     def __call__(self, done, total):
-        if self._cb is not None:
-            self._cb(done, total)
         pct = done * 100 // total if total else 100
         step = pct // 10
         if step > self._step:
@@ -351,7 +347,7 @@ def _data_path(name):  # pragma: no cover
     return __file__.rsplit("/", 1)[0] + "/data/" + name
 
 
-def sync(on_progress=None):  # pragma: no cover
+def sync():  # pragma: no cover
     """Apply bundled resources (``data/resources.json``) whose target differs from the
     bundled copy -- today the coprocessor romfs into the helper core's partition, but the
     loop is handler-agnostic (a resource's ``handler`` selects a (matches, apply) pair,
@@ -360,9 +356,8 @@ def sync(on_progress=None):  # pragma: no cover
     no-op when nothing is bundled. A flash erase + chunked write of a whole partition, so
     NOT quick -- it feeds the watchdog (openmv_wdt) the same minimal way install() does
     (relax() around the erase, feed() per chunk, including the already-applied re-read).
-    ``on_progress(done, total)`` (if given) is called per written chunk as each resource
-    is applied, and the write is logged at every 10% step. Returns the names applied;
-    raises OSError if a write fails. Call early, before the helper core runs."""
+    Each resource's write is logged at every 10% step. Returns the names applied; raises
+    OSError if a write fails. Call early, before the helper core runs."""
     import json
     try:
         manifest = json.load(open(_data_path("resources.json")))
@@ -376,7 +371,7 @@ def sync(on_progress=None):  # pragma: no cover
         if matches(entry, path):
             continue
         log.info("sync: applying " + name)
-        apply(entry, path, _Progress("sync " + name, on_progress))
+        apply(entry, path, _Progress("sync " + name))
         applied.append(name)
     if applied:
         log.info("sync: applied resource(s): " + ", ".join(applied))

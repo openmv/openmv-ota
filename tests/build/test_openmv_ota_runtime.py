@@ -116,17 +116,6 @@ class _RecordLog:
         self.lines.append(msg)
 
 
-def test_progress_forwards_to_callback_every_chunk(monkeypatch):
-    # sync()'s reporter forwards every chunk to the app callback (safe: sync erases a
-    # different partition than the one this lib runs from)
-    monkeypatch.setattr(rt, "log", _RecordLog())
-    seen = []
-    p = rt._Progress("coprocessor", lambda d, t: seen.append((d, t)))
-    for done in (10, 20, 30):
-        p(done, 100)
-    assert seen == [(10, 100), (20, 100), (30, 100)]
-
-
 def test_progress_logs_only_on_each_ten_percent_step(monkeypatch):
     rec = _RecordLog()
     monkeypatch.setattr(rt, "log", rec)
