@@ -101,6 +101,13 @@ def test_streams_equal_offset_tracking():
     assert rt._streams_equal([b"ab", b"cd", b"ef"], _target(b"abcdXf")) is False
 
 
+def test_streams_equal_feeds_per_chunk():
+    # the watchdog is fed per compared chunk (the already-applied case reads it all)
+    calls = []
+    assert rt._streams_equal([b"ab", b"cd"], _target(b"abcd"), lambda: calls.append(1)) is True
+    assert len(calls) == 2
+
+
 def test_check_readback_ok():
     rt._check_readback(b"\xff\xff", b"\xff\xff")          # match -> no raise
     rt._check_readback(bytearray(b"abc"), b"abc")         # bytearray vs bytes, by value

@@ -11,9 +11,10 @@ are what an app uses around an OTA update:
                   rollback safety.
     sync()     -> apply any bundled resources (``data/resources.json``) whose target
                   partition differs from the bundled copy -- e.g. write the AE3
-                  coprocessor romfs into the helper core's partition. Idempotent;
-                  call early (before the helper core is used). No-op when there is
-                  nothing bundled.
+                  coprocessor romfs into the helper core's partition. A flash erase +
+                  chunked write of a whole partition, so NOT quick -- it feeds the
+                  watchdog (openmv_wdt) like install() does. Idempotent; call early
+                  (before the helper core is used). No-op when nothing is bundled.
     install()  -> download a gzipped FRONT-slot image over HTTPS and install it:
                   write the FRONT slot, arm the one-shot trial, reboot. Does NOT
                   return on success. Call with the network already up, after any app
@@ -52,6 +53,31 @@ except ImportError:
             pass
 
     log = _NullLog()
+
+# The watchdog helper (frozen as openmv_wdt) -- sync() does a flash erase + chunked write
+# of a whole partition, which can be slow enough to trip an enabled watchdog, so it feeds
+# it the same minimal way install() does. Absent on the host / a build without a watchdog.
+try:
+    import openmv_wdt as _wdt
+except ImportError:
+    _wdt = None
+
+
+class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is frozen)
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _wdt_relax():  # pragma: no cover  (device)
+    return _wdt.relax() if _wdt is not None else _NoWdt()
+
+
+def _wdt_feed():  # pragma: no cover  (device)
+    if _wdt is not None:
+        _wdt.feed()
 
 # --- Status markers (mirror of openmv_ota.ota.status / boot.py) --------------
 
@@ -112,15 +138,19 @@ def _should_confirm(slot, status_sector):
 _CHUNK = 4096
 
 
-def _streams_equal(file_chunks, read_target):
+def _streams_equal(file_chunks, read_target, feed=None):
     """True iff a file (yielded as ``file_chunks``) matches a target byte-for-byte.
     ``read_target(off, n)`` returns the ``n`` target bytes at offset ``off``. Streamed:
-    one chunk at a time, so neither whole image is materialised in RAM."""
+    one chunk at a time, so neither whole image is materialised in RAM. ``feed`` (if given)
+    is called per chunk -- the already-applied case re-reads the whole partition every
+    boot, long enough to need watchdog feeding."""
     off = 0
     for chunk in file_chunks:
         if read_target(off, len(chunk)) != chunk:
             return False
         off += len(chunk)
+        if feed is not None:
+            feed()
     return True
 
 
@@ -187,6 +217,7 @@ def _verify_erased(part_index, total):  # pragma: no cover
         n = _CHUNK if total - off >= _CHUNK else total - off
         _check_readback(_read_at(part_index, off, n), b"\xff" * n)
         off += n
+        _wdt_feed()
 
 
 def _boot_result():  # pragma: no cover
@@ -260,7 +291,7 @@ def _partition_matches(entry, path):  # pragma: no cover
     import vfs
     base = uctypes.addressof(vfs.rom_ioctl(2, entry["partition"]))
     return _streams_equal(_file_chunks(path),
-                          lambda off, n: uctypes.bytearray_at(base + off, n))
+                          lambda off, n: uctypes.bytearray_at(base + off, n), _wdt_feed)
 
 
 def _partition_apply(entry, path):  # pragma: no cover
@@ -272,14 +303,16 @@ def _partition_apply(entry, path):  # pragma: no cover
     part_index = entry["partition"]
     size = os.stat(path)[6]
     total = (size + _CHUNK - 1) // _CHUNK * _CHUNK
-    _rom_write(3, part_index, total)                  # WRITE_PREPARE: erase the region
-    _verify_erased(part_index, total)                 # read back -> confirm all 0xFF
+    with _wdt_relax():                                 # the erase is the one op we can't
+        _rom_write(3, part_index, total)              # feed from a loop (WRITE_PREPARE)
+    _verify_erased(part_index, total)                 # read back -> confirm all 0xFF (feeds)
     off = 0
     for chunk in _file_chunks(path):
         if len(chunk) < _CHUNK:
             chunk = chunk + b"\xff" * (_CHUNK - len(chunk))
         _write_verified(part_index, off, chunk)       # WRITE one block + verify
         off += _CHUNK
+        _wdt_feed()                                   # per chunk, like the installer
 
 
 # resource kind -> (matches, apply); add new kinds here without touching sync().
@@ -299,8 +332,11 @@ def sync():  # pragma: no cover
     loop is handler-agnostic (a resource's ``handler`` selects a (matches, apply) pair,
     so future kinds like keys/fuses just add a handler). Streamed (compare then write) so
     a multi-MB image is never fully in RAM; idempotent (applies only on a difference); a
-    no-op when nothing is bundled. Returns the names applied; raises OSError if a write
-    fails. Call early, before the helper core runs."""
+    no-op when nothing is bundled. A flash erase + chunked write of a whole partition, so
+    NOT quick -- it feeds the watchdog (openmv_wdt) the same minimal way install() does
+    (relax() around the erase, feed() per chunk, including the already-applied re-read).
+    Returns the names applied; raises OSError if a write fails. Call early, before the
+    helper core runs."""
     import json
     try:
         manifest = json.load(open(_data_path("resources.json")))

@@ -83,9 +83,11 @@ extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes
   fell back to BACK because a trial failed, FRONT still looks like an un-confirmed trial,
   so confirming it from BACK would resurrect the bad image — `confirm()` refuses to.
 - **`sync()`** — apply any **bundled resources** (see below) whose on-device target
-  differs from the bundled copy. Idempotent, returns the names applied; a no-op when
-  nothing is bundled. Call it **early**, before a resource's consumer is used (e.g.
-  before the helper core runs).
+  differs from the bundled copy. A flash erase + chunked write of a whole partition, so
+  **not quick** — it feeds the watchdog (`openmv_wdt`) the same minimal way `install()`
+  does (`relax()` around the erase, `feed()` per chunk, including the already-applied
+  re-read). Idempotent, returns the names applied; a no-op when nothing is bundled. Call
+  it **early**, before a resource's consumer is used (e.g. before the helper core runs).
 - **`install(url, ca=None)`** — download a gzipped FRONT-slot image over HTTPS and
   install it (see [Installing an update](#installing-an-update-install) below). Does
   **not** return on success — it reboots into the new image's trial.
@@ -282,13 +284,15 @@ watchdog still catches a hung loop. The timer **must be a real hardware id** —
 callback is a true ISR that fires mid-erase; a virtual/soft `Timer(-1)` runs via the
 scheduler, which doesn't run while the CPU is blocked, so it would never fire when needed.
 
-**`install()` already does this, minimally** — it `relax()`es *only* the one long flash
-erase (which it can't feed from a loop and which can exceed even the WDT's max timeout),
-and `feed()`s the watchdog **per chunk** through the download + write. So an OTA install
-won't trip an enabled watchdog, yet a genuine stall *isn't* masked: if the loop stops or
-a recv stalls, feeding stops and the watchdog resets to golden. A 30 s socket timeout is
-the same backstop when no watchdog is enabled (a stalled download fails cleanly instead
-of hanging). All a no-op if you haven't enabled a watchdog.
+**`install()` and `sync()` already do this, minimally** — each `relax()`es *only* the one
+long flash erase (which it can't feed from a loop and which can exceed even the WDT's max
+timeout) and `feed()`s the watchdog **per chunk** through the surrounding loops (`install`
+through the download + write; `sync` through its write *and* the already-applied re-read).
+So an OTA install or a `sync()` won't trip an enabled watchdog, yet a genuine stall
+*isn't* masked: if a loop stops or a recv stalls, feeding stops and the watchdog resets to
+golden. `install()` also sets a 30 s socket timeout as the same backstop when no watchdog
+is enabled (a stalled download fails cleanly instead of hanging). All a no-op if you
+haven't enabled a watchdog.
 
 ## Safety properties at a glance
 
