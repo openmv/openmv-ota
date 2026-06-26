@@ -10,6 +10,20 @@ Installs the package with dev extras and runs `pytest`, which is configured
 `macos-latest`. This includes the device `boot.py` logic, which is pure and fully
 host-tested (the hardware `_main` wiring is the only excluded part).
 
+The **trial state machine** is covered exhaustively rather than by example, since its
+edge cases are where update-safety bugs hide:
+
+- `evaluate_slot` is tested against **all 8** `(pending, tried, confirmed)` marker
+  combinations for **both** the FRONT slot (one-shot trial: arm → mount → roll back if
+  un-confirmed; reject a `confirmed`-without-`tried` forgery) and the BACK slot (only the
+  golden `(F,F,T)` mounts; every other state → `back-not-factory`).
+- `OtaBoot.run` is tested for each *boot decision* — FRONT committed, FRONT on trial,
+  FRONT `trial-failed` → roll back to golden BACK, FRONT signature-reject → BACK, a trial
+  that can't be armed → BACK, and both slots failing → `no-slot`.
+- `openmv_ota._should_confirm` is parametrized over slot × markers, pinning the slot
+  guard: only a FRONT boot's un-confirmed trial confirms, so falling back to BACK never
+  resurrects the failed FRONT image.
+
 ## `cshim` — the ECDSA verify C shim
 
 Compiles the shim's pure-C core (`device/ecdsa_verify.c`) against the firmware's
