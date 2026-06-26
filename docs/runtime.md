@@ -249,13 +249,13 @@ levels, filtering, and API are the standard `logging` ones.
 A real app should run a watchdog so a hang reboots the device instead of bricking it.
 Like the logger, there's an opt-in helper — `device/openmv_wdt.py`, frozen as
 **`openmv_wdt`**, off by default, yours to edit. Enable it and pick your board's
-`machine.WDT` id + timeout, plus a spare **hardware** `machine.Timer` id, then rebuild:
+`machine.WDT` id + timeout, then rebuild:
 
 ```python
 ENABLED    = True
 WDT_ID     = 0
 TIMEOUT_MS = 5000
-TIMER_ID   = 1     # a spare *hardware* timer (see below)
+TIMER_ID   = -1    # the soft timer (only id machine.Timer accepts; see below)
 FEED_HZ    = 10
 ```
 
@@ -276,13 +276,15 @@ with openmv_wdt.relax():
     do_long_thing()
 ```
 
-`relax()` runs a hardware-`Timer` ISR that feeds the watchdog at **interrupt time**, so
-the board survives the op *as long as the CPU is healthy* (interrupts still firing) —
+`relax()` runs a `machine.Timer` whose callback feeds the watchdog at **interrupt time**,
+so the board survives the op *as long as the CPU is healthy* (interrupts still firing) —
 effectively suspending the watchdog without disabling it, and on exit it stops and hands
 feeding back to your loop. Use it only around genuinely long ops; outside `relax()` the
-watchdog still catches a hung loop. The timer **must be a real hardware id** — its
-callback is a true ISR that fires mid-erase; a virtual/soft `Timer(-1)` runs via the
-scheduler, which doesn't run while the CPU is blocked, so it would never fire when needed.
+watchdog still catches a hung loop. On every OpenMV port `machine.Timer` *is* the
+virtual/soft timer (`-1`, the only id it accepts), and the helper creates it with
+`hard=True` — that runs its callback in the SysTick/PendSV interrupt handler, which is
+what lets the feed fire mid-erase. Without `hard=True` the callback is *scheduled* and
+wouldn't run while the CPU is blocked, so the erase would still trip the watchdog.
 
 **`install()` and `sync()` already do this, minimally** — each `relax()`es *only* the one
 long flash erase (which it can't feed from a loop and which can exceed even the WDT's max

@@ -17,7 +17,13 @@ _spec.loader.exec_module(_mod)
 
 def test_disabled_by_default():
     assert _mod.ENABLED is False
-    assert _mod._wdt is None and _mod._timer is None
+    assert _mod._wdt is None and _mod._timer is None and _mod._feed is None
+
+
+def test_timer_id_is_the_soft_timer():
+    # machine.Timer on every OpenMV port is the soft timer; only -1 is accepted, and the
+    # feed must run at interrupt time (hard=True) to fire during a blocking erase.
+    assert _mod.TIMER_ID == -1
 
 
 def test_feed_is_a_noop_when_disabled():
