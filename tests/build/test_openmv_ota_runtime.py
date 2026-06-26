@@ -56,17 +56,20 @@ def test_markers_decodes_each_flag():
     assert rt._markers(_sector(True, False, True)) == (True, False, True)
 
 
-def test_resources_to_apply_filters_unchanged():
-    manifest = [
-        {"file": "a.romfs", "bytes": b"AAAA"},   # differs -> apply
-        {"file": "b.romfs", "bytes": b"BBBB"},   # same    -> skip
-    ]
-    current = {"a.romfs": b"ZZZZ", "b.romfs": b"BBBB"}
-    todo = rt._resources_to_apply(manifest, lambda e: current[e["file"]])
-    assert [e["file"] for e in todo] == ["a.romfs"]
+def _target(buf):
+    """A read_target(off, n) over an in-memory buffer (stands in for the partition)."""
+    return lambda off, n: buf[off:off + n]
 
 
-def test_resources_to_apply_missing_target_counts_as_changed():
-    manifest = [{"file": "a.romfs", "bytes": b"AAAA"}]
-    todo = rt._resources_to_apply(manifest, lambda e: None)   # unreadable target
-    assert [e["file"] for e in todo] == ["a.romfs"]
+def test_streams_equal_matching():
+    # multi-chunk file that matches the target byte-for-byte
+    assert rt._streams_equal([b"abcd", b"ef"], _target(b"abcdef")) is True
+
+
+def test_streams_equal_mismatch():
+    assert rt._streams_equal([b"abcd", b"ef"], _target(b"abXdef")) is False
+
+
+def test_streams_equal_offset_tracking():
+    # a later chunk differing is still caught (offset advances per chunk)
+    assert rt._streams_equal([b"ab", b"cd", b"ef"], _target(b"abcdXf")) is False

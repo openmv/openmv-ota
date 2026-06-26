@@ -275,6 +275,9 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         vfs.mount(vfs.VfsRom(body), "/rom")
 
     def write_marker(off, marker):
+        # Best-effort by design (unlike the app-level openmv_ota.confirm()/sync(),
+        # which raise on a failed write): if arming 'tried' fails we must NOT abort the
+        # boot -- the worst case is the next boot re-trials FRONT, never a brick.
         vfs.rom_ioctl(4, 0, off, marker)
 
     try:

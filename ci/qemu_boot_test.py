@@ -206,14 +206,24 @@ def _runtime_partition(part: int, front: int) -> bytes:
 
 def _runtime_script() -> str:
     # mp_init auto-mounts the partition's romfs at /rom and adds /rom/lib to sys.path,
-    # so the lib + _ota_config import directly.
+    # so the lib + _ota_config import directly. status() reads the crafted trial;
+    # confirm()/sync() reach their flash writes, which the qemu port rejects (read-only
+    # rom_ioctl) -- so they must raise OSError, verifying both that the read/decide/plan
+    # paths ran and that the rom_ioctl return-code check fires. (Real hardware writes
+    # succeed; that path is covered by the host logic tests.)
     return '''
 import openmv_ota as o
 s = o.status()
-c = o.confirm()
-applied = o.sync()
-ok = s["trial"] and c and ("probe" in applied)
-print("RT trial=%s confirm=%s synced=%s" % (s["trial"], c, ",".join(applied)))
+try:
+    o.confirm(); cw = "no-raise"
+except OSError:
+    cw = "raised"
+try:
+    o.sync(); sw = "no-raise"
+except OSError:
+    sw = "raised"
+ok = s["trial"] and cw == "raised" and sw == "raised"
+print("RT trial=%s confirm=%s sync=%s" % (s["trial"], cw, sw))
 print("RTRESULT", "PASS" if ok else "FAIL")
 '''
 

@@ -69,17 +69,22 @@ def _needs_confirm(status_sector):
     return _status_of(status_sector)["trial"]
 
 
-def _resources_to_apply(manifest, current_of):
-    """Resources whose bundled bytes differ from what's already on their target.
+# Streaming unit for partition compare/write. A multiple of every flash write
+# alignment, so chunked writes never need per-port re-alignment, and only one chunk
+# is ever held in RAM -- never a whole (up to ~1 MiB) image.
+_CHUNK = 4096
 
-    ``manifest`` is the decoded ``data/resources.json`` (a list of entries);
-    ``current_of(entry)`` returns the bytes currently on the entry's target (or
-    ``None`` if unreadable). Returns the entries that need applying, in order."""
-    todo = []
-    for entry in manifest:
-        if bytes(current_of(entry) or b"") != bytes(entry["bytes"]):
-            todo.append(entry)
-    return todo
+
+def _streams_equal(file_chunks, read_target):
+    """True iff a file (yielded as ``file_chunks``) matches a target byte-for-byte.
+    ``read_target(off, n)`` returns the ``n`` target bytes at offset ``off``. Streamed:
+    one chunk at a time, so neither whole image is materialised in RAM."""
+    off = 0
+    for chunk in file_chunks:
+        if read_target(off, len(chunk)) != chunk:
+            return False
+        off += len(chunk)
+    return True
 
 
 # --- device entry points ----------------------------------------------------
@@ -101,6 +106,28 @@ def _read_at(part_index, off, size):  # pragma: no cover
     return uctypes.bytearray_at(base + off, size)
 
 
+def _rom_write(*args):  # pragma: no cover
+    """A romfs write ioctl (WRITE_PREPARE / WRITE) that raises on failure: the port
+    returns a negative MicroPython errno on error (0 or a positive value on success)."""
+    import vfs
+    rc = vfs.rom_ioctl(*args)
+    if rc < 0:
+        raise OSError(-rc)
+    return rc
+
+
+def _file_chunks(path):  # pragma: no cover
+    f = open(path, "rb")
+    try:
+        while True:
+            chunk = f.read(_CHUNK)
+            if not chunk:
+                return
+            yield chunk
+    finally:
+        f.close()
+
+
 def status():  # pragma: no cover
     """The running FRONT image's trial state: a dict with ``pending`` / ``tried`` /
     ``confirmed`` / ``trial`` (``trial`` == an un-confirmed one-shot trial)."""
@@ -113,25 +140,44 @@ def confirm():  # pragma: no cover
     """Keep the running FRONT image. Writes CONFIRMED iff it's an un-confirmed
     one-shot trial (no erase -- the marker just programs into the already-erased
     status sector, like boot.py arming ``tried``); a no-op otherwise. Returns True
-    iff it just confirmed. Idempotent -- safe to call every boot once healthy."""
+    iff it just confirmed; raises OSError if the marker write fails. Idempotent --
+    safe to call every boot once healthy."""
     import _ota_config
-    import vfs
     off = _front_status_offset(_ota_config)
     if not _needs_confirm(_read_at(0, off, 3 * MARKER_SIZE)):
         return False
-    vfs.rom_ioctl(4, 0, off + _CONFIRMED_OFF, CONFIRMED)
+    _rom_write(4, 0, off + _CONFIRMED_OFF, CONFIRMED)
     return True
 
 
-def _apply_partition(part_index, data):  # pragma: no cover
-    """Write ``data`` to the start of ROMFS partition ``part_index`` (erase then
-    program). The image is self-sized, so any older bytes past it are ignored."""
+def _partition_matches(part_index, path):  # pragma: no cover
+    """Stream-compare the file at ``path`` to the start of partition ``part_index``,
+    copying neither whole image into RAM (the partition via a uctypes view, the file
+    one chunk at a time)."""
+    import uctypes
     import vfs
-    vfs.rom_ioctl(3, part_index, len(data))   # WRITE_PREPARE: erase len(data) bytes
-    vfs.rom_ioctl(4, part_index, 0, data)     # WRITE at offset 0
+    base = uctypes.addressof(vfs.rom_ioctl(2, part_index))
+    return _streams_equal(_file_chunks(path),
+                          lambda off, n: uctypes.bytearray_at(base + off, n))
 
 
-_HANDLERS = {"partition": _apply_partition}   # resource "handler" -> applier
+def _apply_partition(part_index, path):  # pragma: no cover
+    """Erase + program partition ``part_index`` with the file at ``path``, streamed in
+    _CHUNK blocks (never the whole image in RAM). The final block is 0xFF-padded to a
+    full chunk -- matching the erased flash, and ignored since the romfs is self-sized."""
+    import os
+    size = os.stat(path)[6]
+    total = (size + _CHUNK - 1) // _CHUNK * _CHUNK
+    _rom_write(3, part_index, total)                  # WRITE_PREPARE: erase the region
+    off = 0
+    for chunk in _file_chunks(path):
+        if len(chunk) < _CHUNK:
+            chunk = chunk + b"\xff" * (_CHUNK - len(chunk))
+        _rom_write(4, part_index, off, chunk)         # WRITE one block
+        off += _CHUNK
+
+
+_HANDLERS = {"partition": _apply_partition}   # resource "handler" -> applier(part, path)
 
 
 def _data_path(name):  # pragma: no cover
@@ -142,28 +188,21 @@ def _data_path(name):  # pragma: no cover
 
 
 def sync():  # pragma: no cover
-    """Apply bundled resources (``data/resources.json``) whose target differs from
-    the bundled copy -- e.g. write the coprocessor romfs into the helper core's
-    partition. Idempotent (only writes on a difference); a no-op when nothing is
-    bundled. Returns the names applied. Call early, before the helper core is used."""
+    """Apply bundled resources (``data/resources.json``) whose target differs from the
+    bundled copy -- e.g. write the coprocessor romfs into the helper core's partition.
+    Streamed (compare then write) so a multi-MB image is never fully in RAM; idempotent
+    (writes only on a difference); a no-op when nothing is bundled. Returns the names
+    applied; raises OSError if a write fails. Call early, before the helper core runs."""
     import json
-    import uctypes
-    import vfs
     try:
         manifest = json.load(open(_data_path("resources.json")))
     except OSError:
         return []
-    for entry in manifest:
-        entry["bytes"] = open(_data_path(entry["file"]), "rb").read()
-
-    def current_of(entry):
-        # Read only the bytes we compare -- NOT bytes(rom_ioctl(2, ...)), which would
-        # copy the entire (multi-MB) partition into RAM.
-        base = uctypes.addressof(vfs.rom_ioctl(2, entry["partition"]))
-        return bytes(uctypes.bytearray_at(base, len(entry["bytes"])))
-
     applied = []
-    for entry in _resources_to_apply(manifest, current_of):
-        _HANDLERS[entry["handler"]](entry["partition"], entry["bytes"])
+    for entry in manifest:
+        path = _data_path(entry["file"])
+        if _partition_matches(entry["partition"], path):
+            continue
+        _HANDLERS[entry["handler"]](entry["partition"], path)
         applied.append(entry.get("name", entry["file"]))
     return applied
