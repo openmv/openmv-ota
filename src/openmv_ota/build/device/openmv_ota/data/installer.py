@@ -260,7 +260,7 @@ def _is_blank(chunk):
     return chunk == b"\xff" * len(chunk)
 
 
-def _install_stream(read, erase, write, readback, front_size, block, feed):
+def _install_stream(read, erase, write, readback, front_size, block, feed, progress=None):
     """Erase the FRONT slot, stream the decompressed image into it 1:1 (verifying
     every write by read-back, skipping already-erased 0xFF runs), then arm the trial.
 
@@ -269,8 +269,10 @@ def _install_stream(read, erase, write, readback, front_size, block, feed):
     long call, via a timer ISR); ``write(off, data)`` programs flash; ``readback(off, n)``
     returns the ``n`` bytes at ``off``; ``feed()`` is called once per chunk so the
     watchdog stays alive through the loops *without* masking a hang (if the loop stops
-    iterating, feeding stops). Raises on any size mismatch or read-back miscompare; this
-    runs after the erase, so the caller turns any exception into a reboot into golden."""
+    iterating, feeding stops); ``progress(done, front_size)`` (if given) is called once per
+    written chunk so the caller can log/report how far the install has got. Raises on any
+    size mismatch or read-back miscompare; this runs after the erase, so the caller turns
+    any exception into a reboot into golden."""
     erase(front_size)
     off = 0
     while off < front_size:                          # confirm the erase took
@@ -296,6 +298,8 @@ def _install_stream(read, erase, write, readback, front_size, block, feed):
                     raise OSError("write verify failed at %d" % off)
             off += len(chunk)
             feed()
+            if progress is not None:
+                progress(off, front_size)
         if not data:
             break
     if off != front_size:
@@ -358,10 +362,11 @@ def _open(url, ca_pem, socket, ssl, max_redirects=5):  # pragma: no cover
     raise OSError("too many redirects")
 
 
-def run(url, ca_pem, cfg):  # pragma: no cover
+def run(url, ca_pem, cfg, progress=None):  # pragma: no cover
     """Download and install the gzipped FRONT-slot image at ``url``. Never returns:
     reboots into the new image's trial on success, or into the golden BACK image if
-    anything fails after the erase commits."""
+    anything fails after the erase commits. ``progress(done, total)`` (if given) is
+    forwarded to the write loop so the install's advance can be logged/reported."""
     import deflate
     import machine
     import socket
@@ -405,7 +410,7 @@ def run(url, ca_pem, cfg):  # pragma: no cover
         log.info("install: connected; erasing + writing FRONT (%d bytes)" % front_size)
     try:
         dio = deflate.DeflateIO(body, deflate.GZIP)
-        _install_stream(dio.read, erase, write, readback, front_size, block, feed)
+        _install_stream(dio.read, erase, write, readback, front_size, block, feed, progress)
     except Exception as e:
         sock.close()
         if log:

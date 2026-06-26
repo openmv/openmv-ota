@@ -279,10 +279,10 @@ def _noop():
     pass
 
 
-def _run_install(image, front_size, block, feed=_noop):
+def _run_install(image, front_size, block, feed=_noop, progress=None):
     flash = _FakeFlash(front_size)
     inst("_install_stream")(_reader_of(image), flash.erase, flash.write,
-                            flash.readback, front_size, block, feed)
+                            flash.readback, front_size, block, feed, progress)
     return flash
 
 
@@ -314,6 +314,19 @@ def test_install_stream_feeds_the_watchdog_per_chunk():
     _run_install(bytes(image), front, block, lambda: calls.append(1))
     # fed once per chunk through the erase-verify + write loops (not masking a hang)
     assert len(calls) >= front // block
+
+
+def test_install_stream_reports_progress_per_chunk():
+    block = 4096
+    front = 3 * block
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    seen = []
+    _run_install(bytes(image), front, block, progress=lambda d, t: seen.append((d, t)))
+    # one report per written chunk, advancing to a full slot, total always front_size
+    assert seen[-1] == (front, front)
+    assert all(t == front for _, t in seen)
+    assert [d for d, _ in seen] == sorted(d for d, _ in seen)
 
 
 def test_install_stream_image_too_large():

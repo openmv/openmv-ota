@@ -108,6 +108,44 @@ def test_streams_equal_feeds_per_chunk():
     assert len(calls) == 2
 
 
+class _RecordLog:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, msg, *a):
+        self.lines.append(msg)
+
+
+def test_progress_forwards_to_callback_every_chunk(monkeypatch):
+    monkeypatch.setattr(rt, "log", _RecordLog())
+    seen = []
+    p = rt._Progress("install", lambda d, t: seen.append((d, t)))
+    for done in (10, 20, 30):
+        p(done, 100)
+    assert seen == [(10, 100), (20, 100), (30, 100)]   # the app callback sees every chunk
+
+
+def test_progress_logs_only_on_each_ten_percent_step(monkeypatch):
+    rec = _RecordLog()
+    monkeypatch.setattr(rt, "log", rec)
+    p = rt._Progress("install")
+    # within the same 10% bucket -> one line; crossing into the next -> another
+    for done in (3, 5, 9, 12, 19, 25):
+        p(done, 100)
+    assert rec.lines == [
+        "install: 3% (3/100 bytes)",
+        "install: 12% (12/100 bytes)",
+        "install: 25% (25/100 bytes)",
+    ]
+
+
+def test_progress_zero_total_is_full(monkeypatch):
+    rec = _RecordLog()
+    monkeypatch.setattr(rt, "log", rec)
+    rt._Progress("sync x")(0, 0)               # empty target -> 100%, never divides by zero
+    assert rec.lines == ["sync x: 100% (0/0 bytes)"]
+
+
 def test_check_readback_ok():
     rt._check_readback(b"\xff\xff", b"\xff\xff")          # match -> no raise
     rt._check_readback(bytearray(b"abc"), b"abc")         # bytearray vs bytes, by value

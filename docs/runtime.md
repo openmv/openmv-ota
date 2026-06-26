@@ -82,15 +82,22 @@ extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes
   once healthy), returns whether it just confirmed. The FRONT-slot guard matters: if you
   fell back to BACK because a trial failed, FRONT still looks like an un-confirmed trial,
   so confirming it from BACK would resurrect the bad image — `confirm()` refuses to.
-- **`sync()`** — apply any **bundled resources** (see below) whose on-device target
-  differs from the bundled copy. A flash erase + chunked write of a whole partition, so
-  **not quick** — it feeds the watchdog (`openmv_wdt`) the same minimal way `install()`
-  does (`relax()` around the erase, `feed()` per chunk, including the already-applied
-  re-read). Idempotent, returns the names applied; a no-op when nothing is bundled. Call
-  it **early**, before a resource's consumer is used (e.g. before the helper core runs).
-- **`install(url, ca=None)`** — download a gzipped FRONT-slot image over HTTPS and
-  install it (see [Installing an update](#installing-an-update-install) below). Does
-  **not** return on success — it reboots into the new image's trial.
+- **`sync(on_progress=None)`** — apply any **bundled resources** (see below) whose
+  on-device target differs from the bundled copy. A flash erase + chunked write of a whole
+  partition, so **not quick** — it feeds the watchdog (`openmv_wdt`) the same minimal way
+  `install()` does (`relax()` around the erase, `feed()` per chunk, including the
+  already-applied re-read). Idempotent, returns the names applied; a no-op when nothing is
+  bundled. Call it **early**, before a resource's consumer is used (e.g. before the helper
+  core runs).
+- **`install(url, ca=None, on_progress=None)`** — download a gzipped FRONT-slot image over
+  HTTPS and install it (see [Installing an update](#installing-an-update-install) below).
+  Does **not** return on success — it reboots into the new image's trial.
+
+Both `install()` and `sync()` take an optional **`on_progress(done, total)`** callback,
+invoked per written chunk as the image is laid down — wire it to a screen/LED for a
+progress bar. Whether or not you pass one, the write is **logged at every 10% step**
+(`install: 40% (…)`, `sync coprocessor: 70% (…)`), so an enabled logger shows movement
+through the long flash write without a line per 4 KiB chunk.
 
 ```python
 import openmv_ota
@@ -144,8 +151,11 @@ down. It:
 ```python
 import network, openmv_ota
 # ... bring up WiFi / Ethernet / WiFi-HaLow, then:
+def show(done, total):                 # optional: drive a progress bar / status LED
+    print("installing %d%%" % (done * 100 // total))
 try:
-    openmv_ota.install("https://downloads.example.com/fw/OPENMV_N6-v2.img.gz")
+    openmv_ota.install("https://downloads.example.com/fw/OPENMV_N6-v2.img.gz",
+                       on_progress=show)
     # unreachable on success — the device reboots into the trial
 except OSError as e:
     print("update download failed, still running the current image:", e)

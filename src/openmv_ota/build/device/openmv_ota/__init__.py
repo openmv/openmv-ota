@@ -161,6 +161,27 @@ def _check_readback(actual, expected):
         raise OSError("flash verify failed")
 
 
+class _Progress:
+    """Throttled progress reporter for the chunked flash loops. Forwards each
+    ``(done, total)`` to the app's callback (if it passed one) and logs at every new 10%
+    step -- so a multi-second install/sync shows movement without a log line per 4 KiB
+    chunk. ``label`` tags the phase (``"install"``, or the resource name for sync)."""
+
+    def __init__(self, label, cb=None):
+        self._label = label
+        self._cb = cb
+        self._step = -1
+
+    def __call__(self, done, total):
+        if self._cb is not None:
+            self._cb(done, total)
+        pct = done * 100 // total if total else 100
+        step = pct // 10
+        if step > self._step:
+            self._step = step
+            log.info("%s: %d%% (%d/%d bytes)" % (self._label, pct, done, total))
+
+
 # --- device entry points ----------------------------------------------------
 # Thin wrappers that wire the real vfs/uctypes/_ota_config to the pure logic
 # above. Device-only (need MicroPython + a frozen _ota_config), so they're
@@ -294,11 +315,12 @@ def _partition_matches(entry, path):  # pragma: no cover
                           lambda off, n: uctypes.bytearray_at(base + off, n), _wdt_feed)
 
 
-def _partition_apply(entry, path):  # pragma: no cover
+def _partition_apply(entry, path, progress=None):  # pragma: no cover
     """apply() for the ``partition`` handler: erase + program partition
     ``entry["partition"]`` with the file, streamed in _CHUNK blocks (never the whole
     image in RAM). The final block is 0xFF-padded to a full chunk -- matching the erased
-    flash, and ignored since the romfs is self-sized."""
+    flash, and ignored since the romfs is self-sized. ``progress(done, total)`` (if given)
+    reports the write's advance per chunk."""
     import os
     part_index = entry["partition"]
     size = os.stat(path)[6]
@@ -313,6 +335,8 @@ def _partition_apply(entry, path):  # pragma: no cover
         _write_verified(part_index, off, chunk)       # WRITE one block + verify
         off += _CHUNK
         _wdt_feed()                                   # per chunk, like the installer
+        if progress is not None:
+            progress(off if off < total else total, total)
 
 
 # resource kind -> (matches, apply); add new kinds here without touching sync().
@@ -326,7 +350,7 @@ def _data_path(name):  # pragma: no cover
     return __file__.rsplit("/", 1)[0] + "/data/" + name
 
 
-def sync():  # pragma: no cover
+def sync(on_progress=None):  # pragma: no cover
     """Apply bundled resources (``data/resources.json``) whose target differs from the
     bundled copy -- today the coprocessor romfs into the helper core's partition, but the
     loop is handler-agnostic (a resource's ``handler`` selects a (matches, apply) pair,
@@ -335,8 +359,9 @@ def sync():  # pragma: no cover
     no-op when nothing is bundled. A flash erase + chunked write of a whole partition, so
     NOT quick -- it feeds the watchdog (openmv_wdt) the same minimal way install() does
     (relax() around the erase, feed() per chunk, including the already-applied re-read).
-    Returns the names applied; raises OSError if a write fails. Call early, before the
-    helper core runs."""
+    ``on_progress(done, total)`` (if given) is called per written chunk as each resource
+    is applied, and the write is logged at every 10% step. Returns the names applied;
+    raises OSError if a write fails. Call early, before the helper core runs."""
     import json
     try:
         manifest = json.load(open(_data_path("resources.json")))
@@ -345,17 +370,19 @@ def sync():  # pragma: no cover
     applied = []
     for entry in manifest:
         path = _data_path(entry["file"])
+        name = entry.get("name", entry["file"])
         matches, apply = _HANDLERS[entry["handler"]]
         if matches(entry, path):
             continue
-        apply(entry, path)
-        applied.append(entry.get("name", entry["file"]))
+        log.info("sync: applying " + name)
+        apply(entry, path, _Progress("sync " + name, on_progress))
+        applied.append(name)
     if applied:
         log.info("sync: applied resource(s): " + ", ".join(applied))
     return applied
 
 
-def install(url, ca=None):  # pragma: no cover
+def install(url, ca=None, on_progress=None):  # pragma: no cover
     """Download a gzipped FRONT-slot OTA image over HTTPS and install it: write the new
     image into the FRONT slot, arm the one-shot trial, and reboot into it.
 
@@ -370,7 +397,9 @@ def install(url, ca=None):  # pragma: no cover
     into RAM here: the app's code is in the FRONT slot we're about to erase, so the
     installer must run from RAM, not XIP from that slot. ``ca`` are the TLS trust anchors
     (PEM): ``None`` uses the bundled ``data/ca.pem`` (the Mozilla root bundle), ``bytes``
-    are used as-is, and a ``str`` is a path to read."""
+    are used as-is, and a ``str`` is a path to read. ``on_progress(done, total)`` (if
+    given) is called as the image is written -- e.g. to drive a progress bar; the write is
+    also logged at every 10% step regardless."""
     import _ota_config as cfg
     here = __file__.rsplit("/", 1)[0]
     if ca is None:
@@ -379,7 +408,7 @@ def install(url, ca=None):  # pragma: no cover
         ca = _read_file(ca, "rb")
     ns = {}
     exec(_read_file(here + "/data/installer.py", "r"), ns)
-    ns["run"](url, ca, cfg)
+    ns["run"](url, ca, cfg, _Progress("install", on_progress))
 
 
 def _read_file(path, mode):  # pragma: no cover
