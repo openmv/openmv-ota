@@ -327,6 +327,7 @@ def create_project(
         _scaffold_coprocessor(paths, app_version)
     if config.ota:  # the device OTA runtime lib (status/confirm/sync) for the app to use
         _scaffold_runtime_lib(paths, boards)
+        _scaffold_device_log(paths)  # the editable logger frozen into the firmware
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
@@ -450,6 +451,10 @@ def _scaffold_coprocessor(paths: ProjectPaths, app_version: str) -> None:
 # the tool and scaffolded into an OTA project's app/lib/openmv_ota/.
 _RUNTIME_LIB_SRC = Path(__file__).resolve().parents[1] / "build" / "device" / "openmv_ota"
 
+# The editable OTA logger, scaffolded to <project>/device/log.py and frozen as _ota_log
+# by `build firmware` (see build/firmware.py).
+_DEVICE_LOG_SRC = Path(__file__).resolve().parents[1] / "build" / "device" / "log.py"
+
 
 def _coprocessor_partitions(boards: list[str]) -> list[dict]:
     """Distinct coprocessor partitions across the project's boards, as
@@ -529,6 +534,17 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str]) -> None:
             entries = [{"file": "coprocessor.romfs", "handler": "partition",
                         "partition": p["index"], "name": p["name"]} for p in copro]
             manifest.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+
+
+def _scaffold_device_log(paths: ProjectPaths) -> None:
+    """Scaffold ``device/log.py`` -- the OTA logger frozen into the firmware (as
+    ``_ota_log``) and shared by boot.py, the installer, and the runtime lib. The user
+    edits it to enable/redirect logging (off by default). Left alone if it exists."""
+    d = paths.root / "device"
+    d.mkdir(parents=True, exist_ok=True)
+    log = d / "log.py"
+    if not log.exists():
+        log.write_text(_DEVICE_LOG_SRC.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _write_local(paths: ProjectPaths, repo: Path, sdk_home_override: Path | None) -> None:

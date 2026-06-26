@@ -97,10 +97,21 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     manifest = (r.build_dir / "manifest.py").read_text()
     assert "include(" in manifest and "boards/OPENMV_N6/manifest.py" in manifest
     assert 'freeze(' in manifest and "boot.py" in manifest and "_ota_config.py" in manifest
-    # the real boot.py (not a placeholder) + the generated config are present
+    assert "_ota_log.py" in manifest                       # the logger is frozen too
+    # the real boot.py (not a placeholder) + the generated config + logger are present
     assert "OtaBoot" in (r.build_dir / "boot.py").read_text()
     cfg = (r.build_dir / "_ota_config.py").read_text()
     assert "TRUSTED_KEYS" in cfg and "PARTITION_SIZE" in cfg and "BOARD_ID" in cfg
+    assert "ENABLED" in (r.build_dir / "_ota_log.py").read_text()  # the project's copy
+
+
+def test_build_firmware_log_falls_back_to_default(make_project, monkeypatch):
+    # An OTA project missing its device/log.py still freezes a logger -- the bundled default.
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)
+    (Path(root) / "device" / "log.py").unlink()
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+    assert "ENABLED" in (r.build_dir / "_ota_log.py").read_text()
 
 
 def test_ota_config_values(make_project, monkeypatch):

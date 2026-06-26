@@ -257,6 +257,20 @@ def test_create_non_ota_no_runtime_lib(tmp_path, make_firmware, make_sdk):
     assert not (proj.ProjectPaths(root).app_dir / "lib" / "openmv_ota").exists()
 
 
+def test_create_ota_scaffolds_device_log(tmp_path, make_firmware, make_sdk):
+    root, _ = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV_N6"],
+                      ota=True, ota_keys=2, factory_keys=1)
+    log = root / "device" / "log.py"
+    assert log.exists()
+    txt = log.read_text()
+    assert "ENABLED" in txt and "def log(" in txt
+
+
+def test_create_non_ota_no_device_log(tmp_path, make_firmware, make_sdk):
+    root, _ = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV_N6"])
+    assert not (root / "device").exists()
+
+
 def test_create_preserves_existing_app(tmp_path, make_firmware, make_sdk):
     # Re-running new --force never clobbers a user's app.
     repo = make_firmware()

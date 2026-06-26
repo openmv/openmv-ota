@@ -43,6 +43,7 @@ MAKE = "make"
 # The device sources the OTA firmware build freezes / compiles in.
 _DEVICE_DIR = Path(__file__).parent / "device"
 _BOOT_PY = _DEVICE_DIR / "boot.py"
+_LOG_PY = _DEVICE_DIR / "log.py"          # default logger; the per-project copy overrides
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 
@@ -127,11 +128,16 @@ def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
     tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-fw-"))
     shutil.copy2(_BOOT_PY, tmp / "boot.py")
     (tmp / "_ota_config.py").write_text(_render_ota_config(p, name), encoding="utf-8")
+    # The OTA logger, frozen as _ota_log so boot.py can use it before /rom mounts. Prefer
+    # the project's editable copy (device/log.py); fall back to the bundled default.
+    log_src = p.root / "device" / "log.py"
+    shutil.copy2(log_src if log_src.exists() else _LOG_PY, tmp / "_ota_log.py")
     board_manifest = repo / "boards" / name / "manifest.py"
     (tmp / "manifest.py").write_text(
         'include("%s")\n' % board_manifest.as_posix()
         + 'freeze("%s", "boot.py")\n' % tmp.as_posix()
-        + 'freeze("%s", "_ota_config.py")\n' % tmp.as_posix(),
+        + 'freeze("%s", "_ota_config.py")\n' % tmp.as_posix()
+        + 'freeze("%s", "_ota_log.py")\n' % tmp.as_posix(),
         encoding="utf-8",
     )
     return tmp
