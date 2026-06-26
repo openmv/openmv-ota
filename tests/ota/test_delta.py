@@ -98,6 +98,19 @@ def test_base_shorter_than_anchor():
 
 # --- rejections -------------------------------------------------------------
 
+def test_target_size_reads_header():
+    from openmv_ota.ota.delta import target_size
+    base = bytes(range(256)) * 50
+    target = base[:1000] + b"edit" + base[1000:]
+    assert target_size(make_delta(base, target)) == len(target)
+
+
+def test_target_size_bad_magic():
+    from openmv_ota.ota.delta import target_size
+    with pytest.raises(OtaError, match="not an OCDL"):
+        target_size(b"XX")
+
+
 def test_apply_bad_magic():
     with pytest.raises(OtaError, match="not an OCDL"):
         apply_delta(b"base", b"XXXX\x00")

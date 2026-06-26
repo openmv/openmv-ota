@@ -88,6 +88,31 @@ def test_build_manifest_cli_error(make_project, capsys):
     assert "build ota-image" in capsys.readouterr().err
 
 
+def test_build_ota_delta_cli(tmp_path, capsys):
+    base = tmp_path / "b.img"
+    target = tmp_path / "t.img"
+    base_bytes = bytes(range(256)) * 100
+    base.write_bytes(base_bytes)
+    target.write_bytes(base_bytes[:3000] + b"NEW" * 50 + base_bytes[3000:])
+    out = tmp_path / "d.delta.gz"
+    rc = main(["build", "ota-delta", "--base", str(base), "--target", str(target),
+               "-o", str(out)])
+    assert rc == 0 and out.exists()
+    assert "delta:" in capsys.readouterr().out
+
+
+def test_build_ota_delta_cli_error(tmp_path, capsys, monkeypatch):
+    base = tmp_path / "b.img"
+    target = tmp_path / "t.img"
+    base.write_bytes(b"A" * 4096)
+    target.write_bytes(b"B" * 4096)
+    from openmv_ota.ota import delta as delta_mod
+    monkeypatch.setattr(delta_mod, "make_delta", lambda b, t: delta_mod.MAGIC + b"\x00")
+    rc = main(["build", "ota-delta", "--base", str(base), "--target", str(target),
+               "-o", str(tmp_path / "o.gz")])
+    assert rc == 1 and "self-check" in capsys.readouterr().err
+
+
 def _fake_firmware_make(monkeypatch):
     """Patch firmware._run_make to emit a stm32 firmware.bin on the build call."""
     from pathlib import Path

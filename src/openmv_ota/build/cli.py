@@ -83,7 +83,21 @@ def register(build_parser: argparse.ArgumentParser):
     p_man.add_argument("-b", "--board", action="append", metavar="NAME",
                        help="only build this board (repeatable; default: all targets)")
     p_man.add_argument("-f", "--firmware", help="firmware checkout override")
+    p_man.add_argument("--delta", metavar="FILE", help="a build ota-delta artifact to add "
+                       "as an ocdl representation (one board; select it with --board)")
+    p_man.add_argument("--delta-base-version", metavar="VER",
+                       help="the golden version --delta applies against (MAJOR.MINOR.PATCH)")
     p_man.set_defaults(func=cmd_manifest, _command="build manifest")
+
+    p_dlt = sub.add_parser("ota-delta",
+                           help="build a gzipped delta that reconstructs one image from another")
+    p_dlt.add_argument("--base", required=True, metavar="FILE",
+                       help="the golden image (BACK-slot bytes / golden ota.img.gz)")
+    p_dlt.add_argument("--target", required=True, metavar="FILE",
+                       help="the new image (new ota.img.gz)")
+    p_dlt.add_argument("-o", "--output", required=True, metavar="FILE",
+                       help="output path (e.g. <board>-vX-to-vY.delta.gz)")
+    p_dlt.set_defaults(func=cmd_ota_delta, _command="build ota-delta")
 
     p_ins = sub.add_parser("inspect", help="decode + print an OTA image's trailer(s)")
     p_ins.add_argument("image", help="a <board>-romfs.zip bundle, a trailer.bin, or a "
@@ -198,6 +212,7 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         results = build_mod.build_manifest(
             args.project, url_base=args.url_base, output=args.output,
             boards=args.board, firmware=args.firmware,
+            delta=args.delta, delta_base_version=args.delta_base_version,
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -206,6 +221,18 @@ def cmd_manifest(args: argparse.Namespace) -> int:
     for r in results:
         print("Built %s  (signed manifest, %d bytes, key 0x%04x)"
               % (r.output, r.manifest_size, r.key_id))
+    return 0
+
+
+def cmd_ota_delta(args: argparse.Namespace) -> int:
+    try:
+        r = build_mod.build_delta(args.base, args.target, args.output)
+    except BuildError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    ratio = (r.gz_size / r.target_size * 100) if r.target_size else 0
+    print("Built %s  (delta: %d-byte image -> %d gzipped, %.2f%%)"
+          % (r.output, r.target_size, r.gz_size, ratio))
     return 0
 
 

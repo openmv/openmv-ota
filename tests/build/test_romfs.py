@@ -758,6 +758,109 @@ def test_build_manifest_bad_bundle_errors(make_project):
         build_mod.build_manifest(root, url_base=_URL, firmware=repo)
 
 
+# --- build_delta + manifest delta representation -----------------------------
+
+def test_build_delta_roundtrip(make_project, tmp_path):
+    import gzip
+
+    from openmv_ota.ota.delta import apply_delta
+    base = tmp_path / "golden.img"
+    target = tmp_path / "new.img"
+    base_bytes = bytes(range(256)) * 200
+    target_bytes = base_bytes[:5000] + b"NEW" * 100 + base_bytes[5000:]
+    base.write_bytes(base_bytes)
+    target.write_bytes(gzip.compress(target_bytes))       # .img but gzip-magic -> gunzipped
+    out = tmp_path / "v1-to-v2.delta.gz"
+    r = build_mod.build_delta(base, target, out)
+    assert r.output == out and r.target_size == len(target_bytes)
+    assert r.gz_size < r.target_size                       # the delta is much smaller
+    assert apply_delta(base_bytes, gzip.decompress(out.read_bytes())) == target_bytes
+
+
+def test_build_delta_self_check_guards(make_project, tmp_path, monkeypatch):
+    base = tmp_path / "b.img"
+    target = tmp_path / "t.img"
+    base.write_bytes(b"A" * 4096)
+    target.write_bytes(b"B" * 4096)
+    # make_delta emits a structurally invalid patch -> apply_delta raises -> self-check fails
+    from openmv_ota.ota import delta as delta_mod
+    monkeypatch.setattr(delta_mod, "make_delta", lambda b, t: b"NOTOCDL!")
+    with pytest.raises(BuildError, match="self-check failed"):
+        build_mod.build_delta(base, target, tmp_path / "out.gz")
+
+
+def test_build_manifest_with_delta_rep(make_project):
+    import gzip
+
+    from openmv_ota.ota.manifest import parse_manifest, select_representation
+    from openmv_ota.ota.version import encode_app_version
+    root, repo = _build_n6_ota_artifacts(make_project)
+    img = root / "build" / "OPENMV_N6-ota.img.gz"
+    image = gzip.decompress(img.read_bytes())
+
+    # a golden almost identical to the new image -> a tiny delta that beats the full
+    base_bytes = bytearray(image)
+    base_bytes[100:110] = b"OLDOLDOLD!"
+    delta_path = root / "build" / "OPENMV_N6-v0-to-v1.delta.gz"
+    base_file = root / "build" / "golden.img"
+    base_file.write_bytes(bytes(base_bytes))
+    new_file = root / "build" / "new.img"
+    new_file.write_bytes(image)
+    dr = build_mod.build_delta(base_file, new_file, delta_path)
+    assert dr.gz_size < img.stat().st_size                 # delta beats the full download
+
+    results = build_mod.build_manifest(root, url_base=_URL, firmware=repo, boards=["OPENMV_N6"],
+                                       delta=delta_path, delta_base_version="1.0.0")
+    body = parse_manifest(results[0].output.read_bytes()).body
+    fmts = {r["format"] for r in body["representations"]}
+    assert fmts == {"full", "ocdl"}
+    rep = select_representation(body, delta_capable=True,
+                               golden_payload_version=encode_app_version("1.0.0"))
+    assert rep["format"] == "ocdl" and rep["url"] == _URL + "/" + delta_path.name
+
+
+def test_build_manifest_delta_needs_base_version(make_project):
+    root, repo = _build_n6_ota_artifacts(make_project)
+    (root / "build" / "x.delta.gz").write_bytes(b"whatever")
+    with pytest.raises(BuildError, match="delta-base-version"):
+        build_mod.build_manifest(root, url_base=_URL, firmware=repo,
+                                 delta=root / "build" / "x.delta.gz")
+
+
+def test_build_manifest_delta_size_mismatch(make_project):
+    import gzip
+
+    from openmv_ota.ota.delta import make_delta
+    root, repo = _build_n6_ota_artifacts(make_project)
+    # a delta that reconstructs the WRONG size -> manifest must refuse it
+    bad = gzip.compress(make_delta(b"x" * 10, b"y" * 20))
+    bad_path = root / "build" / "bad.delta.gz"
+    bad_path.write_bytes(bad)
+    with pytest.raises(BuildError, match="reconstructs"):
+        build_mod.build_manifest(root, url_base=_URL, firmware=repo, boards=["OPENMV_N6"],
+                                 delta=bad_path, delta_base_version="1.0.0")
+
+
+def test_build_manifest_delta_bad_magic(make_project):
+    import gzip
+    root, repo = _build_n6_ota_artifacts(make_project)
+    bad_path = root / "build" / "junk.delta.gz"
+    bad_path.write_bytes(gzip.compress(b"NOT-AN-OCDL-PATCH"))   # gunzips to bad magic
+    with pytest.raises(BuildError, match="bad delta"):
+        build_mod.build_manifest(root, url_base=_URL, firmware=repo, boards=["OPENMV_N6"],
+                                 delta=bad_path, delta_base_version="1.0.0")
+
+
+def test_build_manifest_delta_rejects_multiple_boards(make_project):
+    # --delta names one artifact, so it's only valid when one board is selected
+    root, repo, _ = make_project(boards=("OPENMV_N6", "OPENMV_AE3"), ota=True)
+    (root / "build").mkdir(exist_ok=True)
+    (root / "build" / "d.delta.gz").write_bytes(b"x")
+    with pytest.raises(BuildError, match="one board"):
+        build_mod.build_manifest(root, url_base=_URL, firmware=repo,
+                                 delta=root / "build" / "d.delta.gz", delta_base_version="1.0.0")
+
+
 def test_build_manifest_bad_project_errors(make_project, tmp_path):
     root, _repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
     with pytest.raises(BuildError):

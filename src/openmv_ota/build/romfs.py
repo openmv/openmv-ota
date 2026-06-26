@@ -622,6 +622,50 @@ class OtaManifestResult:
     key_id: int
 
 
+@dataclass
+class OtaDeltaResult:
+    output: Path        # <name>.delta.gz
+    patch_size: int     # the raw OCDL patch
+    gz_size: int        # the gzipped artifact written
+    target_size: int    # the reconstructed image size
+
+
+def _read_maybe_gz(path: Path) -> bytes:
+    """Read an image file, transparently gunzipping a ``.gz`` (or gzip-magic) file."""
+    data = path.read_bytes()
+    if path.suffix == ".gz" or data[:2] == b"\x1f\x8b":
+        import gzip
+        return gzip.decompress(data)
+    return data
+
+
+def build_delta(base: str | Path, target: str | Path,
+                output: str | Path) -> OtaDeltaResult:
+    """Build a gzipped OCDL delta that reconstructs ``target`` from ``base`` (each a raw or
+    ``.gz`` image). ``base`` is the device's golden -- the BACK-slot bytes (the back half of
+    the golden ``factory-romfs.img``); ``target`` is the new FRONT image (the new
+    ``ota.img.gz``). Self-checked: the patch is applied back and must reproduce ``target``
+    exactly before it's written, so a published delta always reconstructs its image."""
+    import gzip
+
+    from openmv_ota.ota.delta import apply_delta, make_delta
+    from openmv_ota.ota.errors import OtaError
+
+    base_bytes = _read_maybe_gz(Path(base))
+    target_bytes = _read_maybe_gz(Path(target))
+    patch = make_delta(base_bytes, target_bytes)
+    try:
+        if apply_delta(base_bytes, patch) != target_bytes:
+            raise BuildError("delta self-check failed: patch does not reconstruct target",
+                             exit_code=1)
+    except OtaError as e:
+        raise BuildError("delta self-check failed: %s" % e, exit_code=1) from None
+    gz = gzip.compress(patch, mtime=0)
+    out = Path(output)
+    out.write_bytes(gz)
+    return OtaDeltaResult(out, len(patch), len(gz), len(target_bytes))
+
+
 def build_manifest(
     project: str | Path,
     *,
@@ -630,6 +674,8 @@ def build_manifest(
     app: str | Path | None = None,
     boards: list[str] | None = None,
     firmware: str | Path | None = None,
+    delta: str | Path | None = None,
+    delta_base_version: str | None = None,
 ) -> list[OtaManifestResult]:
     """Build + sign an update manifest per OTA main target from the already-built
     ``<board>-ota.img.gz`` artifacts -- the descriptor a device's ``install()`` fetches
@@ -639,18 +685,23 @@ def build_manifest(
     the image's own signed trailer. Signed with the project's OTA key, exactly like the
     image. ``url_base`` is the absolute ``https://`` directory the artifacts are hosted
     under -- a representation's URL is ``url_base/<artifact filename>``. Run ``build
-    ota-image`` first."""
+    ota-image`` first. Pass ``delta`` (a ``build ota-delta`` artifact) + ``delta_base_version``
+    (the golden's version it applies against) to add an ``ocdl`` delta representation -- one
+    board only (select it with ``boards``)."""
     import gzip
 
     from openmv_ota.ota import bundle
+    from openmv_ota.ota.delta import target_size as delta_target_size
     from openmv_ota.ota.errors import OtaError
-    from openmv_ota.ota.manifest import SCHEMA, Manifest, pack_manifest, signed_region
+    from openmv_ota.ota.manifest import DELTA_FORMAT, SCHEMA, Manifest, pack_manifest, signed_region
     from openmv_ota.ota.sign import sign_region
     from openmv_ota.ota.trailer import parse_trailer
-    from openmv_ota.ota.version import decode_app_version
+    from openmv_ota.ota.version import decode_app_version, encode_app_version
 
     if not url_base.startswith("https://"):
         raise BuildError("manifest --url-base must be an absolute https:// URL", exit_code=1)
+    if delta and not delta_base_version:
+        raise BuildError("manifest --delta also needs --delta-base-version", exit_code=1)
 
     project = Path(project)
     try:
@@ -668,6 +719,9 @@ def build_manifest(
     targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
     if not targets:
         raise BuildError("no matching main targets in this project")
+    if delta and len(targets) > 1:
+        raise BuildError("manifest --delta applies to one board - select it with --board",
+                         exit_code=1)
 
     base = url_base.rstrip("/")
     results = []
@@ -685,6 +739,23 @@ def build_manifest(
         except OtaError as e:
             raise BuildError(str(e), exit_code=1) from None
 
+        reps = [{"format": "full", "url": "%s/%s" % (base, img_path.name),
+                 "size": img_path.stat().st_size}]
+        if delta:
+            delta_path = Path(delta)
+            patch = _read_maybe_gz(delta_path)
+            try:
+                if delta_target_size(patch) != len(image):
+                    raise BuildError("delta reconstructs %d bytes but the image is %d "
+                                     "(rebuild the delta against this image)"
+                                     % (delta_target_size(patch), len(image)), exit_code=1)
+            except OtaError as e:
+                raise BuildError("bad delta: %s" % e, exit_code=1) from None
+            reps.append({"format": DELTA_FORMAT,
+                         "url": "%s/%s" % (base, delta_path.name),
+                         "size": delta_path.stat().st_size,
+                         "base_payload_version": encode_app_version(delta_base_version)})
+
         body = {
             "schema": SCHEMA,
             "board_id": tr.board_id,
@@ -694,10 +765,7 @@ def build_manifest(
             "min_platform_version": tr.min_platform_version,
             "size": len(image),
             "sha256": hashlib.sha256(image).hexdigest(),
-            "representations": [
-                {"format": "full", "url": "%s/%s" % (base, img_path.name),
-                 "size": img_path.stat().st_size},
-            ],
+            "representations": reps,
         }
         m = Manifest(body=body, key_id=signer.key_id, sig_alg=signer.sig_alg)
         m.signature = sign_region(signer.private_key, signed_region(m), signer.alg)

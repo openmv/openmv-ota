@@ -116,6 +116,15 @@ def make_delta(base: bytes, target: bytes) -> bytes:
     return bytes(out)
 
 
+def target_size(patch) -> int:
+    """The reconstructed-image size declared in a patch header (for a build-time sanity
+    check that a delta matches the image it's published alongside). Raises on bad magic."""
+    if len(patch) < len(MAGIC) or bytes(patch[: len(MAGIC)]) != MAGIC:
+        raise OtaError("not an OCDL delta")
+    size, _pos = _read_uvarint(patch, len(MAGIC))
+    return size
+
+
 def apply_delta(base, patch) -> bytes:
     """Reconstruct the target from ``base`` + ``patch`` (host reference; the device mirrors
     this, streaming the output). Raises ``OtaError`` on a malformed patch or size mismatch."""
