@@ -270,6 +270,8 @@ print("RTRESULT", "PASS" if ok else "FAIL")
 
 _INSTALLER = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
               / "build" / "device" / "openmv_ota" / "data" / "installer.py")
+_LOG = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
+        / "build" / "device" / "log.py")
 
 
 def _installer_partition(part: int, front: int) -> bytes:
@@ -282,6 +284,7 @@ def _installer_partition(part: int, front: int) -> bytes:
     (src / "lib" / "openmv_ota" / "__init__.py").write_text(_RUNTIME_LIB.read_text())
     (data / "installer.py").write_text(_INSTALLER.read_text())
     (data / "ca.pem").write_text("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n")
+    (src / "_ota_log.py").write_text(_LOG.read_text())   # importable from /rom for this test
     (src / "_ota_config.py").write_text(
         "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nOTA_BLOCK=%d\n"
         "BOARD_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
@@ -365,8 +368,13 @@ P["_install_stream"](reader_of(bytes(img)), erase, write, readback, FRONT, BLOCK
 so = FRONT - 2 * BLOCK
 install_ok = mem[0:4] == b"DATA" and bytes(mem[so:so + 16]) == P["PENDING"]
 
-ok = url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok
-print("INST", "url=" + str(url_ok), "deflate=" + str(deflate_ok), "install=" + str(install_ok))
+import _ota_log
+fmt_ok = _ota_log._format(12345, "boot", "x") == "[   12.345] boot: x\\r\\n"
+_ota_log.ENABLED = True
+_ota_log.log("qemu", "live-log")              # exercises log()+_sink()+time on-device
+
+ok = url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok and fmt_ok
+print("INST", "url=" + str(url_ok), "deflate=" + str(deflate_ok), "install=" + str(install_ok), "log=" + str(fmt_ok))
 print("INSTRESULT", "PASS" if ok else "FAIL")
 '''
 
