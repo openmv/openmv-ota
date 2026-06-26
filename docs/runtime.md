@@ -116,21 +116,27 @@ if you want to react.
 
 ## Installing an update (`install()`)
 
-`install(url, ca=None)` is the on-device piece that fetches a new image and writes it
-into the FRONT slot. Something else decides *what* to install and hands it a URL (how
-that URL is obtained is out of scope here); `install()` just downloads it and lays it
-down. It:
+`install(url, ca=None)` is the on-device piece that fetches and applies an update.
+`url` is the **signed manifest** URL (`build manifest`), *not* a raw image — the device
+resolves the actual image from the manifest itself. Something else decides *which*
+manifest URL to hand it (how that's obtained is out of scope here). It:
 
 1. Opens an **HTTPS** connection (plaintext HTTP is refused), verifying the server
-   against `ca` with `CERT_REQUIRED` + SNI, sends the GET, and reads the response
-   headers — all **before** erasing anything.
-2. Erases the FRONT slot, then **streams** the gzipped image straight in: decompress a
+   against `ca` with `CERT_REQUIRED` + SNI — all **before** erasing anything.
+2. **Fetches + verifies the manifest** (into RAM): checks its ECDSA signature against the
+   same frozen trusted keys as an image trailer, then applies the device-relative checks
+   — `board_id` cross-flash guard, `min_platform_version`, and the **anti-rollback floor**
+   (the golden BACK image's version) — exactly mirroring what `boot.py` enforces on the
+   image, just *earlier*. Any failure here raises with `/rom` intact.
+3. **Selects a representation** from the manifest (the full image today; a delta once the
+   delta applier lands) and opens a second HTTPS GET for it.
+4. Erases the FRONT slot, then **streams** the gzipped image straight in: decompress a
    chunk → write it → **read it back and compare** → repeat, skipping already-erased
-   `0xFF` runs. A ~1 MB image is never held in RAM. Handles `Content-Length`, chunked,
-   and close-delimited responses, and follows redirects.
-3. Writes the `pending` marker **last**, only after the whole image verified, then
-   reboots into the one-shot trial (the same mechanism as above — your app then calls
-   `confirm()` once healthy).
+   `0xFF` runs, while hashing the stream and checking it against the manifest's
+   reconstructed-image **sha256** (fail-fast → golden). A ~1 MB image is never held in
+   RAM. Handles `Content-Length`, chunked, and close-delimited responses, and redirects.
+5. Writes the `pending` marker **last**, only after the whole image verified, then
+   reboots into the one-shot trial (your app then calls `confirm()` once healthy).
 
 **It does not return on success — it reboots.** Two consequences:
 
@@ -149,11 +155,11 @@ down. It:
 import network, openmv_ota
 # ... bring up WiFi / Ethernet / WiFi-HaLow, then:
 try:
-    openmv_ota.install("https://downloads.example.com/fw/OPENMV_N6-v2.img.gz")
+    openmv_ota.install("https://downloads.example.com/fw/OPENMV_N6-manifest.bin")
     # unreachable on success — the device reboots into the trial
     # (progress is logged at each 10% step; no callback — the app is being erased)
 except OSError as e:
-    print("update download failed, still running the current image:", e)
+    print("update failed, still running the current image:", e)
 ```
 
 **TLS trust.** `ca` is the PEM trust store: `None` (the default) reads the bundled
@@ -162,13 +168,17 @@ fresh Mozilla root bundle into `data/ca.pem` so common public CAs (incl. the one
 Cloudflare R2 rotates among) verify out of the box; replace it with your own provider's
 roots for a tighter trust store. Broad CA trust is acceptable here because **the
 signature, not TLS, is the integrity boundary** — a TLS MITM still can't forge a
-validly-signed image (it lacks your signing key); the worst it can do is serve a stale
-signed image, which the anti-rollback floor blocks, or deny the download.
+validly-signed manifest or image (it lacks your signing key); the worst it can do is
+serve a stale signed update, which the anti-rollback floor blocks, or deny the download.
 
-**The image.** The artifact `install()` consumes is a gzipped full FRONT-slot image,
-produced by `openmv-ota build ota-image` from a built bundle (see
-[the build docs](project.md)). It's a pure rendering of the signed body+trailer for one
-slot geometry — the signed bundle stays the source of truth.
+**The manifest + image.** `install()` consumes a signed manifest (`build manifest`),
+which names the reconstructed image's size/sha256 and the available **representations**
+and binds `board_id`/`payload_version`/`min_platform_version` under one ECDSA signature
+(same keys as the image). Each representation points at an absolute `https://` artifact —
+today the gzipped full FRONT-slot image from `build ota-image` (a pure rendering of the
+signed body+trailer; the signed bundle stays the source of truth). Build them in order:
+`build romfs` → `build ota-image` → `build manifest -u <https-base-url>`, then host the
+`.img.gz` and `-manifest.bin` under that base URL.
 
 ## Bundled resources — applying romfs data to the device
 

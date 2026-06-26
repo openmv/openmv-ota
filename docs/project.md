@@ -302,10 +302,14 @@ RAM while it overwrites the slot it runs from), and `data/ca.pem` is the TLS tru
 store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step needs
 network, like the SDK download), and you can replace it with your provider's roots.
 
-To produce the artifact `install()` downloads, run **`openmv-ota build ota-image`**
-after `build romfs`: it renders each board's signed bundle into a gzipped full
-FRONT-slot image (`<board>-ota.img.gz`) to host on a server. The signed bundle stays
-the source of truth; the image is a regenerable rendering of it.
+To produce what `install()` downloads, run **`openmv-ota build ota-image`** after
+`build romfs` (renders each board's signed bundle into a gzipped full FRONT-slot image
+`<board>-ota.img.gz`), then **`openmv-ota build manifest -u <https-base-url>`** — the
+signed descriptor `install()` fetches first. The manifest names the image's size/sha256
+and representations and binds board/version/anti-rollback under the same key as the image;
+host both `<board>-ota.img.gz` and `<board>-manifest.bin` under that base URL and point
+`install()` at the manifest. The signed bundle stays the source of truth; both are
+regenerable renderings of it.
 
 For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in
 logger built on the standard `logging` module (frozen as `openmv_log`, off by default)

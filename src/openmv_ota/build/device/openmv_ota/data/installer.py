@@ -1,15 +1,16 @@
-"""The OTA installer -- downloads a gzipped FRONT-slot image over HTTPS and writes
-it into the FRONT slot, then arms the trial and reboots.
+"""The OTA installer -- fetches a signed manifest over HTTPS, picks the image it points
+to, writes that into the FRONT slot, then arms the trial and reboots.
 
 This file ships in the romfs as **source** (it is exempt from the .py->.mpy build
 step) so ``openmv_ota.install()`` can ``exec()`` it into RAM before the FRONT slot
 is erased: the running app's code lives in that slot, so once the erase starts
 nothing on it can be executed -- but this module, compiled into RAM by ``exec``,
-runs from RAM throughout. ``run()`` never returns: on success it sets PENDING and
-``machine.reset()``s into the trial; on any post-erase failure it resets into the
-golden BACK image (boot.py rejects the half-written FRONT). Pre-erase failures
-(bad URL, DNS, TLS, HTTP status) raise normally -- ``/rom`` is still intact, so the
-app catches them and can retry without a reboot.
+runs from RAM throughout. ``run()`` first fetches + verifies the manifest and vets it
+(signature, board, anti-rollback) with ``/rom`` intact, then never returns: on success
+it sets PENDING and ``machine.reset()``s into the trial; on any post-erase failure it
+resets into the golden BACK image (boot.py rejects the half-written FRONT). Pre-erase
+failures (bad URL, DNS, TLS, a bad/forbidden manifest) raise normally -- ``/rom`` is
+still intact, so the app catches them and can retry without a reboot.
 
 Like ``boot.py`` this is split into pure logic (URL/HTTP/chunked parsing, the
 flash write loop -- all I/O injected, host-tested) and a device entry (``run`` /
