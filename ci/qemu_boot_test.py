@@ -434,11 +434,23 @@ manifest_ok = (len(_m["signature"]) == 64                 # ES256 R||S parsed ou
                and _m["region"] == __MANIFEST__[:len(_m["region"])]
                and _rep["format"] == "full" and _rej is None)
 
+# Delta apply: reconstruct the target from a base (stands in for the BACK slot) + patch,
+# streamed through the real _delta_chunks/_GenReader under MicroPython.
+_dbase = __DELTA_BASE__
+_rd = P["_GenReader"](P["_delta_chunks"](__DELTA_PATCH__, lambda o, n: _dbase[o:o+n], 64))
+_recon = b""
+while True:
+    _c = _rd.read(100)
+    if not _c:
+        break
+    _recon += _c
+delta_ok = _recon == __DELTA_TARGET__
+
 ok = (url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok
-      and fmt_ok and emit_ok and manifest_ok)
+      and fmt_ok and emit_ok and manifest_ok and delta_ok)
 print("INST", "url=" + str(url_ok), "deflate=" + str(deflate_ok),
       "install=" + str(install_ok), "manifest=" + str(manifest_ok),
-      "log=" + str(fmt_ok), "emit=" + str(emit_ok))
+      "delta=" + str(delta_ok), "log=" + str(fmt_ok), "emit=" + str(emit_ok))
 print("INSTRESULT", "PASS" if ok else "FAIL")
 '''
 
@@ -447,12 +459,17 @@ def _installer_script() -> str:
     import gzip
 
     from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.delta import make_delta
     from openmv_ota.ota.keys import generate_private_key
     from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
     from openmv_ota.ota.sign import sign_region
 
     payload = b"openmv-ota installer payload " * 40
     gz = gzip.compress(payload, mtime=0)
+
+    dbase = bytes((i * 13 + 5) & 0xFF for i in range(4000))
+    dtarget = dbase[:1500] + b"DELTA-NEW-BYTES" + dbase[1700:] + b"trailer" * 20
+    dpatch = make_delta(dbase, dtarget)
 
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
@@ -465,7 +482,9 @@ def _installer_script() -> str:
 
     return (_INSTALLER_SCRIPT_TMPL
             .replace("__GZ__", repr(gz)).replace("__PAYLOAD__", repr(payload))
-            .replace("__MANIFEST__", repr(manifest_bytes)))
+            .replace("__MANIFEST__", repr(manifest_bytes))
+            .replace("__DELTA_BASE__", repr(dbase)).replace("__DELTA_TARGET__", repr(dtarget))
+            .replace("__DELTA_PATCH__", repr(dpatch)))
 
 
 # --- qemu orchestration -----------------------------------------------------

@@ -311,6 +311,13 @@ host both `<board>-ota.img.gz` and `<board>-manifest.bin` under that base URL an
 `install()` at the manifest. The signed bundle stays the source of truth; both are
 regenerable renderings of it.
 
+To ship a smaller **delta** download, run **`openmv-ota build ota-delta --base <golden>
+--target <new ota.img.gz> -o <board>-vX-to-vY.delta.gz`** (the golden is the BACK-slot
+bytes of the version on devices), then add it to the manifest with `build manifest …
+--board <board> --delta <file> --delta-base-version <golden-version>`. The device copies
+the unchanged bulk from its golden BACK slot and only downloads the changes; it's
+opportunistic and still sha256/signature-verified (see [the runtime docs](runtime.md)).
+
 For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in
 logger built on the standard `logging` module (frozen as `openmv_log`, off by default)
 shared by `boot.py`, the installer, and this lib, and exposed as `openmv_ota.log` (the

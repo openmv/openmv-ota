@@ -128,13 +128,16 @@ manifest URL to hand it (how that's obtained is out of scope here). It:
    — `board_id` cross-flash guard, `min_platform_version`, and the **anti-rollback floor**
    (the golden BACK image's version) — exactly mirroring what `boot.py` enforces on the
    image, just *earlier*. Any failure here raises with `/rom` intact.
-3. **Selects a representation** from the manifest (the full image today; a delta once the
-   delta applier lands) and opens a second HTTPS GET for it.
-4. Erases the FRONT slot, then **streams** the gzipped image straight in: decompress a
-   chunk → write it → **read it back and compare** → repeat, skipping already-erased
-   `0xFF` runs, while hashing the stream and checking it against the manifest's
-   reconstructed-image **sha256** (fail-fast → golden). A ~1 MB image is never held in
-   RAM. Handles `Content-Length`, chunked, and close-delimited responses, and redirects.
+3. **Selects a representation** from the manifest — the **full** image, or a **delta**
+   when one is offered whose base matches this device's golden (BACK) version and it's
+   smaller — and opens a second HTTPS GET for it.
+4. Erases the FRONT slot, then **streams** the image straight in. For a full image:
+   decompress a chunk → write → **read back and compare** → repeat, skipping erased `0xFF`
+   runs. For a delta: decompress the small patch into RAM, then reconstruct by copying
+   exact runs from the golden **BACK** slot (XIP bytes) + inserting the patch's literals,
+   writing+verifying the same way. Either way the stream is hashed and checked against the
+   manifest's reconstructed-image **sha256** (fail-fast → golden). A ~1 MB image is never
+   held in RAM. Handles `Content-Length`, chunked, close-delimited responses, and redirects.
 5. Writes the `pending` marker **last**, only after the whole image verified, then
    reboots into the one-shot trial (your app then calls `confirm()` once healthy).
 
@@ -174,11 +177,23 @@ serve a stale signed update, which the anti-rollback floor blocks, or deny the d
 **The manifest + image.** `install()` consumes a signed manifest (`build manifest`),
 which names the reconstructed image's size/sha256 and the available **representations**
 and binds `board_id`/`payload_version`/`min_platform_version` under one ECDSA signature
-(same keys as the image). Each representation points at an absolute `https://` artifact —
-today the gzipped full FRONT-slot image from `build ota-image` (a pure rendering of the
-signed body+trailer; the signed bundle stays the source of truth). Build them in order:
-`build romfs` → `build ota-image` → `build manifest -u <https-base-url>`, then host the
-`.img.gz` and `-manifest.bin` under that base URL.
+(same keys as the image). Each representation points at an absolute `https://` artifact:
+the gzipped full FRONT-slot image from `build ota-image`, and optionally a **delta** from
+`build ota-delta`. Build order: `build romfs` → `build ota-image` → (optional `build
+ota-delta --base <golden> --target <new ota.img.gz>`) → `build manifest -u <https-base>`
+(add `--delta <file> --delta-base-version <golden-ver>` to advertise the delta), then host
+the `.img.gz`, any `.delta.gz`, and `-manifest.bin` under that base URL.
+
+**Deltas.** A delta is a copy/insert patch against the **golden** (the immutable BACK
+slot every device keeps): the device copies the unchanged bulk straight from BACK and
+only downloads the changes, so a release that leaves the model blobs untouched (a config
+or key change) ships as a few KB instead of the whole image. It's *opportunistic* — the
+device picks the delta only when its golden matches the delta's base and it's smaller,
+else the full image. The delta is pure transport: the reconstructed slot is still
+sha256- and signature-verified, so a bad patch just falls back to golden. The applier is
+pure Python (no `ulab`/C), so every board can use deltas, and it ships in the romfs (it's
+OTA-patchable like the installer). One `golden → latest` delta updates any device,
+whatever version it's currently running — there are no per-version delta chains.
 
 ## Bundled resources — applying romfs data to the device
 
