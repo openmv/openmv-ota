@@ -85,10 +85,17 @@ def make_firmware(tmp_path):
         mbed.mkdir(parents=True)
         (mbed / "mbedtls_config_common.h").write_text(
             "#ifndef X\n#define MBEDTLS_X509_USE_C\n#endif\n")
+        for port in ("stm32", "alif"):
+            pc = repo / "lib" / "micropython" / "ports" / port / "mbedtls"
+            pc.mkdir(parents=True)
+            (pc / "mbedtls_config_port.h").write_text(
+                '#include <time.h>\n#include "extmod/mbedtls/mbedtls_config_common.h"\n')
         for board, content in (("OPENMV_N6", N6_BOARD), ("OPENMV_AE3", AE3_BOARD)):
             d = repo / "boards" / board
             d.mkdir(parents=True)
             (d / "board_config.h").write_text(content)
+            (d / "board_config.mk").write_text(
+                "PORT=%s\n" % ("alif" if board == "OPENMV_AE3" else "stm32"))
         if with_mpy_cross:
             mc = repo / "lib" / "micropython" / "mpy-cross" / "build"
             mc.mkdir(parents=True)

@@ -32,61 +32,107 @@ def _fake_make(artifacts):
     return fake
 
 
-_MBEDTLS_REL = "lib/micropython/extmod/mbedtls/mbedtls_config_common.h"
+_COMMON_REL = "lib/micropython/extmod/mbedtls/mbedtls_config_common.h"
+_PORT_REL = "lib/micropython/ports/stm32/mbedtls/mbedtls_config_port.h"
 
 
-# --- _enable_pem: transient mbedtls PEM patch for OTA builds -----------------
+# --- PEM-enable: a patched COPY of the per-port mbedtls config (source untouched) -----
 
-def test_enable_pem_patches_and_restores(tmp_path):
-    cfg = tmp_path / _MBEDTLS_REL
-    cfg.parent.mkdir(parents=True)
-    cfg.write_text("#define MBEDTLS_X509_USE_C\n")
-    restore = fw._enable_pem(tmp_path)
-    assert restore is not None and restore[0] == cfg
-    patched = cfg.read_text()
-    assert "MBEDTLS_BASE64_C" in patched and "MBEDTLS_PEM_PARSE_C" in patched
-    restore[0].write_text(restore[1])
-    assert "MBEDTLS_PEM_PARSE_C" not in cfg.read_text()
-
-
-def test_enable_pem_noop_when_already_enabled(tmp_path):
-    cfg = tmp_path / _MBEDTLS_REL
-    cfg.parent.mkdir(parents=True)
-    cfg.write_text("#define MBEDTLS_X509_USE_C\n#define MBEDTLS_PEM_PARSE_C\n")
-    before = cfg.read_text()
-    assert fw._enable_pem(tmp_path) is None
-    assert cfg.read_text() == before
+def _fake_fw(tmp_path, *, port="stm32", pem_in_common=False, port_cfg=True):
+    repo = tmp_path / "fw"
+    common = repo / _COMMON_REL
+    common.parent.mkdir(parents=True)
+    common.write_text("#define MBEDTLS_X509_USE_C\n"
+                      + ("#define MBEDTLS_PEM_PARSE_C\n" if pem_in_common else ""))
+    bd = repo / "boards" / "OPENMV_N6"
+    bd.mkdir(parents=True)
+    (bd / "board_config.mk").write_text("PORT=%s\n" % port)
+    if port_cfg:
+        pc = repo / "lib" / "micropython" / "ports" / port / "mbedtls"
+        pc.mkdir(parents=True)
+        (pc / "mbedtls_config_port.h").write_text(
+            '#include <time.h>\n#include "extmod/mbedtls/mbedtls_config_common.h"\n#endif\n')
+    return repo
 
 
-def test_enable_pem_warns_when_anchor_missing(tmp_path, capsys):
-    cfg = tmp_path / _MBEDTLS_REL
-    cfg.parent.mkdir(parents=True)
-    cfg.write_text("#define MBEDTLS_SOMETHING_ELSE\n")
-    assert fw._enable_pem(tmp_path) is None
-    assert "could not enable PEM" in capsys.readouterr().err
+def test_board_port_from_board_config_mk(tmp_path):
+    repo = _fake_fw(tmp_path, port="alif")
+    assert fw._board_port(repo, "OPENMV_N6") == "alif"
+    assert fw._board_port(repo, "NOPE") is None        # no boards/NOPE/board_config.mk
 
 
-def test_enable_pem_noop_when_config_absent(tmp_path):
-    assert fw._enable_pem(tmp_path) is None
+def test_board_port_none_without_port_line(tmp_path):
+    repo = tmp_path / "fw"
+    (repo / "boards" / "B").mkdir(parents=True)
+    (repo / "boards" / "B" / "board_config.mk").write_text("FOO=bar\n")
+    assert fw._board_port(repo, "B") is None
 
 
-def test_build_firmware_ota_patches_pem_during_build_then_restores(make_project, monkeypatch):
+def test_pem_config_arg_copies_and_patches_port_config(tmp_path):
+    repo = _fake_fw(tmp_path)
+    tmp = tmp_path / "t"
+    tmp.mkdir()
+    arg = fw._pem_config_arg(repo, tmp, "OPENMV_N6")
+    assert arg is not None and arg.startswith('MBEDTLS_CONFIG_FILE=\\"') and arg.endswith('\\"')
+    dst = tmp / "mbedtls_config_port.h"
+    txt = dst.read_text()
+    assert "MBEDTLS_BASE64_C" in txt and "MBEDTLS_PEM_PARSE_C" in txt
+    assert '#include "extmod/mbedtls/mbedtls_config_common.h"' in txt   # still chains to common
+    assert dst.as_posix() in arg
+    assert "X509_USE_C" in (repo / _COMMON_REL).read_text()             # source untouched
+
+
+def test_pem_config_arg_none_when_already_enabled(tmp_path):
+    tmp = tmp_path / "t"
+    tmp.mkdir()
+    assert fw._pem_config_arg(_fake_fw(tmp_path, pem_in_common=True), tmp, "OPENMV_N6") is None
+
+
+def test_pem_config_arg_enables_when_common_unreadable(tmp_path):
+    repo = _fake_fw(tmp_path)
+    (repo / _COMMON_REL).unlink()                  # can't detect -> enable to be safe
+    tmp = tmp_path / "t"
+    tmp.mkdir()
+    assert fw._pem_config_arg(repo, tmp, "OPENMV_N6") is not None
+
+
+def test_pem_config_arg_appends_when_no_common_include(tmp_path):
+    repo = _fake_fw(tmp_path)
+    (repo / _PORT_REL).write_text("#define X\n")    # port config without the include anchor
+    tmp = tmp_path / "t"
+    tmp.mkdir()
+    fw._pem_config_arg(repo, tmp, "OPENMV_N6")
+    assert "MBEDTLS_PEM_PARSE_C" in (tmp / "mbedtls_config_port.h").read_text()
+
+
+def test_pem_config_arg_warns_when_port_config_missing(tmp_path, capsys):
+    repo = _fake_fw(tmp_path, port_cfg=False)
+    tmp = tmp_path / "t"
+    tmp.mkdir()
+    assert fw._pem_config_arg(repo, tmp, "OPENMV_N6") is None
+    assert "could not read the mbedtls config" in capsys.readouterr().err
+
+
+def test_build_firmware_ota_passes_pem_override_and_leaves_source(make_project, monkeypatch):
     root, repo, _app = make_project(ota=True)
-    cfg = Path(repo) / _MBEDTLS_REL
-    original = cfg.read_text()
-    state = {}
+    common = Path(repo) / _COMMON_REL
+    port_cfg = Path(repo) / _PORT_REL
+    before = (common.read_text(), port_cfg.read_text())
+    seen = {}
 
     def fake(repo_, args):
         if "clean" not in args:
-            state["pem"] = "MBEDTLS_PEM_PARSE_C" in cfg.read_text()
+            for a in args:
+                if a.startswith("MBEDTLS_CONFIG_FILE="):
+                    seen["copy"] = Path(a.split("=", 1)[1].strip('\\"')).read_text()
             target = next(a.split("=", 1)[1] for a in args if a.startswith("TARGET="))
             f = Path(repo_) / "build" / target / "bin" / "firmware.bin"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(b"FW")
     monkeypatch.setattr(fw, "_run_make", fake)
-    fw.build_firmware(root, firmware=repo)
-    assert state["pem"] is True            # PEM was enabled while building
-    assert cfg.read_text() == original     # and restored afterward
+    fw.build_firmware(root, firmware=repo, boards=["OPENMV_N6"])
+    assert "MBEDTLS_PEM_PARSE_C" in seen["copy"]                        # override -> patched copy
+    assert (common.read_text(), port_cfg.read_text()) == before        # firmware source untouched
 
 
 def test_build_firmware_non_ota(make_project, monkeypatch):

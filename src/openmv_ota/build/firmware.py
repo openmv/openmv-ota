@@ -51,9 +51,10 @@ _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ 
 
 # The OTA installer verifies the download's TLS against a PEM CA bundle, but micropython's
 # mbedtls config builds DER-only (no MBEDTLS_PEM_PARSE_C) to stay lean. Until the firmware
-# enables it upstream, an OTA build transiently patches it in (restored after the build).
-_MBEDTLS_CONFIG = Path("lib/micropython/extmod/mbedtls/mbedtls_config_common.h")
-_PEM_ANCHOR = "#define MBEDTLS_X509_USE_C\n"
+# enables it upstream, an OTA build points mbedtls at a patched *copy* of the per-port
+# config (in a temp dir) -- the firmware source is never touched.
+_MBEDTLS_COMMON = Path("lib/micropython/extmod/mbedtls/mbedtls_config_common.h")
+_MBEDTLS_COMMON_INCLUDE = '#include "extmod/mbedtls/mbedtls_config_common.h"\n'
 _PEM_DEFINES = "#define MBEDTLS_BASE64_C\n#define MBEDTLS_PEM_PARSE_C\n"
 
 
@@ -110,14 +111,15 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
     ota = p.config.ota
     tmp: Path | None = None
     cmod: Path | None = None
-    pem: tuple[Path, str] | None = None
     try:
         build_args = ["TARGET=%s" % name, "-j%d" % (jobs or os.cpu_count() or 1)]
         if ota:
             tmp = _write_wrapper_manifest(p, repo, name)
             build_args.append("FROZEN_MANIFEST=%s" % (tmp / "manifest.py").as_posix())
             cmod = _install_verify_module(repo)
-            pem = _enable_pem(repo)
+            pem_arg = _pem_config_arg(repo, tmp, name)
+            if pem_arg is not None:
+                build_args.append(pem_arg)
         if not incremental:
             _run_make(repo, ["TARGET=%s" % name, "clean"])
         _ensure_mpy_cross(repo)
@@ -126,34 +128,53 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
         return FirmwareResult(name, outputs, ota=ota,
                               build_dir=tmp if (ota and keep_build_dir) else None)
     finally:
-        if pem is not None:                        # restore the mbedtls config
-            pem[0].write_text(pem[1], encoding="utf-8")
         if cmod is not None:                       # restore the firmware tree
             cmod.unlink(missing_ok=True)
         if tmp is not None and not (ota and keep_build_dir):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _enable_pem(repo: Path) -> tuple[Path, str] | None:
-    """Transiently add MBEDTLS_BASE64_C + MBEDTLS_PEM_PARSE_C to the firmware's mbedtls
-    config so the OTA installer can verify TLS against a PEM CA bundle. Returns
-    ``(path, original_text)`` for the caller to restore, or ``None`` if it's already
-    enabled (e.g. once the firmware ships it) or the config can't be patched."""
-    cfg = repo / _MBEDTLS_CONFIG
+def _board_port(repo: Path, board: str) -> str | None:
+    """The micropython port (stm32 / alif / mimxrt) a board builds on, from its
+    ``boards/<board>/board_config.mk`` (``PORT=...``)."""
     try:
-        text = cfg.read_text(encoding="utf-8")
+        text = (repo / "boards" / board / "board_config.mk").read_text(encoding="utf-8")
     except OSError:
         return None
-    if re.search(r"(?m)^\s*#define\s+MBEDTLS_PEM_PARSE_C\b", text):
-        return None                                # already enabled, nothing to do
-    if _PEM_ANCHOR not in text:
-        print("warning: could not enable PEM parsing in %s (unexpected mbedtls config); "
-              "OTA TLS may fail to load PEM CA bundles" % cfg, file=sys.stderr)
+    m = re.search(r"(?m)^\s*PORT\s*=\s*(\w+)", text)
+    return m.group(1) if m else None
+
+
+def _pem_config_arg(repo: Path, tmp: Path, board: str) -> str | None:
+    """A make ``MBEDTLS_CONFIG_FILE=...`` override that enables PEM parsing for the OTA
+    installer's TLS, by pointing mbedtls at a **patched copy** of the board's per-port
+    config (in ``tmp``) with MBEDTLS_BASE64_C + MBEDTLS_PEM_PARSE_C appended. The
+    firmware source is never touched. Returns ``None`` when the firmware already enables
+    PEM (then its own config is used unchanged)."""
+    try:
+        if re.search(r"(?m)^\s*#define\s+MBEDTLS_PEM_PARSE_C\b",
+                     (repo / _MBEDTLS_COMMON).read_text(encoding="utf-8")):
+            return None                            # already enabled upstream
+    except OSError:
+        pass                                       # can't tell -> enable it to be safe
+    port = _board_port(repo, board)
+    src = repo / "lib" / "micropython" / "ports" / (port or "") / "mbedtls" \
+        / "mbedtls_config_port.h"
+    try:
+        text = src.read_text(encoding="utf-8")
+    except OSError:
+        print("warning: could not read the mbedtls config for %s; OTA TLS may fail to "
+              "load PEM CA bundles" % board, file=sys.stderr)
         return None
-    cfg.write_text(text.replace(_PEM_ANCHOR, _PEM_ANCHOR + _PEM_DEFINES, 1), encoding="utf-8")
-    print("note: enabled MBEDTLS_PEM_PARSE_C for the OTA build (restored after); drop this "
-          "once the firmware enables it upstream")
-    return cfg, text
+    # Append the defines after the config includes the common module list (all ports do),
+    # so they're inside the include guard and applied before mbedtls's check_config runs.
+    patched = (text.replace(_MBEDTLS_COMMON_INCLUDE, _MBEDTLS_COMMON_INCLUDE + _PEM_DEFINES, 1)
+               if _MBEDTLS_COMMON_INCLUDE in text else text + _PEM_DEFINES)
+    dst = tmp / "mbedtls_config_port.h"
+    dst.write_text(patched, encoding="utf-8")
+    print("note: building OTA firmware with PEM parsing enabled (mbedtls config copy; "
+          "source untouched); drop once the firmware enables it upstream")
+    return 'MBEDTLS_CONFIG_FILE=\\"%s\\"' % dst.as_posix()
 
 
 def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
