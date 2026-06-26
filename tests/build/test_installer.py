@@ -279,10 +279,10 @@ def _noop():
     pass
 
 
-def _run_install(image, front_size, block, feed=_noop, progress=None):
+def _run_install(image, front_size, block, feed=_noop, progress=None, expect_sha=None):
     flash = _FakeFlash(front_size)
     inst("_install_stream")(_reader_of(image), flash.erase, flash.write,
-                            flash.readback, front_size, block, feed, progress)
+                            flash.readback, front_size, block, feed, progress, expect_sha)
     return flash
 
 
@@ -355,6 +355,163 @@ def test_progress_zero_total_is_full():
     rec = _RecordLog()
     inst("_Progress")(rec)(0, 0)               # empty image -> 100%, no divide-by-zero
     assert rec.lines == ["install: 100% (0/0 bytes)"]
+
+
+def test_install_stream_sha_ok():
+    import hashlib
+    block, front = 4096, 3 * 4096
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    flash = _run_install(bytes(image), front, block,
+                         expect_sha=hashlib.sha256(bytes(image)).hexdigest())
+    assert flash.mem[:4] == b"DATA"                       # sha matched -> installed
+
+
+def test_install_stream_sha_mismatch_raises():
+    block, front = 4096, 2 * 4096
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    with pytest.raises(OSError):
+        _run_install(bytes(image), front, block, expect_sha="00" * 32)
+
+
+# --- signed manifest: parse/select/reject/floor mirror the host codec --------
+
+def _host_manifest(body=None, alg=None, key_id=0x0100):
+    from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.keys import generate_private_key
+    from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
+    from openmv_ota.ota.sign import sign_region
+    spec = algorithm_for(alg or ES256)
+    priv = generate_private_key(spec)
+    if body is None:
+        body = {"schema": 1, "board_id": 7, "payload_version": 33685760,
+                "min_platform_version": 0, "sha256": "ab" * 32,
+                "representations": [{"format": "full", "url": "https://x/f.gz", "size": 9}]}
+    m = Manifest(body=body, key_id=key_id, sig_alg=spec.cose_id)
+    m.signature = sign_region(priv, signed_region(m), spec)
+    return pack_manifest(m)
+
+
+def test_manifest_parse_mirrors_host():
+    from openmv_ota.ota.manifest import parse_manifest, signed_region
+    raw = _host_manifest(key_id=0x0123)
+    got = inst("_manifest_parse")(raw)
+    host = parse_manifest(raw)
+    assert got["body"] == host.body
+    assert got["key_id"] == host.key_id == 0x0123
+    assert got["sig_alg"] == host.sig_alg
+    assert got["signature"] == host.signature
+    assert got["region"] == signed_region(raw)            # the bytes the signature covers
+
+
+def test_manifest_parse_rejections():
+    import struct
+    from openmv_ota.ota import ES384
+    good = _host_manifest()
+    with pytest.raises(ValueError, match="too small"):
+        inst("_manifest_parse")(b"\x00" * 4)
+    bad = bytearray(good)
+    bad[0:4] = b"XXXX"
+    with pytest.raises(ValueError, match="magic"):
+        inst("_manifest_parse")(bytes(bad))
+    bad = bytearray(good)
+    struct.pack_into("<I", bad, 4, 2)                            # header_version
+    with pytest.raises(ValueError, match="header_version"):
+        inst("_manifest_parse")(bytes(bad))
+    bad = bytearray(good)
+    struct.pack_into("<i", bad, struct.calcsize("<4sIIII"), ES384)
+    with pytest.raises(ValueError, match="alg/sig_size"):
+        inst("_manifest_parse")(bytes(bad))
+    with pytest.raises(ValueError, match="truncated"):
+        inst("_manifest_parse")(good[:-1])
+    bad = bytearray(good)
+    bad[-1] ^= 0xFF
+    with pytest.raises(ValueError, match="crc"):
+        inst("_manifest_parse")(bytes(bad))
+
+
+def test_manifest_parse_unknown_alg():
+    import struct
+    bad = bytearray(_host_manifest())
+    struct.pack_into("<i", bad, struct.calcsize("<4sIIII"), -99)
+    with pytest.raises(ValueError, match="alg/sig_size"):
+        inst("_manifest_parse")(bytes(bad))
+
+
+@pytest.mark.parametrize(("body", "board", "plat", "floor"), [
+    ({"schema": 2}, 7, 0, 0),
+    ({"schema": 1, "board_id": 9}, 7, 0, 0),
+    ({"schema": 1, "board_id": 7, "min_platform_version": 100}, 7, 50, 0),
+    ({"schema": 1, "board_id": 7, "payload_version": 5}, 7, 0, 10),
+    ({"schema": 1, "board_id": 7, "payload_version": 10}, 7, 0, 5),
+    ({"schema": 1, "board_id": 9}, 0, 0, 0),               # device board_id 0 disables check
+])
+def test_update_reject_mirrors_host(body, board, plat, floor):
+    from openmv_ota.ota.manifest import update_reject_reason
+    assert (inst("_update_reject")(body, board, plat, floor)
+            == update_reject_reason(body, board, plat, floor))
+
+
+@pytest.mark.parametrize(("capable", "golden"), [(False, 0), (True, 100), (True, 999)])
+def test_select_rep_mirrors_host(capable, golden):
+    from openmv_ota.ota.manifest import select_representation
+    body = {"representations": [
+        {"format": "full", "url": "https://x/f.gz", "size": 900},
+        {"format": "bsdiff", "url": "https://x/d.gz", "size": 40, "base_payload_version": 100},
+        {"format": "lzma", "url": "https://x/w.gz", "size": 1},
+    ]}
+    assert (inst("_select_rep")(body, capable, golden)
+            == select_representation(body, capable, golden))
+
+
+def test_select_rep_none_when_nothing_usable():
+    body = {"representations": [
+        {"format": "bsdiff", "url": "https://x/d.gz", "size": 40, "base_payload_version": 1}]}
+    assert inst("_select_rep")(body, False, 0) is None
+
+
+def test_golden_floor_mirrors_trailer():
+    import hashlib
+
+    from openmv_ota.ota import ES256, Trailer, algorithm_for, pack_trailer, signed_region
+    from openmv_ota.ota.keys import generate_private_key
+    from openmv_ota.ota.sign import sign_region
+    from openmv_ota.ota.version import encode_app_version
+    pv = encode_app_version("3.4.5")
+    spec = algorithm_for(ES256)
+    priv = generate_private_key(spec)
+    body = b"B" * 48
+    t = Trailer(body_size=len(body), pad_size=0, meta={}, board_id=7, min_platform_version=0,
+                payload_version=pv, payload_version_floor=0, key_id=0x0100, sig_alg=ES256,
+                body_sha256=hashlib.sha256(body).digest())
+    t.signature = sign_region(priv, signed_region(t), spec)
+    trailer = pack_trailer(t)
+    assert inst("_golden_floor")(trailer) == pv            # reads payload_version
+    assert inst("_golden_floor")(b"\x00" * 4) == 0         # too short -> floor 0
+    assert inst("_golden_floor")(b"XXXX" + trailer[4:]) == 0  # bad magic -> floor 0
+
+
+# --- _read_all (the manifest is read into RAM, not streamed) -----------------
+
+class _FakeBody:
+    def __init__(self, data):
+        self.data, self.pos = data, 0
+
+    def readinto(self, buf):
+        chunk = self.data[self.pos:self.pos + len(buf)]
+        buf[:len(chunk)] = chunk
+        self.pos += len(chunk)
+        return len(chunk)
+
+
+def test_read_all_reads_to_eof():
+    assert inst("_read_all")(_FakeBody(b"manifest" * 200), 100000) == b"manifest" * 200
+
+
+def test_read_all_rejects_oversize():
+    with pytest.raises(ValueError, match="larger than"):
+        inst("_read_all")(_FakeBody(b"x" * 5000), 1000)
 
 
 def test_install_stream_image_too_large():

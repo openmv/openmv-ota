@@ -19,8 +19,11 @@ import that runs on the host (to derive the PENDING marker, pinned against
 ``openmv_ota.ota.status`` by a test); the device imports are lazy.
 """
 
+import binascii
 import hashlib
 import io
+import json
+import struct
 
 try:                                   # the firmware freezes openmv_log beside boot.py
     import openmv_log
@@ -253,6 +256,111 @@ def _make_body(reader, headers):
     return _Body(reader, None, False)
 
 
+def _read_all(body, limit):
+    """Read a whole (small) response body into bytes, capped at ``limit`` -- for the
+    manifest, which is fetched into RAM rather than streamed to flash. Raises if it
+    exceeds ``limit`` (a runaway/oversized manifest)."""
+    out = b""
+    buf = bytearray(512)
+    while True:
+        n = body.readinto(buf)
+        if not n:
+            return out
+        out += bytes(buf[:n])
+        if len(out) > limit:
+            raise ValueError("manifest larger than %d bytes" % limit)
+
+
+# --- pure: signed manifest (mirror of openmv_ota.ota.manifest, pinned by tests) ----
+# The installer parses + selects from the manifest here (pre-erase, /rom intact); run()
+# verifies the signature with the frozen ecdsa_verify C module + cfg.TRUSTED_KEYS, exactly
+# as boot.py verifies an image trailer.
+
+_MANIFEST_MAGIC = b"OMVM"
+_MANIFEST_HEADER_VERSION = 1
+_MANIFEST_SCHEMA = 1
+_MANIFEST_HEADER_STRUCT = "<4sIIIIi"          # magic, hver, body_size, sig_size, key_id, alg
+_MANIFEST_HEADER_SIZE = struct.calcsize(_MANIFEST_HEADER_STRUCT)   # 24
+_MANIFEST_MAX = 8192
+# COSE alg id -> raw R||S signature length (mirror of openmv_ota.ota.algorithms / boot.py).
+_ALG_SIG_SIZE = {-7: 64, -35: 96, -36: 132}
+# Image trailer header (mirror of openmv_ota.ota.trailer) -- only payload_version is read.
+_TRAILER_MAGIC = b"OMVR"
+_TRAILER_HEADER_STRUCT = "<4sIIIIIIIIIIi32s"
+
+
+def _manifest_parse(data):
+    """Structurally parse + CRC-check a manifest, returning a dict with the signed
+    ``body``, the ``key_id``/``sig_alg`` (to pick the key), the ``signature``, and the
+    exact ``region`` the signature covers. Raises ValueError on any malformation -- the
+    signature itself is checked by the caller against the trusted keys."""
+    if len(data) < _MANIFEST_HEADER_SIZE:
+        raise ValueError("manifest too small")
+    magic, hver, body_size, sig_size, key_id, sig_alg = struct.unpack_from(
+        _MANIFEST_HEADER_STRUCT, data, 0)
+    if magic != _MANIFEST_MAGIC:
+        raise ValueError("bad manifest magic")
+    if hver != _MANIFEST_HEADER_VERSION:
+        raise ValueError("bad manifest header_version")
+    expect_sig = _ALG_SIG_SIZE.get(sig_alg)
+    if expect_sig is None or sig_size != expect_sig:
+        raise ValueError("bad manifest alg/sig_size")
+    body_end = _MANIFEST_HEADER_SIZE + body_size + sig_size
+    if body_end + 4 > len(data):
+        raise ValueError("manifest truncated")
+    crc = struct.unpack_from("<I", data, body_end)[0]
+    if (binascii.crc32(data[:body_end]) & 0xFFFFFFFF) != crc:
+        raise ValueError("manifest crc mismatch")
+    region = bytes(data[:_MANIFEST_HEADER_SIZE + body_size])
+    body = json.loads(data[_MANIFEST_HEADER_SIZE:_MANIFEST_HEADER_SIZE + body_size])
+    signature = bytes(data[_MANIFEST_HEADER_SIZE + body_size:body_end])
+    return {"body": body, "key_id": key_id, "sig_alg": sig_alg,
+            "signature": signature, "region": region}
+
+
+def _update_reject(body, board_id, platform_version, rollback_floor):
+    """Device-relative pre-flight check on a verified manifest body -- the mirror of
+    boot.evaluate_slot's image checks (and openmv_ota.ota.manifest.update_reject_reason).
+    Returns a reason string to reject, or None to proceed."""
+    if body.get("schema") != _MANIFEST_SCHEMA:
+        return "schema"
+    if board_id and body.get("board_id", 0) != board_id:
+        return "board"
+    mpv = body.get("min_platform_version", 0)
+    if mpv and mpv > platform_version:
+        return "compat"
+    if body.get("payload_version", 0) < rollback_floor:
+        return "rollback"
+    return None
+
+
+def _select_rep(body, delta_capable, golden_payload_version):
+    """Pick the cheapest usable representation (mirror of
+    openmv_ota.ota.manifest.select_representation). Returns the rep dict, or None."""
+    best = None
+    for rep in body.get("representations", []):
+        fmt = rep.get("format")
+        if fmt == "bsdiff":
+            if not delta_capable or rep.get("base_payload_version") != golden_payload_version:
+                continue
+        elif fmt != "full":
+            continue
+        if best is None or rep.get("size", 1 << 62) < best.get("size", 1 << 62):
+            best = rep
+    return best
+
+
+def _golden_floor(trailer):
+    """The anti-rollback floor: BACK golden's ``payload_version`` (mirror of
+    boot._rollback_floor). 0 if BACK's trailer doesn't parse (a torn factory image)."""
+    if len(trailer) < struct.calcsize(_TRAILER_HEADER_STRUCT):
+        return 0
+    fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
+    if fields[0] != _TRAILER_MAGIC:
+        return 0
+    return fields[8]                              # payload_version (9th header field)
+
+
 # --- pure: the flash write (host-testable; all I/O injected) -----------------
 
 def _is_blank(chunk):
@@ -280,7 +388,8 @@ class _Progress:
             self._log.info("install: %d%% (%d/%d bytes)" % (pct, done, total))
 
 
-def _install_stream(read, erase, write, readback, front_size, block, feed, progress=None):
+def _install_stream(read, erase, write, readback, front_size, block, feed,
+                    progress=None, expect_sha=None):
     """Erase the FRONT slot, stream the decompressed image into it 1:1 (verifying
     every write by read-back, skipping already-erased 0xFF runs), then arm the trial.
 
@@ -290,9 +399,11 @@ def _install_stream(read, erase, write, readback, front_size, block, feed, progr
     returns the ``n`` bytes at ``off``; ``feed()`` is called once per chunk so the
     watchdog stays alive through the loops *without* masking a hang (if the loop stops
     iterating, feeding stops); ``progress(done, front_size)`` (if given) is called once per
-    written chunk so the caller can log/report how far the install has got. Raises on any
-    size mismatch or read-back miscompare; this runs after the erase, so the caller turns
-    any exception into a reboot into golden."""
+    written chunk so the caller can log/report how far the install has got; ``expect_sha``
+    (if given, the manifest's hex sha256 of the reconstructed image) is checked over the
+    streamed bytes and must match. Raises on any size/hash mismatch or read-back
+    miscompare; this runs after the erase, so the caller turns any exception into a reboot
+    into golden."""
     erase(front_size)
     off = 0
     while off < front_size:                          # confirm the erase took
@@ -302,6 +413,7 @@ def _install_stream(read, erase, write, readback, front_size, block, feed, progr
         off += n
         feed()
 
+    digest = hashlib.sha256() if expect_sha is not None else None
     off = 0
     buf = b""
     while True:
@@ -312,6 +424,8 @@ def _install_stream(read, erase, write, readback, front_size, block, feed, progr
             chunk, buf = buf[:_CHUNK], buf[_CHUNK:]
             if off + len(chunk) > front_size:
                 raise ValueError("image larger than the %d-byte slot" % front_size)
+            if digest is not None:
+                digest.update(chunk)
             if not _is_blank(chunk):                 # erased regions are already 0xFF
                 write(off, chunk)
                 if readback(off, len(chunk)) != chunk:
@@ -325,6 +439,8 @@ def _install_stream(read, erase, write, readback, front_size, block, feed, progr
     if off != front_size:
         raise ValueError("image is %d bytes, expected a full %d-byte slot"
                          % (off, front_size))
+    if digest is not None and digest.hexdigest() != expect_sha:
+        raise OSError("image sha256 does not match the manifest")
 
     pending_off = front_size - 2 * block             # the status sector
     write(pending_off, PENDING)                       # arm the one-shot trial, last
@@ -382,12 +498,48 @@ def _open(url, ca_pem, socket, ssl, max_redirects=5):  # pragma: no cover
     raise OSError("too many redirects")
 
 
-def run(url, ca_pem, cfg):  # pragma: no cover
-    """Download and install the gzipped FRONT-slot image at ``url``. Never returns:
-    reboots into the new image's trial on success, or into the golden BACK image if
-    anything fails after the erase commits. Progress is logged from here (RAM + the frozen
-    logger) at every 10% step -- it can't be a caller callback, whose code is being
-    erased."""
+def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: no cover
+    """Pre-erase: fetch the signed manifest, verify its signature against the frozen
+    trusted keys (exactly as boot.py verifies an image trailer), apply the device-relative
+    checks (board / platform / anti-rollback), and pick a representation. Returns
+    ``(image_url, fmt, expect_sha)``. Raises (to the app, /rom intact) on any failure --
+    nothing is erased."""
+    import uctypes
+    import vfs
+
+    sock, body = _open(manifest_url, ca_pem, socket, ssl)
+    try:
+        raw = _read_all(body, _MANIFEST_MAX)
+    finally:
+        sock.close()
+    m = _manifest_parse(raw)                          # structure + crc (raises on bad)
+    pubkey = cfg.TRUSTED_KEYS.get(m["key_id"])
+    if pubkey is None:
+        raise OSError("manifest signed by an untrusted key")
+    if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
+        raise OSError("manifest signature does not verify")
+
+    body_dict = m["body"]
+    base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # partition XIP base
+    floor = _golden_floor(uctypes.bytearray_at(base + cfg.PARTITION_SIZE - cfg.OTA_BLOCK,
+                                              cfg.OTA_BLOCK))
+    reason = _update_reject(body_dict, cfg.BOARD_ID, cfg.PLATFORM_VERSION, floor)
+    if reason is not None:
+        raise OSError("manifest rejected (%s)" % reason)
+    # No on-device delta applier yet -> only the full representation is usable.
+    rep = _select_rep(body_dict, False, floor)
+    if rep is None:
+        raise OSError("manifest has no usable representation")
+    return rep["url"], rep.get("format"), body_dict.get("sha256")
+
+
+def run(manifest_url, ca_pem, cfg):  # pragma: no cover
+    """Fetch the signed manifest at ``manifest_url``, verify + vet it, then download and
+    install the chosen image. Never returns: reboots into the new image's trial on
+    success, or into the golden BACK image if anything fails after the erase commits.
+    A pre-flight failure (bad URL/DNS/TLS, bad/forbidden manifest) raises to the app with
+    ``/rom`` intact. Progress is logged from here (RAM + the frozen logger) at every 10%
+    step -- it can't be a caller callback, whose code is being erased."""
     import deflate
     import machine
     import socket
@@ -395,6 +547,7 @@ def run(url, ca_pem, cfg):  # pragma: no cover
 
     import uctypes
     import vfs
+    from ecdsa_verify import verify                  # the frozen C module (as in boot.py)
 
     log = openmv_log.log if openmv_log is not None else None
     # Watchdog (if the app enabled one): relax() feeds it from a timer ISR ONLY around the
@@ -421,19 +574,23 @@ def run(url, ca_pem, cfg):  # pragma: no cover
         if rc < 0:
             raise OSError(-rc)
 
-    # Pre-erase: connect + verify TLS + read response headers. Errors here raise to the
+    # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the
     # app (the FRONT slot is untouched).
     if log:
-        log.info("install: downloading %s" % url)
-    sock, body = _open(url, ca_pem, socket, ssl)
+        log.info("install: fetching manifest %s" % manifest_url)
+    image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
+    if log:
+        log.info("install: downloading %s (%s)" % (image_url, fmt))
+    sock, body = _open(image_url, ca_pem, socket, ssl)
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
     # failure reboots into the golden image instead of propagating.
     if log:
-        log.info("install: connected; erasing + writing FRONT (%d bytes)" % front_size)
+        log.info("install: erasing + writing FRONT (%d bytes)" % front_size)
     try:
         dio = deflate.DeflateIO(body, deflate.GZIP)
-        _install_stream(dio.read, erase, write, readback, front_size, block, feed, progress)
+        _install_stream(dio.read, erase, write, readback, front_size, block, feed,
+                        progress, expect_sha)
     except Exception as e:
         sock.close()
         if log:

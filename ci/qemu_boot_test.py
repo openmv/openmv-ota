@@ -423,20 +423,49 @@ openmv_log.log.setLevel(logging.INFO)
 openmv_log.log.warning("qemu: live-log")
 emit_ok = buf.getvalue() == "[2026-06-25 12:34:56] WARNING openmv_ota: qemu: live-log\\r\\n"
 
+# Signed manifest: parse the real host-signed bytes under MicroPython (exercises the
+# struct/json/binascii/crc path) and run the pure selection + reject logic. The ECDSA
+# verify itself uses the ecdsa_verify C module, absent on the bare MPS port (the boot
+# scenarios inject verify too), so it's host-tested, not exercised here.
+_m = P["_manifest_parse"](__MANIFEST__)
+_rep = P["_select_rep"](_m["body"], False, 0)
+_rej = P["_update_reject"](_m["body"], 0, 0, 0)
+manifest_ok = (len(_m["signature"]) == 64                 # ES256 R||S parsed out
+               and _m["region"] == __MANIFEST__[:len(_m["region"])]
+               and _rep["format"] == "full" and _rej is None)
+
 ok = (url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok
-      and fmt_ok and emit_ok)
+      and fmt_ok and emit_ok and manifest_ok)
 print("INST", "url=" + str(url_ok), "deflate=" + str(deflate_ok),
-      "install=" + str(install_ok), "log=" + str(fmt_ok), "emit=" + str(emit_ok))
+      "install=" + str(install_ok), "manifest=" + str(manifest_ok),
+      "log=" + str(fmt_ok), "emit=" + str(emit_ok))
 print("INSTRESULT", "PASS" if ok else "FAIL")
 '''
 
 
 def _installer_script() -> str:
     import gzip
+
+    from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.keys import generate_private_key
+    from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
+    from openmv_ota.ota.sign import sign_region
+
     payload = b"openmv-ota installer payload " * 40
     gz = gzip.compress(payload, mtime=0)
+
+    spec = algorithm_for(ES256)
+    priv = generate_private_key(spec)
+    body = {"schema": 1, "board_id": 0, "payload_version": 0, "min_platform_version": 0,
+            "sha256": "ab" * 32,
+            "representations": [{"format": "full", "url": "https://x/f.gz", "size": 9}]}
+    man = Manifest(body=body, key_id=0x0100, sig_alg=ES256)
+    man.signature = sign_region(priv, signed_region(man), spec)
+    manifest_bytes = pack_manifest(man)
+
     return (_INSTALLER_SCRIPT_TMPL
-            .replace("__GZ__", repr(gz)).replace("__PAYLOAD__", repr(payload)))
+            .replace("__GZ__", repr(gz)).replace("__PAYLOAD__", repr(payload))
+            .replace("__MANIFEST__", repr(manifest_bytes)))
 
 
 # --- qemu orchestration -----------------------------------------------------

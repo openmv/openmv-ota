@@ -379,15 +379,19 @@ def sync():  # pragma: no cover
 
 
 def install(url, ca=None):  # pragma: no cover
-    """Download a gzipped FRONT-slot OTA image over HTTPS and install it: write the new
-    image into the FRONT slot, arm the one-shot trial, and reboot into it.
+    """Fetch the signed update **manifest** at ``url`` and install the image it points to:
+    verify the manifest's signature (same trusted keys as the image trailer), check the
+    device-relative fields (board / platform / anti-rollback) and pick a representation,
+    then download that image into the FRONT slot, arm the one-shot trial, and reboot.
 
-    Does **not** return on success -- it reboots. A failure *after* the write commits
-    reboots into the golden BACK image instead (boot.py rejects the half-written FRONT);
-    a pre-flight failure (bad URL, DNS, TLS, HTTP status) raises before anything is
-    erased, so the app can catch it and retry without a reboot. Call once the network is
-    up (WiFi/Ethernet/HaLow) and after any app teardown -- the install erases ``/rom``,
-    so the running app cannot continue past this call.
+    ``url`` is the **manifest** URL (produced by ``build manifest``), not a raw image --
+    the device resolves the actual image URL from the signed manifest internally. Does
+    **not** return on success -- it reboots. A failure *after* the write commits reboots
+    into the golden BACK image instead (boot.py rejects the half-written FRONT); a
+    pre-flight failure (bad URL, DNS, TLS, a bad/forbidden/rolled-back manifest) raises
+    before anything is erased, so the app can catch it and retry without a reboot. Call
+    once the network is up (WiFi/Ethernet/HaLow) and after any app teardown -- the install
+    erases ``/rom``, so the running app cannot continue past this call.
 
     The heavy lifting lives in ``data/installer.py``, shipped as source and ``exec``'d
     into RAM here: the app's code is in the FRONT slot we're about to erase, so the
