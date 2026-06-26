@@ -238,8 +238,10 @@ class OtaBoot:
 
 
 # --- Telemetry the app reads after boot completes ---------------------------
-# boot.py can't write to UART/REPL (not initialised yet in the frozen boot path),
-# so it records the outcome here for the app to read once it's running.
+# boot.py can't write to UART/REPL (not initialised yet in the frozen boot path), so it
+# records the outcome for the app to read once it's running. _main also mirrors these
+# onto the _ota_config module (see below) -- that's the channel the app-side openmv_ota
+# library actually reads, since importing *this* module would re-run the boot logic.
 
 last_slot = None              # 'FRONT' or 'BACK'
 last_payload_version = 0      # the mounted image's payload_version
@@ -301,6 +303,11 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     global last_slot, last_payload_version, last_failure_reason
     last_slot, last_payload_version, last_failure_reason = (
         slot, trailer.payload_version, front_reason)
+    # Mirror onto _ota_config, the module the app's openmv_ota lib reads (both import it,
+    # and modules are cached, so this persists in-VM without re-running boot.py).
+    cfg.last_slot = slot
+    cfg.last_payload_version = trailer.payload_version
+    cfg.last_failure_reason = front_reason
 
     os.chdir("/rom")
     sys.path.append("/rom")

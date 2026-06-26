@@ -40,6 +40,17 @@ def test_status_of_unconfirmed_trial():
     assert rt._needs_confirm(_sector(True, True, False)) is True
 
 
+def test_should_confirm_only_on_a_front_trial():
+    trial = _sector(True, True, False)
+    assert rt._should_confirm("FRONT", trial) is True
+    # the guard: a trial we *fell back from* (running BACK) must NOT be confirmed, or
+    # we'd resurrect the bad FRONT image on the next boot
+    assert rt._should_confirm("BACK", trial) is False
+    assert rt._should_confirm(None, trial) is False
+    # on FRONT but already confirmed / not a trial -> nothing to do
+    assert rt._should_confirm("FRONT", _sector(True, True, True)) is False
+
+
 def test_status_of_pending_only_is_not_a_trial():
     # staged but not yet trial-booted (boot.py hasn't armed 'tried') -> nothing to confirm
     s = rt._status_of(_sector(True, False, False))

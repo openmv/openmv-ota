@@ -52,13 +52,16 @@ drives the device over the QEMU serial REPL via the firmware's bundled `mpremote
    the read-only qemu port rejects the write, so boot.py can't record the trial and falls
    back to the golden image (`reason trial-arm`) rather than running an untracked FRONT.
 5. **`openmv_ota` runtime lib** — a romfs carrying the real `app/lib/openmv_ota/`
-   runtime helpers + a matching `_ota_config`, with the FRONT status sector crafted as
-   an un-confirmed trial: `status()` reads the trial, `confirm()` decides to keep it,
+   runtime helpers + a matching `_ota_config` + a `/rom/system.json`, with the FRONT
+   status sector crafted as an un-confirmed trial: `status()` reflects the slot (read via
+   the `_ota_config` channel) + the trial, `identity()` reads system.json, `confirm()`
+   keeps a FRONT trial but no-ops once we pretend we fell back to BACK (the slot guard),
    and `sync()` finds + plans its bundled resource. This covers the lib's device wiring
-   (the read/decision/plan paths + `__file__`-based data resolution) that host tests
-   can't reach. The flash *writes* no-op on the qemu port (read-only `rom_ioctl`), the
-   same reason scenario 2's `write_marker` is stubbed; the writes use the same
-   `rom_ioctl` API as `boot.py` and are covered by the host logic tests.
+   (the read/decision/plan paths, `__file__`-based data resolution, the boot-result
+   channel, the slot guard) that host tests can't reach. The flash *writes* no-op on the
+   qemu port (read-only `rom_ioctl`), the same reason scenario 2's `write_marker` is
+   stubbed; the writes use the same `rom_ioctl` API as `boot.py` and are covered by the
+   host logic tests.
 
 The signature step uses an injected `verify` because the qemu port doesn't build
 mbedtls yet (the ECDSA core is covered by `cshim`); enabling mbedtls on the qemu

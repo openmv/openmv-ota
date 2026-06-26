@@ -64,15 +64,24 @@ to run the known-good image than an update we couldn't make recoverable.
 ## `openmv_ota` — the runtime library
 
 `project new --ota` scaffolds `app/lib/openmv_ota/` (plain Python you own and can
-extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes three
-calls:
+extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes:
 
-- **`status()`** — read-only view of the running FRONT image's trial state:
-  `{"pending", "tried", "confirmed", "trial"}`. `trial` is `True` when you've booted a
-  freshly-updated image that hasn't been kept yet.
-- **`confirm()`** — keep the running image: writes `confirmed` **iff** it's an
-  un-confirmed trial, else a no-op. Idempotent (safe to call every boot once healthy),
-  returns whether it just confirmed.
+- **`status()`** — read-only view of what boot.py did this boot (it mirrors its result
+  onto `_ota_config`, the module the lib reads — importing boot.py would re-run it):
+  - `slot` — `'FRONT'` | `'BACK'` | `None` (which image booted),
+  - `fallback_reason` — why FRONT was rejected (`None` when on FRONT); `slot == 'BACK'`
+    with a reason means **the last update failed and you're on the golden image** — worth
+    reporting upstream,
+  - `payload_version` — the booted image's version,
+  - `pending` / `tried` / `confirmed` / `trial` — FRONT's trial-marker state.
+- **`identity()`** — the running image's identity/provenance from `/rom/system.json`
+  (`board`, `product`, `board_id`, `app_version`, `vendor`, toolchain, …) — what an
+  update server reads to decide what to push. `{}` if there's no system.json.
+- **`confirm()`** — keep the running image: writes `confirmed` **iff** you booted FRONT
+  *and* it's an un-confirmed trial, else a no-op. Idempotent (safe to call every boot
+  once healthy), returns whether it just confirmed. The FRONT-slot guard matters: if you
+  fell back to BACK because a trial failed, FRONT still looks like an un-confirmed trial,
+  so confirming it from BACK would resurrect the bad image — `confirm()` refuses to.
 - **`sync()`** — apply any **bundled resources** (see below) whose on-device target
   differs from the bundled copy. Idempotent, returns the names applied; a no-op when
   nothing is bundled. Call it **early**, before a resource's consumer is used (e.g.
@@ -84,10 +93,11 @@ import openmv_ota
 openmv_ota.sync()                 # early: bring bundled resources (e.g. the helper
                                   # core's romfs) up to date with this image
 # ... start your app; once it has validated itself healthy:
-openmv_ota.confirm()              # keep this update (no-op if it isn't a trial)
+openmv_ota.confirm()              # keep this update (no-op unless a FRONT trial)
 
-if openmv_ota.status()["trial"]:  # optional: still on trial -> run extra self-checks
-    ...
+st = openmv_ota.status()
+if st["fallback_reason"]:         # on golden because the last update failed -> report it
+    report_to_server(openmv_ota.identity(), st["fallback_reason"])
 ```
 
 Both `confirm()` and `sync()` **read their flash writes back and compare** (not just

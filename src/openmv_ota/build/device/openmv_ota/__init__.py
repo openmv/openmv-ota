@@ -69,6 +69,14 @@ def _needs_confirm(status_sector):
     return _status_of(status_sector)["trial"]
 
 
+def _should_confirm(slot, status_sector):
+    """True iff confirm() should write CONFIRMED: we actually booted FRONT *and* it's an
+    un-confirmed trial. The slot guard matters -- if we fell back to BACK because FRONT's
+    trial failed, FRONT still looks like an un-confirmed trial, and confirming it would
+    resurrect the bad image on the next boot."""
+    return slot == "FRONT" and _needs_confirm(status_sector)
+
+
 # Streaming unit for partition compare/write. A multiple of every flash write
 # alignment, so chunked writes never need per-port re-alignment, and only one chunk
 # is ever held in RAM -- never a whole (up to ~1 MiB) image.
@@ -152,23 +160,56 @@ def _verify_erased(part_index, total):  # pragma: no cover
         off += n
 
 
-def status():  # pragma: no cover
-    """The running FRONT image's trial state: a dict with ``pending`` / ``tried`` /
-    ``confirmed`` / ``trial`` (``trial`` == an un-confirmed one-shot trial)."""
+def _boot_result():  # pragma: no cover
+    """What boot.py recorded this boot (it mirrors its result onto _ota_config):
+    ``(slot, payload_version, fallback_reason)``. Defaults if boot.py didn't run."""
     import _ota_config
-    sector = _read_at(0, _front_status_offset(_ota_config), 3 * MARKER_SIZE)
-    return _status_of(sector)
+    return (getattr(_ota_config, "last_slot", None),
+            getattr(_ota_config, "last_payload_version", 0),
+            getattr(_ota_config, "last_failure_reason", None))
+
+
+def status():  # pragma: no cover
+    """What boot.py did this boot, for the app/updater to inspect or report:
+
+        slot             'FRONT' | 'BACK' | None    which image booted
+        fallback_reason  str | None                 why FRONT was rejected (None on FRONT)
+        payload_version  int                         the booted image's version
+        pending/tried/confirmed/trial               FRONT's trial-marker state
+
+    ``slot == 'BACK'`` with a ``fallback_reason`` means the last update failed and the
+    device is on the golden image -- worth reporting upstream."""
+    import _ota_config
+    slot, version, reason = _boot_result()
+    s = _status_of(_read_at(0, _front_status_offset(_ota_config), 3 * MARKER_SIZE))
+    s["slot"] = slot
+    s["fallback_reason"] = reason
+    s["payload_version"] = version
+    return s
+
+
+def identity():  # pragma: no cover
+    """The running image's identity/provenance from ``/rom/system.json`` (board, product,
+    board_id, app_version, vendor, toolchain, ...) -- what an update server reads to decide
+    what to push. ``{}`` if there's no system.json."""
+    import json
+    try:
+        return json.load(open("/rom/system.json"))
+    except OSError:
+        return {}
 
 
 def confirm():  # pragma: no cover
-    """Keep the running FRONT image. Writes CONFIRMED iff it's an un-confirmed
-    one-shot trial (no erase -- the marker just programs into the already-erased
-    status sector, like boot.py arming ``tried``); a no-op otherwise. Returns True
-    iff it just confirmed; raises OSError if the marker write fails. Idempotent --
-    safe to call every boot once healthy."""
+    """Keep the running FRONT image. Writes CONFIRMED iff we booted FRONT *and* it's an
+    un-confirmed one-shot trial (no erase -- the marker just programs into the
+    already-erased status sector, like boot.py arming ``tried``); a no-op otherwise. The
+    FRONT-slot guard prevents confirming a failed trial we fell back from. Returns True
+    iff it just confirmed; raises OSError if the marker write fails. Idempotent -- safe
+    to call every boot once healthy."""
     import _ota_config
+    slot, _v, _r = _boot_result()
     off = _front_status_offset(_ota_config)
-    if not _needs_confirm(_read_at(0, off, 3 * MARKER_SIZE)):
+    if not _should_confirm(slot, _read_at(0, off, 3 * MARKER_SIZE)):
         return False
     _write_verified(0, off + _CONFIRMED_OFF, CONFIRMED)
     return True
