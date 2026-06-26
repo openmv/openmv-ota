@@ -32,6 +32,63 @@ def _fake_make(artifacts):
     return fake
 
 
+_MBEDTLS_REL = "lib/micropython/extmod/mbedtls/mbedtls_config_common.h"
+
+
+# --- _enable_pem: transient mbedtls PEM patch for OTA builds -----------------
+
+def test_enable_pem_patches_and_restores(tmp_path):
+    cfg = tmp_path / _MBEDTLS_REL
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("#define MBEDTLS_X509_USE_C\n")
+    restore = fw._enable_pem(tmp_path)
+    assert restore is not None and restore[0] == cfg
+    patched = cfg.read_text()
+    assert "MBEDTLS_BASE64_C" in patched and "MBEDTLS_PEM_PARSE_C" in patched
+    restore[0].write_text(restore[1])
+    assert "MBEDTLS_PEM_PARSE_C" not in cfg.read_text()
+
+
+def test_enable_pem_noop_when_already_enabled(tmp_path):
+    cfg = tmp_path / _MBEDTLS_REL
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("#define MBEDTLS_X509_USE_C\n#define MBEDTLS_PEM_PARSE_C\n")
+    before = cfg.read_text()
+    assert fw._enable_pem(tmp_path) is None
+    assert cfg.read_text() == before
+
+
+def test_enable_pem_warns_when_anchor_missing(tmp_path, capsys):
+    cfg = tmp_path / _MBEDTLS_REL
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("#define MBEDTLS_SOMETHING_ELSE\n")
+    assert fw._enable_pem(tmp_path) is None
+    assert "could not enable PEM" in capsys.readouterr().err
+
+
+def test_enable_pem_noop_when_config_absent(tmp_path):
+    assert fw._enable_pem(tmp_path) is None
+
+
+def test_build_firmware_ota_patches_pem_during_build_then_restores(make_project, monkeypatch):
+    root, repo, _app = make_project(ota=True)
+    cfg = Path(repo) / _MBEDTLS_REL
+    original = cfg.read_text()
+    state = {}
+
+    def fake(repo_, args):
+        if "clean" not in args:
+            state["pem"] = "MBEDTLS_PEM_PARSE_C" in cfg.read_text()
+            target = next(a.split("=", 1)[1] for a in args if a.startswith("TARGET="))
+            f = Path(repo_) / "build" / target / "bin" / "firmware.bin"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"FW")
+    monkeypatch.setattr(fw, "_run_make", fake)
+    fw.build_firmware(root, firmware=repo)
+    assert state["pem"] is True            # PEM was enabled while building
+    assert cfg.read_text() == original     # and restored afterward
+
+
 def test_build_firmware_non_ota(make_project, monkeypatch):
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)

@@ -81,6 +81,10 @@ def make_firmware(tmp_path):
         if "mpconfig" not in omit:
             (mp / "mpconfig.h").write_text(MPCONFIG)
         (mp / "persistentcode.h").write_text(PERSISTENT)
+        mbed = repo / "lib" / "micropython" / "extmod" / "mbedtls"
+        mbed.mkdir(parents=True)
+        (mbed / "mbedtls_config_common.h").write_text(
+            "#ifndef X\n#define MBEDTLS_X509_USE_C\n#endif\n")
         for board, content in (("OPENMV_N6", N6_BOARD), ("OPENMV_AE3", AE3_BOARD)):
             d = repo / "boards" / board
             d.mkdir(parents=True)
