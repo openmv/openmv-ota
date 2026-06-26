@@ -83,7 +83,7 @@ drives the device over the QEMU serial REPL via the firmware's bundled `mpremote
    is decompressed on-device and compared), and the `_install_stream` erase/write/
    read-back/arm loop over a fake flash. This pins the one genuinely device-specific
    risk — that a pure-Python stream subclassing `io.IOBase` feeds `DeflateIO` correctly
-   under MicroPython — which CPython host tests can't. It also checks the **`_ota_log`
+   under MicroPython — which CPython host tests can't. It also checks the **`openmv_log`
    logger** on-device: it ships the real micropython-lib `logging.py` (the emulator
    boards don't freeze it; real OpenMV boards do), injects a fake `time` (the qemu port
    has no RTC), and drives a `logging.warning(...)` through the real logger + the custom

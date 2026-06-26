@@ -215,8 +215,8 @@ import logging
 logging.getLogger("openmv_ota").info("hi")     # or: openmv_ota.log.info("hi")
 ```
 
-The configuration lives in `device/log.py`, scaffolded into your project and frozen by
-`build firmware` as **`_ota_log`** (frozen so `boot.py` can use it before `/rom` mounts).
+The configuration lives in `device/openmv_log.py`, scaffolded into your project and frozen by
+`build firmware` as **`openmv_log`** (frozen so `boot.py` can use it before `/rom` mounts).
 It's **off by default** (the logger's level is set above `CRITICAL`, so nothing emits and
 nothing leaks to the REPL). To debug on hardware, edit it and rebuild firmware:
 
@@ -238,7 +238,7 @@ and falls back to **monotonic uptime** before the clock is set (e.g. in `boot.py
 
 `boot.py` logs the mounted slot and any reject reason; the installer logs each phase
 (download / erase+write / done / failure); `confirm()`/`sync()` log their actions. Any
-`machine.UART` is created once and kept by the handler. Because `device/log.py` is
+`machine.UART` is created once and kept by the handler. Because `device/openmv_log.py` is
 *yours*, sending logs elsewhere (a file, a socket) is just editing its handler — the
 levels, filtering, and API are the standard `logging` ones.
 

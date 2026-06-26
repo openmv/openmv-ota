@@ -25,10 +25,10 @@ import binascii
 import hashlib
 import struct
 
-try:                                   # the firmware freezes _ota_log beside boot.py
-    import _ota_log
+try:                                   # the firmware freezes openmv_log beside boot.py
+    import openmv_log
 except ImportError:                    # host / tests / a build without logging
-    _ota_log = None
+    openmv_log = None
 
 # --- Trailer format (mirror of openmv_ota.ota.trailer) ----------------------
 
@@ -306,14 +306,14 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
             cfg.OTA_BLOCK, cfg.BOARD_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
     except OtaReject as e:
-        if _ota_log is not None:
-            _ota_log.log.error("boot: no bootable slot: %s" % e)
+        if openmv_log is not None:
+            openmv_log.log.error("boot: no bootable slot: %s" % e)
         raise
-    if _ota_log is not None:
+    if openmv_log is not None:
         if front_reason is None:
-            _ota_log.log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
+            openmv_log.log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
         else:
-            _ota_log.log.warning("boot: FRONT rejected (%s) -> mounted %s (payload %d)"
+            openmv_log.log.warning("boot: FRONT rejected (%s) -> mounted %s (payload %d)"
                                  % (front_reason, slot, trailer.payload_version))
 
     global last_slot, last_payload_version, last_failure_reason

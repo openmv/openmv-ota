@@ -30,10 +30,10 @@ import hashlib
 
 # Re-export the frozen OTA logger so the app can ``openmv_ota.log.info("...")`` (it's the
 # standard ``logging.getLogger("openmv_ota")``) and the lib's own device paths can log.
-# Absent on the host (and on a firmware built without the frozen _ota_log) -> a null
+# Absent on the host (and on a firmware built without the frozen openmv_log) -> a null
 # logger, so callers never need to guard.
 try:
-    from _ota_log import log
+    from openmv_log import log
 except ImportError:
     class _NullLog:
         def debug(self, msg, *a):

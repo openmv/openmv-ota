@@ -260,7 +260,7 @@ def test_create_non_ota_no_runtime_lib(tmp_path, make_firmware, make_sdk):
 def test_create_ota_scaffolds_device_log(tmp_path, make_firmware, make_sdk):
     root, _ = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV_N6"],
                       ota=True, ota_keys=2, factory_keys=1)
-    log = root / "device" / "log.py"
+    log = root / "device" / "openmv_log.py"
     assert log.exists()
     txt = log.read_text()
     assert "ENABLED" in txt and 'getLogger("openmv_ota")' in txt

@@ -22,10 +22,10 @@ import that runs on the host (to derive the PENDING marker, pinned against
 import hashlib
 import io
 
-try:                                   # the firmware freezes _ota_log beside boot.py
-    import _ota_log
+try:                                   # the firmware freezes openmv_log beside boot.py
+    import openmv_log
 except ImportError:                    # host / tests / a build without logging
-    _ota_log = None
+    openmv_log = None
 
 # --- Status marker (mirror of openmv_ota.ota.status; pinned by a test) -------
 
@@ -344,7 +344,7 @@ def run(url, ca_pem, cfg):  # pragma: no cover
     import uctypes
     import vfs
 
-    log = _ota_log.log if _ota_log is not None else None
+    log = openmv_log.log if openmv_log is not None else None
     front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # FRONT partition XIP base
 

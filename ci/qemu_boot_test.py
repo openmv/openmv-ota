@@ -271,13 +271,13 @@ print("RTRESULT", "PASS" if ok else "FAIL")
 _INSTALLER = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
               / "build" / "device" / "openmv_ota" / "data" / "installer.py")
 _LOG = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
-        / "build" / "device" / "log.py")
+        / "build" / "device" / "openmv_log.py")
 
 
 def _installer_partition(fw: Path, part: int, front: int) -> bytes:
     """A partition whose FRONT romfs carries the runtime lib + the installer *source*
     (data/installer.py) + a fake ca.pem + a matching _ota_config -- enough to exec the
-    installer into RAM and exercise its logic on real MicroPython. Also ships _ota_log +
+    installer into RAM and exercise its logic on real MicroPython. Also ships openmv_log +
     the real micropython-lib logging.py (the emulator boards don't freeze logging, but
     real OpenMV boards do), so the logging-based logger can be exercised too."""
     src = Path(tempfile.mkdtemp(prefix="omv-qemu-inst-"))
@@ -286,7 +286,7 @@ def _installer_partition(fw: Path, part: int, front: int) -> bytes:
     (src / "lib" / "openmv_ota" / "__init__.py").write_text(_RUNTIME_LIB.read_text())
     (data / "installer.py").write_text(_INSTALLER.read_text())
     (data / "ca.pem").write_text("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n")
-    (src / "_ota_log.py").write_text(_LOG.read_text())   # importable from /rom for this test
+    (src / "openmv_log.py").write_text(_LOG.read_text())   # importable from /rom for this test
     logging_lib = (fw / "lib" / "micropython" / "lib" / "micropython-lib"
                    / "python-stdlib" / "logging" / "logging.py")
     (src / "logging.py").write_text(logging_lib.read_text())
@@ -322,7 +322,7 @@ class _FakeTime:                                # the qemu port has no RTC (no t
         return 12345
 
 
-sys.modules["time"] = _FakeTime                 # before _ota_log/logging import time
+sys.modules["time"] = _FakeTime                 # before openmv_log/logging import time
 
 ns = {}
 exec(open("/rom/lib/openmv_ota/data/installer.py").read(), ns)
@@ -392,22 +392,22 @@ P["_install_stream"](reader_of(bytes(img)), erase, write, readback, FRONT, BLOCK
 so = FRONT - 2 * BLOCK
 install_ok = mem[0:4] == b"DATA" and bytes(mem[so:so + 16]) == P["PENDING"]
 
-import _ota_log                                 # imports logging + configures the logger
+import openmv_log                                 # imports logging + configures the logger
 import logging
 import io
-fmt_ok = (_ota_log._format("12.345", "INFO", "openmv_ota", "x")
+fmt_ok = (openmv_log._format("12.345", "INFO", "openmv_ota", "x")
           == "[12.345] INFO openmv_ota: x"
-          and _ota_log._stamp((2026, 6, 25, 12, 34, 56, 0, 0), 0) == "2026-06-25 12:34:56"
-          and _ota_log._stamp((2000, 1, 1, 0, 0, 0, 0, 0), 12345) == "   12.345")
+          and openmv_log._stamp((2026, 6, 25, 12, 34, 56, 0, 0), 0) == "2026-06-25 12:34:56"
+          and openmv_log._stamp((2000, 1, 1, 0, 0, 0, 0, 0), 12345) == "   12.345")
 # Full emit path through the real micropython-lib logging.py + our _OtaFormatter (with
 # the RTC set via _FakeTime -> wall-clock stamp), captured to a buffer.
 buf = io.StringIO()
 _h = logging.StreamHandler(buf)
 _h.terminator = "\\r\\n"
-_h.setFormatter(_ota_log._OtaFormatter())
-_ota_log.log.addHandler(_h)
-_ota_log.log.setLevel(logging.INFO)
-_ota_log.log.warning("qemu: live-log")
+_h.setFormatter(openmv_log._OtaFormatter())
+openmv_log.log.addHandler(_h)
+openmv_log.log.setLevel(logging.INFO)
+openmv_log.log.warning("qemu: live-log")
 emit_ok = buf.getvalue() == "[2026-06-25 12:34:56] WARNING openmv_ota: qemu: live-log\\r\\n"
 
 ok = (url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok

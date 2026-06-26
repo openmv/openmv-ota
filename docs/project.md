@@ -248,7 +248,7 @@ my-product/
 │       ├── installer.py     # the installer, shipped as source (exec'd into RAM)
 │       └── ca.pem           # TLS root bundle for downloads (fetched fresh at `new`)
 ├── device/
-│   └── log.py               # OTA debug logger, frozen as _ota_log (off by default)
+│   └── openmv_log.py               # OTA debug logger, frozen as openmv_log (off by default)
 └── keys/
     ├── trusted_keys.json    # committed: the public key set baked into firmware
     └── private/             # GITIGNORED: the private signing keys (PKCS#8 PEM)
@@ -306,8 +306,8 @@ after `build romfs`: it renders each board's signed bundle into a gzipped full
 FRONT-slot image (`<board>-ota.img.gz`) to host on a server. The signed bundle stays
 the source of truth; the image is a regenerable rendering of it.
 
-For debugging on hardware, `new --ota` also scaffolds **`device/log.py`** — an opt-in
-logger built on the standard `logging` module (frozen as `_ota_log`, off by default)
+For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in
+logger built on the standard `logging` module (frozen as `openmv_log`, off by default)
 shared by `boot.py`, the installer, and this lib, and exposed as `openmv_ota.log` (the
 `logging.getLogger("openmv_ota")` logger) for your app. Edit it to enable + pick your
 board's UART, then rebuild firmware.

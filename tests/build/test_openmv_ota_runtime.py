@@ -57,7 +57,7 @@ def test_should_confirm(slot, pending, tried, confirmed, expect):
 
 
 def test_log_reexport_is_a_null_logger_on_host():
-    # _ota_log is absent off-device, so openmv_ota.log is a null logger -- the app can
+    # openmv_log is absent off-device, so openmv_ota.log is a null logger -- the app can
     # call .info/.warning/etc. unconditionally (on-device it's logging.getLogger).
     assert rt.log.debug("d") is None
     assert rt.log.info("i") is None

@@ -1,4 +1,4 @@
-"""OTA logging config -- frozen into the firmware as ``_ota_log``.
+"""OTA logging config -- frozen into the firmware as ``openmv_log``.
 
 Built on the standard ``logging`` module (frozen on every OpenMV board via the board
 manifest's ``require("logging")``), so the OTA code and your app share one logger tree:
@@ -7,7 +7,7 @@ manifest's ``require("logging")``), so the OTA code and your app share one logge
     logging.getLogger("openmv_ota").info("hi")     # or openmv_ota.log.info("hi")
 
 ``boot.py``, the installer, and the ``openmv_ota`` runtime lib all log to the
-``openmv_ota`` logger; importing this module (which the build freezes as ``_ota_log``)
+``openmv_ota`` logger; importing this module (which the build freezes as ``openmv_log``)
 configures it. Records carry a level; the output is timestamped:
 
     [2026-06-25 12:34:56] WARNING openmv_ota: install: FAILED after erase   (RTC set)

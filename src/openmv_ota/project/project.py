@@ -451,9 +451,9 @@ def _scaffold_coprocessor(paths: ProjectPaths, app_version: str) -> None:
 # the tool and scaffolded into an OTA project's app/lib/openmv_ota/.
 _RUNTIME_LIB_SRC = Path(__file__).resolve().parents[1] / "build" / "device" / "openmv_ota"
 
-# The editable OTA logger, scaffolded to <project>/device/log.py and frozen as _ota_log
+# The editable OTA logger, scaffolded to <project>/device/openmv_log.py and frozen as openmv_log
 # by `build firmware` (see build/firmware.py).
-_DEVICE_LOG_SRC = Path(__file__).resolve().parents[1] / "build" / "device" / "log.py"
+_DEVICE_LOG_SRC = Path(__file__).resolve().parents[1] / "build" / "device" / "openmv_log.py"
 
 
 def _coprocessor_partitions(boards: list[str]) -> list[dict]:
@@ -537,12 +537,12 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str]) -> None:
 
 
 def _scaffold_device_log(paths: ProjectPaths) -> None:
-    """Scaffold ``device/log.py`` -- the OTA logger frozen into the firmware (as
-    ``_ota_log``) and shared by boot.py, the installer, and the runtime lib. The user
+    """Scaffold ``device/openmv_log.py`` -- the OTA logger frozen into the firmware (as
+    ``openmv_log``) and shared by boot.py, the installer, and the runtime lib. The user
     edits it to enable/redirect logging (off by default). Left alone if it exists."""
     d = paths.root / "device"
     d.mkdir(parents=True, exist_ok=True)
-    log = d / "log.py"
+    log = d / "openmv_log.py"
     if not log.exists():
         log.write_text(_DEVICE_LOG_SRC.read_text(encoding="utf-8"), encoding="utf-8")
 

@@ -1,4 +1,4 @@
-"""Host tests for the device OTA logging config (device/log.py, frozen as _ota_log).
+"""Host tests for the device OTA logging config (device/openmv_log.py, frozen as openmv_log).
 
 Loaded as a file module (under the openmv_ota name) so coverage measures it. The pure
 timestamp/line formatting is checked here; the logging-record formatter, the UART/handler
@@ -8,7 +8,7 @@ setup, and the enable block are device-only (``pragma: no cover``).
 import importlib.util
 from pathlib import Path
 
-_SRC = Path(__file__).resolve().parents[2] / "src/openmv_ota/build/device/log.py"
+_SRC = Path(__file__).resolve().parents[2] / "src/openmv_ota/build/device/openmv_log.py"
 _spec = importlib.util.spec_from_file_location("openmv_ota._log_under_test", str(_SRC))
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
