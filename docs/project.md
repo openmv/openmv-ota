@@ -316,7 +316,8 @@ board's UART, then rebuild firmware.
 It also scaffolds **`device/openmv_wdt.py`** — an opt-in watchdog helper (frozen as
 `openmv_wdt`, off by default): `openmv_wdt.feed()` from your main loop, and
 `with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds the watchdog
-through them). `install()` already wraps its erase/write in it. See
+through them). `install()` uses it automatically — `relax()` around the erase, `feed()`
+per chunk. See
 **[the on-device runtime](runtime.md#watchdog)**.
 
 The runtime lib is plain Python you own and can extend. For the full picture — the

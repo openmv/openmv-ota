@@ -275,10 +275,14 @@ def _reader_of(data):
     return read
 
 
-def _run_install(image, front_size, block):
+def _noop():
+    pass
+
+
+def _run_install(image, front_size, block, feed=_noop):
     flash = _FakeFlash(front_size)
     inst("_install_stream")(_reader_of(image), flash.erase, flash.write,
-                            flash.readback, front_size, block)
+                            flash.readback, front_size, block, feed)
     return flash
 
 
@@ -299,6 +303,17 @@ def test_install_stream_writes_and_arms():
     # the all-0xFF gap was never written (skipped)
     assert all(off < len(body) or off >= front - block for off, _ in flash.writes
                if off < front - 2 * block)
+
+
+def test_install_stream_feeds_the_watchdog_per_chunk():
+    block = 4096
+    front = 3 * block
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    calls = []
+    _run_install(bytes(image), front, block, lambda: calls.append(1))
+    # fed once per chunk through the erase-verify + write loops (not masking a hang)
+    assert len(calls) >= front // block
 
 
 def test_install_stream_image_too_large():
@@ -326,7 +341,7 @@ def test_install_stream_erase_verify_fails():
     flash = BadErase(front)
     with pytest.raises(OSError):
         inst("_install_stream")(_reader_of(b"\xff" * front), flash.erase, flash.write,
-                                flash.readback, front, block)
+                                flash.readback, front, block, _noop)
 
 
 def test_install_stream_write_verify_fails():
@@ -342,7 +357,7 @@ def test_install_stream_write_verify_fails():
     flash = BadWrite(front)
     with pytest.raises(OSError):
         inst("_install_stream")(_reader_of(bytes(image)), flash.erase, flash.write,
-                                flash.readback, front, block)
+                                flash.readback, front, block, _noop)
 
 
 def test_install_stream_arm_verify_fails():
@@ -358,4 +373,4 @@ def test_install_stream_arm_verify_fails():
     flash = DropPending(front)
     with pytest.raises(OSError):
         inst("_install_stream")(_reader_of(b"\xff" * front), flash.erase, flash.write,
-                                flash.readback, front, block)
+                                flash.readback, front, block, _noop)

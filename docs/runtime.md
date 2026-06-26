@@ -282,9 +282,13 @@ watchdog still catches a hung loop. The timer **must be a real hardware id** —
 callback is a true ISR that fires mid-erase; a virtual/soft `Timer(-1)` runs via the
 scheduler, which doesn't run while the CPU is blocked, so it would never fire when needed.
 
-**`install()` already does this** — it wraps its whole download + erase + write in
-`openmv_wdt.relax()`, so an OTA install won't trip a watchdog you've enabled (a big-slot
-erase can exceed even the WDT's max timeout). If you haven't enabled one, it's a no-op.
+**`install()` already does this, minimally** — it `relax()`es *only* the one long flash
+erase (which it can't feed from a loop and which can exceed even the WDT's max timeout),
+and `feed()`s the watchdog **per chunk** through the download + write. So an OTA install
+won't trip an enabled watchdog, yet a genuine stall *isn't* masked: if the loop stops or
+a recv stalls, feeding stops and the watchdog resets to golden. A 30 s socket timeout is
+the same backstop when no watchdog is enabled (a stalled download fails cleanly instead
+of hanging). All a no-op if you haven't enabled a watchdog.
 
 ## Safety properties at a glance
 

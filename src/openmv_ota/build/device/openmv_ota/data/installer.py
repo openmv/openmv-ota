@@ -33,12 +33,16 @@ except ImportError:
     openmv_wdt = None
 
 
-class _NoWdt:  # pragma: no cover  (fallback context when no watchdog module is frozen)
+class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is frozen)
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
         return False
+
+
+def _noop():  # pragma: no cover  (fallback feed() when no watchdog is frozen)
+    pass
 
 # --- Status marker (mirror of openmv_ota.ota.status; pinned by a test) -------
 
@@ -54,6 +58,10 @@ PENDING = _marker(b"pending")
 # Stream/flash unit. FRONT_SIZE is always a multiple of this (it is block-aligned
 # and the block is >= 4096), so every flash write is a full, aligned chunk.
 _CHUNK = 4096
+
+# Socket timeout (s) for the download: bounds the TLS handshake and every recv so a
+# stalled connection fails the install cleanly (-> reboot to golden) instead of hanging.
+_SOCK_TIMEOUT = 30
 
 
 # --- pure: URL + HTTP (host-testable) ---------------------------------------
@@ -252,15 +260,17 @@ def _is_blank(chunk):
     return chunk == b"\xff" * len(chunk)
 
 
-def _install_stream(read, erase, write, readback, front_size, block):
+def _install_stream(read, erase, write, readback, front_size, block, feed):
     """Erase the FRONT slot, stream the decompressed image into it 1:1 (verifying
     every write by read-back, skipping already-erased 0xFF runs), then arm the trial.
 
     ``read(n)`` yields decompressed image bytes (``b''`` at end); ``erase(total)``
-    erases ``total`` bytes from offset 0; ``write(off, data)`` programs flash;
-    ``readback(off, n)`` returns the ``n`` bytes at ``off``. Raises on any size
-    mismatch or read-back miscompare; this runs after the erase, so the caller turns
-    any exception into a reboot into the golden image."""
+    erases ``total`` bytes from offset 0 (the caller feeds the watchdog *inside* this one
+    long call, via a timer ISR); ``write(off, data)`` programs flash; ``readback(off, n)``
+    returns the ``n`` bytes at ``off``; ``feed()`` is called once per chunk so the
+    watchdog stays alive through the loops *without* masking a hang (if the loop stops
+    iterating, feeding stops). Raises on any size mismatch or read-back miscompare; this
+    runs after the erase, so the caller turns any exception into a reboot into golden."""
     erase(front_size)
     off = 0
     while off < front_size:                          # confirm the erase took
@@ -268,6 +278,7 @@ def _install_stream(read, erase, write, readback, front_size, block):
         if not _is_blank(readback(off, n)):
             raise OSError("erase verify failed at %d" % off)
         off += n
+        feed()
 
     off = 0
     buf = b""
@@ -284,6 +295,7 @@ def _install_stream(read, erase, write, readback, front_size, block):
                 if readback(off, len(chunk)) != chunk:
                     raise OSError("write verify failed at %d" % off)
             off += len(chunk)
+            feed()
         if not data:
             break
     if off != front_size:
@@ -307,7 +319,8 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
     ai = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0]
     sock = socket.socket(ai[0], ai[1], ai[2])
     try:
-        sock.connect(ai[-1])
+        sock.settimeout(_SOCK_TIMEOUT)               # so a stalled handshake/recv can't
+        sock.connect(ai[-1])                         # block forever -> clean install error
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.verify_mode = ssl.CERT_REQUIRED
         ctx.load_verify_locations(cadata=ca_pem)
@@ -358,6 +371,11 @@ def run(url, ca_pem, cfg):  # pragma: no cover
     import vfs
 
     log = openmv_log.log if openmv_log is not None else None
+    # Watchdog (if the app enabled one): relax() feeds it from a timer ISR ONLY around the
+    # single multi-second erase the main loop can't reach; feed() keeps it alive per chunk
+    # through the loops -- so a hung loop (or a stalled recv) still trips it -> golden.
+    relax = openmv_wdt.relax if openmv_wdt is not None else _NoWdt
+    feed = openmv_wdt.feed if openmv_wdt is not None else _noop
     front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # FRONT partition XIP base
 
@@ -365,37 +383,34 @@ def run(url, ca_pem, cfg):  # pragma: no cover
         return uctypes.bytearray_at(base + off, n)
 
     def erase(total):
-        rc = vfs.rom_ioctl(3, 0, total)
-        if rc < 0:
-            raise OSError(-rc)
+        with relax():                                 # the one op we can't feed in a loop
+            rc = vfs.rom_ioctl(3, 0, total)
+            if rc < 0:
+                raise OSError(-rc)
 
     def write(off, data):
         rc = vfs.rom_ioctl(4, 0, off, data)
         if rc < 0:
             raise OSError(-rc)
 
-    # Feed the watchdog (if the app enabled one) from a timer ISR across the whole long
-    # op -- download + multi-second erase + write -- which the main loop can't reach.
-    relax = openmv_wdt.relax if openmv_wdt is not None else _NoWdt
-    with relax():
-        # Pre-erase: connect + verify TLS + read response headers. Errors here raise to
-        # the app (the FRONT slot is untouched); relax() stops feeding on the way out.
-        if log:
-            log.info("install: downloading %s" % url)
-        sock, body = _open(url, ca_pem, socket, ssl)
+    # Pre-erase: connect + verify TLS + read response headers. Errors here raise to the
+    # app (the FRONT slot is untouched).
+    if log:
+        log.info("install: downloading %s" % url)
+    sock, body = _open(url, ca_pem, socket, ssl)
 
-        # Commit point: from the erase on we can't unwind into the (erased) app, so any
-        # failure reboots into the golden image instead of propagating.
+    # Commit point: from the erase on we can't unwind into the (erased) app, so any
+    # failure reboots into the golden image instead of propagating.
+    if log:
+        log.info("install: connected; erasing + writing FRONT (%d bytes)" % front_size)
+    try:
+        dio = deflate.DeflateIO(body, deflate.GZIP)
+        _install_stream(dio.read, erase, write, readback, front_size, block, feed)
+    except Exception as e:
+        sock.close()
         if log:
-            log.info("install: connected; erasing + writing FRONT (%d bytes)" % front_size)
-        try:
-            dio = deflate.DeflateIO(body, deflate.GZIP)
-            _install_stream(dio.read, erase, write, readback, front_size, block)
-        except Exception as e:
-            sock.close()
-            if log:
-                log.error("install: FAILED after erase (%s); rebooting to golden BACK" % e)
-            machine.reset()
+            log.error("install: FAILED after erase (%s); rebooting to golden BACK" % e)
+        machine.reset()
         sock.close()
     if log:
         log.info("install: installed + armed; rebooting into the trial")

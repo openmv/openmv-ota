@@ -388,9 +388,12 @@ def reader_of(d):
 
 img = bytearray(b"\\xff" * FRONT)
 img[0:4] = b"DATA"
-P["_install_stream"](reader_of(bytes(img)), erase, write, readback, FRONT, BLOCK)
+fed = []
+P["_install_stream"](reader_of(bytes(img)), erase, write, readback, FRONT, BLOCK,
+                     lambda: fed.append(1))
 so = FRONT - 2 * BLOCK
-install_ok = mem[0:4] == b"DATA" and bytes(mem[so:so + 16]) == P["PENDING"]
+install_ok = (mem[0:4] == b"DATA" and bytes(mem[so:so + 16]) == P["PENDING"]
+              and len(fed) > 0)        # fed the watchdog per chunk
 
 import openmv_log                                 # imports logging + configures the logger
 import logging
