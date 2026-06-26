@@ -14,6 +14,10 @@ are what an app uses around an OTA update:
                   coprocessor romfs into the helper core's partition. Idempotent;
                   call early (before the helper core is used). No-op when there is
                   nothing bundled.
+    install()  -> download a gzipped FRONT-slot image over HTTPS and install it:
+                  write the FRONT slot, arm the one-shot trial, reboot. Does NOT
+                  return on success. Call with the network already up, after any app
+                  teardown (the install erases /rom, so the app can't continue).
 
 Like the frozen ``boot.py`` this module is self-contained -- it can't import the
 host ``openmv_ota.ota.*`` packages under MicroPython, so the status-marker constants
@@ -285,3 +289,38 @@ def sync():  # pragma: no cover
         apply(entry, path)
         applied.append(entry.get("name", entry["file"]))
     return applied
+
+
+def install(url, ca=None):  # pragma: no cover
+    """Download a gzipped FRONT-slot OTA image over HTTPS and install it: write the new
+    image into the FRONT slot, arm the one-shot trial, and reboot into it.
+
+    Does **not** return on success -- it reboots. A failure *after* the write commits
+    reboots into the golden BACK image instead (boot.py rejects the half-written FRONT);
+    a pre-flight failure (bad URL, DNS, TLS, HTTP status) raises before anything is
+    erased, so the app can catch it and retry without a reboot. Call once the network is
+    up (WiFi/Ethernet/HaLow) and after any app teardown -- the install erases ``/rom``,
+    so the running app cannot continue past this call.
+
+    The heavy lifting lives in ``data/installer.py``, shipped as source and ``exec``'d
+    into RAM here: the app's code is in the FRONT slot we're about to erase, so the
+    installer must run from RAM, not XIP from that slot. ``ca`` are the TLS trust anchors
+    (PEM): ``None`` uses the bundled ``data/ca.pem`` (the Mozilla root bundle), ``bytes``
+    are used as-is, and a ``str`` is a path to read."""
+    import _ota_config as cfg
+    here = __file__.rsplit("/", 1)[0]
+    if ca is None:
+        ca = _read_file(here + "/data/ca.pem", "rb")
+    elif isinstance(ca, str):
+        ca = _read_file(ca, "rb")
+    ns = {}
+    exec(_read_file(here + "/data/installer.py", "r"), ns)
+    ns["run"](url, ca, cfg)
+
+
+def _read_file(path, mode):  # pragma: no cover
+    f = open(path, mode)
+    try:
+        return f.read()
+    finally:
+        f.close()
