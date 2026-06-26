@@ -2,6 +2,7 @@
 
     romfs      compile + pack a romfs image from a project
     firmware   build firmware per board (OTA projects freeze a boot.py)
+    ota-image  assemble the gzipped FRONT-slot image a server hosts for OTA download
     inspect    decode + print a signed OTA trailer
     verify     verify a built OTA image (signature + body hash)
 
@@ -63,6 +64,15 @@ def register(build_parser: argparse.ArgumentParser):
     p_fw.add_argument("--keep-build-dir", action="store_true",
                       help="keep the generated wrapper manifest dir (OTA builds) for inspection")
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
+
+    p_img = sub.add_parser("ota-image",
+                           help="assemble the gzipped FRONT-slot OTA download image(s)")
+    p_img.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
+    p_img.add_argument("-o", "--output", help="output dir (default: <project>/build)")
+    p_img.add_argument("-b", "--board", action="append", metavar="NAME",
+                       help="only build this board (repeatable; default: all targets)")
+    p_img.add_argument("-f", "--firmware", help="firmware checkout override")
+    p_img.set_defaults(func=cmd_ota_image, _command="build ota-image")
 
     p_ins = sub.add_parser("inspect", help="decode + print an OTA image's trailer(s)")
     p_ins.add_argument("image", help="a <board>-romfs.zip bundle, a trailer.bin, or a "
@@ -153,6 +163,22 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
               % (r.output, r.size, pct, r.bound))
         if r.build_dir is not None:
             print("  build dir kept: %s" % r.build_dir)
+    return 0
+
+
+def cmd_ota_image(args: argparse.Namespace) -> int:
+    try:
+        results = build_mod.build_ota_image(
+            args.project, output=args.output, boards=args.board, firmware=args.firmware,
+        )
+    except BuildError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+
+    for r in results:
+        ratio = (r.gz_size / r.image_size * 100) if r.image_size else 0
+        print("Built %s  (OTA download image, %d-byte slot -> %d gzipped, %.1f%%)"
+              % (r.output, r.image_size, r.gz_size, ratio))
     return 0
 
 

@@ -51,6 +51,24 @@ def test_build_romfs_ota_reports_bundle(make_project, capsys):
     assert "OPENMV_N6-romfs.zip" in out and "signed OTA bundle" in out
 
 
+def test_build_ota_image_cli(make_project, capsys):
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    main(["build", "romfs", str(root), "-f", str(repo),
+          "--no-compile-py", "--no-convert-models"])
+    capsys.readouterr()
+    rc = main(["build", "ota-image", str(root), "-f", str(repo)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "OPENMV_N6-ota.img.gz" in out and "OTA download image" in out
+
+
+def test_build_ota_image_cli_error(make_project, capsys):
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)  # no bundle built
+    rc = main(["build", "ota-image", str(root), "-f", str(repo)])
+    assert rc == 1
+    assert "not found" in capsys.readouterr().err
+
+
 def _fake_firmware_make(monkeypatch):
     """Patch firmware._run_make to emit a stm32 firmware.bin on the build call."""
     from pathlib import Path

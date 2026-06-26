@@ -598,3 +598,80 @@ def test_factory_body_too_big(monkeypatch, make_project):
     with pytest.raises(BuildError, match="factory slot holds"):
         build_mod.build_factory_romfs(root, app=app, firmware=repo,
                                       compile_py=False, convert_models=False)
+
+
+# --- build_ota_image (the gzipped FRONT-slot download image) -----------------
+
+def _build_n6_ota_bundle(make_project):
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    build_mod.build_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    return root, repo
+
+
+def test_build_ota_image_roundtrip(make_project):
+    import gzip
+
+    from openmv_ota.ota import bundle, geometry, parse_trailer
+    from openmv_ota.project import load_project
+    root, repo = _build_n6_ota_bundle(make_project)
+
+    results = build_mod.build_ota_image(root, firmware=repo)
+    assert len(results) == 1
+    r = results[0]
+    assert r.output.name == "OPENMV_N6-ota.img.gz"
+    assert r.gz_size < r.image_size                       # the 0xFF gap compresses away
+
+    image = gzip.decompress(r.output.read_bytes())
+    t = load_project(root, firmware=repo).board("OPENMV_N6")
+    front_size, block = t.front_size, geometry.ota_block(t.erase_size)
+    body, trailer = bundle.read_bundle(root / "build" / "OPENMV_N6-romfs.zip")
+
+    assert len(image) == front_size                       # a full slot, 1:1 writable
+    assert image[:len(body)] == body                      # body at offset 0
+    assert image[front_size - 2 * block:front_size - block] == b"\xff" * block  # blank status
+    assert image[front_size - block:front_size - block + len(trailer)] == trailer
+    parse_trailer(image[front_size - block:])             # the trailer parses in place
+
+
+def test_build_ota_image_non_ota_errors(make_project):
+    root, repo, _ = make_project(boards=("OPENMV_N6",))   # not an OTA project
+    with pytest.raises(BuildError, match="needs an OTA project"):
+        build_mod.build_ota_image(root, firmware=repo)
+
+
+def test_build_ota_image_missing_bundle_errors(make_project):
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)  # no `build romfs` yet
+    with pytest.raises(BuildError, match="not found"):
+        build_mod.build_ota_image(root, firmware=repo)
+
+
+def test_build_ota_image_bad_bundle_errors(make_project):
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    (root / "build").mkdir(exist_ok=True)
+    (root / "build" / "OPENMV_N6-romfs.zip").write_bytes(b"not a zip")
+    with pytest.raises(BuildError):
+        build_mod.build_ota_image(root, firmware=repo)
+
+
+def test_build_ota_image_oversize_body_errors(make_project):
+    from openmv_ota.ota import bundle, geometry
+    from openmv_ota.project import load_project
+    root, repo = _build_n6_ota_bundle(make_project)
+    t = load_project(root, firmware=repo).board("OPENMV_N6")
+    front_cap = t.front_size - 2 * geometry.ota_block(t.erase_size)
+    bundle.write_bundle(root / "build" / "OPENMV_N6-romfs.zip",
+                        b"\x00" * (front_cap + 1), b"trailer")
+    with pytest.raises(BuildError, match="body is"):
+        build_mod.build_ota_image(root, firmware=repo)
+
+
+def test_build_ota_image_no_targets_errors(make_project):
+    root, repo = _build_n6_ota_bundle(make_project)
+    with pytest.raises(BuildError, match="no matching"):
+        build_mod.build_ota_image(root, firmware=repo, boards=["NOPE"])
+
+
+def test_build_ota_image_bad_project_errors(make_project, tmp_path):
+    root, _repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    with pytest.raises(BuildError):                       # firmware override isn't a git repo
+        build_mod.build_ota_image(root, firmware=tmp_path / "not-a-repo")

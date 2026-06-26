@@ -531,3 +531,81 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
     finally:
         if not keep_build_dir:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+# --- OTA download image (the gzipped FRONT-slot image a server hosts) --------
+
+@dataclass
+class OtaImageResult:
+    target: str
+    partition_index: int
+    output: Path        # <board>-ota.img.gz
+    image_size: int     # the full FRONT-slot image (uncompressed)
+    gz_size: int        # the gzipped artifact actually written
+
+
+def build_ota_image(
+    project: str | Path,
+    *,
+    output: str | Path | None = None,
+    boards: list[str] | None = None,
+    firmware: str | Path | None = None,
+) -> list[OtaImageResult]:
+    """Assemble the gzipped FRONT-slot OTA *download* image(s) from already-built
+    bundles -- the artifact a server (e.g. Cloudflare R2) hosts for the device
+    ``install()`` to stream in. For each OTA main target it reads the
+    ``<board>-romfs.zip`` bundle, lays the body + signed trailer into a full FRONT-slot
+    image (blank status sector -- the installer arms PENDING last, after verifying the
+    write), gzips it, and writes ``<board>-ota.img.gz``. The gzip collapses the slot's
+    0xFF gap to almost nothing, so the artifact is ~body-sized regardless of slot size.
+
+    The signed body+trailer (the bundle) stay the source of truth; this image is a pure,
+    regenerable rendering of them for one slot geometry. Run ``build romfs`` first."""
+    import gzip
+
+    from openmv_ota.ota import bundle
+    from openmv_ota.ota.errors import OtaError
+
+    project = Path(project)
+    try:
+        p = load_project(project, firmware=firmware)
+    except ProjectError as e:
+        raise BuildError(str(e), exit_code=e.exit_code) from None
+    if not p.config.ota:
+        raise BuildError("ota-image needs an OTA project (create with "
+                         "`openmv-ota project new --ota`)", exit_code=1)
+
+    out_dir = Path(output) if output else project / "build"
+    targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
+    if not targets:
+        raise BuildError("no matching main targets in this project")
+
+    results = []
+    for t in targets:
+        bundle_path = out_dir / (_target_name(t) + "-romfs.zip")
+        if not bundle_path.exists():
+            raise BuildError("%s not found - run `openmv-ota build romfs` first"
+                             % bundle_path, exit_code=1)
+        try:
+            body, trailer_bytes = bundle.read_bundle(bundle_path)
+        except OtaError as e:
+            raise BuildError(str(e), exit_code=1) from None
+
+        block = geometry.ota_block(t.erase_size)
+        front_size = t.front_size
+        front_cap = front_size - 2 * block
+        if len(body) > front_cap:
+            raise BuildError(
+                "%s body is %d bytes but a FRONT slot holds %d (rebuild within capacity)"
+                % (t.name, len(body), front_cap), exit_code=1)
+
+        # Full FRONT slot with a blank (0xFF) status sector: the installer writes this
+        # 1:1, then arms PENDING in that sector last.
+        image = _compose_slot(body, front_cap - len(body), b"\xff" * block,
+                              trailer_bytes, block, front_size)
+        gz = gzip.compress(image, mtime=0)            # mtime=0: reproducible artifact
+        out_path = out_dir / (_target_name(t) + "-ota.img.gz")
+        out_path.write_bytes(gz)
+        results.append(OtaImageResult(t.name, t.partition_index, out_path,
+                                      len(image), len(gz)))
+    return results
