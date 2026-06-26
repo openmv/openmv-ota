@@ -27,6 +27,19 @@ try:                                   # the firmware freezes openmv_log beside 
 except ImportError:                    # host / tests / a build without logging
     openmv_log = None
 
+try:                                   # ...and openmv_wdt (the watchdog helper)
+    import openmv_wdt
+except ImportError:
+    openmv_wdt = None
+
+
+class _NoWdt:  # pragma: no cover  (fallback context when no watchdog module is frozen)
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
 # --- Status marker (mirror of openmv_ota.ota.status; pinned by a test) -------
 
 MARKER_SIZE = 16
@@ -361,25 +374,29 @@ def run(url, ca_pem, cfg):  # pragma: no cover
         if rc < 0:
             raise OSError(-rc)
 
-    # Pre-erase: connect + verify TLS + read response headers. Errors here raise to
-    # the app (the FRONT slot is untouched).
-    if log:
-        log.info("install: downloading %s" % url)
-    sock, body = _open(url, ca_pem, socket, ssl)
-
-    # Commit point: from the erase on we can't unwind into the (erased) app, so any
-    # failure reboots into the golden image instead of propagating.
-    if log:
-        log.info("install: connected; erasing + writing FRONT (%d bytes)" % front_size)
-    try:
-        dio = deflate.DeflateIO(body, deflate.GZIP)
-        _install_stream(dio.read, erase, write, readback, front_size, block)
-    except Exception as e:
-        sock.close()
+    # Feed the watchdog (if the app enabled one) from a timer ISR across the whole long
+    # op -- download + multi-second erase + write -- which the main loop can't reach.
+    relax = openmv_wdt.relax if openmv_wdt is not None else _NoWdt
+    with relax():
+        # Pre-erase: connect + verify TLS + read response headers. Errors here raise to
+        # the app (the FRONT slot is untouched); relax() stops feeding on the way out.
         if log:
-            log.error("install: FAILED after erase (%s); rebooting to golden BACK" % e)
-        machine.reset()
-    sock.close()
+            log.info("install: downloading %s" % url)
+        sock, body = _open(url, ca_pem, socket, ssl)
+
+        # Commit point: from the erase on we can't unwind into the (erased) app, so any
+        # failure reboots into the golden image instead of propagating.
+        if log:
+            log.info("install: connected; erasing + writing FRONT (%d bytes)" % front_size)
+        try:
+            dio = deflate.DeflateIO(body, deflate.GZIP)
+            _install_stream(dio.read, erase, write, readback, front_size, block)
+        except Exception as e:
+            sock.close()
+            if log:
+                log.error("install: FAILED after erase (%s); rebooting to golden BACK" % e)
+            machine.reset()
+        sock.close()
     if log:
         log.info("install: installed + armed; rebooting into the trial")
     machine.reset()

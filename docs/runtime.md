@@ -242,6 +242,50 @@ and falls back to **monotonic uptime** before the clock is set (e.g. in `boot.py
 *yours*, sending logs elsewhere (a file, a socket) is just editing its handler — the
 levels, filtering, and API are the standard `logging` ones.
 
+## Watchdog
+
+A real app should run a watchdog so a hang reboots the device instead of bricking it.
+Like the logger, there's an opt-in helper — `device/openmv_wdt.py`, frozen as
+**`openmv_wdt`**, off by default, yours to edit. Enable it and pick your board's
+`machine.WDT` id + timeout, plus a spare **hardware** `machine.Timer` id, then rebuild:
+
+```python
+ENABLED    = True
+WDT_ID     = 0
+TIMEOUT_MS = 5000
+TIMER_ID   = 1     # a spare *hardware* timer (see below)
+FEED_HZ    = 10
+```
+
+Feed it from your main loop — if the loop ever stops, the board resets:
+
+```python
+import openmv_wdt
+while True:
+    openmv_wdt.feed()
+    ...
+```
+
+**Long blocking ops vs. the watchdog.** A multi-second flash erase (an OTA install), a
+model load, etc. can't feed from the main loop and would trip the watchdog. Wrap them:
+
+```python
+with openmv_wdt.relax():
+    do_long_thing()
+```
+
+`relax()` runs a hardware-`Timer` ISR that feeds the watchdog at **interrupt time**, so
+the board survives the op *as long as the CPU is healthy* (interrupts still firing) —
+effectively suspending the watchdog without disabling it, and on exit it stops and hands
+feeding back to your loop. Use it only around genuinely long ops; outside `relax()` the
+watchdog still catches a hung loop. The timer **must be a real hardware id** — its
+callback is a true ISR that fires mid-erase; a virtual/soft `Timer(-1)` runs via the
+scheduler, which doesn't run while the CPU is blocked, so it would never fire when needed.
+
+**`install()` already does this** — it wraps its whole download + erase + write in
+`openmv_wdt.relax()`, so an OTA install won't trip a watchdog you've enabled (a big-slot
+erase can exceed even the WDT's max timeout). If you haven't enabled one, it's a no-op.
+
 ## Safety properties at a glance
 
 | Property | How |

@@ -327,7 +327,7 @@ def create_project(
         _scaffold_coprocessor(paths, app_version)
     if config.ota:  # the device OTA runtime lib (status/confirm/sync) for the app to use
         _scaffold_runtime_lib(paths, boards)
-        _scaffold_device_log(paths)  # the editable logger frozen into the firmware
+        _scaffold_device_files(paths)  # editable logger + watchdog, frozen into firmware
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
@@ -453,7 +453,10 @@ _RUNTIME_LIB_SRC = Path(__file__).resolve().parents[1] / "build" / "device" / "o
 
 # The editable OTA logger, scaffolded to <project>/device/openmv_log.py and frozen as openmv_log
 # by `build firmware` (see build/firmware.py).
-_DEVICE_LOG_SRC = Path(__file__).resolve().parents[1] / "build" / "device" / "openmv_log.py"
+# Editable device modules scaffolded into <project>/device/ and frozen into the firmware
+# (the logger + the watchdog helper); see build/firmware.py.
+_DEVICE_SRC_DIR = Path(__file__).resolve().parents[1] / "build" / "device"
+_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py")
 
 
 def _coprocessor_partitions(boards: list[str]) -> list[dict]:
@@ -536,15 +539,17 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str]) -> None:
             manifest.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
 
 
-def _scaffold_device_log(paths: ProjectPaths) -> None:
-    """Scaffold ``device/openmv_log.py`` -- the OTA logger frozen into the firmware (as
-    ``openmv_log``) and shared by boot.py, the installer, and the runtime lib. The user
-    edits it to enable/redirect logging (off by default). Left alone if it exists."""
+def _scaffold_device_files(paths: ProjectPaths) -> None:
+    """Scaffold the editable device modules frozen into the firmware -- the logger
+    (``openmv_log``) and the watchdog helper (``openmv_wdt``), both shared by the
+    installer and your app and both off until you edit + rebuild. Left alone if present."""
     d = paths.root / "device"
     d.mkdir(parents=True, exist_ok=True)
-    log = d / "openmv_log.py"
-    if not log.exists():
-        log.write_text(_DEVICE_LOG_SRC.read_text(encoding="utf-8"), encoding="utf-8")
+    for name in _DEVICE_MODULES:
+        out = d / name
+        if not out.exists():
+            out.write_text((_DEVICE_SRC_DIR / name).read_text(encoding="utf-8"),
+                           encoding="utf-8")
 
 
 def _write_local(paths: ProjectPaths, repo: Path, sdk_home_override: Path | None) -> None:

@@ -200,12 +200,13 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     manifest = (r.build_dir / "manifest.py").read_text()
     assert "include(" in manifest and "boards/OPENMV_N6/manifest.py" in manifest
     assert 'freeze(' in manifest and "boot.py" in manifest and "_ota_config.py" in manifest
-    assert "openmv_log.py" in manifest                       # the logger is frozen too
-    # the real boot.py (not a placeholder) + the generated config + logger are present
+    assert "openmv_log.py" in manifest and "openmv_wdt.py" in manifest  # logger + watchdog frozen
+    # the real boot.py (not a placeholder) + the generated config + device modules are present
     assert "OtaBoot" in (r.build_dir / "boot.py").read_text()
     cfg = (r.build_dir / "_ota_config.py").read_text()
     assert "TRUSTED_KEYS" in cfg and "PARTITION_SIZE" in cfg and "BOARD_ID" in cfg
-    assert "ENABLED" in (r.build_dir / "openmv_log.py").read_text()  # the project's copy
+    assert "ENABLED" in (r.build_dir / "openmv_log.py").read_text()   # the project's copy
+    assert "def relax(" in (r.build_dir / "openmv_wdt.py").read_text()
 
 
 def test_build_firmware_log_falls_back_to_default(make_project, monkeypatch):

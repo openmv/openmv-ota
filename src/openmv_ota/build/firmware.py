@@ -45,7 +45,10 @@ MAKE = "make"
 # The device sources the OTA firmware build freezes / compiles in.
 _DEVICE_DIR = Path(__file__).parent / "device"
 _BOOT_PY = _DEVICE_DIR / "boot.py"
-_LOG_PY = _DEVICE_DIR / "openmv_log.py"          # default logger; the per-project copy overrides
+# Editable device modules frozen alongside boot.py: the logger + the watchdog helper.
+# The project's device/<name> copy is preferred; the bundled build/device/<name> default
+# is the fallback.
+_FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py")
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 
@@ -184,18 +187,18 @@ def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
     tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-fw-"))
     shutil.copy2(_BOOT_PY, tmp / "boot.py")
     (tmp / "_ota_config.py").write_text(_render_ota_config(p, name), encoding="utf-8")
-    # The OTA logger, frozen as openmv_log so boot.py can use it before /rom mounts. Prefer
-    # the project's editable copy (device/openmv_log.py); fall back to the bundled default.
-    log_src = p.root / "device" / "openmv_log.py"
-    shutil.copy2(log_src if log_src.exists() else _LOG_PY, tmp / "openmv_log.py")
+    freezes = ['freeze("%s", "boot.py")\n' % tmp.as_posix(),
+               'freeze("%s", "_ota_config.py")\n' % tmp.as_posix()]
+    # Editable device modules (logger + watchdog) frozen so boot.py / the installer / the
+    # app share them; prefer the project's copy, fall back to the bundled default.
+    for mod in _FROZEN_DEVICE_MODULES:
+        src = p.root / "device" / mod
+        shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, tmp / mod)
+        freezes.append('freeze("%s", "%s")\n' % (tmp.as_posix(), mod))
     board_manifest = repo / "boards" / name / "manifest.py"
     (tmp / "manifest.py").write_text(
-        'include("%s")\n' % board_manifest.as_posix()
-        + 'freeze("%s", "boot.py")\n' % tmp.as_posix()
-        + 'freeze("%s", "_ota_config.py")\n' % tmp.as_posix()
-        + 'freeze("%s", "openmv_log.py")\n' % tmp.as_posix(),
-        encoding="utf-8",
-    )
+        'include("%s")\n' % board_manifest.as_posix() + "".join(freezes),
+        encoding="utf-8")
     return tmp
 
 

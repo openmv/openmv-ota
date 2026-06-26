@@ -248,7 +248,8 @@ my-product/
 │       ├── installer.py     # the installer, shipped as source (exec'd into RAM)
 │       └── ca.pem           # TLS root bundle for downloads (fetched fresh at `new`)
 ├── device/
-│   └── openmv_log.py               # OTA debug logger, frozen as openmv_log (off by default)
+│   ├── openmv_log.py               # OTA debug logger, frozen as openmv_log (off by default)
+│   └── openmv_wdt.py               # watchdog helper, frozen as openmv_wdt (off by default)
 └── keys/
     ├── trusted_keys.json    # committed: the public key set baked into firmware
     └── private/             # GITIGNORED: the private signing keys (PKCS#8 PEM)
@@ -311,6 +312,12 @@ logger built on the standard `logging` module (frozen as `openmv_log`, off by de
 shared by `boot.py`, the installer, and this lib, and exposed as `openmv_ota.log` (the
 `logging.getLogger("openmv_ota")` logger) for your app. Edit it to enable + pick your
 board's UART, then rebuild firmware.
+
+It also scaffolds **`device/openmv_wdt.py`** — an opt-in watchdog helper (frozen as
+`openmv_wdt`, off by default): `openmv_wdt.feed()` from your main loop, and
+`with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds the watchdog
+through them). `install()` already wraps its erase/write in it. See
+**[the on-device runtime](runtime.md#watchdog)**.
 
 The runtime lib is plain Python you own and can extend. For the full picture — the
 trial/rollback lifecycle, the API semantics, `install()`/TLS/cert handling, the
