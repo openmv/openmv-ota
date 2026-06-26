@@ -162,10 +162,11 @@ def _check_readback(actual, expected):
 
 
 class _Progress:
-    """Throttled progress reporter for the chunked flash loops. Forwards each
+    """Throttled progress reporter for ``sync()``'s chunked write. Forwards each
     ``(done, total)`` to the app's callback (if it passed one) and logs at every new 10%
-    step -- so a multi-second install/sync shows movement without a log line per 4 KiB
-    chunk. ``label`` tags the phase (``"install"``, or the resource name for sync)."""
+    step -- so a multi-second sync shows movement without a log line per 4 KiB chunk.
+    ``label`` is the resource name. (``install()`` can't use this: it erases the partition
+    this lib lives in, so it logs from its own RAM-resident reporter in installer.py.)"""
 
     def __init__(self, label, cb=None):
         self._label = label
@@ -382,7 +383,7 @@ def sync(on_progress=None):  # pragma: no cover
     return applied
 
 
-def install(url, ca=None, on_progress=None):  # pragma: no cover
+def install(url, ca=None):  # pragma: no cover
     """Download a gzipped FRONT-slot OTA image over HTTPS and install it: write the new
     image into the FRONT slot, arm the one-shot trial, and reboot into it.
 
@@ -395,11 +396,13 @@ def install(url, ca=None, on_progress=None):  # pragma: no cover
 
     The heavy lifting lives in ``data/installer.py``, shipped as source and ``exec``'d
     into RAM here: the app's code is in the FRONT slot we're about to erase, so the
-    installer must run from RAM, not XIP from that slot. ``ca`` are the TLS trust anchors
-    (PEM): ``None`` uses the bundled ``data/ca.pem`` (the Mozilla root bundle), ``bytes``
-    are used as-is, and a ``str`` is a path to read. ``on_progress(done, total)`` (if
-    given) is called as the image is written -- e.g. to drive a progress bar; the write is
-    also logged at every 10% step regardless."""
+    installer must run from RAM, not XIP from that slot. For that same reason install
+    progress is *logged* by the installer (RAM + the frozen logger), not delivered to a
+    caller callback -- any callback here (this lib, the app) lives in the slot being
+    erased, so calling it post-erase would XIP from erased flash. (``sync()`` *does* take
+    an ``on_progress`` -- it erases a different partition, leaving this one intact.) ``ca``
+    are the TLS trust anchors (PEM): ``None`` uses the bundled ``data/ca.pem`` (the Mozilla
+    root bundle), ``bytes`` are used as-is, and a ``str`` is a path to read."""
     import _ota_config as cfg
     here = __file__.rsplit("/", 1)[0]
     if ca is None:
@@ -408,7 +411,7 @@ def install(url, ca=None, on_progress=None):  # pragma: no cover
         ca = _read_file(ca, "rb")
     ns = {}
     exec(_read_file(here + "/data/installer.py", "r"), ns)
-    ns["run"](url, ca, cfg, _Progress("install", on_progress))
+    ns["run"](url, ca, cfg)
 
 
 def _read_file(path, mode):  # pragma: no cover

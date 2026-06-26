@@ -260,6 +260,26 @@ def _is_blank(chunk):
     return chunk == b"\xff" * len(chunk)
 
 
+class _Progress:
+    """Per-chunk install progress -> the (frozen) logger, throttled to one line per new
+    10% step. Defined *here* so ``exec`` compiles it into RAM: it is called from the write
+    loop *after* the FRONT slot is erased, so its bytecode must not live in that slot. A
+    reporter (or any app callback) from the romfs ``openmv_ota``/app -- which is in the
+    slot being erased -- would XIP its bytecode from erased flash and fault. For the same
+    reason install progress is log-only: there is no safe app callback to invoke here."""
+
+    def __init__(self, log):
+        self._log = log
+        self._step = -1
+
+    def __call__(self, done, total):
+        pct = done * 100 // total if total else 100
+        step = pct // 10
+        if step > self._step:
+            self._step = step
+            self._log.info("install: %d%% (%d/%d bytes)" % (pct, done, total))
+
+
 def _install_stream(read, erase, write, readback, front_size, block, feed, progress=None):
     """Erase the FRONT slot, stream the decompressed image into it 1:1 (verifying
     every write by read-back, skipping already-erased 0xFF runs), then arm the trial.
@@ -362,11 +382,12 @@ def _open(url, ca_pem, socket, ssl, max_redirects=5):  # pragma: no cover
     raise OSError("too many redirects")
 
 
-def run(url, ca_pem, cfg, progress=None):  # pragma: no cover
+def run(url, ca_pem, cfg):  # pragma: no cover
     """Download and install the gzipped FRONT-slot image at ``url``. Never returns:
     reboots into the new image's trial on success, or into the golden BACK image if
-    anything fails after the erase commits. ``progress(done, total)`` (if given) is
-    forwarded to the write loop so the install's advance can be logged/reported."""
+    anything fails after the erase commits. Progress is logged from here (RAM + the frozen
+    logger) at every 10% step -- it can't be a caller callback, whose code is being
+    erased."""
     import deflate
     import machine
     import socket
@@ -381,6 +402,8 @@ def run(url, ca_pem, cfg, progress=None):  # pragma: no cover
     # through the loops -- so a hung loop (or a stalled recv) still trips it -> golden.
     relax = openmv_wdt.relax if openmv_wdt is not None else _NoWdt
     feed = openmv_wdt.feed if openmv_wdt is not None else _noop
+    # Log-only progress, built from RAM + the frozen logger so it survives the FRONT erase.
+    progress = _Progress(log) if log is not None else None
     front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # FRONT partition XIP base
 

@@ -117,33 +117,35 @@ class _RecordLog:
 
 
 def test_progress_forwards_to_callback_every_chunk(monkeypatch):
+    # sync()'s reporter forwards every chunk to the app callback (safe: sync erases a
+    # different partition than the one this lib runs from)
     monkeypatch.setattr(rt, "log", _RecordLog())
     seen = []
-    p = rt._Progress("install", lambda d, t: seen.append((d, t)))
+    p = rt._Progress("coprocessor", lambda d, t: seen.append((d, t)))
     for done in (10, 20, 30):
         p(done, 100)
-    assert seen == [(10, 100), (20, 100), (30, 100)]   # the app callback sees every chunk
+    assert seen == [(10, 100), (20, 100), (30, 100)]
 
 
 def test_progress_logs_only_on_each_ten_percent_step(monkeypatch):
     rec = _RecordLog()
     monkeypatch.setattr(rt, "log", rec)
-    p = rt._Progress("install")
+    p = rt._Progress("coprocessor")
     # within the same 10% bucket -> one line; crossing into the next -> another
     for done in (3, 5, 9, 12, 19, 25):
         p(done, 100)
     assert rec.lines == [
-        "install: 3% (3/100 bytes)",
-        "install: 12% (12/100 bytes)",
-        "install: 25% (25/100 bytes)",
+        "coprocessor: 3% (3/100 bytes)",
+        "coprocessor: 12% (12/100 bytes)",
+        "coprocessor: 25% (25/100 bytes)",
     ]
 
 
 def test_progress_zero_total_is_full(monkeypatch):
     rec = _RecordLog()
     monkeypatch.setattr(rt, "log", rec)
-    rt._Progress("sync x")(0, 0)               # empty target -> 100%, never divides by zero
-    assert rec.lines == ["sync x: 100% (0/0 bytes)"]
+    rt._Progress("coprocessor")(0, 0)          # empty target -> 100%, never divides by zero
+    assert rec.lines == ["coprocessor: 100% (0/0 bytes)"]
 
 
 def test_check_readback_ok():

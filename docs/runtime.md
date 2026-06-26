@@ -89,15 +89,17 @@ extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes
   already-applied re-read). Idempotent, returns the names applied; a no-op when nothing is
   bundled. Call it **early**, before a resource's consumer is used (e.g. before the helper
   core runs).
-- **`install(url, ca=None, on_progress=None)`** — download a gzipped FRONT-slot image over
-  HTTPS and install it (see [Installing an update](#installing-an-update-install) below).
-  Does **not** return on success — it reboots into the new image's trial.
+- **`install(url, ca=None)`** — download a gzipped FRONT-slot image over HTTPS and install
+  it (see [Installing an update](#installing-an-update-install) below). Does **not** return
+  on success — it reboots into the new image's trial.
 
-Both `install()` and `sync()` take an optional **`on_progress(done, total)`** callback,
-invoked per written chunk as the image is laid down — wire it to a screen/LED for a
-progress bar. Whether or not you pass one, the write is **logged at every 10% step**
-(`install: 40% (…)`, `sync coprocessor: 70% (…)`), so an enabled logger shows movement
-through the long flash write without a line per 4 KiB chunk.
+Both report their progress, **logged at every 10% step** (`install: 40% (…)`,
+`coprocessor: 70% (…)`), so an enabled logger shows movement through the long flash write
+without a line per 4 KiB chunk. `sync()` additionally takes an optional
+**`on_progress(done, total)`** callback (wire it to a screen/LED for a progress bar) —
+`install()` does **not**, because it erases the partition the app and this library run
+from: any callback would live in the slot being erased and crash when called. The
+installer logs its progress from RAM via the frozen logger instead.
 
 ```python
 import openmv_ota
@@ -151,12 +153,10 @@ down. It:
 ```python
 import network, openmv_ota
 # ... bring up WiFi / Ethernet / WiFi-HaLow, then:
-def show(done, total):                 # optional: drive a progress bar / status LED
-    print("installing %d%%" % (done * 100 // total))
 try:
-    openmv_ota.install("https://downloads.example.com/fw/OPENMV_N6-v2.img.gz",
-                       on_progress=show)
+    openmv_ota.install("https://downloads.example.com/fw/OPENMV_N6-v2.img.gz")
     # unreachable on success — the device reboots into the trial
+    # (progress is logged at each 10% step; no callback — the app is being erased)
 except OSError as e:
     print("update download failed, still running the current image:", e)
 ```

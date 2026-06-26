@@ -329,6 +329,34 @@ def test_install_stream_reports_progress_per_chunk():
     assert [d for d, _ in seen] == sorted(d for d, _ in seen)
 
 
+class _RecordLog:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, msg, *a):
+        self.lines.append(msg)
+
+
+def test_progress_logs_to_the_injected_logger_at_ten_percent_steps():
+    # The installer's _Progress is defined in installer.py so exec() puts it in RAM (safe
+    # to call after the FRONT erase); it logs only, throttled to each new 10% step.
+    rec = _RecordLog()
+    p = inst("_Progress")(rec)
+    for done in (4, 8, 40, 100):
+        p(done, 100)
+    assert rec.lines == [
+        "install: 4% (4/100 bytes)",
+        "install: 40% (40/100 bytes)",
+        "install: 100% (100/100 bytes)",
+    ]
+
+
+def test_progress_zero_total_is_full():
+    rec = _RecordLog()
+    inst("_Progress")(rec)(0, 0)               # empty image -> 100%, no divide-by-zero
+    assert rec.lines == ["install: 100% (0/0 bytes)"]
+
+
 def test_install_stream_image_too_large():
     block = 4096
     front = 2 * block
