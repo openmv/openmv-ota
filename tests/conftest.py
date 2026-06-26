@@ -37,6 +37,20 @@ AE3_BOARD = (
 )
 
 
+# A minimal but structurally-valid CA bundle, stubbed in for the network download that
+# `project new --ota` does (the real fetcher is covered directly in test_project).
+FAKE_CA_BUNDLE = b"-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
+
+
+@pytest.fixture(autouse=True)
+def _stub_ca_bundle(monkeypatch):
+    """Creating an OTA project downloads the CA root bundle; stub that network call
+    everywhere so tests stay offline. The dedicated fetch tests import the real
+    function directly, so this attribute swap doesn't affect them."""
+    from openmv_ota.project import project as _proj
+    monkeypatch.setattr(_proj, "_fetch_ca_bundle", lambda *a, **k: FAKE_CA_BUNDLE)
+
+
 def git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
 

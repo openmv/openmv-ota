@@ -183,16 +183,73 @@ def test_create_ota_scaffolds_runtime_lib_with_coprocessor_data(tmp_path, make_f
     root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, ota_keys=2, factory_keys=1)
     lib = proj.ProjectPaths(root).app_dir / "lib" / "openmv_ota"
     assert (lib / "__init__.py").exists()
+    # the installer + CA bundle are scaffolded for every OTA board
+    assert "def run(" in (lib / "data" / "installer.py").read_text()
+    assert (lib / "data" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()
     res = json.loads((lib / "data" / "resources.json").read_text())
     assert res[0]["handler"] == "partition" and res[0]["partition"] == 1
     read_image((lib / "data" / "coprocessor.romfs").read_bytes())   # valid romfs, no raise
 
 
-def test_create_ota_runtime_lib_no_data_without_coprocessor(tmp_path, make_firmware, make_sdk):
+def test_create_ota_runtime_lib_no_coprocessor_data_without_coprocessor(
+        tmp_path, make_firmware, make_sdk):
+    # A plain OTA board still gets data/ for the installer + CA bundle, but no
+    # coprocessor resource (nothing to sync).
     root, _ = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV_N6"],
                       ota=True, ota_keys=2, factory_keys=1)
     lib = proj.ProjectPaths(root).app_dir / "lib" / "openmv_ota"
-    assert (lib / "__init__.py").exists() and not (lib / "data").exists()
+    data = lib / "data"
+    assert (lib / "__init__.py").exists()
+    assert "def run(" in (data / "installer.py").read_text()
+    assert (data / "ca.pem").read_bytes() == proj._fetch_ca_bundle()  # the stubbed bundle
+    assert not (data / "coprocessor.romfs").exists()
+    assert not (data / "resources.json").exists()
+
+
+# --- _fetch_ca_bundle (the real downloader; network mocked at urlopen) -------
+
+class _FakeResp:
+    def __init__(self, data):
+        self._data = data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self._data
+
+
+# Captured at import (before the autouse stub swaps the module attribute) so these
+# tests exercise the real downloader, with the network mocked at urlopen.
+_REAL_FETCH = proj._fetch_ca_bundle
+
+
+def test_fetch_ca_bundle_success(monkeypatch):
+    import urllib.request
+    pem = b"-----BEGIN CERTIFICATE-----\nreal\n-----END CERTIFICATE-----\n"
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeResp(pem))
+    assert _REAL_FETCH("https://x/ca.pem") == pem
+
+
+def test_fetch_ca_bundle_network_error(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    def boom(*a, **k):
+        raise urllib.error.URLError("down")
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    with pytest.raises(ProjectError, match="could not download"):
+        _REAL_FETCH("https://x/ca.pem")
+
+
+def test_fetch_ca_bundle_invalid(monkeypatch):
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeResp(b"nope"))
+    with pytest.raises(ProjectError, match="looks invalid"):
+        _REAL_FETCH("https://x/ca.pem")
 
 
 def test_create_non_ota_no_runtime_lib(tmp_path, make_firmware, make_sdk):

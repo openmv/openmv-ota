@@ -25,6 +25,11 @@ from .resolve.submodules import resolve_submodules
 
 GENERATED_BY = "openmv-ota %s" % __version__
 
+# The CA root bundle the device verifies OTA download TLS against, fetched fresh when
+# an OTA project is created (the curl/Mozilla bundle). No offline fallback: creating an
+# OTA project needs network anyway (the SDK), and a stale vendored snapshot would rot.
+CA_BUNDLE_URL = "https://curl.se/ca/cacert.pem"
+
 # The project folder holding a coprocessor core's app (a slaved second partition,
 # e.g. AE3's M55_HE). Built as a plain romfs and written by the main core.
 COPROCESSOR_APP = "app-coprocessor"
@@ -469,21 +474,53 @@ def _empty_romfs() -> bytes:
         return build_image(empty)
 
 
+def _fetch_ca_bundle(url: str = CA_BUNDLE_URL) -> bytes:
+    """Download the CA root bundle for the device's OTA TLS trust store. No offline
+    fallback -- creating an OTA project requires network access (like the SDK)."""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"User-Agent": "openmv-ota"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+    except (urllib.error.URLError, OSError) as e:
+        raise ProjectError(
+            "could not download the CA bundle from %s (%s); creating an OTA project "
+            "needs network access" % (url, e), exit_code=1) from None
+    if b"BEGIN CERTIFICATE" not in data:
+        raise ProjectError("downloaded CA bundle from %s looks invalid" % url, exit_code=1)
+    return data
+
+
 def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str]) -> None:
     """Scaffold ``app/lib/openmv_ota/`` -- the device OTA runtime helpers
-    (status/confirm/sync) -- into an OTA project. For coprocessor boards also seed
-    ``data/coprocessor.romfs`` (a placeholder the build swaps for the real image) and
-    ``data/resources.json`` (the sync() manifest). Existing files are left alone."""
+    (status/confirm/sync/install) -- into an OTA project. ``data/`` always gets the
+    installer source (shipped uncompiled so ``install()`` can ``exec`` it into RAM) and
+    a freshly-downloaded ``ca.pem`` (the TLS trust store). For coprocessor boards it
+    also seeds ``data/coprocessor.romfs`` (a placeholder the build swaps for the real
+    image) and ``data/resources.json`` (the sync() manifest). Existing files are left
+    alone, so a user's replaced ``ca.pem`` survives ``new --force``."""
     dst = paths.app_dir / "lib" / "openmv_ota"
     dst.mkdir(parents=True, exist_ok=True)
     for src in sorted(_RUNTIME_LIB_SRC.glob("*.py")):
         out = dst / src.name
         if not out.exists():
             out.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    data = dst / "data"
+    data.mkdir(exist_ok=True)
+    installer = data / "installer.py"
+    if not installer.exists():
+        installer.write_text(
+            (_RUNTIME_LIB_SRC / "data" / "installer.py").read_text(encoding="utf-8"),
+            encoding="utf-8")
+    ca = data / "ca.pem"
+    if not ca.exists():
+        ca.write_bytes(_fetch_ca_bundle())
+
     copro = _coprocessor_partitions(boards)
     if copro:
-        data = dst / "data"
-        data.mkdir(exist_ok=True)
         romfs = data / "coprocessor.romfs"
         if not romfs.exists():
             romfs.write_bytes(_empty_romfs())

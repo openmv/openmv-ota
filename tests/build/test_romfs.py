@@ -226,10 +226,10 @@ def test_build_nests_coprocessor_into_main(make_project):
     assert manifest[0]["partition"] == 1 and manifest[0]["name"] == "High Efficiency Core"
 
 
-def test_build_strips_runtime_data_for_plain_board_in_shared_app(make_project):
+def test_build_keeps_installer_strips_coprocessor_data_for_plain_board(make_project):
     # AE3 + N6 OTA project: the shared app/ has lib/openmv_ota/data/ (scaffolded for
-    # AE3). Building N6 must ship the lib but strip data/ so sync() no-ops on the
-    # board that has no coprocessor partition.
+    # AE3). Building N6 keeps the installer + CA bundle (every OTA image needs them) but
+    # strips the coprocessor resource so sync() no-ops on the board with no coprocessor.
     from openmv_ota.ota import bundle
     from openmv_ota.romfs.builder import read_image
     root, repo, _ = make_project(boards=("OPENMV_N6", "OPENMV_AE3"), ota=True)
@@ -238,7 +238,25 @@ def test_build_strips_runtime_data_for_plain_board_in_shared_app(make_project):
     body, _ = bundle.read_bundle(results[0].output)
     paths = {p for p, _ in read_image(body).walk()}
     assert "lib/openmv_ota/__init__.py" in paths
-    assert not any("openmv_ota/data" in p for p in paths)
+    assert "lib/openmv_ota/data/installer.py" in paths
+    assert "lib/openmv_ota/data/ca.pem" in paths
+    assert "lib/openmv_ota/data/coprocessor.romfs" not in paths
+    assert "lib/openmv_ota/data/resources.json" not in paths
+
+
+def test_installer_source_not_compiled(monkeypatch, make_project):
+    # install() exec()s the installer into RAM, so it must survive as source: the build
+    # compiles every other .py to .mpy but leaves lib/openmv_ota/data/installer.py alone.
+    from openmv_ota.ota import bundle
+    monkeypatch.setattr(build_mod.mpy, "compile_py", _fake_compile)
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    results = build_mod.build_romfs(root, firmware=repo, convert_models=False)
+    body, _ = bundle.read_bundle(results[0].output)
+    names = {p for p, _ in read_image(body).walk()}
+    assert "lib/openmv_ota/data/installer.py" in names       # kept as source
+    assert "lib/openmv_ota/data/installer.mpy" not in names
+    assert "lib/openmv_ota/__init__.mpy" in names            # the rest still compiled
+    assert "lib/openmv_ota/__init__.py" not in names
 
 
 def test_coprocessor_missing_app_dir_errors(make_project):

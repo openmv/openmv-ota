@@ -309,6 +309,11 @@ def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_mod
 
     if mpy_cmd is not None:
         for src in iter_files(stage, (".py",)):
+            # The OTA installer ships in the runtime lib's data/ as *source*: install()
+            # reads + exec()s it into RAM (it can't run from the slot it's erasing), so
+            # it must survive as .py, not be compiled to .mpy.
+            if src.parent.name == "data" and src.parent.parent.name == "openmv_ota":
+                continue
             mpy.compile_py(mpy_cmd, t.mpy_args + mpy_extra, src, src.with_suffix(".mpy"))
             src.unlink()
 
@@ -345,7 +350,10 @@ def _runtime_inject(out_dir, board, copro_targets):
             return                                   # not an OTA project
         data = lib / "data"
         if not copro_targets:
-            shutil.rmtree(data, ignore_errors=True)  # plain board -> nothing to sync
+            # Plain board: drop only the coprocessor resource (nothing to sync) -- keep
+            # installer.py + ca.pem, which every OTA image needs.
+            (data / "coprocessor.romfs").unlink(missing_ok=True)
+            (data / "resources.json").unlink(missing_ok=True)
             return
         data.mkdir(parents=True, exist_ok=True)
         shutil.copy2(out_dir / ("%s-coprocessor-romfs.img" % board), data / "coprocessor.romfs")
