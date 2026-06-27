@@ -22,6 +22,11 @@ def _roundtrip(base, target):
     return patch
 
 
+def _gz(data):
+    import gzip
+    return gzip.compress(data, mtime=0)
+
+
 # --- varints ----------------------------------------------------------------
 
 @pytest.mark.parametrize("val", [0, 1, 127, 128, 255, 300, 16384, 1 << 20, (1 << 32) - 1])
@@ -42,25 +47,37 @@ def test_svarint_roundtrip(val):
 
 # --- make/apply roundtrips --------------------------------------------------
 
-def test_identical_is_one_big_copy():
+def test_identical_compresses_away():
     base = bytes(range(256)) * 200                      # 51200 bytes
     patch = _roundtrip(base, base)
-    assert len(patch) < len(base) // 10                 # tiny: essentially one copy op
+    # the raw patch is image-sized (a diff of zeros) but gzips to almost nothing
+    assert len(_gz(patch)) < len(base) // 50
 
 
-def test_small_edit_in_large_image():
+def test_small_edit_gzips_tiny():
     base = bytearray(bytes(range(256)) * 200)
     target = bytearray(base)
     target[10000:10016] = b"NEW-CERT-BYTES!!"           # a small in-place edit
     patch = _roundtrip(bytes(base), bytes(target))
-    assert len(patch) < 1000                            # the unchanged bulk stays a copy
+    assert len(_gz(patch)) < 1000                       # the unchanged bulk -> zero diff
+
+
+def test_scattered_edits_fold_into_one_diff():
+    # bsdiff's win: every 64th byte changed (e.g. shifted pointers) is ONE diff region
+    # (sparse nonzeros) that gzips small -- copy/insert would re-insert all of it.
+    base = bytes((i * 5) & 0xFF for i in range(20000))
+    target = bytearray(base)
+    for i in range(0, len(target), 64):
+        target[i] ^= 0xAA
+    patch = _roundtrip(base, bytes(target))
+    assert len(_gz(patch)) < len(target) // 3           # far smaller than the full image
 
 
 def test_inserted_region_shifts_everything():
     base = bytes(range(256)) * 100
     target = base[:5000] + b"X" * 300 + base[5000:]     # an insertion slides the tail
     patch = _roundtrip(base, target)
-    assert len(patch) < len(target) // 5                # the slid tail is still a copy (seek)
+    assert len(_gz(patch)) < len(target) // 5           # the slid tail is still a copy (seek)
 
 
 def test_deleted_region():
@@ -81,7 +98,7 @@ def test_all_literal_when_nothing_matches():
     base = b"\x00" * 4096
     target = bytes((i * 7 + 3) & 0xFF for i in range(5000))   # no anchor-length run in base
     patch = _roundtrip(base, target)
-    assert b"OCDL" == patch[:4] and len(patch) >= len(target)  # ~all inserted
+    assert b"OCDL" == patch[:4]
 
 
 def test_empty_target():
@@ -122,22 +139,29 @@ def test_apply_too_short():
 
 
 def test_apply_copy_out_of_bounds():
-    # a hand-built patch whose copy runs past the base -> rejected, not silent
+    # a hand-built patch whose diff region runs past the base -> rejected, not silent
     out = bytearray(MAGIC)
     _write_uvarint(out, 100)            # target_size
-    _write_uvarint(out, 0)              # insert_len
-    _write_uvarint(out, 100)            # copy_len (base is only 4 bytes)
+    _write_uvarint(out, 0)              # extra_len
+    _write_uvarint(out, 100)            # diff_len (base is only 4 bytes)
     _write_svarint(out, 0)             # seek
     with pytest.raises(OtaError, match="out of base bounds"):
         apply_delta(b"base", bytes(out))
 
 
-def test_apply_size_mismatch():
+def test_apply_truncated():
     out = bytearray(MAGIC)
-    _write_uvarint(out, 999)           # claims 999 bytes...
-    _write_uvarint(out, 3)             # ...but only inserts 3
+    _write_uvarint(out, 100)           # claims 100 bytes but the ops run out
+    with pytest.raises(OtaError, match="truncated"):
+        apply_delta(b"base", bytes(out))
+
+
+def test_apply_size_overshoot():
+    out = bytearray(MAGIC)
+    _write_uvarint(out, 3)             # claims 3 bytes...
+    _write_uvarint(out, 5)             # ...but one op emits 5 extra
     _write_uvarint(out, 0)
     _write_svarint(out, 0)
-    out += b"abc"
+    out += b"abcde"
     with pytest.raises(OtaError, match="header says"):
         apply_delta(b"base", bytes(out))

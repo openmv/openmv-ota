@@ -434,17 +434,21 @@ manifest_ok = (len(_m["signature"]) == 64                 # ES256 R||S parsed ou
                and _m["region"] == __MANIFEST__[:len(_m["region"])]
                and _rep["format"] == "full" and _rej is None)
 
-# Delta apply: reconstruct the target from a base (stands in for the BACK slot) + patch,
-# streamed through the real _delta_chunks/_GenReader under MicroPython.
+# Delta apply: stream a *gzipped* patch through the real DeflateIO -> _PatchReader ->
+# _delta_stream -> _GenReader (the on-device path), reconstructing against a base that
+# stands in for the BACK slot. The scattered-edit diffs go through the real ulab _add.
+import deflate as _deflate
 _dbase = __DELTA_BASE__
-_rd = P["_GenReader"](P["_delta_chunks"](__DELTA_PATCH__, lambda o, n: _dbase[o:o+n], 64))
+_dio = _deflate.DeflateIO(io.BytesIO(__DELTA_PATCH_GZ__), _deflate.GZIP)
+_rd = P["_GenReader"](P["_delta_stream"](P["_PatchReader"](_dio),
+                                         lambda o, n: _dbase[o:o+n], 64))
 _recon = b""
 while True:
     _c = _rd.read(100)
     if not _c:
         break
     _recon += _c
-delta_ok = _recon == __DELTA_TARGET__
+delta_ok = _recon == __DELTA_TARGET__ and P["_np"] is not None   # ulab really present
 
 ok = (url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok
       and fmt_ok and emit_ok and manifest_ok and delta_ok)
@@ -467,9 +471,12 @@ def _installer_script() -> str:
     payload = b"openmv-ota installer payload " * 40
     gz = gzip.compress(payload, mtime=0)
 
-    dbase = bytes((i * 13 + 5) & 0xFF for i in range(4000))
-    dtarget = dbase[:1500] + b"DELTA-NEW-BYTES" + dbase[1700:] + b"trailer" * 20
-    dpatch = make_delta(dbase, dtarget)
+    dbase = bytearray((i * 13 + 5) & 0xFF for i in range(4000))
+    dtarget = bytearray(dbase[:1500] + b"DELTA-NEW-BYTES" + dbase[1700:] + b"trailer" * 20)
+    for i in range(0, len(dtarget), 40):                  # scattered edits -> nonzero diffs
+        dtarget[i] ^= 0x33
+    dbase, dtarget = bytes(dbase), bytes(dtarget)
+    dpatch_gz = gzip.compress(make_delta(dbase, dtarget), mtime=0)
 
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
@@ -484,7 +491,7 @@ def _installer_script() -> str:
             .replace("__GZ__", repr(gz)).replace("__PAYLOAD__", repr(payload))
             .replace("__MANIFEST__", repr(manifest_bytes))
             .replace("__DELTA_BASE__", repr(dbase)).replace("__DELTA_TARGET__", repr(dtarget))
-            .replace("__DELTA_PATCH__", repr(dpatch)))
+            .replace("__DELTA_PATCH_GZ__", repr(dpatch_gz)))
 
 
 # --- qemu orchestration -----------------------------------------------------

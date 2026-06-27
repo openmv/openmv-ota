@@ -498,20 +498,34 @@ def _old_read_of(base):
     return lambda off, n: base[off:off + n]
 
 
+class _SrcOf:
+    """A src.read(n) over raw patch bytes (stands in for the DeflateIO patch stream)."""
+    def __init__(self, data, step=7):
+        self.data, self.pos, self.step = data, 0, step
+
+    def read(self, n):
+        n = min(n, self.step)                             # dribble it out to exercise buffering
+        out = self.data[self.pos:self.pos + n]
+        self.pos += len(out)
+        return out
+
+
 def test_delta_format_pinned_to_host():
     from openmv_ota.ota.manifest import DELTA_FORMAT
     assert inst("_DELTA_FORMAT") == DELTA_FORMAT
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2])
-def test_delta_chunks_mirror_host_apply(seed):
+def test_delta_stream_mirrors_host_apply(seed):
     from openmv_ota.ota.delta import apply_delta, make_delta
     base = bytes((i * 31 + seed) & 0xFF for i in range(8000))
-    target = base[:3000] + b"INSERTED-NEW-BYTES" + base[3200:] + b"tail" * 50
+    target = bytearray(base[:3000] + b"INSERTED-NEW-BYTES" + base[3200:] + b"tail" * 50)
+    for i in range(0, len(target), 50):                   # scattered edits -> nonzero diffs
+        target[i] ^= 0x5A
+    target = bytes(target)
     patch = make_delta(base, target)
-    # the device generator, collected, equals the host reference reconstruction
-    pieces = list(inst("_delta_chunks")(patch, _old_read_of(base), 256))
-    assert b"".join(bytes(p) for p in pieces) == apply_delta(base, patch) == target
+    gen = inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)), _old_read_of(base), 256)
+    assert b"".join(bytes(p) for p in gen) == apply_delta(base, patch) == target
 
 
 def test_gen_reader_serves_read_n():
@@ -519,7 +533,8 @@ def test_gen_reader_serves_read_n():
     base = bytes(range(256)) * 30
     target = base[:2000] + b"X" * 40 + base[2000:]
     patch = make_delta(base, target)
-    rd = inst("_GenReader")(inst("_delta_chunks")(patch, _old_read_of(base), 512))
+    gen = inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)), _old_read_of(base), 512)
+    rd = inst("_GenReader")(gen)
     out = b""
     while True:
         d = rd.read(100)
@@ -529,23 +544,26 @@ def test_gen_reader_serves_read_n():
     assert out == target
 
 
-def test_delta_chunks_bad_magic():
+def test_delta_stream_bad_magic():
+    gen = inst("_delta_stream")(inst("_PatchReader")(_SrcOf(b"NOPE\x00\x00")),
+                                _old_read_of(b""), 64)
     with pytest.raises(OSError, match="bad delta"):
-        list(inst("_delta_chunks")(b"NOPE\x00\x00", _old_read_of(b""), 64))
+        list(gen)
 
 
-def test_read_decompressed_caps():
-    class _Dio:
-        def __init__(self, data):
-            self.data, self.pos = data, 0
+def test_patch_reader_truncated_varint_and_exact():
+    pr = inst("_PatchReader")(_SrcOf(b""))
+    with pytest.raises(OSError, match="truncated"):
+        pr.read_uvarint()
+    pr2 = inst("_PatchReader")(_SrcOf(b"ab"))
+    with pytest.raises(OSError, match="truncated"):
+        pr2.read_exact(8)
 
-        def read(self, n):
-            out = self.data[self.pos:self.pos + n]
-            self.pos += len(out)
-            return out
-    assert inst("_read_decompressed")(_Dio(b"abc" * 100), 100000) == b"abc" * 100
-    with pytest.raises(OSError, match="larger than"):
-        inst("_read_decompressed")(_Dio(b"x" * 9000), 1000)
+
+def test_add_zero_copy_and_pure_add():
+    # all-zero diff -> straight copy; nonzero -> (old+diff) mod 256 (pure fallback on host)
+    assert inst("_add")(b"\x10\x20", b"\x00\x00") == b"\x10\x20"
+    assert inst("_add")(b"\xff\x02", b"\x01\x05") == b"\x00\x07"   # wraps mod 256
 
 
 # --- _read_all (the manifest is read into RAM, not streamed) -----------------

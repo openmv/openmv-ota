@@ -363,57 +363,97 @@ def _golden_floor(trailer):
 
 
 # --- pure: delta apply (mirror of openmv_ota.ota.delta, pinned by tests) -----
-# A selected delta is reconstructed against the golden BACK slot: copy exact runs from
-# BACK + insert literals from the patch. Pure bytearray slices -- no per-byte arithmetic,
-# so it runs on every board (no ulab/C). The result is still verified by sha256 (here) +
-# the signed trailer (on boot), so the patch is never trusted.
+# A selected delta is reconstructed against the golden BACK slot: for each op, emit the
+# `extra` literals, seek the base cursor, then emit the diff region = BACK + diff (mod 256).
+# The diff stream is image-sized (mostly zeros), so the patch is *streamed* through the
+# decompressor (never held whole in RAM). The add is vectorised with ulab on-device (with a
+# pure fallback); the result is still sha256- + trailer-verified, so the patch isn't trusted.
 
 _DELTA_FORMAT = "ocdl"                            # manifest representation["format"]
 _DELTA_MAGIC = b"OCDL"
 
-
-def _uvarint(buf, pos):
-    result = shift = 0
-    while True:
-        b = buf[pos]
-        pos += 1
-        result |= (b & 0x7F) << shift
-        if not (b & 0x80):
-            return result, pos
-        shift += 7
+try:                                              # ulab numpy: on every OTA-capable board
+    from ulab import numpy as _np
+except ImportError:                               # host / a board without ulab -> pure add
+    _np = None
 
 
-def _svarint(buf, pos):
-    zz, pos = _uvarint(buf, pos)
-    return ((zz >> 1) if not (zz & 1) else -((zz + 1) >> 1)), pos
+def _add(old_b, diff_b):
+    """``(old_b + diff_b) mod 256`` for the diff region. All-zero diff (the unchanged bulk)
+    is a straight copy; otherwise ulab vectorises the add, with a pure-Python fallback."""
+    if diff_b == bytes(len(diff_b)):
+        return bytes(old_b)
+    if _np is not None:
+        return (_np.frombuffer(old_b, dtype=_np.uint8)        # pragma: no cover (device/ulab)
+                + _np.frombuffer(diff_b, dtype=_np.uint8)).tobytes()
+    return bytes((old_b[i] + diff_b[i]) & 0xFF for i in range(len(diff_b)))
 
 
-def _delta_chunks(patch, old_read, chunk):
-    """Yield the reconstructed image in pieces from an OCDL ``patch`` (whole, in RAM --
-    deltas are small) + the golden base via ``old_read(off, n)`` (the XIP'd BACK slot).
-    Mirror of openmv_ota.ota.delta.apply_delta, but streamed (the target is never
-    materialised). Raises OSError on a bad patch (-> caller reboots to golden)."""
-    if len(patch) < 4 or patch[:4] != _DELTA_MAGIC:
+class _PatchReader:
+    """A buffered reader over a streamed patch source (``src.read(n)`` -- a DeflateIO),
+    giving exact reads + varints so the patch is consumed in one forward pass."""
+
+    def __init__(self, src):
+        self._src = src
+        self._buf = b""
+
+    def _fill(self, need):
+        while len(self._buf) < need:
+            d = self._src.read(_CHUNK)
+            if not d:
+                return
+            self._buf += d
+
+    def read_exact(self, k):
+        self._fill(k)
+        if len(self._buf) < k:
+            raise OSError("delta truncated")
+        out, self._buf = self._buf[:k], self._buf[k:]
+        return out
+
+    def read_uvarint(self):
+        result = shift = 0
+        while True:
+            self._fill(1)
+            if not self._buf:
+                raise OSError("delta truncated")
+            b = self._buf[0]
+            self._buf = self._buf[1:]
+            result |= (b & 0x7F) << shift
+            if not (b & 0x80):
+                return result
+            shift += 7
+
+    def read_svarint(self):
+        zz = self.read_uvarint()
+        return (zz >> 1) if not (zz & 1) else -((zz + 1) >> 1)
+
+
+def _delta_stream(reader, old_read, chunk):
+    """Yield the reconstructed image in pieces from a streamed OCDL patch (via ``reader``)
+    + the golden base (``old_read(off, n)`` over the XIP'd BACK slot). Mirror of
+    openmv_ota.ota.delta.apply_delta -- streamed both ways, so neither the patch nor the
+    target is held whole. Raises OSError on a bad/short patch (-> reboot to golden)."""
+    if reader.read_exact(4) != _DELTA_MAGIC:
         raise OSError("bad delta magic")
-    _, pos = _uvarint(patch, 4)                   # skip target_size
-    old = 0
-    end = len(patch)
-    while pos < end:
-        insert_len, pos = _uvarint(patch, pos)
-        copy_len, pos = _uvarint(patch, pos)
-        seek, pos = _svarint(patch, pos)
-        if insert_len:
-            yield patch[pos:pos + insert_len]
-            pos += insert_len
-        old += seek
+    target_size = reader.read_uvarint()
+    old = produced = 0
+    while produced < target_size:
+        extra_len = reader.read_uvarint()
+        diff_len = reader.read_uvarint()
+        old += reader.read_svarint()
+        if extra_len:
+            yield reader.read_exact(extra_len)
+            produced += extra_len
         o = old
-        left = copy_len
+        left = diff_len
         while left:
             m = left if left < chunk else chunk
-            yield old_read(o, m)
+            yield _add(old_read(o, m), reader.read_exact(m))
             o += m
             left -= m
-        old += copy_len
+        old += diff_len
+        produced += diff_len
 
 
 class _GenReader:
@@ -432,19 +472,6 @@ class _GenReader:
                 break
         out, self._buf = self._buf[:n], self._buf[n:]
         return out
-
-
-def _read_decompressed(dio, cap):
-    """Read a whole decompressed stream (a delta patch) into RAM, capped at ``cap`` (a
-    patch larger than a full image is bogus)."""
-    out = b""
-    while True:
-        d = dio.read(_CHUNK)
-        if not d:
-            return out
-        out += d
-        if len(out) > cap:
-            raise OSError("delta larger than a full image")
 
 
 # --- pure: the flash write (host-testable; all I/O injected) -----------------
@@ -671,14 +698,12 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     sock, body = _open(image_url, ca_pem, socket, ssl)
     dio = deflate.DeflateIO(body, deflate.GZIP)
     if fmt == _DELTA_FORMAT:
-        # Delta: the (small) patch is decompressed whole into RAM, then the image is
-        # reconstructed by copying exact runs from the golden BACK slot + inserting the
-        # patch literals -- streamed into FRONT, never materialised.
-        patch = _read_decompressed(dio, front_size)
-
+        # Delta: stream-decompress the patch and reconstruct the image against the golden
+        # BACK slot (copy-with-diff, ulab add) -- both the patch and the output are streamed
+        # into FRONT, neither is materialised.
         def _old_read(off, n):
             return uctypes.bytearray_at(base + front_size + off, n)   # BACK slot at front_size
-        source = _GenReader(_delta_chunks(patch, _old_read, _CHUNK)).read
+        source = _GenReader(_delta_stream(_PatchReader(dio), _old_read, _CHUNK)).read
     else:
         source = dio.read
 

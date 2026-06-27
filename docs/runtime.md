@@ -133,11 +133,12 @@ manifest URL to hand it (how that's obtained is out of scope here). It:
    smaller — and opens a second HTTPS GET for it.
 4. Erases the FRONT slot, then **streams** the image straight in. For a full image:
    decompress a chunk → write → **read back and compare** → repeat, skipping erased `0xFF`
-   runs. For a delta: decompress the small patch into RAM, then reconstruct by copying
-   exact runs from the golden **BACK** slot (XIP bytes) + inserting the patch's literals,
-   writing+verifying the same way. Either way the stream is hashed and checked against the
-   manifest's reconstructed-image **sha256** (fail-fast → golden). A ~1 MB image is never
-   held in RAM. Handles `Content-Length`, chunked, close-delimited responses, and redirects.
+   runs. For a delta: stream-decompress the patch and reconstruct against the golden
+   **BACK** slot (copy a run from BACK + add the patch's per-byte difference, vectorised
+   with `ulab`; the patch is never held whole in RAM), writing+verifying the same way.
+   Either way the stream is hashed and checked against the manifest's reconstructed-image
+   **sha256** (fail-fast → golden). A ~1 MB image is never held in RAM. Handles
+   `Content-Length`, chunked, close-delimited responses, and redirects.
 5. Writes the `pending` marker **last**, only after the whole image verified, then
    reboots into the one-shot trial (your app then calls `confirm()` once healthy).
 
@@ -184,16 +185,19 @@ ota-delta --base <golden> --target <new ota.img.gz>`) → `build manifest -u <ht
 (add `--delta <file> --delta-base-version <golden-ver>` to advertise the delta), then host
 the `.img.gz`, any `.delta.gz`, and `-manifest.bin` under that base URL.
 
-**Deltas.** A delta is a copy/insert patch against the **golden** (the immutable BACK
-slot every device keeps): the device copies the unchanged bulk straight from BACK and
+**Deltas.** A delta is a bsdiff-class patch against the **golden** (the immutable BACK
+slot every device keeps): the device reconstructs the new image from BACK + the patch and
 only downloads the changes, so a release that leaves the model blobs untouched (a config
-or key change) ships as a few KB instead of the whole image. It's *opportunistic* — the
-device picks the delta only when its golden matches the delta's base and it's smaller,
-else the full image. The delta is pure transport: the reconstructed slot is still
-sha256- and signature-verified, so a bad patch just falls back to golden. The applier is
-pure Python (no `ulab`/C), so every board can use deltas, and it ships in the romfs (it's
-OTA-patchable like the installer). One `golden → latest` delta updates any device,
-whatever version it's currently running — there are no per-version delta chains.
+or key change) ships as a few KB instead of the whole image. Because it carries a
+byte-difference stream, even *scattered* small edits — a recompiled function, a table whose
+pointers all shifted — fold into a cheap copy-with-difference rather than being re-sent.
+It's *opportunistic* — the device picks the delta only when its golden matches the delta's
+base and it's smaller, else the full image. The delta is pure transport: the reconstructed
+slot is still sha256- and signature-verified, so a bad patch just falls back to golden. The
+applier ships in the romfs (it's OTA-patchable like the installer) and uses `ulab` for the
+per-byte add — present on every OTA-capable board (it falls back to plain Python where it
+isn't). One `golden → latest` delta updates any device, whatever version it's currently
+running — there are no per-version delta chains.
 
 ## Bundled resources — applying romfs data to the device
 
