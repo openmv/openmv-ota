@@ -57,7 +57,10 @@ def _write_uvarint(out: bytearray, val: int) -> None:
 
 def _read_uvarint(buf, pos: int) -> tuple[int, int]:
     result = shift = 0
+    n = len(buf)
     while True:
+        if pos >= n:
+            raise OtaError("truncated varint")
         b = buf[pos]
         pos += 1
         result |= (b & 0x7F) << shift
@@ -149,6 +152,33 @@ def target_size(patch) -> int:
         raise OtaError("not an OCDL delta")
     size, _pos = _read_uvarint(patch, len(MAGIC))
     return size
+
+
+def summarize(patch) -> dict:
+    """Stats for a patch (for ``build inspect``): the reconstructed ``target_size``, the op
+    count, total ``extra`` (literal) bytes, total ``diff`` (copy-with-difference) bytes, and
+    how many of those diff bytes are nonzero -- i.e. the real change content. Raises on a
+    malformed patch."""
+    if len(patch) < len(MAGIC) or bytes(patch[: len(MAGIC)]) != MAGIC:
+        raise OtaError("not an OCDL delta")
+    target_sz, pos = _read_uvarint(patch, len(MAGIC))
+    ops = extra = diff = nonzero = produced = 0
+    end = len(patch)
+    while produced < target_sz:
+        if pos >= end:
+            raise OtaError("delta truncated")
+        extra_len, pos = _read_uvarint(patch, pos)
+        diff_len, pos = _read_uvarint(patch, pos)
+        _seek, pos = _read_svarint(patch, pos)
+        pos += extra_len
+        nonzero += diff_len - patch[pos : pos + diff_len].count(0)
+        pos += diff_len
+        ops += 1
+        extra += extra_len
+        diff += diff_len
+        produced += extra_len + diff_len
+    return {"target_size": target_sz, "ops": ops, "extra_bytes": extra,
+            "diff_bytes": diff, "nonzero_diff_bytes": nonzero}
 
 
 def apply_delta(base, patch) -> bytes:

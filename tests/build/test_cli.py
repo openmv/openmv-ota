@@ -384,3 +384,144 @@ def test_build_verify_unsigned_romfs(tmp_path, capsys):
     img = _plain_romfs(tmp_path)
     assert main(["build", "verify", str(img), "--trusted-keys", str(keys)]) == 2
     assert "unsigned ROMFS image" in capsys.readouterr().err
+
+
+# --- inspect / verify of manifests + deltas ----------------------------------
+
+def _write_manifest_and_keys(d, *, key_id=0x0100, sign_key_id=None, with_delta=True):
+    """Write a signed <d>/m.bin + a <d>/trusted_keys.json that trusts it. Returns nothing;
+    `sign_key_id` (default key_id) signs, so passing a different key_id forges a bad sig."""
+    import gzip
+
+    from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.delta import make_delta
+    from openmv_ota.ota.keys import (
+        TrustedKey, generate_private_key, public_point_hex, write_trusted_keys)
+    from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
+    from openmv_ota.ota.sign import sign_region
+
+    spec = algorithm_for(ES256)
+    priv = generate_private_key(spec)
+    reps = [{"format": "full", "url": "https://x/n6.img.gz", "size": 9000}]
+    if with_delta:
+        reps.append({"format": "ocdl", "url": "https://x/n6.delta.gz", "size": 1200,
+                     "base_payload_version": 16777216})
+    body = {"schema": 1, "board_id": 7, "product": "OPENMV_N6", "version": "2.1.0",
+            "payload_version": 33685760, "min_platform_version": 0, "size": 16384,
+            "sha256": "ab" * 32, "representations": reps}
+    m = Manifest(body=body, key_id=key_id, sig_alg=ES256)
+    m.signature = sign_region(priv, signed_region(m), spec)
+    (d / "m.bin").write_bytes(pack_manifest(m))
+    # the trusted set carries the signer's *real* pubkey under `key_id`
+    write_trusted_keys(d / "trusted_keys.json",
+                       [TrustedKey(key_id, ES256, "ota", public_point_hex(priv.public_key()))])
+    base = bytes(range(256)) * 64
+    target = base[:1000] + b"NEW" * 30 + base[1000:]
+    (d / "base.img").write_bytes(base)
+    (d / "target.img").write_bytes(target)
+    (d / "n6.delta.gz").write_bytes(gzip.compress(make_delta(base, target)))
+
+
+def test_inspect_manifest(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    assert main(["build", "inspect", str(tmp_path / "m.bin")]) == 0
+    out = capsys.readouterr().out
+    assert "manifest" in out and "board_id 7" in out and "ocdl" in out and "full" in out
+
+
+def test_inspect_manifest_json(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    assert main(["build", "inspect", str(tmp_path / "m.bin"), "--json"]) == 0
+    import json
+    out = json.loads(capsys.readouterr().out)
+    assert out["body"]["board_id"] == 7 and out["key_id"] == 0x0100
+
+
+def test_inspect_manifest_corrupt(tmp_path, capsys):
+    (tmp_path / "bad.bin").write_bytes(b"OMVM" + b"\x00" * 40)   # OMVM magic, junk body
+    assert main(["build", "inspect", str(tmp_path / "bad.bin")]) == 2
+    assert "not a valid manifest" in capsys.readouterr().err
+
+
+def test_inspect_delta(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    assert main(["build", "inspect", str(tmp_path / "n6.delta.gz")]) == 0
+    out = capsys.readouterr().out
+    assert "delta" in out and "reconstructs" in out and "copy-with-diff" in out
+
+
+def test_inspect_delta_json(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    assert main(["build", "inspect", str(tmp_path / "n6.delta.gz"), "--json"]) == 0
+    import json
+    assert json.loads(capsys.readouterr().out)["ops"] >= 1
+
+
+def test_inspect_delta_corrupt(tmp_path, capsys):
+    (tmp_path / "bad.delta").write_bytes(b"OCDL\xff")            # OCDL magic, truncated
+    assert main(["build", "inspect", str(tmp_path / "bad.delta")]) == 2
+
+
+def test_verify_manifest_ok(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    rc = main(["build", "verify", str(tmp_path / "m.bin"),
+               "--trusted-keys", str(tmp_path / "trusted_keys.json")])
+    assert rc == 0 and "verified" in capsys.readouterr().out
+
+
+def test_verify_manifest_untrusted(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path, key_id=0x0100)
+    # a trusted set that doesn't contain the signer -> verification fails
+    from openmv_ota.ota.keys import TrustedKey, write_trusted_keys
+    from openmv_ota.ota import ES256
+    write_trusted_keys(tmp_path / "other.json",
+                       [TrustedKey(0x0999, ES256, "ota", "04" + "00" * 64)])
+    rc = main(["build", "verify", str(tmp_path / "m.bin"),
+               "--trusted-keys", str(tmp_path / "other.json")])
+    assert rc == 1 and "FAILED" in capsys.readouterr().err
+
+
+def test_verify_delta_with_base(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    rc = main(["build", "verify", str(tmp_path / "n6.delta.gz"),
+               "--base", str(tmp_path / "base.img")])
+    assert rc == 0 and "applies against the base" in capsys.readouterr().out
+
+
+def test_verify_delta_with_target(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    rc = main(["build", "verify", str(tmp_path / "n6.delta.gz"),
+               "--base", str(tmp_path / "base.img"), "--target", str(tmp_path / "target.img")])
+    assert rc == 0 and "reconstructs the target" in capsys.readouterr().out
+
+
+def test_verify_delta_wrong_target(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    (tmp_path / "wrong.img").write_bytes(b"not the target")
+    rc = main(["build", "verify", str(tmp_path / "n6.delta.gz"),
+               "--base", str(tmp_path / "base.img"), "--target", str(tmp_path / "wrong.img")])
+    assert rc == 1 and "does not reconstruct" in capsys.readouterr().err
+
+
+def test_verify_delta_needs_base(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    rc = main(["build", "verify", str(tmp_path / "n6.delta.gz")])
+    assert rc == 2 and "needs --base" in capsys.readouterr().err
+
+
+def test_verify_delta_bad_base(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    (tmp_path / "tiny.img").write_bytes(b"x")               # too small -> apply out of bounds
+    rc = main(["build", "verify", str(tmp_path / "n6.delta.gz"),
+               "--base", str(tmp_path / "tiny.img")])
+    assert rc == 2 and "error" in capsys.readouterr().err
+
+
+def test_load_artifact_gz_not_delta(tmp_path):
+    import gzip
+    from openmv_ota.build.cli import _load_artifact
+    (tmp_path / "x.gz").write_bytes(gzip.compress(b"just some gzipped data, not a patch"))
+    assert _load_artifact(tmp_path / "x.gz") == (None, None)
+    assert _load_artifact(tmp_path / "nope.bin") == (None, None)   # unreadable
+    (tmp_path / "notgz.gz").write_bytes(b"\x1f\x8bnotgzip")        # gzip magic, bad stream
+    assert _load_artifact(tmp_path / "notgz.gz") == (None, None)

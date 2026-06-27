@@ -128,6 +128,30 @@ def test_target_size_bad_magic():
         target_size(b"XX")
 
 
+def test_summarize_reports_stats():
+    from openmv_ota.ota.delta import summarize
+    base = bytes((i * 5) & 0xFF for i in range(8000))
+    target = bytearray(base)
+    target[100:103] = b"abc"                            # one small change
+    s = summarize(make_delta(base, bytes(target)))
+    assert s["target_size"] == len(target) and s["ops"] >= 1
+    assert s["nonzero_diff_bytes"] >= 1 and s["nonzero_diff_bytes"] <= s["diff_bytes"]
+
+
+def test_summarize_bad_magic():
+    from openmv_ota.ota.delta import summarize
+    with pytest.raises(OtaError, match="not an OCDL"):
+        summarize(b"XX")
+
+
+def test_summarize_truncated():
+    from openmv_ota.ota.delta import summarize
+    out = bytearray(MAGIC)
+    _write_uvarint(out, 100)            # claims 100 bytes but carries no ops
+    with pytest.raises(OtaError, match="truncated"):
+        summarize(bytes(out))
+
+
 def test_apply_bad_magic():
     with pytest.raises(OtaError, match="not an OCDL"):
         apply_delta(b"base", b"XXXX\x00")

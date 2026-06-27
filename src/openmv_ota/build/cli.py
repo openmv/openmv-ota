@@ -99,18 +99,22 @@ def register(build_parser: argparse.ArgumentParser):
                        help="output path (e.g. <board>-vX-to-vY.delta.gz)")
     p_dlt.set_defaults(func=cmd_ota_delta, _command="build ota-delta")
 
-    p_ins = sub.add_parser("inspect", help="decode + print an OTA image's trailer(s)")
-    p_ins.add_argument("image", help="a <board>-romfs.zip bundle, a trailer.bin, or a "
-                                     "factory/partition .img (decodes every slot)")
+    p_ins = sub.add_parser("inspect", help="decode + print an OTA artifact "
+                                           "(image trailer, manifest, or delta)")
+    p_ins.add_argument("image", help="a romfs.zip bundle, trailer.bin, factory/partition "
+                                     ".img, a -manifest.bin, or a .delta.gz")
     p_ins.add_argument("--json", action="store_true", help="machine-readable dump")
     p_ins.set_defaults(func=cmd_inspect, _command="build inspect")
 
-    p_ver = sub.add_parser("verify", help="verify an OTA image (signature + body hash)")
-    p_ver.add_argument("image", help="a <board>-romfs.zip bundle, a factory/partition "
-                                     ".img (verifies every slot), or the romfs.img body")
+    p_ver = sub.add_parser("verify", help="verify an OTA artifact "
+                                          "(image/manifest signature, or a delta)")
+    p_ver.add_argument("image", help="a romfs.zip bundle, factory/partition .img, the "
+                                     "romfs.img body, a -manifest.bin, or a .delta.gz")
     p_ver.add_argument("trailer", nargs="?", help="trailer.bin (omit when image is a .zip)")
     p_ver.add_argument("--trusted-keys", default="keys/trusted_keys.json",
                        help="trusted_keys.json (default: keys/trusted_keys.json)")
+    p_ver.add_argument("--base", help="golden image to apply a delta against (delta verify)")
+    p_ver.add_argument("--target", help="expected new image, to confirm a delta reconstructs it")
     p_ver.set_defaults(func=cmd_verify, _command="build verify")
 
     p_fac = sub.add_parser("factory-romfs", help="compose the dual-slot factory ROMFS image")
@@ -321,11 +325,81 @@ def _print_trailer(s: dict) -> None:
           % (tc.get("mpy_cross"), tc.get("vela"), tc.get("stedgeai"), tc.get("sdk")))
 
 
+def _load_artifact(path: Path):
+    """Peek at a file and classify it for inspect/verify: ``("manifest", bytes)``,
+    ``("delta", raw-patch-bytes)`` (gunzipping a ``.delta.gz``), or ``(None, None)`` to let
+    the trailer/image path handle it. Never raises on a read error -- returns ``(None, None)``."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None, None
+    if data[:4] == b"OMVM":
+        return "manifest", data
+    if data[:4] == b"OCDL":
+        return "delta", data
+    if data[:2] == b"\x1f\x8b":                            # gzip -- maybe a gzipped delta
+        import gzip
+        try:
+            inner = gzip.decompress(data)
+        except (OSError, EOFError):
+            return None, None
+        if inner[:4] == b"OCDL":
+            return "delta", inner
+    return None, None
+
+
+def _inspect_manifest(raw: bytes, as_json: bool) -> int:
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.manifest import parse_manifest
+    try:
+        m = parse_manifest(raw)
+    except OtaError as e:
+        print("error: not a valid manifest: %s" % e, file=sys.stderr)
+        return 2
+    b = m.body
+    if as_json:
+        print(json.dumps({"key_id": m.key_id, "sig_alg": m.sig_alg, "body": b}, indent=2))
+        return 0
+    print("manifest  (signed by key 0x%04x, alg %d)" % (m.key_id, m.sig_alg))
+    print("  board_id %s  version %s  (payload_version %s)"
+          % (b.get("board_id"), b.get("version"), b.get("payload_version")))
+    print("  image %s bytes  sha256 %s" % (b.get("size"), b.get("sha256")))
+    for r in b.get("representations", []):
+        base = ("  base_payload_version=%s" % r["base_payload_version"]
+                if "base_payload_version" in r else "")
+        print("  - %-5s %s bytes  %s%s"
+              % (r.get("format"), r.get("size"), r.get("url"), base))
+    return 0
+
+
+def _inspect_delta(raw: bytes, as_json: bool) -> int:
+    from openmv_ota.ota.delta import summarize
+    from openmv_ota.ota.errors import OtaError
+    try:
+        s = summarize(raw)
+    except OtaError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
+    if as_json:
+        print(json.dumps(s, indent=2))
+        return 0
+    print("delta  (reconstructs %d bytes in %d ops)" % (s["target_size"], s["ops"]))
+    print("  literal (extra): %d bytes" % s["extra_bytes"])
+    print("  copy-with-diff:  %d bytes (%d changed)"
+          % (s["diff_bytes"], s["nonzero_diff_bytes"]))
+    return 0
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     from openmv_ota.ota import bundle, parse_trailer, partition
     from openmv_ota.ota.errors import OtaError
 
     path = Path(args.image)
+    kind, raw = _load_artifact(path)
+    if kind == "manifest":
+        return _inspect_manifest(raw, args.json)
+    if kind == "delta":
+        return _inspect_delta(raw, args.json)
     try:
         is_b = bundle.is_bundle(path)
         trailer_bytes = bundle.read_bundle(path)[1] if is_b else None
@@ -366,17 +440,56 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _verify_delta(raw: bytes, args: argparse.Namespace) -> int:
+    import hashlib
+
+    from openmv_ota.ota.delta import apply_delta
+    from openmv_ota.ota.errors import OtaError
+    if not args.base:
+        print("error: verifying a delta needs --base <golden image>", file=sys.stderr)
+        return 2
+    try:
+        base = build_mod._read_maybe_gz(Path(args.base))
+        recon = apply_delta(base, raw)
+    except (OSError, OtaError) as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
+    sha = hashlib.sha256(recon).hexdigest()
+    if args.target:
+        target = build_mod._read_maybe_gz(Path(args.target))
+        if recon != target:
+            print("verification FAILED: delta does not reconstruct the target",
+                  file=sys.stderr)
+            return 1
+        print("verified: delta reconstructs the target (%d bytes, sha256 %s)"
+              % (len(recon), sha))
+        return 0
+    print("verified: delta applies against the base (%d bytes, sha256 %s)"
+          % (len(recon), sha))
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     from openmv_ota.ota import bundle, partition, read_trusted_keys
     from openmv_ota.ota.errors import OtaError
-    from openmv_ota.ota.verify import verify_image
+    from openmv_ota.ota.verify import verify_image, verify_manifest
 
     image = Path(args.image)
+    kind, raw = _load_artifact(image)
+    if kind == "delta":
+        return _verify_delta(raw, args)
     try:
         trusted = read_trusted_keys(Path(args.trusted_keys))
     except OtaError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
+    if kind == "manifest":
+        ok, reason = verify_manifest(raw, trusted)
+        if ok:
+            print("verified: %s" % reason)
+            return 0
+        print("verification FAILED: %s" % reason, file=sys.stderr)
+        return 1
     try:
         if args.trailer is not None:                       # loose body + trailer
             pairs = [("image", image.read_bytes(), Path(args.trailer).read_bytes())]
