@@ -24,6 +24,16 @@ edge cases are where update-safety bugs hide:
   guard: only a FRONT boot's un-confirmed trial confirms, so falling back to BACK never
   resurrects the failed FRONT image.
 
+The **update path** is covered at every layer: the signed-manifest codec + policy
+(`ota.manifest` — parse/verify/`update_reject_reason`/`select_representation`), the
+copy-with-difference **delta codec** (`ota.delta` — make/apply across identical, scattered-
+edit, shift, insert/delete, and truncation cases), and the device installer's *mirrors* of
+both (pinned byte-for-byte to the host codecs). A **black-box end-to-end test**
+([`tests/build/test_integration.py`](../tests/build/test_integration.py)) then publishes a
+real golden→new image + delta + manifest with the build tools and consumes them through the
+installer's own parse / select / streaming delta-apply, asserting the manifest's sha256+size
+match the image and the install-time hash check passes — catching cross-tool drift.
+
 ## `cshim` — the ECDSA verify C shim
 
 Compiles the shim's pure-C core (`device/ecdsa_verify.c`) against the firmware's
@@ -52,7 +62,8 @@ each slot at its absolute XIP address via `uctypes.bytearray_at` rather than
 slicing one whole-partition memoryview (which would overflow on the 24 MiB N6/AE3
 partitions). [`ci/qemu_boot_test.py`](../ci/qemu_boot_test.py)
 drives the device over the QEMU serial REPL via the firmware's bundled `mpremote`
-(pasting a script — no filesystem mount) and checks six scenarios:
+(pasting a script — no filesystem mount) and checks six scenarios (the last folds in the
+manifest + delta paths):
 
 1. **All boot paths** — `evaluate_slot`/`parse_trailer` exercised for every reject
    reason (`magic`/`crc`/`key`/`sig`/`board`/`compat`/`size`/`body-sha`/`rollback`/
@@ -88,13 +99,18 @@ drives the device over the QEMU serial REPL via the firmware's bundled `mpremote
    boards don't freeze it; real OpenMV boards do), injects a fake `time` (the qemu port
    has no RTC), and drives a `logging.warning(...)` through the real logger + the custom
    `_OtaFormatter`, asserting the exact line `[2026-06-25 12:34:56] WARNING openmv_ota:
-   qemu: live-log`. The real `socket`/`ssl`/
-   `rom_ioctl` wiring stays QEMU-unreachable (no network, read-only `rom_ioctl`) and is
-   covered by the host logic tests.
+   qemu: live-log`. Finally it exercises the **manifest** path — parsing a real host-signed
+   manifest under MicroPython (the struct/json/binascii/crc decode) + `_select_rep`/
+   `_update_reject` — and the **delta** path end-to-end: a host-built gzipped patch streamed
+   through the real `DeflateIO → _PatchReader → _delta_stream → _GenReader`, reconstructing
+   the target against a stand-in golden and asserting the on-device **`ulab`** add ran
+   (`_np is not None`) — ulab is built on every OTA-capable board (and the MPS emulators),
+   so this is real vectorised reconstruction. The real `socket`/`ssl`/`rom_ioctl` wiring
+   stays QEMU-unreachable (no network, read-only `rom_ioctl`) and is covered by host tests.
 
-The signature step uses an injected `verify` because the qemu port doesn't build
-mbedtls yet (the ECDSA core is covered by `cshim`); enabling mbedtls on the qemu
-port for real on-device crypto is a planned follow-up. The emulator boards don't
+Both the image **and the manifest** signature checks use an injected/host-tested `verify`
+because the qemu port doesn't build mbedtls yet (the ECDSA core is covered by `cshim`);
+enabling mbedtls on the qemu port for real on-device crypto is a planned follow-up. The emulator boards don't
 build mbedtls, so the tool refuses `project new --ota` for them (*not OTA-capable:
 … build firmware without mbedtls*) — the job builds plain firmware (`project new` +
 `build firmware`, no `--ota`) for both boards and needs `qemu-system-arm` +
