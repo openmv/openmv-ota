@@ -739,8 +739,8 @@ def test_build_manifest_non_ota_errors(make_project):
 
 
 def test_build_manifest_missing_image_errors(make_project):
-    root, repo = _build_n6_ota_bundle(make_project)        # bundle built, but no ota-image
-    with pytest.raises(BuildError, match="run `openmv-ota build ota-image`"):
+    root, repo = _build_n6_ota_bundle(make_project)        # bundle built, but no ota image
+    with pytest.raises(BuildError, match="run `openmv-ota build ota-romfs`"):
         build_mod.build_manifest(root, url_base=_URL, firmware=repo)
 
 

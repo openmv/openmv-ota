@@ -117,9 +117,10 @@ if you want to react.
 ## Installing an update (`install()`)
 
 `install(url, ca=None)` is the on-device piece that fetches and applies an update.
-`url` is the **signed manifest** URL (`build manifest`), *not* a raw image — the device
-resolves the actual image from the manifest itself. Something else decides *which*
-manifest URL to hand it (how that's obtained is out of scope here). It:
+`url` is the **signed manifest** URL (`build ota-romfs`), *not* a raw image — the device
+resolves the actual image from the manifest itself (representation URLs are relative to the
+manifest's URL by default). Something else decides *which* manifest URL to hand it (how
+that's obtained is out of scope here). It:
 
 1. Opens an **HTTPS** connection (plaintext HTTP is refused), verifying the server
    against `ca` with `CERT_REQUIRED` + SNI — all **before** erasing anything.
@@ -175,15 +176,16 @@ signature, not TLS, is the integrity boundary** — a TLS MITM still can't forge
 validly-signed manifest or image (it lacks your signing key); the worst it can do is
 serve a stale signed update, which the anti-rollback floor blocks, or deny the download.
 
-**The manifest + image.** `install()` consumes a signed manifest (`build manifest`),
-which names the reconstructed image's size/sha256 and the available **representations**
-and binds `board_id`/`payload_version`/`min_platform_version` under one ECDSA signature
-(same keys as the image). Each representation points at an absolute `https://` artifact:
-the gzipped full FRONT-slot image from `build ota-image`, and optionally a **delta** from
-`build ota-delta`. Build order: `build romfs` → `build ota-image` → (optional `build
-ota-delta --base <golden> --target <new ota.img.gz>`) → `build manifest -u <https-base>`
-(add `--delta <file> --delta-base-version <golden-ver>` to advertise the delta), then host
-the `.img.gz`, any `.delta.gz`, and `-manifest.bin` under that base URL.
+**The manifest + image.** `install()` consumes a signed manifest, which names the
+reconstructed image's size/sha256 and the available **representations** and binds
+`board_id`/`payload_version`/`min_platform_version` under one ECDSA signature (same keys as
+the image). One command builds the whole publishable set: **`build romfs`** (sign the
+bundle) → **`build ota-romfs`** (render `<board>-ota.img.gz`, sign `<board>-manifest.bin`,
+and — with `--delta-from <factory-romfs.img>` — emit `<board>-ota.delta.gz` + a delta
+representation). Host the artifacts beside each other; representation URLs are **relative
+filenames** (resolved against the manifest's URL on-device), so the signed manifest moves
+between hosts without re-signing. Pass `--url-base` to pin absolute `https://` URLs (an
+off-host CDN) instead.
 
 **Deltas.** A delta is a bsdiff-class patch against the **golden** (the immutable BACK
 slot every device keeps): the device reconstructs the new image from BACK + the patch and

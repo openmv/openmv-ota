@@ -302,21 +302,25 @@ RAM while it overwrites the slot it runs from), and `data/ca.pem` is the TLS tru
 store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step needs
 network, like the SDK download), and you can replace it with your provider's roots.
 
-To produce what `install()` downloads, run **`openmv-ota build ota-image`** after
-`build romfs` (renders each board's signed bundle into a gzipped full FRONT-slot image
-`<board>-ota.img.gz`), then **`openmv-ota build manifest -u <https-base-url>`** — the
-signed descriptor `install()` fetches first. The manifest names the image's size/sha256
-and representations and binds board/version/anti-rollback under the same key as the image;
-host both `<board>-ota.img.gz` and `<board>-manifest.bin` under that base URL and point
-`install()` at the manifest. The signed bundle stays the source of truth; both are
-regenerable renderings of it.
+To produce what `install()` downloads, run **`openmv-ota build ota-romfs`** after
+`build romfs`. It renders each board's signed bundle into the gzipped full FRONT-slot
+image (`<board>-ota.img.gz`) and signs the **manifest** (`<board>-manifest.bin`) — the
+descriptor `install()` fetches first, which names the image's size/sha256 + representations
+and binds board/version/anti-rollback under the same key as the image. Host both beside
+each other and point `install()` at the manifest. The signed bundle stays the source of
+truth; both are regenerable renderings of it.
 
-To ship a smaller **delta** download, run **`openmv-ota build ota-delta --base <golden>
---target <new ota.img.gz> -o <board>-vX-to-vY.delta.gz`** (the golden is the BACK-slot
-bytes of the version on devices), then add it to the manifest with `build manifest …
---board <board> --delta <file> --delta-base-version <golden-version>`. The device copies
-the unchanged bulk from its golden BACK slot and only downloads the changes; it's
-opportunistic and still sha256/signature-verified (see [the runtime docs](runtime.md)).
+Representation URLs are **relative filenames by default**, resolved on-device against the
+manifest's own URL — so the signed manifest is **host-portable** (move buckets / add a
+mirror without rebuilding + re-signing). Pass `-u/--url-base <https://…>` only if you want
+to pin absolute URLs (e.g. an off-host CDN).
+
+To ship a smaller **delta** download, add **`--delta-from <board>-factory-romfs.img`**
+(or a directory of per-board factory images). The delta is computed against the factory
+image's **BACK slot** — the exact golden bytes the device keeps — so a device copies the
+unchanged bulk from its own BACK slot and downloads only the changes. It's opportunistic
+(picked only when the device's golden matches and it's smaller) and still
+sha256/signature-verified (see [the runtime docs](runtime.md)).
 
 For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in
 logger built on the standard `logging` module (frozen as `openmv_log`, off by default)

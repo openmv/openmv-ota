@@ -691,8 +691,9 @@ def build_manifest(
     own signed trailer. Signed with the project's OTA key, exactly like the image.
     Representation URLs are **relative filenames by default** (resolved on-device against the
     manifest's own URL, so the signed manifest is host-portable); pass ``url_base`` (an
-    absolute ``https://`` dir) to pin absolute URLs instead. Run ``build ota-image`` first.
-    Pass ``delta`` + ``delta_base_version`` (the golden's version) to add the delta rep."""
+    absolute ``https://`` dir) to pin absolute URLs instead. The image must be rendered
+    first (``build ota-romfs`` does that, then calls here). Pass ``delta`` +
+    ``delta_base_version`` (the golden's version) to add the delta rep."""
     import gzip
 
     from openmv_ota.ota import bundle
@@ -737,7 +738,7 @@ def build_manifest(
         name = _target_name(t)
         img_path = out_dir / (name + "-ota.img.gz")
         if not img_path.exists():
-            raise BuildError("%s not found - run `openmv-ota build ota-image` first"
+            raise BuildError("%s not found - run `openmv-ota build ota-romfs` first"
                              % img_path, exit_code=1)
         image = gzip.decompress(img_path.read_bytes())
 

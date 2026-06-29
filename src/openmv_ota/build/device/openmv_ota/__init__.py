@@ -384,7 +384,7 @@ def install(url, ca=None):  # pragma: no cover
     device-relative fields (board / platform / anti-rollback) and pick a representation,
     then download that image into the FRONT slot, arm the one-shot trial, and reboot.
 
-    ``url`` is the **manifest** URL (produced by ``build manifest``), not a raw image --
+    ``url`` is the **manifest** URL (produced by ``build ota-romfs``), not a raw image --
     the device resolves the actual image URL from the signed manifest internally. Does
     **not** return on success -- it reboots. A failure *after* the write commits reboots
     into the golden BACK image instead (boot.py rejects the half-written FRONT); a
