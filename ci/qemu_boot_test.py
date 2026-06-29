@@ -430,9 +430,12 @@ emit_ok = buf.getvalue() == "[2026-06-25 12:34:56] WARNING openmv_ota: qemu: liv
 _m = P["_manifest_parse"](__MANIFEST__)
 _rep = P["_select_rep"](_m["body"], False, 0)
 _rej = P["_update_reject"](_m["body"], 0, 0, 0)
+# representation URL resolution: relative -> against the manifest URL; absolute -> as-is
+_rel = P["_resolve_url"]("https://h.io/fw/m.bin", "n6-ota.img.gz") == "https://h.io/fw/n6-ota.img.gz"
+_abs = P["_resolve_url"]("https://h.io/fw/m.bin", "https://cdn/x.gz") == "https://cdn/x.gz"
 manifest_ok = (len(_m["signature"]) == 64                 # ES256 R||S parsed out
                and _m["region"] == __MANIFEST__[:len(_m["region"])]
-               and _rep["format"] == "full" and _rej is None)
+               and _rep["format"] == "full" and _rej is None and _rel and _abs)
 
 # Delta apply: stream a *gzipped* patch through the real DeflateIO -> _PatchReader ->
 # _delta_stream -> _GenReader (the on-device path), reconstructing against a base that

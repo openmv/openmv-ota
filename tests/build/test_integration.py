@@ -50,11 +50,12 @@ def _build_version(root, app, repo, version):
 
 
 def test_publish_and_consume_end_to_end(make_project):
-    from openmv_ota.ota.delta import apply_delta
+    from openmv_ota.ota import partition
     from openmv_ota.ota.keys import read_trusted_keys
-    from openmv_ota.ota.manifest import parse_manifest, select_representation
+    from openmv_ota.ota.manifest import parse_manifest
+    from openmv_ota.ota.trailer import parse_trailer
     from openmv_ota.ota.verify import verify_manifest
-    from openmv_ota.ota.version import encode_app_version
+    from openmv_ota.project import load_project
     from openmv_ota.project.project import ProjectPaths
 
     root, repo, app = make_project(
@@ -62,43 +63,50 @@ def test_publish_and_consume_end_to_end(make_project):
         app_files={"main.py": "print('hi')\n", "data.bin": _ASSET,
                    "settings.json": '{"app_version": "1.0.0", "vendor": "Acme"}\n'})
     out = root / "build"
+    t = load_project(root, firmware=repo).board("OPENMV_N6")
 
-    golden_img = _build_version(root, app, repo, "1.0.0")
-    (out / "golden.img").write_bytes(golden_img)
-    new_img = _build_version(root, app, repo, "1.1.0")
-    assert new_img != golden_img
+    # v1.0.0 is the *factory* golden -- its BACK slot is exactly what the device keeps.
+    _build_version(root, app, repo, "1.0.0")
+    build_mod.build_factory_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    factory = (out / "OPENMV_N6-factory-romfs.img").read_bytes()
+    device_back = factory[t.front_size:]                    # what the device reads as `old`
 
-    # --- publish: delta golden->new + a manifest that advertises both representations ---
-    delta_path = out / "OPENMV_N6-v1.0.0-to-v1.1.0.delta.gz"
-    dr = build_mod.build_delta(out / "golden.img", out / "OPENMV_N6-ota.img.gz", delta_path)
-    [mres] = build_mod.build_manifest(
-        root, url_base="https://dl.x.io/fw", firmware=repo, boards=["OPENMV_N6"],
-        delta=delta_path, delta_base_version="1.0.0")
-    manifest_bytes = mres.output.read_bytes()
-    assert dr.gz_size < (out / "OPENMV_N6-ota.img.gz").stat().st_size   # delta beats full
+    # v1.1.0 release, published in one shot: image + delta(vs factory golden) + manifest,
+    # relative URLs by default. This is the real `build ota-romfs --delta-from <factory>`.
+    _build_version(root, app, repo, "1.1.0")
+    [r] = build_mod.build_ota_romfs(root, firmware=repo,
+                                    delta_from=out / "OPENMV_N6-factory-romfs.img")
+    assert r.delta is not None
+    new_img = gzip.decompress(r.image.read_bytes())
+    assert r.delta.stat().st_size < r.image.stat().st_size  # delta beats the full download
 
-    # --- host contract: the manifest is genuine and consistent with the image+delta ---
-    trusted = read_trusted_keys(ProjectPaths(root).trusted_keys)
-    ok, _reason = verify_manifest(manifest_bytes, trusted)
+    # --- host contract: the manifest is genuine and consistent with the image ---
+    manifest_bytes = r.manifest.read_bytes()
+    ok, _reason = verify_manifest(manifest_bytes, read_trusted_keys(ProjectPaths(root).trusted_keys))
     assert ok
     body = parse_manifest(manifest_bytes).body
     assert body["sha256"] == hashlib.sha256(new_img).hexdigest()
-    assert body["size"] == len(new_img)
-    delta = gzip.decompress(delta_path.read_bytes())
-    assert apply_delta(golden_img, delta) == new_img        # host applier reconstructs
-    golden_pv = encode_app_version("1.0.0")
-    assert select_representation(body, delta_capable=True,
-                                golden_payload_version=golden_pv)["format"] == "ocdl"
+    assert body["representations"][0]["url"] == r.image.name   # relative (host-portable)
+
+    # the delta's base is the factory golden version, read from its BACK trailer
+    back_tr = next(tr for lbl, _b, tr in partition.slots(factory) if lbl == "BACK")
+    golden_pv = parse_trailer(back_tr).payload_version
+    ocdl = next(rep for rep in body["representations"] if rep["format"] == "ocdl")
+    assert ocdl["base_payload_version"] == golden_pv
 
     # --- device consume: the installer's own parse + select + streaming applier ---
     inst = _load_installer()
-    m = inst._manifest_parse(manifest_bytes)               # device parser agrees with host
-    assert m["body"]["sha256"] == body["sha256"]
-    rep = inst._select_rep(m["body"], True, golden_pv)      # picks the delta (base matches)
-    assert rep["format"] == "ocdl" and rep["url"] == "https://dl.x.io/fw/" + delta_path.name
-    # reconstruct exactly as install() does: stream the patch against the golden BACK bytes
+    m = inst._manifest_parse(manifest_bytes)
+    rep = inst._select_rep(m["body"], True, golden_pv)      # delta picked (base matches golden)
+    assert rep["format"] == "ocdl"
+    # the relative URL resolves against the manifest's own URL
+    assert (inst._resolve_url("https://dl.x.io/fw/OPENMV_N6-manifest.bin", rep["url"])
+            == "https://dl.x.io/fw/" + r.delta.name)
+    # reconstruct exactly as install() does: stream the patch against the REAL device BACK
+    # bytes (factory back slot, confirmed status) -- the masking-free check.
+    delta = gzip.decompress(r.delta.read_bytes())
     gen = inst._delta_stream(inst._PatchReader(_SrcOf(delta)),
-                             lambda o, n: golden_img[o:o + n], 4096)
+                             lambda o, n: device_back[o:o + n], 4096)
     recon = b"".join(bytes(p) for p in gen)
     assert recon == new_img
     assert hashlib.sha256(recon).hexdigest() == body["sha256"]   # the install-time check

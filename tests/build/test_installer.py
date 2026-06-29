@@ -60,6 +60,20 @@ def test_parse_url_rejects(url):
         inst("_parse_url")(url)
 
 
+@pytest.mark.parametrize(("manifest_url", "rep_url", "expect"), [
+    # relative filename -> resolved against the manifest's own URL (the default)
+    ("https://dl.x.io/fw/N6-manifest.bin", "N6-ota.img.gz",
+     "https://dl.x.io/fw/N6-ota.img.gz"),
+    ("https://dl.x.io/fw/N6-manifest.bin", "./N6-ota.delta.gz",
+     "https://dl.x.io/fw/N6-ota.delta.gz"),
+    # absolute https -> used as-is (an off-host CDN)
+    ("https://dl.x.io/fw/N6-manifest.bin", "https://cdn.y.io/a.gz",
+     "https://cdn.y.io/a.gz"),
+])
+def test_resolve_url(manifest_url, rep_url, expect):
+    assert inst("_resolve_url")(manifest_url, rep_url) == expect
+
+
 # --- request line + status + small parsers ----------------------------------
 
 def test_request_bytes():

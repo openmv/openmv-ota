@@ -70,6 +70,18 @@ _SOCK_TIMEOUT = 30
 
 # --- pure: URL + HTTP (host-testable) ---------------------------------------
 
+def _resolve_url(manifest_url, rep_url):
+    """Resolve a manifest representation URL. An ``https://`` URL is used as-is (an
+    off-host CDN); otherwise it's relative to the manifest's own URL (the common case --
+    artifacts published beside the manifest), so a signed manifest stays valid wherever
+    it's hosted."""
+    if rep_url.startswith("https://"):
+        return rep_url
+    if rep_url.startswith("./"):
+        rep_url = rep_url[2:]
+    return manifest_url.rsplit("/", 1)[0] + "/" + rep_url
+
+
 def _parse_url(url):
     """Split an ``https://host[:port]/path`` URL into ``(host, port, path)``. Raises
     ValueError for anything but https -- the installer never speaks plaintext HTTP."""
@@ -644,7 +656,7 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     rep = _select_rep(body_dict, True, floor)
     if rep is None:
         raise OSError("manifest has no usable representation")
-    return rep["url"], rep.get("format"), body_dict.get("sha256")
+    return _resolve_url(manifest_url, rep["url"]), rep.get("format"), body_dict.get("sha256")
 
 
 def run(manifest_url, ca_pem, cfg):  # pragma: no cover

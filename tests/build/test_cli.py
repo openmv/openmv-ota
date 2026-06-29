@@ -51,66 +51,57 @@ def test_build_romfs_ota_reports_bundle(make_project, capsys):
     assert "OPENMV_N6-romfs.zip" in out and "signed OTA bundle" in out
 
 
-def test_build_ota_image_cli(make_project, capsys):
+def test_build_ota_romfs_cli_relative_urls(make_project, capsys):
+    # default: relative filename URLs (host-portable manifest)
+    from openmv_ota.ota.manifest import parse_manifest
     root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
     main(["build", "romfs", str(root), "-f", str(repo),
           "--no-compile-py", "--no-convert-models"])
     capsys.readouterr()
-    rc = main(["build", "ota-image", str(root), "-f", str(repo)])
+    rc = main(["build", "ota-romfs", str(root), "-f", str(repo)])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "OPENMV_N6-ota.img.gz" in out and "OTA download image" in out
+    assert "OPENMV_N6-ota.img.gz" in out and "OPENMV_N6-manifest.bin" in out
+    body = parse_manifest((root / "build" / "OPENMV_N6-manifest.bin").read_bytes()).body
+    assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"   # relative
 
 
-def test_build_ota_image_cli_error(make_project, capsys):
-    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)  # no bundle built
-    rc = main(["build", "ota-image", str(root), "-f", str(repo)])
-    assert rc == 1
-    assert "not found" in capsys.readouterr().err
-
-
-def test_build_manifest_cli(make_project, capsys):
+def test_build_ota_romfs_cli_absolute_urls(make_project, capsys):
+    # --url-base pins absolute https URLs
+    from openmv_ota.ota.manifest import parse_manifest
     root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
     main(["build", "romfs", str(root), "-f", str(repo),
           "--no-compile-py", "--no-convert-models"])
-    main(["build", "ota-image", str(root), "-f", str(repo)])
     capsys.readouterr()
-    rc = main(["build", "manifest", str(root), "-u", "https://dl.x.io/fw", "-f", str(repo)])
+    rc = main(["build", "ota-romfs", str(root), "-u", "https://dl.x.io/fw", "-f", str(repo)])
+    assert rc == 0
+    body = parse_manifest((root / "build" / "OPENMV_N6-manifest.bin").read_bytes()).body
+    assert body["representations"][0]["url"] == "https://dl.x.io/fw/OPENMV_N6-ota.img.gz"
+
+
+def test_build_ota_romfs_cli_with_delta(make_project, capsys):
+    # --delta-from a factory image -> a delta representation, base read from BACK trailer
+    from openmv_ota.ota.manifest import parse_manifest
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    main(["build", "romfs", str(root), "-f", str(repo),
+          "--no-compile-py", "--no-convert-models"])
+    build_mod.build_factory_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    capsys.readouterr()
+    factory = root / "build" / "OPENMV_N6-factory-romfs.img"
+    rc = main(["build", "ota-romfs", str(root), "-f", str(repo), "--delta-from", str(factory)])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "OPENMV_N6-manifest.bin" in out and "signed manifest" in out
+    assert "OPENMV_N6-ota.delta.gz" in out
+    body = parse_manifest((root / "build" / "OPENMV_N6-manifest.bin").read_bytes()).body
+    fmts = {r["format"] for r in body["representations"]}
+    assert fmts == {"full", "ocdl"}
 
 
-def test_build_manifest_cli_error(make_project, capsys):
-    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)  # no ota-image built
-    rc = main(["build", "manifest", str(root), "-u", "https://dl.x.io/fw", "-f", str(repo)])
+def test_build_ota_romfs_cli_error(make_project, capsys):
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)  # no romfs bundle built
+    rc = main(["build", "ota-romfs", str(root), "-f", str(repo)])
     assert rc == 1
-    assert "build ota-image" in capsys.readouterr().err
-
-
-def test_build_ota_delta_cli(tmp_path, capsys):
-    base = tmp_path / "b.img"
-    target = tmp_path / "t.img"
-    base_bytes = bytes(range(256)) * 100
-    base.write_bytes(base_bytes)
-    target.write_bytes(base_bytes[:3000] + b"NEW" * 50 + base_bytes[3000:])
-    out = tmp_path / "d.delta.gz"
-    rc = main(["build", "ota-delta", "--base", str(base), "--target", str(target),
-               "-o", str(out)])
-    assert rc == 0 and out.exists()
-    assert "delta:" in capsys.readouterr().out
-
-
-def test_build_ota_delta_cli_error(tmp_path, capsys, monkeypatch):
-    base = tmp_path / "b.img"
-    target = tmp_path / "t.img"
-    base.write_bytes(b"A" * 4096)
-    target.write_bytes(b"B" * 4096)
-    from openmv_ota.ota import delta as delta_mod
-    monkeypatch.setattr(delta_mod, "make_delta", lambda b, t: delta_mod.MAGIC + b"\x00")
-    rc = main(["build", "ota-delta", "--base", str(base), "--target", str(target),
-               "-o", str(tmp_path / "o.gz")])
-    assert rc == 1 and "self-check" in capsys.readouterr().err
+    assert "build romfs" in capsys.readouterr().err
 
 
 def _fake_firmware_make(monkeypatch):

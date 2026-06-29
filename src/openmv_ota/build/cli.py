@@ -1,10 +1,11 @@
 """CLI handlers for the ``openmv-ota build`` command group.
 
-    romfs      compile + pack a romfs image from a project
-    firmware   build firmware per board (OTA projects freeze a boot.py)
-    ota-image  assemble the gzipped FRONT-slot image a server hosts for OTA download
-    inspect    decode + print a signed OTA trailer
-    verify     verify a built OTA image (signature + body hash)
+    romfs         compile + pack a romfs image from a project
+    factory-romfs compose the dual-slot factory image (flashed at manufacture)
+    firmware      build firmware per board (OTA projects freeze a boot.py)
+    ota-romfs     build the cloud-published OTA set: image + signed manifest (+ delta)
+    inspect       decode + print an OTA artifact (trailer, manifest, or delta)
+    verify        verify an OTA artifact (image/manifest signature, or a delta)
 
 Note: ``build romfs`` (firmware-aware, compiles from a project) is distinct from
 ``romfs pack`` (low-level, packs a directory verbatim).
@@ -65,39 +66,21 @@ def register(build_parser: argparse.ArgumentParser):
                       help="keep the generated wrapper manifest dir (OTA builds) for inspection")
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
 
-    p_img = sub.add_parser("ota-image",
-                           help="assemble the gzipped FRONT-slot OTA download image(s)")
-    p_img.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
-    p_img.add_argument("-o", "--output", help="output dir (default: <project>/build)")
-    p_img.add_argument("-b", "--board", action="append", metavar="NAME",
+    p_otr = sub.add_parser("ota-romfs",
+                           help="build the cloud-published OTA set: image + signed manifest "
+                                "(+ optional delta)")
+    p_otr.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
+    p_otr.add_argument("--delta-from", metavar="PATH",
+                       help="the factory image (<board>-factory-romfs.img, or a dir of them) "
+                            "to build a delta against the golden BACK slot")
+    p_otr.add_argument("-u", "--url-base", metavar="URL",
+                       help="pin absolute https:// URLs in the manifest (default: relative "
+                            "filenames, resolved against the manifest's own URL on-device)")
+    p_otr.add_argument("-o", "--output", help="output dir (default: <project>/build)")
+    p_otr.add_argument("-b", "--board", action="append", metavar="NAME",
                        help="only build this board (repeatable; default: all targets)")
-    p_img.add_argument("-f", "--firmware", help="firmware checkout override")
-    p_img.set_defaults(func=cmd_ota_image, _command="build ota-image")
-
-    p_man = sub.add_parser("manifest",
-                           help="build + sign the update manifest(s) install() fetches first")
-    p_man.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
-    p_man.add_argument("-u", "--url-base", required=True, metavar="URL",
-                       help="absolute https:// dir the artifacts are hosted under")
-    p_man.add_argument("-o", "--output", help="output dir (default: <project>/build)")
-    p_man.add_argument("-b", "--board", action="append", metavar="NAME",
-                       help="only build this board (repeatable; default: all targets)")
-    p_man.add_argument("-f", "--firmware", help="firmware checkout override")
-    p_man.add_argument("--delta", metavar="FILE", help="a build ota-delta artifact to add "
-                       "as an ocdl representation (one board; select it with --board)")
-    p_man.add_argument("--delta-base-version", metavar="VER",
-                       help="the golden version --delta applies against (MAJOR.MINOR.PATCH)")
-    p_man.set_defaults(func=cmd_manifest, _command="build manifest")
-
-    p_dlt = sub.add_parser("ota-delta",
-                           help="build a gzipped delta that reconstructs one image from another")
-    p_dlt.add_argument("--base", required=True, metavar="FILE",
-                       help="the golden image (BACK-slot bytes / golden ota.img.gz)")
-    p_dlt.add_argument("--target", required=True, metavar="FILE",
-                       help="the new image (new ota.img.gz)")
-    p_dlt.add_argument("-o", "--output", required=True, metavar="FILE",
-                       help="output path (e.g. <board>-vX-to-vY.delta.gz)")
-    p_dlt.set_defaults(func=cmd_ota_delta, _command="build ota-delta")
+    p_otr.add_argument("-f", "--firmware", help="firmware checkout override")
+    p_otr.set_defaults(func=cmd_ota_romfs, _command="build ota-romfs")
 
     p_ins = sub.add_parser("inspect", help="decode + print an OTA artifact "
                                            "(image trailer, manifest, or delta)")
@@ -195,48 +178,20 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_ota_image(args: argparse.Namespace) -> int:
+def cmd_ota_romfs(args: argparse.Namespace) -> int:
     try:
-        results = build_mod.build_ota_image(
-            args.project, output=args.output, boards=args.board, firmware=args.firmware,
+        results = build_mod.build_ota_romfs(
+            args.project, url_base=args.url_base, delta_from=args.delta_from,
+            output=args.output, boards=args.board, firmware=args.firmware,
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
 
     for r in results:
-        ratio = (r.gz_size / r.image_size * 100) if r.image_size else 0
-        print("Built %s  (OTA download image, %d-byte slot -> %d gzipped, %.1f%%)"
-              % (r.output, r.image_size, r.gz_size, ratio))
-    return 0
-
-
-def cmd_manifest(args: argparse.Namespace) -> int:
-    try:
-        results = build_mod.build_manifest(
-            args.project, url_base=args.url_base, output=args.output,
-            boards=args.board, firmware=args.firmware,
-            delta=args.delta, delta_base_version=args.delta_base_version,
-        )
-    except BuildError as e:
-        print("error: %s" % e, file=sys.stderr)
-        return e.exit_code
-
-    for r in results:
-        print("Built %s  (signed manifest, %d bytes, key 0x%04x)"
-              % (r.output, r.manifest_size, r.key_id))
-    return 0
-
-
-def cmd_ota_delta(args: argparse.Namespace) -> int:
-    try:
-        r = build_mod.build_delta(args.base, args.target, args.output)
-    except BuildError as e:
-        print("error: %s" % e, file=sys.stderr)
-        return e.exit_code
-    ratio = (r.gz_size / r.target_size * 100) if r.target_size else 0
-    print("Built %s  (delta: %d-byte image -> %d gzipped, %.2f%%)"
-          % (r.output, r.target_size, r.gz_size, ratio))
+        extra = (" + %s" % r.delta.name) if r.delta else ""
+        print("Built %s%s + %s  (OTA set, key 0x%04x)"
+              % (r.image.name, extra, r.manifest.name, r.key_id))
     return 0
 
 

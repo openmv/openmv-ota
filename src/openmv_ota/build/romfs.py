@@ -639,6 +639,22 @@ def _read_maybe_gz(path: Path) -> bytes:
     return data
 
 
+def _delta_bytes(base_bytes: bytes, target_bytes: bytes) -> bytes:
+    """make_delta + self-check (the patch must reconstruct ``target`` exactly), raising
+    BuildError on failure. Shared by ``build_delta`` and ``build_ota_romfs``."""
+    from openmv_ota.ota.delta import apply_delta, make_delta
+    from openmv_ota.ota.errors import OtaError
+
+    patch = make_delta(base_bytes, target_bytes)
+    try:
+        if apply_delta(base_bytes, patch) != target_bytes:
+            raise BuildError("delta self-check failed: patch does not reconstruct target",
+                             exit_code=1)
+    except OtaError as e:
+        raise BuildError("delta self-check failed: %s" % e, exit_code=1) from None
+    return patch
+
+
 def build_delta(base: str | Path, target: str | Path,
                 output: str | Path) -> OtaDeltaResult:
     """Build a gzipped OCDL delta that reconstructs ``target`` from ``base`` (each a raw or
@@ -648,18 +664,8 @@ def build_delta(base: str | Path, target: str | Path,
     exactly before it's written, so a published delta always reconstructs its image."""
     import gzip
 
-    from openmv_ota.ota.delta import apply_delta, make_delta
-    from openmv_ota.ota.errors import OtaError
-
-    base_bytes = _read_maybe_gz(Path(base))
     target_bytes = _read_maybe_gz(Path(target))
-    patch = make_delta(base_bytes, target_bytes)
-    try:
-        if apply_delta(base_bytes, patch) != target_bytes:
-            raise BuildError("delta self-check failed: patch does not reconstruct target",
-                             exit_code=1)
-    except OtaError as e:
-        raise BuildError("delta self-check failed: %s" % e, exit_code=1) from None
+    patch = _delta_bytes(_read_maybe_gz(Path(base)), target_bytes)
     gz = gzip.compress(patch, mtime=0)
     out = Path(output)
     out.write_bytes(gz)
@@ -669,7 +675,7 @@ def build_delta(base: str | Path, target: str | Path,
 def build_manifest(
     project: str | Path,
     *,
-    url_base: str,
+    url_base: str | None = None,
     output: str | Path | None = None,
     app: str | Path | None = None,
     boards: list[str] | None = None,
@@ -680,14 +686,13 @@ def build_manifest(
     """Build + sign an update manifest per OTA main target from the already-built
     ``<board>-ota.img.gz`` artifacts -- the descriptor a device's ``install()`` fetches
     *before* it downloads/erases. Each manifest names the reconstructed image's size +
-    sha256 and the representations that produce it (today the full image; the delta is
-    added by the delta tooling), and binds board_id / payload_version / min_platform from
-    the image's own signed trailer. Signed with the project's OTA key, exactly like the
-    image. ``url_base`` is the absolute ``https://`` directory the artifacts are hosted
-    under -- a representation's URL is ``url_base/<artifact filename>``. Run ``build
-    ota-image`` first. Pass ``delta`` (a ``build ota-delta`` artifact) + ``delta_base_version``
-    (the golden's version it applies against) to add an ``ocdl`` delta representation -- one
-    board only (select it with ``boards``)."""
+    sha256 and the representations that produce it (the full image; an ``ocdl`` delta when
+    ``delta`` is given), and binds board_id / payload_version / min_platform from the image's
+    own signed trailer. Signed with the project's OTA key, exactly like the image.
+    Representation URLs are **relative filenames by default** (resolved on-device against the
+    manifest's own URL, so the signed manifest is host-portable); pass ``url_base`` (an
+    absolute ``https://`` dir) to pin absolute URLs instead. Run ``build ota-image`` first.
+    Pass ``delta`` + ``delta_base_version`` (the golden's version) to add the delta rep."""
     import gzip
 
     from openmv_ota.ota import bundle
@@ -698,10 +703,14 @@ def build_manifest(
     from openmv_ota.ota.trailer import parse_trailer
     from openmv_ota.ota.version import decode_app_version, encode_app_version
 
-    if not url_base.startswith("https://"):
+    if url_base and not url_base.startswith("https://"):
         raise BuildError("manifest --url-base must be an absolute https:// URL", exit_code=1)
     if delta and not delta_base_version:
         raise BuildError("manifest --delta also needs --delta-base-version", exit_code=1)
+    _base = url_base.rstrip("/") if url_base else None
+
+    def _rep_url(name):
+        return ("%s/%s" % (_base, name)) if _base else name
 
     project = Path(project)
     try:
@@ -723,7 +732,6 @@ def build_manifest(
         raise BuildError("manifest --delta applies to one board - select it with --board",
                          exit_code=1)
 
-    base = url_base.rstrip("/")
     results = []
     for t in targets:
         name = _target_name(t)
@@ -739,7 +747,7 @@ def build_manifest(
         except OtaError as e:
             raise BuildError(str(e), exit_code=1) from None
 
-        reps = [{"format": "full", "url": "%s/%s" % (base, img_path.name),
+        reps = [{"format": "full", "url": _rep_url(img_path.name),
                  "size": img_path.stat().st_size}]
         if delta:
             delta_path = Path(delta)
@@ -752,7 +760,7 @@ def build_manifest(
             except OtaError as e:
                 raise BuildError("bad delta: %s" % e, exit_code=1) from None
             reps.append({"format": DELTA_FORMAT,
-                         "url": "%s/%s" % (base, delta_path.name),
+                         "url": _rep_url(delta_path.name),
                          "size": delta_path.stat().st_size,
                          "base_payload_version": encode_app_version(delta_base_version)})
 
@@ -774,4 +782,103 @@ def build_manifest(
         out_path.write_bytes(raw)
         results.append(OtaManifestResult(t.name, t.partition_index, out_path,
                                          len(raw), signer.key_id))
+    return results
+
+
+# --- the one cloud-publish verb: image + (optional delta) + signed manifest ---
+
+@dataclass
+class OtaRomfsResult:
+    target: str
+    partition_index: int
+    image: Path             # <board>-ota.img.gz
+    delta: Path | None      # <board>-ota.delta.gz (when --delta-from supplied a golden)
+    manifest: Path          # <board>-manifest.bin
+    key_id: int
+
+
+def build_ota_romfs(
+    project: str | Path,
+    *,
+    url_base: str | None = None,
+    delta_from: str | Path | None = None,
+    output: str | Path | None = None,
+    app: str | Path | None = None,
+    boards: list[str] | None = None,
+    firmware: str | Path | None = None,
+) -> list[OtaRomfsResult]:
+    """Produce the complete **cloud-published** OTA set per main board: the gzipped full
+    FRONT-slot image, a signed manifest, and -- when ``delta_from`` is given -- a delta
+    against the factory golden plus an ``ocdl`` representation in the manifest. Run ``build
+    romfs`` first (this renders + publishes from its signed bundle).
+
+    ``delta_from`` is the board's **factory image** (a ``<board>-factory-romfs.img``, or a
+    *directory* holding one per board); the delta base is that image's **BACK slot** -- the
+    exact bytes the device reads as its golden -- and the base version is read from the BACK
+    trailer. Boards without a factory golden there get image + manifest only.
+
+    Representation URLs are **relative filenames** (resolved on-device against the manifest's
+    own URL, so the signed manifest is host-portable); pass ``url_base`` to pin absolute
+    ``https://`` URLs instead."""
+    import gzip
+
+    from openmv_ota.ota import partition
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.trailer import parse_trailer
+    from openmv_ota.ota.version import decode_app_version
+
+    project = Path(project)
+    try:
+        p = load_project(project, firmware=firmware)
+    except ProjectError as e:
+        raise BuildError(str(e), exit_code=e.exit_code) from None
+    out_dir = Path(output) if output else project / "build"
+    targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
+    if not targets:
+        raise BuildError("no matching main targets in this project")
+
+    delta_dir = delta_file = None
+    if delta_from is not None:
+        dp = Path(delta_from)
+        if dp.is_dir():
+            delta_dir = dp
+        elif len(targets) > 1:
+            raise BuildError("--delta-from a single file needs one board (--board); pass a "
+                             "directory of <board>-factory-romfs.img for several", exit_code=1)
+        else:
+            delta_file = dp
+
+    # 1) render the download image(s) -- validates the OTA project + bundle presence.
+    build_ota_image(project, output=output, boards=boards, firmware=firmware)
+
+    results = []
+    for t in targets:
+        name = _target_name(t)
+        img_path = out_dir / (name + "-ota.img.gz")
+        delta_path = base_version = None
+        if delta_from is not None:
+            fac = delta_file or (delta_dir / (name + "-factory-romfs.img"))
+            if fac.exists():
+                factory = fac.read_bytes()
+                try:
+                    back = next((tr for lbl, _b, tr in partition.slots(factory)
+                                 if lbl == "BACK"), None)
+                    if back is None:
+                        raise OtaError("no BACK slot")
+                    base_version = decode_app_version(parse_trailer(back).payload_version)
+                except OtaError as e:
+                    raise BuildError("%s is not a usable factory image: %s" % (fac, e),
+                                     exit_code=1) from None
+                patch = _delta_bytes(factory[t.front_size:],   # the BACK golden slot bytes
+                                     gzip.decompress(img_path.read_bytes()))
+                delta_path = out_dir / (name + "-ota.delta.gz")
+                delta_path.write_bytes(gzip.compress(patch, mtime=0))
+            else:
+                print("warning: no factory golden for %s at %s - full image only"
+                      % (name, fac), file=sys.stderr)
+        [mres] = build_manifest(project, url_base=url_base, output=output, app=app,
+                                boards=[name], firmware=firmware,
+                                delta=delta_path, delta_base_version=base_version)
+        results.append(OtaRomfsResult(t.name, t.partition_index, img_path, delta_path,
+                                      mres.output, mres.key_id))
     return results

@@ -782,11 +782,15 @@ def test_build_delta_self_check_guards(make_project, tmp_path, monkeypatch):
     target = tmp_path / "t.img"
     base.write_bytes(b"A" * 4096)
     target.write_bytes(b"B" * 4096)
-    # make_delta emits a structurally invalid patch -> apply_delta raises -> self-check fails
     from openmv_ota.ota import delta as delta_mod
+    # (a) make_delta emits a structurally invalid patch -> apply_delta raises -> self-check
     monkeypatch.setattr(delta_mod, "make_delta", lambda b, t: b"NOTOCDL!")
     with pytest.raises(BuildError, match="self-check failed"):
         build_mod.build_delta(base, target, tmp_path / "out.gz")
+    # (b) a valid-but-empty patch applies cleanly but doesn't reproduce target -> self-check
+    monkeypatch.setattr(delta_mod, "make_delta", lambda b, t: delta_mod.MAGIC + b"\x00")
+    with pytest.raises(BuildError, match="does not reconstruct"):
+        build_mod.build_delta(base, target, tmp_path / "out2.gz")
 
 
 def test_build_manifest_with_delta_rep(make_project):
@@ -865,3 +869,109 @@ def test_build_manifest_bad_project_errors(make_project, tmp_path):
     root, _repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
     with pytest.raises(BuildError):
         build_mod.build_manifest(root, url_base=_URL, firmware=tmp_path / "not-a-repo")
+
+
+# --- build_ota_romfs (the one cloud-publish verb) ----------------------------
+
+def _ota_project_with_factory(make_project):
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    build_mod.build_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    build_mod.build_factory_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    return root, repo
+
+
+def test_build_ota_romfs_relative_default(make_project):
+    from openmv_ota.ota.manifest import parse_manifest
+    root, repo = _build_n6_ota_bundle(make_project)
+    [r] = build_mod.build_ota_romfs(root, firmware=repo)
+    assert r.image.name == "OPENMV_N6-ota.img.gz" and r.delta is None
+    body = parse_manifest(r.manifest.read_bytes()).body
+    assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"   # relative filename
+
+
+def test_build_ota_romfs_absolute_url_base(make_project):
+    from openmv_ota.ota.manifest import parse_manifest
+    root, repo = _build_n6_ota_bundle(make_project)
+    [r] = build_mod.build_ota_romfs(root, url_base="https://dl.x.io/fw/", firmware=repo)
+    body = parse_manifest(r.manifest.read_bytes()).body
+    assert body["representations"][0]["url"] == "https://dl.x.io/fw/OPENMV_N6-ota.img.gz"
+
+
+def test_build_ota_romfs_with_delta_from_file(make_project):
+    from openmv_ota.ota.delta import apply_delta
+    from openmv_ota.ota.manifest import parse_manifest, select_representation
+    from openmv_ota.project import load_project
+    root, repo = _ota_project_with_factory(make_project)
+    factory = root / "build" / "OPENMV_N6-factory-romfs.img"
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=factory)
+    assert r.delta is not None and r.delta.name == "OPENMV_N6-ota.delta.gz"
+
+    body = parse_manifest(r.manifest.read_bytes()).body
+    assert {rep["format"] for rep in body["representations"]} == {"full", "ocdl"}
+    # the delta reconstructs the new image from the factory BACK slot (what the device reads)
+    import gzip
+    t = load_project(root, firmware=repo).board("OPENMV_N6")
+    back = factory.read_bytes()[t.front_size:]
+    new_img = gzip.decompress((root / "build" / "OPENMV_N6-ota.img.gz").read_bytes())
+    assert apply_delta(back, gzip.decompress(r.delta.read_bytes())) == new_img
+    # the delta rep's base matches the factory golden's version, so a device on it picks delta
+    ocdl = next(rep for rep in body["representations"] if rep["format"] == "ocdl")
+    assert select_representation(body, delta_capable=True,
+                               golden_payload_version=ocdl["base_payload_version"])["format"] == "ocdl"
+
+
+def test_build_ota_romfs_delta_from_dir(make_project):
+    from openmv_ota.ota.manifest import parse_manifest
+    root, repo = _ota_project_with_factory(make_project)
+    # a directory holding <board>-factory-romfs.img (build/ itself qualifies)
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=root / "build")
+    body = parse_manifest(r.manifest.read_bytes()).body
+    assert {rep["format"] for rep in body["representations"]} == {"full", "ocdl"}
+
+
+def test_build_ota_romfs_delta_dir_missing_golden_warns(make_project, tmp_path, capsys):
+    from openmv_ota.ota.manifest import parse_manifest
+    root, repo = _build_n6_ota_bundle(make_project)
+    empty = tmp_path / "no-goldens"
+    empty.mkdir()
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=empty)
+    assert r.delta is None                                  # no golden -> full image only
+    assert "no factory golden" in capsys.readouterr().err
+    body = parse_manifest(r.manifest.read_bytes()).body
+    assert {rep["format"] for rep in body["representations"]} == {"full"}
+
+
+def test_build_ota_romfs_delta_file_rejects_multiple_boards(make_project):
+    root, repo, _ = make_project(boards=("OPENMV_N6", "OPENMV_AE3"), ota=True)
+    build_mod.build_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    (root / "build" / "fac.img").write_bytes(b"x")
+    with pytest.raises(BuildError, match="single file needs one board"):
+        build_mod.build_ota_romfs(root, firmware=repo, delta_from=root / "build" / "fac.img")
+
+
+def test_build_ota_romfs_delta_from_bad_factory(make_project):
+    root, repo = _build_n6_ota_bundle(make_project)
+    bad = root / "build" / "OPENMV_N6-factory-romfs.img"
+    bad.write_bytes(b"not a factory image" * 100)
+    with pytest.raises(BuildError, match="not a usable factory image"):
+        build_mod.build_ota_romfs(root, firmware=repo, delta_from=root / "build")
+
+
+def test_build_ota_romfs_no_targets(make_project):
+    root, repo = _build_n6_ota_bundle(make_project)
+    with pytest.raises(BuildError, match="no matching"):
+        build_mod.build_ota_romfs(root, firmware=repo, boards=["NOPE"])
+
+
+def test_build_ota_romfs_bad_project(make_project, tmp_path):
+    root, _repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    with pytest.raises(BuildError):
+        build_mod.build_ota_romfs(root, firmware=tmp_path / "not-a-repo")
+
+
+def test_build_manifest_relative_default(make_project):
+    from openmv_ota.ota.manifest import parse_manifest
+    root, repo = _build_n6_ota_artifacts(make_project)
+    [r] = build_mod.build_manifest(root, firmware=repo)     # no url_base -> relative
+    body = parse_manifest(r.output.read_bytes()).body
+    assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"
