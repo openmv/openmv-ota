@@ -883,7 +883,7 @@ def _ota_project_with_factory(make_project):
 def test_build_ota_romfs_relative_default(make_project):
     from openmv_ota.ota.manifest import parse_manifest
     root, repo = _build_n6_ota_bundle(make_project)
-    [r] = build_mod.build_ota_romfs(root, firmware=repo)
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
     assert r.image.name == "OPENMV_N6-ota.img.gz" and r.delta is None
     body = parse_manifest(r.manifest.read_bytes()).body
     assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"   # relative filename
@@ -895,7 +895,7 @@ def test_build_ota_romfs_with_delta_from_file(make_project):
     from openmv_ota.project import load_project
     root, repo = _ota_project_with_factory(make_project)
     factory = root / "build" / "OPENMV_N6-factory-romfs.img"
-    [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=factory)
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=factory, compile_py=False, convert_models=False)
     assert r.delta is not None and r.delta.name == "OPENMV_N6-ota.delta.gz"
 
     body = parse_manifest(r.manifest.read_bytes()).body
@@ -916,7 +916,7 @@ def test_build_ota_romfs_delta_from_dir(make_project):
     from openmv_ota.ota.manifest import parse_manifest
     root, repo = _ota_project_with_factory(make_project)
     # a directory holding <board>-factory-romfs.img (build/ itself qualifies)
-    [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=root / "build")
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=root / "build", compile_py=False, convert_models=False)
     body = parse_manifest(r.manifest.read_bytes()).body
     assert {rep["format"] for rep in body["representations"]} == {"full", "ocdl"}
 
@@ -926,7 +926,7 @@ def test_build_ota_romfs_delta_dir_missing_golden_warns(make_project, tmp_path, 
     root, repo = _build_n6_ota_bundle(make_project)
     empty = tmp_path / "no-goldens"
     empty.mkdir()
-    [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=empty)
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=empty, compile_py=False, convert_models=False)
     assert r.delta is None                                  # no golden -> full image only
     assert "no factory golden" in capsys.readouterr().err
     body = parse_manifest(r.manifest.read_bytes()).body
@@ -946,7 +946,7 @@ def test_build_ota_romfs_delta_from_bad_factory(make_project):
     bad = root / "build" / "OPENMV_N6-factory-romfs.img"
     bad.write_bytes(b"not a factory image" * 100)
     with pytest.raises(BuildError, match="not a usable factory image"):
-        build_mod.build_ota_romfs(root, firmware=repo, delta_from=root / "build")
+        build_mod.build_ota_romfs(root, firmware=repo, delta_from=root / "build", compile_py=False, convert_models=False)
 
 
 def test_build_ota_romfs_no_targets(make_project):

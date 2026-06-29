@@ -52,13 +52,11 @@ def test_build_romfs_ota_reports_bundle(make_project, capsys):
 
 
 def test_build_ota_romfs_cli_relative_urls(make_project, capsys):
-    # default: relative filename URLs (host-portable manifest)
+    # one shot from app source (no separate `build romfs`); relative filename URLs
     from openmv_ota.ota.manifest import parse_manifest
     root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
-    main(["build", "romfs", str(root), "-f", str(repo),
-          "--no-compile-py", "--no-convert-models"])
-    capsys.readouterr()
-    rc = main(["build", "ota-romfs", str(root), "-f", str(repo)])
+    rc = main(["build", "ota-romfs", str(root), "-f", str(repo),
+               "--no-compile-py", "--no-convert-models"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "OPENMV_N6-ota.img.gz" in out and "OPENMV_N6-manifest.bin" in out
@@ -70,12 +68,11 @@ def test_build_ota_romfs_cli_with_delta(make_project, capsys):
     # --delta-from a factory image -> a delta representation, base read from BACK trailer
     from openmv_ota.ota.manifest import parse_manifest
     root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
-    main(["build", "romfs", str(root), "-f", str(repo),
-          "--no-compile-py", "--no-convert-models"])
     build_mod.build_factory_romfs(root, firmware=repo, compile_py=False, convert_models=False)
     capsys.readouterr()
     factory = root / "build" / "OPENMV_N6-factory-romfs.img"
-    rc = main(["build", "ota-romfs", str(root), "-f", str(repo), "--delta-from", str(factory)])
+    rc = main(["build", "ota-romfs", str(root), "-f", str(repo), "--delta-from", str(factory),
+               "--no-compile-py", "--no-convert-models"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "OPENMV_N6-ota.delta.gz" in out
@@ -85,10 +82,11 @@ def test_build_ota_romfs_cli_with_delta(make_project, capsys):
 
 
 def test_build_ota_romfs_cli_error(make_project, capsys):
-    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)  # no romfs bundle built
-    rc = main(["build", "ota-romfs", str(root), "-f", str(repo)])
-    assert rc == 1
-    assert "build romfs" in capsys.readouterr().err
+    root, repo, _ = make_project(boards=("OPENMV_N6",))    # not an OTA project
+    rc = main(["build", "ota-romfs", str(root), "-f", str(repo),
+               "--no-compile-py", "--no-convert-models"])
+    assert rc != 0
+    assert "OTA" in capsys.readouterr().err
 
 
 def _fake_firmware_make(monkeypatch):

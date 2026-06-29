@@ -67,15 +67,30 @@ def register(build_parser: argparse.ArgumentParser):
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
 
     p_otr = sub.add_parser("ota-romfs",
-                           help="build the cloud-published OTA set: image + signed manifest "
-                                "(+ optional delta)")
+                           help="build the cloud-published OTA set from app source: image + "
+                                "signed manifest (+ optional delta)")
     p_otr.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
     p_otr.add_argument("--delta-from", metavar="PATH",
                        help="the factory image (<board>-factory-romfs.img, or a dir of them) "
                             "to build a delta against the golden BACK slot")
+    p_otr.add_argument("--app", help="app source dir (default: <project>/app)")
     p_otr.add_argument("-o", "--output", help="output dir (default: <project>/build)")
     p_otr.add_argument("-b", "--board", action="append", metavar="NAME",
                        help="only build this board (repeatable; default: all targets)")
+    p_otr.add_argument("--no-compile-py", dest="compile_py", action="store_false",
+                       help="pack .py as source (skip mpy-cross)")
+    p_otr.add_argument("--no-convert-models", dest="convert_models", action="store_false",
+                       help="pack models as-is (skip vela/stedgeai)")
+    p_otr.add_argument("--mpy-arg", action="append", default=[], metavar="ARG",
+                       help="extra mpy-cross arg (repeatable)")
+    p_otr.add_argument("--vela-arg", action="append", default=[], metavar="ARG",
+                       help="extra vela arg (repeatable)")
+    p_otr.add_argument("--stedgeai-arg", action="append", default=[], metavar="ARG",
+                       help="extra stedgeai arg (repeatable)")
+    p_otr.add_argument("--vela-optimise", choices=["Performance", "Size"], default="Performance",
+                       help="vela optimisation (default: Performance)")
+    p_otr.add_argument("--stedgeai-optimization", type=int, choices=[0, 1, 2, 3], default=3,
+                       help="st edge ai level (default: 3 = max)")
     p_otr.add_argument("-f", "--firmware", help="firmware checkout override")
     p_otr.set_defaults(func=cmd_ota_romfs, _command="build ota-romfs")
 
@@ -178,8 +193,12 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
 def cmd_ota_romfs(args: argparse.Namespace) -> int:
     try:
         results = build_mod.build_ota_romfs(
-            args.project, delta_from=args.delta_from,
-            output=args.output, boards=args.board, firmware=args.firmware,
+            args.project, delta_from=args.delta_from, app=args.app,
+            output=args.output, boards=args.board, compile_py=args.compile_py,
+            convert_models=args.convert_models, mpy_extra=args.mpy_arg,
+            vela_extra=args.vela_arg, stedgeai_extra=args.stedgeai_arg,
+            vela_optimise=args.vela_optimise,
+            stedgeai_optimization=args.stedgeai_optimization, firmware=args.firmware,
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)

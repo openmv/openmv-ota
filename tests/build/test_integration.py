@@ -71,10 +71,10 @@ def test_publish_and_consume_end_to_end(make_project):
     factory = (out / "OPENMV_N6-factory-romfs.img").read_bytes()
     device_back = factory[t.front_size:]                    # what the device reads as `old`
 
-    # v1.1.0 release, published in one shot: image + delta(vs factory golden) + manifest,
-    # relative URLs by default. This is the real `build ota-romfs --delta-from <factory>`.
-    _build_version(root, app, repo, "1.1.0")
-    [r] = build_mod.build_ota_romfs(root, firmware=repo,
+    # v1.1.0 release, published in ONE shot from app source: compile+sign the bundle, render
+    # the image, build the delta(vs factory golden) + sign the manifest. Relative URLs.
+    (app / "settings.json").write_text('{"app_version": "1.1.0", "vendor": "Acme"}\n')
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False,
                                     delta_from=out / "OPENMV_N6-factory-romfs.img")
     assert r.delta is not None
     new_img = gzip.decompress(r.image.read_bytes())

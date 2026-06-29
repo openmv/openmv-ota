@@ -805,12 +805,20 @@ def build_ota_romfs(
     output: str | Path | None = None,
     app: str | Path | None = None,
     boards: list[str] | None = None,
+    compile_py: bool = True,
+    convert_models: bool = True,
+    mpy_extra: list[str] | None = None,
+    vela_extra: list[str] | None = None,
+    stedgeai_extra: list[str] | None = None,
+    vela_optimise: str = "Performance",
+    stedgeai_optimization: int = 3,
     firmware: str | Path | None = None,
 ) -> list[OtaRomfsResult]:
-    """Produce the complete **cloud-published** OTA set per main board: the gzipped full
-    FRONT-slot image, a signed manifest, and -- when ``delta_from`` is given -- a delta
-    against the factory golden plus an ``ocdl`` representation in the manifest. Run ``build
-    romfs`` first (this renders + publishes from its signed bundle).
+    """Produce the complete **cloud-published** OTA set per main board, from app source in
+    one shot (like ``build factory-romfs``): compile + sign the romfs bundle, render the
+    gzipped full FRONT-slot image, sign a manifest, and -- when ``delta_from`` is given --
+    add a delta against the factory golden + an ``ocdl`` representation. (``build romfs``
+    stays available standalone for the plain bundle / non-OTA case.)
 
     ``delta_from`` is the board's **factory image** (a ``<board>-factory-romfs.img``, or a
     *directory* holding one per board); the delta base is that image's **BACK slot** -- the
@@ -849,7 +857,11 @@ def build_ota_romfs(
         else:
             delta_file = dp
 
-    # 1) render the download image(s) -- validates the OTA project + bundle presence.
+    # 1) compile + sign the romfs bundle, then render the download image(s) from it.
+    build_romfs(project, app=app, output=output, boards=boards, compile_py=compile_py,
+                convert_models=convert_models, mpy_extra=mpy_extra, vela_extra=vela_extra,
+                stedgeai_extra=stedgeai_extra, vela_optimise=vela_optimise,
+                stedgeai_optimization=stedgeai_optimization, firmware=firmware)
     build_ota_image(project, output=output, boards=boards, firmware=firmware)
 
     results = []

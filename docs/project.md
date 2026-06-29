@@ -302,13 +302,13 @@ RAM while it overwrites the slot it runs from), and `data/ca.pem` is the TLS tru
 store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step needs
 network, like the SDK download), and you can replace it with your provider's roots.
 
-To produce what `install()` downloads, run **`openmv-ota build ota-romfs`** after
-`build romfs`. It renders each board's signed bundle into the gzipped full FRONT-slot
-image (`<board>-ota.img.gz`) and signs the **manifest** (`<board>-manifest.bin`) — the
-descriptor `install()` fetches first, which names the image's size/sha256 + representations
-and binds board/version/anti-rollback under the same key as the image. Host both beside
-each other and point `install()` at the manifest. The signed bundle stays the source of
-truth; both are regenerable renderings of it.
+To produce what `install()` downloads, run **`openmv-ota build ota-romfs`** — one command,
+straight from app source (like `build factory-romfs`). It compiles + signs the romfs bundle,
+renders the gzipped full FRONT-slot image (`<board>-ota.img.gz`), and signs the **manifest**
+(`<board>-manifest.bin`) — the descriptor `install()` fetches first, which names the image's
+size/sha256 + representations and binds board/version/anti-rollback under the same key as the
+image. Host both beside each other and point `install()` at the manifest. (`build romfs`
+stays available standalone for the plain bundle / non-OTA case.)
 
 Representation URLs are **relative filenames**, resolved on-device against the manifest's
 own URL — so the signed manifest is **host-portable** (move buckets / add a mirror without

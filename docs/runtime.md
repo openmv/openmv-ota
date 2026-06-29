@@ -179,10 +179,11 @@ serve a stale signed update, which the anti-rollback floor blocks, or deny the d
 **The manifest + image.** `install()` consumes a signed manifest, which names the
 reconstructed image's size/sha256 and the available **representations** and binds
 `board_id`/`payload_version`/`min_platform_version` under one ECDSA signature (same keys as
-the image). One command builds the whole publishable set: **`build romfs`** (sign the
-bundle) → **`build ota-romfs`** (render `<board>-ota.img.gz`, sign `<board>-manifest.bin`,
-and — with `--delta-from <factory-romfs.img>` — emit `<board>-ota.delta.gz` + a delta
-representation). Host the artifacts beside each other; representation URLs are **relative
+the image). **One command** builds the whole publishable set from app source:
+**`build ota-romfs`** — compiles + signs the bundle, renders `<board>-ota.img.gz`, signs
+`<board>-manifest.bin`, and — with `--delta-from <factory-romfs.img>` — emits
+`<board>-ota.delta.gz` + a delta representation. Host the artifacts beside each other;
+representation URLs are **relative
 filenames** (resolved against the manifest's URL on-device), so the signed manifest moves
 between hosts without re-signing. (The device also accepts absolute `https://` URLs in a
 manifest — what a dynamic update server emits when blobs live on a different origin than
