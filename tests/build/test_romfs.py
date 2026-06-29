@@ -889,14 +889,6 @@ def test_build_ota_romfs_relative_default(make_project):
     assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"   # relative filename
 
 
-def test_build_ota_romfs_absolute_url_base(make_project):
-    from openmv_ota.ota.manifest import parse_manifest
-    root, repo = _build_n6_ota_bundle(make_project)
-    [r] = build_mod.build_ota_romfs(root, url_base="https://dl.x.io/fw/", firmware=repo)
-    body = parse_manifest(r.manifest.read_bytes()).body
-    assert body["representations"][0]["url"] == "https://dl.x.io/fw/OPENMV_N6-ota.img.gz"
-
-
 def test_build_ota_romfs_with_delta_from_file(make_project):
     from openmv_ota.ota.delta import apply_delta
     from openmv_ota.ota.manifest import parse_manifest, select_representation

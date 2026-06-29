@@ -73,9 +73,6 @@ def register(build_parser: argparse.ArgumentParser):
     p_otr.add_argument("--delta-from", metavar="PATH",
                        help="the factory image (<board>-factory-romfs.img, or a dir of them) "
                             "to build a delta against the golden BACK slot")
-    p_otr.add_argument("-u", "--url-base", metavar="URL",
-                       help="pin absolute https:// URLs in the manifest (default: relative "
-                            "filenames, resolved against the manifest's own URL on-device)")
     p_otr.add_argument("-o", "--output", help="output dir (default: <project>/build)")
     p_otr.add_argument("-b", "--board", action="append", metavar="NAME",
                        help="only build this board (repeatable; default: all targets)")
@@ -181,7 +178,7 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
 def cmd_ota_romfs(args: argparse.Namespace) -> int:
     try:
         results = build_mod.build_ota_romfs(
-            args.project, url_base=args.url_base, delta_from=args.delta_from,
+            args.project, delta_from=args.delta_from,
             output=args.output, boards=args.board, firmware=args.firmware,
         )
     except BuildError as e:

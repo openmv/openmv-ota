@@ -184,8 +184,9 @@ bundle) → **`build ota-romfs`** (render `<board>-ota.img.gz`, sign `<board>-ma
 and — with `--delta-from <factory-romfs.img>` — emit `<board>-ota.delta.gz` + a delta
 representation). Host the artifacts beside each other; representation URLs are **relative
 filenames** (resolved against the manifest's URL on-device), so the signed manifest moves
-between hosts without re-signing. Pass `--url-base` to pin absolute `https://` URLs (an
-off-host CDN) instead.
+between hosts without re-signing. (The device also accepts absolute `https://` URLs in a
+manifest — what a dynamic update server emits when blobs live on a different origin than
+the manifest endpoint — but the build CLI only ever writes relative ones.)
 
 **Deltas.** A delta is a bsdiff-class patch against the **golden** (the immutable BACK
 slot every device keeps): the device reconstructs the new image from BACK + the patch and

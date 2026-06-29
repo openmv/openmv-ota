@@ -66,19 +66,6 @@ def test_build_ota_romfs_cli_relative_urls(make_project, capsys):
     assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"   # relative
 
 
-def test_build_ota_romfs_cli_absolute_urls(make_project, capsys):
-    # --url-base pins absolute https URLs
-    from openmv_ota.ota.manifest import parse_manifest
-    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
-    main(["build", "romfs", str(root), "-f", str(repo),
-          "--no-compile-py", "--no-convert-models"])
-    capsys.readouterr()
-    rc = main(["build", "ota-romfs", str(root), "-u", "https://dl.x.io/fw", "-f", str(repo)])
-    assert rc == 0
-    body = parse_manifest((root / "build" / "OPENMV_N6-manifest.bin").read_bytes()).body
-    assert body["representations"][0]["url"] == "https://dl.x.io/fw/OPENMV_N6-ota.img.gz"
-
-
 def test_build_ota_romfs_cli_with_delta(make_project, capsys):
     # --delta-from a factory image -> a delta representation, base read from BACK trailer
     from openmv_ota.ota.manifest import parse_manifest

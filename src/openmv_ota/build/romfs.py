@@ -801,7 +801,6 @@ class OtaRomfsResult:
 def build_ota_romfs(
     project: str | Path,
     *,
-    url_base: str | None = None,
     delta_from: str | Path | None = None,
     output: str | Path | None = None,
     app: str | Path | None = None,
@@ -818,9 +817,10 @@ def build_ota_romfs(
     exact bytes the device reads as its golden -- and the base version is read from the BACK
     trailer. Boards without a factory golden there get image + manifest only.
 
-    Representation URLs are **relative filenames** (resolved on-device against the manifest's
-    own URL, so the signed manifest is host-portable); pass ``url_base`` to pin absolute
-    ``https://`` URLs instead."""
+    Representation URLs are **relative filenames** -- artifacts are published together and the
+    device resolves them against the manifest's own URL, so the signed manifest is
+    host-portable (no host baked in). A dynamic update server that serves blobs from a
+    different origin sets absolute URLs itself via :func:`build_manifest`'s ``url_base``."""
     import gzip
 
     from openmv_ota.ota import partition
@@ -877,7 +877,7 @@ def build_ota_romfs(
             else:
                 print("warning: no factory golden for %s at %s - full image only"
                       % (name, fac), file=sys.stderr)
-        [mres] = build_manifest(project, url_base=url_base, output=output, app=app,
+        [mres] = build_manifest(project, output=output, app=app,
                                 boards=[name], firmware=firmware,
                                 delta=delta_path, delta_base_version=base_version)
         results.append(OtaRomfsResult(t.name, t.partition_index, img_path, delta_path,

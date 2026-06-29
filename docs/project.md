@@ -310,10 +310,11 @@ and binds board/version/anti-rollback under the same key as the image. Host both
 each other and point `install()` at the manifest. The signed bundle stays the source of
 truth; both are regenerable renderings of it.
 
-Representation URLs are **relative filenames by default**, resolved on-device against the
-manifest's own URL — so the signed manifest is **host-portable** (move buckets / add a
-mirror without rebuilding + re-signing). Pass `-u/--url-base <https://…>` only if you want
-to pin absolute URLs (e.g. an off-host CDN).
+Representation URLs are **relative filenames**, resolved on-device against the manifest's
+own URL — so the signed manifest is **host-portable** (move buckets / add a mirror without
+rebuilding + re-signing). The device also accepts absolute `https://` URLs in a manifest —
+which a future dynamic update server emits when it serves blobs from a different origin than
+the manifest endpoint — but `build ota-romfs` only ever writes relative ones.
 
 To ship a smaller **delta** download, add **`--delta-from <board>-factory-romfs.img`**
 (or a directory of per-board factory images). The delta is computed against the factory
