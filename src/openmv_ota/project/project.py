@@ -42,6 +42,7 @@ openmv-ota.local.toml
 keys/*.pem
 keys/*.key
 keys/private/
+keys-backup.enc
 
 # build artefacts
 build/
@@ -296,6 +297,11 @@ def create_project(
     provisioned = None
     signing_key_id = None
     if ota:
+        if force and paths.trusted_keys.exists():
+            warnings.append(
+                "this regenerates the signing keys; devices already in the field trust the "
+                "OLD keys and will REJECT updates signed by the new ones (you'd have to "
+                "re-flash them). Only do this for a fresh fleet -- back up the old keys first")
         provisioned, w = _provision_keys(sig_alg, factory_keys, ota_keys)
         signing_key_id = provisioned.signing_key_id
         warnings += w
@@ -367,6 +373,39 @@ def _write_keys(paths: ProjectPaths, provisioned) -> None:
     for key_id, pem in provisioned.private_pems.items():
         pem_path = paths.private_keys_dir / ("%s-%04x.pem" % (role_by_id[key_id], key_id))
         pem_path.write_bytes(pem)
+
+
+KEY_BACKUP_NAME = "keys-backup.enc"
+
+
+def backup_private_keys(root: str | Path, passphrase: str) -> Path:
+    """Write an encrypted backup of every private signing PEM to ``<root>/keys-backup.enc``
+    (the operator then moves it off-machine). Raises ``ProjectError`` if no private keys are
+    present (nothing to back up)."""
+    from . import keybackup
+
+    pem_dir = ProjectPaths(Path(root)).private_keys_dir
+    pems = ({p.name: p.read_bytes() for p in sorted(pem_dir.glob("*.pem"))}
+            if pem_dir.exists() else {})
+    if not pems:
+        raise ProjectError("no private keys in %s to back up" % pem_dir, exit_code=1)
+    out = Path(root) / KEY_BACKUP_NAME
+    out.write_bytes(keybackup.encrypt_keys(pems, passphrase))
+    return out
+
+
+def restore_private_keys(root: str | Path, blob: bytes, passphrase: str) -> list[str]:
+    """Decrypt a backup ``blob`` and write its PEMs into the project's private-key dir,
+    returning the restored filenames. Raises ``ProjectError`` on a wrong passphrase / corrupt
+    backup (recovery fails loudly)."""
+    from . import keybackup
+
+    pem_dir = ProjectPaths(Path(root)).private_keys_dir
+    pems = keybackup.decrypt_keys(blob, passphrase)
+    pem_dir.mkdir(parents=True, exist_ok=True)
+    for name, pem in pems.items():
+        (pem_dir / name).write_bytes(pem)
+    return sorted(pems)
 
 
 _APP_MAIN = """\

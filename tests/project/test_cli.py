@@ -63,6 +63,107 @@ def test_new_force(tmp_path, make_firmware, make_sdk):
     assert rc == 0
 
 
+def test_new_ota_prints_key_backup_reminder(tmp_path, make_firmware, make_sdk, capsys):
+    rc, _root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota")
+    assert rc == 0
+    assert "back up your signing keys" in capsys.readouterr().out
+
+
+def test_new_ota_auto_backup(tmp_path, make_firmware, make_sdk, capsys):
+    pw = tmp_path / "pw.txt"
+    pw.write_text("a strong passphrase")
+    rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota",
+                       "--backup-passphrase-file", str(pw))
+    assert rc == 0
+    assert (root / "keys-backup.enc").exists()
+    assert "encrypted key backup" in capsys.readouterr().out
+
+
+def test_new_ota_backup_failure_warns_but_succeeds(tmp_path, make_firmware, make_sdk, capsys):
+    # a bad backup passphrase file shouldn't fail the project (it was created); just warn
+    rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota",
+                       "--backup-passphrase-file", str(tmp_path / "missing.txt"))
+    assert rc == 0 and (root / "openmv-ota.toml").exists()
+    assert "key backup skipped" in capsys.readouterr().err
+
+
+def test_new_force_warns_key_regeneration(tmp_path, make_firmware, make_sdk, capsys):
+    repo = make_firmware()
+    _new(tmp_path, make_firmware, make_sdk, "--ota", repo=repo)
+    capsys.readouterr()
+    rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--force", repo=repo)
+    assert rc == 0
+    assert "REJECT updates signed by the new ones" in capsys.readouterr().err
+
+
+# --- keys backup / restore ---------------------------------------------------
+
+def test_keys_backup_and_restore_roundtrip(tmp_path, make_firmware, make_sdk, capsys):
+    _rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota")
+    pw = tmp_path / "pw.txt"
+    pw.write_text("vault passphrase")
+    capsys.readouterr()
+    assert main(["project", "keys", "backup", str(root), "--passphrase-file", str(pw)]) == 0
+    assert "MOVE IT OFF THIS MACHINE" in capsys.readouterr().out
+    backup = root / "keys-backup.enc"
+    assert backup.exists()
+
+    # wipe the private keys, then restore them from the backup
+    private = proj.ProjectPaths(root).private_keys_dir
+    saved = {p.name: p.read_bytes() for p in private.glob("*.pem")}
+    for p in private.glob("*.pem"):
+        p.unlink()
+    rc = main(["project", "keys", "restore", str(backup), str(root),
+               "--passphrase-file", str(pw)])
+    assert rc == 0 and "Restored" in capsys.readouterr().out
+    assert {p.name: p.read_bytes() for p in private.glob("*.pem")} == saved
+
+
+def test_keys_backup_no_keys_errors(tmp_path, make_firmware, make_sdk, capsys):
+    _rc, root, _ = _new(tmp_path, make_firmware, make_sdk)   # non-OTA -> no private keys
+    pw = tmp_path / "pw.txt"
+    pw.write_text("x")
+    rc = main(["project", "keys", "backup", str(root), "--passphrase-file", str(pw)])
+    assert rc == 1 and "no private keys" in capsys.readouterr().err
+
+
+def test_keys_backup_empty_passphrase_file(tmp_path, make_firmware, make_sdk, capsys):
+    _rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota")
+    pw = tmp_path / "pw.txt"
+    pw.write_text("   \n")
+    rc = main(["project", "keys", "backup", str(root), "--passphrase-file", str(pw)])
+    assert rc == 2 and "is empty" in capsys.readouterr().err
+
+
+def test_keys_restore_wrong_passphrase(tmp_path, make_firmware, make_sdk, capsys):
+    _rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota")
+    pw = tmp_path / "pw.txt"
+    pw.write_text("right")
+    main(["project", "keys", "backup", str(root), "--passphrase-file", str(pw)])
+    bad = tmp_path / "bad.txt"
+    bad.write_text("wrong")
+    capsys.readouterr()
+    rc = main(["project", "keys", "restore", str(root / "keys-backup.enc"), str(root),
+               "--passphrase-file", str(bad)])
+    assert rc == 2 and "wrong passphrase" in capsys.readouterr().err
+
+
+def test_keys_restore_missing_backup(tmp_path, make_firmware, make_sdk, capsys):
+    _rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota")
+    pw = tmp_path / "pw.txt"
+    pw.write_text("x")
+    rc = main(["project", "keys", "restore", str(tmp_path / "nope.enc"), str(root),
+               "--passphrase-file", str(pw)])
+    assert rc == 2 and "can't read backup" in capsys.readouterr().err
+
+
+def test_keys_backup_missing_passphrase_file(tmp_path, make_firmware, make_sdk, capsys):
+    _rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota")
+    rc = main(["project", "keys", "backup", str(root),
+               "--passphrase-file", str(tmp_path / "nope.txt")])
+    assert rc == 2 and "can't read passphrase file" in capsys.readouterr().err
+
+
 def test_show(tmp_path, make_firmware, make_sdk, capsys):
     _, root, _ = _new(tmp_path, make_firmware, make_sdk)
     capsys.readouterr()

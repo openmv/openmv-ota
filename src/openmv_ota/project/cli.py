@@ -53,6 +53,9 @@ def register(project_parser: argparse.ArgumentParser):
     p_new.add_argument("--factory-keys", type=int, default=8, metavar="N",
                        help="factory-key reserve to provision, one per site (default 8)")
     p_new.add_argument("--force", action="store_true", help="overwrite an existing project")
+    p_new.add_argument("--backup-passphrase-file", metavar="FILE",
+                       help="auto-write an encrypted key backup using this passphrase (else a "
+                            "reminder is printed for OTA projects)")
     p_new.set_defaults(func=cmd_new, _command="project new")
 
     p_setup = sub.add_parser("setup", help="reconstruct the pinned checkout + SDK")
@@ -108,6 +111,19 @@ def register(project_parser: argparse.ArgumentParser):
     p_kun.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_kun.set_defaults(func=cmd_keys_unrevoke, _command="project keys unrevoke")
 
+    p_kb = keys_sub.add_parser("backup", help="write an encrypted backup of the private keys")
+    p_kb.add_argument("--passphrase-file", required=True, metavar="FILE",
+                      help="file whose contents are the backup passphrase")
+    p_kb.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kb.set_defaults(func=cmd_keys_backup, _command="project keys backup")
+
+    p_krs = keys_sub.add_parser("restore", help="restore private keys from an encrypted backup")
+    p_krs.add_argument("backup", help="the keys-backup.enc file")
+    p_krs.add_argument("--passphrase-file", required=True, metavar="FILE",
+                       help="file whose contents are the backup passphrase")
+    p_krs.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_krs.set_defaults(func=cmd_keys_restore, _command="project keys restore")
+
     p_hist = sub.add_parser("history", help="print the project's operations history")
     p_hist.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_hist.add_argument("-n", "--limit", type=int, default=0,
@@ -120,6 +136,45 @@ def register(project_parser: argparse.ArgumentParser):
 def _warn(warnings: list[str]) -> None:
     for w in warnings:
         print("warning: %s" % w, file=sys.stderr)
+
+
+def _read_passphrase(path: str) -> str:
+    try:
+        pw = Path(path).read_text(encoding="utf-8").strip()
+    except OSError as e:
+        raise ProjectError("can't read passphrase file %s: %s" % (path, e)) from None
+    if not pw:
+        raise ProjectError("passphrase file %s is empty" % path)
+    return pw
+
+
+def cmd_keys_backup(args: argparse.Namespace) -> int:
+    try:
+        out = proj.backup_private_keys(args.dir, _read_passphrase(args.passphrase_file))
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    history.record(args.dir, "keys-backup", file=out.name)
+    print("Wrote encrypted key backup: %s" % out)
+    print("  MOVE IT OFF THIS MACHINE (a vault / offline drive) — a backup sitting next to "
+          "the keys doesn't survive a lost laptop.")
+    return 0
+
+
+def cmd_keys_restore(args: argparse.Namespace) -> int:
+    try:
+        pw = _read_passphrase(args.passphrase_file)
+        try:
+            blob = Path(args.backup).read_bytes()
+        except OSError as e:
+            raise ProjectError("can't read backup %s: %s" % (args.backup, e)) from None
+        names = proj.restore_private_keys(args.dir, blob, pw)
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    history.record(args.dir, "keys-restore", count=len(names))
+    print("Restored %d private key(s): %s" % (len(names), ", ".join(names)))
+    return 0
 
 
 def cmd_history(args: argparse.Namespace) -> int:
@@ -170,6 +225,18 @@ def cmd_new(args: argparse.Namespace) -> int:
     if args.ota:
         print("Provisioned %d factory + %d ota keys -> keys/trusted_keys.json "
               "(private keys gitignored in keys/private/)" % (args.factory_keys, args.ota_keys))
+        if args.backup_passphrase_file:
+            try:
+                out = proj.backup_private_keys(args.dir, _read_passphrase(args.backup_passphrase_file))
+                history.record(args.dir, "keys-backup", file=out.name)
+                print("Wrote an encrypted key backup: %s — MOVE IT OFF THIS MACHINE." % out)
+            except ProjectError as e:   # the project IS created -- don't fail it over a backup
+                print("warning: key backup skipped (%s); run `openmv-ota project keys "
+                      "backup` manually" % e, file=sys.stderr)
+        else:
+            print("IMPORTANT: back up your signing keys off-machine now — "
+                  "`openmv-ota project keys backup --passphrase-file <file>`. Without them you "
+                  "can never update this fleet again.")
         print("Next: set board_id per board in openmv-ota.toml, and your app "
               "version in app/settings.json.")
     _print_summary(lock)
