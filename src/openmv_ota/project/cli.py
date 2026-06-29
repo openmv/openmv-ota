@@ -5,6 +5,8 @@
     show     print the resolved snapshot
     status   check the lock against the current checkout (drift)
     sync     re-resolve and rewrite the lock
+    keys     OTA signing-key status / rotation / revocation
+    history  the project's append-only operations history
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import history
 from . import lock as lock_mod
 from . import project as proj
 from .errors import ProjectError
@@ -105,12 +108,32 @@ def register(project_parser: argparse.ArgumentParser):
     p_kun.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_kun.set_defaults(func=cmd_keys_unrevoke, _command="project keys unrevoke")
 
+    p_hist = sub.add_parser("history", help="print the project's operations history")
+    p_hist.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_hist.add_argument("-n", "--limit", type=int, default=0,
+                        help="show only the most recent N events (default: all)")
+    p_hist.set_defaults(func=cmd_history, _command="project history")
+
     return sub
 
 
 def _warn(warnings: list[str]) -> None:
     for w in warnings:
         print("warning: %s" % w, file=sys.stderr)
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    events = history.read(args.dir)
+    if args.limit > 0:
+        events = events[-args.limit:]
+    if not events:
+        print("no recorded operations (nothing built/signed yet, or no project here)")
+        return 0
+    for e in events:
+        detail = "  ".join("%s=%s" % (k, e[k]) for k in sorted(e)
+                           if k not in ("ts", "action"))
+        print("%s  %-18s %s" % (e.get("ts", "?"), e.get("action", "?"), detail))
+    return 0
 
 
 def cmd_new(args: argparse.Namespace) -> int:
@@ -138,6 +161,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     _warn(warnings)
+    history.record(args.dir, "project-new", when=_now(), boards=args.board, ota=args.ota)
     print("Created project in %s" % args.dir)
     print("Scaffolded app/ (main.py, settings.json with your app version).")
     if any(rb.get("role") == "coprocessor" for rb in lock.targets.get("resolved", [])):
@@ -257,6 +281,7 @@ def cmd_keys_rotate(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     _warn(warnings)
+    history.record(args.dir, "keys-rotate", old=old, new=new)
     print("Rotated OTA signing key: 0x%04x -> 0x%04x" % (old, new))
     print("Commit openmv-ota.toml to record the rotation.")
     return 0
@@ -272,6 +297,7 @@ def cmd_keys_revoke(args: argparse.Namespace) -> int:
     if not changed:
         print("Key 0x%04x is already revoked." % key.key_id)
         return 0
+    history.record(args.dir, "keys-revoke", key_id=key.key_id, role=key.role)
     print("Revoked key 0x%04x (%s)." % (key.key_id, key.role))
     print("  Takes effect on the next firmware build; already-fielded devices keep")
     print("  trusting it until they update. Commit keys/trusted_keys.json.")
@@ -290,6 +316,7 @@ def cmd_keys_unrevoke(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     if changed:
+        history.record(args.dir, "keys-unrevoke", key_id=key.key_id, role=key.role)
         print("Unrevoked key 0x%04x (%s). Commit keys/trusted_keys.json." % (key.key_id, key.role))
     else:
         print("Key 0x%04x is not revoked." % key.key_id)

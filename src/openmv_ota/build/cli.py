@@ -18,6 +18,8 @@ import json
 import sys
 from pathlib import Path
 
+from openmv_ota.project import history
+
 from . import romfs as build_mod
 from .errors import BuildError
 
@@ -163,6 +165,8 @@ def cmd_romfs(args: argparse.Namespace) -> int:
               % (r.output, kind, r.size, pct, r.bound))
         if r.build_dir is not None:
             print("  build dir kept: %s" % r.build_dir)
+    history.record(args.project, "build-romfs",
+                   outputs=[{"board": r.target, "file": r.output.name} for r in results])
     return 0
 
 
@@ -187,6 +191,8 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
               % (r.output, r.size, pct, r.bound))
         if r.build_dir is not None:
             print("  build dir kept: %s" % r.build_dir)
+    history.record(args.project, "build-factory-romfs",
+                   outputs=[{"board": r.target, "file": r.output.name} for r in results])
     return 0
 
 
@@ -208,6 +214,10 @@ def cmd_ota_romfs(args: argparse.Namespace) -> int:
         extra = (" + %s" % r.delta.name) if r.delta else ""
         print("Built %s%s + %s  (OTA set, key 0x%04x)"
               % (r.image.name, extra, r.manifest.name, r.key_id))
+    history.record(args.project, "build-ota-romfs", sets=[
+        {"board": r.target, "image": r.image.name, "manifest": r.manifest.name,
+         "delta": (r.delta.name if r.delta else None), "key_id": r.key_id}
+        for r in results])
     return 0
 
 
