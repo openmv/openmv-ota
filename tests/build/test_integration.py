@@ -42,13 +42,6 @@ _ASSET = b"".join(hashlib.sha256(bytes([i & 0xFF, (i >> 8) & 0xFF])).digest()
                   for i in range(6400))
 
 
-def _build_version(root, app, repo, version):
-    (app / "settings.json").write_text('{"app_version": "%s", "vendor": "Acme"}\n' % version)
-    build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
-    [img] = build_mod.build_ota_image(root, firmware=repo)
-    return gzip.decompress(img.output.read_bytes())
-
-
 def test_publish_and_consume_end_to_end(make_project):
     from openmv_ota.ota import partition
     from openmv_ota.ota.keys import read_trusted_keys
@@ -66,15 +59,17 @@ def test_publish_and_consume_end_to_end(make_project):
     t = load_project(root, firmware=repo).board("OPENMV_N6")
 
     # v1.0.0 is the *factory* golden -- its BACK slot is exactly what the device keeps.
-    _build_version(root, app, repo, "1.0.0")
-    build_mod.build_factory_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    (app / "settings.json").write_text('{"app_version": "1.0.0", "vendor": "Acme"}\n')
+    build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                  compile_py=False, convert_models=False)
     factory = (out / "OPENMV_N6-factory-romfs.img").read_bytes()
     device_back = factory[t.front_size:]                    # what the device reads as `old`
 
     # v1.1.0 release, published in ONE shot from app source: compile+sign the bundle, render
     # the image, build the delta(vs factory golden) + sign the manifest. Relative URLs.
     (app / "settings.json").write_text('{"app_version": "1.1.0", "vendor": "Acme"}\n')
-    [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False,
+    [r] = build_mod.build_ota_romfs(root, app=app, firmware=repo,
+                                    compile_py=False, convert_models=False,
                                     delta_from=out / "OPENMV_N6-factory-romfs.img")
     assert r.delta is not None
     new_img = gzip.decompress(r.image.read_bytes())

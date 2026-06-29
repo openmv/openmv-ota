@@ -874,9 +874,10 @@ def test_build_manifest_bad_project_errors(make_project, tmp_path):
 # --- build_ota_romfs (the one cloud-publish verb) ----------------------------
 
 def _ota_project_with_factory(make_project):
+    # factory golden at v1.0.0, then bump the project app version so a release is newer
     root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
-    build_mod.build_romfs(root, firmware=repo, compile_py=False, convert_models=False)
     build_mod.build_factory_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    (root / "app" / "settings.json").write_text('{"app_version": "1.1.0", "vendor": "Acme"}\n')
     return root, repo
 
 
@@ -959,6 +960,72 @@ def test_build_ota_romfs_bad_project(make_project, tmp_path):
     root, _repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
     with pytest.raises(BuildError):
         build_mod.build_ota_romfs(root, firmware=tmp_path / "not-a-repo")
+
+
+def test_build_ota_romfs_auto_resolves_golden_from_ledger(make_project):
+    # build factory (records the golden in the ledger), bump version, then ota WITHOUT
+    # --delta-from: the golden is resolved automatically.
+    from openmv_ota.ota.manifest import parse_manifest
+    from openmv_ota.project import ledger
+    root, repo = _ota_project_with_factory(make_project)
+    assert ledger.golden_for(root, "OPENMV_N6") is not None
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    assert r.delta is not None                              # auto-resolved -> delta built
+    body = parse_manifest(r.manifest.read_bytes()).body
+    assert {rep["format"] for rep in body["representations"]} == {"full", "ocdl"}
+
+
+def test_build_ota_romfs_records_release_and_blocks_rerun(make_project):
+    from openmv_ota.project import ledger
+    root, repo = _build_n6_ota_bundle(make_project)
+    build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    assert ledger.last_release(root, "OPENMV_N6")["version"] == "1.0.0"
+    # the same version again is refused (no new build over a shipped version)...
+    with pytest.raises(BuildError, match="not newer than the last published"):
+        build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    # ...unless explicitly allowed
+    build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False,
+                              allow_republish=True)
+
+
+def test_build_ota_romfs_rejects_golden_not_older(make_project):
+    # golden at 1.0.0 but the release is also 1.0.0 (deltas must go older -> newer)
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    build_mod.build_factory_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    factory = root / "build" / "OPENMV_N6-factory-romfs.img"
+    with pytest.raises(BuildError, match="not older than this release"):
+        build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False,
+                                  delta_from=factory)
+
+
+def test_build_ota_romfs_rejects_wrong_board_golden(make_project):
+    # a factory image for a *different* board passed as the golden -> board_id mismatch
+    root, repo, _ = make_project(boards=("OPENMV_N6", "OPENMV_AE3"), ota=True)
+    build_mod.build_factory_romfs(root, firmware=repo, boards=["OPENMV_AE3"],
+                                  compile_py=False, convert_models=False)
+    ae3_factory = root / "build" / "OPENMV_AE3-factory-romfs.img"
+    with pytest.raises(BuildError, match="is for board_id"):
+        build_mod.build_ota_romfs(root, firmware=repo, boards=["OPENMV_N6"],
+                                  delta_from=ae3_factory,
+                                  compile_py=False, convert_models=False)
+
+
+def test_build_ota_romfs_warns_when_recorded_golden_missing(make_project, capsys):
+    root, repo = _ota_project_with_factory(make_project)
+    (root / "build" / "OPENMV_N6-factory-romfs.img").unlink()   # golden recorded but gone
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    assert r.delta is None                                  # full image only
+    assert "recorded golden is missing" in capsys.readouterr().err
+
+
+def test_build_factory_romfs_golden_path_outside_root(make_project, tmp_path):
+    # --output outside the project tree -> the golden path is recorded absolute (not relative)
+    from openmv_ota.project import ledger
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    elsewhere = tmp_path / "artifacts"
+    build_mod.build_factory_romfs(root, output=elsewhere, firmware=repo,
+                                  compile_py=False, convert_models=False)
+    assert str(elsewhere) in ledger.golden_for(root, "OPENMV_N6")["path"]
 
 
 def test_build_manifest_relative_default(make_project):

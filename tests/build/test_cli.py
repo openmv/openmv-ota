@@ -74,6 +74,7 @@ def test_build_ota_romfs_cli_with_delta(make_project, capsys):
     from openmv_ota.ota.manifest import parse_manifest
     root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
     build_mod.build_factory_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    (root / "app" / "settings.json").write_text('{"app_version": "1.1.0", "vendor": "Acme"}\n')
     capsys.readouterr()
     factory = root / "build" / "OPENMV_N6-factory-romfs.img"
     rc = main(["build", "ota-romfs", str(root), "-f", str(repo), "--delta-from", str(factory),

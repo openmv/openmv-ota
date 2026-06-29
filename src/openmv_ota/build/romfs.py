@@ -472,13 +472,36 @@ def build_factory_romfs(
             p, t, copro_dir, out_dir, ctx, mpy_cmd,
             convert_models=convert_models, mpy_extra=list(mpy_extra or []),
             allow_oversize=False, keep_build_dir=keep_build_dir))
+    main_names = {t.name for t in mains}
     for t in mains:
         inject = _runtime_inject(out_dir, t.name, [c for c in coprocs if c.name == t.name])
         results.append(_factory_one(
             p, t, app_dir, out_dir, ctx, mpy_cmd, signer,
             signer.app_version, signer.vendor, convert_models=convert_models,
             mpy_extra=list(mpy_extra or []), keep_build_dir=keep_build_dir, inject=inject))
+    _record_goldens(p.root, [r for r in results if r.target in main_names], signer)
     return results
+
+
+def _record_goldens(root: Path, results, signer) -> None:
+    """Record each main board's factory image in the ledger so ``build ota-romfs`` can
+    resolve the delta base automatically (the golden every device of that board keeps)."""
+    from openmv_ota.project import ledger
+
+    for r in results:
+        rel = r.output.relative_to(root) if _under(r.output, root) else r.output
+        ledger.record_golden(
+            root, r.target, version=signer.app_version,
+            payload_version=signer.payload_version,
+            sha256=hashlib.sha256(r.output.read_bytes()).hexdigest(), path=str(rel))
+
+
+def _under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _compose_slot(body: bytes, pad: int, status_sector: bytes, trailer_bytes: bytes,
@@ -813,17 +836,16 @@ def build_ota_romfs(
     vela_optimise: str = "Performance",
     stedgeai_optimization: int = 3,
     firmware: str | Path | None = None,
+    allow_republish: bool = False,
 ) -> list[OtaRomfsResult]:
     """Produce the complete **cloud-published** OTA set per main board, from app source in
     one shot (like ``build factory-romfs``): compile + sign the romfs bundle, render the
-    gzipped full FRONT-slot image, sign a manifest, and -- when ``delta_from`` is given --
-    add a delta against the factory golden + an ``ocdl`` representation. (``build romfs``
-    stays available standalone for the plain bundle / non-OTA case.)
-
-    ``delta_from`` is the board's **factory image** (a ``<board>-factory-romfs.img``, or a
-    *directory* holding one per board); the delta base is that image's **BACK slot** -- the
-    exact bytes the device reads as its golden -- and the base version is read from the BACK
-    trailer. Boards without a factory golden there get image + manifest only.
+    gzipped full FRONT-slot image, sign a manifest, and add a delta against the factory
+    golden + an ``ocdl`` representation. The golden is resolved automatically from the
+    ledger (recorded by ``build factory-romfs``), or pass ``delta_from`` explicitly (a
+    ``<board>-factory-romfs.img`` or a directory of them); boards with no golden get
+    image + manifest only. The golden is validated (board + older version) and the release
+    is recorded -- a non-increasing version is refused unless ``allow_republish``.
 
     Representation URLs are **relative filenames** -- artifacts are published together and the
     device resolves them against the manifest's own URL, so the signed manifest is
@@ -831,9 +853,6 @@ def build_ota_romfs(
     different origin sets absolute URLs itself via :func:`build_manifest`'s ``url_base``."""
     import gzip
 
-    from openmv_ota.ota import partition
-    from openmv_ota.ota.errors import OtaError
-    from openmv_ota.ota.trailer import parse_trailer
     from openmv_ota.ota.version import decode_app_version
 
     project = Path(project)
@@ -841,6 +860,9 @@ def build_ota_romfs(
         p = load_project(project, firmware=firmware)
     except ProjectError as e:
         raise BuildError(str(e), exit_code=e.exit_code) from None
+    if not p.config.ota:
+        raise BuildError("ota-romfs needs an OTA project (create with "
+                         "`openmv-ota project new --ota`)", exit_code=1)
     out_dir = Path(output) if output else project / "build"
     targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
     if not targets:
@@ -857,6 +879,11 @@ def build_ota_romfs(
         else:
             delta_file = dp
 
+    from openmv_ota.project import ledger
+    app_dir = Path(app) if app else project / "app"
+    signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota")
+    new_pv = signer.payload_version
+
     # 1) compile + sign the romfs bundle, then render the download image(s) from it.
     build_romfs(project, app=app, output=output, boards=boards, compile_py=compile_py,
                 convert_models=convert_models, mpy_extra=mpy_extra, vela_extra=vela_extra,
@@ -868,30 +895,81 @@ def build_ota_romfs(
     for t in targets:
         name = _target_name(t)
         img_path = out_dir / (name + "-ota.img.gz")
+        image = gzip.decompress(img_path.read_bytes())
+
+        last = ledger.last_release(project, name)                   # #6 anti-rollback
+        if last and new_pv <= last["payload_version"] and not allow_republish:
+            raise BuildError(
+                "%s: version %s is not newer than the last published %s -- refusing to "
+                "republish/downgrade (pass --allow-republish to override)"
+                % (name, signer.app_version, last["version"]), exit_code=1)
+
         delta_path = base_version = None
-        if delta_from is not None:
-            fac = delta_file or (delta_dir / (name + "-factory-romfs.img"))
-            if fac.exists():
-                factory = fac.read_bytes()
-                try:
-                    back = next((tr for lbl, _b, tr in partition.slots(factory)
-                                 if lbl == "BACK"), None)
-                    if back is None:
-                        raise OtaError("no BACK slot")
-                    base_version = decode_app_version(parse_trailer(back).payload_version)
-                except OtaError as e:
-                    raise BuildError("%s is not a usable factory image: %s" % (fac, e),
-                                     exit_code=1) from None
-                patch = _delta_bytes(factory[t.front_size:],   # the BACK golden slot bytes
-                                     gzip.decompress(img_path.read_bytes()))
-                delta_path = out_dir / (name + "-ota.delta.gz")
-                delta_path.write_bytes(gzip.compress(patch, mtime=0))
-            else:
-                print("warning: no factory golden for %s at %s - full image only"
-                      % (name, fac), file=sys.stderr)
+        golden = _resolve_golden(project, name, delta_from, delta_file, delta_dir)
+        if golden is not None:
+            back_tr = _factory_back_trailer(golden)                 # #2 validate the golden
+            bid = _board_id_for(p, t)
+            if bid and back_tr.board_id and back_tr.board_id != bid:
+                raise BuildError("%s: golden %s is for board_id %d, not this board's %d"
+                                 % (name, golden, back_tr.board_id, bid), exit_code=1)
+            if back_tr.payload_version >= new_pv:
+                raise BuildError(
+                    "%s: golden version %s is not older than this release %s (deltas go "
+                    "golden -> new)" % (name, decode_app_version(back_tr.payload_version),
+                                        signer.app_version), exit_code=1)
+            base_version = decode_app_version(back_tr.payload_version)
+            patch = _delta_bytes(golden.read_bytes()[t.front_size:], image)   # BACK golden bytes
+            delta_path = out_dir / (name + "-ota.delta.gz")
+            delta_path.write_bytes(gzip.compress(patch, mtime=0))
+
         [mres] = build_manifest(project, output=output, app=app,
                                 boards=[name], firmware=firmware,
                                 delta=delta_path, delta_base_version=base_version)
+        ledger.record_release(project, name, version=signer.app_version, payload_version=new_pv,
+                              sha256=hashlib.sha256(image).hexdigest(), key_id=mres.key_id)
         results.append(OtaRomfsResult(t.name, t.partition_index, img_path, delta_path,
                                       mres.output, mres.key_id))
     return results
+
+
+def _resolve_golden(project, name, delta_from, delta_file, delta_dir):
+    """The factory image to diff against, or None (-> full image only, with a warning).
+    Explicit ``--delta-from`` wins; otherwise the golden recorded in the ledger."""
+    if delta_from is not None:
+        fac = delta_file or (delta_dir / (name + "-factory-romfs.img"))
+        if fac.exists():
+            return fac
+        print("warning: no factory golden for %s at %s - full image only"
+              % (name, fac), file=sys.stderr)
+        return None
+    from openmv_ota.project import ledger
+    g = ledger.golden_for(project, name)
+    if g is None:
+        return None
+    path = Path(project) / g["path"]
+    if not path.exists():
+        print("warning: %s's recorded golden is missing at %s - full image only (keep your "
+              "factory images)" % (name, path), file=sys.stderr)
+        return None
+    return path
+
+
+def _factory_back_trailer(golden: Path):
+    from openmv_ota.ota import partition
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.trailer import parse_trailer
+    try:
+        back = next((tr for lbl, _b, tr in partition.slots(golden.read_bytes())
+                     if lbl == "BACK"), None)
+        if back is None:
+            raise OtaError("no BACK slot")
+        return parse_trailer(back)
+    except OtaError as e:
+        raise BuildError("%s is not a usable factory image: %s" % (golden, e),
+                         exit_code=1) from None
+
+
+def _board_id_for(p, t) -> int:
+    ov = p.config.overrides.get(t.name, {})
+    bid = ov.get("board_id")
+    return int(bid) if bid is not None else derive_board_id(p.config.name, t.name)

@@ -93,6 +93,8 @@ def register(build_parser: argparse.ArgumentParser):
                        help="vela optimisation (default: Performance)")
     p_otr.add_argument("--stedgeai-optimization", type=int, choices=[0, 1, 2, 3], default=3,
                        help="st edge ai level (default: 3 = max)")
+    p_otr.add_argument("--allow-republish", action="store_true",
+                       help="allow a version <= the last published (re-sign / downgrade)")
     p_otr.add_argument("-f", "--firmware", help="firmware checkout override")
     p_otr.set_defaults(func=cmd_ota_romfs, _command="build ota-romfs")
 
@@ -205,6 +207,7 @@ def cmd_ota_romfs(args: argparse.Namespace) -> int:
             vela_extra=args.vela_arg, stedgeai_extra=args.stedgeai_arg,
             vela_optimise=args.vela_optimise,
             stedgeai_optimization=args.stedgeai_optimization, firmware=args.firmware,
+            allow_republish=args.allow_republish,
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)
