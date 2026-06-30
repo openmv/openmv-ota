@@ -135,9 +135,17 @@ def test_resolve_cubeprog_dry_run_tolerates_missing(monkeypatch):
         fl._resolve_cubeprog(None, dry_run=False)
 
 
-def test_bootloader_not_available_for_arduino():
-    with pytest.raises(FlashError, match="no bootloader to flash"):
+def test_bootloader_refused_for_arduino_with_reason():
+    with pytest.raises(FlashError, match="Arduino boards keep their factory MCUboot"):
         fl.flash_bootloader(board="ARDUINO_PORTENTA_H7")
+
+
+def test_bootloader_missing_block_is_refused(monkeypatch):
+    from openmv_ota.flash.targets import FlashConfig
+    monkeypatch.setattr(fl, "flash_config",                  # a flashable board with no bl block
+                        lambda b: FlashConfig(board=b, backend="dfu", raw={"backend": "dfu"}))
+    with pytest.raises(FlashError, match="no bootloader to flash"):
+        fl.flash_bootloader(board="SOMEBOARD")
 
 
 def test_bootloader_cli(bl_project, capsys):
