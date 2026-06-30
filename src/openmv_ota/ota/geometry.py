@@ -13,7 +13,7 @@ from the last block::
     slot_size - 4*block   spare      reserved for future metadata
 
 The ``rollback`` sector holds a fixed-size append-only log of confirmed versions (one
-block, ~500 entries); ``confirm()`` appends the running version (a 1->0 program, no erase)
+4 KiB block = 512 entries); ``confirm()`` appends the running version (a 1->0 program, no erase)
 and boot.py takes the max as the anti-rollback floor, so a device can't be downgraded to
 an older *signed* release. When the log fills the floor freezes at its max -- still
 protective. The **BACK** slot's rollback sector is the authoritative one (FRONT is erased
