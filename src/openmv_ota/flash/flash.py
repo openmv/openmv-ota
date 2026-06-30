@@ -251,6 +251,55 @@ def flash_factory(project: str = ".", *, board: str, output: str | None = None,
                       dry_run=dry_run)
 
 
+@dataclass(frozen=True)
+class EraseStep:
+    label: str
+    argv: list[str]
+
+
+_ERASE_SECTOR = 4096            # FLASH_SECTOR_ERASE: a sector of zeros invalidates the filesystem
+
+
+def flash_erase(project: str = ".", *, board: str, dfu_util: str | None = None,
+                sdk_home: Path | None = None, reset: bool = True, enter_bootloader: bool = True,
+                serial: str | None = None, mpremote: str | None = None,
+                dry_run: bool = False) -> list[EraseStep]:
+    """Erase a board's onboard filesystem (the user disk) -- download a sector of zeros to each
+    of the board's erase targets, mirroring the IDE's eraseCommands. dfu/arduino only; the
+    retired Nanos are refused (unsupported), and so is the RT1060 (imx) -- it has no separate
+    user-flash partition to clear."""
+    cfg = flash_config(board)                        # refuses the retired Nanos
+    if cfg.backend not in ("dfu", "arduino"):
+        raise FlashError("erase isn't available for the %r backend (board %r)"
+                         % (cfg.backend, board))
+    targets = cfg.raw.get("erase")
+    if not targets:
+        raise FlashError("board %r has no erase target configured" % board)
+    serial = _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader,
+                      mpremote=mpremote, dry_run=dry_run)
+    tool = _resolve_dfu_util(dfu_util, sdk_home, dry_run)
+    last = len(targets) - 1
+
+    def step(t: dict, i: int, f: Path) -> EraseStep:
+        argv = dfu.erase_argv(tool, cfg.usb, t, f, leave=reset and i == last, serial=serial)
+        return EraseStep("erase alt %s" % t["alt"], argv)
+
+    if dry_run:
+        return [step(t, i, Path("<zeros>")) for i, t in enumerate(targets)]
+    import tempfile
+    steps: list[EraseStep] = []
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "erase.bin"
+        f.write_bytes(b"\x00" * _ERASE_SECTOR)
+        for i, t in enumerate(targets):
+            s = step(t, i, f)
+            runner.run(s.argv)
+            steps.append(s)
+    history.record(project, "flash-erase", board=board,
+                   files=[{"alt": t["alt"]} for t in targets])
+    return steps
+
+
 def _bootloader_bin(project: str, output: str | None, board: str) -> Path:
     f = _output_dir(project, output) / ("%s-bootloader.bin" % board)
     if not f.exists():

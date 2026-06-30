@@ -5,7 +5,7 @@
     "OPENMV2": {
       "display_name": "OpenMV Cam M4 (STM32F427)",
       "arch": "OMV2 F4 256 JPEG",
-      "flash": {"backend": "dfu", "usb": "37c5:9202", "runtime": "37c5:1202", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
+      "flash": {"backend": "dfu", "usb": "37c5:9202", "erase": [{"alt": 1}], "runtime": "37c5:1202", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
       "mpy_args": [
         "-march=armv7emsp"
       ],
@@ -36,7 +36,7 @@
     "OPENMV3": {
       "display_name": "OpenMV Cam M7 (STM32F765/67)",
       "arch": "OMV3 F7 512",
-      "flash": {"backend": "dfu", "usb": "37c5:9203", "runtime": "37c5:1203", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
+      "flash": {"backend": "dfu", "usb": "37c5:9203", "erase": [{"alt": 1}], "runtime": "37c5:1203", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -67,7 +67,7 @@
     "OPENMV4": {
       "display_name": "OpenMV Cam H7 (STM32H743)",
       "arch": "OMV4 H7 1024",
-      "flash": {"backend": "dfu", "usb": "37c5:9204", "runtime": "37c5:1204", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
+      "flash": {"backend": "dfu", "usb": "37c5:9204", "erase": [{"alt": 1}], "runtime": "37c5:1204", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -98,7 +98,7 @@
     "OPENMV4P": {
       "display_name": "OpenMV Cam H7 Plus (STM32H743 w/ SDRAM)",
       "arch": "OMV4P H7 32768 SDRAM",
-      "flash": {"backend": "dfu", "usb": "37c5:924a", "runtime": "37c5:124a", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
+      "flash": {"backend": "dfu", "usb": "37c5:924a", "erase": [{"alt": 3}], "runtime": "37c5:124a", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -129,7 +129,7 @@
     "OPENMVPT": {
       "display_name": "OpenMV Pure Thermal (STM32H743 w/ SDRAM)",
       "arch": "OPENMVPT 65536 SDRAM",
-      "flash": {"backend": "dfu", "usb": "37c5:9205", "runtime": "37c5:1205", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
+      "flash": {"backend": "dfu", "usb": "37c5:9205", "erase": [{"alt": 3}], "runtime": "37c5:1205", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -191,7 +191,7 @@
     "OPENMV_AE3": {
       "display_name": "OpenMV AE3",
       "arch": "OPENMV AE3",
-      "flash": {"backend": "dfu", "usb": "37c5:96e3", "runtime": "37c5:16e3", "alt": {"firmware": 1, "coprocessor": 2, "coprocessor_romfs": 3, "romfs": 6}, "file": {"firmware": "firmware-M55_HP.bin"}, "bootloader": {"backend": "alif", "toolkit": "tools/alif/toolkit", "cfg_rev": "B4", "variants": [{"name": "SBL", "bridge": "0403:6015", "cfg_part": "AE302F80F55D5AE"}, {"name": "SBL2", "bridge": "1a86:55d3", "cfg_part": "AE302F80F55D5LE"}], "images": [{"file": "bootloader.bin", "addr": "0x80000000"}, {"file": "firmware_pad.toc", "addr": "0x8057e000"}], "instructions": "Alif SE-UART maintenance mode is selected at power-on. On an already-programmed camera, put it into maintenance mode while unplugged, then plug it into the PC to drop into the SE-UART bootloader. A virgin (unprogrammed) camera drops into it on its own. Wait for the SE-UART device to enumerate.", "note": "the AE3 bootloader needs the Alif Security Toolkit from the openmv firmware tree (tools/alif/toolkit); run `git submodule update --init`"}},
+      "flash": {"backend": "dfu", "usb": "37c5:96e3", "erase": [{"alt": 5}], "runtime": "37c5:16e3", "alt": {"firmware": 1, "coprocessor": 2, "coprocessor_romfs": 3, "romfs": 6}, "file": {"firmware": "firmware-M55_HP.bin"}, "bootloader": {"backend": "alif", "toolkit": "tools/alif/toolkit", "cfg_rev": "B4", "variants": [{"name": "SBL", "bridge": "0403:6015", "cfg_part": "AE302F80F55D5AE"}, {"name": "SBL2", "bridge": "1a86:55d3", "cfg_part": "AE302F80F55D5LE"}], "images": [{"file": "bootloader.bin", "addr": "0x80000000"}, {"file": "firmware_pad.toc", "addr": "0x8057e000"}], "instructions": "Alif SE-UART maintenance mode is selected at power-on. On an already-programmed camera, put it into maintenance mode while unplugged, then plug it into the PC to drop into the SE-UART bootloader. A virgin (unprogrammed) camera drops into it on its own. Wait for the SE-UART device to enumerate.", "note": "the AE3 bootloader needs the Alif Security Toolkit from the openmv firmware tree (tools/alif/toolkit); run `git submodule update --init`"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -263,7 +263,7 @@
     "OPENMV_N6": {
       "display_name": "OpenMV N6 (STM32N657)",
       "arch": "OpenMV N6",
-      "flash": {"backend": "dfu", "usb": "37c5:9206", "runtime": "37c5:1206", "alt": {"firmware": 1, "romfs": 3}, "bootloader": {"backend": "cubeprog", "tsv": "FlashLayout.tsv", "loaders": ["OpenBootloader_STM32N6570-DK-trusted.stm32", "MX66UW1G45G_STM32N6570-DK-OBL.bin"], "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
+      "flash": {"backend": "dfu", "usb": "37c5:9206", "erase": [{"alt": 2}], "runtime": "37c5:1206", "alt": {"firmware": 1, "romfs": 3}, "bootloader": {"backend": "cubeprog", "tsv": "FlashLayout.tsv", "loaders": ["OpenBootloader_STM32N6570-DK-trusted.stm32", "MX66UW1G45G_STM32N6570-DK-OBL.bin"], "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -306,7 +306,7 @@
     "ARDUINO_PORTENTA_H7": {
       "display_name": "Arduino Portenta",
       "arch": "PORTENTA H7 8192 SDRAM",
-      "flash": {"backend": "arduino", "usb": "2341:035b", "app": {"usb": "2341:005b", "pids": ["0x005b", "0x045b", "0x025b", "0x805b"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
+      "flash": {"backend": "arduino", "usb": "2341:035b", "erase": [{"alt": 0, "addr": "0x08020000"}, {"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:005b", "pids": ["0x005b", "0x045b", "0x025b", "0x805b"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -337,7 +337,7 @@
     "ARDUINO_GIGA": {
       "display_name": "Arduino Giga",
       "arch": "GIGA H7 8192 SDRAM",
-      "flash": {"backend": "arduino", "usb": "2341:0366", "app": {"usb": "2341:0066", "pids": ["0x0066", "0x0466", "0x0266", "0x8066"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
+      "flash": {"backend": "arduino", "usb": "2341:0366", "erase": [{"alt": 0, "addr": "0x08020000"}, {"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:0066", "pids": ["0x0066", "0x0466", "0x0266", "0x8066"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -368,7 +368,7 @@
     "ARDUINO_NICLA_VISION": {
       "display_name": "Arduino Nicla Vision",
       "arch": "NICLAV H7 1024",
-      "flash": {"backend": "arduino", "usb": "2341:035f", "app": {"usb": "2341:005f", "pids": ["0x005f", "0x045f", "0x055f", "0x025f", "0x805f"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
+      "flash": {"backend": "arduino", "usb": "2341:035f", "erase": [{"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:005f", "pids": ["0x005f", "0x045f", "0x055f", "0x025f", "0x805f"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],

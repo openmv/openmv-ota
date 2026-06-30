@@ -31,6 +31,24 @@ def download_argv(dfu_util: str, usb: str, alt: int, file: Path, *, reset: bool 
     return argv
 
 
+def erase_argv(dfu_util: str, usb: str, target: dict, file: Path, *, leave: bool = False,
+               serial: str | None = None) -> list[str]:
+    """Erase a partition by downloading a sector of zeros to its DFU alt (and optional
+    ``addr``), mirroring the IDE's ``eraseCommands``. The board leaves the bootloader on the
+    final step -- ``:leave`` appended to an address-based (Arduino) target, ``--reset`` on an
+    alt-only (OpenMV) one."""
+    argv = [dfu_util, "-w", "-d", ",%s" % usb]
+    if serial:
+        argv += ["-S", serial]
+    argv += ["-a", str(target["alt"])]
+    addr = target.get("addr")
+    if addr is not None:
+        argv += ["-s", addr + (":leave" if leave else "")]
+    elif leave:
+        argv.append("--reset")
+    return argv + ["-D", str(file)]
+
+
 def upload_argv(dfu_util: str, usb: str, alt: int, file: Path) -> list[str]:
     """Argv to read DFU alt ``alt`` back into ``file`` (for a post-flash verify)."""
     return [dfu_util, "-w", "-d", ",%s" % usb, "-a", str(alt), "-U", str(file)]

@@ -4,6 +4,7 @@
     romfs      flash the app romfs image
     factory    flash the manufacturing program: firmware + the dual-slot factory image
     bootloader flash the bootloader (board must be in system ROM DFU, entered by hand)
+    erase      erase the onboard filesystem (the user disk)
 
 One board at a time (the connected device); ``--dry-run`` prints the dfu-util commands
 without running them.
@@ -57,6 +58,10 @@ def register(flash_parser: argparse.ArgumentParser):
     p_bl = sub.add_parser("bootloader", help="flash the bootloader (board in system ROM DFU)")
     _add_common(p_bl)
     p_bl.set_defaults(func=cmd_bootloader, _command="flash bootloader")
+
+    p_er = sub.add_parser("erase", help="erase the onboard filesystem (the user disk)")
+    _add_common(p_er)
+    p_er.set_defaults(func=cmd_erase, _command="flash erase")
     return sub
 
 
@@ -107,6 +112,18 @@ def cmd_factory(args: argparse.Namespace) -> int:
             sdk_home=_sdk_home(args), reset=args.reset, enter_bootloader=args.enter_bootloader,
             serial=args.serial, mpremote=args.mpremote,
             dry_run=args.dry_run)
+    except FlashError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return _report(args, steps)
+
+
+def cmd_erase(args: argparse.Namespace) -> int:
+    try:
+        steps = flash_mod.flash_erase(
+            args.project, board=args.board, dfu_util=args.dfu_util, sdk_home=_sdk_home(args),
+            reset=args.reset, enter_bootloader=args.enter_bootloader, serial=args.serial,
+            mpremote=args.mpremote, dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

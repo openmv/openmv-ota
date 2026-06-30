@@ -35,6 +35,7 @@ is invoked (default `python -m mpremote`).
 | `flash romfs` | the app romfs image | `<board>-romfs.img` |
 | `flash factory` | firmware **+** the dual-slot factory image (the manufacturing program) | `<board>-firmware.bin`, `<board>-factory-romfs.img` |
 | `flash bootloader` | the bootloader (see below) | `<board>-bootloader.bin` |
+| `flash erase` | the onboard filesystem / user disk (see below) | — (no artifact) |
 
 `flash factory` writes firmware and the factory image in one pass, resetting the board only
 after the final write so it stays in the bootloader between steps.
@@ -178,6 +179,25 @@ the board's recovery pin held to 3.3V on a programmed camera, automatic on a vir
 on the STM32/N6, **SBL** on the RT1060 (keep that jumper on until flashing finishes); and on
 the **AE3** via the Alif SE tools (see below). **Arduino** boards have no OpenMV bootloader to
 flash.
+
+## Erasing the filesystem
+
+`flash erase` wipes the board's onboard filesystem — the user disk where `main.py` and your
+files live — the same "Erase Onboard Data Flash" the IDE does. It downloads a 4 KB sector of
+zeros (`FLASH_SECTOR_ERASE`) to the board's dedicated filesystem partition, which invalidates
+it so the firmware reformats a clean disk on the next boot. It enters the bootloader the same
+way the flash verbs do (detect + reset), and leaves it on the last step so the board reboots.
+
+The target is the board's own erase alt (it's a *different* partition from firmware/romfs):
+OpenMV M4/M7/H7 = alt 1, H7 Plus / Pure Thermal = alt 3, N6 = alt 2, AE3 = alt 5 (its RWFS).
+Arduino boards erase by address (Portenta/Giga clear the app at `0x08020000` **and** the QSPI
+filesystem at `0x90000000`; Nicla clears just the QSPI). The retired Nano boards are refused,
+and so is the **RT1060** — it has no separate user-flash partition to clear.
+
+```
+$ openmv-ota flash erase -b OPENMV4 --dry-run
+would run: dfu-util -w -d ,37c5:9204 -a 1 --reset -D <4KB-zeros>
+```
 
 ## i.MX RT1060
 
