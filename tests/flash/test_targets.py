@@ -56,6 +56,14 @@ def test_board_without_flash_block_raises():
         targets.flash_config("MPS2_AN500")
 
 
+def test_unsupported_board_gives_a_reason():
+    # the pico / ble33 use a UF2 bootloader, not our DFU path -- a clean, specific error
+    with pytest.raises(FlashError, match="UF2 mass-storage bootloader"):
+        targets.flash_config("ARDUINO_NANO_RP2040_CONNECT")
+    with pytest.raises(FlashError, match="can't be flashed with this tool"):
+        targets.flash_config("ARDUINO_NANO_33_BLE_SENSE")
+
+
 def test_unsupported_backend_raises(monkeypatch):
     fake = BoardConfig(name="FAKE", display_name="Fake", arch="x", mpy_args=[],
                        partitions=[], flash={"backend": "alif", "usb": "37c5:96e3", "alt": {}})
