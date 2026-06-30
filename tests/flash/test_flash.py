@@ -146,9 +146,9 @@ def imx_project(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.time, "sleep", lambda _s: None)
     monkeypatch.setattr(fl.history, "record",
                         lambda root, action, **f: recorded.append({"action": action, **f}))
+    # the flashloaders are bundled in the package; only the build artifacts go in build/
     for n in ("OPENMV_RT1060-firmware.bin", "OPENMV_RT1060-romfs.img",
-              "OPENMV_RT1060-factory-romfs.img", "sdphost_flash_loader.bin",
-              "blhost_flash_loader.bin"):
+              "OPENMV_RT1060-factory-romfs.img"):
         (tmp_path / "build" / n).write_bytes(b"x" * 5000)
     return tmp_path, ran, recorded
 
@@ -178,12 +178,20 @@ def test_imx_dry_run_runs_nothing(imx_project, monkeypatch):
     assert steps[-1].argv[-1] == "reset"
 
 
-def test_imx_missing_flashloader_errors(tmp_path, monkeypatch):
+def test_imx_uses_bundled_flashloader_by_default(imx_project):
+    root, ran, _rec = imx_project
+    fl.flash_firmware(str(root), board="OPENMV_RT1060")
+    assert "data/flashloaders/OPENMV_RT1060/sdphost_flash_loader.bin" in ran[0][-1]
+
+
+def test_imx_missing_loader_in_override_dir_errors(tmp_path, monkeypatch):
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "OPENMV_RT1060-firmware.bin").write_bytes(b"x")
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
+    empty = tmp_path / "noloaders"
+    empty.mkdir()
     with pytest.raises(FlashError, match="sdphost_flash_loader.bin"):
-        fl.flash_firmware(str(tmp_path), board="OPENMV_RT1060")
+        fl.flash_firmware(str(tmp_path), board="OPENMV_RT1060", flashloader_dir=str(empty))
 
 
 def test_imx_flashloader_dir_override(imx_project, tmp_path):
@@ -191,8 +199,6 @@ def test_imx_flashloader_dir_override(imx_project, tmp_path):
     loaders = tmp_path / "loaders"
     loaders.mkdir()
     (loaders / "sdphost_flash_loader.bin").write_bytes(b"x" * 100)
-    # remove the in-build copy so only the override dir can satisfy it
-    (root / "build" / "sdphost_flash_loader.bin").unlink()
     fl.flash_firmware(str(root), board="OPENMV_RT1060", flashloader_dir=str(loaders))
     assert str(loaders / "sdphost_flash_loader.bin") in ran[0]
 

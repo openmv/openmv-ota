@@ -73,8 +73,9 @@ does the full provision (flash-config block, secure bootloader, firmware, romfs,
 e-fuse); `flash firmware`/`flash romfs` rewrite just that one region.
 
 The two flashloader binaries (`sdphost_flash_loader.bin`, `blhost_flash_loader.bin`) are
-prebuilt artifacts shipped with the firmware/IDE — they are **not** produced by `build`. Put
-them in the artifact dir, or point `--flashloader-dir` at them.
+prebuilt artifacts (not produced by `build`) — copies are **bundled in the package**
+(`data/flashloaders/OPENMV_RT1060/`), so RT1060 flashing works out of the box. Point
+`--flashloader-dir` at a directory to override them (e.g. a newer firmware release).
 
 ```
 $ openmv-ota flash factory ./my-product -b OPENMV_RT1060 --flashloader-dir ./loaders --dry-run

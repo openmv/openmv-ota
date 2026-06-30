@@ -93,20 +93,30 @@ def _resolve_spsdk(name: str, sdk_home: Path | None, dry_run: bool) -> str:
         return name
 
 
-def _imx_files(board: str, op: str, raw: dict, out_dir: Path, ld_dir: Path) -> dict[str, Path]:
+def _loader(name: str, board: str, ld_dir: Path | None) -> Path:
+    """An i.MX flashloader binary: from ``--flashloader-dir`` if given, else the copy bundled
+    in the package (``data/flashloaders/<board>/``)."""
+    if ld_dir is not None:
+        return ld_dir / name
+    from importlib.resources import files
+    return Path(str(files("openmv_ota").joinpath("data/flashloaders", board, name)))
+
+
+def _imx_files(board: str, op: str, raw: dict, out_dir: Path, ld_dir: Path | None
+               ) -> dict[str, Path]:
     sd, bl = raw["sdphost"], raw["blhost"]
-    files = {"sdphost_loader": ld_dir / sd["loader"]}
+    files = {"sdphost_loader": _loader(sd["loader"], board, ld_dir)}
     if op in ("firmware", "factory"):
         files["firmware"] = out_dir / ("%s-firmware.bin" % board)
     if op == "factory":
-        files["blhost_loader"] = ld_dir / bl["sbl_loader"]
+        files["blhost_loader"] = _loader(bl["sbl_loader"], board, ld_dir)
         files["romfs"] = out_dir / ("%s-factory-romfs.img" % board)
     elif op == "romfs":
         files["romfs"] = out_dir / ("%s-romfs.img" % board)
     for f in files.values():
         if not f.exists():
-            raise FlashError("missing %s -- build the firmware/romfs first; the flashloader "
-                             ".bin files ship with the firmware (or pass --flashloader-dir)" % f)
+            raise FlashError("missing %s -- build the firmware/romfs first "
+                             "(flashloaders are bundled; --flashloader-dir overrides)" % f)
     return files
 
 
@@ -137,7 +147,7 @@ def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str,
                output: str | None, sdk_home: Path | None, flashloader_dir: str | None,
                dry_run: bool) -> list[imx.ImxStep]:
     out_dir = _output_dir(project, output)
-    ld_dir = Path(flashloader_dir) if flashloader_dir else out_dir
+    ld_dir = Path(flashloader_dir) if flashloader_dir else None   # None -> bundled loaders
     sdphost = _resolve_spsdk("sdphost", sdk_home, dry_run)
     blhost = _resolve_spsdk("blhost", sdk_home, dry_run)
     files = _imx_files(board, op, cfg.raw, out_dir, ld_dir)

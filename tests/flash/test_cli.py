@@ -87,8 +87,7 @@ def test_factory_coprocessor_flag(proj, capsys):
 def test_imx_rt1060_dry_run(proj, monkeypatch, capsys):
     root, ran, artifact = proj
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
-    for n in ("OPENMV_RT1060-firmware.bin", "sdphost_flash_loader.bin"):
-        artifact(n)
+    artifact("OPENMV_RT1060-firmware.bin")    # flashloaders are bundled in the package
     assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "would run: sdphost -u 0x1FC9,0x0135 -- write-file" in out
@@ -99,8 +98,7 @@ def test_imx_rt1060_reports_step_labels(proj, monkeypatch, capsys):
     root, ran, artifact = proj
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
     monkeypatch.setattr(fl.time, "sleep", lambda _s: None)
-    for n in ("OPENMV_RT1060-firmware.bin", "sdphost_flash_loader.bin"):
-        artifact(n)
+    artifact("OPENMV_RT1060-firmware.bin")    # flashloaders are bundled in the package
     assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060"]) == 0
     out = capsys.readouterr().out
     assert "reset (OPENMV_RT1060)" in out and "load flashloader" in out
