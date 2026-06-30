@@ -85,6 +85,8 @@ MARKER_SIZE = 16
 _PENDING_OFF = 0
 _TRIED_OFF = 16
 _CONFIRMED_OFF = 32
+_REPR_OFF = 48
+_STATUS_READ = 4 * MARKER_SIZE                   # pending/tried/confirmed + repr
 
 
 def _marker(label):
@@ -94,6 +96,8 @@ def _marker(label):
 PENDING = _marker(b"pending")
 TRIED = _marker(b"tried")
 CONFIRMED = _marker(b"confirmed")
+REPR_FULL = _marker(b"repr.full")
+REPR_DELTA = _marker(b"repr.ocdl")
 
 
 def _markers(status):
@@ -101,6 +105,16 @@ def _markers(status):
     return (status[_PENDING_OFF:_PENDING_OFF + MARKER_SIZE] == PENDING,
             status[_TRIED_OFF:_TRIED_OFF + MARKER_SIZE] == TRIED,
             status[_CONFIRMED_OFF:_CONFIRMED_OFF + MARKER_SIZE] == CONFIRMED)
+
+
+def _representation_of(status):
+    """How the FRONT image was installed: ``"full"`` / ``"delta"`` / ``None`` (unwritten)."""
+    m = status[_REPR_OFF:_REPR_OFF + MARKER_SIZE]
+    if m == REPR_FULL:
+        return "full"
+    if m == REPR_DELTA:
+        return "delta"
+    return None
 
 
 # --- pure logic (host-testable; all flash I/O injected) ---------------------
@@ -253,16 +267,19 @@ def status():  # pragma: no cover
         slot             'FRONT' | 'BACK' | None    which image booted
         fallback_reason  str | None                 why FRONT was rejected (None on FRONT)
         payload_version  int                         the booted image's version
+        representation   'full' | 'delta' | None     how the FRONT image was installed
         pending/tried/confirmed/trial               FRONT's trial-marker state
 
     ``slot == 'BACK'`` with a ``fallback_reason`` means the last update failed and the
     device is on the golden image -- worth reporting upstream."""
     import _ota_config
     slot, version, reason = _boot_result()
-    s = _status_of(_read_at(0, _front_status_offset(_ota_config), 3 * MARKER_SIZE))
+    sector = _read_at(0, _front_status_offset(_ota_config), _STATUS_READ)
+    s = _status_of(sector)
     s["slot"] = slot
     s["fallback_reason"] = reason
     s["payload_version"] = version
+    s["representation"] = _representation_of(sector)
     return s
 
 

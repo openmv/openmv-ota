@@ -25,9 +25,22 @@ def test_markers_and_offsets_pinned_to_host():
     # The library duplicates these from openmv_ota.ota.status; keep them identical.
     assert (rt.PENDING, rt.TRIED, rt.CONFIRMED) == (
         host_status.PENDING, host_status.TRIED, host_status.CONFIRMED)
-    assert (rt._PENDING_OFF, rt._TRIED_OFF, rt._CONFIRMED_OFF) == (
-        host_status.PENDING_OFFSET, host_status.TRIED_OFFSET, host_status.CONFIRMED_OFFSET)
+    assert (rt.REPR_FULL, rt.REPR_DELTA) == (host_status.REPR_FULL, host_status.REPR_DELTA)
+    assert (rt._PENDING_OFF, rt._TRIED_OFF, rt._CONFIRMED_OFF, rt._REPR_OFF) == (
+        host_status.PENDING_OFFSET, host_status.TRIED_OFFSET, host_status.CONFIRMED_OFFSET,
+        host_status.REPR_OFFSET)
     assert rt.MARKER_SIZE == host_status.MARKER_SIZE
+
+
+def test_representation_of_decodes_each():
+    def sector(repr_marker):
+        s = bytearray(_sector(True, True, False))
+        if repr_marker is not None:
+            s[rt._REPR_OFF:rt._REPR_OFF + rt.MARKER_SIZE] = repr_marker
+        return bytes(s)
+    assert rt._representation_of(sector(rt.REPR_FULL)) == "full"
+    assert rt._representation_of(sector(rt.REPR_DELTA)) == "delta"
+    assert rt._representation_of(sector(None)) is None        # unwritten (0xFF) -> None
 
 
 def test_status_of_confirmed_image():

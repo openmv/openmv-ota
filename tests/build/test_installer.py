@@ -33,6 +33,23 @@ def test_pending_marker_matches_status_module():
     from openmv_ota.ota import status
     assert inst("PENDING") == status.PENDING
     assert len(inst("PENDING")) == inst("MARKER_SIZE") == 16
+    assert (inst("REPR_FULL"), inst("REPR_DELTA")) == (status.REPR_FULL, status.REPR_DELTA)
+    assert inst("_REPR_OFF") == status.REPR_OFFSET
+
+
+def test_install_stream_writes_repr_marker():
+    from openmv_ota.ota import status
+    block, front = 4096, 3 * 4096
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    so = front - 2 * block                                # status sector base
+    ro = so + status.REPR_OFFSET
+    flash = _run_install(bytes(image), front, block, repr_marker=inst("REPR_DELTA"))
+    assert flash.mem[so:so + 16] == inst("PENDING")       # armed
+    assert flash.mem[ro:ro + 16] == status.REPR_DELTA     # rep recorded beside pending
+    # no repr_marker -> the slot has none (a factory image looks like this)
+    flash2 = _run_install(bytes(image), front, block)
+    assert flash2.mem[ro:ro + 16] == b"\xff" * 16
 
 
 # --- _parse_url -------------------------------------------------------------
@@ -293,10 +310,12 @@ def _noop():
     pass
 
 
-def _run_install(image, front_size, block, feed=_noop, progress=None, expect_sha=None):
+def _run_install(image, front_size, block, feed=_noop, progress=None, expect_sha=None,
+                 repr_marker=None):
     flash = _FakeFlash(front_size)
     inst("_install_stream")(_reader_of(image), flash.erase, flash.write,
-                            flash.readback, front_size, block, feed, progress, expect_sha)
+                            flash.readback, front_size, block, feed, progress, expect_sha,
+                            repr_marker)
     return flash
 
 
@@ -369,6 +388,25 @@ def test_progress_zero_total_is_full():
     rec = _RecordLog()
     inst("_Progress")(rec)(0, 0)               # empty image -> 100%, no divide-by-zero
     assert rec.lines == ["install: 100% (0/0 bytes)"]
+
+
+def test_install_stream_repr_marker_verify_fails():
+    block, front = 4096, 2 * 4096
+    so = front - 2 * block
+
+    class DropRepr(_FakeFlash):
+        def write(self, off, data):
+            if off == so + 48:                            # pretend the repr write vanished
+                return
+            super().write(off, data)
+
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    flash = DropRepr(front)
+    with pytest.raises(OSError):
+        inst("_install_stream")(_reader_of(bytes(image)), flash.erase, flash.write,
+                                flash.readback, front, block, _noop, None, None,
+                                inst("REPR_FULL"))
 
 
 def test_install_stream_sha_ok():

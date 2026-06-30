@@ -399,9 +399,11 @@ class _RecLog:
 
 plog = _RecLog()
 P["_install_stream"](reader_of(bytes(img)), erase, write, readback, FRONT, BLOCK,
-                     lambda: fed.append(1), P["_Progress"](plog))   # the real RAM reporter
+                     lambda: fed.append(1), P["_Progress"](plog),   # the real RAM reporter
+                     None, P["REPR_DELTA"])                         # record the representation
 so = FRONT - 2 * BLOCK
 install_ok = (mem[0:4] == b"DATA" and bytes(mem[so:so + 16]) == P["PENDING"]
+              and bytes(mem[so + 48:so + 64]) == P["REPR_DELTA"]   # repr marker written
               and len(fed) > 0           # fed the watchdog per chunk
               and plog.n > 0)            # progress logged through the installer's reporter
 

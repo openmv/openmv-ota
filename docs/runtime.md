@@ -73,6 +73,9 @@ extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes
     with a reason means **the last update failed and you're on the golden image** — worth
     reporting upstream,
   - `payload_version` — the booted image's version,
+  - `representation` — `'full'` | `'delta'` | `None` — how the FRONT image was installed
+    (the updater stamps this; `None` for a factory image). Lets you see on-device whether
+    deltas are actually being applied,
   - `pending` / `tried` / `confirmed` / `trial` — FRONT's trial-marker state.
 - **`identity()`** — the running image's identity/provenance from `/rom/system.json`
   (`board`, `product`, `board_id`, `app_version`, `vendor`, toolchain, …) — what an

@@ -48,9 +48,10 @@ class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is
 def _noop():  # pragma: no cover  (fallback feed() when no watchdog is frozen)
     pass
 
-# --- Status marker (mirror of openmv_ota.ota.status; pinned by a test) -------
+# --- Status markers (mirror of openmv_ota.ota.status; pinned by a test) ------
 
 MARKER_SIZE = 16
+_REPR_OFF = 48                                    # status-sector offset of the repr marker
 
 
 def _marker(label):
@@ -58,6 +59,8 @@ def _marker(label):
 
 
 PENDING = _marker(b"pending")
+REPR_FULL = _marker(b"repr.full")
+REPR_DELTA = _marker(b"repr.ocdl")
 
 # Stream/flash unit. FRONT_SIZE is always a multiple of this (it is block-aligned
 # and the block is >= 4096), so every flash write is a full, aligned chunk.
@@ -514,7 +517,7 @@ class _Progress:
 
 
 def _install_stream(read, erase, write, readback, front_size, block, feed,
-                    progress=None, expect_sha=None):
+                    progress=None, expect_sha=None, repr_marker=None):
     """Erase the FRONT slot, stream the decompressed image into it 1:1 (verifying
     every write by read-back, skipping already-erased 0xFF runs), then arm the trial.
 
@@ -526,9 +529,10 @@ def _install_stream(read, erase, write, readback, front_size, block, feed,
     iterating, feeding stops); ``progress(done, front_size)`` (if given) is called once per
     written chunk so the caller can log/report how far the install has got; ``expect_sha``
     (if given, the manifest's hex sha256 of the reconstructed image) is checked over the
-    streamed bytes and must match. Raises on any size/hash mismatch or read-back
-    miscompare; this runs after the erase, so the caller turns any exception into a reboot
-    into golden."""
+    streamed bytes and must match; ``repr_marker`` (if given) records which representation
+    was applied (REPR_FULL / REPR_DELTA) for status() to report. Raises on any size/hash
+    mismatch or read-back miscompare; this runs after the erase, so the caller turns any
+    exception into a reboot into golden."""
     erase(front_size)
     off = 0
     while off < front_size:                          # confirm the erase took
@@ -568,7 +572,11 @@ def _install_stream(read, erase, write, readback, front_size, block, feed,
         raise OSError("image sha256 does not match the manifest")
 
     pending_off = front_size - 2 * block             # the status sector
-    write(pending_off, PENDING)                       # arm the one-shot trial, last
+    if repr_marker is not None:                      # record which rep was applied (1->0 only)
+        write(pending_off + _REPR_OFF, repr_marker)
+        if readback(pending_off + _REPR_OFF, len(repr_marker)) != repr_marker:
+            raise OSError("repr marker verify failed")
+    write(pending_off, PENDING)                       # arm the one-shot trial, LAST
     if readback(pending_off, len(PENDING)) != PENDING:
         raise OSError("arm verify failed")
 
@@ -716,8 +724,10 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         def _old_read(off, n):
             return uctypes.bytearray_at(base + front_size + off, n)   # BACK slot at front_size
         source = _GenReader(_delta_stream(_PatchReader(dio), _old_read, _CHUNK)).read
+        repr_marker = REPR_DELTA
     else:
         source = dio.read
+        repr_marker = REPR_FULL
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
     # failure reboots into the golden image instead of propagating.
@@ -725,7 +735,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         log.info("install: erasing + writing FRONT (%d bytes)" % front_size)
     try:
         _install_stream(source, erase, write, readback, front_size, block, feed,
-                        progress, expect_sha)
+                        progress, expect_sha, repr_marker)
     except Exception as e:
         sock.close()
         if log:
