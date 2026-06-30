@@ -61,21 +61,32 @@ def test_no_reset(project):
     assert "--reset" not in ran[0]
 
 
-def test_ae3_firmware_uses_per_core_file_and_alt(project):
+def test_ae3_firmware_flashes_both_cores(project):
+    # the HE core ships with the firmware -- both images, always, no flag
     root, ran, _rec, artifact = project
     artifact("OPENMV_AE3-firmware-M55_HP.bin")
+    artifact("OPENMV_AE3-firmware-M55_HE.bin")
     steps = fl.flash_firmware(str(root), board="OPENMV_AE3")
-    assert steps[0].alt == 1 and steps[0].file.name == "OPENMV_AE3-firmware-M55_HP.bin"
-    assert ran[0][3] == ",37c5:96e3"
+    assert [(s.alt, s.file.name) for s in steps] == [
+        (1, "OPENMV_AE3-firmware-M55_HP.bin"), (2, "OPENMV_AE3-firmware-M55_HE.bin")]
+    assert ran[0][3] == ",37c5:96e3" and "--reset" in ran[1] and "--reset" not in ran[0]
 
 
-def test_ae3_factory_coprocessor_flashes_all_four_partitions(project):
+def test_ae3_firmware_requires_both_cores(project):
+    root, ran, _rec, artifact = project
+    artifact("OPENMV_AE3-firmware-M55_HP.bin")            # HE missing -> fail fast, flash nothing
+    with pytest.raises(FlashError, match="firmware-M55_HE.bin"):
+        fl.flash_firmware(str(root), board="OPENMV_AE3")
+    assert ran == []
+
+
+def test_ae3_factory_flashes_all_four_partitions(project):
     root, ran, _rec, artifact = project
     for n in ("firmware-M55_HP", "firmware-M55_HE"):
         artifact("OPENMV_AE3-%s.bin" % n)
     artifact("OPENMV_AE3-coprocessor-romfs.img")
     artifact("OPENMV_AE3-factory-romfs.img")
-    steps = fl.flash_factory(str(root), board="OPENMV_AE3", coprocessor=True)
+    steps = fl.flash_factory(str(root), board="OPENMV_AE3")
     assert [(s.artifact, s.alt) for s in steps] == [
         ("firmware", 1), ("coprocessor", 2), ("coprocessor_romfs", 3), ("romfs", 6)]
     assert sum("--reset" in a for a in ran) == 1 and "--reset" in ran[-1]
@@ -114,14 +125,12 @@ def test_custom_output_dir(project, tmp_path):
     assert str(out / "OPENMV4-romfs.img") in ran[0]
 
 
-def test_coprocessor_on_non_multicore_board_is_a_clean_error(project):
-    # OPENMV4 has no coprocessor alt -> fail fast on the unsupported target (the flag exists;
-    # the AE3 is the board it applies to).
+def test_single_core_board_flashes_only_firmware(project):
+    # OPENMV4 has no coprocessor target, so firmware is a single image
     root, ran, _rec, artifact = project
     artifact("OPENMV4-firmware.bin")
-    with pytest.raises(FlashError, match="no 'coprocessor' flash target"):
-        fl.flash_firmware(str(root), board="OPENMV4", coprocessor=True)
-    assert ran == []
+    steps = fl.flash_firmware(str(root), board="OPENMV4")
+    assert [s.artifact for s in steps] == ["firmware"]
 
 
 def test_resolve_dfu_util_dry_run_tolerates_missing_dfu_util(monkeypatch):

@@ -1,6 +1,6 @@
 """CLI handlers for the ``openmv-ota flash`` command group.
 
-    firmware   flash the firmware image (``--coprocessor`` also flashes the AE3 HE core)
+    firmware   flash the firmware image (both cores on the AE3 -- they're inseparable)
     romfs      flash the app romfs image
     factory    flash the manufacturing program: firmware + the dual-slot factory image
 
@@ -37,8 +37,6 @@ def register(flash_parser: argparse.ArgumentParser):
 
     p_fw = sub.add_parser("firmware", help="flash the firmware image")
     _add_common(p_fw)
-    p_fw.add_argument("--coprocessor", action="store_true",
-                      help="also flash the coprocessor core (AE3)")
     p_fw.set_defaults(func=cmd_firmware, _command="flash firmware")
 
     p_ro = sub.add_parser("romfs", help="flash the app romfs image")
@@ -47,8 +45,6 @@ def register(flash_parser: argparse.ArgumentParser):
 
     p_fa = sub.add_parser("factory", help="flash firmware + the dual-slot factory image")
     _add_common(p_fa)
-    p_fa.add_argument("--coprocessor", action="store_true",
-                      help="also flash the coprocessor core (AE3)")
     p_fa.set_defaults(func=cmd_factory, _command="flash factory")
     return sub
 
@@ -72,7 +68,7 @@ def cmd_firmware(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_firmware(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), coprocessor=args.coprocessor, reset=args.reset,
+            sdk_home=_sdk_home(args), reset=args.reset,
             dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -95,7 +91,7 @@ def cmd_factory(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_factory(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), coprocessor=args.coprocessor, reset=args.reset,
+            sdk_home=_sdk_home(args), reset=args.reset,
             dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)

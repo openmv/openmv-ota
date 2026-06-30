@@ -22,11 +22,13 @@ openmv-ota flash factory  ./my-product -b OPENMV4
 | `flash factory` | firmware **+** the dual-slot factory image (the manufacturing program) | `<board>-firmware.bin`, `<board>-factory-romfs.img` |
 
 `flash factory` writes firmware and the factory image in one pass, resetting the board only
-after the final write so it stays in the bootloader between steps. On the AE3, add
-`--coprocessor` to also flash the HE core: `flash firmware --coprocessor` adds the HE-core
-firmware, and `flash factory --coprocessor` adds the HE firmware **and** the coprocessor
-romfs (alts 1/2/3/6 = HP fw, HE fw, coprocessor romfs, main romfs). It's a flag, not a
-separate command, because the coprocessor only exists on that board.
+after the final write so it stays in the bootloader between steps.
+
+The **AE3** is dual-core, and its HE core ships *with* the firmware — the two core images
+can't be flashed separately. So there's no flag: `flash firmware` always writes both cores
+(HP + HE), and `flash factory` always writes all four partitions (alts 1/2/3/6 = HP fw, HE
+fw, coprocessor romfs, main romfs). If either core image is missing the flash fails fast
+rather than half-programming.
 
 ## Where the targets come from
 

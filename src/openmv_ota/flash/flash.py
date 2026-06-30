@@ -158,13 +158,13 @@ def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str,
 
 def flash_firmware(project: str = ".", *, board: str, output: str | None = None,
                    dfu_util: str | None = None, sdk_home: Path | None = None,
-                   coprocessor: bool = False, reset: bool = True, dry_run: bool = False):
+                   reset: bool = True, dry_run: bool = False):
     cfg = flash_config(board)
     if cfg.backend == "imx":
         return _imx_flash(project, "firmware", board, cfg, "flash-firmware", output=output,
                           sdk_home=sdk_home, dry_run=dry_run)
     spec = [("firmware", "firmware.bin")]
-    if coprocessor:
+    if cfg.has("coprocessor"):                   # AE3: the HE core ships with the firmware
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
     return _dfu_flash(project, board, cfg, spec, "flash-firmware", output=output,
                       dfu_util=dfu_util, sdk_home=sdk_home, reset=reset, dry_run=dry_run)
@@ -184,13 +184,13 @@ def flash_romfs(project: str = ".", *, board: str, output: str | None = None,
 
 def flash_factory(project: str = ".", *, board: str, output: str | None = None,
                   dfu_util: str | None = None, sdk_home: Path | None = None,
-                  coprocessor: bool = False, reset: bool = True, dry_run: bool = False):
+                  reset: bool = True, dry_run: bool = False):
     cfg = flash_config(board)
     if cfg.backend == "imx":
         return _imx_flash(project, "factory", board, cfg, "flash-factory", output=output,
                           sdk_home=sdk_home, dry_run=dry_run)
     spec = [("firmware", "firmware.bin")]
-    if coprocessor:
+    if cfg.has("coprocessor"):                   # AE3: HE core + its romfs, with the main image
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
         spec.append(("coprocessor_romfs", "coprocessor-romfs.img"))
     spec.append(("romfs", "factory-romfs.img"))

@@ -76,12 +76,10 @@ def test_sdk_home_passed_through(proj, monkeypatch, capsys):
     assert str(seen["sdk"]) == "/opt/sdk"
 
 
-def test_factory_coprocessor_flag(proj, capsys):
-    root, _ran, artifact = proj
-    artifact("OPENMV4-firmware.bin")
-    # --coprocessor needs a coprocessor alt OPENMV4 doesn't have -> clean error, exit 2
-    assert main(["flash", "factory", str(root), "-b", "OPENMV4", "--coprocessor"]) == 2
-    assert "no 'coprocessor' flash target" in capsys.readouterr().err
+def test_factory_error_returns_exit_code(proj, capsys):
+    root, _ran, _artifact = proj
+    assert main(["flash", "factory", str(root), "-b", "OPENMV4"]) == 2   # nothing built
+    assert "error: missing artifact" in capsys.readouterr().err
 
 
 def test_imx_rt1060_dry_run(proj, monkeypatch, capsys):
@@ -104,12 +102,11 @@ def test_imx_rt1060_reports_step_labels(proj, monkeypatch, capsys):
     assert "reset (OPENMV_RT1060)" in out and "load flashloader" in out
 
 
-def test_ae3_factory_coprocessor_ok(proj, capsys):
+def test_ae3_factory_flashes_all_partitions(proj, capsys):
     root, ran, artifact = proj
     for n in ("firmware-M55_HP.bin", "firmware-M55_HE.bin", "coprocessor-romfs.img",
               "factory-romfs.img"):
         artifact("OPENMV_AE3-%s" % n)
-    assert main(["flash", "factory", str(root), "-b", "OPENMV_AE3", "--coprocessor",
-                 "--no-reset"]) == 0
-    assert [a[5] for a in ran] == ["1", "2", "3", "6"]   # the -a alt of each step
+    assert main(["flash", "factory", str(root), "-b", "OPENMV_AE3", "--no-reset"]) == 0
+    assert [a[5] for a in ran] == ["1", "2", "3", "6"]   # HP, HE, coproc romfs, main romfs
     assert all("--reset" not in a for a in ran)          # --no-reset honored on every step

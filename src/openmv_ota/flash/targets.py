@@ -44,6 +44,12 @@ class FlashConfig:
         """The artifact's filename suffix (after ``<board>-``), board override or ``default``."""
         return self.raw.get("file", {}).get(artifact, default)
 
+    def has(self, artifact: str) -> bool:
+        """Whether this board flashes ``artifact``. The AE3's HE core ships *with* the
+        firmware (the two core images can't be flashed separately), so it's keyed off the
+        board config, not a user flag."""
+        return artifact in self.raw.get("alt", {})
+
 
 def flash_config(board: str) -> FlashConfig:
     """The resolved flash config for ``board``; raises ``FlashError`` if it can't be flashed."""
