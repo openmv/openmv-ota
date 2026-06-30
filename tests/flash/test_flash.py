@@ -236,8 +236,8 @@ def test_resolve_spsdk_dry_run_tolerates_missing(monkeypatch):
 
 @pytest.fixture
 def arduino_project(tmp_path, monkeypatch):
-    """An Arduino project with build artifacts; runner/dfu-util/touch stubbed (wifi blobs
-    are bundled in the package)."""
+    """An Arduino project; runner/dfu-util/touch stubbed. The wifi blobs sit in the output
+    dir (build emits them there, version-matched), alongside the firmware/romfs artifacts."""
     (tmp_path / "build").mkdir()
     ran: list[list[str]] = []
     touched: list = []
@@ -245,7 +245,8 @@ def arduino_project(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
     monkeypatch.setattr(fl.arduino, "touch_to_reset", lambda raw: touched.append(raw["usb"]))
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
-    for n in ("ARDUINO_PORTENTA_H7-firmware.bin", "ARDUINO_PORTENTA_H7-romfs.img"):
+    for n in ("ARDUINO_PORTENTA_H7-firmware.bin", "ARDUINO_PORTENTA_H7-romfs.img",
+              "cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):
         (tmp_path / "build" / n).write_bytes(b"x")
     return tmp_path, ran, touched
 
@@ -257,11 +258,11 @@ def test_arduino_firmware_touches_then_flashes(arduino_project):
     assert len(ran) == 1 and ran[0][7] == "0x08040000:leave"
 
 
-def test_arduino_factory_writes_wifi_from_bundle(arduino_project):
+def test_arduino_factory_writes_wifi_from_output_dir(arduino_project):
     root, ran, _touched = arduino_project
     fl.flash_factory(str(root), board="ARDUINO_PORTENTA_H7")
     assert [a[7] for a in ran] == ["0x90F00000", "0x90FC0000", "0x08040000", "0x90B00000:leave"]
-    assert "data/cyw4343/cyw4343_7_45_98_102.bin" in ran[0][-1]   # bundled blob
+    assert ran[0][-1] == str(root / "build/cyw4343_7_45_98_102.bin")   # from the build outputs
 
 
 def test_arduino_no_touch_skips_the_reset(arduino_project):

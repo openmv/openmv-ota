@@ -113,9 +113,11 @@ These run the Arduino MCUboot DFU bootloader, so dfu-util addresses flash by abs
 **address** (`-a <alt> -s 0xADDR`) and leaves via `-s 0xADDR:leave` rather than `--reset`.
 The verbs are the same; `flash firmware` writes the app at `0x08040000`, `flash romfs` the
 romfs at QSPI `0x90B00000`, and `flash factory` additionally writes the **CYW4343** wifi/bt
-firmware to QSPI — a full first-time provision. The CYW4343 blobs are bundled in the tool
-(shared across the three boards), so you never supply them; writes erase-on-write, so there's
-no separate erase pass.
+firmware to QSPI — a full first-time provision. Those wifi blobs version-track the firmware,
+so `build firmware` copies them out of the firmware tree (`drivers/cyw4343/firmware/`) into
+the output dir alongside the image — pinned to the exact firmware you just built. `flash
+factory` reads them from there like any other artifact; you never supply them, and a stale
+copy can never be written. Writes erase-on-write, so there's no separate erase pass.
 
 To flash, the board must be in its DFU bootloader. If it's in app mode the tool
 **touch-to-resets** it — opens its serial port at 1200 baud, which the bootloader detects and

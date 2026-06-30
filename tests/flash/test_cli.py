@@ -104,8 +104,10 @@ def test_imx_rt1060_reports_step_labels(proj, monkeypatch, capsys):
 
 def test_arduino_factory_dry_run(proj, capsys):
     root, ran, artifact = proj
-    artifact("ARDUINO_PORTENTA_H7-firmware.bin")
-    artifact("ARDUINO_PORTENTA_H7-romfs.img")
+    for n in ("firmware.bin", "romfs.img"):
+        artifact("ARDUINO_PORTENTA_H7-%s" % n)
+    for n in ("cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):   # build emits these to out_dir
+        artifact(n)
     assert main(["flash", "factory", str(root), "-b", "ARDUINO_PORTENTA_H7", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "would run: DFU -w -d ,2341:035b -a 0 -s 0x08040000 " in out

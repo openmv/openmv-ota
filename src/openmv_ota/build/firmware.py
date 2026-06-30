@@ -128,6 +128,7 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
         _ensure_mpy_cross(repo)
         _run_make(repo, build_args)
         outputs = _collect_outputs(repo, name, out_dir)
+        outputs += _copy_wifi_blobs(repo, name, out_dir)
         return FirmwareResult(name, outputs, ota=ota,
                               build_dir=tmp if (ota and keep_build_dir) else None)
     finally:
@@ -266,6 +267,28 @@ def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:
         raise BuildError("firmware build produced no image for %s (looked for "
                          "firmware*.bin in %s)" % (name, bdir), exit_code=1)
     return collected
+
+
+def _copy_wifi_blobs(repo: Path, name: str, out_dir: Path) -> list[Path]:
+    """Copy a board's flash-time wifi/bt blobs (the Arduino CYW4343 firmware) out of the
+    firmware tree alongside its image, so the output dir is a self-contained, version-matched
+    flashable set -- the blob is pinned to the exact firmware just built, not whatever the
+    checkout holds at flash time. A no-op for boards that don't bundle any."""
+    from openmv_ota.romfs.boards import load_boards
+
+    board = load_boards().get(name)
+    flash = board.flash if board else None
+    if not flash or not flash.get("wifi"):
+        return []
+    src_dir = repo / flash["wifi_dir"]
+    copied = []
+    for w in flash["wifi"]:
+        src = src_dir / w["file"]
+        if not src.exists():
+            raise BuildError("wifi blob %s not found in the firmware tree (expected at %s)"
+                             % (w["file"], src), exit_code=1)
+        copied.append(_copy(src, out_dir / w["file"]))
+    return copied
 
 
 def _copy(src: Path, dst: Path) -> Path:

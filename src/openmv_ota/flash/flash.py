@@ -156,21 +156,14 @@ def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str,
 
 # --- arduino backend ------------------------------------------------------------------------
 
-def _cyw(name: str) -> Path:
-    """A bundled Arduino CYW4343 wifi/bt blob (``data/cyw4343/``) -- shipped in the package,
-    shared across the boards, never the user's to supply."""
-    from importlib.resources import files
-    return Path(str(files("openmv_ota").joinpath("data/cyw4343", name)))
-
-
 def _arduino_files(board: str, op: str, raw: dict, out_dir: Path) -> dict:
     files: dict = {}
     if op in ("firmware", "factory"):
         files["firmware"] = out_dir / ("%s-firmware.bin" % board)
     if op in ("romfs", "factory"):
         files["romfs"] = out_dir / ("%s-romfs.img" % board)
-    if op == "factory":
-        files["wifi"] = [_cyw(w["file"]) for w in raw["wifi"]]
+    if op == "factory":                              # wifi blobs ship in the output dir,
+        files["wifi"] = [out_dir / w["file"] for w in raw["wifi"]]   # version-matched by build
     to_check = [files.get("firmware"), files.get("romfs"), *files.get("wifi", [])]
     for f in to_check:
         if f is not None and not f.exists():

@@ -306,7 +306,7 @@
     "ARDUINO_PORTENTA_H7": {
       "display_name": "Arduino Portenta",
       "arch": "PORTENTA H7 8192 SDRAM",
-      "flash": {"backend": "arduino", "usb": "2341:035b", "app": {"usb": "2341:005b", "pids": ["0x005b", "0x045b", "0x025b", "0x805b"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}]},
+      "flash": {"backend": "arduino", "usb": "2341:035b", "app": {"usb": "2341:005b", "pids": ["0x005b", "0x045b", "0x025b", "0x805b"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}]},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -337,7 +337,7 @@
     "ARDUINO_GIGA": {
       "display_name": "Arduino Giga",
       "arch": "GIGA H7 8192 SDRAM",
-      "flash": {"backend": "arduino", "usb": "2341:0366", "app": {"usb": "2341:0066", "pids": ["0x0066", "0x0466", "0x0266", "0x8066"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}]},
+      "flash": {"backend": "arduino", "usb": "2341:0366", "app": {"usb": "2341:0066", "pids": ["0x0066", "0x0466", "0x0266", "0x8066"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}]},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -368,7 +368,7 @@
     "ARDUINO_NICLA_VISION": {
       "display_name": "Arduino Nicla Vision",
       "arch": "NICLAV H7 1024",
-      "flash": {"backend": "arduino", "usb": "2341:035f", "app": {"usb": "2341:005f", "pids": ["0x005f", "0x045f", "0x055f", "0x025f", "0x805f"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}]},
+      "flash": {"backend": "arduino", "usb": "2341:035f", "app": {"usb": "2341:005f", "pids": ["0x005f", "0x045f", "0x055f", "0x025f", "0x805f"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}]},
       "mpy_args": [
         "-march=armv7emdp"
       ],

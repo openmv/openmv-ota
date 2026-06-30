@@ -407,3 +407,27 @@ def test_run_make_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", boom)
     with pytest.raises(BuildError, match="firmware build failed"):
         fw._run_make(tmp_path, ["TARGET=X"])
+
+
+def test_copy_wifi_blobs_for_arduino(tmp_path):
+    # an Arduino board's CYW4343 blobs are copied out of the firmware tree, version-matched
+    wdir = tmp_path / "repo" / "drivers" / "cyw4343" / "firmware"
+    wdir.mkdir(parents=True)
+    (wdir / "cyw4343_7_45_98_102.bin").write_bytes(b"WIFI")
+    (wdir / "cyw4343_btfw.bin").write_bytes(b"BT")
+    out = tmp_path / "out"
+    out.mkdir()
+    copied = fw._copy_wifi_blobs(tmp_path / "repo", "ARDUINO_PORTENTA_H7", out)
+    assert [p.name for p in copied] == ["cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"]
+    assert (out / "cyw4343_btfw.bin").read_bytes() == b"BT"
+
+
+def test_copy_wifi_blobs_noop_for_non_arduino(tmp_path):
+    assert fw._copy_wifi_blobs(tmp_path, "OPENMV4", tmp_path) == []
+
+
+def test_copy_wifi_blobs_missing_blob_raises(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(BuildError, match="not found in the firmware tree"):
+        fw._copy_wifi_blobs(tmp_path / "repo", "ARDUINO_PORTENTA_H7", out)
