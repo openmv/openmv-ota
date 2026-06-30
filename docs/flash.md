@@ -105,7 +105,9 @@ would run: dfu-util -w -d ,37c5:9204 -a 3 --reset -D build/OPENMV4-factory-romfs
 ```
 
 A board with no `flash` block, or a not-yet-supported backend, fails with a clear message
-rather than guessing.
+rather than guessing. A **retired** board (the Nano RP2040 Connect and Nano 33 BLE Sense —
+the firmware builds but crashes at boot, and they have no ROMFS for OTA) is refused by *every*
+tool — `flash`, `build`, and `project` — with the same "no longer supported" message.
 
 ## Arduino boards (Portenta H7, Giga, Nicla Vision)
 

@@ -80,6 +80,15 @@ def test_resolve_snapshot_unknown_board(make_firmware, make_sdk):
                               config_digest="d", now=NOW)
 
 
+def test_resolve_snapshot_retired_board(make_firmware, make_sdk):
+    # a retired board (pico/ble33) can't be added to a project at all
+    config = cfg.OtaConfig(name="p", vendor=None,
+                           boards=["ARDUINO_NANO_33_BLE_SENSE"], overrides={})
+    with pytest.raises(ProjectError, match="no longer supported"):
+        proj.resolve_snapshot(make_firmware(), config, sdk_home_override=make_sdk(),
+                              config_digest="d", now=NOW)
+
+
 # --- ensure_sdk -------------------------------------------------------------
 
 def test_ensure_sdk_ok(make_firmware, make_sdk):

@@ -54,3 +54,10 @@ def test_board_names_sorted():
     names = boards_mod.board_names()
     assert names == sorted(names)
     assert "OPENMV_N6" in names
+
+
+def test_unsupported_reason():
+    # retired boards carry a reason; supported and unknown boards return None
+    assert "crashes at boot" in boards_mod.unsupported_reason("ARDUINO_NANO_RP2040_CONNECT")
+    assert boards_mod.unsupported_reason("OPENMV4") is None
+    assert boards_mod.unsupported_reason("NOPE") is None        # unknown -> None, not a crash

@@ -1034,3 +1034,10 @@ def test_build_manifest_relative_default(make_project):
     [r] = build_mod.build_manifest(root, firmware=repo)     # no url_base -> relative
     body = parse_manifest(r.output.read_bytes()).body
     assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"
+
+
+def test_reject_unsupported_board():
+    # build refuses a retired board with its graceful message; supported boards pass
+    with pytest.raises(BuildError, match="no longer supported"):
+        build_mod._reject_unsupported("ARDUINO_NANO_RP2040_CONNECT")
+    build_mod._reject_unsupported("OPENMV4")           # supported -> no raise

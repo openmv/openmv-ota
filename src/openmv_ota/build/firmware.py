@@ -89,6 +89,9 @@ def build_firmware(
     names = _select_boards(p.targets, boards)
     if not names:
         raise BuildError("no matching boards in this project")
+    for name in names:                               # a retired board crashes at boot
+        from .romfs import _reject_unsupported
+        _reject_unsupported(name)
 
     repo = p.firmware_path
     out_dir.mkdir(parents=True, exist_ok=True)

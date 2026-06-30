@@ -280,7 +280,16 @@ def _select_targets(targets, boards):
     sel = list(targets)
     if boards:
         sel = [t for t in sel if t.name in boards]
+    for t in sel:
+        _reject_unsupported(t.name)
     return sel
+
+
+def _reject_unsupported(name: str) -> None:
+    """Refuse a retired board with its graceful message (the firmware crashes at boot)."""
+    reason = boards_mod.unsupported_reason(name)
+    if reason:
+        raise BuildError("board %r is no longer supported: %s" % (name, reason), exit_code=1)
 
 
 def _target_name(t) -> str:

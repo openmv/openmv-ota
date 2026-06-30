@@ -125,6 +125,9 @@ def resolve_snapshot(
             bcfg = boards_mod.get_board(name)
         except KeyError as e:
             raise ProjectError(str(e)) from None
+        if bcfg.unsupported:                         # a retired board -- can't be a target
+            raise ProjectError("board %r is no longer supported: %s"
+                               % (name, bcfg.unsupported), exit_code=1)
         # Every partition the board declares is a target -- there is nothing to
         # configure per partition: a coprocessor partition is slaved to the main one
         # (the main core owns it), so the tool always builds them all. A

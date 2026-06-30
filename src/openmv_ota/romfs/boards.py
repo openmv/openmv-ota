@@ -37,6 +37,8 @@ class BoardConfig:
     partitions: list[Partition]
     flash: dict[str, Any] | None = None  # how to flash the board (backend + usb + alt map);
                                          # None for boards without a configured flasher
+    unsupported: str | None = None       # if set, a reason the board is retired -- every
+                                         # tool refuses it gracefully with this message
 
     def partition(self, index: int | None = None) -> Partition:
         """Return the partition with the given ``index`` (default: the first).
@@ -83,6 +85,7 @@ def load_boards() -> dict[str, BoardConfig]:
             mpy_args=list(b.get("mpy_args", [])),
             partitions=parts,
             flash=b.get("flash"),
+            unsupported=b.get("unsupported"),
         )
     return boards
 
@@ -101,3 +104,13 @@ def get_board(name: str) -> BoardConfig:
 
 def board_names() -> list[str]:
     return sorted(load_boards())
+
+
+def unsupported_reason(name: str) -> str | None:
+    """Why ``name`` is retired (the graceful refusal message every tool shows), or ``None``
+    if it's supported. An unknown board returns ``None`` -- the caller's own unknown-board
+    handling applies there."""
+    try:
+        return get_board(name).unsupported
+    except KeyError:
+        return None

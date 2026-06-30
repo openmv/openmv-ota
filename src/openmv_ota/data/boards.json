@@ -399,7 +399,7 @@
     "ARDUINO_NANO_33_BLE_SENSE": {
       "display_name": "Arduino Nano33 BLE",
       "arch": "NANO33 M4",
-      "flash": {"backend": "unsupported", "reason": "the Nano 33 BLE Sense (nRF52840) uses a UF2 mass-storage bootloader, not the DFU/serial path this tool drives -- flash it with its Arduino/UF2 tooling"},
+      "unsupported": "the Nano 33 BLE Sense (nRF52840) is no longer supported by OpenMV -- the firmware builds but crashes at boot, and the board has no ROMFS for OTA",
       "mpy_args": [
         "-march=armv7emsp"
       ],
@@ -430,7 +430,7 @@
     "ARDUINO_NANO_RP2040_CONNECT": {
       "display_name": "Arduino Nano RP2040 Connect",
       "arch": "PICO M0",
-      "flash": {"backend": "unsupported", "reason": "the Nano RP2040 Connect (RP2040) uses a UF2 mass-storage bootloader, not the DFU/serial path this tool drives -- flash it with its Arduino/UF2 tooling"},
+      "unsupported": "the Nano RP2040 Connect (RP2040) is no longer supported by OpenMV -- the firmware builds but crashes at boot, and the board has no ROMFS for OTA",
       "mpy_args": [
         "-march=armv6m"
       ],

@@ -57,14 +57,13 @@ def flash_config(board: str) -> FlashConfig:
         cfg = get_board(board)
     except LookupError as e:
         raise FlashError(str(e)) from None
+    if cfg.unsupported:                              # a retired board -- refused everywhere
+        raise FlashError("board %r is no longer supported: %s" % (board, cfg.unsupported))
     raw = cfg.flash
     if not raw:
         raise FlashError("board %r has no flash configuration (not a flashable target yet)"
                          % board)
     backend = raw.get("backend")
-    if backend == "unsupported":                     # a board we deliberately can't flash
-        raise FlashError("board %r can't be flashed with this tool: %s"
-                         % (board, raw.get("reason", "unsupported target")))
     if backend not in SUPPORTED_BACKENDS:
         raise FlashError("board %r uses the %r flash backend, not supported yet (have: %s)"
                          % (board, backend, ", ".join(SUPPORTED_BACKENDS)))
