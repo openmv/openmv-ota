@@ -41,48 +41,14 @@ def test_factory_plan_writes_wifi_firmware_romfs_leave_last(tmp_path):
     assert sum(a.endswith(":leave") for a in addrs) == 1   # only the final write leaves DFU
 
 
-def test_touch_to_reset_pulses_matching_app_port(monkeypatch):
-    class _Port:
-        def __init__(self, vid, pid, device):
-            self.vid, self.pid, self.device = vid, pid, device
-    opened = []
-    slept = []
-    monkeypatch.setattr(arduino, "_comports", lambda: [
-        _Port(0x1234, 0x0001, "/dev/other"),                 # unrelated device
-        _Port(0x2341, 0x005b, "/dev/ttyACM0")])              # the Portenta in app mode
-    monkeypatch.setattr(arduino, "_open_1200", lambda port: opened.append(port))
-    monkeypatch.setattr(arduino.time, "sleep", lambda s: slept.append(s))
-    assert arduino.touch_to_reset(_raw()) == "/dev/ttyACM0"
-    assert opened == ["/dev/ttyACM0"] and slept == [arduino._TOUCH_SETTLE_S]
+def test_program_argv_serial_pins_the_device():
+    from pathlib import Path
+    argv = arduino.program_argv("dfu-util", "2341:035b", 0, "0x08040000", Path("fw.bin"),
+                                serial="AB12")
+    assert argv[4:6] == ["-S", "AB12"]
 
 
-def test_touch_to_reset_noop_when_not_in_app_mode(monkeypatch):
-    monkeypatch.setattr(arduino, "_comports", lambda: [])    # board already in the bootloader
-    monkeypatch.setattr(arduino, "_open_1200",
-                        lambda port: (_ for _ in ()).throw(AssertionError("should not open")))
-    assert arduino.touch_to_reset(_raw()) is None
-
-
-def test_touch_to_reset_noop_without_app_block():
-    assert arduino.touch_to_reset({"usb": "2341:035b"}) is None   # no app -> nothing to touch
-
-
-def test_comports_wraps_pyserial(monkeypatch):
-    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: ["p0"])
-    assert arduino._comports() == ["p0"]
-
-
-def test_open_1200_opens_at_1200_and_closes(monkeypatch):
-    import serial
-    made = {}
-
-    class _FakeSerial:
-        def __init__(self, port, baud):
-            made["port"], made["baud"], made["closed"] = port, baud, False
-
-        def close(self):
-            made["closed"] = True
-
-    monkeypatch.setattr(serial, "Serial", _FakeSerial)
-    arduino._open_1200("/dev/ttyACM0")
-    assert made == {"port": "/dev/ttyACM0", "baud": 1200, "closed": True}
+def test_plan_threads_serial():
+    files = {"firmware": __import__("pathlib").Path("fw.bin")}
+    steps = arduino.plan("firmware", _raw(), "dfu-util", files, serial="AB12")
+    assert "-S" in steps[0].argv and "AB12" in steps[0].argv

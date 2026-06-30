@@ -24,7 +24,8 @@ classifiers = [
 #   sbom/cve: cyclonedx, osv/nvd scanners
 dependencies = [
     "cryptography>=42",  # ECDSA keygen + signing for OTA trailers
-    "pyserial>=3.5",     # 1200-baud touch-to-reset for the Arduino DFU boards
+    "pyserial>=3.5",     # serial-port discovery + 1200-baud touch-to-reset (Arduino)
+    "mpremote>=1.20",    # reset OpenMV-protocol cameras into the bootloader (machine.bootloader)
 ]
 
 [project.optional-dependencies]

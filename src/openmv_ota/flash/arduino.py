@@ -8,19 +8,14 @@ OpenMV boards still applies. Writes erase-on-write, so no separate erase pass is
 A full provision (``flash factory``) also writes the shared **CYW4343** wifi/bt firmware
 blobs to QSPI -- prebuilt copies bundled in the package, so the user never supplies them.
 
-To flash, the board must be in the DFU bootloader. If it's in app mode we **touch-to-reset**
-it: open its serial port at 1200 baud, which the bootloader detects and reboots into DFU
-(then ``dfu-util -w`` waits for it). If no app-mode port is found the board is assumed to be
-in the bootloader already (the user double-tapped reset), and ``-w`` waits regardless.
+Getting the board into its DFU bootloader (the 1200-baud touch) is handled by ``flash.device``
+before these writes run.
 """
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from pathlib import Path
-
-_TOUCH_SETTLE_S = 2.0            # let the board re-enumerate in DFU after the 1200-baud touch
 
 
 @dataclass(frozen=True)
@@ -30,13 +25,18 @@ class ArduinoStep:
 
 
 def program_argv(dfu_util: str, usb: str, alt: int, addr: str, file: Path, *,
-                 leave: bool = False) -> list[str]:
-    """Argv to write ``file`` to ``addr`` on alt ``alt``; ``leave`` exits DFU after the write."""
+                 leave: bool = False, serial: str | None = None) -> list[str]:
+    """Argv to write ``file`` to ``addr`` on alt ``alt``; ``leave`` exits DFU after the write.
+    ``serial`` pins it to one specific board (``-S``) when several are in DFU at once."""
     target = (addr + ":leave") if leave else addr
-    return [dfu_util, "-w", "-d", ",%s" % usb, "-a", str(alt), "-s", target, "-D", str(file)]
+    argv = [dfu_util, "-w", "-d", ",%s" % usb]
+    if serial:
+        argv += ["-S", serial]
+    return argv + ["-a", str(alt), "-s", target, "-D", str(file)]
 
 
-def plan(op: str, raw: dict, dfu_util: str, files: dict) -> list[ArduinoStep]:
+def plan(op: str, raw: dict, dfu_util: str, files: dict, serial: str | None = None
+         ) -> list[ArduinoStep]:
     """The ordered writes for an Arduino ``op``. ``files`` holds the resolved paths:
     ``firmware``/``romfs`` as the op needs, plus ``wifi`` (a list) for a factory flash."""
     usb, fw, ro = raw["usb"], raw["firmware"], raw["romfs"]
@@ -55,36 +55,7 @@ def plan(op: str, raw: dict, dfu_util: str, files: dict) -> list[ArduinoStep]:
     last = len(writes) - 1
     for i, (alt, addr, path, label) in enumerate(writes):
         leave = i == last                             # only the final write leaves DFU
-        steps.append(ArduinoStep("%s -> %s%s" % (label, addr, ":leave" if leave else ""),
-                                 program_argv(dfu_util, usb, alt, addr, path, leave=leave)))
+        steps.append(ArduinoStep(
+            "%s -> %s%s" % (label, addr, ":leave" if leave else ""),
+            program_argv(dfu_util, usb, alt, addr, path, leave=leave, serial=serial)))
     return steps
-
-
-def _comports():
-    from serial.tools import list_ports
-    return list_ports.comports()
-
-
-def _open_1200(port: str) -> None:
-    import serial
-    s = serial.Serial(port, 1200)                     # the 1200-baud open is the reset signal
-    try:
-        s.dtr = True
-    finally:
-        s.close()
-
-
-def touch_to_reset(raw: dict) -> str | None:
-    """If the board is in app mode, 1200-baud touch its serial port to reboot it into DFU.
-    Returns the port touched, or ``None`` if it's not in app mode (already in the bootloader)."""
-    app = raw.get("app")
-    if not app:
-        return None
-    vid = int(app["usb"].split(":")[0], 16)
-    pids = {int(p, 16) for p in app.get("pids", [])}
-    for p in _comports():
-        if p.vid == vid and p.pid in pids:
-            _open_1200(p.device)
-            time.sleep(_TOUCH_SETTLE_S)
-            return p.device
-    return None

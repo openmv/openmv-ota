@@ -16,6 +16,19 @@ openmv-ota flash romfs    ./my-product -b OPENMV4
 openmv-ota flash factory  ./my-product -b OPENMV4
 ```
 
+## Getting into the bootloader
+
+You don't have to put the camera in its bootloader first — `flash` does it. It scans the
+serial ports for a board running its firmware (by the board's runtime USB VID:PID), resets it
+into the bootloader (**OpenMV** boards via `machine.bootloader()` over `mpremote`; **Arduino**
+boards via a 1200-baud touch), and captures the board's USB serial number so the flash is
+pinned to that exact device (`dfu-util -S`) when several are attached.
+
+If **several** of the same board are connected, pass `--serial <SN>` to pick one. If the board
+is **already** in its bootloader (no serial port present), it's flashed as-is — pass
+`--in-bootloader` to skip the detect/reset step entirely. `--mpremote` overrides how mpremote
+is invoked (default `python -m mpremote`).
+
 | command | flashes | from |
 | --- | --- | --- |
 | `flash firmware` | the firmware image | `<board>-firmware.bin` |
@@ -94,6 +107,9 @@ only after the last write.
 - `--dry-run` — print the `dfu-util` commands without running them. Useful to see the exact
   device id / alt / file before committing to a flash.
 - `--no-reset` — don't reset (reboot) the board after flashing (stay in the bootloader).
+- `--in-bootloader` — the board is already in its bootloader; skip the detect/reset step.
+- `--serial SN` — USB serial number of the camera to flash (when several are attached).
+- `--mpremote PATH` — how to run mpremote (default `python -m mpremote`).
 - `--dfu-util PATH` — use a specific `dfu-util` (default: the SDK's `bin/dfu-util` when
   `--sdk-home` is given, else one on `PATH`).
 - `--sdk-home DIR` — find `dfu-util` under `<DIR>/bin`.

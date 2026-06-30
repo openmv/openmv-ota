@@ -5,7 +5,7 @@
     "OPENMV2": {
       "display_name": "OpenMV Cam M4 (STM32F427)",
       "arch": "OMV2 F4 256 JPEG",
-      "flash": {"backend": "dfu", "usb": "37c5:9202", "alt": {"firmware": 2, "romfs": 3}},
+      "flash": {"backend": "dfu", "usb": "37c5:9202", "runtime": "37c5:1202", "alt": {"firmware": 2, "romfs": 3}},
       "mpy_args": [
         "-march=armv7emsp"
       ],
@@ -36,7 +36,7 @@
     "OPENMV3": {
       "display_name": "OpenMV Cam M7 (STM32F765/67)",
       "arch": "OMV3 F7 512",
-      "flash": {"backend": "dfu", "usb": "37c5:9203", "alt": {"firmware": 2, "romfs": 3}},
+      "flash": {"backend": "dfu", "usb": "37c5:9203", "runtime": "37c5:1203", "alt": {"firmware": 2, "romfs": 3}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -67,7 +67,7 @@
     "OPENMV4": {
       "display_name": "OpenMV Cam H7 (STM32H743)",
       "arch": "OMV4 H7 1024",
-      "flash": {"backend": "dfu", "usb": "37c5:9204", "alt": {"firmware": 2, "romfs": 3}},
+      "flash": {"backend": "dfu", "usb": "37c5:9204", "runtime": "37c5:1204", "alt": {"firmware": 2, "romfs": 3}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -98,7 +98,7 @@
     "OPENMV4P": {
       "display_name": "OpenMV Cam H7 Plus (STM32H743 w/ SDRAM)",
       "arch": "OMV4P H7 32768 SDRAM",
-      "flash": {"backend": "dfu", "usb": "37c5:924a", "alt": {"firmware": 2, "romfs": 4}},
+      "flash": {"backend": "dfu", "usb": "37c5:924a", "runtime": "37c5:124a", "alt": {"firmware": 2, "romfs": 4}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -129,7 +129,7 @@
     "OPENMVPT": {
       "display_name": "OpenMV Pure Thermal (STM32H743 w/ SDRAM)",
       "arch": "OPENMVPT 65536 SDRAM",
-      "flash": {"backend": "dfu", "usb": "37c5:9205", "alt": {"firmware": 2, "romfs": 4}},
+      "flash": {"backend": "dfu", "usb": "37c5:9205", "runtime": "37c5:1205", "alt": {"firmware": 2, "romfs": 4}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -160,7 +160,7 @@
     "OPENMV_RT1060": {
       "display_name": "OpenMV Cam RT1062 (MIMXRT1062)",
       "arch": "OMVRT1060 32768 SDRAM",
-      "flash": {"backend": "imx", "sdphost": {"usb": "0x1FC9,0x0135", "loader": "sdphost_flash_loader.bin", "loader_addr": "0x20001C00"}, "blhost": {"usb": "0x15A2,0x0073", "cfg_addr": "0x2000", "cfg_spi": "0xC0000008", "cfg_fcb": "0xF000000F", "cfg_type": "9", "fcb_addr": "0x60000000", "fcb_len": "0x1000", "sbl_addr": "0x60001000", "sbl_loader": "blhost_flash_loader.bin", "firmware_addr": "0x60040000", "romfs_addr": "0x60800000", "efuse_addr": "0x06", "efuse_data": "00000010"}},
+      "flash": {"backend": "imx", "runtime": "37c5:1060", "sdphost": {"usb": "0x1FC9,0x0135", "loader": "sdphost_flash_loader.bin", "loader_addr": "0x20001C00"}, "blhost": {"usb": "0x15A2,0x0073", "cfg_addr": "0x2000", "cfg_spi": "0xC0000008", "cfg_fcb": "0xF000000F", "cfg_type": "9", "fcb_addr": "0x60000000", "fcb_len": "0x1000", "sbl_addr": "0x60001000", "sbl_loader": "blhost_flash_loader.bin", "firmware_addr": "0x60040000", "romfs_addr": "0x60800000", "efuse_addr": "0x06", "efuse_data": "00000010"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -191,7 +191,7 @@
     "OPENMV_AE3": {
       "display_name": "OpenMV AE3",
       "arch": "OPENMV AE3",
-      "flash": {"backend": "dfu", "usb": "37c5:96e3", "alt": {"firmware": 1, "coprocessor": 2, "coprocessor_romfs": 3, "romfs": 6}, "file": {"firmware": "firmware-M55_HP.bin"}},
+      "flash": {"backend": "dfu", "usb": "37c5:96e3", "runtime": "37c5:16e3", "alt": {"firmware": 1, "coprocessor": 2, "coprocessor_romfs": 3, "romfs": 6}, "file": {"firmware": "firmware-M55_HP.bin"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -263,7 +263,7 @@
     "OPENMV_N6": {
       "display_name": "OpenMV N6 (STM32N657)",
       "arch": "OpenMV N6",
-      "flash": {"backend": "dfu", "usb": "37c5:9206", "alt": {"firmware": 1, "romfs": 3}},
+      "flash": {"backend": "dfu", "usb": "37c5:9206", "runtime": "37c5:1206", "alt": {"firmware": 1, "romfs": 3}},
       "mpy_args": [
         "-march=armv7emdp"
       ],

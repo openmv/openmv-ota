@@ -17,10 +17,14 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def download_argv(dfu_util: str, usb: str, alt: int, file: Path, *, reset: bool = True
-                  ) -> list[str]:
-    """Argv to flash ``file`` to DFU alt ``alt`` on the ``vid:pid`` device ``usb``."""
-    argv = [dfu_util, "-w", "-d", ",%s" % usb, "-a", str(alt)]
+def download_argv(dfu_util: str, usb: str, alt: int, file: Path, *, reset: bool = True,
+                  serial: str | None = None) -> list[str]:
+    """Argv to flash ``file`` to DFU alt ``alt`` on the ``vid:pid`` device ``usb``. ``serial``
+    pins it to one specific board (``-S``) when several are in DFU at once."""
+    argv = [dfu_util, "-w", "-d", ",%s" % usb]
+    if serial:
+        argv += ["-S", serial]
+    argv += ["-a", str(alt)]
     if reset:
         argv.append("--reset")
     argv += ["-D", str(file)]

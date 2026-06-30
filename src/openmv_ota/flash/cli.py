@@ -28,9 +28,12 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    "(dfu-util in bin/, sdphost/blhost in python/bin/)")
     p.add_argument("--no-reset", dest="reset", action="store_false",
                    help="don't reset (reboot) the board after flashing (dfu boards)")
-    p.add_argument("--no-touch", dest="touch", action="store_false",
-                   help="don't 1200-baud touch-to-reset into the bootloader (Arduino boards; "
-                        "use if you've already double-tapped reset)")
+    p.add_argument("--in-bootloader", dest="enter_bootloader", action="store_false",
+                   help="the board is already in its bootloader; skip detecting + resetting "
+                        "the running camera")
+    p.add_argument("--serial", metavar="SN",
+                   help="USB serial number of the camera to flash (when several are attached)")
+    p.add_argument("--mpremote", help="path to mpremote (default: python -m mpremote)")
     p.add_argument("--dry-run", action="store_true",
                    help="print the dfu-util commands without running them")
 
@@ -71,7 +74,8 @@ def cmd_firmware(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_firmware(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), reset=args.reset, touch=args.touch,
+            sdk_home=_sdk_home(args), reset=args.reset, enter_bootloader=args.enter_bootloader,
+            serial=args.serial, mpremote=args.mpremote,
             dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -83,7 +87,8 @@ def cmd_romfs(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_romfs(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), reset=args.reset, touch=args.touch, dry_run=args.dry_run)
+            sdk_home=_sdk_home(args), reset=args.reset, enter_bootloader=args.enter_bootloader,
+            serial=args.serial, mpremote=args.mpremote, dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -94,7 +99,8 @@ def cmd_factory(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_factory(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), reset=args.reset, touch=args.touch,
+            sdk_home=_sdk_home(args), reset=args.reset, enter_bootloader=args.enter_bootloader,
+            serial=args.serial, mpremote=args.mpremote,
             dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)

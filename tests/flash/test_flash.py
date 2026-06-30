@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from openmv_ota.flash import flash as fl
 from openmv_ota.flash.errors import FlashError
+from openmv_ota.flash.targets import flash_config
 
 
 @pytest.fixture
@@ -236,46 +239,36 @@ def test_resolve_spsdk_dry_run_tolerates_missing(monkeypatch):
 
 @pytest.fixture
 def arduino_project(tmp_path, monkeypatch):
-    """An Arduino project; runner/dfu-util/touch stubbed. The wifi blobs sit in the output
-    dir (build emits them there, version-matched), alongside the firmware/romfs artifacts."""
+    """An Arduino project; runner/dfu-util stubbed, no camera attached (conftest). The wifi
+    blobs sit in the output dir (build emits them there), with the firmware/romfs artifacts."""
     (tmp_path / "build").mkdir()
     ran: list[list[str]] = []
-    touched: list = []
     monkeypatch.setattr(fl.runner, "run", lambda argv: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
-    monkeypatch.setattr(fl.arduino, "touch_to_reset", lambda raw: touched.append(raw["usb"]))
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
     for n in ("ARDUINO_PORTENTA_H7-firmware.bin", "ARDUINO_PORTENTA_H7-romfs.img",
               "cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):
         (tmp_path / "build" / n).write_bytes(b"x")
-    return tmp_path, ran, touched
+    return tmp_path, ran
 
 
-def test_arduino_firmware_touches_then_flashes(arduino_project):
-    root, ran, touched = arduino_project
+def test_arduino_firmware(arduino_project):
+    root, ran = arduino_project
     fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7")
-    assert touched == ["2341:035b"]                       # touched into the bootloader first
     assert len(ran) == 1 and ran[0][7] == "0x08040000:leave"
 
 
 def test_arduino_factory_writes_wifi_from_output_dir(arduino_project):
-    root, ran, _touched = arduino_project
+    root, ran = arduino_project
     fl.flash_factory(str(root), board="ARDUINO_PORTENTA_H7")
     assert [a[7] for a in ran] == ["0x90F00000", "0x90FC0000", "0x08040000", "0x90B00000:leave"]
     assert ran[0][-1] == str(root / "build/cyw4343_7_45_98_102.bin")   # from the build outputs
 
 
-def test_arduino_no_touch_skips_the_reset(arduino_project):
-    root, ran, touched = arduino_project
-    fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7", touch=False)
-    assert touched == [] and len(ran) == 1
-
-
-def test_arduino_dry_run_neither_touches_nor_runs(arduino_project):
-    root, ran, touched = arduino_project
+def test_arduino_dry_run_runs_nothing(arduino_project):
+    root, ran = arduino_project
     steps = fl.flash_romfs(str(root), board="ARDUINO_PORTENTA_H7", dry_run=True)
-    assert ran == [] and touched == []
-    assert steps[0].argv[7] == "0x90B00000:leave"
+    assert ran == [] and steps[0].argv[7] == "0x90B00000:leave"
 
 
 def test_arduino_missing_artifact_errors(tmp_path, monkeypatch):
@@ -283,3 +276,54 @@ def test_arduino_missing_artifact_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: "DFU")
     with pytest.raises(FlashError, match="ARDUINO_PORTENTA_H7-firmware.bin"):
         fl.flash_firmware(str(tmp_path), board="ARDUINO_PORTENTA_H7", dry_run=True)
+
+
+# --- device prepare (detect running camera, reset into bootloader, pin -S serial) ---------
+
+class _Port:
+    def __init__(self, vid, pid, dev, serial=None):
+        self.vid, self.pid, self.device, self.serial_number = vid, pid, dev, serial
+
+
+def _running(monkeypatch, *cams):
+    monkeypatch.setattr(fl.device, "_comports", lambda: list(cams))
+
+
+def test_mpremote_default_and_override():
+    assert fl._mpremote(None)[1:] == ["-m", "mpremote"]
+    assert fl._mpremote("/x/mpremote") == ["/x/mpremote"]
+
+
+def test_prepare_resets_running_camera_and_returns_serial(monkeypatch):
+    raw = flash_config("OPENMV4").raw
+    _running(monkeypatch, _Port(0x37C5, 0x1204, "/dev/ttyACM0", "SN9"))
+    reset = []
+    monkeypatch.setattr(fl.device, "reset", lambda r, cam, **k: reset.append(cam.serial))
+    serial = fl._prepare(raw, serial=None, enter_bootloader=True, mpremote=None, dry_run=False)
+    assert serial == "SN9" and reset == ["SN9"]
+
+
+def test_prepare_is_a_noop_in_bootloader_or_dry_run(monkeypatch):
+    raw = flash_config("OPENMV4").raw
+    monkeypatch.setattr(fl.device, "reset", lambda *a, **k: pytest.fail("should not reset"))
+    assert fl._prepare(raw, serial="X", enter_bootloader=False, mpremote=None,
+                       dry_run=False) == "X"           # --in-bootloader
+    assert fl._prepare(raw, serial="X", enter_bootloader=True, mpremote=None,
+                       dry_run=True) == "X"             # dry-run
+
+
+def test_prepare_none_when_no_running_camera(monkeypatch):
+    raw = flash_config("OPENMV4").raw                   # conftest: no cameras
+    monkeypatch.setattr(fl.device, "reset", lambda *a, **k: pytest.fail("nothing to reset"))
+    assert fl._prepare(raw, serial=None, enter_bootloader=True, mpremote=None,
+                       dry_run=False) is None
+
+
+def test_flash_resets_then_pins_serial_end_to_end(project, monkeypatch):
+    # a running OPENMV4: mpremote reset runs, then dfu-util is pinned with -S <serial>
+    root, ran, _rec, artifact = project
+    artifact("OPENMV4-firmware.bin")
+    _running(monkeypatch, _Port(0x37C5, 0x1204, "/dev/ttyACM0", "SN9"))
+    fl.flash_firmware(str(root), board="OPENMV4")
+    assert ran[0] == [sys.executable, "-m", "mpremote", "connect", "/dev/ttyACM0", "bootloader"]
+    assert ran[1][4:6] == ["-S", "SN9"]                 # the flash is pinned to that board

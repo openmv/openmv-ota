@@ -14,19 +14,39 @@ factory`` the manufacturing program. The backend is chosen by the board's ``flas
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from openmv_ota.project import history
 
-from . import arduino, dfu, imx, runner, tools
+from . import arduino, device, dfu, imx, runner, tools
 from .errors import FlashError
 from .targets import FlashConfig, flash_config
 
 _PROBE_ATTEMPTS = 10             # poll get-property up to this many times after the jump
 _PROBE_SETTLE_S = 2.0            # let the flashloader enumerate before the first poll
 _PROBE_DELAY_S = 1.0            # between polls
+
+
+def _mpremote(override: str | None) -> list[str]:
+    """The argv prefix to run mpremote (a console script, also `python -m mpremote`)."""
+    return [override] if override else [sys.executable, "-m", "mpremote"]
+
+
+def _prepare(raw: dict, *, serial: str | None, enter_bootloader: bool, mpremote: str | None,
+             dry_run: bool) -> str | None:
+    """Get the running camera into its bootloader and return its USB serial (to pin dfu-util
+    with ``-S`` when several boards are attached). A no-op for ``--dry-run`` or
+    ``--in-bootloader``, or when no running camera is found (it's already in the bootloader)."""
+    if dry_run or not enter_bootloader:
+        return serial
+    cam = device.select(raw, serial)             # raises if several match without --serial
+    if cam is None:
+        return serial                            # already in the bootloader / not attached
+    device.reset(raw, cam, mpremote=_mpremote(mpremote))
+    return cam.serial
 
 
 @dataclass(frozen=True)
@@ -53,7 +73,7 @@ def _resolve_dfu_util(dfu_util: str | None, sdk_home: Path | None, dry_run: bool
 
 
 def _dfu_steps(cfg: FlashConfig, board: str, spec: list[tuple[str, str]], tool: str,
-               out_dir: Path, reset: bool, dry_run: bool) -> list[FlashStep]:
+               out_dir: Path, reset: bool, serial: str | None, dry_run: bool) -> list[FlashStep]:
     resolved = []
     for artifact, suffix in spec:
         alt = cfg.alt_of(artifact)                   # the clearest error (unsupported) first
@@ -64,7 +84,7 @@ def _dfu_steps(cfg: FlashConfig, board: str, spec: list[tuple[str, str]], tool: 
     steps: list[FlashStep] = []
     last = len(resolved) - 1
     for i, (artifact, f, alt) in enumerate(resolved):
-        argv = dfu.download_argv(tool, cfg.usb, alt, f, reset=reset and i == last)
+        argv = dfu.download_argv(tool, cfg.usb, alt, f, reset=reset and i == last, serial=serial)
         if not dry_run:
             runner.run(argv)
         steps.append(FlashStep(artifact, f, alt, argv))
@@ -73,9 +93,10 @@ def _dfu_steps(cfg: FlashConfig, board: str, spec: list[tuple[str, str]], tool: 
 
 def _dfu_flash(project: str, board: str, cfg: FlashConfig, spec: list[tuple[str, str]],
                action: str, *, output: str | None, dfu_util: str | None, sdk_home: Path | None,
-               reset: bool, dry_run: bool) -> list[FlashStep]:
+               reset: bool, serial: str | None, dry_run: bool) -> list[FlashStep]:
     tool = _resolve_dfu_util(dfu_util, sdk_home, dry_run)
-    steps = _dfu_steps(cfg, board, spec, tool, _output_dir(project, output), reset, dry_run)
+    steps = _dfu_steps(cfg, board, spec, tool, _output_dir(project, output), reset, serial,
+                       dry_run)
     if not dry_run:
         history.record(project, action, board=board,
                        files=[{"file": s.file.name, "alt": s.alt} for s in steps])
@@ -173,14 +194,12 @@ def _arduino_files(board: str, op: str, raw: dict, out_dir: Path) -> dict:
 
 def _arduino_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str, *,
                    output: str | None, dfu_util: str | None, sdk_home: Path | None,
-                   touch: bool, dry_run: bool) -> list[arduino.ArduinoStep]:
+                   serial: str | None, dry_run: bool) -> list[arduino.ArduinoStep]:
     out_dir = _output_dir(project, output)
     tool = _resolve_dfu_util(dfu_util, sdk_home, dry_run)
     files = _arduino_files(board, op, cfg.raw, out_dir)
-    steps = arduino.plan(op, cfg.raw, tool, files)
+    steps = arduino.plan(op, cfg.raw, tool, files, serial=serial)
     if not dry_run:
-        if touch:
-            arduino.touch_to_reset(cfg.raw)          # reboot into DFU if it's in app mode
         for s in steps:
             runner.run(s.argv)
         history.record(project, action, board=board, steps=[s.label for s in steps])
@@ -191,50 +210,62 @@ def _arduino_flash(project: str, op: str, board: str, cfg: FlashConfig, action: 
 
 def flash_firmware(project: str = ".", *, board: str, output: str | None = None,
                    dfu_util: str | None = None, sdk_home: Path | None = None,
-                   reset: bool = True, touch: bool = True, dry_run: bool = False):
+                   reset: bool = True, enter_bootloader: bool = True, serial: str | None = None,
+                   mpremote: str | None = None, dry_run: bool = False):
     cfg = flash_config(board)
+    serial = _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader,
+                      mpremote=mpremote, dry_run=dry_run)
     if cfg.backend == "imx":
         return _imx_flash(project, "firmware", board, cfg, "flash-firmware", output=output,
                           sdk_home=sdk_home, dry_run=dry_run)
     if cfg.backend == "arduino":
         return _arduino_flash(project, "firmware", board, cfg, "flash-firmware", output=output,
-                              dfu_util=dfu_util, sdk_home=sdk_home, touch=touch, dry_run=dry_run)
+                              dfu_util=dfu_util, sdk_home=sdk_home, serial=serial, dry_run=dry_run)
     spec = [("firmware", "firmware.bin")]
     if cfg.has("coprocessor"):                   # AE3: the HE core ships with the firmware
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
     return _dfu_flash(project, board, cfg, spec, "flash-firmware", output=output,
-                      dfu_util=dfu_util, sdk_home=sdk_home, reset=reset, dry_run=dry_run)
+                      dfu_util=dfu_util, sdk_home=sdk_home, reset=reset, serial=serial,
+                      dry_run=dry_run)
 
 
 def flash_romfs(project: str = ".", *, board: str, output: str | None = None,
                 dfu_util: str | None = None, sdk_home: Path | None = None,
-                reset: bool = True, touch: bool = True, dry_run: bool = False):
+                reset: bool = True, enter_bootloader: bool = True, serial: str | None = None,
+                mpremote: str | None = None, dry_run: bool = False):
     cfg = flash_config(board)
+    serial = _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader,
+                      mpremote=mpremote, dry_run=dry_run)
     if cfg.backend == "imx":
         return _imx_flash(project, "romfs", board, cfg, "flash-romfs", output=output,
                           sdk_home=sdk_home, dry_run=dry_run)
     if cfg.backend == "arduino":
         return _arduino_flash(project, "romfs", board, cfg, "flash-romfs", output=output,
-                              dfu_util=dfu_util, sdk_home=sdk_home, touch=touch, dry_run=dry_run)
+                              dfu_util=dfu_util, sdk_home=sdk_home, serial=serial, dry_run=dry_run)
     spec = [("romfs", "romfs.img")]
     return _dfu_flash(project, board, cfg, spec, "flash-romfs", output=output,
-                      dfu_util=dfu_util, sdk_home=sdk_home, reset=reset, dry_run=dry_run)
+                      dfu_util=dfu_util, sdk_home=sdk_home, reset=reset, serial=serial,
+                      dry_run=dry_run)
 
 
 def flash_factory(project: str = ".", *, board: str, output: str | None = None,
                   dfu_util: str | None = None, sdk_home: Path | None = None,
-                  reset: bool = True, touch: bool = True, dry_run: bool = False):
+                  reset: bool = True, enter_bootloader: bool = True, serial: str | None = None,
+                  mpremote: str | None = None, dry_run: bool = False):
     cfg = flash_config(board)
+    serial = _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader,
+                      mpremote=mpremote, dry_run=dry_run)
     if cfg.backend == "imx":
         return _imx_flash(project, "factory", board, cfg, "flash-factory", output=output,
                           sdk_home=sdk_home, dry_run=dry_run)
     if cfg.backend == "arduino":
         return _arduino_flash(project, "factory", board, cfg, "flash-factory", output=output,
-                              dfu_util=dfu_util, sdk_home=sdk_home, touch=touch, dry_run=dry_run)
+                              dfu_util=dfu_util, sdk_home=sdk_home, serial=serial, dry_run=dry_run)
     spec = [("firmware", "firmware.bin")]
     if cfg.has("coprocessor"):                   # AE3: HE core + its romfs, with the main image
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
         spec.append(("coprocessor_romfs", "coprocessor-romfs.img"))
     spec.append(("romfs", "factory-romfs.img"))
     return _dfu_flash(project, board, cfg, spec, "flash-factory", output=output,
-                      dfu_util=dfu_util, sdk_home=sdk_home, reset=reset, dry_run=dry_run)
+                      dfu_util=dfu_util, sdk_home=sdk_home, reset=reset, serial=serial,
+                      dry_run=dry_run)

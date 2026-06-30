@@ -114,13 +114,13 @@ def test_arduino_factory_dry_run(proj, capsys):
     assert "0x90B00000:leave" in out
 
 
-def test_arduino_firmware_no_touch(proj, monkeypatch, capsys):
+def test_flash_in_bootloader_skips_reset(proj, monkeypatch, capsys):
     root, ran, artifact = proj
-    touched = []
-    monkeypatch.setattr(fl.arduino, "touch_to_reset", lambda raw: touched.append(1))
+    monkeypatch.setattr(fl.device, "reset", lambda *a, **k: pytest.fail("should not reset"))
     artifact("ARDUINO_PORTENTA_H7-firmware.bin")
-    assert main(["flash", "firmware", str(root), "-b", "ARDUINO_PORTENTA_H7", "--no-touch"]) == 0
-    assert touched == [] and len(ran) == 1
+    assert main(["flash", "firmware", str(root), "-b", "ARDUINO_PORTENTA_H7",
+                 "--in-bootloader"]) == 0
+    assert len(ran) == 1
     assert "firmware -> 0x08040000:leave (ARDUINO_PORTENTA_H7)" in capsys.readouterr().out
 
 
