@@ -112,6 +112,14 @@ def test_boards_list_and_detail(capsys):
     assert "tflite=32" in detail
 
 
+def test_boards_listing_flags_retired(capsys):
+    assert main(["romfs", "boards"]) == 0
+    out = capsys.readouterr().out
+    assert "ARDUINO_NANO_33_BLE_SENSE" in out and "(retired" in out
+    assert main(["romfs", "boards", "ARDUINO_NANO_RP2040_CONNECT"]) == 0
+    assert "RETIRED:" in capsys.readouterr().out
+
+
 def test_boards_detail_multipartition_shows_roles(capsys):
     # A dual-core board lists both partitions with their role (main vs the slaved
     # coprocessor), so the low-level tool reflects the same layout the project does.

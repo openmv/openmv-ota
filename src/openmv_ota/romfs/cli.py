@@ -400,6 +400,8 @@ def cmd_boards(args: argparse.Namespace) -> int:
             print("error: %s" % e, file=sys.stderr)
             return 2
         print("%s - %s" % (b.name, b.display_name))
+        if b.unsupported:
+            print("  RETIRED:  %s" % b.unsupported)
         print("  arch:     %s" % b.arch)
         if b.mpy_args:
             print("  mpy_args: %s   (used by `build romfs` when compiling .py)" % " ".join(b.mpy_args))
@@ -417,5 +419,6 @@ def cmd_boards(args: argparse.Namespace) -> int:
     for name in sorted(boards):
         b = boards[name]
         sizes = "/".join(_human(p.size) for p in b.partitions)
-        print("%-*s  %-34s  %s" % (width, name, b.display_name, sizes))
+        tail = "  (retired -- no longer supported)" if b.unsupported else ""
+        print("%-*s  %-34s  %s%s" % (width, name, b.display_name, sizes, tail))
     return 0
