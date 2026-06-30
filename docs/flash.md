@@ -58,5 +58,29 @@ would run: dfu-util -w -d ,37c5:9204 -a 2 -D build/OPENMV4-firmware.bin
 would run: dfu-util -w -d ,37c5:9204 -a 3 --reset -D build/OPENMV4-factory-romfs.img
 ```
 
-A board with no `flash` block (RT1060 today) or a not-yet-supported backend fails with a
-clear message rather than guessing.
+A board with no `flash` block, or a not-yet-supported backend, fails with a clear message
+rather than guessing.
+
+## i.MX RT1060
+
+The RT1062 has no resident DFU bootloader — it flashes through the ROM's serial-download
+protocol with NXP's `sdphost` + `blhost` (the SDK's spsdk tools, found under `--sdk-home`'s
+`python/bin`). The same `flash firmware` / `flash romfs` / `flash factory` verbs apply; the
+backend just runs a longer sequence: `sdphost` loads a RAM flashloader and jumps to it, then
+— after the flashloader re-enumerates (the tool settles and polls `blhost get-property` until
+it answers) — `blhost` configures the FlexSPI NOR and writes each region. `flash factory`
+does the full provision (flash-config block, secure bootloader, firmware, romfs, and the boot
+e-fuse); `flash firmware`/`flash romfs` rewrite just that one region.
+
+The two flashloader binaries (`sdphost_flash_loader.bin`, `blhost_flash_loader.bin`) are
+prebuilt artifacts shipped with the firmware/IDE — they are **not** produced by `build`. Put
+them in the artifact dir, or point `--flashloader-dir` at them.
+
+```
+$ openmv-ota flash factory ./my-product -b OPENMV_RT1060 --flashloader-dir ./loaders --dry-run
+would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 loaders/sdphost_flash_loader.bin
+would run: sdphost -u 0x1FC9,0x0135 -- jump-address 0x20001C00
+would run: blhost -u 0x15A2,0x0073 -- get-property 1
+...
+would run: blhost -u 0x15A2,0x0073 -- reset
+```

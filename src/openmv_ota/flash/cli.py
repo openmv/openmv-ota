@@ -24,9 +24,12 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    help="the board to flash (the connected device)")
     p.add_argument("-o", "--output", help="artifact dir (default: <project>/build)")
     p.add_argument("--dfu-util", help="path to dfu-util (default: SDK's, else PATH)")
-    p.add_argument("--sdk-home", help="SDK home to find dfu-util under (<home>/bin/dfu-util)")
+    p.add_argument("--sdk-home", help="SDK home to find the flash tools under "
+                   "(dfu-util in bin/, sdphost/blhost in python/bin/)")
+    p.add_argument("--flashloader-dir", help="dir holding the i.MX flashloader .bin files "
+                   "(RT1060; default: the artifact dir)")
     p.add_argument("--no-reset", dest="reset", action="store_false",
-                   help="don't reset (reboot) the board after flashing")
+                   help="don't reset (reboot) the board after flashing (dfu boards)")
     p.add_argument("--dry-run", action="store_true",
                    help="print the dfu-util commands without running them")
 
@@ -60,8 +63,10 @@ def _report(args: argparse.Namespace, steps) -> int:
     for s in steps:
         if args.dry_run:
             print("would run: %s" % " ".join(s.argv))
-        else:
+        elif getattr(s, "alt", None) is not None:          # a dfu step
             print("Flashed %s -> alt %d (%s)" % (s.file.name, s.alt, args.board))
+        else:                                              # an imx step
+            print("%s (%s)" % (s.label, args.board))
     return 0
 
 
@@ -69,7 +74,8 @@ def cmd_firmware(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_firmware(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), coprocessor=args.coprocessor, reset=args.reset,
+            sdk_home=_sdk_home(args), flashloader_dir=args.flashloader_dir,
+            coprocessor=args.coprocessor, reset=args.reset,
             dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -81,7 +87,8 @@ def cmd_romfs(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_romfs(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), reset=args.reset, dry_run=args.dry_run)
+            sdk_home=_sdk_home(args), flashloader_dir=args.flashloader_dir,
+            reset=args.reset, dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -92,7 +99,8 @@ def cmd_factory(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_factory(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), coprocessor=args.coprocessor, reset=args.reset,
+            sdk_home=_sdk_home(args), flashloader_dir=args.flashloader_dir,
+            coprocessor=args.coprocessor, reset=args.reset,
             dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)

@@ -1,7 +1,8 @@
 """Locate the host flashing binaries.
 
-The SDK bundles a known-good ``dfu-util`` (``<sdk_home>/bin/dfu-util``); prefer it when a
-SDK home is known, fall back to one on ``PATH``, and let ``--dfu-util`` override outright.
+The SDK bundles a known-good ``dfu-util`` (``<sdk_home>/bin/dfu-util``) and the spsdk
+``sdphost``/``blhost`` (``<sdk_home>/python/bin/``); prefer the SDK's when a home is known,
+fall back to ``PATH``, and let an explicit override win outright.
 """
 
 from __future__ import annotations
@@ -25,3 +26,16 @@ def find_dfu_util(override: str | None = None, sdk_home: Path | None = None) -> 
         return found
     raise FlashError("dfu-util not found -- install it, put the SDK's on PATH, "
                      "or pass --dfu-util <path>")
+
+
+def find_spsdk(name: str, sdk_home: Path | None = None) -> str:
+    """Resolve an spsdk tool (``sdphost``/``blhost``): ``<sdk_home>/python/bin/<name>`` > PATH."""
+    if sdk_home is not None:
+        cand = Path(sdk_home) / "python" / "bin" / name
+        if cand.exists():
+            return str(cand)
+    found = shutil.which(name)
+    if found:
+        return found
+    raise FlashError("%s not found -- it ships in the SDK's python/bin (spsdk); pass "
+                     "--sdk-home or put it on PATH" % name)

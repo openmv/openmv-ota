@@ -160,6 +160,7 @@
     "OPENMV_RT1060": {
       "display_name": "OpenMV Cam RT1062 (MIMXRT1062)",
       "arch": "OMVRT1060 32768 SDRAM",
+      "flash": {"backend": "imx", "sdphost": {"usb": "0x1FC9,0x0135", "loader": "sdphost_flash_loader.bin", "loader_addr": "0x20001C00"}, "blhost": {"usb": "0x15A2,0x0073", "cfg_addr": "0x2000", "cfg_spi": "0xC0000008", "cfg_fcb": "0xF000000F", "cfg_type": "9", "fcb_addr": "0x60000000", "fcb_len": "0x1000", "sbl_addr": "0x60001000", "sbl_loader": "blhost_flash_loader.bin", "firmware_addr": "0x60040000", "romfs_addr": "0x60800000", "efuse_addr": "0x06", "efuse_data": "00000010"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],

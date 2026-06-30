@@ -1,9 +1,10 @@
 """Resolve a board to its flash backend and per-artifact target.
 
-The ``flash`` block in ``boards.json`` is the source of truth: ``backend`` (which host tool),
-``usb`` (the ``vid:pid`` for dfu), ``alt`` (a map of logical artifact -> DFU alt-setting), and
-an optional ``file`` map overriding an artifact's default filename (the AE3's firmware is the
-per-core ``firmware-M55_HP.bin``, not a plain ``firmware.bin``).
+The ``flash`` block in ``boards.json`` is the source of truth. For ``dfu`` it carries ``usb``
+(the ``vid:pid``), ``alt`` (logical artifact -> DFU alt-setting), and an optional ``file`` map
+overriding an artifact's filename (the AE3's per-core ``firmware-M55_HP.bin``). For ``imx`` it
+carries the ``sdphost``/``blhost`` sub-blocks (device ids, addresses, flashloader names) that
+``flash.imx`` reads directly off ``raw``.
 """
 
 from __future__ import annotations
@@ -14,30 +15,34 @@ from openmv_ota.romfs.boards import get_board
 
 from .errors import FlashError
 
-SUPPORTED_BACKENDS = ("dfu",)
+SUPPORTED_BACKENDS = ("dfu", "imx")
 
 
 @dataclass(frozen=True)
 class FlashConfig:
     board: str
     backend: str
-    usb: str
-    alt: dict[str, int]
-    files: dict[str, str]
+    raw: dict
+
+    @property
+    def usb(self) -> str:
+        """The dfu ``vid:pid``."""
+        return self.raw["usb"]
 
     def alt_of(self, artifact: str) -> int:
         """The DFU alt-setting for a logical artifact (``firmware``/``romfs``/``coprocessor``)."""
+        alt = self.raw.get("alt", {})
         try:
-            return self.alt[artifact]
+            return int(alt[artifact])
         except KeyError:
             raise FlashError(
                 "board %r has no %r flash target (configured: %s)"
-                % (self.board, artifact, ", ".join(sorted(self.alt)) or "none")
+                % (self.board, artifact, ", ".join(sorted(alt)) or "none")
             ) from None
 
     def filename(self, artifact: str, default: str) -> str:
         """The artifact's filename suffix (after ``<board>-``), board override or ``default``."""
-        return self.files.get(artifact, default)
+        return self.raw.get("file", {}).get(artifact, default)
 
 
 def flash_config(board: str) -> FlashConfig:
@@ -54,6 +59,4 @@ def flash_config(board: str) -> FlashConfig:
     if backend not in SUPPORTED_BACKENDS:
         raise FlashError("board %r uses the %r flash backend, not supported yet (have: %s)"
                          % (board, backend, ", ".join(SUPPORTED_BACKENDS)))
-    return FlashConfig(board=board, backend=backend, usb=raw["usb"],
-                       alt={k: int(v) for k, v in raw.get("alt", {}).items()},
-                       files=dict(raw.get("file", {})))
+    return FlashConfig(board=board, backend=backend, raw=raw)

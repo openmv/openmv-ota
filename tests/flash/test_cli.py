@@ -62,7 +62,7 @@ def test_romfs_error_returns_exit_code(proj, capsys):
 
 def test_unsupported_board_error(proj, capsys):
     root, _ran, _artifact = proj
-    assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060"]) == 2
+    assert main(["flash", "firmware", str(root), "-b", "MPS2_AN500"]) == 2
     assert "no flash configuration" in capsys.readouterr().err
 
 
@@ -82,6 +82,28 @@ def test_factory_coprocessor_flag(proj, capsys):
     # --coprocessor needs a coprocessor alt OPENMV4 doesn't have -> clean error, exit 2
     assert main(["flash", "factory", str(root), "-b", "OPENMV4", "--coprocessor"]) == 2
     assert "no 'coprocessor' flash target" in capsys.readouterr().err
+
+
+def test_imx_rt1060_dry_run(proj, monkeypatch, capsys):
+    root, ran, artifact = proj
+    monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
+    for n in ("OPENMV_RT1060-firmware.bin", "sdphost_flash_loader.bin"):
+        artifact(n)
+    assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "would run: sdphost -u 0x1FC9,0x0135 -- write-file" in out
+    assert "would run: blhost -u 0x15A2,0x0073 -- reset" in out
+
+
+def test_imx_rt1060_reports_step_labels(proj, monkeypatch, capsys):
+    root, ran, artifact = proj
+    monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
+    monkeypatch.setattr(fl.time, "sleep", lambda _s: None)
+    for n in ("OPENMV_RT1060-firmware.bin", "sdphost_flash_loader.bin"):
+        artifact(n)
+    assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060"]) == 0
+    out = capsys.readouterr().out
+    assert "reset (OPENMV_RT1060)" in out and "load flashloader" in out
 
 
 def test_ae3_factory_coprocessor_ok(proj, capsys):

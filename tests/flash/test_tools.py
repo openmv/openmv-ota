@@ -35,3 +35,22 @@ def test_not_found_raises(monkeypatch):
     monkeypatch.setattr(tools.shutil, "which", lambda _n: None)
     with pytest.raises(FlashError, match="dfu-util not found"):
         tools.find_dfu_util()
+
+
+def test_find_spsdk_prefers_sdk_python_bin(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools.shutil, "which", lambda _n: "/usr/bin/blhost")
+    binp = tmp_path / "python" / "bin"
+    binp.mkdir(parents=True)
+    (binp / "blhost").write_text("")
+    assert tools.find_spsdk("blhost", sdk_home=tmp_path) == str(binp / "blhost")
+
+
+def test_find_spsdk_falls_back_to_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools.shutil, "which", lambda _n: "/usr/bin/sdphost")
+    assert tools.find_spsdk("sdphost", sdk_home=tmp_path) == "/usr/bin/sdphost"
+
+
+def test_find_spsdk_not_found_raises(monkeypatch):
+    monkeypatch.setattr(tools.shutil, "which", lambda _n: None)
+    with pytest.raises(FlashError, match="blhost not found"):
+        tools.find_spsdk("blhost")

@@ -44,9 +44,9 @@ def test_unknown_board_raises():
 
 
 def test_board_without_flash_block_raises():
-    # RT1060 has no flash block yet (mimxrt backend not built).
+    # a QEMU board has no flash block -- not a physical flashable target.
     with pytest.raises(FlashError, match="no flash configuration"):
-        targets.flash_config("OPENMV_RT1060")
+        targets.flash_config("MPS2_AN500")
 
 
 def test_unsupported_backend_raises(monkeypatch):
