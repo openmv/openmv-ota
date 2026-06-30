@@ -178,29 +178,19 @@ def test_imx_dry_run_runs_nothing(imx_project, monkeypatch):
     assert steps[-1].argv[-1] == "reset"
 
 
-def test_imx_uses_bundled_flashloader_by_default(imx_project):
+def test_imx_uses_bundled_flashloader(imx_project):
+    # the flashloaders are an internal crutch shipped in the package -- never the user's
     root, ran, _rec = imx_project
     fl.flash_firmware(str(root), board="OPENMV_RT1060")
     assert "data/flashloaders/OPENMV_RT1060/sdphost_flash_loader.bin" in ran[0][-1]
 
 
-def test_imx_missing_loader_in_override_dir_errors(tmp_path, monkeypatch):
+def test_imx_missing_build_artifact_errors(tmp_path, monkeypatch):
+    # loaders are bundled, but the firmware image still has to be built first
     (tmp_path / "build").mkdir()
-    (tmp_path / "build" / "OPENMV_RT1060-firmware.bin").write_bytes(b"x")
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
-    empty = tmp_path / "noloaders"
-    empty.mkdir()
-    with pytest.raises(FlashError, match="sdphost_flash_loader.bin"):
-        fl.flash_firmware(str(tmp_path), board="OPENMV_RT1060", flashloader_dir=str(empty))
-
-
-def test_imx_flashloader_dir_override(imx_project, tmp_path):
-    root, ran, _rec = imx_project
-    loaders = tmp_path / "loaders"
-    loaders.mkdir()
-    (loaders / "sdphost_flash_loader.bin").write_bytes(b"x" * 100)
-    fl.flash_firmware(str(root), board="OPENMV_RT1060", flashloader_dir=str(loaders))
-    assert str(loaders / "sdphost_flash_loader.bin") in ran[0]
+    with pytest.raises(FlashError, match="OPENMV_RT1060-firmware.bin"):
+        fl.flash_firmware(str(tmp_path), board="OPENMV_RT1060")
 
 
 def test_poll_retries_until_the_flashloader_answers(monkeypatch):

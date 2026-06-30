@@ -70,18 +70,20 @@ backend just runs a longer sequence: `sdphost` loads a RAM flashloader and jumps
 — after the flashloader re-enumerates (the tool settles and polls `blhost get-property` until
 it answers) — `blhost` configures the FlexSPI NOR and writes each region. `flash factory`
 does the full provision (flash-config block, secure bootloader, firmware, romfs, and the boot
-e-fuse); `flash firmware`/`flash romfs` rewrite just that one region.
-
-The two flashloader binaries (`sdphost_flash_loader.bin`, `blhost_flash_loader.bin`) are
-prebuilt artifacts (not produced by `build`) — copies are **bundled in the package**
-(`data/flashloaders/OPENMV_RT1060/`), so RT1060 flashing works out of the box. Point
-`--flashloader-dir` at a directory to override them (e.g. a newer firmware release).
+e-fuse); `flash firmware`/`flash romfs` rewrite just that one region. It works the same as any
+other board — nothing extra to supply:
 
 ```
-$ openmv-ota flash factory ./my-product -b OPENMV_RT1060 --flashloader-dir ./loaders --dry-run
-would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 loaders/sdphost_flash_loader.bin
+$ openmv-ota flash factory ./my-product -b OPENMV_RT1060 --dry-run
+would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 .../sdphost_flash_loader.bin
 would run: sdphost -u 0x1FC9,0x0135 -- jump-address 0x20001C00
 would run: blhost -u 0x15A2,0x0073 -- get-property 1
 ...
 would run: blhost -u 0x15A2,0x0073 -- reset
 ```
+
+The two flashloader binaries the sequence needs (`sdphost_flash_loader.bin`,
+`blhost_flash_loader.bin`) are an internal detail — prebuilt copies ship inside the tool, so
+you never supply or carry them. This whole backend is temporary: the RT1062 will move to the
+same DFU bootloader as the other cameras, and when it does this path (and those bundled files)
+goes away.

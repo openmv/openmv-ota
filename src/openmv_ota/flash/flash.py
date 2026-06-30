@@ -93,30 +93,28 @@ def _resolve_spsdk(name: str, sdk_home: Path | None, dry_run: bool) -> str:
         return name
 
 
-def _loader(name: str, board: str, ld_dir: Path | None) -> Path:
-    """An i.MX flashloader binary: from ``--flashloader-dir`` if given, else the copy bundled
-    in the package (``data/flashloaders/<board>/``)."""
-    if ld_dir is not None:
-        return ld_dir / name
+def _loader(name: str, board: str) -> Path:
+    """An i.MX flashloader binary, from the copies bundled in the package
+    (``data/flashloaders/<board>/``). These are an internal crutch the user never handles --
+    when the RT1062 moves to the same DFU bootloader as the other cameras this backend (and
+    these files) goes away."""
     from importlib.resources import files
     return Path(str(files("openmv_ota").joinpath("data/flashloaders", board, name)))
 
 
-def _imx_files(board: str, op: str, raw: dict, out_dir: Path, ld_dir: Path | None
-               ) -> dict[str, Path]:
+def _imx_files(board: str, op: str, raw: dict, out_dir: Path) -> dict[str, Path]:
     sd, bl = raw["sdphost"], raw["blhost"]
-    files = {"sdphost_loader": _loader(sd["loader"], board, ld_dir)}
+    files = {"sdphost_loader": _loader(sd["loader"], board)}
     if op in ("firmware", "factory"):
         files["firmware"] = out_dir / ("%s-firmware.bin" % board)
     if op == "factory":
-        files["blhost_loader"] = _loader(bl["sbl_loader"], board, ld_dir)
+        files["blhost_loader"] = _loader(bl["sbl_loader"], board)
         files["romfs"] = out_dir / ("%s-factory-romfs.img" % board)
     elif op == "romfs":
         files["romfs"] = out_dir / ("%s-romfs.img" % board)
     for f in files.values():
         if not f.exists():
-            raise FlashError("missing %s -- build the firmware/romfs first "
-                             "(flashloaders are bundled; --flashloader-dir overrides)" % f)
+            raise FlashError("missing %s -- build the firmware/romfs first" % f)
     return files
 
 
@@ -144,13 +142,11 @@ def _execute_imx(steps: list[imx.ImxStep]) -> None:
 
 
 def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str, *,
-               output: str | None, sdk_home: Path | None, flashloader_dir: str | None,
-               dry_run: bool) -> list[imx.ImxStep]:
+               output: str | None, sdk_home: Path | None, dry_run: bool) -> list[imx.ImxStep]:
     out_dir = _output_dir(project, output)
-    ld_dir = Path(flashloader_dir) if flashloader_dir else None   # None -> bundled loaders
     sdphost = _resolve_spsdk("sdphost", sdk_home, dry_run)
     blhost = _resolve_spsdk("blhost", sdk_home, dry_run)
-    files = _imx_files(board, op, cfg.raw, out_dir, ld_dir)
+    files = _imx_files(board, op, cfg.raw, out_dir)
     steps = imx.plan(op, cfg.raw, sdphost, blhost, files)
     if not dry_run:
         _execute_imx(steps)
@@ -162,12 +158,11 @@ def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str,
 
 def flash_firmware(project: str = ".", *, board: str, output: str | None = None,
                    dfu_util: str | None = None, sdk_home: Path | None = None,
-                   flashloader_dir: str | None = None, coprocessor: bool = False,
-                   reset: bool = True, dry_run: bool = False):
+                   coprocessor: bool = False, reset: bool = True, dry_run: bool = False):
     cfg = flash_config(board)
     if cfg.backend == "imx":
         return _imx_flash(project, "firmware", board, cfg, "flash-firmware", output=output,
-                          sdk_home=sdk_home, flashloader_dir=flashloader_dir, dry_run=dry_run)
+                          sdk_home=sdk_home, dry_run=dry_run)
     spec = [("firmware", "firmware.bin")]
     if coprocessor:
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
@@ -177,11 +172,11 @@ def flash_firmware(project: str = ".", *, board: str, output: str | None = None,
 
 def flash_romfs(project: str = ".", *, board: str, output: str | None = None,
                 dfu_util: str | None = None, sdk_home: Path | None = None,
-                flashloader_dir: str | None = None, reset: bool = True, dry_run: bool = False):
+                reset: bool = True, dry_run: bool = False):
     cfg = flash_config(board)
     if cfg.backend == "imx":
         return _imx_flash(project, "romfs", board, cfg, "flash-romfs", output=output,
-                          sdk_home=sdk_home, flashloader_dir=flashloader_dir, dry_run=dry_run)
+                          sdk_home=sdk_home, dry_run=dry_run)
     spec = [("romfs", "romfs.img")]
     return _dfu_flash(project, board, cfg, spec, "flash-romfs", output=output,
                       dfu_util=dfu_util, sdk_home=sdk_home, reset=reset, dry_run=dry_run)
@@ -189,12 +184,11 @@ def flash_romfs(project: str = ".", *, board: str, output: str | None = None,
 
 def flash_factory(project: str = ".", *, board: str, output: str | None = None,
                   dfu_util: str | None = None, sdk_home: Path | None = None,
-                  flashloader_dir: str | None = None, coprocessor: bool = False,
-                  reset: bool = True, dry_run: bool = False):
+                  coprocessor: bool = False, reset: bool = True, dry_run: bool = False):
     cfg = flash_config(board)
     if cfg.backend == "imx":
         return _imx_flash(project, "factory", board, cfg, "flash-factory", output=output,
-                          sdk_home=sdk_home, flashloader_dir=flashloader_dir, dry_run=dry_run)
+                          sdk_home=sdk_home, dry_run=dry_run)
     spec = [("firmware", "firmware.bin")]
     if coprocessor:
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
