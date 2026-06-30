@@ -263,20 +263,21 @@ _ERASE_SECTOR = 4096            # FLASH_SECTOR_ERASE: a sector of zeros invalida
 def flash_erase(project: str = ".", *, board: str, dfu_util: str | None = None,
                 sdk_home: Path | None = None, reset: bool = True, enter_bootloader: bool = True,
                 serial: str | None = None, mpremote: str | None = None,
-                dry_run: bool = False) -> list[EraseStep]:
-    """Erase a board's onboard filesystem (the user disk) -- download a sector of zeros to each
-    of the board's erase targets, mirroring the IDE's eraseCommands. dfu/arduino only; the
-    retired Nanos are refused (unsupported), and so is the RT1060 (imx) -- it has no separate
-    user-flash partition to clear."""
+                dry_run: bool = False):
+    """Erase a board's onboard filesystem (the user disk) so the firmware reformats a clean one
+    on the next boot, mirroring the IDE's "Erase Onboard Data Flash". On dfu/arduino boards that
+    means downloading a sector of zeros to the filesystem alt/address (the IDE's eraseCommands);
+    on the RT1060 (imx) it's a blhost ``flash-erase-region`` of the disk's MBR sector. The
+    retired Nanos are refused."""
     cfg = flash_config(board)                        # refuses the retired Nanos
-    if cfg.backend not in ("dfu", "arduino"):
-        raise FlashError("erase isn't available for the %r backend (board %r)"
-                         % (cfg.backend, board))
+    serial = _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader,
+                      mpremote=mpremote, dry_run=dry_run)
+    if cfg.backend == "imx":                          # RT1060: erase the disk region via blhost
+        return _imx_flash(project, "erase", board, cfg, "flash-erase", output=None,
+                          sdk_home=sdk_home, dry_run=dry_run)
     targets = cfg.raw.get("erase")
     if not targets:
         raise FlashError("board %r has no erase target configured" % board)
-    serial = _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader,
-                      mpremote=mpremote, dry_run=dry_run)
     tool = _resolve_dfu_util(dfu_util, sdk_home, dry_run)
     last = len(targets) - 1
 

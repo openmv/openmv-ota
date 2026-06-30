@@ -191,12 +191,20 @@ way the flash verbs do (detect + reset), and leaves it on the last step so the b
 The target is the board's own erase alt (it's a *different* partition from firmware/romfs):
 OpenMV M4/M7/H7 = alt 1, H7 Plus / Pure Thermal = alt 3, N6 = alt 2, AE3 = alt 5 (its RWFS).
 Arduino boards erase by address (Portenta/Giga clear the app at `0x08020000` **and** the QSPI
-filesystem at `0x90000000`; Nicla clears just the QSPI). The retired Nano boards are refused,
-and so is the **RT1060** — it has no separate user-flash partition to clear.
+filesystem at `0x90000000`; Nicla clears just the QSPI). The **RT1060** has no DFU bootloader,
+so it erases through blhost instead — a `flash-erase-region` of its disk's MBR sector
+(`0x60400000`), after the same SDP/flashloader bring-up the imx flash uses. The retired Nano
+boards are refused.
 
 ```
 $ openmv-ota flash erase -b OPENMV4 --dry-run
 would run: dfu-util -w -d ,37c5:9204 -a 1 --reset -D <4KB-zeros>
+
+$ openmv-ota flash erase -b OPENMV_RT1060 --dry-run
+would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 .../sdphost_flash_loader.bin
+...
+would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60400000 0x1000
+would run: blhost -u 0x15A2,0x0073 -- reset
 ```
 
 ## i.MX RT1060

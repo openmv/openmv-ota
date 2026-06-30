@@ -134,6 +134,10 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
         steps += _write_region(blhost, usb, bl["firmware_addr"], files["firmware"])
     elif op == "romfs":
         steps += _write_region(blhost, usb, bl["romfs_addr"], files["romfs"])
+    elif op == "erase":                                # wipe the user disk's first sector (its MBR)
+        steps.append(ImxStep("erase disk %s (%s)" % (bl["disk_addr"], bl["disk_size"]),
+                             _blhost(blhost, usb, "flash-erase-region", bl["disk_addr"],
+                                     bl["disk_size"], timeout=ERASE_TIMEOUT_MS)))
 
     steps.append(ImxStep("reset", _blhost(blhost, usb, "reset")))
     return steps

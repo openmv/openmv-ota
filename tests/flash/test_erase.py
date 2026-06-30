@@ -76,9 +76,17 @@ def test_erase_dry_run_runs_nothing(erase_project):
     assert steps[0].argv[4:7] == ["-a", "2", "--reset"]
 
 
-def test_erase_refused_for_imx_backend():
-    with pytest.raises(FlashError, match="erase isn't available for the 'imx' backend"):
-        fl.flash_erase(board="OPENMV_RT1060")
+def test_erase_rt1060_blhost_erases_the_disk_mbr_sector(tmp_path, monkeypatch):
+    ran: list = []
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **k: ran.append(argv))
+    monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name.upper())
+    monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
+    steps = fl.flash_erase(str(tmp_path), board="OPENMV_RT1060")
+    flat = " ".join(" ".join(a) for a in ran)
+    assert "flash-erase-region 0x60400000 0x1000" in flat      # the disk MBR sector, not romfs
+    assert "0x60800000" not in flat and "write-memory" not in flat and "efuse" not in flat
+    assert ran[-1][-1] == "reset"
+    assert any("erase disk 0x60400000" in s.label for s in steps)
 
 
 def test_erase_refused_for_retired_nano():
@@ -101,5 +109,5 @@ def test_erase_cli_dry_run(erase_project, capsys):
 
 
 def test_erase_cli_error_returns_exit_code(capsys):
-    assert main(["flash", "erase", "-b", "OPENMV_RT1060"]) == 2
-    assert "erase isn't available" in capsys.readouterr().err
+    assert main(["flash", "erase", "-b", "ARDUINO_NANO_RP2040_CONNECT"]) == 2
+    assert "no longer supported" in capsys.readouterr().err
