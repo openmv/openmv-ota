@@ -25,8 +25,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("-o", "--output", help="artifact dir (default: <project>/build)")
     p.add_argument("--dfu-util", help="path to dfu-util (default: SDK's, else PATH)")
     p.add_argument("--sdk-home", help="SDK home to find dfu-util under (<home>/bin/dfu-util)")
-    p.add_argument("--no-leave", dest="leave", action="store_false",
-                   help="don't reboot out of DFU after flashing")
+    p.add_argument("--no-reset", dest="reset", action="store_false",
+                   help="don't reset (reboot) the board after flashing")
     p.add_argument("--dry-run", action="store_true",
                    help="print the dfu-util commands without running them")
 
@@ -69,7 +69,7 @@ def cmd_firmware(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_firmware(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), coprocessor=args.coprocessor, leave=args.leave,
+            sdk_home=_sdk_home(args), coprocessor=args.coprocessor, reset=args.reset,
             dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -81,7 +81,7 @@ def cmd_romfs(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_romfs(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), leave=args.leave, dry_run=args.dry_run)
+            sdk_home=_sdk_home(args), reset=args.reset, dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -92,7 +92,7 @@ def cmd_factory(args: argparse.Namespace) -> int:
     try:
         steps = flash_mod.flash_factory(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
-            sdk_home=_sdk_home(args), coprocessor=args.coprocessor, leave=args.leave,
+            sdk_home=_sdk_home(args), coprocessor=args.coprocessor, reset=args.reset,
             dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)

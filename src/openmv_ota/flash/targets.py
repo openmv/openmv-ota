@@ -1,7 +1,9 @@
 """Resolve a board to its flash backend and per-artifact target.
 
 The ``flash`` block in ``boards.json`` is the source of truth: ``backend`` (which host tool),
-``usb`` (the ``vid:pid`` for dfu), and ``alt`` (a map of logical artifact -> DFU alt-setting).
+``usb`` (the ``vid:pid`` for dfu), ``alt`` (a map of logical artifact -> DFU alt-setting), and
+an optional ``file`` map overriding an artifact's default filename (the AE3's firmware is the
+per-core ``firmware-M55_HP.bin``, not a plain ``firmware.bin``).
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ class FlashConfig:
     backend: str
     usb: str
     alt: dict[str, int]
+    files: dict[str, str]
 
     def alt_of(self, artifact: str) -> int:
         """The DFU alt-setting for a logical artifact (``firmware``/``romfs``/``coprocessor``)."""
@@ -31,6 +34,10 @@ class FlashConfig:
                 "board %r has no %r flash target (configured: %s)"
                 % (self.board, artifact, ", ".join(sorted(self.alt)) or "none")
             ) from None
+
+    def filename(self, artifact: str, default: str) -> str:
+        """The artifact's filename suffix (after ``<board>-``), board override or ``default``."""
+        return self.files.get(artifact, default)
 
 
 def flash_config(board: str) -> FlashConfig:
@@ -48,4 +55,5 @@ def flash_config(board: str) -> FlashConfig:
         raise FlashError("board %r uses the %r flash backend, not supported yet (have: %s)"
                          % (board, backend, ", ".join(SUPPORTED_BACKENDS)))
     return FlashConfig(board=board, backend=backend, usb=raw["usb"],
-                       alt={k: int(v) for k, v in raw.get("alt", {}).items()})
+                       alt={k: int(v) for k, v in raw.get("alt", {}).items()},
+                       files=dict(raw.get("file", {})))

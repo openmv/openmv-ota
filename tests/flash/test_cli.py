@@ -44,7 +44,7 @@ def test_flash_romfs_dry_run_prints_command(proj, capsys):
     assert main(["flash", "romfs", str(root), "-b", "OPENMV4", "--dry-run",
                  "--dfu-util", "/x/dfu-util"]) == 0
     assert ran == []
-    assert "would run: /x/dfu-util -d 37c5:9204 -a 3" in capsys.readouterr().out
+    assert "would run: /x/dfu-util -w -d ,37c5:9204 -a 3" in capsys.readouterr().out
 
 
 def test_error_returns_exit_code(proj, capsys):
@@ -79,8 +79,17 @@ def test_sdk_home_passed_through(proj, monkeypatch, capsys):
 def test_factory_coprocessor_flag(proj, capsys):
     root, _ran, artifact = proj
     artifact("OPENMV4-firmware.bin")
-    artifact("OPENMV4-firmware-M55_HE.bin")
-    artifact("OPENMV4-factory-romfs.img")
     # --coprocessor needs a coprocessor alt OPENMV4 doesn't have -> clean error, exit 2
     assert main(["flash", "factory", str(root), "-b", "OPENMV4", "--coprocessor"]) == 2
     assert "no 'coprocessor' flash target" in capsys.readouterr().err
+
+
+def test_ae3_factory_coprocessor_ok(proj, capsys):
+    root, ran, artifact = proj
+    for n in ("firmware-M55_HP.bin", "firmware-M55_HE.bin", "coprocessor-romfs.img",
+              "factory-romfs.img"):
+        artifact("OPENMV_AE3-%s" % n)
+    assert main(["flash", "factory", str(root), "-b", "OPENMV_AE3", "--coprocessor",
+                 "--no-reset"]) == 0
+    assert [a[5] for a in ran] == ["1", "2", "3", "6"]   # the -a alt of each step
+    assert all("--reset" not in a for a in ran)          # --no-reset honored on every step

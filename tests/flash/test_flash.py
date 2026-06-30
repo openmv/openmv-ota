@@ -1,4 +1,4 @@
-"""Orchestration: artifact selection, alt mapping, multi-step leave, dry-run, history."""
+"""Orchestration: artifact selection, alt mapping, multi-step reset, dry-run, history."""
 
 from __future__ import annotations
 
@@ -31,34 +31,54 @@ def test_flash_firmware(project):
     artifact("OPENMV4-firmware.bin")
     steps = fl.flash_firmware(str(root), board="OPENMV4")
     assert [s.alt for s in steps] == [2]
-    assert ran == [["DFU", "-d", "37c5:9204", "-a", "2",
-                    "-D", str(root / "build/OPENMV4-firmware.bin"), "-s", ":leave"]]
+    assert ran == [["DFU", "-w", "-d", ",37c5:9204", "-a", "2", "--reset",
+                    "-D", str(root / "build/OPENMV4-firmware.bin")]]
     assert recorded == [{"action": "flash-firmware", "board": "OPENMV4",
                          "files": [{"file": "OPENMV4-firmware.bin", "alt": 2}]}]
 
 
-def test_flash_factory_is_multistep_and_leaves_only_last(project):
+def test_flash_factory_is_multistep_and_resets_only_last(project):
     root, ran, _rec, artifact = project
     artifact("OPENMV4-firmware.bin")
     artifact("OPENMV4-factory-romfs.img")
     steps = fl.flash_factory(str(root), board="OPENMV4")
     assert [(s.artifact, s.alt) for s in steps] == [("firmware", 2), ("romfs", 3)]
-    assert "-s" not in ran[0] and ran[0][-2:] == ["-D", str(root / "build/OPENMV4-firmware.bin")]
-    assert ran[1][-2:] == ["-s", ":leave"]          # only the final write leaves DFU
+    assert "--reset" not in ran[0]                   # firmware step stays in the bootloader
+    assert "--reset" in ran[1]                       # only the final write reboots
 
 
 def test_flash_romfs(project):
     root, ran, _rec, artifact = project
     artifact("OPENMV4-romfs.img")
     fl.flash_romfs(str(root), board="OPENMV4")
-    assert ran[0][3:5] == ["-a", "3"] and ran[0][-1] == ":leave"
+    assert ran[0][4:6] == ["-a", "3"] and "--reset" in ran[0]
 
 
-def test_no_leave(project):
+def test_no_reset(project):
     root, ran, _rec, artifact = project
     artifact("OPENMV4-romfs.img")
-    fl.flash_romfs(str(root), board="OPENMV4", leave=False)
-    assert "-s" not in ran[0]
+    fl.flash_romfs(str(root), board="OPENMV4", reset=False)
+    assert "--reset" not in ran[0]
+
+
+def test_ae3_firmware_uses_per_core_file_and_alt(project):
+    root, ran, _rec, artifact = project
+    artifact("OPENMV_AE3-firmware-M55_HP.bin")
+    steps = fl.flash_firmware(str(root), board="OPENMV_AE3")
+    assert steps[0].alt == 1 and steps[0].file.name == "OPENMV_AE3-firmware-M55_HP.bin"
+    assert ran[0][3] == ",37c5:96e3"
+
+
+def test_ae3_factory_coprocessor_flashes_all_four_partitions(project):
+    root, ran, _rec, artifact = project
+    for n in ("firmware-M55_HP", "firmware-M55_HE"):
+        artifact("OPENMV_AE3-%s.bin" % n)
+    artifact("OPENMV_AE3-coprocessor-romfs.img")
+    artifact("OPENMV_AE3-factory-romfs.img")
+    steps = fl.flash_factory(str(root), board="OPENMV_AE3", coprocessor=True)
+    assert [(s.artifact, s.alt) for s in steps] == [
+        ("firmware", 1), ("coprocessor", 2), ("coprocessor_romfs", 3), ("romfs", 6)]
+    assert sum("--reset" in a for a in ran) == 1 and "--reset" in ran[-1]
 
 
 def test_missing_artifact_fails_before_running(project):
@@ -82,7 +102,7 @@ def test_dry_run_records_nothing_and_runs_nothing(project):
     artifact("OPENMV4-firmware.bin")
     steps = fl.flash_firmware(str(root), board="OPENMV4", dry_run=True)
     assert ran == [] and recorded == []
-    assert steps[0].argv[-1] == ":leave"             # argv still built for display
+    assert "--reset" in steps[0].argv             # argv still built for display
 
 
 def test_custom_output_dir(project, tmp_path):
@@ -94,17 +114,17 @@ def test_custom_output_dir(project, tmp_path):
     assert str(out / "OPENMV4-romfs.img") in ran[0]
 
 
-def test_coprocessor_appends_he_core(project):
+def test_coprocessor_on_non_multicore_board_is_a_clean_error(project):
+    # OPENMV4 has no coprocessor alt -> fail fast on the unsupported target (the flag exists;
+    # the AE3 is the board it applies to).
     root, ran, _rec, artifact = project
     artifact("OPENMV4-firmware.bin")
-    artifact("OPENMV4-firmware-M55_HE.bin")
-    # OPENMV4 has no coprocessor alt -> fail fast (the flag exists; the AE3 alt lands later)
     with pytest.raises(FlashError, match="no 'coprocessor' flash target"):
         fl.flash_firmware(str(root), board="OPENMV4", coprocessor=True)
     assert ran == []
 
 
-def test_resolve_tool_dry_run_tolerates_missing_dfu_util(tmp_path, monkeypatch):
+def test_resolve_tool_dry_run_tolerates_missing_dfu_util(monkeypatch):
     monkeypatch.setattr(fl.tools, "find_dfu_util",
                         lambda override, sdk_home: (_ for _ in ()).throw(FlashError("nope")))
     assert fl._resolve_tool(None, None, dry_run=True) == "dfu-util"

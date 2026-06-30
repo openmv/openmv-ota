@@ -21,6 +21,17 @@ def test_n6_has_firmware_at_alt_1():
     assert cfg.alt_of("firmware") == 1 and cfg.alt_of("romfs") == 3
 
 
+def test_ae3_is_dfu_with_per_core_alts():
+    # AE3 flashes everything over DFU (write-mram is only for its bootloader): HP fw, HE fw,
+    # the coprocessor romfs, and the main romfs -- and its firmware file is the per-core one.
+    cfg = targets.flash_config("OPENMV_AE3")
+    assert cfg.backend == "dfu" and cfg.usb == "37c5:96e3"
+    assert (cfg.alt_of("firmware"), cfg.alt_of("coprocessor"),
+            cfg.alt_of("coprocessor_romfs"), cfg.alt_of("romfs")) == (1, 2, 3, 6)
+    assert cfg.filename("firmware", "firmware.bin") == "firmware-M55_HP.bin"
+    assert cfg.filename("romfs", "romfs.img") == "romfs.img"   # no override -> default
+
+
 def test_alt_of_unknown_artifact_raises():
     cfg = targets.flash_config("OPENMV4")
     with pytest.raises(FlashError, match="no 'coprocessor' flash target"):

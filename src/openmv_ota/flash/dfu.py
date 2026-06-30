@@ -5,9 +5,11 @@ OpenMV's bootloader exposes each flashable partition as a numbered DFU **alt-set
 partition by that alt -- the bootloader maps block offsets to absolute flash addresses
 itself, so the host only needs the alt, not the address.
 
-``-s :leave`` makes the device exit DFU and boot the new image after a write; a multi-step
-flash (firmware then romfs) leaves only on the final step so the device stays in DFU
-between writes.
+The argv mirrors what the OpenMV IDE issues: ``-w`` (wait for the device to appear, since
+DFU re-enumeration is racy), ``-d ,<vid:pid>`` (match the device in DFU mode -- the leading
+comma scopes the id to the DFU-mode descriptor), and ``--reset`` on the *final* step of a
+flash so the board reboots only after the last write (it stays in the bootloader between the
+steps of a multi-partition flash).
 """
 
 from __future__ import annotations
@@ -15,15 +17,16 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def download_argv(dfu_util: str, usb: str, alt: int, file: Path, *, leave: bool = True
+def download_argv(dfu_util: str, usb: str, alt: int, file: Path, *, reset: bool = True
                   ) -> list[str]:
     """Argv to flash ``file`` to DFU alt ``alt`` on the ``vid:pid`` device ``usb``."""
-    argv = [dfu_util, "-d", usb, "-a", str(alt), "-D", str(file)]
-    if leave:
-        argv += ["-s", ":leave"]
+    argv = [dfu_util, "-w", "-d", ",%s" % usb, "-a", str(alt)]
+    if reset:
+        argv.append("--reset")
+    argv += ["-D", str(file)]
     return argv
 
 
 def upload_argv(dfu_util: str, usb: str, alt: int, file: Path) -> list[str]:
     """Argv to read DFU alt ``alt`` back into ``file`` (for a post-flash verify)."""
-    return [dfu_util, "-d", usb, "-a", str(alt), "-U", str(file)]
+    return [dfu_util, "-w", "-d", ",%s" % usb, "-a", str(alt), "-U", str(file)]

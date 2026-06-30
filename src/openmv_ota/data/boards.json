@@ -190,6 +190,7 @@
     "OPENMV_AE3": {
       "display_name": "OpenMV AE3",
       "arch": "OPENMV AE3",
+      "flash": {"backend": "dfu", "usb": "37c5:96e3", "alt": {"firmware": 1, "coprocessor": 2, "coprocessor_romfs": 3, "romfs": 6}, "file": {"firmware": "firmware-M55_HP.bin"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
