@@ -66,13 +66,55 @@ def test_bootloader_missing_artifact(tmp_path, monkeypatch):
         fl.flash_bootloader(str(tmp_path), board="OPENMV4")
 
 
-def test_bootloader_non_dfu_backends_give_clear_notes():
-    with pytest.raises(FlashError, match="STM32CubeProgrammer"):
-        fl.flash_bootloader(board="OPENMV_N6")
+def test_bootloader_unsupported_backends_give_clear_notes():
     with pytest.raises(FlashError, match="flash factory"):
         fl.flash_bootloader(board="OPENMV_RT1060")
     with pytest.raises(FlashError, match="Alif SE tools"):
         fl.flash_bootloader(board="OPENMV_AE3")
+
+
+@pytest.fixture
+def n6_project(tmp_path, monkeypatch):
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "OPENMV_N6-bootloader.bin").write_bytes(b"BL")
+    ran: list = []
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **k: ran.append(argv))
+    monkeypatch.setattr(fl.tools, "find_cubeprog", lambda sdk_home: "CUBE")
+    monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
+    return tmp_path, ran
+
+
+def test_n6_bootloader_stages_static_files_and_runs_cubeprog(n6_project, capsys):
+    root, ran = n6_project
+    steps = fl.flash_bootloader(str(root), board="OPENMV_N6")
+    # CubeProgrammer over USB with the staged FlashLayout.tsv (which pairs the built
+    # bootloader.bin with the bundled FSBL/loader binaries)
+    assert ran[0][:4] == ["CUBE", "-c", "port=USB1", "-d"]
+    assert ran[0][4].endswith("FlashLayout.tsv")
+    assert steps[0].artifact == "bootloader"
+    assert "jumper BOOT0 to 3.3V" in capsys.readouterr().err
+
+
+def test_n6_bootloader_dry_run(n6_project):
+    root, ran = n6_project
+    steps = fl.flash_bootloader(str(root), board="OPENMV_N6", dry_run=True)
+    assert ran == []
+    assert steps[0].argv == ["CUBE", "-c", "port=USB1", "-d", "FlashLayout.tsv"]
+
+
+def test_n6_bootloader_missing_artifact(tmp_path, monkeypatch):
+    (tmp_path / "build").mkdir()
+    monkeypatch.setattr(fl.tools, "find_cubeprog", lambda sdk_home: "CUBE")
+    with pytest.raises(FlashError, match="OPENMV_N6-bootloader.bin"):
+        fl.flash_bootloader(str(tmp_path), board="OPENMV_N6")
+
+
+def test_resolve_cubeprog_dry_run_tolerates_missing(monkeypatch):
+    monkeypatch.setattr(fl.tools, "find_cubeprog",
+                        lambda sdk_home: (_ for _ in ()).throw(FlashError("no")))
+    assert fl._resolve_cubeprog(None, dry_run=True) == "STM32_Programmer_CLI"
+    with pytest.raises(FlashError):
+        fl._resolve_cubeprog(None, dry_run=False)
 
 
 def test_bootloader_not_available_for_arduino():

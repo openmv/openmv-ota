@@ -54,3 +54,22 @@ def test_find_spsdk_not_found_raises(monkeypatch):
     monkeypatch.setattr(tools.shutil, "which", lambda _n: None)
     with pytest.raises(FlashError, match="blhost not found"):
         tools.find_spsdk("blhost")
+
+
+def test_find_cubeprog_prefers_sdk_stcubeprog(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools.shutil, "which", lambda _n: "/usr/bin/STM32_Programmer_CLI")
+    binp = tmp_path / "stcubeprog" / "bin"
+    binp.mkdir(parents=True)
+    (binp / "STM32_Programmer_CLI").write_text("")
+    assert tools.find_cubeprog(sdk_home=tmp_path) == str(binp / "STM32_Programmer_CLI")
+
+
+def test_find_cubeprog_falls_back_to_path(monkeypatch):
+    monkeypatch.setattr(tools.shutil, "which", lambda _n: "/usr/bin/STM32_Programmer_CLI")
+    assert tools.find_cubeprog() == "/usr/bin/STM32_Programmer_CLI"
+
+
+def test_find_cubeprog_not_found_raises(monkeypatch):
+    monkeypatch.setattr(tools.shutil, "which", lambda _n: None)
+    with pytest.raises(FlashError, match="STM32_Programmer_CLI not found"):
+        tools.find_cubeprog()

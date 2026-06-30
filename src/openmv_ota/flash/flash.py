@@ -250,28 +250,71 @@ def flash_factory(project: str = ".", *, board: str, output: str | None = None,
                       dry_run=dry_run)
 
 
-def flash_bootloader(project: str = ".", *, board: str, output: str | None = None,
-                     dfu_util: str | None = None, sdk_home: Path | None = None,
-                     serial: str | None = None, dry_run: bool = False):
-    """Flash the board's bootloader. Unlike firmware/romfs, this can't go through the OpenMV
-    bootloader (it protects itself) -- the board must be in its **system** ROM DFU, entered by
-    hand (BOOT0/jumper). So there's no auto-reset here; we print the board's instructions and
-    wait for the system-DFU device (``dfu-util -w``)."""
-    cfg = flash_config(board)
-    bl = cfg.raw.get("bootloader")
-    if not bl:
-        raise FlashError("board %r has no bootloader to flash with this tool" % board)
-    if bl["backend"] != "dfu":                       # N6 (cubeprog) / RT (factory) / AE3 (alif)
-        raise FlashError("bootloader flashing for %r isn't available here: %s"
-                         % (board, bl.get("note", "unsupported")))
+def _bootloader_bin(project: str, output: str | None, board: str) -> Path:
     f = _output_dir(project, output) / ("%s-bootloader.bin" % board)
     if not f.exists():
         raise FlashError("missing %s -- run `build firmware` first" % f)
+    return f
+
+
+def _bootloader_dfu(project, board, bl, f, *, dfu_util, sdk_home, serial, dry_run):
     tool = _resolve_dfu_util(dfu_util, sdk_home, dry_run)
     argv = dfu.bootloader_argv(tool, bl["usb"], int(bl["alt"]), bl["addr"], f, serial=serial)
-    print(bl["instructions"], file=sys.stderr)       # the manual system-DFU entry (BOOT0/jumper)
     if not dry_run:
         runner.run(argv, tolerate_fail=True)         # the ST ROM doesn't ACK the final status
         history.record(project, "flash-bootloader", board=board,
                        files=[{"file": f.name, "addr": bl["addr"]}])
     return [FlashStep("bootloader", f, int(bl["alt"]), argv)]
+
+
+def _resolve_cubeprog(sdk_home: Path | None, dry_run: bool) -> str:
+    try:
+        return tools.find_cubeprog(sdk_home)
+    except FlashError:
+        if not dry_run:
+            raise
+        return "STM32_Programmer_CLI"
+
+
+def _bootloader_cubeprog(project, board, bl, f, *, sdk_home, dry_run):
+    """N6: STM32CubeProgrammer flashes a FlashLayout.tsv that pairs the freshly-built
+    ``bootloader.bin`` with the static FSBL/loader binaries (bundled). Stage them together (the
+    tsv references each by name) and run CubeProgrammer over USB."""
+    cube = _resolve_cubeprog(sdk_home, dry_run)
+    argv = [cube, "-c", "port=USB1", "-d", bl["tsv"]]    # display/return; the real -d is staged
+    if not dry_run:
+        import shutil
+        import tempfile
+        from importlib.resources import files
+        with tempfile.TemporaryDirectory() as td:
+            stage = Path(td)
+            for name in [bl["tsv"], *bl["loaders"]]:     # bundled static layout + FSBL/loader
+                shutil.copy(str(files("openmv_ota").joinpath("data/n6_bootloader", name)),
+                            stage / name)
+            shutil.copy(str(f), stage / "bootloader.bin")   # the name the tsv references
+            runner.run([cube, "-c", "port=USB1", "-d", str(stage / bl["tsv"])])
+        history.record(project, "flash-bootloader", board=board, files=[{"file": f.name}])
+    return [FlashStep("bootloader", f, 0, argv)]
+
+
+def flash_bootloader(project: str = ".", *, board: str, output: str | None = None,
+                     dfu_util: str | None = None, sdk_home: Path | None = None,
+                     serial: str | None = None, dry_run: bool = False):
+    """Flash the board's bootloader. Unlike firmware/romfs, this can't go through the OpenMV
+    bootloader (it protects itself) -- the board must be in its **system** ROM DFU, entered by
+    hand (BOOT0/jumper) on a programmed camera (a virgin one is there already). So there's no
+    auto-reset; we print the board's instructions and wait for the system-DFU device."""
+    cfg = flash_config(board)
+    bl = cfg.raw.get("bootloader")
+    if not bl:
+        raise FlashError("board %r has no bootloader to flash with this tool" % board)
+    backend = bl["backend"]
+    if backend not in ("dfu", "cubeprog"):           # RT (factory) / AE3 (alif)
+        raise FlashError("bootloader flashing for %r isn't available here: %s"
+                         % (board, bl.get("note", "unsupported")))
+    f = _bootloader_bin(project, output, board)
+    print(bl["instructions"], file=sys.stderr)       # the manual system-DFU entry (BOOT0/jumper)
+    if backend == "dfu":
+        return _bootloader_dfu(project, board, bl, f, dfu_util=dfu_util, sdk_home=sdk_home,
+                               serial=serial, dry_run=dry_run)
+    return _bootloader_cubeprog(project, board, bl, f, sdk_home=sdk_home, dry_run=dry_run)

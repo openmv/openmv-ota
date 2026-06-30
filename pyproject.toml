@@ -50,6 +50,7 @@ where = ["src"]
     "data/*.json",
     "data/firmware/**/*",
     "data/flashloaders/**/*",    # prebuilt i.MX RT sdphost/blhost flashloaders
+    "data/n6_bootloader/*",      # static N6 CubeProgrammer FSBL/loader + FlashLayout.tsv
     "build/device/*.c",          # the ECDSA verify C module dropped into modules/
     "build/device/openmv_ota/data/*",  # the installer source, scaffolded into projects
     "romfs/sdk/**/*",

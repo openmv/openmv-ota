@@ -169,10 +169,13 @@ remove the jumper after flashing. A virgin (unprogrammed) camera comes up in sys
 its own -- no jumper needed. Wait for the system DFU bootloader to enumerate.
 ```
 
-Supported on the OpenMV STM32 boards (OPENMV2/3/4/4P/PT). The others report what to do instead:
-the **N6** uses STM32CubeProgrammer + a FlashLayout.tsv (not yet wired); the **RT1060**'s secure
-bootloader is written by `flash factory`; the **AE3** uses Alif SE tools; **Arduino** boards
-have no OpenMV bootloader to flash.
+Supported on the OpenMV STM32 boards (OPENMV2/3/4/4P/PT) over the system DFU, and on the **N6**
+via STM32CubeProgrammer: the N6 needs a `FlashLayout.tsv` plus two static FSBL/loader binaries,
+which are bundled in the tool — `flash bootloader` stages them with the freshly-built
+`bootloader.bin` and runs `STM32_Programmer_CLI`. Its ROM-DFU entry is the same as the other
+STM32 boards (BOOT0 on a programmed camera, automatic on a virgin one). The remaining boards
+report what to do instead: the **RT1060**'s secure bootloader is written by `flash factory`;
+the **AE3** uses Alif SE tools; **Arduino** boards have no OpenMV bootloader to flash.
 
 ## i.MX RT1060
 

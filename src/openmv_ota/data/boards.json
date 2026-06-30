@@ -263,7 +263,7 @@
     "OPENMV_N6": {
       "display_name": "OpenMV N6 (STM32N657)",
       "arch": "OpenMV N6",
-      "flash": {"backend": "dfu", "usb": "37c5:9206", "runtime": "37c5:1206", "alt": {"firmware": 1, "romfs": 3}, "bootloader": {"backend": "cubeprog", "note": "the N6 bootloader is flashed with STM32CubeProgrammer + a FlashLayout.tsv and ST FSBL binaries; not yet wired into this tool"}},
+      "flash": {"backend": "dfu", "usb": "37c5:9206", "runtime": "37c5:1206", "alt": {"firmware": 1, "romfs": 3}, "bootloader": {"backend": "cubeprog", "tsv": "FlashLayout.tsv", "loaders": ["OpenBootloader_STM32N6570-DK-trusted.stm32", "MX66UW1G45G_STM32N6570-DK-OBL.bin"], "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],

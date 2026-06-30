@@ -28,6 +28,21 @@ def find_dfu_util(override: str | None = None, sdk_home: Path | None = None) -> 
                      "or pass --dfu-util <path>")
 
 
+def find_cubeprog(sdk_home: Path | None = None) -> str:
+    """Resolve STM32CubeProgrammer's CLI (``<sdk_home>/stcubeprog/bin/STM32_Programmer_CLI``,
+    else PATH) -- used to flash the N6 bootloader."""
+    name = "STM32_Programmer_CLI"
+    if sdk_home is not None:
+        cand = Path(sdk_home) / "stcubeprog" / "bin" / name
+        if cand.exists():
+            return str(cand)
+    found = shutil.which(name)
+    if found:
+        return found
+    raise FlashError("%s not found -- it ships in the SDK's stcubeprog/bin; pass --sdk-home"
+                     % name)
+
+
 def find_spsdk(name: str, sdk_home: Path | None = None) -> str:
     """Resolve an spsdk tool (``sdphost``/``blhost``): ``<sdk_home>/python/bin/<name>`` > PATH."""
     if sdk_home is not None:
