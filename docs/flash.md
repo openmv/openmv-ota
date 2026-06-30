@@ -34,6 +34,7 @@ is invoked (default `python -m mpremote`).
 | `flash firmware` | the firmware image | `<board>-firmware.bin` |
 | `flash romfs` | the app romfs image | `<board>-romfs.img` |
 | `flash factory` | firmware **+** the dual-slot factory image (the manufacturing program) | `<board>-firmware.bin`, `<board>-factory-romfs.img` |
+| `flash bootloader` | the bootloader (see below) | `<board>-bootloader.bin` |
 
 `flash factory` writes firmware and the factory image in one pass, resetting the board only
 after the final write so it stays in the bootloader between steps.
@@ -149,6 +150,26 @@ would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90FC0000 -D .../cyw4343_btfw.bin
 would run: dfu-util -w -d ,2341:035b -a 0 -s 0x08040000 -D ARDUINO_PORTENTA_H7-firmware.bin
 would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90B00000:leave -D ARDUINO_PORTENTA_H7-romfs.img
 ```
+
+## Flashing the bootloader
+
+`flash bootloader` writes the board's `<board>-bootloader.bin` (collected by `build firmware`).
+It's a different path from firmware/romfs: those reach the board through the *OpenMV*
+bootloader (which we reset into automatically), but the bootloader can only be written from
+the board's **system ROM DFU**, which you enter **by hand** (jumper BOOT→RST / BOOT0/REC→3.3V,
+then replug). So there's no auto-reset — `flash bootloader` prints the board's instructions and
+waits for the system-DFU device, then writes to `0x08000000` via `dfu-util`. (dfu-util may
+report a nonzero exit on the final status — expected for the ST ROM; the tool tolerates it.)
+
+```
+$ openmv-ota flash bootloader -b OPENMV4
+Unplug the camera, jumper the BOOT pin to RST ..., and replug it. Wait for the system DFU ...
+```
+
+Supported on the OpenMV STM32 boards (OPENMV2/3/4/4P/PT). The others report what to do instead:
+the **N6** uses STM32CubeProgrammer + a FlashLayout.tsv (not yet wired); the **RT1060**'s secure
+bootloader is written by `flash factory`; the **AE3** uses Alif SE tools; **Arduino** boards
+have no OpenMV bootloader to flash.
 
 ## i.MX RT1060
 

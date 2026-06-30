@@ -34,3 +34,14 @@ def download_argv(dfu_util: str, usb: str, alt: int, file: Path, *, reset: bool 
 def upload_argv(dfu_util: str, usb: str, alt: int, file: Path) -> list[str]:
     """Argv to read DFU alt ``alt`` back into ``file`` (for a post-flash verify)."""
     return [dfu_util, "-w", "-d", ",%s" % usb, "-a", str(alt), "-U", str(file)]
+
+
+def bootloader_argv(dfu_util: str, usb: str, alt: int, addr: str, file: Path, *,
+                    serial: str | None = None) -> list[str]:
+    """Argv to write the bootloader to absolute address ``addr`` via the **system** DFU
+    (``usb`` = e.g. 0483:df11). No ``--reset``/``:leave``: the ST system ROM doesn't ACK the
+    final status, so the caller tolerates a non-zero exit (matching the IDE)."""
+    argv = [dfu_util, "-w", "-d", ",%s" % usb]
+    if serial:
+        argv += ["-S", serial]
+    return argv + ["-a", str(alt), "-s", addr, "-D", str(file)]

@@ -248,3 +248,30 @@ def flash_factory(project: str = ".", *, board: str, output: str | None = None,
     return _dfu_flash(project, board, cfg, spec, "flash-factory", output=output,
                       dfu_util=dfu_util, sdk_home=sdk_home, reset=reset, serial=serial,
                       dry_run=dry_run)
+
+
+def flash_bootloader(project: str = ".", *, board: str, output: str | None = None,
+                     dfu_util: str | None = None, sdk_home: Path | None = None,
+                     serial: str | None = None, dry_run: bool = False):
+    """Flash the board's bootloader. Unlike firmware/romfs, this can't go through the OpenMV
+    bootloader (it protects itself) -- the board must be in its **system** ROM DFU, entered by
+    hand (BOOT0/jumper). So there's no auto-reset here; we print the board's instructions and
+    wait for the system-DFU device (``dfu-util -w``)."""
+    cfg = flash_config(board)
+    bl = cfg.raw.get("bootloader")
+    if not bl:
+        raise FlashError("board %r has no bootloader to flash with this tool" % board)
+    if bl["backend"] != "dfu":                       # N6 (cubeprog) / RT (factory) / AE3 (alif)
+        raise FlashError("bootloader flashing for %r isn't available here: %s"
+                         % (board, bl.get("note", "unsupported")))
+    f = _output_dir(project, output) / ("%s-bootloader.bin" % board)
+    if not f.exists():
+        raise FlashError("missing %s -- run `build firmware` first" % f)
+    tool = _resolve_dfu_util(dfu_util, sdk_home, dry_run)
+    argv = dfu.bootloader_argv(tool, bl["usb"], int(bl["alt"]), bl["addr"], f, serial=serial)
+    print(bl["instructions"], file=sys.stderr)       # the manual system-DFU entry (BOOT0/jumper)
+    if not dry_run:
+        runner.run(argv, tolerate_fail=True)         # the ST ROM doesn't ACK the final status
+        history.record(project, "flash-bootloader", board=board,
+                       files=[{"file": f.name, "addr": bl["addr"]}])
+    return [FlashStep("bootloader", f, int(bl["alt"]), argv)]

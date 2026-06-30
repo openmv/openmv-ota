@@ -39,3 +39,12 @@ def test_nonzero_exit_raises(monkeypatch):
     with pytest.raises(FlashError, match="exit 3") as e:
         runner.run(["dfu-util"])
     assert e.value.exit_code == 1
+
+
+def test_tolerate_fail_warns_and_continues(monkeypatch, capsys):
+    def fake(argv, check):
+        raise subprocess.CalledProcessError(74, argv)
+
+    monkeypatch.setattr(runner.subprocess, "run", fake)
+    runner.run(["dfu-util"], tolerate_fail=True)      # no raise -- the bootloader-write quirk
+    assert "exited 74" in capsys.readouterr().err

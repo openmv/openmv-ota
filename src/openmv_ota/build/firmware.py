@@ -269,6 +269,9 @@ def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:
     if not collected:
         raise BuildError("firmware build produced no image for %s (looked for "
                          "firmware*.bin in %s)" % (name, bdir), exit_code=1)
+    boot = bdir / "bootloader.bin"
+    if boot.exists():                              # the OpenMV bootloader (STM32/N6 ports);
+        collected.append(_copy(boot, out_dir / ("%s-bootloader.bin" % name)))   # `flash bootloader`
     return collected
 
 
