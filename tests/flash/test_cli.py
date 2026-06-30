@@ -95,7 +95,6 @@ def test_imx_rt1060_dry_run(proj, monkeypatch, capsys):
 def test_imx_rt1060_reports_step_labels(proj, monkeypatch, capsys):
     root, ran, artifact = proj
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
-    monkeypatch.setattr(fl.time, "sleep", lambda _s: None)
     artifact("OPENMV_RT1060-firmware.bin")    # flashloaders are bundled in the package
     assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060"]) == 0
     out = capsys.readouterr().out

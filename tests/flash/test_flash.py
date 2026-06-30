@@ -149,13 +149,12 @@ def test_resolve_dfu_util_dry_run_tolerates_missing_dfu_util(monkeypatch):
 
 @pytest.fixture
 def imx_project(tmp_path, monkeypatch):
-    """An RT1060 project with build artifacts + flashloaders; runner/tools/sleep stubbed."""
+    """An RT1060 project with build artifacts + flashloaders; runner/tools stubbed."""
     (tmp_path / "build").mkdir()
     ran: list[list[str]] = []
     recorded: list[dict] = []
     monkeypatch.setattr(fl.runner, "run", lambda argv: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name.upper())
-    monkeypatch.setattr(fl.time, "sleep", lambda _s: None)
     monkeypatch.setattr(fl.history, "record",
                         lambda root, action, **f: recorded.append({"action": action, **f}))
     # the flashloaders are bundled in the package; only the build artifacts go in build/
@@ -169,6 +168,8 @@ def test_imx_firmware_runs_the_sequence(imx_project):
     root, ran, recorded = imx_project
     steps = fl.flash_firmware(str(root), board="OPENMV_RT1060")
     assert ran[0][0] == "SDPHOST" and ran[-1][-1] == "reset"
+    # the wait is a single SDK-python scan process (beside blhost), not a relaunched poll
+    assert ran[2][0] == "python3" and ran[2][1] == "-c" and ran[2][-2:] == ["0x15A2,0x0073", "30"]
     assert any("write-memory" in a and "0x60040000" in a for a in ran)
     assert recorded[0]["action"] == "flash-firmware" and recorded[0]["steps"] == \
         [s.label for s in steps]
@@ -181,13 +182,15 @@ def test_imx_factory_full_provision(imx_project):
     assert "efuse-program-once 0x06 00000010" in flat and "0x60001000" in flat
 
 
-def test_imx_dry_run_runs_nothing(imx_project, monkeypatch):
+def test_imx_dry_run_runs_nothing(imx_project):
     root, ran, recorded = imx_project
-    slept = []
-    monkeypatch.setattr(fl.time, "sleep", lambda s: slept.append(s))
     steps = fl.flash_romfs(str(root), board="OPENMV_RT1060", dry_run=True)
-    assert ran == [] and recorded == [] and slept == []
+    assert ran == [] and recorded == []
     assert steps[-1].argv[-1] == "reset"
+
+
+def test_imx_sdk_python_is_beside_blhost():
+    assert fl._sdk_python("/opt/sdk/python/bin/blhost") == "/opt/sdk/python/bin/python3"
 
 
 def test_imx_uses_bundled_flashloader(imx_project):
@@ -205,26 +208,6 @@ def test_imx_missing_build_artifact_errors(tmp_path, monkeypatch):
         fl.flash_firmware(str(tmp_path), board="OPENMV_RT1060")
 
 
-def test_poll_retries_until_the_flashloader_answers(monkeypatch):
-    calls = []
-
-    def flaky(argv):
-        calls.append(argv)
-        if len(calls) < 3:                            # fail twice, then succeed
-            raise FlashError("no device")
-
-    monkeypatch.setattr(fl.runner, "run", flaky)
-    monkeypatch.setattr(fl.time, "sleep", lambda _s: None)
-    fl._poll(["blhost", "get-property", "1"])
-    assert len(calls) == 3
-
-
-def test_poll_gives_up_after_max_attempts(monkeypatch):
-    monkeypatch.setattr(fl.runner, "run",
-                        lambda argv: (_ for _ in ()).throw(FlashError("no device")))
-    monkeypatch.setattr(fl.time, "sleep", lambda _s: None)
-    with pytest.raises(FlashError, match="never came up"):
-        fl._poll(["blhost", "get-property", "1"])
 
 
 def test_resolve_spsdk_dry_run_tolerates_missing(monkeypatch):

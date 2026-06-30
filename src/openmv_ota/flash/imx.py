@@ -4,15 +4,15 @@ Unlike the DFU boards, the RT1062 has no resident DFU bootloader -- it's flashed
 ROM's serial-download protocol (SDP). The flow, mirroring the OpenMV IDE's ``imx.cpp``:
 
 1. ``sdphost`` loads a RAM **flashloader** (``sdphost_flash_loader.bin``) and jumps to it.
-2. The flashloader re-enumerates as the MCU-bootloader (blhost) device; we settle, then poll
-   ``blhost get-property 1`` until it answers (the "sync while the bootloader is up" step).
+2. The flashloader re-enumerates as the MCU-bootloader (blhost) USB device. We **wait** for it
+   to appear -- one process that polls spsdk's USB scan internally (like ``dfu-util -w``),
+   instead of relaunching ``blhost`` to retry ``get-property`` (a heavy, flaky poll).
 3. ``blhost`` configures the FlexSPI NOR, then erases/writes each region. A full ``factory``
    flash also writes the flash-config block (FCB), the secure bootloader, and burns the boot
    e-fuse; a ``firmware``/``romfs`` update just rewrites that one region.
 4. ``blhost reset`` runs the new image.
 
-Every command is a pure argv (testable); the only runtime subtlety -- the post-jump poll --
-is a ``probe`` step the orchestrator retries. The flashloader binaries are prebuilt artifacts
+Every command is a pure argv (testable). The flashloader binaries are prebuilt artifacts
 (shipped with the firmware/IDE, not produced by ``build``), resolved from the flashloader dir.
 """
 
@@ -22,14 +22,30 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ERASE_TIMEOUT_MS = 120000        # the IDE allows 120s for an erase
+WAIT_TIMEOUT_S = 30              # how long to wait for the flashloader to enumerate
 _SECTOR = 0x1000                 # FlexSPI NOR erase granularity; round erase lengths up to it
+
+# A single process that waits for the flashloader's USB device to enumerate, polling spsdk's
+# scan in-process -- the dfu-util ``-w`` equivalent. Run with the SDK's python (where spsdk
+# lives); argv: <python3> -c <this> <vid,pid> <timeout_s>. Exits 0 once present, 1 on timeout.
+_WAIT_SCRIPT = (
+    "import sys, time\n"
+    "from spsdk.mboot.interfaces.usb import MbootUSBInterface as U\n"
+    "dev, deadline = sys.argv[1], time.time() + float(sys.argv[2])\n"
+    "while time.time() < deadline:\n"
+    "    if U.scan(device_id=dev):\n"
+    "        sys.exit(0)\n"
+    "    time.sleep(0.2)\n"
+    "sys.stderr.write('i.MX flashloader %s did not enumerate within %ss\\n'\n"
+    "                 % (dev, sys.argv[2]))\n"
+    "sys.exit(1)\n"
+)
 
 
 @dataclass(frozen=True)
 class ImxStep:
     label: str
     argv: list[str]
-    probe: bool = False          # a probe step is polled until it succeeds (the post-jump sync)
 
 
 def _sdphost(sdphost: str, usb: str, *sub: str) -> list[str]:
@@ -41,6 +57,10 @@ def _blhost(blhost: str, usb: str, *sub: str, timeout: int | None = None) -> lis
     if timeout is not None:
         argv += ["-t", str(timeout)]
     return argv + ["--", *sub]
+
+
+def _wait_argv(python3: str, usb: str) -> list[str]:
+    return [python3, "-c", _WAIT_SCRIPT, usb, "%g" % WAIT_TIMEOUT_S]
 
 
 def _aligned(size: int) -> int:
@@ -57,7 +77,8 @@ def _write_region(blhost: str, usb: str, addr: str, file: Path) -> list[ImxStep]
     ]
 
 
-def plan(op: str, raw: dict, sdphost: str, blhost: str, files: dict[str, Path]) -> list[ImxStep]:
+def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
+         files: dict[str, Path]) -> list[ImxStep]:
     """The ordered command list for an i.MX ``op`` (``firmware``/``romfs``/``factory``).
 
     ``files`` holds the resolved paths the op needs: ``sdphost_loader`` always, plus
@@ -72,8 +93,8 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, files: dict[str, Path]) 
                          str(files["sdphost_loader"]))),
         ImxStep("jump to flashloader",
                 _sdphost(sdphost, sd["usb"], "jump-address", sd["loader_addr"])),
-        ImxStep("wait for the flashloader",
-                _blhost(blhost, usb, "get-property", "1"), probe=True),
+        ImxStep("wait for the flashloader to enumerate",
+                _wait_argv(python3, usb)),
         ImxStep("configure FlexSPI NOR",
                 _blhost(blhost, usb, "fill-memory", bl["cfg_addr"], "4", bl["cfg_spi"], "word")),
         ImxStep("apply FlexSPI config",

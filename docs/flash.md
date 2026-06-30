@@ -156,8 +156,9 @@ The RT1062 has no resident DFU bootloader — it flashes through the ROM's seria
 protocol with NXP's `sdphost` + `blhost` (the SDK's spsdk tools, found under `--sdk-home`'s
 `python/bin`). The same `flash firmware` / `flash romfs` / `flash factory` verbs apply; the
 backend just runs a longer sequence: `sdphost` loads a RAM flashloader and jumps to it, then
-— after the flashloader re-enumerates (the tool settles and polls `blhost get-property` until
-it answers) — `blhost` configures the FlexSPI NOR and writes each region. `flash factory`
+— after the flashloader re-enumerates (a single process waits for it by polling spsdk's USB
+scan in-process, the `dfu-util -w` equivalent, rather than relaunching `blhost` to retry) —
+`blhost` configures the FlexSPI NOR and writes each region. `flash factory`
 does the full provision (flash-config block, secure bootloader, firmware, romfs, and the boot
 e-fuse); `flash firmware`/`flash romfs` rewrite just that one region. It works the same as any
 other board — nothing extra to supply:

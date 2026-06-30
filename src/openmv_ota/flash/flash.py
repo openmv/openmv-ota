@@ -15,7 +15,6 @@ factory`` the manufacturing program. The backend is chosen by the board's ``flas
 from __future__ import annotations
 
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,10 +23,6 @@ from openmv_ota.project import history
 from . import arduino, device, dfu, imx, runner, tools
 from .errors import FlashError
 from .targets import FlashConfig, flash_config
-
-_PROBE_ATTEMPTS = 10             # poll get-property up to this many times after the jump
-_PROBE_SETTLE_S = 2.0            # let the flashloader enumerate before the first poll
-_PROBE_DELAY_S = 1.0            # between polls
 
 
 def _mpremote(override: str | None) -> list[str]:
@@ -139,27 +134,10 @@ def _imx_files(board: str, op: str, raw: dict, out_dir: Path) -> dict[str, Path]
     return files
 
 
-def _poll(argv: list[str]) -> None:
-    """Wait for the flashloader to answer after the SDP jump (it re-enumerates as a new
-    USB device): settle, then retry ``get-property`` until it responds."""
-    time.sleep(_PROBE_SETTLE_S)
-    for attempt in range(_PROBE_ATTEMPTS):
-        try:
-            runner.run(argv)
-            return
-        except FlashError:
-            if attempt + 1 == _PROBE_ATTEMPTS:
-                raise FlashError("i.MX flashloader never came up (no get-property response "
-                                 "after %d tries)" % _PROBE_ATTEMPTS) from None
-            time.sleep(_PROBE_DELAY_S)
-
-
-def _execute_imx(steps: list[imx.ImxStep]) -> None:
-    for s in steps:
-        if s.probe:
-            _poll(s.argv)
-        else:
-            runner.run(s.argv)
+def _sdk_python(blhost: str) -> str:
+    """The python interpreter beside the spsdk tools (blhost is a wrapper that execs it) --
+    used to run the in-process flashloader scan-wait."""
+    return str(Path(blhost).parent / "python3")
 
 
 def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str, *,
@@ -168,9 +146,10 @@ def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str,
     sdphost = _resolve_spsdk("sdphost", sdk_home, dry_run)
     blhost = _resolve_spsdk("blhost", sdk_home, dry_run)
     files = _imx_files(board, op, cfg.raw, out_dir)
-    steps = imx.plan(op, cfg.raw, sdphost, blhost, files)
+    steps = imx.plan(op, cfg.raw, sdphost, blhost, _sdk_python(blhost), files)
     if not dry_run:
-        _execute_imx(steps)
+        for s in steps:
+            runner.run(s.argv)
         history.record(project, action, board=board, steps=[s.label for s in steps])
     return steps
 
