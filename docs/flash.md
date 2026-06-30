@@ -163,9 +163,10 @@ report a nonzero exit on the final status — expected for the ST ROM; the tool 
 
 ```
 $ openmv-ota flash bootloader -b OPENMV4
-BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug
-the camera first, jumper BOOT0 to 3.3V, then plug it back in with the jumper
-held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing.
+BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU:
+unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then
+remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on
+its own -- no jumper needed. Wait for the system DFU bootloader to enumerate.
 ```
 
 Supported on the OpenMV STM32 boards (OPENMV2/3/4/4P/PT). The others report what to do instead:
