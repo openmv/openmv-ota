@@ -33,22 +33,28 @@ rather than half-programming.
 
 ## What each board does
 
-The DFU boards differ only in their `vid:pid` and which alt-setting each artifact lands on:
+The OpenMV DFU boards differ only in their `vid:pid` and which alt-setting each artifact
+lands on:
 
-| Board | vid:pid | firmware | romfs | notes |
-| --- | --- | --- | --- | --- |
-| OPENMV2 | 37c5:9202 | alt 2 | alt 3 | |
-| OPENMV3 | 37c5:9203 | alt 2 | alt 3 | |
-| OPENMV4 | 37c5:9204 | alt 2 | alt 3 | |
-| OPENMV4P | 37c5:924a | alt 2 | alt 4 | |
-| OPENMVPT | 37c5:9205 | alt 2 | alt 4 | |
-| OPENMV_N6 | 37c5:9206 | alt **1** | alt 3 | firmware before filesystem |
-| OPENMV_AE3 | 37c5:96e3 | alt 1 (HP) | alt 6 | + HE fw alt 2, coprocessor romfs alt 3 |
-| OPENMV_RT1060 | — | — | — | i.MX backend (below) |
+| Board | backend | vid:pid | firmware | romfs | notes |
+| --- | --- | --- | --- | --- | --- |
+| OPENMV2 | dfu (alt) | 37c5:9202 | alt 2 | alt 3 | |
+| OPENMV3 | dfu (alt) | 37c5:9203 | alt 2 | alt 3 | |
+| OPENMV4 | dfu (alt) | 37c5:9204 | alt 2 | alt 3 | |
+| OPENMV4P | dfu (alt) | 37c5:924a | alt 2 | alt 4 | |
+| OPENMVPT | dfu (alt) | 37c5:9205 | alt 2 | alt 4 | |
+| OPENMV_N6 | dfu (alt) | 37c5:9206 | alt **1** | alt 3 | firmware before filesystem |
+| OPENMV_AE3 | dfu (alt) | 37c5:96e3 | alt 1 (HP) | alt 6 | + HE fw alt 2, coprocessor romfs alt 3 |
+| ARDUINO_PORTENTA_H7 | dfu (addr) | 2341:035b | 0x08040000 | 0x90B00000 | + CYW4343 wifi blobs; touch-to-reset |
+| ARDUINO_GIGA | dfu (addr) | 2341:0366 | 0x08040000 | 0x90B00000 | + CYW4343 wifi blobs; touch-to-reset |
+| ARDUINO_NICLA_VISION | dfu (addr) | 2341:035f | 0x08040000 | 0x90B00000 | + CYW4343 wifi blobs; touch-to-reset |
+| OPENMV_RT1060 | imx | sdphost/blhost | 0x60040000 | 0x60800000 | full sequence (below) |
 
-A single-partition write (`flash firmware`, `flash romfs`) is one `dfu-util` call; a
-multi-partition write resets only on the final step so the board stays in the bootloader
-between them. For example, on **OPENMV4**:
+The OpenMV boards address partitions by **alt-setting**; the Arduino boards by **address**
+(`-a <alt> -s 0xADDR`); the RT1060 has its own `sdphost`/`blhost` backend. A single-partition
+write (`flash firmware`, `flash romfs`) is one `dfu-util` call; a multi-partition write
+resets only on the final step so the board stays in the bootloader between them. For example,
+on **OPENMV4**:
 
 ```
 # flash firmware
