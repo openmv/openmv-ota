@@ -1,11 +1,11 @@
 # Flashing a board
 
 `openmv-ota flash` pushes the artifacts `build` produced onto a connected board over its
-programming interface. Phase 1 drives **`dfu-util`**, which covers every DFU board: the
-OpenMV STM32 boards (OPENMV2/3/4/4P/PT and N6) **and the AE3** — the AE3 flashes its two
-cores, its coprocessor romfs, and its main romfs all over DFU (the Alif write-mram tool is
-only for programming its bootloader). The i.MX (RT1060) backend, and CubeProgrammer for the
-N6's initial factory-bootloader burn, slot in later.
+programming interface. Most boards use **`dfu-util`**: the OpenMV STM32 boards
+(OPENMV2/3/4/4P/PT and N6) **and the AE3** — the AE3 flashes its two cores, its coprocessor
+romfs, and its main romfs all over DFU (the Alif write-mram tool is only for programming its
+bootloader). The **RT1060** uses its own `sdphost`/`blhost` backend (see below). The only
+piece still to come is CubeProgrammer for the N6's one-time factory-bootloader burn.
 
 Flash one board at a time — the device you have plugged in, named with `-b`:
 
@@ -29,6 +29,43 @@ can't be flashed separately. So there's no flag: `flash firmware` always writes 
 (HP + HE), and `flash factory` always writes all four partitions (alts 1/2/3/6 = HP fw, HE
 fw, coprocessor romfs, main romfs). If either core image is missing the flash fails fast
 rather than half-programming.
+
+## What each board does
+
+The DFU boards differ only in their `vid:pid` and which alt-setting each artifact lands on:
+
+| Board | vid:pid | firmware | romfs | notes |
+| --- | --- | --- | --- | --- |
+| OPENMV2 | 37c5:9202 | alt 2 | alt 3 | |
+| OPENMV3 | 37c5:9203 | alt 2 | alt 3 | |
+| OPENMV4 | 37c5:9204 | alt 2 | alt 3 | |
+| OPENMV4P | 37c5:924a | alt 2 | alt 4 | |
+| OPENMVPT | 37c5:9205 | alt 2 | alt 4 | |
+| OPENMV_N6 | 37c5:9206 | alt **1** | alt 3 | firmware before filesystem |
+| OPENMV_AE3 | 37c5:96e3 | alt 1 (HP) | alt 6 | + HE fw alt 2, coprocessor romfs alt 3 |
+| OPENMV_RT1060 | — | — | — | i.MX backend (below) |
+
+A single-partition write (`flash firmware`, `flash romfs`) is one `dfu-util` call; a
+multi-partition write resets only on the final step so the board stays in the bootloader
+between them. For example, on **OPENMV4**:
+
+```
+# flash firmware
+dfu-util -w -d ,37c5:9204 -a 2 --reset -D OPENMV4-firmware.bin
+
+# flash factory  (firmware, then the dual-slot factory image)
+dfu-util -w -d ,37c5:9204 -a 2 -D OPENMV4-firmware.bin
+dfu-util -w -d ,37c5:9204 -a 3 --reset -D OPENMV4-factory-romfs.img
+```
+
+and the **AE3** `flash factory`, all four partitions in order:
+
+```
+dfu-util -w -d ,37c5:96e3 -a 1 -D OPENMV_AE3-firmware-M55_HP.bin
+dfu-util -w -d ,37c5:96e3 -a 2 -D OPENMV_AE3-firmware-M55_HE.bin
+dfu-util -w -d ,37c5:96e3 -a 3 -D OPENMV_AE3-coprocessor-romfs.img
+dfu-util -w -d ,37c5:96e3 -a 6 --reset -D OPENMV_AE3-factory-romfs.img
+```
 
 ## Where the targets come from
 
@@ -89,3 +126,24 @@ The two flashloader binaries the sequence needs (`sdphost_flash_loader.bin`,
 you never supply or carry them. This whole backend is temporary: the RT1062 will move to the
 same DFU bootloader as the other cameras, and when it does this path (and those bundled files)
 goes away.
+
+## Typical use
+
+```
+# Manufacturing — provision a fresh board (firmware + the golden factory image):
+openmv-ota build firmware       -b OPENMV4
+openmv-ota build factory-romfs  -b OPENMV4
+openmv-ota flash factory        -b OPENMV4
+
+# Iterate on the app image on a dev board:
+openmv-ota build romfs  -b OPENMV4
+openmv-ota flash romfs  -b OPENMV4
+
+# See exactly what would run before committing to a flash:
+openmv-ota flash factory -b OPENMV4 --dry-run
+```
+
+On a multi-core board (the AE3) the same commands flash every partition the image spans —
+`build` produces the per-core firmware and the coprocessor romfs in lockstep with the main
+image, and `flash` writes them together. Flashing always resolves every artifact first, so a
+missing file fails fast instead of half-programming the board.
