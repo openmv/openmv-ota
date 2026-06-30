@@ -20,6 +20,8 @@ htmlcov/
 /releases/
 *.bin
 firmware.bin
+# ...except the vendored i.MX flashloaders (prebuilt, shipped as package data)
+!src/openmv_ota/data/flashloaders/**/*.bin
 
 # Private signing material — NEVER commit these
 *.pem
