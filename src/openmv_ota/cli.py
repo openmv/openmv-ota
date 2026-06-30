@@ -4,6 +4,7 @@ Commands are namespaced by subsystem:
 
     openmv-ota project …    peg a project to a firmware checkout + toolchain
     openmv-ota build …      compile + sign romfs / factory / firmware images
+    openmv-ota flash …      flash built artifacts onto a board (dfu-util)
     openmv-ota romfs …      low-level pack / inspect of a ROMFS image directory
 """
 
@@ -34,6 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
     from openmv_ota.build import cli as build_cli
 
     build_cli.register(p_build)
+
+    p_flash = sub.add_parser("flash", help="flash built artifacts onto a board (dfu-util)")
+    from openmv_ota.flash import cli as flash_cli
+
+    flash_cli.register(p_flash)
 
     return parser
 

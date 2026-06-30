@@ -35,6 +35,8 @@ class BoardConfig:
     arch: str
     mpy_args: list[str]
     partitions: list[Partition]
+    flash: dict[str, Any] | None = None  # how to flash the board (backend + usb + alt map);
+                                         # None for boards without a configured flasher
 
     def partition(self, index: int | None = None) -> Partition:
         """Return the partition with the given ``index`` (default: the first).
@@ -80,6 +82,7 @@ def load_boards() -> dict[str, BoardConfig]:
             arch=b.get("arch", ""),
             mpy_args=list(b.get("mpy_args", [])),
             partitions=parts,
+            flash=b.get("flash"),
         )
     return boards
 

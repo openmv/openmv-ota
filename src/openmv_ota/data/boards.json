@@ -5,6 +5,7 @@
     "OPENMV2": {
       "display_name": "OpenMV Cam M4 (STM32F427)",
       "arch": "OMV2 F4 256 JPEG",
+      "flash": {"backend": "dfu", "usb": "37c5:9202", "alt": {"firmware": 2, "romfs": 3}},
       "mpy_args": [
         "-march=armv7emsp"
       ],
@@ -35,6 +36,7 @@
     "OPENMV3": {
       "display_name": "OpenMV Cam M7 (STM32F765/67)",
       "arch": "OMV3 F7 512",
+      "flash": {"backend": "dfu", "usb": "37c5:9203", "alt": {"firmware": 2, "romfs": 3}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -65,6 +67,7 @@
     "OPENMV4": {
       "display_name": "OpenMV Cam H7 (STM32H743)",
       "arch": "OMV4 H7 1024",
+      "flash": {"backend": "dfu", "usb": "37c5:9204", "alt": {"firmware": 2, "romfs": 3}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -95,6 +98,7 @@
     "OPENMV4P": {
       "display_name": "OpenMV Cam H7 Plus (STM32H743 w/ SDRAM)",
       "arch": "OMV4P H7 32768 SDRAM",
+      "flash": {"backend": "dfu", "usb": "37c5:924a", "alt": {"firmware": 2, "romfs": 4}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -125,6 +129,7 @@
     "OPENMVPT": {
       "display_name": "OpenMV Pure Thermal (STM32H743 w/ SDRAM)",
       "arch": "OPENMVPT 65536 SDRAM",
+      "flash": {"backend": "dfu", "usb": "37c5:9205", "alt": {"firmware": 2, "romfs": 4}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -256,6 +261,7 @@
     "OPENMV_N6": {
       "display_name": "OpenMV N6 (STM32N657)",
       "arch": "OpenMV N6",
+      "flash": {"backend": "dfu", "usb": "37c5:9206", "alt": {"firmware": 1, "romfs": 3}},
       "mpy_args": [
         "-march=armv7emdp"
       ],

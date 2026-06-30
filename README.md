@@ -139,7 +139,8 @@ openmv-ota build verify        ./my-product/build/OPENMV_N6-romfs.zip
 
 This is distinct from `romfs pack`, which packs a directory verbatim with no
 compilation. See [docs/build.md](docs/build.md) and, for the signed image format,
-[docs/trailer.md](docs/trailer.md).
+[docs/trailer.md](docs/trailer.md). To flash the built artifacts onto a board with
+`dfu-util`, see [docs/flash.md](docs/flash.md).
 
 ### OTA
 
