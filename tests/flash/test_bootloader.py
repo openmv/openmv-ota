@@ -42,7 +42,7 @@ def test_bootloader_flash_via_system_dfu(bl_project, capsys):
     assert ran[0][1] == {"tolerate_fail": True}
     assert steps[0].artifact == "bootloader"
     # the manual BOOT0 instruction is shown
-    assert "jumper the BOOT pin to RST" in capsys.readouterr().err
+    assert "jumper BOOT0 (the REC pad) to 3.3V" in capsys.readouterr().err
 
 
 def test_bootloader_no_auto_reset(bl_project, monkeypatch):
@@ -56,7 +56,7 @@ def test_bootloader_dry_run_shows_instructions_runs_nothing(bl_project, capsys):
     root, ran = bl_project
     fl.flash_bootloader(str(root), board="OPENMV4", dry_run=True)
     assert ran == []
-    assert "jumper the BOOT pin to RST" in capsys.readouterr().err
+    assert "jumper BOOT0 (the REC pad) to 3.3V" in capsys.readouterr().err
 
 
 def test_bootloader_missing_artifact(tmp_path, monkeypatch):
@@ -85,7 +85,7 @@ def test_bootloader_cli(bl_project, capsys):
     assert main(["flash", "bootloader", str(root), "-b", "OPENMV4", "--dry-run"]) == 0
     out = capsys.readouterr()
     assert "would run: DFU -w -d ,0483:df11" in out.out
-    assert "jumper the BOOT pin to RST" in out.err
+    assert "jumper BOOT0 (the REC pad) to 3.3V" in out.err
 
 
 def test_bootloader_cli_error_returns_exit_code(bl_project, capsys):
