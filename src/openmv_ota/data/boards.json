@@ -5,7 +5,7 @@
     "OPENMV2": {
       "display_name": "OpenMV Cam M4 (STM32F427)",
       "arch": "OMV2 F4 256 JPEG",
-      "flash": {"backend": "dfu", "usb": "37c5:9202", "runtime": "37c5:1202", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug the camera first, jumper BOOT0 (the REC pad) to 3.3V (VCC), then plug it back in with the jumper held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing."}},
+      "flash": {"backend": "dfu", "usb": "37c5:9202", "runtime": "37c5:1202", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug the camera first, jumper BOOT0 to 3.3V (VCC), then plug it back in with the jumper held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing."}},
       "mpy_args": [
         "-march=armv7emsp"
       ],
@@ -36,7 +36,7 @@
     "OPENMV3": {
       "display_name": "OpenMV Cam M7 (STM32F765/67)",
       "arch": "OMV3 F7 512",
-      "flash": {"backend": "dfu", "usb": "37c5:9203", "runtime": "37c5:1203", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug the camera first, jumper BOOT0 (the REC pad) to 3.3V (VCC), then plug it back in with the jumper held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing."}},
+      "flash": {"backend": "dfu", "usb": "37c5:9203", "runtime": "37c5:1203", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug the camera first, jumper BOOT0 to 3.3V (VCC), then plug it back in with the jumper held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -67,7 +67,7 @@
     "OPENMV4": {
       "display_name": "OpenMV Cam H7 (STM32H743)",
       "arch": "OMV4 H7 1024",
-      "flash": {"backend": "dfu", "usb": "37c5:9204", "runtime": "37c5:1204", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug the camera first, jumper BOOT0 (the REC pad) to 3.3V (VCC), then plug it back in with the jumper held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing."}},
+      "flash": {"backend": "dfu", "usb": "37c5:9204", "runtime": "37c5:1204", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug the camera first, jumper BOOT0 to 3.3V (VCC), then plug it back in with the jumper held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -98,7 +98,7 @@
     "OPENMV4P": {
       "display_name": "OpenMV Cam H7 Plus (STM32H743 w/ SDRAM)",
       "arch": "OMV4P H7 32768 SDRAM",
-      "flash": {"backend": "dfu", "usb": "37c5:924a", "runtime": "37c5:124a", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug the camera first, jumper BOOT0 (the REC pad) to 3.3V (VCC), then plug it back in with the jumper held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing."}},
+      "flash": {"backend": "dfu", "usb": "37c5:924a", "runtime": "37c5:124a", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug the camera first, jumper BOOT0 to 3.3V (VCC), then plug it back in with the jumper held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -129,7 +129,7 @@
     "OPENMVPT": {
       "display_name": "OpenMV Pure Thermal (STM32H743 w/ SDRAM)",
       "arch": "OPENMVPT 65536 SDRAM",
-      "flash": {"backend": "dfu", "usb": "37c5:9205", "runtime": "37c5:1205", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug the camera first, jumper BOOT0 (the REC pad) to 3.3V (VCC), then plug it back in with the jumper held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing."}},
+      "flash": {"backend": "dfu", "usb": "37c5:9205", "runtime": "37c5:1205", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on, so the jumper must be on BEFORE the board is powered: unplug the camera first, jumper BOOT0 to 3.3V (VCC), then plug it back in with the jumper held. Wait for the system DFU bootloader to enumerate; remove the jumper after flashing."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
