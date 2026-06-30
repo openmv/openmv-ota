@@ -1,9 +1,21 @@
 """OTA slot geometry, derived from a partition's flash erase block.
 
 A ROMFS partition is split 50/50 into a **FRONT** (mutable runtime) slot and a
-**BACK** (immutable golden) slot. Each slot holds the ROMFS body plus two
-control sectors -- a **status** sector and a **trailer** sector -- each one flash
-erase block so they can be erased/rewritten independently of the body.
+**BACK** (immutable golden) slot. Each slot holds the ROMFS body plus four
+control sectors at the **end** of the slot, each one flash erase block so they can
+be erased/rewritten independently of the body. Counting back from the last block::
+
+    slot_size - 1*block   trailer    the signed trust trailer
+    slot_size - 2*block   status     the trial-boot state machine markers
+    slot_size - 3*block   spare      reserved for future metadata
+    slot_size - 4*block   rollback   the monotonic anti-rollback floor
+
+The ``rollback`` sector holds an append-only log of confirmed versions; ``confirm()``
+appends the running version (a 1->0 program, no erase) and boot.py takes the max as the
+anti-rollback floor, so a device can't be downgraded to an older *signed* release. The
+**BACK** slot's rollback sector is the authoritative one (FRONT is erased on every
+install); the FRONT copy is reserved for symmetry. ``spare`` is held back so the next
+metadata need doesn't force a layout change that would re-base every fielded device.
 
 Everything keys off the erase block, but floored to ``MIN_OTA_BLOCK``: a
 byte-writable backing store like AE3's MRAM reports a tiny 16-byte "sector", and
@@ -11,14 +23,15 @@ sizing the trailer to that would leave no room to grow the signed metadata later
 without reshaping the layout and breaking already-deployed devices. Reserving a
 full 4 KiB block instead costs nothing on a multi-megabyte partition.
 
-A partition is **OTA-capable** only if a slot has room for a body after its two
+A partition is **OTA-capable** only if a slot has room for a body after its
 control sectors -- which excludes boards whose ROMFS is a single large internal
 flash sector (e.g. OpenMV2/3/4), where the math itself proves OTA is impossible.
 """
 
 from __future__ import annotations
 
-MIN_OTA_BLOCK = 4096  # trailer/status reserve at least one 4 KiB block
+MIN_OTA_BLOCK = 4096  # each control sector reserves at least one 4 KiB block
+CONTROL_SECTORS = 4   # rollback, spare, status, trailer (in ascending offset order)
 
 
 def ota_block(erase_size: int) -> int:
@@ -34,8 +47,23 @@ def front_size(partition_size: int, erase_size: int) -> int:
 
 
 def slot_overhead(erase_size: int) -> int:
-    """Per-slot control overhead: a status sector + a trailer sector (one block each)."""
-    return 2 * ota_block(erase_size)
+    """Per-slot control overhead: the trailer/status/spare/rollback sectors (one block each)."""
+    return CONTROL_SECTORS * ota_block(erase_size)
+
+
+def trailer_offset(slot_size: int, erase_size: int) -> int:
+    """Offset of the trailer sector within a slot (the last block)."""
+    return slot_size - ota_block(erase_size)
+
+
+def status_offset(slot_size: int, erase_size: int) -> int:
+    """Offset of the status sector within a slot."""
+    return slot_size - 2 * ota_block(erase_size)
+
+
+def rollback_offset(slot_size: int, erase_size: int) -> int:
+    """Offset of the anti-rollback (version-floor) sector within a slot."""
+    return slot_size - 4 * ota_block(erase_size)
 
 
 def body_capacity(partition_size: int, erase_size: int) -> int:

@@ -57,6 +57,22 @@ PENDING = _marker(b"pending")
 TRIED = _marker(b"tried")
 CONFIRMED = _marker(b"confirmed")
 
+# --- Anti-rollback floor (mirror of openmv_ota.ota.rollback) ----------------
+_ROLLBACK_ENTRY = 8                     # u32 version || u32 ~version, in BACK's rollback sector
+
+
+def _rollback_floor_of(sector):
+    """The highest valid version recorded in a rollback sector (0 if none)."""
+    floor = 0
+    i = 0
+    n = len(sector)
+    while i + _ROLLBACK_ENTRY <= n:
+        version, check = struct.unpack_from("<II", sector, i)
+        if (version ^ 0xFFFFFFFF) == check and version > floor:
+            floor = version
+        i += _ROLLBACK_ENTRY
+    return floor
+
 
 class OtaReject(Exception):
     """A slot was rejected. The message is a short, stable reason code."""
@@ -196,13 +212,16 @@ class OtaBoot:
         self.platform_version = platform_version
 
     def _rollback_floor(self):
-        """BACK's payload_version is the anti-rollback floor for FRONT; 0 if BACK's
-        trailer doesn't parse (a torn factory image -- FRONT then floors at 0)."""
+        """The anti-rollback floor for FRONT: the higher of BACK's factory version and the
+        monotonic floor in BACK's rollback sector (advanced by confirm() as updates are
+        kept). 0 if BACK's trailer doesn't parse (a torn factory image) and no floor logged."""
         back = self.read(self.partition_size - self.block, self.block)
         try:
-            return parse_trailer(back).payload_version
+            base = parse_trailer(back).payload_version
         except OtaReject:
-            return 0
+            base = 0
+        logged = _rollback_floor_of(self.read(self.partition_size - 4 * self.block, self.block))
+        return logged if logged > base else base
 
     def _try_slot(self, offset, slot_size, is_front, rollback_floor):
         blk = self.block

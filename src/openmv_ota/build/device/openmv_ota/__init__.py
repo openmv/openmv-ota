@@ -28,6 +28,7 @@ wire the real ``vfs``/``uctypes``/``_ota_config``.
 """
 
 import hashlib
+import struct
 
 # Re-export the frozen OTA logger so the app can ``openmv_ota.log.info("...")`` (it's the
 # standard ``logging.getLogger("openmv_ota")``) and the lib's own device paths can log.
@@ -114,6 +115,39 @@ def _representation_of(status):
         return "full"
     if m == REPR_DELTA:
         return "delta"
+    return None
+
+
+# --- Anti-rollback floor (mirror of openmv_ota.ota.rollback) -----------------
+
+_ROLLBACK_ENTRY = 8                              # u32 version || u32 ~version
+
+
+def _rollback_entry(version):
+    return struct.pack("<II", version & 0xFFFFFFFF, (version & 0xFFFFFFFF) ^ 0xFFFFFFFF)
+
+
+def _rollback_floor_of(sector):
+    """The highest valid version recorded in a rollback sector (0 if none)."""
+    floor = i = 0
+    n = len(sector)
+    while i + _ROLLBACK_ENTRY <= n:
+        version, check = struct.unpack_from("<II", sector, i)
+        if (version ^ 0xFFFFFFFF) == check and version > floor:
+            floor = version
+        i += _ROLLBACK_ENTRY
+    return floor
+
+
+def _rollback_append_offset(sector):
+    """Offset of the first blank entry slot, or None if the sector is full."""
+    blank = b"\xff" * _ROLLBACK_ENTRY
+    i = 0
+    n = len(sector)
+    while i + _ROLLBACK_ENTRY <= n:
+        if bytes(sector[i:i + _ROLLBACK_ENTRY]) == blank:
+            return i
+        i += _ROLLBACK_ENTRY
     return None
 
 
@@ -285,27 +319,53 @@ def status():  # pragma: no cover
 
 def identity():  # pragma: no cover
     """The running image's identity/provenance from ``/rom/system.json`` (board, product,
-    board_id, app_version, vendor, toolchain, ...) -- what an update server reads to decide
-    what to push. ``{}`` if there's no system.json."""
+    board_id, app_version, vendor, toolchain, ...) plus ``device_id`` -- this unit's unique
+    hardware id (``machine.unique_id()``) -- so an update server can address the specific
+    device, not just the model. ``{}`` (minus device_id) if there's no system.json."""
     import json
     try:
-        return json.load(open("/rom/system.json"))
+        info = json.load(open("/rom/system.json"))
     except OSError:
-        return {}
+        info = {}
+    try:
+        import machine
+        info["device_id"] = machine.unique_id().hex()
+    except (ImportError, AttributeError):
+        pass
+    return info
+
+
+def _advance_rollback(cfg, version):  # pragma: no cover (device)
+    """Raise the anti-rollback floor to ``version`` by appending it to BACK's rollback
+    sector (a 1->0 program, no erase). A no-op if the floor already covers ``version`` or
+    the log is full (the floor then stays frozen at its max -- still protective)."""
+    import uctypes
+    import vfs
+    base = uctypes.addressof(vfs.rom_ioctl(2, 0))
+    off = cfg.PARTITION_SIZE - 4 * cfg.OTA_BLOCK     # BACK's rollback sector (absolute)
+    sector = uctypes.bytearray_at(base + off, cfg.OTA_BLOCK)
+    if _rollback_floor_of(sector) >= version:
+        return
+    pos = _rollback_append_offset(sector)
+    if pos is None:
+        return
+    _write_verified(0, off + pos, _rollback_entry(version))
 
 
 def confirm():  # pragma: no cover
-    """Keep the running FRONT image. Writes CONFIRMED iff we booted FRONT *and* it's an
-    un-confirmed one-shot trial (no erase -- the marker just programs into the
-    already-erased status sector, like boot.py arming ``tried``); a no-op otherwise. The
-    FRONT-slot guard prevents confirming a failed trial we fell back from. Returns True
-    iff it just confirmed; raises OSError if the marker write fails. Idempotent -- safe
-    to call every boot once healthy."""
+    """Keep the running FRONT image: raise the anti-rollback floor to this version, then
+    write CONFIRMED -- iff we booted FRONT *and* it's an un-confirmed one-shot trial (a
+    no-op otherwise). Advancing the floor *before* CONFIRMED means a crash in between leaves
+    the floor raised but the image un-confirmed, so the next boot safely falls back to the
+    golden (which the floor never locks out). The FRONT-slot guard prevents confirming a
+    failed trial we fell back from. Returns True iff it just confirmed; raises OSError if a
+    write fails. Idempotent -- safe to call every boot once healthy."""
     import _ota_config
-    slot, _v, _r = _boot_result()
+    slot, version, _r = _boot_result()
     off = _front_status_offset(_ota_config)
     if not _should_confirm(slot, _read_at(0, off, 3 * MARKER_SIZE)):
         return False
+    _advance_rollback(_ota_config, version)
     _write_verified(0, off + _CONFIRMED_OFF, CONFIRMED)
     log.info("confirm: kept running FRONT image")
     return True

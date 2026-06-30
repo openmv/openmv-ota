@@ -25,7 +25,7 @@ runs after the board's stock `_boot.py` and:
    (via the on-device mbedtls shim) *before trusting any header field*.
 2. Checks the authenticated header: **integrity** (body SHA-256), **cross-flash guard**
    (`board_id`), **compatibility** (`min_platform_version`), and **anti-rollback**
-   (`payload_version` vs the golden image's floor).
+   (`payload_version` vs the **rollback floor** — see below).
 3. Runs the **trial state machine** (below) and mounts the chosen slot at `/rom`.
 
 If FRONT fails *any* of these, `boot.py` falls back to the golden **BACK** image — so a
@@ -33,6 +33,17 @@ bad, corrupt, mis-targeted, downgraded, or un-confirmable update can never stran
 device. It records the outcome in module globals (`last_slot`,
 `last_payload_version`, `last_failure_reason`) for the app to read, since the boot path
 can't print.
+
+**The anti-rollback floor** is a monotonic minimum version, so a device can't be
+downgraded to an *older signed* release (a replay attack — the signature is genuine, just
+stale). It starts at the factory version and **advances**: each `confirm()` appends the
+running version to an append-only log in the **golden BACK** slot's reserved `rollback`
+sector (a 1→0 flash program, no erase — a power loss mid-append just leaves an ignored torn
+entry), and `boot.py` takes the highest logged version as the floor. Advancing happens in
+BACK because FRONT is erased on every install; the floor is raised *before* `CONFIRMED` is
+written, so a crash in between safely falls back to golden (which the floor never locks
+out). Each slot reserves four control sectors now (`rollback`, a `spare` for future
+metadata, `status`, `trailer`); the body shrinks by the two new blocks, slot size unchanged.
 
 ## The update lifecycle (and your app's one job)
 
@@ -78,13 +89,15 @@ extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes
     deltas are actually being applied,
   - `pending` / `tried` / `confirmed` / `trial` — FRONT's trial-marker state.
 - **`identity()`** — the running image's identity/provenance from `/rom/system.json`
-  (`board`, `product`, `board_id`, `app_version`, `vendor`, toolchain, …) — what an
-  update server reads to decide what to push. `{}` if there's no system.json.
-- **`confirm()`** — keep the running image: writes `confirmed` **iff** you booted FRONT
-  *and* it's an un-confirmed trial, else a no-op. Idempotent (safe to call every boot
-  once healthy), returns whether it just confirmed. The FRONT-slot guard matters: if you
-  fell back to BACK because a trial failed, FRONT still looks like an un-confirmed trial,
-  so confirming it from BACK would resurrect the bad image — `confirm()` refuses to.
+  (`board`, `product`, `board_id`, `app_version`, `vendor`, toolchain, …) plus `device_id`
+  (this unit's hardware id from `machine.unique_id()`) — what an update server reads to
+  decide what to push, and to address the specific device. `{}` if there's no system.json.
+- **`confirm()`** — keep the running image: **advances the anti-rollback floor** to this
+  version, then writes `confirmed` — **iff** you booted FRONT *and* it's an un-confirmed
+  trial, else a no-op. Idempotent (safe to call every boot once healthy), returns whether
+  it just confirmed. The FRONT-slot guard matters: if you fell back to BACK because a trial
+  failed, FRONT still looks like an un-confirmed trial, so confirming it from BACK would
+  resurrect the bad image — `confirm()` refuses to.
 - **`sync()`** — apply any **bundled resources** (see below) whose on-device target
   differs from the bundled copy. A flash erase + chunked write of a whole partition, so
   **not quick** — it feeds the watchdog (`openmv_wdt`) the same minimal way `install()`

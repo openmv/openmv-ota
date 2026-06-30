@@ -504,18 +504,21 @@ def _under(path: Path, root: Path) -> bool:
         return False
 
 
-def _compose_slot(body: bytes, pad: int, status_sector: bytes, trailer_bytes: bytes,
-                  block: int, slot_size: int) -> bytes:
-    """One slot: ``body || 0xFF pad || status block || trailer block`` == slot_size."""
+def _compose_slot(body: bytes, pad: int, rollback_sector: bytes, status_sector: bytes,
+                  trailer_bytes: bytes, block: int, slot_size: int) -> bytes:
+    """One slot: ``body || 0xFF pad || rollback || spare || status || trailer`` == slot_size
+    (the control sectors are the last four blocks; ``spare`` is reserved, all 0xFF)."""
+    rollback_block = rollback_sector + b"\xff" * (block - len(rollback_sector))
+    spare_block = b"\xff" * block
     trailer_block = trailer_bytes + b"\xff" * (block - len(trailer_bytes))
-    slot = body + b"\xff" * pad + status_sector + trailer_block
+    slot = body + b"\xff" * pad + rollback_block + spare_block + status_sector + trailer_block
     assert len(slot) == slot_size, (len(slot), slot_size)
     return slot
 
 
 def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vendor, *,
                  convert_models, mpy_extra, keep_build_dir, inject=None) -> BuildResult:
-    from openmv_ota.ota import status
+    from openmv_ota.ota import rollback, status
 
     body, system_info, tmp = _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor,
                                          convert_models=convert_models, mpy_extra=mpy_extra,
@@ -524,24 +527,28 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         block = geometry.ota_block(t.erase_size)
         front_size = t.front_size
         back_size = t.partition_size - front_size
-        front_cap = front_size - 2 * block
-        back_cap = back_size - 2 * block
+        overhead = geometry.slot_overhead(t.erase_size)
+        front_cap = front_size - overhead
+        back_cap = back_size - overhead
         if len(body) > front_cap:  # the smaller slot bounds it
             raise BuildError(
                 "%s image is %d bytes but a factory slot holds %d (%d over)"
                 % (t.name, len(body), front_cap, len(body) - front_cap), exit_code=1)
         _warn_unset_board_id(t, system_info)
+        # seed the anti-rollback floor at the factory version (the device can never be
+        # downgraded below it; confirm() advances it as updates are kept).
+        floor = rollback.encode_entry(signer.payload_version)
 
         # FRONT: mountable at first boot (post-OTA-confirmed shape).
         front_pad = front_cap - len(body)
         front = _compose_slot(
-            body, front_pad,
+            body, front_pad, floor,
             status.build_status_sector(block, pending=True, tried=True, confirmed=True),
             _build_trailer(signer, p, body, system_info, front_pad), block, front_size)
         # BACK: golden / factory state (confirmed only), never trialed.
         back_pad = back_cap - len(body)
         back = _compose_slot(
-            body, back_pad,
+            body, back_pad, floor,
             status.build_status_sector(block, pending=False, tried=False, confirmed=True),
             _build_trailer(signer, p, body, system_info, back_pad), block, back_size)
 
@@ -616,15 +623,15 @@ def build_ota_image(
 
         block = geometry.ota_block(t.erase_size)
         front_size = t.front_size
-        front_cap = front_size - 2 * block
+        front_cap = front_size - geometry.slot_overhead(t.erase_size)
         if len(body) > front_cap:
             raise BuildError(
                 "%s body is %d bytes but a FRONT slot holds %d (rebuild within capacity)"
                 % (t.name, len(body), front_cap), exit_code=1)
 
-        # Full FRONT slot with a blank (0xFF) status sector: the installer writes this
-        # 1:1, then arms PENDING in that sector last.
-        image = _compose_slot(body, front_cap - len(body), b"\xff" * block,
+        # Full FRONT slot, all control sectors blank (0xFF): the installer writes this 1:1,
+        # then arms PENDING last. The rollback floor lives in BACK, so FRONT's stays blank.
+        image = _compose_slot(body, front_cap - len(body), b"", b"\xff" * block,
                               trailer_bytes, block, front_size)
         gz = gzip.compress(image, mtime=0)            # mtime=0: reproducible artifact
         out_path = out_dir / (_target_name(t) + "-ota.img.gz")

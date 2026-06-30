@@ -32,6 +32,18 @@ def test_markers_and_offsets_pinned_to_host():
     assert rt.MARKER_SIZE == host_status.MARKER_SIZE
 
 
+def test_rollback_mirror_matches_host():
+    from openmv_ota.ota import rollback as host
+    assert rt._ROLLBACK_ENTRY == host.ENTRY_SIZE
+    assert rt._rollback_entry(0x01020000) == host.encode_entry(0x01020000)
+    sector = bytearray(b"\xff" * 4096)
+    sector[0:host.ENTRY_SIZE] = host.encode_entry(0x01000000)
+    sector[host.ENTRY_SIZE:2 * host.ENTRY_SIZE] = host.encode_entry(0x01030000)
+    assert rt._rollback_floor_of(sector) == host.floor_of(sector) == 0x01030000
+    assert rt._rollback_append_offset(sector) == host.append_offset(sector) == 2 * host.ENTRY_SIZE
+    assert rt._rollback_append_offset(b"\x00" * 4096) is None   # full -> no room
+
+
 def test_representation_of_decodes_each():
     def sector(repr_marker):
         s = bytearray(_sector(True, True, False))

@@ -15,12 +15,13 @@ import pytest
 
 from openmv_ota.build.device import boot as B
 from openmv_ota.ota import keys, sign
+from openmv_ota.ota import rollback as host_rollback
 from openmv_ota.ota import status as host_status
 from openmv_ota.ota import trailer as host_trailer
 from openmv_ota.ota.algorithms import ES256, algorithm_for
 
 BLOCK = 4096
-FRONT_SIZE = 3 * BLOCK           # body capacity = FRONT_SIZE - 2*BLOCK = 4096
+FRONT_SIZE = 5 * BLOCK           # body cap = FRONT_SIZE - 4*BLOCK (rollback/spare/status/trailer)
 PARTITION_SIZE = 2 * FRONT_SIZE  # BACK slot is the other half
 BOARD_ID = 0x1234
 PLATFORM = (5 << 24)             # running firmware version code
@@ -78,6 +79,16 @@ def test_constants_match_host():
         host_status.PENDING_OFFSET, host_status.TRIED_OFFSET, host_status.CONFIRMED_OFFSET)
     for alg in (-7, -35, -36):
         assert B._ALG_SIG_SIZE[alg] == algorithm_for(alg).sig_size
+    assert B._ROLLBACK_ENTRY == host_rollback.ENTRY_SIZE
+
+
+def test_rollback_floor_of_matches_host():
+    from openmv_ota.ota import rollback as host
+    sector = bytearray(b"\xff" * BLOCK)
+    sector[0:host.ENTRY_SIZE] = host.encode_entry(0x01000000)
+    sector[host.ENTRY_SIZE:2 * host.ENTRY_SIZE] = host.encode_entry(0x01020000)
+    assert B._rollback_floor_of(bytes(sector)) == host.floor_of(sector) == 0x01020000
+    assert B._rollback_floor_of(b"\xff" * BLOCK) == 0          # blank -> no floor
 
 
 # --- parse_trailer ----------------------------------------------------------
@@ -367,6 +378,19 @@ def test_run_front_rollback_floored_by_back():
         _back(priv, 0x1, bb, payload_version=(2 << 24))))
     slot, _t, reason = dev.boot({0x100: pub, 0x1: pub})
     assert slot == "BACK" and reason == "rollback"
+
+
+def test_run_front_rejected_by_advanced_rollback_floor():
+    priv, pub = _key()
+    fb, bb = b"v2front!" * 4, b"v1back!!" * 4
+    # FRONT v2 clears the factory floor (BACK v1), but the device already confirmed v5 --
+    # recorded in BACK's rollback sector -- so installing v2 is a downgrade and is rejected.
+    front = _front(priv, 0x100, fb, _status(True, True, True), payload_version=(2 << 24))
+    part = _partition(front, _back(priv, 0x1, bb, payload_version=V1))
+    ro = PARTITION_SIZE - 4 * BLOCK                       # BACK's rollback sector (absolute)
+    part[ro:ro + host_rollback.ENTRY_SIZE] = host_rollback.encode_entry(5 << 24)
+    slot, _t, reason = _Dev(part).boot({0x100: pub, 0x1: pub})
+    assert slot == "BACK" and reason == "rollback"        # the advanced floor blocks v2
 
 
 def test_run_torn_back_floors_front_at_zero():
