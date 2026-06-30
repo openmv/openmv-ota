@@ -228,10 +228,12 @@ For each board it runs `make TARGET=<board>` and copies the result into
 `<project>/build/`. Both ports name their images `firmware*.bin`: an stm32 board
 emits a single `firmware.bin`, collected as `<board>-firmware.bin`; an Alif board
 emits a per-core `firmware_M55_HP.bin` / `firmware_M55_HE.bin`, collected as
-`<board>-firmware-M55_HP.bin` / `<board>-firmware-M55_HE.bin`. The bootloader-combined `openmv.bin`
-and the bootloader-written `firmware.toc` are deliberately not collected — only the
-firmware image is. Firmware is built per board, not per partition, so a board with
-multiple ROMFS partitions still builds one firmware.
+`<board>-firmware-M55_HP.bin` / `<board>-firmware-M55_HE.bin`. When the port also
+builds a bootloader, `bootloader.bin` is collected as `<board>-bootloader.bin` — and
+on the AE3 the padded `firmware_pad.toc` as `<board>-firmware_pad.toc` — for `flash
+bootloader`. The bootloader-combined `openmv.bin` and the unpadded `firmware.toc` are
+deliberately not collected. Firmware is built per board, not per partition, so a board
+with multiple ROMFS partitions still builds one firmware.
 
 The behavior follows the project's OTA flag automatically — there is no separate
 option:

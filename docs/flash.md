@@ -3,10 +3,12 @@
 `openmv-ota flash` pushes the artifacts `build` produced onto a connected board over its
 programming interface. Most boards use **`dfu-util`**: the OpenMV STM32 boards
 (OPENMV2/3/4/4P/PT and N6) **and the AE3** — the AE3 flashes its two cores, its coprocessor
-romfs, and its main romfs all over DFU (the Alif write-mram tool is only for programming its
-bootloader). The **Arduino** boards (Portenta H7, Giga, Nicla Vision) also use dfu-util, by
-address (see below). The **RT1060** uses its own `sdphost`/`blhost` backend (see below). The
-only piece still to come is CubeProgrammer for the N6's one-time factory-bootloader burn.
+romfs, and its main romfs all over DFU (the Alif tools are only for its bootloader). The
+**Arduino** boards (Portenta H7, Giga, Nicla Vision) also use dfu-util, by address. The
+**RT1060** uses its own `sdphost`/`blhost` backend. Beyond the firmware/romfs/factory images
+`flash` also writes the **bootloader** and **erases** the onboard filesystem — every supported
+board is covered by every verb that applies to it (the retired Nano boards are refused
+everywhere). Each backend has its own section below.
 
 Flash one board at a time — the device you have plugged in, named with `-b`:
 
@@ -142,7 +144,7 @@ copy can never be written. Writes erase-on-write, so there's no separate erase p
 To flash, the board must be in its DFU bootloader. If it's in app mode the tool
 **touch-to-resets** it — opens its serial port at 1200 baud, which the bootloader detects and
 reboots into DFU — then `dfu-util -w` waits for it. If you'd rather double-tap reset yourself,
-pass `--no-touch`.
+pass `--in-bootloader` to skip the detect/reset step.
 
 ```
 $ openmv-ota flash factory ./my-product -b ARDUINO_PORTENTA_H7 --dry-run
@@ -157,10 +159,11 @@ would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90B00000:leave -D ARDUINO_PORTENT
 `flash bootloader` writes the board's `<board>-bootloader.bin` (collected by `build firmware`).
 It's a different path from firmware/romfs: those reach the board through the *OpenMV*
 bootloader (which we reset into automatically), but the bootloader can only be written from
-the board's **system ROM DFU**, which you enter **by hand** (jumper BOOT→RST / BOOT0/REC→3.3V,
-then replug). So there's no auto-reset — `flash bootloader` prints the board's instructions and
-waits for the system-DFU device, then writes to `0x08000000` via `dfu-util`. (dfu-util may
-report a nonzero exit on the final status — expected for the ST ROM; the tool tolerates it.)
+the board's **system ROM DFU**, which you enter **by hand** — jumper BOOT0 to 3.3V (VCC) on an
+already-programmed camera, then replug; a virgin one comes up there on its own. So there's no
+auto-reset — `flash bootloader` prints the board's instructions and waits for the system-DFU
+device, then writes to `0x08000000` via `dfu-util`. (dfu-util may report a nonzero exit on the
+final status — expected for the ST ROM; the tool tolerates it.)
 
 ```
 $ openmv-ota flash bootloader -b OPENMV4
@@ -224,7 +227,9 @@ other board — nothing extra to supply:
 $ openmv-ota flash factory ./my-product -b OPENMV_RT1060 --dry-run
 would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 .../sdphost_flash_loader.bin
 would run: sdphost -u 0x1FC9,0x0135 -- jump-address 0x20001C00
-would run: blhost -u 0x15A2,0x0073 -- get-property 1
+would run: python3 -c <wait for the flashloader to enumerate> ... 0x15A2,0x0073 30
+would run: blhost -u 0x15A2,0x0073 -- fill-memory 0x2000 4 0xC0000008 word
+would run: blhost -u 0x15A2,0x0073 -- configure-memory 9 0x2000
 ...
 would run: blhost -u 0x15A2,0x0073 -- reset
 ```
