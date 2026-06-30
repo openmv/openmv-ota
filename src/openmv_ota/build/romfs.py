@@ -506,12 +506,12 @@ def _under(path: Path, root: Path) -> bool:
 
 def _compose_slot(body: bytes, pad: int, rollback_sector: bytes, status_sector: bytes,
                   trailer_bytes: bytes, block: int, slot_size: int) -> bytes:
-    """One slot: ``body || 0xFF pad || rollback || spare || status || trailer`` == slot_size
+    """One slot: ``body || 0xFF pad || spare || rollback || status || trailer`` == slot_size
     (the control sectors are the last four blocks; ``spare`` is reserved, all 0xFF)."""
     rollback_block = rollback_sector + b"\xff" * (block - len(rollback_sector))
     spare_block = b"\xff" * block
     trailer_block = trailer_bytes + b"\xff" * (block - len(trailer_bytes))
-    slot = body + b"\xff" * pad + rollback_block + spare_block + status_sector + trailer_block
+    slot = body + b"\xff" * pad + spare_block + rollback_block + status_sector + trailer_block
     assert len(slot) == slot_size, (len(slot), slot_size)
     return slot
 

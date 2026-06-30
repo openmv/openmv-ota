@@ -342,7 +342,7 @@ def _advance_rollback(cfg, version):  # pragma: no cover (device)
     import uctypes
     import vfs
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))
-    off = cfg.PARTITION_SIZE - 4 * cfg.OTA_BLOCK     # BACK's rollback sector (absolute)
+    off = cfg.PARTITION_SIZE - 3 * cfg.OTA_BLOCK     # BACK's rollback sector (absolute)
     sector = uctypes.bytearray_at(base + off, cfg.OTA_BLOCK)
     if _rollback_floor_of(sector) >= version:
         return

@@ -39,11 +39,13 @@ downgraded to an *older signed* release (a replay attack — the signature is ge
 stale). It starts at the factory version and **advances**: each `confirm()` appends the
 running version to an append-only log in the **golden BACK** slot's reserved `rollback`
 sector (a 1→0 flash program, no erase — a power loss mid-append just leaves an ignored torn
-entry), and `boot.py` takes the highest logged version as the floor. Advancing happens in
-BACK because FRONT is erased on every install; the floor is raised *before* `CONFIRMED` is
-written, so a crash in between safely falls back to golden (which the floor never locks
-out). Each slot reserves four control sectors now (`rollback`, a `spare` for future
-metadata, `status`, `trailer`); the body shrinks by the two new blocks, slot size unchanged.
+entry; when the fixed-size log fills, the floor simply freezes at its max), and `boot.py`
+takes the highest logged version as the floor. Advancing happens in BACK because FRONT is
+erased on every install; the floor is raised *before* `CONFIRMED` is written, so a crash in
+between safely falls back to golden (which the floor never locks out). Each slot reserves
+four control sectors now — `spare`, `rollback`, `status`, `trailer` — with `spare` held back
+as the body-adjacent buffer so the three used sectors stay contiguous at the slot's end; the
+body shrinks by the two new blocks, slot size unchanged.
 
 ## The update lifecycle (and your app's one job)
 

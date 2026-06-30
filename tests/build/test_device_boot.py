@@ -387,7 +387,7 @@ def test_run_front_rejected_by_advanced_rollback_floor():
     # recorded in BACK's rollback sector -- so installing v2 is a downgrade and is rejected.
     front = _front(priv, 0x100, fb, _status(True, True, True), payload_version=(2 << 24))
     part = _partition(front, _back(priv, 0x1, bb, payload_version=V1))
-    ro = PARTITION_SIZE - 4 * BLOCK                       # BACK's rollback sector (absolute)
+    ro = PARTITION_SIZE - 3 * BLOCK                       # BACK's rollback sector (absolute)
     part[ro:ro + host_rollback.ENTRY_SIZE] = host_rollback.encode_entry(5 << 24)
     slot, _t, reason = _Dev(part).boot({0x100: pub, 0x1: pub})
     assert slot == "BACK" and reason == "rollback"        # the advanced floor blocks v2

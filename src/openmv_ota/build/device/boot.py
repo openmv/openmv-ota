@@ -220,7 +220,7 @@ class OtaBoot:
             base = parse_trailer(back).payload_version
         except OtaReject:
             base = 0
-        logged = _rollback_floor_of(self.read(self.partition_size - 4 * self.block, self.block))
+        logged = _rollback_floor_of(self.read(self.partition_size - 3 * self.block, self.block))
         return logged if logged > base else base
 
     def _try_slot(self, offset, slot_size, is_front, rollback_floor):

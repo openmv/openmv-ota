@@ -29,7 +29,7 @@ def test_control_sector_offsets():
     # the control sectors are the last four blocks, in fixed order
     assert geometry.trailer_offset(0x100000, 4096) == 0x100000 - 4096
     assert geometry.status_offset(0x100000, 4096) == 0x100000 - 2 * 4096
-    assert geometry.rollback_offset(0x100000, 4096) == 0x100000 - 4 * 4096
+    assert geometry.rollback_offset(0x100000, 4096) == 0x100000 - 3 * 4096
 
 
 def test_capable_nor_partition():
