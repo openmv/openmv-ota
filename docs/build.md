@@ -244,9 +244,12 @@ option:
   temporary *wrapper manifest* that `include`s the board's own manifest and adds the
   boot script, and points the build at it with `make FROZEN_MANIFEST=<wrapper>`. The
   frozen `boot.py` runs after the board's stock `_boot.py` (the stock boot is left
-  untouched). *(The boot script is currently a placeholder; the on-device
-  trailer-parse, signature/SHA verification, and FRONT/BACK slot selection land in a
-  later step.)*
+  untouched). It selects the FRONT (mutable runtime) or BACK (golden) ROMFS slot,
+  verifies the chosen slot's signed trailer (ECDSA + SHA-256, over the firmware's own
+  mbedtls), enforces the integrity / cross-flash / compatibility / anti-rollback
+  checks, runs the trial-boot status state machine, and mounts the slot it picks.
+  Its `_ota_config.py` — the trusted keys, slot geometry, and board/product ids — is
+  generated from the project and frozen alongside it.
 
 The build is **clean by default** (`make clean` then build). A stale `build/<board>`
 tree fails at link with a misleading `__cyg_profile_func_enter` error — imlib is
