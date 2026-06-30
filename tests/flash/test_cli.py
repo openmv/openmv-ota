@@ -102,6 +102,26 @@ def test_imx_rt1060_reports_step_labels(proj, monkeypatch, capsys):
     assert "reset (OPENMV_RT1060)" in out and "load flashloader" in out
 
 
+def test_arduino_factory_dry_run(proj, capsys):
+    root, ran, artifact = proj
+    artifact("ARDUINO_PORTENTA_H7-firmware.bin")
+    artifact("ARDUINO_PORTENTA_H7-romfs.img")
+    assert main(["flash", "factory", str(root), "-b", "ARDUINO_PORTENTA_H7", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "would run: DFU -w -d ,2341:035b -a 0 -s 0x08040000 " in out
+    assert "0x90B00000:leave" in out
+
+
+def test_arduino_firmware_no_touch(proj, monkeypatch, capsys):
+    root, ran, artifact = proj
+    touched = []
+    monkeypatch.setattr(fl.arduino, "touch_to_reset", lambda raw: touched.append(1))
+    artifact("ARDUINO_PORTENTA_H7-firmware.bin")
+    assert main(["flash", "firmware", str(root), "-b", "ARDUINO_PORTENTA_H7", "--no-touch"]) == 0
+    assert touched == [] and len(ran) == 1
+    assert "firmware -> 0x08040000:leave (ARDUINO_PORTENTA_H7)" in capsys.readouterr().out
+
+
 def test_ae3_factory_flashes_all_partitions(proj, capsys):
     root, ran, artifact = proj
     for n in ("firmware-M55_HP.bin", "firmware-M55_HE.bin", "coprocessor-romfs.img",

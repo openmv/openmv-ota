@@ -4,8 +4,9 @@
 programming interface. Most boards use **`dfu-util`**: the OpenMV STM32 boards
 (OPENMV2/3/4/4P/PT and N6) **and the AE3** — the AE3 flashes its two cores, its coprocessor
 romfs, and its main romfs all over DFU (the Alif write-mram tool is only for programming its
-bootloader). The **RT1060** uses its own `sdphost`/`blhost` backend (see below). The only
-piece still to come is CubeProgrammer for the N6's one-time factory-bootloader burn.
+bootloader). The **Arduino** boards (Portenta H7, Giga, Nicla Vision) also use dfu-util, by
+address (see below). The **RT1060** uses its own `sdphost`/`blhost` backend (see below). The
+only piece still to come is CubeProgrammer for the N6's one-time factory-bootloader burn.
 
 Flash one board at a time — the device you have plugged in, named with `-b`:
 
@@ -99,6 +100,29 @@ would run: dfu-util -w -d ,37c5:9204 -a 3 --reset -D build/OPENMV4-factory-romfs
 
 A board with no `flash` block, or a not-yet-supported backend, fails with a clear message
 rather than guessing.
+
+## Arduino boards (Portenta H7, Giga, Nicla Vision)
+
+These run the Arduino MCUboot DFU bootloader, so dfu-util addresses flash by absolute
+**address** (`-a <alt> -s 0xADDR`) and leaves via `-s 0xADDR:leave` rather than `--reset`.
+The verbs are the same; `flash firmware` writes the app at `0x08040000`, `flash romfs` the
+romfs at QSPI `0x90B00000`, and `flash factory` additionally writes the **CYW4343** wifi/bt
+firmware to QSPI — a full first-time provision. The CYW4343 blobs are bundled in the tool
+(shared across the three boards), so you never supply them; writes erase-on-write, so there's
+no separate erase pass.
+
+To flash, the board must be in its DFU bootloader. If it's in app mode the tool
+**touch-to-resets** it — opens its serial port at 1200 baud, which the bootloader detects and
+reboots into DFU — then `dfu-util -w` waits for it. If you'd rather double-tap reset yourself,
+pass `--no-touch`.
+
+```
+$ openmv-ota flash factory ./my-product -b ARDUINO_PORTENTA_H7 --dry-run
+would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90F00000 -D .../cyw4343_7_45_98_102.bin
+would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90FC0000 -D .../cyw4343_btfw.bin
+would run: dfu-util -w -d ,2341:035b -a 0 -s 0x08040000 -D ARDUINO_PORTENTA_H7-firmware.bin
+would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90B00000:leave -D ARDUINO_PORTENTA_H7-romfs.img
+```
 
 ## i.MX RT1060
 

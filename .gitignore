@@ -20,8 +20,9 @@ htmlcov/
 /releases/
 *.bin
 firmware.bin
-# ...except the vendored i.MX flashloaders (prebuilt, shipped as package data)
+# ...except the vendored device blobs shipped as package data (i.MX flashloaders, Arduino wifi)
 !src/openmv_ota/data/flashloaders/**/*.bin
+!src/openmv_ota/data/cyw4343/*.bin
 
 # Private signing material — NEVER commit these
 *.pem

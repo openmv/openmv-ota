@@ -15,7 +15,7 @@ from openmv_ota.romfs.boards import get_board
 
 from .errors import FlashError
 
-SUPPORTED_BACKENDS = ("dfu", "imx")
+SUPPORTED_BACKENDS = ("dfu", "imx", "arduino")
 
 
 @dataclass(frozen=True)

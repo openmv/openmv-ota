@@ -31,10 +31,6 @@ class ImxStep:
     argv: list[str]
     probe: bool = False          # a probe step is polled until it succeeds (the post-jump sync)
 
-    @property
-    def summary(self) -> str:
-        return self.label
-
 
 def _sdphost(sdphost: str, usb: str, *sub: str) -> list[str]:
     return [sdphost, "-u", usb, "--", *sub]

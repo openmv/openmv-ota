@@ -230,3 +230,55 @@ def test_resolve_spsdk_dry_run_tolerates_missing(monkeypatch):
     assert fl._resolve_spsdk("blhost", None, dry_run=True) == "blhost"
     with pytest.raises(FlashError):
         fl._resolve_spsdk("blhost", None, dry_run=False)
+
+
+# --- arduino (Portenta / Giga / Nicla) ----------------------------------------------------
+
+@pytest.fixture
+def arduino_project(tmp_path, monkeypatch):
+    """An Arduino project with build artifacts; runner/dfu-util/touch stubbed (wifi blobs
+    are bundled in the package)."""
+    (tmp_path / "build").mkdir()
+    ran: list[list[str]] = []
+    touched: list = []
+    monkeypatch.setattr(fl.runner, "run", lambda argv: ran.append(argv))
+    monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
+    monkeypatch.setattr(fl.arduino, "touch_to_reset", lambda raw: touched.append(raw["usb"]))
+    monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
+    for n in ("ARDUINO_PORTENTA_H7-firmware.bin", "ARDUINO_PORTENTA_H7-romfs.img"):
+        (tmp_path / "build" / n).write_bytes(b"x")
+    return tmp_path, ran, touched
+
+
+def test_arduino_firmware_touches_then_flashes(arduino_project):
+    root, ran, touched = arduino_project
+    fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7")
+    assert touched == ["2341:035b"]                       # touched into the bootloader first
+    assert len(ran) == 1 and ran[0][7] == "0x08040000:leave"
+
+
+def test_arduino_factory_writes_wifi_from_bundle(arduino_project):
+    root, ran, _touched = arduino_project
+    fl.flash_factory(str(root), board="ARDUINO_PORTENTA_H7")
+    assert [a[7] for a in ran] == ["0x90F00000", "0x90FC0000", "0x08040000", "0x90B00000:leave"]
+    assert "data/cyw4343/cyw4343_7_45_98_102.bin" in ran[0][-1]   # bundled blob
+
+
+def test_arduino_no_touch_skips_the_reset(arduino_project):
+    root, ran, touched = arduino_project
+    fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7", touch=False)
+    assert touched == [] and len(ran) == 1
+
+
+def test_arduino_dry_run_neither_touches_nor_runs(arduino_project):
+    root, ran, touched = arduino_project
+    steps = fl.flash_romfs(str(root), board="ARDUINO_PORTENTA_H7", dry_run=True)
+    assert ran == [] and touched == []
+    assert steps[0].argv[7] == "0x90B00000:leave"
+
+
+def test_arduino_missing_artifact_errors(tmp_path, monkeypatch):
+    (tmp_path / "build").mkdir()
+    monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: "DFU")
+    with pytest.raises(FlashError, match="ARDUINO_PORTENTA_H7-firmware.bin"):
+        fl.flash_firmware(str(tmp_path), board="ARDUINO_PORTENTA_H7", dry_run=True)

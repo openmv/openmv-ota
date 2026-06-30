@@ -38,6 +38,13 @@ def test_alt_of_unknown_artifact_raises():
         cfg.alt_of("coprocessor")
 
 
+def test_arduino_backend_resolves():
+    cfg = targets.flash_config("ARDUINO_PORTENTA_H7")
+    assert cfg.backend == "arduino" and cfg.usb == "2341:035b"
+    assert cfg.raw["firmware"]["addr"] == "0x08040000"
+    assert cfg.raw["app"]["usb"] == "2341:005b"
+
+
 def test_unknown_board_raises():
     with pytest.raises(FlashError):
         targets.flash_config("NOPE")

@@ -24,6 +24,7 @@ classifiers = [
 #   sbom/cve: cyclonedx, osv/nvd scanners
 dependencies = [
     "cryptography>=42",  # ECDSA keygen + signing for OTA trailers
+    "pyserial>=3.5",     # 1200-baud touch-to-reset for the Arduino DFU boards
 ]
 
 [project.optional-dependencies]
@@ -48,6 +49,7 @@ where = ["src"]
     "data/*.json",
     "data/firmware/**/*",
     "data/flashloaders/**/*",    # prebuilt i.MX RT sdphost/blhost flashloaders
+    "data/cyw4343/*",            # Arduino CYW4343 wifi/bt blobs, flashed to QSPI
     "build/device/*.c",          # the ECDSA verify C module dropped into modules/
     "build/device/openmv_ota/data/*",  # the installer source, scaffolded into projects
     "romfs/sdk/**/*",

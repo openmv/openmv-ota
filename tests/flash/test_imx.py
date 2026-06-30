@@ -70,7 +70,3 @@ def test_blhost_timeout_only_on_erase(tmp_path):
     assert "-t" not in getp.argv
 
 
-def test_imxstep_summary_is_label(tmp_path):
-    files = _files(tmp_path, sdphost_loader=10, firmware=5000)
-    s = imx.plan("firmware", _raw(), "sdphost", "blhost", files)[0]
-    assert s.summary == s.label

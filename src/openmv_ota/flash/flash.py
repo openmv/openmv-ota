@@ -20,7 +20,7 @@ from pathlib import Path
 
 from openmv_ota.project import history
 
-from . import dfu, imx, runner, tools
+from . import arduino, dfu, imx, runner, tools
 from .errors import FlashError
 from .targets import FlashConfig, flash_config
 
@@ -154,15 +154,58 @@ def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str,
     return steps
 
 
+# --- arduino backend ------------------------------------------------------------------------
+
+def _cyw(name: str) -> Path:
+    """A bundled Arduino CYW4343 wifi/bt blob (``data/cyw4343/``) -- shipped in the package,
+    shared across the boards, never the user's to supply."""
+    from importlib.resources import files
+    return Path(str(files("openmv_ota").joinpath("data/cyw4343", name)))
+
+
+def _arduino_files(board: str, op: str, raw: dict, out_dir: Path) -> dict:
+    files: dict = {}
+    if op in ("firmware", "factory"):
+        files["firmware"] = out_dir / ("%s-firmware.bin" % board)
+    if op in ("romfs", "factory"):
+        files["romfs"] = out_dir / ("%s-romfs.img" % board)
+    if op == "factory":
+        files["wifi"] = [_cyw(w["file"]) for w in raw["wifi"]]
+    to_check = [files.get("firmware"), files.get("romfs"), *files.get("wifi", [])]
+    for f in to_check:
+        if f is not None and not f.exists():
+            raise FlashError("missing %s -- build it first" % f)
+    return files
+
+
+def _arduino_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str, *,
+                   output: str | None, dfu_util: str | None, sdk_home: Path | None,
+                   touch: bool, dry_run: bool) -> list[arduino.ArduinoStep]:
+    out_dir = _output_dir(project, output)
+    tool = _resolve_dfu_util(dfu_util, sdk_home, dry_run)
+    files = _arduino_files(board, op, cfg.raw, out_dir)
+    steps = arduino.plan(op, cfg.raw, tool, files)
+    if not dry_run:
+        if touch:
+            arduino.touch_to_reset(cfg.raw)          # reboot into DFU if it's in app mode
+        for s in steps:
+            runner.run(s.argv)
+        history.record(project, action, board=board, steps=[s.label for s in steps])
+    return steps
+
+
 # --- public verbs ---------------------------------------------------------------------------
 
 def flash_firmware(project: str = ".", *, board: str, output: str | None = None,
                    dfu_util: str | None = None, sdk_home: Path | None = None,
-                   reset: bool = True, dry_run: bool = False):
+                   reset: bool = True, touch: bool = True, dry_run: bool = False):
     cfg = flash_config(board)
     if cfg.backend == "imx":
         return _imx_flash(project, "firmware", board, cfg, "flash-firmware", output=output,
                           sdk_home=sdk_home, dry_run=dry_run)
+    if cfg.backend == "arduino":
+        return _arduino_flash(project, "firmware", board, cfg, "flash-firmware", output=output,
+                              dfu_util=dfu_util, sdk_home=sdk_home, touch=touch, dry_run=dry_run)
     spec = [("firmware", "firmware.bin")]
     if cfg.has("coprocessor"):                   # AE3: the HE core ships with the firmware
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
@@ -172,11 +215,14 @@ def flash_firmware(project: str = ".", *, board: str, output: str | None = None,
 
 def flash_romfs(project: str = ".", *, board: str, output: str | None = None,
                 dfu_util: str | None = None, sdk_home: Path | None = None,
-                reset: bool = True, dry_run: bool = False):
+                reset: bool = True, touch: bool = True, dry_run: bool = False):
     cfg = flash_config(board)
     if cfg.backend == "imx":
         return _imx_flash(project, "romfs", board, cfg, "flash-romfs", output=output,
                           sdk_home=sdk_home, dry_run=dry_run)
+    if cfg.backend == "arduino":
+        return _arduino_flash(project, "romfs", board, cfg, "flash-romfs", output=output,
+                              dfu_util=dfu_util, sdk_home=sdk_home, touch=touch, dry_run=dry_run)
     spec = [("romfs", "romfs.img")]
     return _dfu_flash(project, board, cfg, spec, "flash-romfs", output=output,
                       dfu_util=dfu_util, sdk_home=sdk_home, reset=reset, dry_run=dry_run)
@@ -184,11 +230,14 @@ def flash_romfs(project: str = ".", *, board: str, output: str | None = None,
 
 def flash_factory(project: str = ".", *, board: str, output: str | None = None,
                   dfu_util: str | None = None, sdk_home: Path | None = None,
-                  reset: bool = True, dry_run: bool = False):
+                  reset: bool = True, touch: bool = True, dry_run: bool = False):
     cfg = flash_config(board)
     if cfg.backend == "imx":
         return _imx_flash(project, "factory", board, cfg, "flash-factory", output=output,
                           sdk_home=sdk_home, dry_run=dry_run)
+    if cfg.backend == "arduino":
+        return _arduino_flash(project, "factory", board, cfg, "flash-factory", output=output,
+                              dfu_util=dfu_util, sdk_home=sdk_home, touch=touch, dry_run=dry_run)
     spec = [("firmware", "firmware.bin")]
     if cfg.has("coprocessor"):                   # AE3: HE core + its romfs, with the main image
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
