@@ -255,8 +255,9 @@ def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:
     """Copy the firmware image(s) the build produced into ``out_dir``. Both ports
     name their images ``firmware*.bin`` in ``build/<board>/bin``: stm32 emits a
     single ``firmware.bin``; Alif emits a per-core ``firmware_M55_HP.bin`` /
-    ``firmware_M55_HE.bin``. The bootloader-combined ``openmv.bin`` and the
-    bootloader-written ``firmware.toc`` are deliberately not collected."""
+    ``firmware_M55_HE.bin``. The bootloader-combined ``openmv.bin`` and the unpadded
+    ``firmware.toc`` are deliberately not collected (the AE3's padded ``firmware_pad.toc``,
+    written alongside its bootloader, is)."""
     bdir = repo / "build" / name / "bin"
     collected: list[Path] = []
     for src in sorted(bdir.glob("firmware*.bin")):
@@ -272,6 +273,9 @@ def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:
     boot = bdir / "bootloader.bin"
     if boot.exists():                              # the OpenMV bootloader (STM32/N6 ports);
         collected.append(_copy(boot, out_dir / ("%s-bootloader.bin" % name)))   # `flash bootloader`
+    toc = bdir / "firmware_pad.toc"
+    if toc.exists():                               # AE3: the padded TOC written with the SBL
+        collected.append(_copy(toc, out_dir / ("%s-firmware_pad.toc" % name)))  # bootloader
     return collected
 
 

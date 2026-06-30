@@ -175,8 +175,8 @@ in the tool — `flash bootloader` stages them with the freshly-built `bootloade
 `STM32_Programmer_CLI`); and on the **RT1060** via the SDP/blhost flow (it writes the
 flash-config block + the bundled secure bootloader, no build artifact). The recovery entry is
 the board's recovery pin held to 3.3V on a programmed camera, automatic on a virgin one — BOOT0
-on the STM32/N6, **SBL** on the RT1060 (keep that jumper on until flashing finishes). The
-**AE3** uses Alif SE tools (not supported); **Arduino** boards have no OpenMV bootloader to
+on the STM32/N6, **SBL** on the RT1060 (keep that jumper on until flashing finishes); and on
+the **AE3** via the Alif SE tools (see below). **Arduino** boards have no OpenMV bootloader to
 flash.
 
 ## i.MX RT1060
@@ -206,6 +206,25 @@ The two flashloader binaries the sequence needs (`sdphost_flash_loader.bin`,
 you never supply or carry them. This whole backend is temporary: the RT1062 will move to the
 same DFU bootloader as the other cameras, and when it does this path (and those bundled files)
 goes away.
+
+## AE3 (Alif)
+
+The AE3's bootloader lives in MRAM and is written with Alif's Security Toolkit — the Python
+copy vendored in the openmv firmware tree (`tools/alif/toolkit`, a submodule; run `git
+submodule update --init`). The board must be in Alif **SE-UART maintenance mode**, connected
+over its USB-serial bridge (an FTDI on the SBL revision, a CH340 on SBL2 — *not* the OpenMV USB
+port); `flash bootloader` finds that port and picks the matching part automatically. It then:
+
+1. runs `updateSystemPackage.py` — always, since the SE firmware is coupled to the bootloader;
+2. asks you to **unplug and replug** the board (a virgin part *must* be power-cycled for the
+   new system package to take effect) and re-finds the port; then
+3. runs `app-write-mram.py` to write `bootloader.bin` to the MRAM base and the padded
+   `firmware_pad.toc` to the TOC region (both collected by `build firmware`). It never issues
+   the APP mass-erase — that step bricks the board.
+
+Afterwards the AE3 re-enumerates as the OpenMV DFU bootloader (`37c5:96e3`); run `flash
+firmware` to write the application over DFU. Recovering a board that won't enter maintenance
+mode is left to the IDE.
 
 ## Typical use
 

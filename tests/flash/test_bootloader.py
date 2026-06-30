@@ -66,9 +66,14 @@ def test_bootloader_missing_artifact(tmp_path, monkeypatch):
         fl.flash_bootloader(str(tmp_path), board="OPENMV4")
 
 
-def test_bootloader_unsupported_backends_give_clear_notes():
-    with pytest.raises(FlashError, match="Alif SE tools"):
-        fl.flash_bootloader(board="OPENMV_AE3")
+def test_bootloader_unknown_backend_gives_clear_note(monkeypatch):
+    from openmv_ota.flash.targets import FlashConfig
+    raw = {"backend": "dfu",
+           "bootloader": {"backend": "weird", "instructions": "x", "note": "needs a vendor tool"}}
+    monkeypatch.setattr(fl, "flash_config",
+                        lambda b: FlashConfig(board=b, backend="dfu", raw=raw))
+    with pytest.raises(FlashError, match="needs a vendor tool"):
+        fl.flash_bootloader(board="WHATEVER")
 
 
 def test_rt1060_bootloader_runs_the_sdp_sbl_flow(tmp_path, monkeypatch, capsys):
@@ -144,6 +149,6 @@ def test_bootloader_cli(bl_project, capsys):
 
 
 def test_bootloader_cli_error_returns_exit_code(bl_project, capsys):
-    root, _ran = bl_project
+    root, _ran = bl_project    # the AE3 needs the Alif toolkit submodule, absent under bl_project
     assert main(["flash", "bootloader", str(root), "-b", "OPENMV_AE3"]) == 2
-    assert "Alif SE tools" in capsys.readouterr().err
+    assert "Alif Security Toolkit not found" in capsys.readouterr().err

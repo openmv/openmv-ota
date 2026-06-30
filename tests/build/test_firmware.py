@@ -152,12 +152,14 @@ def test_build_firmware_non_ota(make_project, monkeypatch):
 
 
 def test_build_firmware_collects_bootloader(make_project, monkeypatch):
-    # the bootloader binary, when the port builds one, is collected for `flash bootloader`
-    fake = _fake_make(["bin/firmware.bin", "bin/bootloader.bin"])
+    # the bootloader binary, when the port builds one, is collected for `flash bootloader`;
+    # the AE3 also emits a padded TOC written alongside its bootloader
+    fake = _fake_make(["bin/firmware.bin", "bin/bootloader.bin", "bin/firmware_pad.toc"])
     monkeypatch.setattr(fw, "_run_make", fake)
     root, repo, _app = make_project()
     names = [o.name for o in fw.build_firmware(root, firmware=repo)[0].outputs]
     assert "OPENMV_N6-bootloader.bin" in names
+    assert "OPENMV_N6-firmware_pad.toc" in names
 
 
 def test_build_firmware_incremental_skips_clean(make_project, monkeypatch):

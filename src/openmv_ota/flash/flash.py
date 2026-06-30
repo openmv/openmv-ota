@@ -20,7 +20,7 @@ from pathlib import Path
 
 from openmv_ota.project import history
 
-from . import arduino, device, dfu, imx, runner, tools
+from . import alif, arduino, device, dfu, imx, runner, tools
 from .errors import FlashError
 from .targets import FlashConfig, flash_config
 
@@ -298,6 +298,64 @@ def _bootloader_cubeprog(project, board, bl, f, *, sdk_home, dry_run):
     return [FlashStep("bootloader", f, 0, argv)]
 
 
+# --- alif backend (AE3 bootloader) ----------------------------------------------------------
+
+def _alif_toolkit(project: str, bl: dict, dry_run: bool) -> str:
+    try:
+        return tools.find_alif_toolkit(project, bl["toolkit"])
+    except FlashError:
+        if not dry_run:
+            raise
+        return str(Path(project) / bl["toolkit"])
+
+
+def _alif_files(board: str, bl: dict, out_dir: Path) -> dict[str, Path]:
+    files = {i["file"]: out_dir / ("%s-%s" % (board, i["file"])) for i in bl["images"]}
+    for f in files.values():
+        if not f.exists():
+            raise FlashError("missing %s -- run `build firmware` first" % f)
+    return files
+
+
+def _alif_se_uart(bl: dict, dry_run: bool) -> alif.SeUart:
+    if dry_run:                                  # don't require hardware to show the commands
+        v = bl["variants"][0]
+        return alif.SeUart("<se-uart-port>", v["cfg_part"], v["name"])
+    return alif.find_se_uart(bl["variants"], device._comports())
+
+
+def _alif_replug(board: str) -> None:
+    print("\nUnplug and replug the %s now -- the system-package update needs a power cycle -- "
+          "re-enter SE-UART maintenance mode, then press Enter to continue..." % board,
+          file=sys.stderr)
+    input()
+
+
+def _alif_flash(project: str, board: str, bl: dict, *, output: str | None,
+                dry_run: bool) -> list[alif.AlifStep]:
+    """Always update the system package first (it's coupled to the bootloader), have the
+    operator power-cycle the board (mandatory on a virgin part), re-find the SE-UART port, then
+    write the SBL bootloader + padded TOC to MRAM."""
+    out_dir = _output_dir(project, output)
+    toolkit = _alif_toolkit(project, bl, dry_run)
+    rev = bl["cfg_rev"]
+    images = alif.images_arg(bl["images"], _alif_files(board, bl, out_dir))   # fail fast
+    se = _alif_se_uart(bl, dry_run)
+    usp = alif.update_system_package_argv(sys.executable, toolkit, se, rev)
+    if not dry_run:
+        runner.run(usp)
+        _alif_replug(board)
+        se = _alif_se_uart(bl, dry_run)          # the port may re-enumerate after the replug
+    write = alif.write_bootloader_argv(sys.executable, toolkit, se, rev, images)
+    steps = [alif.AlifStep("update system package", usp),
+             alif.AlifStep("write bootloader", write)]
+    if not dry_run:
+        runner.run(write)
+        history.record(project, "flash-bootloader", board=board,
+                       steps=[s.label for s in steps])
+    return steps
+
+
 def flash_bootloader(project: str = ".", *, board: str, output: str | None = None,
                      dfu_util: str | None = None, sdk_home: Path | None = None,
                      serial: str | None = None, dry_run: bool = False):
@@ -310,13 +368,15 @@ def flash_bootloader(project: str = ".", *, board: str, output: str | None = Non
     if not bl:
         raise FlashError("board %r has no bootloader to flash with this tool" % board)
     backend = bl["backend"]
-    if backend not in ("dfu", "cubeprog", "imx"):    # AE3 (alif)
+    if backend not in ("dfu", "cubeprog", "imx", "alif"):
         raise FlashError("bootloader flashing for %r isn't available here: %s"
                          % (board, bl.get("note", "unsupported")))
     print(bl["instructions"], file=sys.stderr)       # the manual recovery entry (BOOT0/SBL jumper)
     if backend == "imx":                             # RT: the SDP/blhost FCB + secure-bootloader
         return _imx_flash(project, "bootloader", board, cfg, "flash-bootloader",   # flow, no build bin
                           output=output, sdk_home=sdk_home, dry_run=dry_run)
+    if backend == "alif":                            # AE3: Alif SE tools (system package + MRAM)
+        return _alif_flash(project, board, bl, output=output, dry_run=dry_run)
     f = _bootloader_bin(project, output, board)
     if backend == "dfu":
         return _bootloader_dfu(project, board, bl, f, dfu_util=dfu_util, sdk_home=sdk_home,

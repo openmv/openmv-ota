@@ -43,6 +43,18 @@ def find_cubeprog(sdk_home: Path | None = None) -> str:
                      % name)
 
 
+def find_alif_toolkit(project: Path | str, rel: str) -> str:
+    """Locate the openmv-vendored Alif Security Toolkit (a submodule of the firmware tree):
+    the board's ``rel`` path (``tools/alif/toolkit``), else micropython's copy."""
+    for cand in (Path(project) / rel,
+                 Path(project) / "lib/micropython/lib/alif-security-toolkit/toolkit"):
+        if (cand / "app-write-mram.py").exists():
+            return str(cand)
+    raise FlashError("Alif Security Toolkit not found under %s -- it's a submodule of the "
+                     "openmv firmware tree (%s); run `git submodule update --init`"
+                     % (project, rel))
+
+
 def find_spsdk(name: str, sdk_home: Path | None = None) -> str:
     """Resolve an spsdk tool (``sdphost``/``blhost``): ``<sdk_home>/python/bin/<name>`` > PATH."""
     if sdk_home is not None:
