@@ -48,9 +48,24 @@ def test_firmware_plan_is_preamble_write_reset(tmp_path):
 
 def test_wait_argv_runs_the_spsdk_scan_in_one_process():
     argv = imx._wait_argv("python3", "0x15A2,0x0073")
-    assert argv[:2] == ["python3", "-c"]
-    assert "MbootUSBInterface" in argv[2] and "scan(device_id=dev)" in argv[2]
-    assert argv[3:] == ["0x15A2,0x0073", "30"]
+    assert argv[:2] == ["python3", "-c"] and "scan(device_id=dev)" in argv[2]
+    assert argv[3:] == ["spsdk.mboot.interfaces.usb", "MbootUSBInterface", "0x15A2,0x0073", "30"]
+    sdp = imx._wait_argv("python3", "0x1FC9,0x0135", sdp=True)
+    assert sdp[3:] == ["spsdk.sdp.interfaces.usb", "SdpUSBInterface", "0x1FC9,0x0135", "120"]
+
+
+def test_bootloader_plan_waits_for_rom_then_writes_fcb_and_sbl(tmp_path):
+    files = _files(tmp_path, sdphost_loader=10, blhost_loader=2000)
+    steps = _plan("bootloader", files)
+    argvs = [s.argv for s in steps]
+    # the ROM (SDP) wait comes first (manual SBL entry), then sdphost
+    assert argvs[0][3:5] == ["spsdk.sdp.interfaces.usb", "SdpUSBInterface"]
+    assert argvs[1][4] == "write-file"
+    flat = " ".join(" ".join(a) for a in argvs)
+    assert "flash-erase-region 0x60000000 0x1000" in flat            # FCB
+    assert "write-memory 0x60001000" in flat                         # secure bootloader
+    assert "0x60040000" not in flat and "efuse-program-once" not in flat   # no firmware/efuse
+    assert steps[-1].argv[-1] == "reset"
 
 
 def test_romfs_plan_targets_romfs_region(tmp_path):

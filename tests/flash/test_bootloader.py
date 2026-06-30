@@ -67,10 +67,23 @@ def test_bootloader_missing_artifact(tmp_path, monkeypatch):
 
 
 def test_bootloader_unsupported_backends_give_clear_notes():
-    with pytest.raises(FlashError, match="flash factory"):
-        fl.flash_bootloader(board="OPENMV_RT1060")
     with pytest.raises(FlashError, match="Alif SE tools"):
         fl.flash_bootloader(board="OPENMV_AE3")
+
+
+def test_rt1060_bootloader_runs_the_sdp_sbl_flow(tmp_path, monkeypatch, capsys):
+    # no build artifact needed -- the SBL is the bundled flashloader; SDP/blhost write FCB + SBL
+    (tmp_path / "build").mkdir()
+    ran: list = []
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **k: ran.append(argv))
+    monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name.upper())
+    monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
+    fl.flash_bootloader(str(tmp_path), board="OPENMV_RT1060")
+    assert ran[0][0] == "python3" and "SdpUSBInterface" in ran[0]      # ROM (SDP) wait first
+    assert ran[1][0] == "SDPHOST" and ran[-1][-1] == "reset"
+    flat = " ".join(" ".join(a) for a in ran)
+    assert "0x60001000" in flat and "0x60040000" not in flat          # SBL, not firmware
+    assert "jumper SBL to 3.3V" in capsys.readouterr().err
 
 
 @pytest.fixture

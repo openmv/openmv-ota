@@ -22,24 +22,27 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ERASE_TIMEOUT_MS = 120000        # the IDE allows 120s for an erase
-WAIT_TIMEOUT_S = 30              # how long to wait for the flashloader to enumerate
+WAIT_TIMEOUT_S = 30              # wait for the flashloader to enumerate after the jump
+SDP_WAIT_TIMEOUT_S = 120         # wait for the ROM device (the user enters SBL recovery by hand)
 _SECTOR = 0x1000                 # FlexSPI NOR erase granularity; round erase lengths up to it
 
-# A single process that waits for the flashloader's USB device to enumerate, polling spsdk's
-# scan in-process -- the dfu-util ``-w`` equivalent. Run with the SDK's python (where spsdk
-# lives); argv: <python3> -c <this> <vid,pid> <timeout_s>. Exits 0 once present, 1 on timeout.
+# A single process that waits for an spsdk USB device to enumerate, polling its scan in-process
+# -- the dfu-util ``-w`` equivalent. Run with the SDK's python (where spsdk lives); argv:
+# <python3> -c <this> <module> <class> <vid,pid> <timeout_s>. Exits 0 once present, 1 on timeout.
 _WAIT_SCRIPT = (
-    "import sys, time\n"
-    "from spsdk.mboot.interfaces.usb import MbootUSBInterface as U\n"
-    "dev, deadline = sys.argv[1], time.time() + float(sys.argv[2])\n"
+    "import sys, time, importlib\n"
+    "mod, cls, dev, t = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])\n"
+    "scan = getattr(importlib.import_module(mod), cls).scan\n"
+    "deadline = time.time() + t\n"
     "while time.time() < deadline:\n"
-    "    if U.scan(device_id=dev):\n"
+    "    if scan(device_id=dev):\n"
     "        sys.exit(0)\n"
     "    time.sleep(0.2)\n"
-    "sys.stderr.write('i.MX flashloader %s did not enumerate within %ss\\n'\n"
-    "                 % (dev, sys.argv[2]))\n"
+    "sys.stderr.write('i.MX device %s did not enumerate within %ss\\n' % (dev, sys.argv[4]))\n"
     "sys.exit(1)\n"
 )
+_MBOOT_IF = ("spsdk.mboot.interfaces.usb", "MbootUSBInterface")   # the flashloader (post-jump)
+_SDP_IF = ("spsdk.sdp.interfaces.usb", "SdpUSBInterface")         # the ROM (serial download)
 
 
 @dataclass(frozen=True)
@@ -59,8 +62,10 @@ def _blhost(blhost: str, usb: str, *sub: str, timeout: int | None = None) -> lis
     return argv + ["--", *sub]
 
 
-def _wait_argv(python3: str, usb: str) -> list[str]:
-    return [python3, "-c", _WAIT_SCRIPT, usb, "%g" % WAIT_TIMEOUT_S]
+def _wait_argv(python3: str, usb: str, *, sdp: bool = False) -> list[str]:
+    mod, cls = _SDP_IF if sdp else _MBOOT_IF
+    timeout = SDP_WAIT_TIMEOUT_S if sdp else WAIT_TIMEOUT_S
+    return [python3, "-c", _WAIT_SCRIPT, mod, cls, usb, "%g" % timeout]
 
 
 def _aligned(size: int) -> int:
@@ -77,17 +82,32 @@ def _write_region(blhost: str, usb: str, addr: str, file: Path) -> list[ImxStep]
     ]
 
 
+def _fcb(blhost: str, usb: str, bl: dict) -> list[ImxStep]:
+    """Write the flash-config block so the ROM can boot from the FlexSPI NOR."""
+    return [
+        ImxStep("erase FCB %s" % bl["fcb_addr"],
+                _blhost(blhost, usb, "flash-erase-region", bl["fcb_addr"], bl["fcb_len"],
+                        timeout=ERASE_TIMEOUT_MS)),
+        ImxStep("configure FCB",
+                _blhost(blhost, usb, "fill-memory", bl["cfg_addr"], "4", bl["cfg_fcb"], "word")),
+        ImxStep("apply FCB config",
+                _blhost(blhost, usb, "configure-memory", bl["cfg_type"], bl["cfg_addr"])),
+    ]
+
+
 def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
          files: dict[str, Path]) -> list[ImxStep]:
-    """The ordered command list for an i.MX ``op`` (``firmware``/``romfs``/``factory``).
-
-    ``files`` holds the resolved paths the op needs: ``sdphost_loader`` always, plus
-    ``blhost_loader``/``firmware``/``romfs`` as the op requires.
-    """
+    """The ordered command list for an i.MX ``op`` (``firmware``/``romfs``/``factory``/
+    ``bootloader``). ``files`` holds the resolved paths the op needs: ``sdphost_loader`` always,
+    plus ``blhost_loader``/``firmware``/``romfs`` as the op requires."""
     sd, bl = raw["sdphost"], raw["blhost"]
     usb = bl["usb"]
 
-    steps = [
+    steps = []
+    if op == "bootloader":             # manual SBL/recovery entry -> wait for the ROM device
+        steps.append(ImxStep("wait for the ROM (SDP) device",
+                             _wait_argv(python3, sd["usb"], sdp=True)))
+    steps += [
         ImxStep("load flashloader -> %s" % sd["loader_addr"],
                 _sdphost(sdphost, sd["usb"], "write-file", sd["loader_addr"],
                          str(files["sdphost_loader"]))),
@@ -101,17 +121,10 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
                 _blhost(blhost, usb, "configure-memory", bl["cfg_type"], bl["cfg_addr"])),
     ]
 
-    if op == "factory":                                # write the FCB so the ROM can boot FlexSPI
-        steps += [
-            ImxStep("erase FCB %s" % bl["fcb_addr"],
-                    _blhost(blhost, usb, "flash-erase-region", bl["fcb_addr"], bl["fcb_len"],
-                            timeout=ERASE_TIMEOUT_MS)),
-            ImxStep("configure FCB",
-                    _blhost(blhost, usb, "fill-memory", bl["cfg_addr"], "4", bl["cfg_fcb"], "word")),
-            ImxStep("apply FCB config",
-                    _blhost(blhost, usb, "configure-memory", bl["cfg_type"], bl["cfg_addr"])),
-        ]
+    if op in ("factory", "bootloader"):                # the FCB + the secure bootloader (SBL)
+        steps += _fcb(blhost, usb, bl)
         steps += _write_region(blhost, usb, bl["sbl_addr"], files["blhost_loader"])
+    if op == "factory":                                # plus firmware, romfs, and the boot e-fuse
         steps += _write_region(blhost, usb, bl["firmware_addr"], files["firmware"])
         steps += _write_region(blhost, usb, bl["romfs_addr"], files["romfs"])
         steps.append(ImxStep("burn boot e-fuse",
@@ -119,7 +132,7 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
                                      bl["efuse_addr"], bl["efuse_data"])))
     elif op == "firmware":
         steps += _write_region(blhost, usb, bl["firmware_addr"], files["firmware"])
-    else:                                              # romfs
+    elif op == "romfs":
         steps += _write_region(blhost, usb, bl["romfs_addr"], files["romfs"])
 
     steps.append(ImxStep("reset", _blhost(blhost, usb, "reset")))

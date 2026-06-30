@@ -121,10 +121,11 @@ def _loader(name: str, board: str) -> Path:
 def _imx_files(board: str, op: str, raw: dict, out_dir: Path) -> dict[str, Path]:
     sd, bl = raw["sdphost"], raw["blhost"]
     files = {"sdphost_loader": _loader(sd["loader"], board)}
+    if op in ("factory", "bootloader"):              # the secure bootloader (bundled SBL)
+        files["blhost_loader"] = _loader(bl["sbl_loader"], board)
     if op in ("firmware", "factory"):
         files["firmware"] = out_dir / ("%s-firmware.bin" % board)
     if op == "factory":
-        files["blhost_loader"] = _loader(bl["sbl_loader"], board)
         files["romfs"] = out_dir / ("%s-factory-romfs.img" % board)
     elif op == "romfs":
         files["romfs"] = out_dir / ("%s-romfs.img" % board)
@@ -309,11 +310,14 @@ def flash_bootloader(project: str = ".", *, board: str, output: str | None = Non
     if not bl:
         raise FlashError("board %r has no bootloader to flash with this tool" % board)
     backend = bl["backend"]
-    if backend not in ("dfu", "cubeprog"):           # RT (factory) / AE3 (alif)
+    if backend not in ("dfu", "cubeprog", "imx"):    # AE3 (alif)
         raise FlashError("bootloader flashing for %r isn't available here: %s"
                          % (board, bl.get("note", "unsupported")))
+    print(bl["instructions"], file=sys.stderr)       # the manual recovery entry (BOOT0/SBL jumper)
+    if backend == "imx":                             # RT: the SDP/blhost FCB + secure-bootloader
+        return _imx_flash(project, "bootloader", board, cfg, "flash-bootloader",   # flow, no build bin
+                          output=output, sdk_home=sdk_home, dry_run=dry_run)
     f = _bootloader_bin(project, output, board)
-    print(bl["instructions"], file=sys.stderr)       # the manual system-DFU entry (BOOT0/jumper)
     if backend == "dfu":
         return _bootloader_dfu(project, board, bl, f, dfu_util=dfu_util, sdk_home=sdk_home,
                                serial=serial, dry_run=dry_run)
