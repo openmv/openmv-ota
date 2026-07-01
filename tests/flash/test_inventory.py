@@ -40,7 +40,7 @@ def test_serial_devices_reports_running_and_se_uart(monkeypatch):
     assert (("OPENMV4", "running", "/dev/ttyACM0", "OMV42") in
             [(d.board, d.state, d.where, d.serial) for d in devs])
     ae3 = next(d for d in devs if d.board == "OPENMV_AE3")
-    assert ae3.state == "recovery" and ae3.where == "/dev/ttyUSB0 (SE-UART)"
+    assert ae3.state == "recovery" and ae3.where == "/dev/ttyUSB0"
     assert len(devs) == 2
 
 
@@ -69,7 +69,7 @@ def test_imx_devices_reports_sdp_rom_downloader(monkeypatch):
     # the ROM downloader (SDP) -- held in recovery, ready to flash
     monkeypatch.setattr(inventory.runner, "output", lambda argv: "FOUND 0x1FC9,0x0135\n")
     devs = inventory.imx_devices("python3")
-    assert [(d.board, d.state, d.where) for d in devs] == [("OPENMV_RT1060", "recovery", "SDP ROM")]
+    assert [(d.board, d.state, d.where) for d in devs] == [("OPENMV_RT1060", "recovery", "system flashloader")]
 
 
 def test_imx_devices_reports_the_loaded_flashloader(monkeypatch):
@@ -86,7 +86,7 @@ def test_imx_scans_both_the_downloader_and_the_flashloader(monkeypatch):
                         lambda argv: seen.setdefault("argv", argv) and "")
     assert inventory.imx_devices("python3") == []          # neither present
     flat = " ".join(seen["argv"])
-    assert "0x1FC9,0x0135" in flat and "SdpUSBInterface" in flat        # SDP ROM
+    assert "0x1FC9,0x0135" in flat and "SdpUSBInterface" in flat        # the ROM downloader
     assert "0x15A2,0x0073" in flat and "MbootUSBInterface" in flat      # the flashloader
 
 
@@ -96,7 +96,7 @@ def test_imx_scans_both_the_downloader_and_the_flashloader(monkeypatch):
 def stub_scanners(monkeypatch):
     d_serial = inventory.Device("OPENMV4", "running", "/dev/ttyACM0", "OMV42")
     d_dfu = inventory.Device("OpenMV STM32", "recovery", "system DFU", "ST9")
-    d_imx = inventory.Device("OPENMV_RT1060", "recovery", "SDP ROM", None)
+    d_imx = inventory.Device("OPENMV_RT1060", "recovery", "system flashloader", None)
     monkeypatch.setattr(fl.inventory, "serial_devices", lambda: [d_serial])
     monkeypatch.setattr(fl.inventory, "dfu_devices", lambda tool: [d_dfu])
     monkeypatch.setattr(fl.inventory, "imx_devices", lambda py: [d_imx])
@@ -138,11 +138,11 @@ def test_list_cli_human_output(monkeypatch, capsys):
 
 def test_list_cli_json(monkeypatch, capsys):
     monkeypatch.setattr(fl, "scan_devices", lambda **k: [
-        inventory.Device("OPENMV_RT1060", "recovery", "SDP ROM", None)])
+        inventory.Device("OPENMV_RT1060", "recovery", "system flashloader", None)])
     assert main(["flash", "list", "--json"]) == 0
     import json
     assert json.loads(capsys.readouterr().out) == [
-        {"board": "OPENMV_RT1060", "state": "recovery", "where": "SDP ROM", "serial": None}]
+        {"board": "OPENMV_RT1060", "state": "recovery", "where": "system flashloader", "serial": None}]
 
 
 def test_list_cli_empty(monkeypatch, capsys):

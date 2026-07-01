@@ -220,11 +220,11 @@ already carries, across three transports:
 
 - **serial** (pyserial) — a board **running** its firmware, or an AE3 held in SE-UART **recovery**;
 - **`dfu-util -l`** — a board in its OpenMV/Arduino **bootloader**, or an STM32 in system-DFU **recovery**;
-- **spsdk USB scan** (needs the SDK's `blhost`/python, via `--sdk-home`) — an RT1060 in its SDP-ROM **recovery**, or the RAM **flashloader** it loads (a `bootloader`-state device present only mid-flash, so seeing it flags an interrupted flash).
+- **spsdk USB scan** (needs the SDK's `blhost`/python, via `--sdk-home`) — an RT1060 in its ROM serial-download mode (its **system flashloader**) → `recovery`, or the RAM **flashloader** it loads (a `bootloader`-state device present only mid-flash, so seeing it flags an interrupted flash).
 
 State is one of **`running`** (firmware up), **`bootloader`** (the normal DFU we flash
 firmware/romfs through), or **`recovery`** (the by-hand ROM/maintenance modes — system DFU,
-SE-UART, SDP — you enter to flash a *bootloader*). Each scanner degrades on its own: the serial
+SE-UART, system flashloader — you enter to flash a *bootloader*). Each scanner degrades on its own: the serial
 scan always runs; the DFU scan is skipped with a note if dfu-util is missing; the i.MX scan is
 skipped quietly without the SDK's spsdk. A shared id (every STM32 looks identical in system
 DFU) is reported under a generic label.
@@ -232,9 +232,9 @@ DFU) is reported under a generic label.
 ```
 $ openmv-ota flash list
 OPENMV4              running    /dev/ttyACM0       208237AD3548
-OPENMV_AE3           recovery   /dev/ttyUSB0 (SE-UART)  -
+OPENMV_AE3           recovery   /dev/ttyUSB0        -
 OpenMV STM32         recovery   system DFU         3648335A3138
-OPENMV_RT1060        recovery   SDP ROM            -
+OPENMV_RT1060        recovery   system flashloader  -
 ```
 
 `--json` prints the same as a machine-readable array (board / state / where / serial).

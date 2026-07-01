@@ -7,7 +7,7 @@ Three scanners, one per transport, mapped back to board names through the very V
   app id), or an AE3 held in SE-UART maintenance mode (its FTDI/CH340 bridge);
 * **dfu** (``dfu-util -l``) -- a board in the OpenMV/Arduino DFU bootloader, or an STM32 in its
   system ROM DFU;
-* **imx** (an spsdk USB scan via the SDK's python) -- an RT1060 held in its SDP ROM.
+* **imx** (an spsdk USB scan via the SDK's python) -- an RT1060 in its ROM serial-download mode.
 
 Every device is reported in one of three **states**: ``running`` (firmware is up), ``bootloader``
 (the normal DFU we flash firmware/romfs through), or ``recovery`` -- the by-hand ROM/maintenance
@@ -37,7 +37,7 @@ _DFU_SERIAL = re.compile(r'serial="([^"]*)"')
 class Device:
     board: str
     state: str           # running | bootloader | recovery
-    where: str           # the serial port, or the USB mode (DFU / system DFU / SDP ROM)
+    where: str           # the serial port, or the USB mode (DFU / system DFU / system flashloader)
     serial: str | None   # USB serial number when known (what `--serial` pins)
 
 
@@ -84,9 +84,8 @@ def serial_devices() -> list[Device]:
     for p in device._comports():
         hit = idx.get((p.vid, p.pid))
         if hit and hit[2] == "serial":
-            label, state, _ = hit
-            where = p.device + (" (SE-UART)" if state == "recovery" else "")
-            out.append(Device(label, state, where, p.serial_number))
+            label, state, _ = hit          # the state column already says running vs recovery
+            out.append(Device(label, state, p.device, p.serial_number))
     return out
 
 
@@ -124,7 +123,8 @@ def imx_devices(python3: str) -> list[Device]:
         f = b.flash
         if not f or b.unsupported or not f.get("sdphost"):
             continue
-        entries.append((f["sdphost"]["usb"], Device(name, "recovery", "SDP ROM", None), *sdp))
+        entries.append((f["sdphost"]["usb"],
+                        Device(name, "recovery", "system flashloader", None), *sdp))
         entries.append((f["blhost"]["usb"],
                         Device(name, "bootloader", "flashloader (mid-flash)", None), *mboot))
     out = runner.output(imx.scan_argv(python3, [(mod, cls, dev) for dev, _, mod, cls in entries]))
