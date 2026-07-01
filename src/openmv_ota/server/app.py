@@ -90,8 +90,13 @@ def _account(ms, ro, rel, checkin, existing, offered):
     rid = ro["rollout_id"]
     prev_offered = existing["last_offered_release_id"] if existing else None
     prev_fallback = existing["fallback_reason"] if existing else None
+    prev_pv = existing["current_payload_version"] if existing else None
     if offered and prev_offered != rel["release_id"]:            # newly entering this rollout
         ms.bump_rollout(rid, attempted=1)
+    # a device we offered this release, now *transitioning to running it* -> a success
+    if (prev_offered == rel["release_id"] and prev_pv != rel["payload_version"]
+            and checkin.payload_version == rel["payload_version"]):
+        ms.bump_rollout(rid, updated=1)
     # a device we offered this release, transitioning *into* a fallback -> one failure
     if prev_offered == rel["release_id"] and checkin.fallback_reason and not prev_fallback:
         ms.bump_rollout(rid, failures=1)
@@ -179,4 +184,6 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.secret = secret
     app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min)
     app.include_router(router)
+    from .admin import admin
+    app.include_router(admin)
     return app

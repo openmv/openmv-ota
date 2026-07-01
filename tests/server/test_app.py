@@ -98,6 +98,16 @@ def test_offer_mints_capability_url_and_accounts(tmp_path):
     assert store.get_rollout("ro1")["attempted"] == 1
 
 
+def test_success_counted_when_device_runs_offered_release(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, pv=0x02000000, percent=100)
+    c = TestClient(app)
+    c.post("/api/v1/check", json=_checkin(pv=0x01000000))     # offered -> attempted 1
+    assert store.get_rollout("ro1")["attempted"] == 1 and store.get_rollout("ro1")["updated"] == 0
+    c.post("/api/v1/check", json=_checkin(pv=0x02000000))     # now running it -> updated 1
+    assert store.get_rollout("ro1")["updated"] == 1
+
+
 def test_not_in_staged_percent(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, pv=0x02000000, percent=0)
