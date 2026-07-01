@@ -5,6 +5,7 @@
     factory    flash the manufacturing program: firmware + the dual-slot factory image
     bootloader flash the bootloader (board must be in system ROM DFU, entered by hand)
     erase      erase the onboard filesystem (the user disk)
+    list       list connected boards and the state (running / bootloader / recovery) each is in
 
 One board at a time (the connected device); ``--dry-run`` prints the dfu-util commands
 without running them.
@@ -62,6 +63,12 @@ def register(flash_parser: argparse.ArgumentParser):
     p_er = sub.add_parser("erase", help="erase the onboard filesystem (the user disk)")
     _add_common(p_er)
     p_er.set_defaults(func=cmd_erase, _command="flash erase")
+
+    p_ls = sub.add_parser("list", help="list connected boards and the state each is in")
+    p_ls.add_argument("--dfu-util", help="path to dfu-util (default: SDK's, else PATH)")
+    p_ls.add_argument("--sdk-home", help="SDK home to find the flash tools under")
+    p_ls.add_argument("--json", action="store_true", help="machine-readable output")
+    p_ls.set_defaults(func=cmd_list, _command="flash list")
     return sub
 
 
@@ -116,6 +123,24 @@ def cmd_factory(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     return _report(args, steps)
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    try:
+        devices = flash_mod.scan_devices(dfu_util=args.dfu_util, sdk_home=_sdk_home(args))
+    except FlashError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if args.json:
+        import json
+        print(json.dumps([{"board": d.board, "state": d.state, "where": d.where,
+                           "serial": d.serial} for d in devices]))
+    elif not devices:
+        print("no boards found")
+    else:
+        for d in devices:
+            print("%-20s %-10s %-18s %s" % (d.board, d.state, d.where, d.serial or "-"))
+    return 0
 
 
 def cmd_erase(args: argparse.Namespace) -> int:

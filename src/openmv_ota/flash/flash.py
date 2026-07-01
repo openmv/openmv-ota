@@ -20,7 +20,7 @@ from pathlib import Path
 
 from openmv_ota.project import history
 
-from . import alif, arduino, device, dfu, imx, runner, tools
+from . import alif, arduino, device, dfu, imx, inventory, runner, tools
 from .errors import FlashError
 from .targets import FlashConfig, flash_config
 
@@ -404,6 +404,23 @@ def _alif_flash(project: str, board: str, bl: dict, *, output: str | None,
         history.record(project, "flash-bootloader", board=board,
                        steps=[s.label for s in steps])
     return steps
+
+
+def scan_devices(*, dfu_util: str | None = None,
+                 sdk_home: Path | None = None) -> list[inventory.Device]:
+    """Enumerate every connected, identifiable board and the state it's in. Each scanner
+    degrades on its own: serial always runs; the DFU scan is skipped (with a note) if dfu-util
+    is absent; the i.MX scan is skipped quietly if the SDK's spsdk isn't reachable."""
+    devices = inventory.serial_devices()
+    try:
+        devices += inventory.dfu_devices(tools.find_dfu_util(dfu_util, sdk_home))
+    except FlashError:
+        print("warning: dfu-util not found -- skipping the DFU/recovery scan", file=sys.stderr)
+    try:
+        devices += inventory.imx_devices(_sdk_python(tools.find_spsdk("blhost", sdk_home)))
+    except FlashError:
+        pass                                         # the i.MX scan needs the SDK's spsdk
+    return sorted(devices, key=lambda d: (d.board, d.state, d.where))
 
 
 def flash_bootloader(project: str = ".", *, board: str, output: str | None = None,

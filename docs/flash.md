@@ -38,6 +38,7 @@ is invoked (default `python -m mpremote`).
 | `flash factory` | firmware **+** the dual-slot factory image (the manufacturing program) | `<board>-firmware.bin`, `<board>-factory-romfs.img` |
 | `flash bootloader` | the bootloader (see below) | `<board>-bootloader.bin` |
 | `flash erase` | the onboard filesystem / user disk (see below) | — (no artifact) |
+| `flash list` | *(query)* connected boards + the state each is in (see below) | — |
 
 `flash factory` writes firmware and the factory image in one pass, resetting the board only
 after the final write so it stays in the bootloader between steps.
@@ -209,6 +210,34 @@ would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 .../sdphost_flash_l
 would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60400000 0x1000
 would run: blhost -u 0x15A2,0x0073 -- reset
 ```
+
+## Listing connected boards
+
+`flash list` enumerates every connected board it can identify and the **state** each is in —
+handy before flashing (which board is which, what serial to pass `--serial`, did it actually
+enter the bootloader). It maps devices back to boards through the same VID:PIDs `boards.json`
+already carries, across three transports:
+
+- **serial** (pyserial) — a board **running** its firmware, or an AE3 held in SE-UART **recovery**;
+- **`dfu-util -l`** — a board in its OpenMV/Arduino **bootloader**, or an STM32 in system-DFU **recovery**;
+- **spsdk USB scan** (needs the SDK's `blhost`/python, via `--sdk-home`) — an RT1060 in its SDP-ROM **recovery**.
+
+State is one of **`running`** (firmware up), **`bootloader`** (the normal DFU we flash
+firmware/romfs through), or **`recovery`** (the by-hand ROM/maintenance modes — system DFU,
+SE-UART, SDP — you enter to flash a *bootloader*). Each scanner degrades on its own: the serial
+scan always runs; the DFU scan is skipped with a note if dfu-util is missing; the i.MX scan is
+skipped quietly without the SDK's spsdk. A shared id (every STM32 looks identical in system
+DFU) is reported under a generic label.
+
+```
+$ openmv-ota flash list
+OPENMV4              running    /dev/ttyACM0       208237AD3548
+OPENMV_AE3           recovery   /dev/ttyUSB0 (SE-UART)  -
+OpenMV STM32         recovery   system DFU         3648335A3138
+OPENMV_RT1060        recovery   SDP ROM            -
+```
+
+`--json` prints the same as a machine-readable array (board / state / where / serial).
 
 ## i.MX RT1060
 

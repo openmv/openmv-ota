@@ -44,6 +44,22 @@ _WAIT_SCRIPT = (
 _MBOOT_IF = ("spsdk.mboot.interfaces.usb", "MbootUSBInterface")   # the flashloader (post-jump)
 _SDP_IF = ("spsdk.sdp.interfaces.usb", "SdpUSBInterface")         # the ROM (serial download)
 
+# One process that scans (once) for each spsdk USB id and prints ``FOUND <id>`` for those
+# present -- the read-only counterpart of the wait script, for ``flash list``. Run with the
+# SDK's python; argv: <python3> -c <this> <mod>|<cls>|<id> ...
+_SCAN_SCRIPT = (
+    "import sys, importlib\n"
+    "for spec in sys.argv[1:]:\n"
+    "    mod, cls, dev = spec.split('|')\n"
+    "    if getattr(importlib.import_module(mod), cls).scan(device_id=dev):\n"
+    "        sys.stdout.write('FOUND ' + dev + '\\n')\n"
+)
+
+
+def scan_argv(python3: str, specs: list[tuple[str, str, str]]) -> list[str]:
+    """Argv to scan for each ``(module, class, device_id)`` spsdk USB device in one process."""
+    return [python3, "-c", _SCAN_SCRIPT] + ["|".join(s) for s in specs]
+
 
 @dataclass(frozen=True)
 class ImxStep:

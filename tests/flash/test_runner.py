@@ -41,6 +41,28 @@ def test_nonzero_exit_raises(monkeypatch):
     assert e.value.exit_code == 1
 
 
+def test_output_captures_stdout(monkeypatch):
+    monkeypatch.setattr(runner.subprocess, "run",
+                        lambda argv, check, capture_output, text:
+                        type("R", (), {"stdout": "Found DFU: [0483:df11]"})())
+    assert runner.output(["dfu-util", "-l"]) == "Found DFU: [0483:df11]"
+
+
+def test_output_missing_binary_raises(monkeypatch):
+    monkeypatch.setattr(runner.subprocess, "run",
+                        lambda argv, **k: (_ for _ in ()).throw(FileNotFoundError()))
+    with pytest.raises(FlashError, match="not found"):
+        runner.output(["dfu-util", "-l"])
+
+
+def test_output_nonzero_exit_raises(monkeypatch):
+    monkeypatch.setattr(runner.subprocess, "run",
+                        lambda argv, **k: (_ for _ in ()).throw(
+                            subprocess.CalledProcessError(2, argv)))
+    with pytest.raises(FlashError, match="exit 2"):
+        runner.output(["dfu-util", "-l"])
+
+
 def test_tolerate_fail_warns_and_continues(monkeypatch, capsys):
     def fake(argv, check):
         raise subprocess.CalledProcessError(74, argv)
