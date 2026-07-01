@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from . import capability
+from .auth import TokenAuth
 from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter
@@ -174,7 +175,7 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.storage = storage
     app.state.metastore = metastore
     app.state.verifier = verifier
-    app.state.admin_auth = admin_auth
+    app.state.admin_auth = admin_auth if admin_auth is not None else TokenAuth(metastore)
     app.state.secret = secret
     app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min)
     app.include_router(router)

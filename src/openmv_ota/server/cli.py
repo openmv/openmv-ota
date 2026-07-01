@@ -16,6 +16,7 @@ import secrets
 import sys
 
 from .errors import ServerError
+from .scopes import SCOPES
 
 
 def register(parser: argparse.ArgumentParser) -> None:
@@ -34,6 +35,19 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_run.add_argument("--host", help="bind host (default from settings / 0.0.0.0)")
     p_run.add_argument("--port", type=int, help="bind port (default $PORT / 8080)")
     p_run.set_defaults(func=cmd_run, _command="server run")
+
+    p_token = sub.add_parser("token", help="manage admin API tokens")
+    tsub = p_token.add_subparsers(dest="_token_cmd")
+    p_ti = tsub.add_parser("issue", help="mint a scoped admin token (printed once)")
+    p_ti.add_argument("--name", required=True)
+    p_ti.add_argument("--scope", action="append", default=[], choices=SCOPES,
+                      help="repeatable; default: all scopes")
+    p_ti.set_defaults(func=cmd_token_issue, _command="server token issue")
+    p_tr = tsub.add_parser("revoke", help="revoke a token by its hash")
+    p_tr.add_argument("token_hash")
+    p_tr.set_defaults(func=cmd_token_revoke, _command="server token revoke")
+    p_tl = tsub.add_parser("list", help="list admin tokens (hashes + scopes, never secrets)")
+    p_tl.set_defaults(func=cmd_token_list, _command="server token list")
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -71,8 +85,49 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     version = _bootstrap(store, settings)
+    _seed_admin_token(store, settings)
     store.close()
     print("initialized (schema v%d)" % version)
+    return 0
+
+
+def cmd_token_issue(args: argparse.Namespace) -> int:
+    try:
+        store = _open()
+    except ServerError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    from .auth import hash_token
+    token = secrets.token_urlsafe(32)
+    store.add_token(hash_token(token), args.name, args.scope or list(SCOPES))
+    store.close()
+    print("token issued (store it now -- it is not recoverable):", file=sys.stderr)
+    print(token)
+    return 0
+
+
+def cmd_token_revoke(args: argparse.Namespace) -> int:
+    try:
+        store = _open()
+    except ServerError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    store.revoke_token(args.token_hash)
+    store.close()
+    print("revoked %s" % args.token_hash)
+    return 0
+
+
+def cmd_token_list(args: argparse.Namespace) -> int:
+    try:
+        store = _open()
+    except ServerError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    for t in store.list_tokens():
+        print("%s  %-24s [%s]%s" % (t["token_hash"][:16], t["name"], ",".join(t["scopes"]),
+                                    "  REVOKED" if t["revoked"] else ""))
+    store.close()
     return 0
 
 
@@ -98,6 +153,20 @@ def _bootstrap(store, settings) -> int:
     return version
 
 
+def _seed_admin_token(store, settings) -> None:
+    """Seed a root admin token on first init: from ``ADMIN_BOOTSTRAP_TOKEN`` (silent) or a freshly
+    generated one printed once. A no-op once any token exists."""
+    if store.count_tokens() > 0:
+        return
+    from .auth import hash_token
+    if settings.admin_bootstrap_token:
+        store.add_token(hash_token(settings.admin_bootstrap_token), "bootstrap", list(SCOPES))
+        return
+    token = secrets.token_urlsafe(32)
+    store.add_token(hash_token(token), "bootstrap", list(SCOPES))
+    print("admin bootstrap token (store it now): %s" % token, file=sys.stderr)
+
+
 def _serve(app, host, port):                     # pragma: no cover  (blocks; seam monkeypatched)
     import uvicorn
     uvicorn.run(app, host=host, port=port)
@@ -113,3 +182,11 @@ def _settings():
 def _store(settings):
     from .metastore import build_metastore
     return build_metastore(settings)
+
+
+def _open():
+    """Resolve settings + open the metastore, ensuring the schema (idempotent) -- for the token
+    ops, which assume `server init`/`migrate` has run but shouldn't fail if it hasn't."""
+    store = _store(_settings())
+    store.migrate()
+    return store

@@ -204,6 +204,23 @@ def test_create_app_requires_secret(tmp_path):
                    metastore=store, storage=LocalArtifactStorage(str(tmp_path)), verifier=_Verifier())
 
 
+def test_create_app_default_admin_auth_is_token_auth(tmp_path):
+    from openmv_ota.server.auth import TokenAuth
+    app, *_ = _app(tmp_path)
+    assert isinstance(app.state.admin_auth, TokenAuth)
+
+
+def test_create_app_injected_admin_auth(tmp_path):
+    sentinel = object()
+    store = SqliteMetadataStore(":memory:")
+    store.migrate()
+    store.set_meta("cohort_salt", "x")
+    app = create_app(ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t"),
+                     metastore=store, storage=LocalArtifactStorage(str(tmp_path)),
+                     verifier=_Verifier(), admin_auth=sentinel)
+    assert app.state.admin_auth is sentinel
+
+
 def test_create_app_builds_defaults(tmp_path):
     s = SqliteMetadataStore(str(tmp_path / "ota.db"))
     s.migrate()
