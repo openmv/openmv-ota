@@ -38,22 +38,24 @@ def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0):
     return app, store, storage, verifier
 
 
+BID = 7
+
 def _seed(store, *, pv=0x02000000, percent=100, storage=None, manifest=b"MANI", image=b"IMG"):
-    store.add_release(release_id="rel1", board="OPENMV_N6", board_id=7, product="P", version="2.0.0",
+    store.add_release(release_id="rel1", board_id=BID, product="P", version="2.0.0",
                       payload_version=pv, min_platform_version=0, image_sha256="ab" * 32,
                       image_size=len(image),
                       representations=[{"format": "full", "url": "OPENMV_N6-ota.img.gz",
                                         "size": len(image)}],
                       manifest_key="manifest/rel1", image_key="image/rel1")
-    store.add_rollout(rollout_id="ro1", release_id="rel1", board="OPENMV_N6", cohort="__default__",
+    store.add_rollout(rollout_id="ro1", release_id="rel1", board_id=BID, cohort="__default__",
                       percent=percent)
     if storage is not None:
         storage.put("manifest/rel1", manifest, "application/octet-stream")
         storage.put("image/rel1", image, "application/gzip")
 
 
-def _checkin(dev="dev1", board="OPENMV_N6", pv=0x01000000, **kw):
-    return {"device_id": dev, "board": board, "payload_version": pv, **kw}
+def _checkin(dev="dev1", board_id=BID, pv=0x01000000, **kw):
+    return {"device_id": dev, "board_id": board_id, "payload_version": pv, **kw}
 
 
 # --- health + validation --------------------------------------------------------------------
@@ -122,7 +124,7 @@ def test_anti_rollback_not_offered(tmp_path):
 
 def test_rollout_pointing_at_missing_release(tmp_path):
     app, store, storage, v = _app(tmp_path)
-    store.add_rollout(rollout_id="ro1", release_id="ghost", board="OPENMV_N6",
+    store.add_rollout(rollout_id="ro1", release_id="ghost", board_id=BID,
                       cohort="__default__", percent=100)
     assert TestClient(app).post("/api/v1/check", json=_checkin(pv=1)).json()["update"] is False
 

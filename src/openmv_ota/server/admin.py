@@ -39,20 +39,21 @@ def create_rollout(body: RolloutCreate, request: Request,
     rel = ms.get_release(body.release_id)
     if rel is None:
         raise HTTPException(status_code=404, detail="no such release")
-    board = rel["board"]
-    prior = ms.active_rollout(board, body.cohort)        # only one active per (board, cohort)
+    board_id = rel["board_id"]
+    prior = ms.active_rollout(board_id, body.cohort)     # only one active per (board_id, cohort)
     if prior is not None:
         ms.update_rollout(prior["rollout_id"], state="paused")
         ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
                         entity_id=prior["rollout_id"])
     rid = new_id("ro")
-    ms.add_rollout(rollout_id=rid, release_id=body.release_id, board=board, cohort=body.cohort,
-                   percent=body.percent, failure_threshold=body.failure_threshold)
+    ms.add_rollout(rollout_id=rid, release_id=body.release_id, board_id=board_id,
+                   cohort=body.cohort, percent=body.percent,
+                   failure_threshold=body.failure_threshold)
     ms.append_audit(actor=principal.name, action="rollout.create", entity_type="rollout",
                     entity_id=rid, data={"release_id": body.release_id, "cohort": body.cohort,
                                          "percent": body.percent})
-    return {"rollout_id": rid, "board": board, "cohort": body.cohort, "percent": body.percent,
-            "state": "active"}
+    return {"rollout_id": rid, "board_id": board_id, "cohort": body.cohort,
+            "percent": body.percent, "state": "active"}
 
 
 @admin.patch("/rollouts/{rollout_id}")
@@ -92,9 +93,9 @@ def rollback_rollout(rollout_id: str, request: Request,
 
 
 @admin.get("/rollouts")
-def list_rollouts(request: Request, board: str | None = None,
+def list_rollouts(request: Request, board_id: int | None = None,
                   principal: Principal = Depends(require_scope("fleet:read"))):
-    return {"rollouts": request.app.state.metastore.list_rollouts(board)}
+    return {"rollouts": request.app.state.metastore.list_rollouts(board_id)}
 
 
 @admin.get("/rollouts/{rollout_id}/status")
@@ -110,15 +111,15 @@ def rollout_status(rollout_id: str, request: Request,
 
 
 @admin.get("/fleet")
-def fleet(request: Request, board: str | None = None,
+def fleet(request: Request, board_id: int | None = None,
           principal: Principal = Depends(require_scope("fleet:read"))):
-    return request.app.state.metastore.fleet_summary(board)
+    return request.app.state.metastore.fleet_summary(board_id)
 
 
 @admin.get("/devices")
-def devices(request: Request, board: str | None = None, limit: int = 100,
+def devices(request: Request, board_id: int | None = None, limit: int = 100,
             principal: Principal = Depends(require_scope("fleet:read"))):
-    return {"devices": request.app.state.metastore.list_devices(board, limit)}
+    return {"devices": request.app.state.metastore.list_devices(board_id, limit)}
 
 
 @admin.get("/audit")

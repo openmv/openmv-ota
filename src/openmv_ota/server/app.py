@@ -37,8 +37,8 @@ _MEDIA = {"manifest.bin": "application/octet-stream"}
 
 class CheckIn(BaseModel):
     device_id: str
-    board: str
-    board_id: int | None = None
+    board_id: int                          # the release<->device join key (from identity())
+    board: str | None = None               # camera model, display-only
     product: str | None = None
     app_version: str | None = None
     payload_version: int = 0
@@ -66,7 +66,7 @@ def _decide(state, checkin, cohort):
     """The active rollout + release for this device, and whether to offer it.
     Returns ``(rollout | None, release | None, offered: bool, manifest_url | None)``."""
     ms = state.metastore
-    ro = ms.active_rollout(checkin.board, cohort)
+    ro = ms.active_rollout(checkin.board_id, cohort)
     if ro is None:
         return None, None, False, None
     rel = ms.get_release(ro["release_id"])
@@ -132,7 +132,7 @@ def check(checkin: CheckIn, request: Request):
     _account(ms, ro, rel, checkin, existing, offered)
     release_id = rel["release_id"] if offered else None
     ms.upsert_device(
-        device_id=checkin.device_id, board=checkin.board, cohort=cohort,
+        device_id=checkin.device_id, board_id=checkin.board_id, board=checkin.board, cohort=cohort,
         current_version=checkin.app_version, current_payload_version=checkin.payload_version,
         slot=checkin.slot, representation=checkin.representation,
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
@@ -185,5 +185,7 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min)
     app.include_router(router)
     from .admin import admin
+    from .publish import publish
     app.include_router(admin)
+    app.include_router(publish)
     return app

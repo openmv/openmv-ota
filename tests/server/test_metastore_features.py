@@ -1,8 +1,13 @@
-"""The metastore feature methods: releases, rollouts, the device registry, tokens, audit."""
+"""The metastore feature methods: releases, rollouts, the device registry, tokens, audit.
+
+Everything groups by board_id (int) -- the manifest/check-in join key.
+"""
 
 from __future__ import annotations
 
 from openmv_ota.server.metastore import SqliteMetadataStore
+
+BID = 7          # a board_id
 
 
 def _store() -> SqliteMetadataStore:
@@ -12,7 +17,7 @@ def _store() -> SqliteMetadataStore:
 
 
 def _add_release(s, **kw):
-    base = dict(release_id="rel1", board="OPENMV_N6", board_id=7, product="P", version="1.1.0",
+    base = dict(release_id="rel1", board_id=BID, product="P", version="1.1.0",
                 payload_version=0x01010000, min_platform_version=0, image_sha256="ab" * 32,
                 image_size=1000, representations=[{"format": "full", "url": "x.img.gz", "size": 900}],
                 manifest_key="m/rel1", image_key="i/rel1")
@@ -23,14 +28,14 @@ def _add_release(s, **kw):
 
 def test_release_add_get_list_latest():
     s = _store()
-    assert s.latest_release_payload_version("OPENMV_N6") is None
+    assert s.latest_release_payload_version(BID) is None
     _add_release(s)
     r = s.get_release("rel1")
-    assert r["board"] == "OPENMV_N6" and r["representations"][0]["format"] == "full"
+    assert r["board_id"] == BID and r["representations"][0]["format"] == "full"
     _add_release(s, release_id="rel2", version="1.2.0", payload_version=0x01020000)
-    assert [x["release_id"] for x in s.list_releases("OPENMV_N6")] == ["rel2", "rel1"]  # pv desc
-    assert s.latest_release_payload_version("OPENMV_N6") == 0x01020000
-    assert s.get_release("nope") is None and s.list_releases("OTHER") == []
+    assert [x["release_id"] for x in s.list_releases(BID)] == ["rel2", "rel1"]   # pv desc
+    assert s.latest_release_payload_version(BID) == 0x01020000
+    assert s.get_release("nope") is None and s.list_releases(999) == []
 
 
 # --- rollouts -------------------------------------------------------------------------------
@@ -38,21 +43,21 @@ def test_release_add_get_list_latest():
 def test_rollout_lifecycle():
     s = _store()
     _add_release(s)
-    s.add_rollout(rollout_id="ro1", release_id="rel1", board="OPENMV_N6", cohort="__default__",
+    s.add_rollout(rollout_id="ro1", release_id="rel1", board_id=BID, cohort="__default__",
                   percent=5)
     assert s.get_rollout("ro1")["state"] == "active" and s.get_rollout("ro1")["percent"] == 5
-    assert s.active_rollout("OPENMV_N6", "__default__")["rollout_id"] == "ro1"
+    assert s.active_rollout(BID, "__default__")["rollout_id"] == "ro1"
     s.update_rollout("ro1", percent=50)
     assert s.get_rollout("ro1")["percent"] == 50
     s.update_rollout("ro1", state="paused")
-    assert s.active_rollout("OPENMV_N6", "__default__") is None
-    assert [r["rollout_id"] for r in s.list_rollouts("OPENMV_N6")] == ["ro1"]
+    assert s.active_rollout(BID, "__default__") is None
+    assert [r["rollout_id"] for r in s.list_rollouts(BID)] == ["ro1"]
     assert [r["rollout_id"] for r in s.list_rollouts()] == ["ro1"]
 
 
 def test_rollout_bump_counters():
     s = _store()
-    s.add_rollout(rollout_id="ro1", release_id="rel1", board="B", cohort="c", percent=100)
+    s.add_rollout(rollout_id="ro1", release_id="rel1", board_id=1, cohort="c", percent=100)
     s.bump_rollout("ro1", attempted=1)
     s.bump_rollout("ro1", attempted=1, updated=1)
     s.bump_rollout("ro1", attempted=1, failures=1)
@@ -64,37 +69,38 @@ def test_rollout_bump_counters():
 
 def test_device_upsert_insert_then_update():
     s = _store()
-    s.upsert_device(device_id="d1", board="OPENMV_N6", current_version="1.0.0",
+    s.upsert_device(device_id="d1", board_id=BID, board="OPENMV_N6", current_version="1.0.0",
                     current_payload_version=0x01000000, slot="FRONT")
     d = s.get_device("d1")
-    assert d["current_version"] == "1.0.0" and d["first_seen"] == d["last_seen"]
+    assert d["current_version"] == "1.0.0" and d["board"] == "OPENMV_N6"
+    assert d["first_seen"] == d["last_seen"]
     first_seen = d["first_seen"]
-    s.upsert_device(device_id="d1", board="OPENMV_N6", current_version="1.1.0",
+    s.upsert_device(device_id="d1", board_id=BID, current_version="1.1.0",
                     current_payload_version=0x01010000, slot="FRONT", last_offered_release_id="rel1")
     d2 = s.get_device("d1")
     assert d2["current_version"] == "1.1.0" and d2["first_seen"] == first_seen
     assert d2["last_offered_release_id"] == "rel1"
-    s.upsert_device(device_id="d1", board="OPENMV_N6", current_version="1.1.0")   # no offer
-    assert s.get_device("d1")["last_offered_release_id"] == "rel1"                # COALESCE keeps it
+    s.upsert_device(device_id="d1", board_id=BID, current_version="1.1.0")    # no offer
+    assert s.get_device("d1")["last_offered_release_id"] == "rel1"            # COALESCE keeps it
     assert s.get_device("missing") is None
 
 
 def test_device_cohort_not_reset_by_checkin():
     s = _store()
-    s.upsert_device(device_id="d1", board="B", cohort="beta")
-    s.upsert_device(device_id="d1", board="B", current_version="2.0.0")   # a plain check-in
-    assert s.get_device("d1")["cohort"] == "beta"                          # admin cohort preserved
+    s.upsert_device(device_id="d1", board_id=1, cohort="beta")
+    s.upsert_device(device_id="d1", board_id=1, current_version="2.0.0")      # a plain check-in
+    assert s.get_device("d1")["cohort"] == "beta"                             # admin cohort preserved
 
 
 def test_list_devices_and_fleet_summary():
     s = _store()
-    s.upsert_device(device_id="d1", board="B", current_version="1.0.0", slot="FRONT")
-    s.upsert_device(device_id="d2", board="B", current_version="1.1.0", slot="FRONT")
-    s.upsert_device(device_id="d3", board="B", current_version="1.0.0", slot="BACK")
-    s.upsert_device(device_id="e1", board="OTHER", current_version="9.0.0", slot="FRONT")
-    assert {d["device_id"] for d in s.list_devices("B")} == {"d1", "d2", "d3"}
-    assert len(s.list_devices()) == 4 and len(s.list_devices("B", limit=2)) == 2
-    fs = s.fleet_summary("B")
+    s.upsert_device(device_id="d1", board_id=1, current_version="1.0.0", slot="FRONT")
+    s.upsert_device(device_id="d2", board_id=1, current_version="1.1.0", slot="FRONT")
+    s.upsert_device(device_id="d3", board_id=1, current_version="1.0.0", slot="BACK")
+    s.upsert_device(device_id="e1", board_id=2, current_version="9.0.0", slot="FRONT")
+    assert {d["device_id"] for d in s.list_devices(1)} == {"d1", "d2", "d3"}
+    assert len(s.list_devices()) == 4 and len(s.list_devices(1, limit=2)) == 2
+    fs = s.fleet_summary(1)
     assert fs["total"] == 3
     assert fs["by_version"] == {"1.0.0": 2, "1.1.0": 1}
     assert fs["by_slot"] == {"FRONT": 2, "BACK": 1}

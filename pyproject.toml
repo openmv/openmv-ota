@@ -33,7 +33,8 @@ dev = ["pytest>=7", "pytest-cov>=4", "pytest-xdist>=3", "ruff"]
 # The update server + client. `httpx` powers both the client verb and FastAPI's test client.
 # Heavy/optional backends are separate extras, lazily imported only when that backend is
 # selected, so the base `server` install stays lean (local-disk + stdlib sqlite work out of it).
-server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "pydantic-settings>=2", "httpx>=0.27"]
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "pydantic-settings>=2", "httpx>=0.27",
+          "python-multipart>=0.0.9"]
 server-s3 = ["boto3>=1.34"]
 server-postgres = ["psycopg[binary]>=3.1"]
 hsm = []

@@ -32,8 +32,10 @@ def _app(tmp_path, scopes=("rollout:control", "fleet:read")):
 AUTH = {"Authorization": "Bearer admintok"}
 
 
-def _seed_release(store, rid="rel1", board="OPENMV_N6", pv=0x02000000):
-    store.add_release(release_id=rid, board=board, board_id=7, product="P", version="2.0.0",
+BID = 7
+
+def _seed_release(store, rid="rel1", board_id=BID, pv=0x02000000):
+    store.add_release(release_id=rid, board_id=board_id, product="P", version="2.0.0",
                       payload_version=pv, min_platform_version=0, image_sha256="ab" * 32,
                       image_size=10, representations=[{"format": "full", "url": "x.img.gz",
                                                        "size": 9}],
@@ -65,7 +67,7 @@ def test_create_rollout(tmp_path):
                              json={"release_id": "rel1", "percent": 5})
     assert r.status_code == 200
     body = r.json()
-    assert body["board"] == "OPENMV_N6" and body["state"] == "active" and body["percent"] == 5
+    assert body["board_id"] == BID and body["state"] == "active" and body["percent"] == 5
     assert store.get_rollout(body["rollout_id"])["release_id"] == "rel1"
     assert any(e["action"] == "rollout.create" for e in store.read_audit())
 
@@ -154,7 +156,8 @@ def test_list_rollouts_and_status(tmp_path):
 
 def test_fleet_devices_audit(tmp_path):
     app, store = _app(tmp_path)
-    store.upsert_device(device_id="d1", board="OPENMV_N6", current_version="1.0.0", slot="FRONT")
+    store.upsert_device(device_id="d1", board_id=BID, board="OPENMV_N6", current_version="1.0.0",
+                        slot="FRONT")
     store.append_audit(actor="ci", action="release.publish", entity_type="release", entity_id="r1")
     c = TestClient(app)
     assert c.get("/api/v1/admin/fleet", headers=AUTH).json()["total"] == 1
