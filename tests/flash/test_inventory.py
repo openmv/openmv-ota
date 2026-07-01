@@ -73,11 +73,11 @@ def test_imx_devices_reports_sdp_rom_downloader(monkeypatch):
 
 
 def test_imx_devices_reports_the_loaded_flashloader(monkeypatch):
-    # the RAM flashloader blhost talks to -- present only mid-flash (an interrupted flash)
+    # the RAM flashloader blhost talks to -- "flashloader"/"system flashloader" parallels DFU
     monkeypatch.setattr(inventory.runner, "output", lambda argv: "FOUND 0x15A2,0x0073\n")
     devs = inventory.imx_devices("python3")
     assert [(d.board, d.state, d.where) for d in devs] == [
-        ("OPENMV_RT1060", "bootloader", "flashloader (mid-flash)")]
+        ("OPENMV_RT1060", "bootloader", "flashloader")]
 
 
 def test_imx_scans_both_the_downloader_and_the_flashloader(monkeypatch):

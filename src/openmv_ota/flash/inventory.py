@@ -126,7 +126,7 @@ def imx_devices(python3: str) -> list[Device]:
         entries.append((f["sdphost"]["usb"],
                         Device(name, "recovery", "system flashloader", None), *sdp))
         entries.append((f["blhost"]["usb"],
-                        Device(name, "bootloader", "flashloader (mid-flash)", None), *mboot))
+                        Device(name, "bootloader", "flashloader", None), *mboot))
     out = runner.output(imx.scan_argv(python3, [(mod, cls, dev) for dev, _, mod, cls in entries]))
     found = {ln[len("FOUND "):].strip() for ln in out.splitlines() if ln.startswith("FOUND ")}
     return [dev for devid, dev, _, _ in entries if devid in found]

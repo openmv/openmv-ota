@@ -220,7 +220,7 @@ already carries, across three transports:
 
 - **serial** (pyserial) — a board **running** its firmware, or an AE3 held in SE-UART **recovery**;
 - **`dfu-util -l`** — a board in its OpenMV/Arduino **bootloader**, or an STM32 in system-DFU **recovery**;
-- **spsdk USB scan** (needs the SDK's `blhost`/python, via `--sdk-home`) — an RT1060 in its ROM serial-download mode (its **system flashloader**) → `recovery`, or the RAM **flashloader** it loads (a `bootloader`-state device present only mid-flash, so seeing it flags an interrupted flash).
+- **spsdk USB scan** (needs the SDK's `blhost`/python, via `--sdk-home`) — an RT1060 in its ROM serial-download mode → `recovery` `system flashloader`, or the RAM **flashloader** it loads → `bootloader` `flashloader` (only up mid-flash, so seeing it flags an interrupted flash).
 
 State is one of **`running`** (firmware up), **`bootloader`** (the normal DFU we flash
 firmware/romfs through), or **`recovery`** (the by-hand ROM/maintenance modes — system DFU,
