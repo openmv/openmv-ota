@@ -1,7 +1,7 @@
 """Validate a device against the central openmv-swd-ids registration registry.
 
 The device check-in is gated on this call: an unregistered ``(board, id)`` gets nothing and
-leaves zero footprint. We call swd-ids' server-to-server ``POST /api/ota/v1/verify`` (token-authed).
+leaves zero footprint. We call swd-ids' server-to-server ``POST /api/v1/registration/verify`` (token-authed).
 
 Two defenses against an attacker looping the id-space:
 * **positive-only caching** -- a registered result is cached (bounded by the real fleet); a
