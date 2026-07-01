@@ -1,0 +1,154 @@
+"""The client verbs end-to-end against a real server (via an injected TestClient)."""
+
+from __future__ import annotations
+
+import gzip
+import hashlib
+
+import pytest
+from fastapi.testclient import TestClient
+
+from openmv_ota.cli import main
+from openmv_ota.client import cli as client_cli
+from openmv_ota.client.api import Api
+from openmv_ota.ota.algorithms import ES256
+from openmv_ota.ota.manifest import Manifest, pack_manifest
+from openmv_ota.server.app import create_app
+from openmv_ota.server.auth import hash_token
+from openmv_ota.server.metastore import SqliteMetadataStore
+from openmv_ota.server.settings import ServerSettings
+from openmv_ota.server.storage import LocalArtifactStorage
+from openmv_ota.server.verify import Registration
+
+BID = 7
+
+
+class _Verifier:
+    def verify(self, board, device_id):
+        return Registration(True)
+
+
+def _server(tmp_path, scopes=("release:write", "rollout:control", "fleet:read")):
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    store.set_meta("cohort_salt", "x")
+    store.add_token(hash_token("tok"), "ci", list(scopes))
+    app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
+                                    swd_ids_verify_token="t"),
+                     metastore=store, storage=LocalArtifactStorage(str(tmp_path / "blobs")),
+                     verifier=_Verifier())
+    return app, store
+
+
+@pytest.fixture
+def wired(tmp_path, monkeypatch):
+    app, store = _server(tmp_path)
+    tc = TestClient(app)
+    monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
+    monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
+    monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
+    return store, tmp_path
+
+
+def _build_release(project, board="OPENMV_N6", pv=0x02000000):
+    build = project / "build"
+    build.mkdir(parents=True, exist_ok=True)
+    img = b"\xA5" * 64
+    image_gz = gzip.compress(img, mtime=0)
+    body = {"schema": 1, "board_id": BID, "product": "P", "version": "2.0.0", "payload_version": pv,
+            "min_platform_version": 0, "size": len(img), "sha256": hashlib.sha256(img).hexdigest(),
+            "representations": [{"format": "full", "url": "%s-ota.img.gz" % board,
+                                 "size": len(image_gz)}]}
+    manifest = pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256,
+                                      signature=b"\x00" * 64))
+    (build / ("%s-manifest.bin" % board)).write_bytes(manifest)
+    (build / ("%s-ota.img.gz" % board)).write_bytes(image_gz)
+    return build
+
+
+def test_publish_and_rollout(wired, tmp_path, capsys):
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6", "--rollout", "beta:5"]) == 0
+    out = capsys.readouterr().out
+    assert "published rel_" in out and "rollout ro_" in out
+    releases = store.list_releases(BID)
+    assert len(releases) == 1 and store.list_rollouts(BID)[0]["cohort"] == "beta"
+
+
+def test_publish_missing_artifacts(wired, tmp_path, capsys):
+    store, _ = wired
+    assert main(["client", "publish", str(tmp_path / "empty"), "-b", "OPENMV_N6"]) == 2
+    assert "no built release" in capsys.readouterr().err
+
+
+def test_publish_bad_rollout_spec(wired, tmp_path, capsys):
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6", "--rollout", "beta:x"]) == 2
+    assert "bad --rollout" in capsys.readouterr().err
+
+
+def test_publish_server_rejects_republish(wired, tmp_path, capsys):
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project, pv=0x02000000)
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    capsys.readouterr()
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 1   # same pv -> 409
+    assert "409" in capsys.readouterr().err
+
+
+def _publish(store, tmp_path):
+    project = tmp_path / "p2"
+    _build_release(project)
+    main(["client", "publish", str(project), "-b", "OPENMV_N6", "--rollout", "beta:5"])
+    return store.list_rollouts(BID)[0]["rollout_id"]
+
+
+def test_rollout_raise_pause_resume_rollback(wired, tmp_path, capsys):
+    store, _ = wired
+    rid = _publish(store, tmp_path)
+    capsys.readouterr()
+    assert main(["client", "rollout", "raise", "--id", rid, "--percent", "50"]) == 0
+    assert store.get_rollout(rid)["percent"] == 50
+    assert main(["client", "rollout", "pause", "--id", rid]) == 0
+    assert store.get_rollout(rid)["state"] == "paused"
+    assert main(["client", "rollout", "resume", "--id", rid]) == 0
+    assert store.get_rollout(rid)["state"] == "active"
+    assert main(["client", "rollout", "rollback", "--id", rid]) == 0
+    assert store.get_rollout(rid)["state"] == "rolled_back"
+    assert "rolled_back" in capsys.readouterr().out
+
+
+def test_rollout_server_error_surfaced(wired, tmp_path, capsys):
+    store, _ = wired
+    assert main(["client", "rollout", "pause", "--id", "nope"]) == 1   # 404 -> exit 1
+    assert "404" in capsys.readouterr().err
+
+
+def test_fleet_devices_audit(wired, tmp_path, capsys):
+    import json
+    store, _ = wired
+    store.upsert_device(device_id="d1", board_id=BID, current_version="1.0.0", slot="FRONT")
+    store.append_audit(actor="ci", action="release.publish")
+    assert main(["client", "fleet"]) == 0
+    assert json.loads(capsys.readouterr().out)["total"] == 1
+    assert main(["client", "devices", "--board-id", str(BID)]) == 0
+    assert json.loads(capsys.readouterr().out)["devices"][0]["device_id"] == "d1"
+    assert main(["client", "audit"]) == 0
+    assert json.loads(capsys.readouterr().out)["events"][0]["action"] == "release.publish"
+
+
+def test_missing_creds(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("OPENMV_OTA_SERVER", raising=False)
+    monkeypatch.delenv("OPENMV_OTA_TOKEN", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))       # no saved profile
+    assert main(["client", "fleet"]) == 2
+    assert "no server URL" in capsys.readouterr().err
+
+
+def test_client_no_subcommand(capsys):
+    assert main(["client"]) == 1
