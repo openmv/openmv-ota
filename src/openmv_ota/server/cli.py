@@ -30,6 +30,11 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_init = sub.add_parser("init", help="migrate + bootstrap (idempotent; the container entrypoint)")
     p_init.set_defaults(func=cmd_init, _command="server init")
 
+    p_run = sub.add_parser("run", help="start the ASGI server (uvicorn)")
+    p_run.add_argument("--host", help="bind host (default from settings / 0.0.0.0)")
+    p_run.add_argument("--port", type=int, help="bind port (default $PORT / 8080)")
+    p_run.set_defaults(func=cmd_run, _command="server run")
+
 
 def cmd_check(args: argparse.Namespace) -> int:
     try:
@@ -65,12 +70,37 @@ def cmd_init(args: argparse.Namespace) -> int:
     except ServerError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
-    version = store.migrate()
-    if not store.get_meta("cohort_salt"):        # stable per-device staged-% bucketing
-        store.set_meta("cohort_salt", settings.cohort_salt or secrets.token_hex(16))
+    version = _bootstrap(store, settings)
     store.close()
     print("initialized (schema v%d)" % version)
     return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    try:
+        settings = _settings()
+        store = _store(settings)
+    except ServerError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    _bootstrap(store, settings)                  # migrate + seed the secret (safe if init already ran)
+    from .app import create_app
+    app = create_app(settings, metastore=store)
+    _serve(app, args.host or settings.host, args.port or settings.port)
+    return 0
+
+
+def _bootstrap(store, settings) -> int:
+    """Migrate + seed the server HMAC secret if unset. Idempotent."""
+    version = store.migrate()
+    if not store.get_meta("cohort_salt"):
+        store.set_meta("cohort_salt", settings.cohort_salt or secrets.token_hex(16))
+    return version
+
+
+def _serve(app, host, port):                     # pragma: no cover  (blocks; seam monkeypatched)
+    import uvicorn
+    uvicorn.run(app, host=host, port=port)
 
 
 def _settings():

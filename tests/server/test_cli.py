@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from openmv_ota.cli import main
 from openmv_ota.server import _extras
+from openmv_ota.server import cli as server_cli
 from openmv_ota.server.errors import ServerError
 
 
@@ -89,4 +90,21 @@ def test_init_requires_extra(monkeypatch, capsys):
     monkeypatch.setattr(_extras, "require_server_extra",
                         lambda *a, **k: (_ for _ in ()).throw(ServerError("need extra", 2)))
     assert main(["server", "init"]) == 2
+    assert "need extra" in capsys.readouterr().err
+
+
+def test_run_cli(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    monkeypatch.setenv("OPENMV_OTA_STORAGE_LOCATION", str(tmp_path / "blobs"))
+    served: dict = {}
+    monkeypatch.setattr(server_cli, "_serve",
+                        lambda app, host, port: served.update(app=app, host=host, port=port))
+    assert main(["server", "run", "--host", "127.0.0.1", "--port", "1234"]) == 0
+    assert served["host"] == "127.0.0.1" and served["port"] == 1234 and served["app"] is not None
+
+
+def test_run_requires_extra(monkeypatch, capsys):
+    monkeypatch.setattr(_extras, "require_server_extra",
+                        lambda *a, **k: (_ for _ in ()).throw(ServerError("need extra", 2)))
+    assert main(["server", "run"]) == 2
     assert "need extra" in capsys.readouterr().err

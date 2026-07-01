@@ -44,8 +44,10 @@ class ServerSettings(BaseSettings):
     admin_bootstrap_token: str = ""        # seeds the root admin token on first `server init`
     swd_ids_verify_url: str = ""           # the registration dependency -- required to serve
     swd_ids_verify_token: str = ""
-    cohort_salt: str = ""                  # stable per-device staged-% bucketing; persisted if unset
-    checkin_rate_per_min: int = 60         # per-IP device check-in rate limit
+    cohort_salt: str = ""                  # the server HMAC secret (capability tokens); persisted if unset
+    checkin_rate_per_min: int = 60         # per-IP device check-in rate limit (0 = disabled)
+    poll_after_s: int = 3600               # backoff the device is told to wait before polling again
+    capability_ttl: int = 3600             # lifetime of an artifact capability token
 
     def missing(self) -> list[str]:
         """Settings required before the server can serve devices (used by ``server check``)."""
