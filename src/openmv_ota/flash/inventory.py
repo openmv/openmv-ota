@@ -114,10 +114,19 @@ def dfu_devices(dfu_util: str) -> list[Device]:
 
 
 def imx_devices(python3: str) -> list[Device]:
-    """RT1060-class boards held in their SDP ROM, via an spsdk USB scan run under ``python3``."""
-    targets = [(name, b.flash["sdphost"]["usb"]) for name, b in load_boards().items()
-               if b.flash and not b.unsupported and b.flash.get("sdphost")]
-    mod, cls = imx._SDP_IF
-    out = runner.output(imx.scan_argv(python3, [(mod, cls, dev) for _, dev in targets]))
+    """RT1060-class boards on their i.MX serial-download USB, via an spsdk scan run under
+    ``python3``: the **ROM downloader** (SDP -- held in recovery, ready to flash) *and* the RAM
+    **flashloader** it loads (the MCU bootloader ``blhost`` talks to). The flashloader is present
+    only mid-flash, so seeing it means a flash was interrupted while the loader was up."""
+    sdp, mboot = imx._SDP_IF, imx._MBOOT_IF
+    entries = []                                         # (device_id, Device, module, class)
+    for name, b in load_boards().items():
+        f = b.flash
+        if not f or b.unsupported or not f.get("sdphost"):
+            continue
+        entries.append((f["sdphost"]["usb"], Device(name, "recovery", "SDP ROM", None), *sdp))
+        entries.append((f["blhost"]["usb"],
+                        Device(name, "bootloader", "flashloader (mid-flash)", None), *mboot))
+    out = runner.output(imx.scan_argv(python3, [(mod, cls, dev) for dev, _, mod, cls in entries]))
     found = {ln[len("FOUND "):].strip() for ln in out.splitlines() if ln.startswith("FOUND ")}
-    return [Device(name, "recovery", "SDP ROM", None) for name, dev in targets if dev in found]
+    return [dev for devid, dev, _, _ in entries if devid in found]

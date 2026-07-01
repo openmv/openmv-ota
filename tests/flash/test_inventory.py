@@ -65,15 +65,29 @@ def test_dfu_devices_dedups_alts_and_skips_unknown(monkeypatch):
 
 # --- imx (spsdk) scan -----------------------------------------------------------------------
 
-def test_imx_devices_reports_sdp_recovery_when_present(monkeypatch):
+def test_imx_devices_reports_sdp_rom_downloader(monkeypatch):
+    # the ROM downloader (SDP) -- held in recovery, ready to flash
     monkeypatch.setattr(inventory.runner, "output", lambda argv: "FOUND 0x1FC9,0x0135\n")
     devs = inventory.imx_devices("python3")
     assert [(d.board, d.state, d.where) for d in devs] == [("OPENMV_RT1060", "recovery", "SDP ROM")]
 
 
-def test_imx_devices_empty_when_no_sdp_device(monkeypatch):
-    monkeypatch.setattr(inventory.runner, "output", lambda argv: "")
-    assert inventory.imx_devices("python3") == []
+def test_imx_devices_reports_the_loaded_flashloader(monkeypatch):
+    # the RAM flashloader blhost talks to -- present only mid-flash (an interrupted flash)
+    monkeypatch.setattr(inventory.runner, "output", lambda argv: "FOUND 0x15A2,0x0073\n")
+    devs = inventory.imx_devices("python3")
+    assert [(d.board, d.state, d.where) for d in devs] == [
+        ("OPENMV_RT1060", "bootloader", "flashloader (mid-flash)")]
+
+
+def test_imx_scans_both_the_downloader_and_the_flashloader(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(inventory.runner, "output",
+                        lambda argv: seen.setdefault("argv", argv) and "")
+    assert inventory.imx_devices("python3") == []          # neither present
+    flat = " ".join(seen["argv"])
+    assert "0x1FC9,0x0135" in flat and "SdpUSBInterface" in flat        # SDP ROM
+    assert "0x15A2,0x0073" in flat and "MbootUSBInterface" in flat      # the flashloader
 
 
 # --- scan_devices composition + graceful degradation ----------------------------------------
