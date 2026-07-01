@@ -30,7 +30,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov>=4", "pytest-xdist>=3", "ruff"]
-server = []
+# The update server + client. `httpx` powers both the client verb and FastAPI's test client.
+# Heavy/optional backends are separate extras, lazily imported only when that backend is
+# selected, so the base `server` install stays lean (local-disk + stdlib sqlite work out of it).
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "pydantic-settings>=2", "httpx>=0.27"]
+server-s3 = ["boto3>=1.34"]
+server-postgres = ["psycopg[binary]>=3.1"]
 hsm = []
 
 [project.urls]
@@ -54,7 +59,7 @@ where = ["src"]
     "build/device/*.c",          # the ECDSA verify C module dropped into modules/
     "build/device/openmv_ota/data/*",  # the installer source, scaffolded into projects
     "romfs/sdk/**/*",
-    "romfs/update_server/deploy/*",
+    "server/deploy/*",           # Dockerfile + render.yaml Blueprint for self-hosters
 ]
 
 [tool.pytest.ini_options]
@@ -67,9 +72,7 @@ norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv",
 [tool.coverage.run]
 source = ["openmv_ota"]
 omit = [
-    # OTA-layer subsystems are stubs until later; the core romfs builder is
-    # what this first tool ships, and it is held to 100%.
-    "*/romfs/update_server/*",
+    # The on-device SDK is illustrative MicroPython, not host-side code.
     "*/romfs/sdk/*",
 ]
 

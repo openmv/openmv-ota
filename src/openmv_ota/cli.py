@@ -6,6 +6,8 @@ Commands are namespaced by subsystem:
     openmv-ota build …      compile + sign romfs / factory / firmware images
     openmv-ota flash …      flash built artifacts onto a board (dfu-util)
     openmv-ota romfs …      low-level pack / inspect of a ROMFS image directory
+    openmv-ota server …     run/manage the update server (needs the `server` extra)
+    openmv-ota client …     talk to an update server's admin API (publish, rollouts, fleet)
 """
 
 from __future__ import annotations
@@ -40,6 +42,16 @@ def build_parser() -> argparse.ArgumentParser:
     from openmv_ota.flash import cli as flash_cli
 
     flash_cli.register(p_flash)
+
+    p_server = sub.add_parser("server", help="run/manage the update server (needs [server] extra)")
+    from openmv_ota.server import cli as server_cli
+
+    server_cli.register(p_server)
+
+    p_client = sub.add_parser("client", help="talk to an update server's admin API")
+    from openmv_ota.client import cli as client_cli
+
+    client_cli.register(p_client)
 
     return parser
 
