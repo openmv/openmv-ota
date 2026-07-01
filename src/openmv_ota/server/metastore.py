@@ -13,13 +13,63 @@ via ``create_app(metastore=...)``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
+from datetime import datetime, timezone
 
 from .errors import ServerError
 
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _d(row) -> dict | None:
+    return dict(row) if row is not None else None
+
+
+def _audit_hash(prev: str, ts: str, actor: str, action: str, etype: str, eid: str,
+                payload: str) -> str:
+    return hashlib.sha256(
+        "|".join((prev, ts, actor or "", action, etype or "", eid or "", payload)).encode()
+    ).hexdigest()
+
+
 # Each entry is a list of DDL statements; its 1-based index is the schema version it defines.
-# (Feature tables are appended here by the steps that introduce them.)
-_MIGRATIONS: list[list[str]] = []
+_MIGRATIONS: list[list[str]] = [
+    [   # v1 -- the MVP feature tables
+        """CREATE TABLE releases (
+            release_id TEXT PRIMARY KEY, board TEXT NOT NULL, board_id INTEGER NOT NULL,
+            product TEXT, version TEXT NOT NULL, payload_version INTEGER NOT NULL,
+            min_platform_version INTEGER NOT NULL DEFAULT 0,
+            image_sha256 TEXT NOT NULL, image_size INTEGER NOT NULL, representations TEXT NOT NULL,
+            manifest_key TEXT NOT NULL, image_key TEXT NOT NULL, delta_key TEXT,
+            key_id INTEGER, uploaded_by TEXT, uploaded_at TEXT NOT NULL)""",
+        """CREATE TABLE rollouts (
+            rollout_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, board TEXT NOT NULL,
+            cohort TEXT NOT NULL, percent REAL NOT NULL, state TEXT NOT NULL,
+            failure_threshold REAL NOT NULL DEFAULT 0.05, attempted INTEGER NOT NULL DEFAULT 0,
+            updated INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+        """CREATE TABLE devices (
+            device_id TEXT PRIMARY KEY, board TEXT NOT NULL,
+            cohort TEXT NOT NULL DEFAULT '__default__', current_version TEXT,
+            current_payload_version INTEGER, slot TEXT, representation TEXT, fallback_reason TEXT,
+            confirmed INTEGER, last_offered_release_id TEXT, owner_ref TEXT,
+            first_seen TEXT NOT NULL, last_seen TEXT NOT NULL)""",
+        """CREATE TABLE admin_tokens (
+            token_hash TEXT PRIMARY KEY, name TEXT NOT NULL, scopes TEXT NOT NULL,
+            created_at TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0)""",
+        """CREATE TABLE audit (
+            seq INTEGER PRIMARY KEY, ts TEXT NOT NULL, actor TEXT, action TEXT NOT NULL,
+            entity_type TEXT, entity_id TEXT, data TEXT NOT NULL, prev_hash TEXT NOT NULL,
+            entry_hash TEXT NOT NULL)""",
+        "CREATE INDEX idx_rollouts_board_cohort ON rollouts (board, cohort, state)",
+        "CREATE INDEX idx_devices_board ON devices (board)",
+        "CREATE INDEX idx_releases_board ON releases (board, payload_version)",
+    ],
+]
 
 
 class SqlMetadataStore:
@@ -74,6 +124,180 @@ class SqlMetadataStore:
     def set_meta(self, key: str, value: str) -> None:
         self.execute("INSERT INTO meta (key, value) VALUES (?, ?) "
                      "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
+
+    # --- releases ---------------------------------------------------------------------------
+
+    def add_release(self, *, release_id, board, board_id, product, version, payload_version,
+                    min_platform_version, image_sha256, image_size, representations,
+                    manifest_key, image_key, delta_key=None, key_id=None, uploaded_by=None) -> None:
+        self.execute(
+            "INSERT INTO releases (release_id, board, board_id, product, version, payload_version, "
+            "min_platform_version, image_sha256, image_size, representations, manifest_key, "
+            "image_key, delta_key, key_id, uploaded_by, uploaded_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (release_id, board, board_id, product, version, payload_version, min_platform_version,
+             image_sha256, image_size, json.dumps(representations), manifest_key, image_key,
+             delta_key, key_id, uploaded_by, _now_iso()))
+
+    def get_release(self, release_id: str) -> dict | None:
+        r = _d(self.query_one("SELECT * FROM releases WHERE release_id = ?", (release_id,)))
+        if r is not None:
+            r["representations"] = json.loads(r["representations"])
+        return r
+
+    def list_releases(self, board: str) -> list[dict]:
+        rows = [_d(r) for r in self.query_all(
+            "SELECT * FROM releases WHERE board = ? ORDER BY payload_version DESC", (board,))]
+        for r in rows:
+            r["representations"] = json.loads(r["representations"])
+        return rows
+
+    def latest_release_payload_version(self, board: str) -> int | None:
+        return self.query_one(
+            "SELECT MAX(payload_version) AS m FROM releases WHERE board = ?", (board,))["m"]
+
+    # --- rollouts ---------------------------------------------------------------------------
+
+    def add_rollout(self, *, rollout_id, release_id, board, cohort, percent, state="active",
+                    failure_threshold=0.05) -> None:
+        now = _now_iso()
+        self.execute(
+            "INSERT INTO rollouts (rollout_id, release_id, board, cohort, percent, state, "
+            "failure_threshold, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (rollout_id, release_id, board, cohort, percent, state, failure_threshold, now, now))
+
+    def get_rollout(self, rollout_id: str) -> dict | None:
+        return _d(self.query_one("SELECT * FROM rollouts WHERE rollout_id = ?", (rollout_id,)))
+
+    def active_rollout(self, board: str, cohort: str) -> dict | None:
+        return _d(self.query_one(
+            "SELECT * FROM rollouts WHERE board = ? AND cohort = ? AND state = 'active' "
+            "ORDER BY created_at DESC LIMIT 1", (board, cohort)))
+
+    def list_rollouts(self, board: str | None = None) -> list[dict]:
+        if board:
+            rows = self.query_all(
+                "SELECT * FROM rollouts WHERE board = ? ORDER BY created_at DESC", (board,))
+        else:
+            rows = self.query_all("SELECT * FROM rollouts ORDER BY created_at DESC")
+        return [_d(r) for r in rows]
+
+    def update_rollout(self, rollout_id: str, **fields) -> None:
+        fields = {**fields, "updated_at": _now_iso()}       # column names are code-controlled
+        assigns = ", ".join(k + " = ?" for k in fields)
+        self.execute("UPDATE rollouts SET " + assigns + " WHERE rollout_id = ?",
+                     (*fields.values(), rollout_id))
+
+    def bump_rollout(self, rollout_id: str, *, attempted=0, updated=0, failures=0) -> None:
+        self.execute(
+            "UPDATE rollouts SET attempted = attempted + ?, updated = updated + ?, "
+            "failures = failures + ?, updated_at = ? WHERE rollout_id = ?",
+            (attempted, updated, failures, _now_iso(), rollout_id))
+
+    # --- the device registry (registered devices only) --------------------------------------
+
+    def upsert_device(self, *, device_id, board, cohort="__default__", current_version=None,
+                      current_payload_version=None, slot=None, representation=None,
+                      fallback_reason=None, confirmed=None, last_offered_release_id=None,
+                      owner_ref=None) -> None:
+        now = _now_iso()
+        if self.query_one("SELECT 1 FROM devices WHERE device_id = ?", (device_id,)) is None:
+            self.execute(
+                "INSERT INTO devices (device_id, board, cohort, current_version, "
+                "current_payload_version, slot, representation, fallback_reason, confirmed, "
+                "last_offered_release_id, owner_ref, first_seen, last_seen) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (device_id, board, cohort, current_version, current_payload_version, slot,
+                 representation, fallback_reason, confirmed, last_offered_release_id, owner_ref,
+                 now, now))
+        else:                                               # cohort is admin-controlled, not by check-in
+            self.execute(
+                "UPDATE devices SET board = ?, current_version = ?, current_payload_version = ?, "
+                "slot = ?, representation = ?, fallback_reason = ?, confirmed = ?, "
+                "last_offered_release_id = COALESCE(?, last_offered_release_id), "
+                "owner_ref = COALESCE(?, owner_ref), last_seen = ? WHERE device_id = ?",
+                (board, current_version, current_payload_version, slot, representation,
+                 fallback_reason, confirmed, last_offered_release_id, owner_ref, now, device_id))
+
+    def get_device(self, device_id: str) -> dict | None:
+        return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
+
+    def list_devices(self, board: str | None = None, limit: int = 100) -> list[dict]:
+        if board:
+            rows = self.query_all("SELECT * FROM devices WHERE board = ? ORDER BY last_seen DESC "
+                                  "LIMIT ?", (board, limit))
+        else:
+            rows = self.query_all("SELECT * FROM devices ORDER BY last_seen DESC LIMIT ?", (limit,))
+        return [_d(r) for r in rows]
+
+    def fleet_summary(self, board: str | None = None) -> dict:
+        where, params = ("WHERE board = ?", (board,)) if board else ("", ())
+        by_version = {r["current_version"]: r["n"] for r in self.query_all(
+            "SELECT current_version, COUNT(*) AS n FROM devices " + where
+            + " GROUP BY current_version", params)}
+        by_slot = {r["slot"]: r["n"] for r in self.query_all(
+            "SELECT slot, COUNT(*) AS n FROM devices " + where + " GROUP BY slot", params)}
+        total = self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
+        return {"total": total, "by_version": by_version, "by_slot": by_slot}
+
+    # --- admin tokens (stored hashed) -------------------------------------------------------
+
+    def add_token(self, token_hash: str, name: str, scopes: list[str]) -> None:
+        self.execute("INSERT INTO admin_tokens (token_hash, name, scopes, created_at) "
+                     "VALUES (?,?,?,?)", (token_hash, name, ",".join(scopes), _now_iso()))
+
+    def get_token(self, token_hash: str) -> dict | None:
+        r = _d(self.query_one("SELECT * FROM admin_tokens WHERE token_hash = ?", (token_hash,)))
+        if r is not None:
+            r["scopes"] = r["scopes"].split(",") if r["scopes"] else []
+        return r
+
+    def revoke_token(self, token_hash: str) -> None:
+        self.execute("UPDATE admin_tokens SET revoked = 1 WHERE token_hash = ?", (token_hash,))
+
+    def list_tokens(self) -> list[dict]:
+        rows = [_d(r) for r in self.query_all(
+            "SELECT token_hash, name, scopes, created_at, revoked FROM admin_tokens "
+            "ORDER BY created_at")]
+        for r in rows:
+            r["scopes"] = r["scopes"].split(",") if r["scopes"] else []
+        return rows
+
+    def count_tokens(self) -> int:
+        return self.query_one("SELECT COUNT(*) AS n FROM admin_tokens")["n"]
+
+    # --- the hash-chained audit log ---------------------------------------------------------
+
+    def append_audit(self, *, actor, action, entity_type=None, entity_id=None, data=None) -> int:
+        last = self.query_one("SELECT seq, entry_hash FROM audit ORDER BY seq DESC LIMIT 1")
+        seq = (last["seq"] + 1) if last else 1
+        prev = last["entry_hash"] if last else ""
+        ts = _now_iso()
+        payload = json.dumps(data or {}, separators=(",", ":"), sort_keys=True)
+        entry = _audit_hash(prev, ts, actor, action, entity_type, entity_id, payload)
+        self.execute(
+            "INSERT INTO audit (seq, ts, actor, action, entity_type, entity_id, data, prev_hash, "
+            "entry_hash) VALUES (?,?,?,?,?,?,?,?,?)",
+            (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry))
+        return seq
+
+    def read_audit(self, limit: int = 100, since_seq: int = 0) -> list[dict]:
+        rows = [_d(r) for r in self.query_all(
+            "SELECT * FROM audit WHERE seq > ? ORDER BY seq LIMIT ?", (since_seq, limit))]
+        for r in rows:
+            r["data"] = json.loads(r["data"])
+        return rows
+
+    def audit_chain_ok(self) -> bool:
+        """Whether the audit hash-chain is intact (tamper check)."""
+        prev = ""
+        for r in self.query_all("SELECT * FROM audit ORDER BY seq"):
+            expect = _audit_hash(prev, r["ts"], r["actor"], r["action"], r["entity_type"],
+                                 r["entity_id"], r["data"])
+            if r["prev_hash"] != prev or r["entry_hash"] != expect:
+                return False
+            prev = r["entry_hash"]
+        return True
 
     def close(self) -> None:
         self._conn.close()
