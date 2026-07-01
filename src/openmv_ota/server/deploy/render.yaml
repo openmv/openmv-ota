@@ -32,7 +32,7 @@ services:
         sync: false
       # Registration dependency -- required. The verify token is an swd-ids allowed_keys entry.
       - key: OPENMV_OTA_SWD_IDS_VERIFY_URL
-        sync: false                       # https://ids.openmv.io/api/ota/verify
+        sync: false                       # https://ids.openmv.io/api/ota/v1/verify
       - key: OPENMV_OTA_SWD_IDS_VERIFY_TOKEN
         sync: false
       # Server HMAC secret (capability tokens) + first admin token -- generated once, kept by Render.
