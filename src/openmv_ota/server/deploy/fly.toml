@@ -1,0 +1,27 @@
+# Fly.io alternative to render.yaml. Stateless -- point it at external Postgres + R2/S3.
+#   fly launch --no-deploy      # then set secrets:
+#   fly secrets set OPENMV_OTA_S3_ACCESS_KEY_ID=... OPENMV_OTA_S3_SECRET_ACCESS_KEY=... \
+#                   OPENMV_OTA_SWD_IDS_VERIFY_TOKEN=... DATABASE_URL=... OPENMV_OTA_COHORT_SALT=...
+#   fly deploy
+app = "openmv-ota"
+
+[build]
+  dockerfile = "src/openmv_ota/server/deploy/Dockerfile"
+
+[env]
+  OPENMV_OTA_STORAGE_BACKEND = "s3"
+  OPENMV_OTA_S3_REGION = "auto"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "2s"

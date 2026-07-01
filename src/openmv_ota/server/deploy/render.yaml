@@ -1,0 +1,46 @@
+# Render Blueprint for a self-hosted OpenMV OTA server.
+# Stateless web service (artifacts -> R2/S3, metadata -> managed Postgres) so it scales horizontally.
+# Bring: an R2/S3 bucket + keys, and an OpenMV OTA-verify token (SWD_IDS_VERIFY_TOKEN).
+#
+#   render blueprint launch     # from the repo root, then fill the sync:false secrets in the dashboard
+services:
+  - type: web
+    name: openmv-ota
+    runtime: docker
+    dockerfilePath: ./src/openmv_ota/server/deploy/Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: OPENMV_OTA_BASE_URL
+        sync: false                       # public https origin, e.g. https://ota.example.com
+      # Metadata store -- Render injects DATABASE_URL from the managed Postgres below.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: openmv-ota-db
+          property: connectionString
+      # Artifact storage -- Cloudflare R2 / AWS S3.
+      - key: OPENMV_OTA_STORAGE_BACKEND
+        value: s3
+      - key: OPENMV_OTA_S3_BUCKET
+        sync: false
+      - key: OPENMV_OTA_S3_ENDPOINT_URL
+        sync: false                       # e.g. https://<acct>.r2.cloudflarestorage.com (omit for AWS)
+      - key: OPENMV_OTA_S3_REGION
+        value: auto
+      - key: OPENMV_OTA_S3_ACCESS_KEY_ID
+        sync: false
+      - key: OPENMV_OTA_S3_SECRET_ACCESS_KEY
+        sync: false
+      # Registration dependency -- required. The verify token is an swd-ids allowed_keys entry.
+      - key: OPENMV_OTA_SWD_IDS_VERIFY_URL
+        sync: false                       # https://ids.openmv.io/api/ota/verify
+      - key: OPENMV_OTA_SWD_IDS_VERIFY_TOKEN
+        sync: false
+      # Server HMAC secret (capability tokens) + first admin token -- generated once, kept by Render.
+      - key: OPENMV_OTA_COHORT_SALT
+        generateValue: true
+      - key: OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN
+        generateValue: true
+
+databases:
+  - name: openmv-ota-db
+    plan: basic-256mb
