@@ -26,3 +26,13 @@ def test_limits_per_window_and_rolls_over():
     assert rl.allow("b") is True                 # a different IP has its own budget
     clk.t += 60                                  # window rolls over
     assert rl.allow("a") is True
+
+
+def test_stale_ips_are_swept_to_bound_memory():
+    clk = _Clock()
+    rl = RateLimiter(5, now=clk, max_tracked=3)
+    for ip in ("a", "b", "c"):                   # fill the table with within-window entries
+        rl.allow(ip)
+    clk.t += 61                                  # all three windows now stale
+    rl.allow("d")                                # crossing max_tracked triggers a sweep
+    assert set(rl._hits) == {"d"}                # stale a/b/c evicted, only the live one kept

@@ -48,6 +48,7 @@ are also honored), or are injected programmatically via `create_app(ServerSettin
 | admin bootstrap | `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` | seeds the first admin token on `server init` |
 | cohort salt | `OPENMV_OTA_COHORT_SALT` | the server HMAC secret; persisted if unset |
 | rate + backoff | `OPENMV_OTA_CHECKIN_RATE_PER_MIN`, `OPENMV_OTA_POLL_AFTER_S`, `OPENMV_OTA_CAPABILITY_TTL` | tunables |
+| trusted proxy | `OPENMV_OTA_TRUSTED_PROXY_IPS` | which upstream peers may set `X-Forwarded-For`; set `*` behind a PaaS proxy (Render/Fly) so the per-IP rate limiter sees the real client, not the proxy |
 
 `openmv-ota server check` validates the resolved settings (secrets redacted) and reports what's
 missing before you deploy.

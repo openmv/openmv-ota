@@ -48,6 +48,9 @@ class ServerSettings(BaseSettings):
     checkin_rate_per_min: int = 60         # per-IP device check-in rate limit (0 = disabled)
     poll_after_s: int = 3600               # backoff the device is told to wait before polling again
     capability_ttl: int = 3600             # lifetime of an artifact capability token
+    # uvicorn forwarded-allow-ips: which upstream peers may set X-Forwarded-For. Behind a PaaS proxy
+    # (Render/Fly) set "*" so the rate limiter sees the real client IP, not the proxy's single IP.
+    trusted_proxy_ips: str = "127.0.0.1"
 
     def missing(self) -> list[str]:
         """Settings required before the server can serve devices (used by ``server check``)."""

@@ -24,8 +24,8 @@ class _Client:
         self._exc = exc
         self.calls: list = []
 
-    def post(self, url, json, headers, timeout):
-        self.calls.append((url, json, headers, timeout))
+    def post(self, url, data, headers, timeout):
+        self.calls.append((url, data, headers, timeout))
         if self._exc:
             raise self._exc
         return self._resp
@@ -40,11 +40,11 @@ class _Clock:
 
 
 def test_registered_parses_and_sends_auth():
-    c = _Client(_Resp(200, {"registered": True, "board_type": "N6", "owner_ref": "o1"}))
-    reg = RegistrationVerifier("https://swd/verify", "tok", c).verify("OPENMV_N6", "abc")
-    assert reg == Registration(True, "N6", "o1")
+    c = _Client(_Resp(200, {"registered": True, "board": "N6", "id": "abc", "owner_ref": "o1"}))
+    reg = RegistrationVerifier("https://swd/verify", "tok", c).verify("N6", "abc")
+    assert reg == Registration(True, "o1")
     url, body, headers, _ = c.calls[0]
-    assert url == "https://swd/verify" and body == {"board": "OPENMV_N6", "id": "abc"}
+    assert url == "https://swd/verify" and body == {"board": "N6", "id": "abc"}
     assert headers["Authorization"] == "Bearer tok"
 
 

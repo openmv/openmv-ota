@@ -12,6 +12,9 @@ services:
     envVars:
       - key: OPENMV_OTA_BASE_URL
         sync: false                       # public https origin, e.g. https://ota.example.com
+      # Behind Render's proxy: trust X-Forwarded-For so the per-IP rate limiter sees the real client.
+      - key: OPENMV_OTA_TRUSTED_PROXY_IPS
+        value: "*"
       # Metadata store -- Render injects DATABASE_URL from the managed Postgres below.
       - key: DATABASE_URL
         fromDatabase:

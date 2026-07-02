@@ -20,7 +20,6 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Registration:
     registered: bool
-    board_type: str = ""
     owner_ref: str = ""
 
 
@@ -53,8 +52,9 @@ class RegistrationVerifier:
 
     def _call(self, board: str, device_id: str) -> Registration:
         try:
+            # Form-encoded: swd-ids reads $_POST/$_GET, not a JSON body.
             resp = self._client.post(
-                self._url, json={"board": board, "id": device_id},
+                self._url, data={"board": board, "id": device_id},
                 headers={"Authorization": "Bearer " + self._token}, timeout=self._timeout)
         except Exception:
             return _NO                              # fail-closed on any transport error
@@ -66,8 +66,7 @@ class RegistrationVerifier:
             return _NO
         if not data.get("registered"):
             return _NO
-        return Registration(True, board_type=data.get("board_type", "") or "",
-                            owner_ref=data.get("owner_ref", "") or "")
+        return Registration(True, owner_ref=data.get("owner_ref", "") or "")
 
 
 def build_verifier(settings) -> RegistrationVerifier:

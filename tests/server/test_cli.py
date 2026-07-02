@@ -99,9 +99,11 @@ def test_run_cli(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENMV_OTA_STORAGE_LOCATION", str(tmp_path / "blobs"))
     served: dict = {}
     monkeypatch.setattr(server_cli, "_serve",
-                        lambda app, host, port: served.update(app=app, host=host, port=port))
+                        lambda app, host, port, proxies: served.update(
+                            app=app, host=host, port=port, proxies=proxies))
     assert main(["server", "run", "--host", "127.0.0.1", "--port", "1234"]) == 0
     assert served["host"] == "127.0.0.1" and served["port"] == 1234 and served["app"] is not None
+    assert served["proxies"] == "127.0.0.1"                 # default trusted-proxy setting threads through
 
 
 def test_run_requires_extra(monkeypatch, capsys):

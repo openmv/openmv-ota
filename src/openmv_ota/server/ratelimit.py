@@ -3,6 +3,10 @@
 Keyed by **IP** (bounded by real clients) -- never by the attacker-controlled ``device_id``, which
 would itself be an unbounded-growth vector. Approximate under multiple workers (each has its own
 window); good enough as the check-in edge limiter in front of the registration call.
+
+The IP table is bounded: once it grows past ``max_tracked``, rolled-over (stale) windows are swept,
+so a distributed flood can't grow it without bound -- its size is capped at the IPs actually seen
+within the last window (i.e. proportional to real traffic, not to the attacker's id-space).
 """
 
 from __future__ import annotations
@@ -11,15 +15,18 @@ import time
 
 
 class RateLimiter:
-    def __init__(self, per_minute: int, *, now=time.monotonic):
+    def __init__(self, per_minute: int, *, now=time.monotonic, max_tracked: int = 100_000):
         self._max = per_minute
         self._now = now
+        self._max_tracked = max_tracked
         self._hits: dict[str, tuple[float, int]] = {}
 
     def allow(self, ip: str) -> bool:
         if self._max <= 0:
             return True                                  # disabled
         t = self._now()
+        if len(self._hits) >= self._max_tracked:         # bound memory: drop rolled-over windows
+            self._hits = {k: (s, c) for k, (s, c) in self._hits.items() if t - s < 60.0}
         start, count = self._hits.get(ip, (t, 0))
         if t - start >= 60.0:                            # window rolled over
             start, count = t, 0

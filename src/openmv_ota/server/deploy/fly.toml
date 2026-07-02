@@ -12,6 +12,8 @@ app = "openmv-ota"
   OPENMV_OTA_STORAGE_BACKEND = "s3"
   OPENMV_OTA_S3_REGION = "auto"
   PORT = "8080"
+  # Trust the Fly proxy's X-Forwarded-For so the per-IP rate limiter sees the real client.
+  OPENMV_OTA_TRUSTED_PROXY_IPS = "*"
 
 [http_service]
   internal_port = 8080

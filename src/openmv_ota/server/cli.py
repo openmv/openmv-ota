@@ -141,7 +141,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     _bootstrap(store, settings)                  # migrate + seed the secret (safe if init already ran)
     from .app import create_app
     app = create_app(settings, metastore=store)
-    _serve(app, args.host or settings.host, args.port or settings.port)
+    _serve(app, args.host or settings.host, args.port or settings.port, settings.trusted_proxy_ips)
     return 0
 
 
@@ -167,9 +167,11 @@ def _seed_admin_token(store, settings) -> None:
     print("admin bootstrap token (store it now): %s" % token, file=sys.stderr)
 
 
-def _serve(app, host, port):                     # pragma: no cover  (blocks; seam monkeypatched)
+def _serve(app, host, port, forwarded_allow_ips):  # pragma: no cover  (blocks; seam monkeypatched)
     import uvicorn
-    uvicorn.run(app, host=host, port=port)
+    # proxy_headers + forwarded_allow_ips let X-Forwarded-For set request.client.host behind a proxy,
+    # so the per-IP rate limiter sees the real client, not the proxy's single address.
+    uvicorn.run(app, host=host, port=port, proxy_headers=True, forwarded_allow_ips=forwarded_allow_ips)
 
 
 def _settings():
