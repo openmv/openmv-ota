@@ -61,6 +61,14 @@ class Api:
     def rollback_rollout(self, rollout_id: str):
         return self._req("POST", "/api/v1/admin/rollouts/%s/rollback" % rollout_id)
 
+    def list_cohorts(self, board_id=None):
+        params = {"board_id": board_id} if board_id is not None else {}
+        return self._req("GET", "/api/v1/admin/cohorts", params=params)
+
+    def assign_cohort(self, cohort, device_ids):
+        return self._req("POST", "/api/v1/admin/cohorts/assign",
+                         json={"cohort": cohort, "device_ids": device_ids})
+
     def fleet(self, board_id=None):
         params = {"board_id": board_id} if board_id is not None else {}
         return self._req("GET", "/api/v1/admin/fleet", params=params)

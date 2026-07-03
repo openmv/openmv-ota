@@ -250,6 +250,22 @@ class SqlMetadataStore:
         total = self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
         return {"total": total, "by_version": by_version, "by_slot": by_slot}
 
+    def list_cohorts(self, board_id: int | None = None) -> list[dict]:
+        """The cohorts in use (per board), with a device count each."""
+        where, params = ("WHERE board_id = ?", (board_id,)) if board_id is not None else ("", ())
+        rows = self.query_all("SELECT cohort, COUNT(*) AS devices FROM devices " + where
+                              + " GROUP BY cohort ORDER BY cohort", params)
+        return [{"cohort": r["cohort"], "devices": r["devices"]} for r in rows]
+
+    def assign_cohort(self, device_ids: list, cohort: str) -> int:
+        """Move the given (already-registered) devices into ``cohort``; returns how many existed."""
+        if not device_ids:
+            return 0
+        placeholders = ",".join("?" for _ in device_ids)
+        cur = self.execute("UPDATE devices SET cohort = ? WHERE device_id IN (" + placeholders + ")",
+                           (cohort, *device_ids))
+        return cur.rowcount
+
     # --- deployments (explicit terminal outcome reports) ------------------------------------
 
     def record_deployment(self, *, device_id, release_id, board_id, status, reason=None) -> None:

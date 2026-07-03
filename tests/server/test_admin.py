@@ -58,6 +58,33 @@ def test_wrong_scope_403(tmp_path):
     assert r.status_code == 403
 
 
+# --- cohorts --------------------------------------------------------------------------------
+
+def test_cohorts_list_and_assign(tmp_path):
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="d1", board_id=BID)
+    store.upsert_device(device_id="d2", board_id=BID)
+    c = TestClient(app)
+    assert c.get("/api/v1/admin/cohorts", headers=AUTH).json() == {
+        "cohorts": [{"cohort": "__default__", "devices": 2}]}
+    r = c.post("/api/v1/admin/cohorts/assign", headers=AUTH,
+               json={"cohort": "beta", "device_ids": ["d1", "ghost"]})   # ghost doesn't exist
+    assert r.json() == {"cohort": "beta", "assigned": 1}                 # only d1 was updated
+    got = {x["cohort"]: x["devices"]
+           for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}
+    assert got == {"__default__": 1, "beta": 1}
+    empty = c.post("/api/v1/admin/cohorts/assign", headers=AUTH,
+                   json={"cohort": "beta", "device_ids": []})
+    assert empty.json() == {"cohort": "beta", "assigned": 0}   # no-op when nothing to assign
+
+
+def test_cohort_assign_requires_scope(tmp_path):
+    app, store = _app(tmp_path, scopes=("fleet:read",))
+    r = TestClient(app).post("/api/v1/admin/cohorts/assign", headers=AUTH,
+                             json={"cohort": "b", "device_ids": ["x"]})
+    assert r.status_code == 403
+
+
 # --- create rollout -------------------------------------------------------------------------
 
 def test_create_rollout(tmp_path):

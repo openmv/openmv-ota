@@ -142,6 +142,26 @@ def test_fleet_devices_audit(wired, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["events"][0]["action"] == "release.publish"
 
 
+def test_cohort_list_and_assign(wired, tmp_path, capsys):
+    import json
+    store, _ = wired
+    store.upsert_device(device_id="d1", board_id=BID)
+    assert main(["client", "cohort", "assign", "--cohort", "beta", "--device", "d1"]) == 0
+    assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
+    assert main(["client", "cohort", "list"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"cohorts": [{"cohort": "beta", "devices": 1}]}
+
+
+def test_cohort_error_surfaced(tmp_path, monkeypatch, capsys):
+    app, store = _server(tmp_path, scopes=("fleet:read",))     # token can't control -> assign 403s
+    tc = TestClient(app)
+    monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
+    monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
+    monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
+    assert main(["client", "cohort", "assign", "--cohort", "b", "--device", "d1"]) == 1
+    assert "403" in capsys.readouterr().err
+
+
 def test_missing_creds(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("OPENMV_OTA_SERVER", raising=False)
     monkeypatch.delenv("OPENMV_OTA_TOKEN", raising=False)

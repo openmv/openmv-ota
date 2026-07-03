@@ -112,6 +112,16 @@ def test_read_calls_carry_params():
     assert c.calls[2][2]["params"] == {"since": 3}
 
 
+def test_cohort_calls():
+    api, c = _api(_Resp(200, {}))
+    api.list_cohorts(7)
+    api.assign_cohort("beta", ["d1", "d2"])
+    assert c.calls[0][:2] == ("GET", "/api/v1/admin/cohorts")
+    assert c.calls[0][2]["params"] == {"board_id": 7}
+    assert c.calls[1][:2] == ("POST", "/api/v1/admin/cohorts/assign")
+    assert c.calls[1][2]["json"] == {"cohort": "beta", "device_ids": ["d1", "d2"]}
+
+
 def test_empty_body_returns_empty_dict():
     api, _ = _api(_Resp(200, payload={"x": 1}, content=b""))   # no content -> {}
     assert api.fleet() == {}

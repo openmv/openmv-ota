@@ -32,6 +32,11 @@ class RolloutPatch(BaseModel):
     state: str | None = None
 
 
+class CohortAssign(BaseModel):
+    cohort: str
+    device_ids: list[str]
+
+
 @admin.post("/rollouts")
 def create_rollout(body: RolloutCreate, request: Request,
                    principal: Principal = Depends(require_scope("rollout:control"))):
@@ -110,6 +115,22 @@ def rollout_status(rollout_id: str, request: Request,
             "success_rate": rate,
             # explicit device reports (POST /feedback) for this rollout's release
             "reported": request.app.state.metastore.deployment_counts(ro["release_id"])}
+
+
+@admin.get("/cohorts")
+def list_cohorts(request: Request, board_id: int | None = None,
+                 principal: Principal = Depends(require_scope("fleet:read"))):
+    return {"cohorts": request.app.state.metastore.list_cohorts(board_id)}
+
+
+@admin.post("/cohorts/assign")
+def assign_cohort(body: CohortAssign, request: Request,
+                  principal: Principal = Depends(require_scope("rollout:control"))):
+    ms = request.app.state.metastore
+    n = ms.assign_cohort(body.device_ids, body.cohort)       # UPDATE existing rows only; missing ids skipped
+    ms.append_audit(actor=principal.name, action="cohort.assign", entity_type="cohort",
+                    entity_id=body.cohort, data={"assigned": n, "requested": len(body.device_ids)})
+    return {"cohort": body.cohort, "assigned": n}
 
 
 @admin.get("/fleet")

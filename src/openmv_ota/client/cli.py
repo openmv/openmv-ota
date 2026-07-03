@@ -58,6 +58,19 @@ def register(parser: argparse.ArgumentParser) -> None:
         _creds(pr)
         pr.set_defaults(func=cmd_rollout, _command="client rollout " + action, action=action)
 
+    p_co = sub.add_parser("cohort", help="list cohorts / assign devices to one")
+    cosub = p_co.add_subparsers(dest="_co")
+    p_col = cosub.add_parser("list")
+    p_col.add_argument("--board-id", type=int)
+    _creds(p_col)
+    p_col.set_defaults(func=cmd_cohort, _command="client cohort list", action="list")
+    p_coa = cosub.add_parser("assign")
+    p_coa.add_argument("--cohort", required=True)
+    p_coa.add_argument("--device", action="append", dest="devices", required=True, metavar="DEVICE_ID",
+                       help="device id to assign (repeatable)")
+    _creds(p_coa)
+    p_coa.set_defaults(func=cmd_cohort, _command="client cohort assign", action="assign")
+
     for name, handler in (("fleet", cmd_fleet), ("devices", cmd_devices), ("audit", cmd_audit)):
         p = sub.add_parser(name, help="read %s status" % name)
         if name in ("fleet", "devices"):
@@ -137,6 +150,21 @@ def cmd_rollout(args: argparse.Namespace) -> int:
         else:
             ro = api.rollback_rollout(args.id)
         print("rollout %s -> %s" % (args.id, ro.get("state", "")))
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return 0
+
+
+def cmd_cohort(args: argparse.Namespace) -> int:
+    try:
+        api = _make_api(config.resolve(args.server, args.token))
+        if args.action == "list":
+            print(json.dumps(api.list_cohorts(args.board_id), indent=2))
+        else:
+            res = api.assign_cohort(args.cohort, args.devices)
+            print("assigned %d/%d device(s) to cohort %s"
+                  % (res["assigned"], len(args.devices), res["cohort"]))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
