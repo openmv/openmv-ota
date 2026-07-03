@@ -79,8 +79,12 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
         raise HTTPException(status_code=400, detail="bad manifest: %s" % e) from None
     product_id, payload_version = body["product_id"], body["payload_version"]
     account_id = body.get("account_id", "")           # the maker's account (baked into the signed manifest)
+    if account_id != principal.account_id:
+        # you can only publish releases under your own account -- the signed manifest's account
+        # must match the token's, so one tenant can't seed another's namespace.
+        raise HTTPException(status_code=403, detail="manifest account_id does not match this token")
 
-    latest = ms.latest_release_payload_version(product_id)
+    latest = ms.latest_release_payload_version(product_id, account_id=account_id)
     if latest is not None and payload_version <= latest and not allow_republish:
         raise HTTPException(status_code=409, detail="payload_version %d <= latest %d "
                             "(pass allow_republish=true to override)" % (payload_version, latest))
@@ -108,7 +112,7 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
                    uploaded_by=principal.name, account_id=account_id)
     ms.append_audit(actor=principal.name, action="release.publish", entity_type="release",
                     entity_id=release_id, data={"product_id": product_id, "version": body.get("version"),
-                                                "payload_version": payload_version,
-                                                "account_id": account_id})
+                                                "payload_version": payload_version},
+                    account_id=account_id)
     return {"release_id": release_id, "product_id": product_id, "version": body.get("version"),
             "payload_version": payload_version, "representations": [r["format"] for r in reps]}

@@ -228,3 +228,71 @@ def test_fleet_devices_audit(tmp_path):
     assert c.get("/api/v1/admin/devices", headers=AUTH).json()["devices"][0]["device_id"] == "d1"
     events = c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
     assert events[0]["action"] == "release.publish"
+
+
+# --- account isolation (adversarial: B must never see or touch A's data) --------------------
+
+def _two_accounts(tmp_path):
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    store.set_meta("cohort_salt", "x")
+    for acc in ("acctA", "acctB"):
+        store.add_account(acc, acc)
+        store.add_token(hash_token("tok" + acc[-1]), acc,
+                        ["release:write", "rollout:control", "fleet:read"], account_id=acc)
+    app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
+                                    swd_ids_verify_token="t"),
+                     metastore=store, storage=LocalArtifactStorage(str(tmp_path / "blobs")),
+                     verifier=_Verifier())
+    return app, store
+
+
+def _seed_for(store, account, rid, pv=0x02000000):
+    store.add_release(release_id=rid, product_id=BID, product="P", version="2.0.0",
+                      payload_version=pv, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=10, representations=[{"format": "full", "url": "x.img.gz",
+                                                       "size": 9}],
+                      manifest_key="m/%s" % rid, image_key="i/%s" % rid, account_id=account)
+
+
+A = {"Authorization": "Bearer tokA"}
+B = {"Authorization": "Bearer tokB"}
+
+
+def test_account_isolation(tmp_path):
+    app, store = _two_accounts(tmp_path)
+    _seed_for(store, "acctA", "relA")
+    _seed_for(store, "acctB", "relB")
+    store.upsert_device(device_id="dA", product_id=BID, account_id="acctA")
+    store.upsert_device(device_id="dB", product_id=BID, account_id="acctB")
+    c = TestClient(app)
+
+    # reads are scoped: A sees only its own device + fleet count
+    assert [d["device_id"] for d in c.get("/api/v1/admin/devices", headers=A).json()["devices"]] == ["dA"]
+    assert c.get("/api/v1/admin/fleet", headers=A).json()["total"] == 1
+
+    # A creates a rollout on its release; B can neither see nor touch it (404, not 403 -> no leak)
+    roA = c.post("/api/v1/admin/rollouts", headers=A,
+                 json={"release_id": "relA", "percent": 5}).json()["rollout_id"]
+    assert c.get("/api/v1/admin/rollouts", headers=B).json()["rollouts"] == []
+    assert c.get("/api/v1/admin/rollouts/%s/status" % roA, headers=B).status_code == 404
+    assert c.patch("/api/v1/admin/rollouts/%s" % roA, headers=B, json={"percent": 50}).status_code == 404
+    assert c.post("/api/v1/admin/rollouts/%s/rollback" % roA, headers=B).status_code == 404
+
+    # B cannot roll out, or pin its cohort to, A's release
+    assert c.post("/api/v1/admin/rollouts", headers=B,
+                  json={"release_id": "relA", "percent": 5}).status_code == 404
+    assert c.post("/api/v1/admin/cohorts/pin", headers=B,
+                  json={"product_id": BID, "cohort": "beta", "release_id": "relA"}).status_code == 404
+
+    # B cannot pin or reassign A's device
+    assert c.patch("/api/v1/admin/devices/dA/pin", headers=B,
+                   json={"release_id": None}).status_code == 404
+    assert c.post("/api/v1/admin/cohorts/assign", headers=B,
+                  json={"cohort": "beta", "device_ids": ["dA"]}).json()["assigned"] == 0
+
+    # audit is per-account: B sees only its OWN events (its cohort.assign), never A's rollout.create
+    b_events = c.get("/api/v1/admin/audit", headers=B).json()["events"]
+    assert b_events and all(e["action"] != "rollout.create" for e in b_events)
+    assert any(e["action"] == "rollout.create" for e in
+               c.get("/api/v1/admin/audit", headers=A).json()["events"])

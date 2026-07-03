@@ -90,7 +90,10 @@ def _decide(state, checkin, cohort, existing=None):
         or ms.get_cohort_pin(checkin.product_id, cohort, account_id=checkin.account_id)
     if pinned:
         rel = ms.get_release(pinned)
-        if rel is None or rel["payload_version"] <= checkin.payload_version:
+        # a release is only ever offered to a device of its own account (defense in depth behind
+        # the admin-side pin check): a cross-account or missing/older pin just holds the device.
+        if (rel is None or rel["account_id"] != checkin.account_id
+                or rel["payload_version"] <= checkin.payload_version):
             return None, rel, False, None
         return None, rel, True, _offer(state, rel)
     ro = ms.active_rollout(checkin.product_id, cohort, account_id=checkin.account_id)
@@ -130,7 +133,7 @@ def _account(ms, ro, rel, checkin, existing, offered):
                 fresh["failures"], fresh["attempted"], fresh["failure_threshold"]):
             ms.update_rollout(rid, state="paused")
             ms.append_audit(actor="system", action="rollout.autopause", entity_type="rollout",
-                            entity_id=rid,
+                            entity_id=rid, account_id=ro.get("account_id", ""),
                             data={"failures": fresh["failures"], "attempted": fresh["attempted"]})
 
 

@@ -29,6 +29,19 @@ def _d(row) -> dict | None:
     return dict(row) if row is not None else None
 
 
+def _scope(account_id=None, product_id=None) -> tuple[str, tuple]:
+    """A ``WHERE`` clause + params for the optional (account_id, product_id) filters -- the
+    building block for account-scoped admin reads. Either/both may be None (no filter)."""
+    conds, params = [], []
+    if account_id is not None:
+        conds.append("account_id = ?")
+        params.append(account_id)
+    if product_id is not None:
+        conds.append("product_id = ?")
+        params.append(product_id)
+    return (("WHERE " + " AND ".join(conds)) if conds else ""), tuple(params)
+
+
 def _audit_hash(prev: str, ts: str, actor: str, action: str, etype: str, eid: str,
                 payload: str) -> str:
     return hashlib.sha256(
@@ -193,16 +206,18 @@ class SqlMetadataStore:
             r["representations"] = json.loads(r["representations"])
         return r
 
-    def list_releases(self, product_id: int) -> list[dict]:
+    def list_releases(self, product_id=None, account_id=None) -> list[dict]:
+        where, params = _scope(account_id, product_id)
         rows = [_d(r) for r in self.query_all(
-            "SELECT * FROM releases WHERE product_id = ? ORDER BY payload_version DESC", (product_id,))]
+            "SELECT * FROM releases " + where + " ORDER BY payload_version DESC", params)]
         for r in rows:
             r["representations"] = json.loads(r["representations"])
         return rows
 
-    def latest_release_payload_version(self, product_id: int) -> int | None:
+    def latest_release_payload_version(self, product_id: int, account_id=None) -> int | None:
+        where, params = _scope(account_id, product_id)
         return self.query_one(
-            "SELECT MAX(payload_version) AS m FROM releases WHERE product_id = ?", (product_id,))["m"]
+            "SELECT MAX(payload_version) AS m FROM releases " + where, params)["m"]
 
     # --- rollouts ---------------------------------------------------------------------------
 
@@ -223,13 +238,10 @@ class SqlMetadataStore:
             "SELECT * FROM rollouts WHERE account_id = ? AND product_id = ? AND cohort = ? "
             "AND state = 'active' ORDER BY created_at DESC LIMIT 1", (account_id, product_id, cohort)))
 
-    def list_rollouts(self, product_id: int | None = None) -> list[dict]:
-        if product_id is not None:
-            rows = self.query_all(
-                "SELECT * FROM rollouts WHERE product_id = ? ORDER BY created_at DESC", (product_id,))
-        else:
-            rows = self.query_all("SELECT * FROM rollouts ORDER BY created_at DESC")
-        return [_d(r) for r in rows]
+    def list_rollouts(self, product_id: int | None = None, account_id=None) -> list[dict]:
+        where, params = _scope(account_id, product_id)
+        return [_d(r) for r in self.query_all(
+            "SELECT * FROM rollouts " + where + " ORDER BY created_at DESC", params)]
 
     def update_rollout(self, rollout_id: str, **fields) -> None:
         fields = {**fields, "updated_at": _now_iso()}       # column names are code-controlled
@@ -273,16 +285,14 @@ class SqlMetadataStore:
     def get_device(self, device_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
 
-    def list_devices(self, product_id: int | None = None, limit: int = 100) -> list[dict]:
-        if product_id is not None:
-            rows = self.query_all("SELECT * FROM devices WHERE product_id = ? ORDER BY last_seen "
-                                  "DESC LIMIT ?", (product_id, limit))
-        else:
-            rows = self.query_all("SELECT * FROM devices ORDER BY last_seen DESC LIMIT ?", (limit,))
+    def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None) -> list[dict]:
+        where, params = _scope(account_id, product_id)
+        rows = self.query_all("SELECT * FROM devices " + where + " ORDER BY last_seen DESC LIMIT ?",
+                              (*params, limit))
         return [_d(r) for r in rows]
 
-    def fleet_summary(self, product_id: int | None = None) -> dict:
-        where, params = ("WHERE product_id = ?", (product_id,)) if product_id is not None else ("", ())
+    def fleet_summary(self, product_id: int | None = None, account_id=None) -> dict:
+        where, params = _scope(account_id, product_id)
         by_version = {r["current_version"]: r["n"] for r in self.query_all(
             "SELECT current_version, COUNT(*) AS n FROM devices " + where
             + " GROUP BY current_version", params)}
@@ -291,21 +301,25 @@ class SqlMetadataStore:
         total = self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
         return {"total": total, "by_version": by_version, "by_slot": by_slot}
 
-    def list_cohorts(self, product_id: int | None = None) -> list[dict]:
+    def list_cohorts(self, product_id: int | None = None, account_id=None) -> list[dict]:
         """The cohorts in use (per board), with a device count each."""
-        where, params = ("WHERE product_id = ?", (product_id,)) if product_id is not None else ("", ())
+        where, params = _scope(account_id, product_id)
         rows = self.query_all("SELECT cohort, COUNT(*) AS devices FROM devices " + where
                               + " GROUP BY cohort ORDER BY cohort", params)
         return [{"cohort": r["cohort"], "devices": r["devices"]} for r in rows]
 
-    def assign_cohort(self, device_ids: list, cohort: str) -> int:
-        """Move the given (already-registered) devices into ``cohort``; returns how many existed."""
+    def assign_cohort(self, device_ids: list, cohort: str, account_id=None) -> int:
+        """Move the given (already-registered) devices into ``cohort``; returns how many existed.
+        Scoped to ``account_id`` when given, so an admin can't reassign another account's device."""
         if not device_ids:
             return 0
         placeholders = ",".join("?" for _ in device_ids)
-        cur = self.execute("UPDATE devices SET cohort = ? WHERE device_id IN (" + placeholders + ")",
-                           (cohort, *device_ids))
-        return cur.rowcount
+        sql = "UPDATE devices SET cohort = ? WHERE device_id IN (" + placeholders + ")"
+        params = [cohort, *device_ids]
+        if account_id is not None:
+            sql += " AND account_id = ?"
+            params.append(account_id)
+        return self.execute(sql, tuple(params)).rowcount
 
     # --- version pins (device / cohort, override rollouts) ----------------------------------
 
@@ -390,7 +404,8 @@ class SqlMetadataStore:
 
     # --- the hash-chained audit log ---------------------------------------------------------
 
-    def append_audit(self, *, actor, action, entity_type=None, entity_id=None, data=None) -> int:
+    def append_audit(self, *, actor, action, entity_type=None, entity_id=None, data=None,
+                     account_id="") -> int:
         last = self.query_one("SELECT seq, entry_hash FROM audit ORDER BY seq DESC LIMIT 1")
         seq = (last["seq"] + 1) if last else 1
         prev = last["entry_hash"] if last else ""
@@ -399,13 +414,17 @@ class SqlMetadataStore:
         entry = _audit_hash(prev, ts, actor, action, entity_type, entity_id, payload)
         self.execute(
             "INSERT INTO audit (seq, ts, actor, action, entity_type, entity_id, data, prev_hash, "
-            "entry_hash) VALUES (?,?,?,?,?,?,?,?,?)",
-            (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry))
+            "entry_hash, account_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry, account_id))
         return seq
 
-    def read_audit(self, limit: int = 100, since_seq: int = 0) -> list[dict]:
-        rows = [_d(r) for r in self.query_all(
-            "SELECT * FROM audit WHERE seq > ? ORDER BY seq LIMIT ?", (since_seq, limit))]
+    def read_audit(self, limit: int = 100, since_seq: int = 0, account_id=None) -> list[dict]:
+        sql = "SELECT * FROM audit WHERE seq > ?"
+        params = [since_seq]
+        if account_id is not None:
+            sql += " AND account_id = ?"
+            params.append(account_id)
+        rows = [_d(r) for r in self.query_all(sql + " ORDER BY seq LIMIT ?", (*params, limit))]
         for r in rows:
             r["data"] = json.loads(r["data"])
         return rows

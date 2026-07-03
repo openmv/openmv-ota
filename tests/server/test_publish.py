@@ -26,11 +26,11 @@ class _Verifier:
         return Registration(True)
 
 
-def _app(tmp_path, scopes=("release:write", "fleet:read")):
+def _app(tmp_path, scopes=("release:write", "fleet:read"), account=""):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("cohort_salt", "x")
-    store.add_token(hash_token("tok"), "ci", list(scopes))
+    store.add_token(hash_token("tok"), "ci", list(scopes), account_id=account)
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))
     app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
                                     swd_ids_verify_token="t"),
@@ -110,6 +110,24 @@ def test_publish_wrong_scope_403(tmp_path):
     app, store, storage = _app(tmp_path, scopes=("fleet:read",))
     img = b"\xA5" * 64
     assert _post(app, _manifest(_body(img)), _gz(img)).status_code == 403
+
+
+def test_publish_account_must_match_token_403(tmp_path):
+    # the token acts for acctA, but the signed manifest is stamped for a different ('') account
+    app, store, storage = _app(tmp_path, account="acctA")
+    img = b"\xA5" * 64
+    r = _post(app, _manifest(_body(img)), _gz(img))            # manifest account_id defaults to ''
+    assert r.status_code == 403 and "does not match" in r.json()["detail"]
+
+
+def test_publish_account_match_ok(tmp_path):
+    app, store, storage = _app(tmp_path, account="acctA")
+    img = b"\xA5" * 64
+    body = _body(img)
+    body["account_id"] = "acctA"
+    r = _post(app, _manifest(body), _gz(img))
+    assert r.status_code == 200
+    assert store.get_release(r.json()["release_id"])["account_id"] == "acctA"
 
 
 # --- validation -----------------------------------------------------------------------------
