@@ -85,5 +85,9 @@ class Api:
         params = {"product_id": product_id} if product_id is not None else {}
         return self._req("GET", "/api/v1/admin/devices", params=params)
 
+    def releases(self, product_id=None):
+        params = {"product_id": product_id} if product_id is not None else {}
+        return self._req("GET", "/api/v1/admin/releases", params=params)
+
     def audit(self, since: int = 0):
         return self._req("GET", "/api/v1/admin/audit", params={"since": since})

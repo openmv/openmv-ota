@@ -138,6 +138,12 @@ def test_fleet_devices_audit(wired, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["total"] == 1
     assert main(["client", "devices", "--product-id", str(BID)]) == 0
     assert json.loads(capsys.readouterr().out)["devices"][0]["device_id"] == "d1"
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[{"format": "full", "url": "x", "size": 1}],
+                      manifest_key="m", image_key="i")
+    assert main(["client", "releases"]) == 0
+    assert json.loads(capsys.readouterr().out)["releases"][0]["release_id"] == "rel1"
     assert main(["client", "audit"]) == 0
     assert json.loads(capsys.readouterr().out)["events"][0]["action"] == "release.publish"
 

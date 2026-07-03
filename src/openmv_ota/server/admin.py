@@ -193,6 +193,13 @@ def fleet(request: Request, product_id: int | None = None,
     return request.app.state.metastore.fleet_summary(product_id, account_id=principal.account_id)
 
 
+@admin.get("/releases")
+def releases(request: Request, product_id: int | None = None,
+             principal: Principal = Depends(require_scope("fleet:read"))):
+    return {"releases": request.app.state.metastore.list_releases(
+        product_id, account_id=principal.account_id)}
+
+
 @admin.get("/devices")
 def devices(request: Request, product_id: int | None = None, limit: int = 100,
             principal: Principal = Depends(require_scope("fleet:read"))):

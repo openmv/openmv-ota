@@ -106,10 +106,13 @@ def test_read_calls_carry_params():
     api, c = _api(_Resp(200, {}))
     api.fleet(7)
     api.devices()
+    api.releases(7)
     api.audit(3)
     assert c.calls[0][2]["params"] == {"product_id": 7}
     assert c.calls[1][2]["params"] == {}
-    assert c.calls[2][2]["params"] == {"since": 3}
+    assert c.calls[2][:2] == ("GET", "/api/v1/admin/releases")
+    assert c.calls[2][2]["params"] == {"product_id": 7}
+    assert c.calls[3][2]["params"] == {"since": 3}
 
 
 def test_cohort_calls():

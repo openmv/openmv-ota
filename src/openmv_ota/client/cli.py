@@ -89,9 +89,10 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_pc)
     p_pc.set_defaults(func=cmd_pin, _command="client pin cohort", target="cohort")
 
-    for name, handler in (("fleet", cmd_fleet), ("devices", cmd_devices), ("audit", cmd_audit)):
+    for name, handler in (("fleet", cmd_fleet), ("devices", cmd_devices),
+                          ("releases", cmd_releases), ("audit", cmd_audit)):
         p = sub.add_parser(name, help="read %s status" % name)
-        if name in ("fleet", "devices"):
+        if name in ("fleet", "devices", "releases"):
             p.add_argument("--product-id", type=int)
         else:
             p.add_argument("--since", type=int, default=0)
@@ -220,6 +221,10 @@ def cmd_fleet(args: argparse.Namespace) -> int:
 
 def cmd_devices(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.devices(args.product_id))
+
+
+def cmd_releases(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.releases(args.product_id))
 
 
 def cmd_audit(args: argparse.Namespace) -> int:

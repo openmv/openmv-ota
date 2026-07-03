@@ -218,6 +218,18 @@ def test_list_rollouts_and_status(tmp_path):
     assert c.get("/api/v1/admin/rollouts/nope/status", headers=AUTH).status_code == 404
 
 
+def test_list_releases(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store, rid="rel1", pv=0x02000000)
+    _seed_release(store, rid="rel2", pv=0x02010000)
+    c = TestClient(app)
+    got = c.get("/api/v1/admin/releases", headers=AUTH).json()["releases"]
+    assert {r["release_id"] for r in got} == {"rel1", "rel2"}
+    assert got[0]["representations"][0]["format"] == "full"          # json-decoded, not a string
+    assert [r["release_id"] for r in
+            c.get("/api/v1/admin/releases?product_id=999", headers=AUTH).json()["releases"]] == []
+
+
 def test_fleet_devices_audit(tmp_path):
     app, store = _app(tmp_path)
     store.upsert_device(device_id="d1", product_id=BID, board="OPENMV_N6", current_version="1.0.0",
