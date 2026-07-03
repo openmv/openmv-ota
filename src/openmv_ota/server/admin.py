@@ -107,7 +107,9 @@ def rollout_status(rollout_id: str, request: Request,
     rate = (ro["updated"] / ro["attempted"]) if ro["attempted"] else None
     return {"rollout_id": rollout_id, "state": ro["state"], "percent": ro["percent"],
             "attempted": ro["attempted"], "updated": ro["updated"], "failures": ro["failures"],
-            "success_rate": rate}
+            "success_rate": rate,
+            # explicit device reports (POST /feedback) for this rollout's release
+            "reported": request.app.state.metastore.deployment_counts(ro["release_id"])}
 
 
 @admin.get("/fleet")

@@ -115,6 +115,51 @@ def test_unverified_board_no_rollout_returns_nothing(tmp_path):
     assert store.get_device("dev1") is None
 
 
+# --- POST /feedback (explicit terminal outcomes) --------------------------------------------
+
+def _feedback(dev="dev1", board_id=BID, release_id="rel1", status="installed", **kw):
+    return {"device_id": dev, "board_id": board_id, "release_id": release_id, "status": status, **kw}
+
+
+def test_feedback_records_for_registered_device(tmp_path):
+    app, store, *_ = _app(tmp_path)
+    assert TestClient(app).post("/api/v1/feedback", json=_feedback()).json() == {"ok": True}
+    assert store.deployment_counts("rel1") == {"installed": 1, "failed": 0}
+
+
+def test_feedback_upserts_one_row_per_device_release(tmp_path):
+    app, store, *_ = _app(tmp_path)
+    c = TestClient(app)
+    c.post("/api/v1/feedback", json=_feedback(status="installed"))
+    c.post("/api/v1/feedback", json=_feedback(status="failed", reason="sha"))   # same (dev, rel)
+    assert store.deployment_counts("rel1") == {"installed": 0, "failed": 1}      # overwritten, not doubled
+
+
+def test_feedback_unregistered_is_noop(tmp_path):
+    app, store, v = _app(tmp_path, registered=False)[:3]
+    assert TestClient(app).post("/api/v1/feedback", json=_feedback()).json() == {"ok": False}
+    assert store.deployment_counts("rel1") == {"installed": 0, "failed": 0}
+
+
+def test_feedback_bypassed_board_is_noop(tmp_path):
+    app, store, storage, v = _app(tmp_path, unverified=["ARDUINO_GIGA"])
+    assert TestClient(app).post("/api/v1/feedback",
+                                json=_feedback(board="ARDUINO_GIGA")).json() == {"ok": False}
+    assert v.calls == 0                                       # bypass -> not verified, not recorded
+
+
+def test_feedback_bad_status_400(tmp_path):
+    app, *_ = _app(tmp_path)
+    assert TestClient(app).post("/api/v1/feedback", json=_feedback(status="weird")).status_code == 400
+
+
+def test_feedback_rate_limited(tmp_path):
+    app, *_ = _app(tmp_path, rate=1)
+    c = TestClient(app)
+    c.post("/api/v1/feedback", json=_feedback())
+    assert c.post("/api/v1/feedback", json=_feedback()).status_code == 429
+
+
 # --- the rollout decision -------------------------------------------------------------------
 
 def test_offer_mints_capability_url_and_accounts(tmp_path):

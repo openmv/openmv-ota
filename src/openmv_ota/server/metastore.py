@@ -71,6 +71,14 @@ _MIGRATIONS: list[list[str]] = [
         "CREATE INDEX idx_devices_board ON devices (board_id)",
         "CREATE INDEX idx_releases_board ON releases (board_id, payload_version)",
     ],
+    [   # v2 -- explicit device->server outcome reports (POST /feedback). One authoritative row per
+        # (device_id, release_id); bounded by the registered fleet x releases, so still zero-footprint.
+        """CREATE TABLE deployments (
+            device_id TEXT NOT NULL, release_id TEXT NOT NULL, board_id INTEGER NOT NULL,
+            status TEXT NOT NULL, reason TEXT, reported_at TEXT NOT NULL,
+            PRIMARY KEY (device_id, release_id))""",
+        "CREATE INDEX idx_deployments_release ON deployments (release_id, status)",
+    ],
 ]
 
 
@@ -241,6 +249,24 @@ class SqlMetadataStore:
             "SELECT slot, COUNT(*) AS n FROM devices " + where + " GROUP BY slot", params)}
         total = self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
         return {"total": total, "by_version": by_version, "by_slot": by_slot}
+
+    # --- deployments (explicit terminal outcome reports) ------------------------------------
+
+    def record_deployment(self, *, device_id, release_id, board_id, status, reason=None) -> None:
+        """Upsert the authoritative outcome for (device_id, release_id) -- one row per pair."""
+        self.execute(
+            "INSERT INTO deployments (device_id, release_id, board_id, status, reason, reported_at) "
+            "VALUES (?,?,?,?,?,?) ON CONFLICT (device_id, release_id) DO UPDATE SET "
+            "status = excluded.status, reason = excluded.reason, reported_at = excluded.reported_at",
+            (device_id, release_id, board_id, status, reason, _now_iso()))
+
+    def deployment_counts(self, release_id: str) -> dict:
+        """Reported {installed, failed} counts for a release (from explicit /feedback)."""
+        rows = self.query_all(
+            "SELECT status, COUNT(*) AS n FROM deployments WHERE release_id = ? GROUP BY status",
+            (release_id,))
+        by = {r["status"]: r["n"] for r in rows}
+        return {"installed": by.get("installed", 0), "failed": by.get("failed", 0)}
 
     # --- admin tokens (stored hashed) -------------------------------------------------------
 

@@ -49,6 +49,15 @@ class CheckIn(BaseModel):
     confirmed: bool = False
 
 
+class Feedback(BaseModel):
+    device_id: str
+    board_id: int
+    board: str | None = None               # firmware board name (for the registration gate)
+    release_id: str
+    status: str                            # terminal outcome: 'installed' | 'failed'
+    reason: str | None = None
+
+
 def _media_type(filename: str) -> str:
     return _MEDIA.get(filename, "application/gzip")
 
@@ -110,6 +119,13 @@ def _account(ms, ro, rel, checkin, existing, offered):
                             data={"failures": fresh["failures"], "attempted": fresh["attempted"]})
 
 
+def _verify(state, req):
+    """Translate the firmware board name to the swd-ids code, then the registration check.
+    ``req`` is a CheckIn or Feedback (both carry ``board`` + ``device_id``)."""
+    swd_board = swd_ids_board_code(req.board, state.settings.board_code_overrides)
+    return state.verifier.verify(swd_board, req.device_id)
+
+
 @router.get("/healthz")
 def healthz():
     return {"ok": True}
@@ -134,9 +150,7 @@ def check(checkin: CheckIn, request: Request):
                     "release_id": rel["release_id"], "poll_after_s": st.settings.poll_after_s}
         return nothing
 
-    # swd-ids matches on its own board codes (N6, H7), not firmware names (OPENMV_N6) -- translate.
-    swd_board = swd_ids_board_code(checkin.board, st.settings.board_code_overrides)
-    reg = st.verifier.verify(swd_board, checkin.device_id)
+    reg = _verify(st, checkin)
     if not reg.registered:
         return nothing                                          # ZERO footprint for unregistered ids
     ms = st.metastore
@@ -155,6 +169,26 @@ def check(checkin: CheckIn, request: Request):
         return {"update": True, "manifest_url": manifest_url, "release_id": release_id,
                 "poll_after_s": st.settings.poll_after_s}
     return nothing
+
+
+@router.post("/api/v1/feedback")
+def feedback(report: Feedback, request: Request):
+    """Explicit terminal outcome of an offered update (precise success/failure vs. inferring it
+    from the next check-in). Recorded ONLY for a registered device -- an unregistered or bypassed
+    board is a no-op, so this stays zero-footprint too."""
+    st = request.app.state
+    ip = request.client.host if request.client else "-"
+    if not st.ratelimit.allow(ip):
+        return JSONResponse({"ok": False}, status_code=429,
+                            headers={"Retry-After": str(st.settings.poll_after_s)})
+    if report.status not in ("installed", "failed"):
+        raise HTTPException(status_code=400, detail="status must be 'installed' or 'failed'")
+    if report.board in st.settings.unverified_boards or not _verify(st, report).registered:
+        return {"ok": False}                                    # untracked / unregistered -> no write
+    st.metastore.record_deployment(
+        device_id=report.device_id, release_id=report.release_id, board_id=report.board_id,
+        status=report.status, reason=report.reason)
+    return {"ok": True}
 
 
 @router.get("/d/{token}/{filename}")
