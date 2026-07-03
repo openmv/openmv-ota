@@ -145,6 +145,46 @@ def test_token_issue_default_scopes(tmp_path, monkeypatch, capsys):
     s.close()
 
 
+def test_token_issue_with_account(tmp_path, monkeypatch, capsys):
+    from openmv_ota.server.auth import hash_token
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    assert main(["server", "token", "issue", "--name", "scoped", "--account", "acct_x"]) == 0
+    token = capsys.readouterr().out.strip()
+    s = _store(tmp_path)
+    assert s.get_token(hash_token(token))["account_id"] == "acct_x"
+    s.close()
+
+
+def test_account_create_and_list(tmp_path, monkeypatch, capsys):
+    from openmv_ota.server.auth import hash_token
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    assert main(["server", "account", "create", "--name", "DroneCo"]) == 0
+    out = capsys.readouterr()
+    assert "account created" in out.err and "store it now" in out.err
+    account_id, token = out.out.strip().split()
+    assert account_id.startswith("acct_")
+    s = _store(tmp_path)
+    assert s.get_account(account_id)["name"] == "DroneCo"
+    tok = s.get_token(hash_token(token))
+    assert tok["account_id"] == account_id and tok["scopes"] == list(SCOPES)
+    s.close()
+    assert main(["server", "account", "list"]) == 0
+    listed = capsys.readouterr().out
+    assert account_id in listed and "DroneCo" in listed
+
+
+def test_account_no_subcommand(capsys):
+    assert main(["server", "account"]) == 1
+
+
+def test_account_requires_extra(monkeypatch, capsys):
+    monkeypatch.setattr(_extras, "require_server_extra",
+                        lambda *a, **k: (_ for _ in ()).throw(ServerError("need extra", 2)))
+    assert main(["server", "account", "create", "--name", "x"]) == 2
+    assert main(["server", "account", "list"]) == 2
+    assert "need extra" in capsys.readouterr().err
+
+
 def test_token_no_subcommand(capsys):
     assert main(["server", "token"]) == 1
 

@@ -42,12 +42,22 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_ti.add_argument("--name", required=True)
     p_ti.add_argument("--scope", action="append", default=[], choices=SCOPES,
                       help="repeatable; default: all scopes")
+    p_ti.add_argument("--account", default="",
+                      help="account this token acts for (default: the implicit '' account)")
     p_ti.set_defaults(func=cmd_token_issue, _command="server token issue")
     p_tr = tsub.add_parser("revoke", help="revoke a token by its hash")
     p_tr.add_argument("token_hash")
     p_tr.set_defaults(func=cmd_token_revoke, _command="server token revoke")
     p_tl = tsub.add_parser("list", help="list admin tokens (hashes + scopes, never secrets)")
     p_tl.set_defaults(func=cmd_token_list, _command="server token list")
+
+    p_acct = sub.add_parser("account", help="manage tenant accounts (self-host)")
+    asub = p_acct.add_subparsers(dest="_account_cmd")
+    p_ac = asub.add_parser("create", help="create an account + issue its first admin token")
+    p_ac.add_argument("--name", required=True)
+    p_ac.set_defaults(func=cmd_account_create, _command="server account create")
+    p_al = asub.add_parser("list", help="list accounts")
+    p_al.set_defaults(func=cmd_account_list, _command="server account list")
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -99,10 +109,41 @@ def cmd_token_issue(args: argparse.Namespace) -> int:
         return e.exit_code
     from .auth import hash_token
     token = secrets.token_urlsafe(32)
-    store.add_token(hash_token(token), args.name, args.scope or list(SCOPES))
+    store.add_token(hash_token(token), args.name, args.scope or list(SCOPES),
+                    account_id=args.account)
     store.close()
     print("token issued (store it now -- it is not recoverable):", file=sys.stderr)
     print(token)
+    return 0
+
+
+def cmd_account_create(args: argparse.Namespace) -> int:
+    try:
+        store = _open()
+    except ServerError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    from .auth import hash_token
+    account_id = "acct_" + secrets.token_hex(8)
+    token = secrets.token_urlsafe(32)
+    store.add_account(account_id, args.name)
+    store.add_token(hash_token(token), args.name, list(SCOPES), account_id=account_id)
+    store.close()
+    print("account created: %s" % account_id, file=sys.stderr)
+    print("admin token (store it now -- it is not recoverable):", file=sys.stderr)
+    print("%s %s" % (account_id, token))
+    return 0
+
+
+def cmd_account_list(args: argparse.Namespace) -> int:
+    try:
+        store = _open()
+    except ServerError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    for a in store.list_accounts():
+        print("%s  %s" % (a["account_id"], a["name"]))
+    store.close()
     return 0
 
 

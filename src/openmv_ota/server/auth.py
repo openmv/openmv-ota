@@ -40,7 +40,8 @@ class TokenAuth:
         row = self._ms.get_token(hash_token(authorization[len("Bearer "):].strip()))
         if row is None or row["revoked"]:
             raise HTTPException(status_code=401, detail="invalid token")
-        return Principal(name=row["name"], scopes=row["scopes"])
+        return Principal(name=row["name"], scopes=row["scopes"],
+                         account_id=row.get("account_id", "") or "")
 
 
 def require_scope(scope: str):

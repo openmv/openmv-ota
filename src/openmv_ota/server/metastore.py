@@ -108,6 +108,14 @@ _MIGRATIONS: list[list[str]] = [
         # sqlite (>=3.25) and postgres support RENAME COLUMN.
         "ALTER TABLE devices RENAME COLUMN owner_ref TO registrar_ref",
     ],
+    [   # v6 -- accounts (multi-tenancy): an admin credential belongs to an account, and every
+        # admin read is scoped to it. '' is the implicit single account (self-host bootstrap
+        # token + pre-account data), so an un-migrated self-host keeps seeing everything.
+        """CREATE TABLE accounts (
+            account_id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)""",
+        "ALTER TABLE admin_tokens ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE audit ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
+    ],
 ]
 
 
@@ -342,11 +350,23 @@ class SqlMetadataStore:
         by = {r["status"]: r["n"] for r in rows}
         return {"installed": by.get("installed", 0), "failed": by.get("failed", 0)}
 
+    # --- accounts (tenants) -----------------------------------------------------------------
+
+    def add_account(self, account_id: str, name: str) -> None:
+        self.execute("INSERT INTO accounts (account_id, name, created_at) VALUES (?,?,?)",
+                     (account_id, name, _now_iso()))
+
+    def get_account(self, account_id: str) -> dict | None:
+        return _d(self.query_one("SELECT * FROM accounts WHERE account_id = ?", (account_id,)))
+
+    def list_accounts(self) -> list[dict]:
+        return [_d(r) for r in self.query_all("SELECT * FROM accounts ORDER BY created_at")]
+
     # --- admin tokens (stored hashed) -------------------------------------------------------
 
-    def add_token(self, token_hash: str, name: str, scopes: list[str]) -> None:
-        self.execute("INSERT INTO admin_tokens (token_hash, name, scopes, created_at) "
-                     "VALUES (?,?,?,?)", (token_hash, name, ",".join(scopes), _now_iso()))
+    def add_token(self, token_hash: str, name: str, scopes: list[str], account_id: str = "") -> None:
+        self.execute("INSERT INTO admin_tokens (token_hash, name, scopes, created_at, account_id) "
+                     "VALUES (?,?,?,?,?)", (token_hash, name, ",".join(scopes), _now_iso(), account_id))
 
     def get_token(self, token_hash: str) -> dict | None:
         r = _d(self.query_one("SELECT * FROM admin_tokens WHERE token_hash = ?", (token_hash,)))
