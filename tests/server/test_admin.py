@@ -271,6 +271,28 @@ A = {"Authorization": "Bearer tokA"}
 B = {"Authorization": "Bearer tokB"}
 
 
+def test_injected_website_auth_scopes_by_account(tmp_path):
+    # the website injects its own admin_auth that resolves identity -> account; the scoping must
+    # honor whatever account that Principal carries (the hosted path, no admin_tokens rows).
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    store.set_meta("cohort_salt", "x")
+    store.upsert_device(device_id="dz", product_id=BID, account_id="acctZ")
+    store.upsert_device(device_id="dq", product_id=BID, account_id="acctQ")
+
+    class WebsiteAuth:
+        def authenticate(self, authorization):
+            from openmv_ota.server.auth import Principal
+            return Principal(name="web-user", scopes=["fleet:read"], account_id="acctZ")
+
+    app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
+                                    swd_ids_verify_token="t"),
+                     metastore=store, storage=LocalArtifactStorage(str(tmp_path / "blobs")),
+                     verifier=_Verifier(), admin_auth=WebsiteAuth())
+    devs = TestClient(app).get("/api/v1/admin/devices", headers={"Authorization": "x"}).json()["devices"]
+    assert [d["device_id"] for d in devs] == ["dz"]           # only acctZ, as the injected auth said
+
+
 def test_account_isolation(tmp_path):
     app, store = _two_accounts(tmp_path)
     _seed_for(store, "acctA", "relA")

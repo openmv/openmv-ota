@@ -70,6 +70,31 @@ openmv-ota server token list | revoke <hash>
 fresh one printed **once** (only the hash is stored — it is not recoverable). Tokens carry scopes:
 `release:write` (publish), `rollout:control` (promote/pause/rollback), `fleet:read` (observe).
 
+## Accounts (multi-tenancy)
+
+A product is namespaced by the maker's **account**: `(account_id, product_id)` is the real
+identity, so a `product_id` only has to be unique *within* an account. Every admin credential
+belongs to an account, and every admin read/write is scoped to it — one tenant can never see or
+touch another's releases, rollouts, devices, or audit (cross-account by-id lookups return `404`,
+so probing leaks nothing). The `account_id` is baked into the firmware (`[product].account_id` →
+`system.json` → the check-in), so a device is only ever offered its own account's releases.
+
+`''` is the **implicit single account**: a self-host that never creates an account keeps its
+bootstrap token, publishes under `''`, and sees everything — unchanged. To run several tenants on
+one server:
+
+```
+openmv-ota server account create --name "DroneCo"      # -> an account_id + its first admin token
+openmv-ota server account list
+openmv-ota server token issue --name ci --account <account_id>   # more tokens for an account
+```
+
+**Hosted identity seam.** `create_app(admin_auth=…)` lets OpenMV's website inject its own auth
+object (`authenticate(header) -> Principal`) that resolves a logged-in maker to their
+`account_id`; the scoping then follows that Principal, with no `admin_tokens` rows involved. The
+server holds the account→ownership mapping but never any billing or identity — that lives in the
+website.
+
 The base `pip install openmv-ota` stays lean; the server needs the extras:
 
 ```
