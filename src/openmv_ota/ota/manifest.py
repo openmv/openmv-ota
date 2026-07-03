@@ -162,16 +162,20 @@ def parse_manifest(data: bytes) -> Manifest:
 
 # --- pure policy (mirrored by the device installer, pinned by tests) ---------
 
-def update_reject_reason(body, product_id, platform_version, rollback_floor):
+def update_reject_reason(body, product_id, platform_version, rollback_floor, account_id=""):
     """The device-relative pre-flight check, applied to an *already signature-verified*
     manifest body before any download/erase. Mirrors the image trailer's checks in
     ``boot.evaluate_slot`` (board cross-flash guard, platform floor, anti-rollback), so
     the manifest rejects the same updates the image's own trailer would on boot — just
-    earlier. Returns a short reason string to reject, or ``None`` to proceed."""
+    earlier. ``account_id`` (when the device has one baked in) additionally rejects a
+    manifest from a different account -- defense in depth behind the server's account
+    scoping and the signature. Returns a short reason string to reject, or ``None``."""
     if body.get("schema") != SCHEMA:
         return "schema"
     if product_id and body.get("product_id", 0) != product_id:
         return "board"
+    if account_id and body.get("account_id", "") != account_id:
+        return "account"
     mpv = body.get("min_platform_version", 0)
     if mpv and mpv > platform_version:
         return "compat"

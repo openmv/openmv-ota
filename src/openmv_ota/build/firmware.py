@@ -233,6 +233,7 @@ def _render_ota_config(p, name: str) -> str:
         + "FRONT_SIZE = %d\n" % t.front_size
         + "OTA_BLOCK = %d\n" % geometry.ota_block(t.erase_size)
         + "PRODUCT_ID = %d\n" % product_id
+        + "ACCOUNT_ID = %r\n" % p.config.account_id
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
         + "TRUSTED_KEYS = {\n%s}\n" % keys
     )

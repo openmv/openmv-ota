@@ -144,6 +144,7 @@ def _build_system_info(p, t, app_version, vendor: str) -> dict:
         "product": product,
         "board": t.name,
         "product_id": product_id,
+        "account_id": p.config.account_id,
         "board_name": str(override.get("board_name") or product),
         "app_version": app_version,
         "vendor": vendor,
@@ -807,6 +808,7 @@ def build_manifest(
         body = {
             "schema": SCHEMA,
             "product_id": tr.product_id,
+            "account_id": tr.meta.get("account_id", ""),   # rides in the trailer's JSON meta, not the binary header
             "product": tr.meta.get("product", p.config.name),
             "version": decode_app_version(tr.payload_version),
             "payload_version": tr.payload_version,

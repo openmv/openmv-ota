@@ -17,9 +17,16 @@ def _write(path: Path, text: str) -> Path:
 
 def test_load_config(tmp_path):
     p = _write(tmp_path / cfg.CONFIG_NAME,
-               '[product]\nname="p"\nvendor="v"\n[targets]\nboards=["OPENMV_N6"]\n')
+               '[product]\nname="p"\nvendor="v"\naccount_id="acct_x"\n'
+               '[targets]\nboards=["OPENMV_N6"]\n')
     c = cfg.load_config(p)
     assert c.name == "p" and c.vendor == "v" and c.boards == ["OPENMV_N6"]
+    assert c.account_id == "acct_x"
+
+
+def test_account_id_defaults_empty(tmp_path):
+    p = _write(tmp_path / cfg.CONFIG_NAME, '[targets]\nboards=["OPENMV_N6"]\n')
+    assert cfg.load_config(p).account_id == ""      # '' = self-host / single account
 
 
 def test_load_config_defaults_name_to_dir(tmp_path):

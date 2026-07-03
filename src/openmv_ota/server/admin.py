@@ -45,6 +45,7 @@ class CohortPin(BaseModel):
     product_id: int
     cohort: str
     release_id: str | None = None          # null unpins
+    account_id: str = ""                    # the maker's account ('' = self-host / single account)
 
 
 @admin.post("/rollouts")
@@ -55,7 +56,8 @@ def create_rollout(body: RolloutCreate, request: Request,
     if rel is None:
         raise HTTPException(status_code=404, detail="no such release")
     product_id = rel["product_id"]
-    prior = ms.active_rollout(product_id, body.cohort)     # only one active per (product_id, cohort)
+    account_id = rel.get("account_id", "")                 # the rollout inherits its release's account
+    prior = ms.active_rollout(product_id, body.cohort, account_id=account_id)   # one active per (account, product, cohort)
     if prior is not None:
         ms.update_rollout(prior["rollout_id"], state="paused")
         ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
@@ -63,7 +65,7 @@ def create_rollout(body: RolloutCreate, request: Request,
     rid = new_id("ro")
     ms.add_rollout(rollout_id=rid, release_id=body.release_id, product_id=product_id,
                    cohort=body.cohort, percent=body.percent,
-                   failure_threshold=body.failure_threshold)
+                   failure_threshold=body.failure_threshold, account_id=account_id)
     ms.append_audit(actor=principal.name, action="rollout.create", entity_type="rollout",
                     entity_id=rid, data={"release_id": body.release_id, "cohort": body.cohort,
                                          "percent": body.percent})
@@ -159,9 +161,12 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
 def pin_cohort(body: CohortPin, request: Request,
                principal: Principal = Depends(require_scope("rollout:control"))):
     ms = request.app.state.metastore
-    ms.set_cohort_pin(body.product_id, body.cohort, body.release_id)   # release_id=None unpins
+    ms.set_cohort_pin(body.product_id, body.cohort, body.release_id,
+                      account_id=body.account_id)          # release_id=None unpins
     ms.append_audit(actor=principal.name, action="cohort.pin", entity_type="cohort",
-                    entity_id=body.cohort, data={"product_id": body.product_id, "release_id": body.release_id})
+                    entity_id=body.cohort, data={"product_id": body.product_id,
+                                                 "release_id": body.release_id,
+                                                 "account_id": body.account_id})
     return {"product_id": body.product_id, "cohort": body.cohort, "release_id": body.release_id}
 
 

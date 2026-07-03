@@ -85,6 +85,24 @@ _MIGRATIONS: list[list[str]] = [
             product_id INTEGER NOT NULL, cohort TEXT NOT NULL, release_id TEXT NOT NULL,
             PRIMARY KEY (product_id, cohort))""",
     ],
+    [   # v4 -- account scoping: a product_id is unique only *within* a maker's account, so
+        # (account_id, product_id) is the real identity. account_id rides in the manifest JSON +
+        # the check-in; '' is the implicit single account (self-host / pre-account devices). The
+        # device path scopes every release/rollout/pin lookup by it, so two accounts that happen
+        # to share a product_id never see each other's firmware. cohort_pins is rebuilt to put
+        # account_id in the key.
+        "ALTER TABLE releases ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE rollouts ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE devices ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE deployments ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE cohort_pins RENAME TO cohort_pins_v3",
+        """CREATE TABLE cohort_pins (
+            account_id TEXT NOT NULL DEFAULT '', product_id INTEGER NOT NULL, cohort TEXT NOT NULL,
+            release_id TEXT NOT NULL, PRIMARY KEY (account_id, product_id, cohort))""",
+        "INSERT INTO cohort_pins (product_id, cohort, release_id) "
+        "SELECT product_id, cohort, release_id FROM cohort_pins_v3",
+        "DROP TABLE cohort_pins_v3",
+    ],
 ]
 
 
@@ -145,15 +163,16 @@ class SqlMetadataStore:
 
     def add_release(self, *, release_id, product_id, product, version, payload_version,
                     min_platform_version, image_sha256, image_size, representations,
-                    manifest_key, image_key, delta_key=None, key_id=None, uploaded_by=None) -> None:
+                    manifest_key, image_key, delta_key=None, key_id=None, uploaded_by=None,
+                    account_id="") -> None:
         self.execute(
             "INSERT INTO releases (release_id, product_id, product, version, payload_version, "
             "min_platform_version, image_sha256, image_size, representations, manifest_key, "
-            "image_key, delta_key, key_id, uploaded_by, uploaded_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (release_id, product_id, product, version, payload_version, min_platform_version,
              image_sha256, image_size, json.dumps(representations), manifest_key, image_key,
-             delta_key, key_id, uploaded_by, _now_iso()))
+             delta_key, key_id, uploaded_by, _now_iso(), account_id))
 
     def get_release(self, release_id: str) -> dict | None:
         r = _d(self.query_one("SELECT * FROM releases WHERE release_id = ?", (release_id,)))
@@ -175,20 +194,21 @@ class SqlMetadataStore:
     # --- rollouts ---------------------------------------------------------------------------
 
     def add_rollout(self, *, rollout_id, release_id, product_id, cohort, percent, state="active",
-                    failure_threshold=0.05) -> None:
+                    failure_threshold=0.05, account_id="") -> None:
         now = _now_iso()
         self.execute(
             "INSERT INTO rollouts (rollout_id, release_id, product_id, cohort, percent, state, "
-            "failure_threshold, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (rollout_id, release_id, product_id, cohort, percent, state, failure_threshold, now, now))
+            "failure_threshold, created_at, updated_at, account_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (rollout_id, release_id, product_id, cohort, percent, state, failure_threshold, now,
+             now, account_id))
 
     def get_rollout(self, rollout_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM rollouts WHERE rollout_id = ?", (rollout_id,)))
 
-    def active_rollout(self, product_id: int, cohort: str) -> dict | None:
+    def active_rollout(self, product_id: int, cohort: str, account_id: str = "") -> dict | None:
         return _d(self.query_one(
-            "SELECT * FROM rollouts WHERE product_id = ? AND cohort = ? AND state = 'active' "
-            "ORDER BY created_at DESC LIMIT 1", (product_id, cohort)))
+            "SELECT * FROM rollouts WHERE account_id = ? AND product_id = ? AND cohort = ? "
+            "AND state = 'active' ORDER BY created_at DESC LIMIT 1", (account_id, product_id, cohort)))
 
     def list_rollouts(self, product_id: int | None = None) -> list[dict]:
         if product_id is not None:
@@ -215,25 +235,26 @@ class SqlMetadataStore:
     def upsert_device(self, *, device_id, product_id, board=None, cohort="__default__",
                       current_version=None, current_payload_version=None, slot=None,
                       representation=None, fallback_reason=None, confirmed=None,
-                      last_offered_release_id=None, owner_ref=None) -> None:
+                      last_offered_release_id=None, owner_ref=None, account_id="") -> None:
         now = _now_iso()
         if self.query_one("SELECT 1 FROM devices WHERE device_id = ?", (device_id,)) is None:
             self.execute(
                 "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
                 "current_payload_version, slot, representation, fallback_reason, confirmed, "
-                "last_offered_release_id, owner_ref, first_seen, last_seen) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "last_offered_release_id, owner_ref, account_id, first_seen, last_seen) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (device_id, product_id, board, cohort, current_version, current_payload_version,
                  slot, representation, fallback_reason, confirmed, last_offered_release_id,
-                 owner_ref, now, now))
+                 owner_ref, account_id, now, now))
         else:                                               # cohort is admin-controlled, not by check-in
             self.execute(
                 "UPDATE devices SET product_id = ?, board = ?, current_version = ?, "
                 "current_payload_version = ?, slot = ?, representation = ?, fallback_reason = ?, "
                 "confirmed = ?, last_offered_release_id = COALESCE(?, last_offered_release_id), "
-                "owner_ref = COALESCE(?, owner_ref), last_seen = ? WHERE device_id = ?",
+                "owner_ref = COALESCE(?, owner_ref), account_id = ?, last_seen = ? WHERE device_id = ?",
                 (product_id, board, current_version, current_payload_version, slot, representation,
-                 fallback_reason, confirmed, last_offered_release_id, owner_ref, now, device_id))
+                 fallback_reason, confirmed, last_offered_release_id, owner_ref, account_id, now,
+                 device_id))
 
     def get_device(self, device_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
@@ -279,29 +300,33 @@ class SqlMetadataStore:
         self.execute("UPDATE devices SET pinned_release_id = ? WHERE device_id = ?",
                      (release_id, device_id))
 
-    def set_cohort_pin(self, product_id: int, cohort: str, release_id: str | None) -> None:
+    def set_cohort_pin(self, product_id: int, cohort: str, release_id: str | None,
+                       account_id: str = "") -> None:
         if release_id is None:
-            self.execute("DELETE FROM cohort_pins WHERE product_id = ? AND cohort = ?",
-                         (product_id, cohort))
+            self.execute("DELETE FROM cohort_pins WHERE account_id = ? AND product_id = ? "
+                         "AND cohort = ?", (account_id, product_id, cohort))
         else:
-            self.execute("INSERT INTO cohort_pins (product_id, cohort, release_id) VALUES (?,?,?) "
-                         "ON CONFLICT (product_id, cohort) DO UPDATE SET release_id = excluded.release_id",
-                         (product_id, cohort, release_id))
+            self.execute(
+                "INSERT INTO cohort_pins (account_id, product_id, cohort, release_id) VALUES (?,?,?,?) "
+                "ON CONFLICT (account_id, product_id, cohort) DO UPDATE SET release_id = excluded.release_id",
+                (account_id, product_id, cohort, release_id))
 
-    def get_cohort_pin(self, product_id: int, cohort: str) -> str | None:
-        row = self.query_one("SELECT release_id FROM cohort_pins WHERE product_id = ? AND cohort = ?",
-                             (product_id, cohort))
+    def get_cohort_pin(self, product_id: int, cohort: str, account_id: str = "") -> str | None:
+        row = self.query_one("SELECT release_id FROM cohort_pins WHERE account_id = ? "
+                             "AND product_id = ? AND cohort = ?", (account_id, product_id, cohort))
         return row["release_id"] if row else None
 
     # --- deployments (explicit terminal outcome reports) ------------------------------------
 
-    def record_deployment(self, *, device_id, release_id, product_id, status, reason=None) -> None:
+    def record_deployment(self, *, device_id, release_id, product_id, status, reason=None,
+                          account_id="") -> None:
         """Upsert the authoritative outcome for (device_id, release_id) -- one row per pair."""
         self.execute(
-            "INSERT INTO deployments (device_id, release_id, product_id, status, reason, reported_at) "
-            "VALUES (?,?,?,?,?,?) ON CONFLICT (device_id, release_id) DO UPDATE SET "
-            "status = excluded.status, reason = excluded.reason, reported_at = excluded.reported_at",
-            (device_id, release_id, product_id, status, reason, _now_iso()))
+            "INSERT INTO deployments (device_id, release_id, product_id, status, reason, "
+            "account_id, reported_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT (device_id, release_id) "
+            "DO UPDATE SET status = excluded.status, reason = excluded.reason, "
+            "account_id = excluded.account_id, reported_at = excluded.reported_at",
+            (device_id, release_id, product_id, status, reason, account_id, _now_iso()))
 
     def deployment_counts(self, release_id: str) -> dict:
         """Reported {installed, failed} counts for a release (from explicit /feedback)."""

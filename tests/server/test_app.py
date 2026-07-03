@@ -215,6 +215,23 @@ def test_offer_mints_capability_url_and_accounts(tmp_path):
     assert store.get_rollout("ro1")["attempted"] == 1
 
 
+def test_release_is_scoped_to_its_account(tmp_path):
+    # a release+rollout published under account 'acctA' (same product_id) must reach only
+    # acctA devices -- a device in acctB (or the '' self-host account) sees nothing.
+    app, store, storage, v = _app(tmp_path)
+    store.add_release(release_id="relA", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=3, representations=[{"format": "full", "url": "x.img.gz",
+                                                      "size": 3}],
+                      manifest_key="m/relA", image_key="i/relA", account_id="acctA")
+    store.add_rollout(rollout_id="roA", release_id="relA", product_id=BID, cohort="__default__",
+                      percent=100, account_id="acctA")
+    c = TestClient(app)
+    assert c.post("/api/v1/check", json=_checkin(dev="a", account_id="acctA")).json()["update"] is True
+    assert c.post("/api/v1/check", json=_checkin(dev="b", account_id="acctB")).json()["update"] is False
+    assert c.post("/api/v1/check", json=_checkin(dev="c")).json()["update"] is False   # '' account
+
+
 def test_success_counted_when_device_runs_offered_release(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, pv=0x02000000, percent=100)

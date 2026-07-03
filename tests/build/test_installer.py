@@ -505,6 +505,18 @@ def test_update_reject_mirrors_host(body, board, plat, floor):
             == update_reject_reason(body, board, plat, floor))
 
 
+@pytest.mark.parametrize(("body_account", "dev_account", "expect"), [
+    ("acctB", "acctA", "account"),      # mismatch -> reject, mirroring the host
+    ("acctA", "acctA", None),           # match -> pass
+    ("acctB", "", None),                # device has no account ('' = self-host) -> no check
+])
+def test_update_reject_account_mirrors_host(body_account, dev_account, expect):
+    from openmv_ota.ota.manifest import update_reject_reason
+    body = {"schema": 1, "product_id": 7, "payload_version": 10, "account_id": body_account}
+    got = inst("_update_reject")(body, 7, 0, 0, dev_account)
+    assert got == expect == update_reject_reason(body, 7, 0, 0, dev_account)
+
+
 @pytest.mark.parametrize(("capable", "golden"), [(False, 0), (True, 100), (True, 999)])
 def test_select_rep_mirrors_host(capable, golden):
     from openmv_ota.ota.manifest import select_representation

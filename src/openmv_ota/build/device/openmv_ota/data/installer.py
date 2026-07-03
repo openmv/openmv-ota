@@ -334,7 +334,7 @@ def _manifest_parse(data):
             "signature": signature, "region": region}
 
 
-def _update_reject(body, product_id, platform_version, rollback_floor):
+def _update_reject(body, product_id, platform_version, rollback_floor, account_id=""):
     """Device-relative pre-flight check on a verified manifest body -- the mirror of
     boot.evaluate_slot's image checks (and openmv_ota.ota.manifest.update_reject_reason).
     Returns a reason string to reject, or None to proceed."""
@@ -342,6 +342,8 @@ def _update_reject(body, product_id, platform_version, rollback_floor):
         return "schema"
     if product_id and body.get("product_id", 0) != product_id:
         return "board"
+    if account_id and body.get("account_id", "") != account_id:
+        return "account"
     mpv = body.get("min_platform_version", 0)
     if mpv and mpv > platform_version:
         return "compat"
@@ -656,7 +658,8 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # partition XIP base
     floor = _golden_floor(uctypes.bytearray_at(base + cfg.PARTITION_SIZE - cfg.OTA_BLOCK,
                                               cfg.OTA_BLOCK))
-    reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor)
+    reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
+                            getattr(cfg, "ACCOUNT_ID", ""))
     if reason is not None:
         raise OSError("manifest rejected (%s)" % reason)
     # The delta applier is pure Python (no ulab/C), so every board is delta-capable; the

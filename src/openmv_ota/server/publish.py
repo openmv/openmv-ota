@@ -78,6 +78,7 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
     except OtaError as e:
         raise HTTPException(status_code=400, detail="bad manifest: %s" % e) from None
     product_id, payload_version = body["product_id"], body["payload_version"]
+    account_id = body.get("account_id", "")           # the maker's account (baked into the signed manifest)
 
     latest = ms.latest_release_payload_version(product_id)
     if latest is not None and payload_version <= latest and not allow_republish:
@@ -104,9 +105,10 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
                    min_platform_version=body.get("min_platform_version", 0),
                    image_sha256=body["sha256"], image_size=body["size"], representations=reps,
                    manifest_key=manifest_key, image_key=image_key, delta_key=delta_key,
-                   uploaded_by=principal.name)
+                   uploaded_by=principal.name, account_id=account_id)
     ms.append_audit(actor=principal.name, action="release.publish", entity_type="release",
                     entity_id=release_id, data={"product_id": product_id, "version": body.get("version"),
-                                                "payload_version": payload_version})
+                                                "payload_version": payload_version,
+                                                "account_id": account_id})
     return {"release_id": release_id, "product_id": product_id, "version": body.get("version"),
             "payload_version": payload_version, "representations": [r["format"] for r in reps]}

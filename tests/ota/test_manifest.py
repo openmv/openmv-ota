@@ -212,6 +212,17 @@ def test_reject_board_mismatch():
                                 rollback_floor=0) == "board"
 
 
+def test_reject_account_mismatch():
+    # a device with a baked account rejects a manifest published under a different account
+    assert update_reject_reason(_body(account_id="acctB"), product_id=7, platform_version=0,
+                                rollback_floor=0, account_id="acctA") == "account"
+    # matching account (and the '' = self-host no-check case) both pass
+    assert update_reject_reason(_body(account_id="acctA"), product_id=7, platform_version=(9 << 24),
+                                rollback_floor=0, account_id="acctA") is None
+    assert update_reject_reason(_body(account_id="acctB"), product_id=7, platform_version=(9 << 24),
+                                rollback_floor=0, account_id="") is None
+
+
 def test_reject_compat_floor():
     assert update_reject_reason(_body(min_platform_version=(6 << 24)), product_id=7,
                                 platform_version=(5 << 24), rollback_floor=0) == "compat"

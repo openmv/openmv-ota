@@ -39,6 +39,7 @@ _MEDIA = {"manifest.bin": "application/octet-stream"}
 class CheckIn(BaseModel):
     device_id: str
     product_id: int                          # the release<->device join key (from identity())
+    account_id: str = ""                     # the maker's account (from identity()); '' = self-host
     board: str | None = None               # camera model, display-only
     product: str | None = None
     app_version: str | None = None
@@ -52,6 +53,7 @@ class CheckIn(BaseModel):
 class Feedback(BaseModel):
     device_id: str
     product_id: int
+    account_id: str = ""                     # the maker's account (from identity()); '' = self-host
     board: str | None = None               # firmware board name (for the registration gate)
     release_id: str
     status: str                            # terminal outcome: 'installed' | 'failed'
@@ -85,13 +87,13 @@ def _decide(state, checkin, cohort, existing=None):
     # A pin (device wins over cohort) overrides the rollout: offer the pinned release iff it's an
     # upgrade -- a pin to the current/older version just holds the device (no rollout reaches it).
     pinned = (existing["pinned_release_id"] if existing else None) \
-        or ms.get_cohort_pin(checkin.product_id, cohort)
+        or ms.get_cohort_pin(checkin.product_id, cohort, account_id=checkin.account_id)
     if pinned:
         rel = ms.get_release(pinned)
         if rel is None or rel["payload_version"] <= checkin.payload_version:
             return None, rel, False, None
         return None, rel, True, _offer(state, rel)
-    ro = ms.active_rollout(checkin.product_id, cohort)
+    ro = ms.active_rollout(checkin.product_id, cohort, account_id=checkin.account_id)
     if ro is None:
         return None, None, False, None
     rel = ms.get_release(ro["release_id"])
@@ -177,7 +179,8 @@ def check(checkin: CheckIn, request: Request):
         current_version=checkin.app_version, current_payload_version=checkin.payload_version,
         slot=checkin.slot, representation=checkin.representation,
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
-        last_offered_release_id=release_id, owner_ref=reg.owner_ref or None)
+        last_offered_release_id=release_id, owner_ref=reg.owner_ref or None,
+        account_id=checkin.account_id)
     if manifest_url:
         return {"update": True, "manifest_url": manifest_url, "release_id": release_id,
                 "poll_after_s": st.settings.poll_after_s}
@@ -200,7 +203,7 @@ def feedback(report: Feedback, request: Request):
         return {"ok": False}                                    # untracked / unregistered -> no write
     st.metastore.record_deployment(
         device_id=report.device_id, release_id=report.release_id, product_id=report.product_id,
-        status=report.status, reason=report.reason)
+        status=report.status, reason=report.reason, account_id=report.account_id)
     return {"ok": True}
 
 

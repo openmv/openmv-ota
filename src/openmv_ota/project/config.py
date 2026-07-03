@@ -29,6 +29,7 @@ class OtaConfig:
     boards: list[str]
     ota: bool = False
     signing_key_id: int | None = None  # current OTA signing key
+    account_id: str = ""               # the maker's OTA account (baked into system.json; '' = self-host)
     overrides: dict[str, dict] = field(default_factory=dict)
 
 
@@ -74,6 +75,7 @@ def parse_config(text: str, default_name: str) -> OtaConfig:
         boards=boards,
         ota=bool(ota.get("enabled", False)),
         signing_key_id=int(signing_key_id) if signing_key_id is not None else None,
+        account_id=str(product.get("account_id") or ""),
         overrides=overrides,
     )
 
