@@ -14,6 +14,13 @@ def test_missing_empty_when_configured():
     assert ServerSettings(swd_ids_verify_url="https://r", swd_ids_verify_token="t").missing() == []
 
 
+def test_unverified_boards_default_covers_arduino_and_m4_not_m7():
+    s = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t")
+    assert {"OPENMV2", "ARDUINO_PORTENTA_H7", "ARDUINO_GIGA", "ARDUINO_NICLA_VISION",
+            "ARDUINO_NANO_33_BLE_SENSE", "ARDUINO_NANO_RP2040_CONNECT"} <= s.unverified_boards
+    assert "OPENMV3" not in s.unverified_boards          # M7 is registered -- must verify
+
+
 def test_s3_backend_requires_bucket():
     s = ServerSettings(storage_backend="s3", s3_bucket="",
                        swd_ids_verify_url="u", swd_ids_verify_token="t")

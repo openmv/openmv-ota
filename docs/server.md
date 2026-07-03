@@ -50,7 +50,7 @@ are also honored), or are injected programmatically via `create_app(ServerSettin
 | rate + backoff | `OPENMV_OTA_CHECKIN_RATE_PER_MIN`, `OPENMV_OTA_POLL_AFTER_S`, `OPENMV_OTA_CAPABILITY_TTL` | tunables |
 | trusted proxy | `OPENMV_OTA_TRUSTED_PROXY_IPS` | which upstream peers may set `X-Forwarded-For`; set `*` behind a PaaS proxy (Render/Fly) so the per-IP rate limiter sees the real client, not the proxy |
 | board codes | `OPENMV_OTA_BOARD_CODE_OVERRIDES` | JSON map to add/correct firmware-name → swd-ids-code translations without a redeploy |
-| unverified boards | `OPENMV_OTA_UNVERIFIED_BOARDS` | JSON list of firmware board names swd-ids never registers (legacy Arduino, pre-registration M4); their registration check is bypassed and OTA is served read-only (no device row, so still zero-footprint) |
+| unverified boards | `OPENMV_OTA_UNVERIFIED_BOARDS` | JSON list of firmware board names swd-ids never registers (Arduino boards, pre-registration M4); their registration check is bypassed and OTA is served read-only (no device row, so still zero-footprint). Defaults to those known board types; override to change the set |
 
 `openmv-ota server check` validates the resolved settings (secrets redacted) and reports what's
 missing before you deploy.
