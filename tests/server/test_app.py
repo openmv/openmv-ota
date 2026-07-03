@@ -20,9 +20,11 @@ class _Verifier:
     def __init__(self, registered=True, owner_ref="o1"):
         self._reg = Registration(registered, owner_ref)
         self.calls = 0
+        self.last_board = None
 
     def verify(self, board, device_id):
         self.calls += 1
+        self.last_board = board
         return self._reg
 
 
@@ -85,6 +87,13 @@ def test_registered_no_rollout_writes_registry(tmp_path):
     app, store, storage, v = _app(tmp_path)
     assert TestClient(app).post("/api/v1/check", json=_checkin()).json()["update"] is False
     assert store.get_device("dev1") is not None
+
+
+def test_firmware_board_translated_to_swd_ids_code(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    TestClient(app).post("/api/v1/check", json=_checkin(board="OPENMV_N6"))
+    assert v.last_board == "N6"                              # verify() got the swd-ids code, not OPENMV_N6
+    assert store.get_device("dev1")["board"] == "OPENMV_N6"  # the raw firmware name is still stored
 
 
 # --- the rollout decision -------------------------------------------------------------------

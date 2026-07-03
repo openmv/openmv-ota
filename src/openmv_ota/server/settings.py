@@ -51,6 +51,9 @@ class ServerSettings(BaseSettings):
     # uvicorn forwarded-allow-ips: which upstream peers may set X-Forwarded-For. Behind a PaaS proxy
     # (Render/Fly) set "*" so the rate limiter sees the real client IP, not the proxy's single IP.
     trusted_proxy_ips: str = "127.0.0.1"
+    # Add/correct firmware-board-name -> swd-ids code mappings without a redeploy (JSON in env),
+    # e.g. OPENMV_OTA_BOARD_CODE_OVERRIDES='{"ARDUINO_PORTENTA_H7":"H7"}'. Merged over boardmap defaults.
+    board_code_overrides: dict[str, str] = {}
 
     def missing(self) -> list[str]:
         """Settings required before the server can serve devices (used by ``server check``)."""

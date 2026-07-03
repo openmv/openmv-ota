@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from . import capability
 from .auth import TokenAuth
+from .boardmap import swd_ids_board_code
 from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter
@@ -122,7 +123,9 @@ def check(checkin: CheckIn, request: Request):
     if not st.ratelimit.allow(ip):
         return JSONResponse(nothing, status_code=429,
                             headers={"Retry-After": str(st.settings.poll_after_s)})
-    reg = st.verifier.verify(checkin.board, checkin.device_id)
+    # swd-ids matches on its own board codes (N6, H7), not firmware names (OPENMV_N6) -- translate.
+    swd_board = swd_ids_board_code(checkin.board, st.settings.board_code_overrides)
+    reg = st.verifier.verify(swd_board, checkin.device_id)
     if not reg.registered:
         return nothing                                          # ZERO footprint for unregistered ids
     ms = st.metastore
