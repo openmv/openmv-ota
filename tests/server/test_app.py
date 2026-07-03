@@ -232,6 +232,43 @@ def test_release_is_scoped_to_its_account(tmp_path):
     assert c.post("/api/v1/check", json=_checkin(dev="c")).json()["update"] is False   # '' account
 
 
+def _seed_account_rollout(store, account="acctA"):
+    store.add_release(release_id="relA", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=3, representations=[{"format": "full", "url": "x.img.gz", "size": 3}],
+                      manifest_key="m/relA", image_key="i/relA", account_id=account)
+    store.add_rollout(rollout_id="roA", release_id="relA", product_id=BID, cohort="__default__",
+                      percent=100, account_id=account)
+
+
+def test_account_binding_learn_sticky_and_golden_recovery(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed_account_rollout(store, "acctA")
+    c = TestClient(app)
+    # LEARN: the first valid check-in binds the device to acctA and gets its release
+    assert c.post("/api/v1/check", json=_checkin(dev="d", account_id="acctA")).json()["update"] is True
+    assert store.device_account("d") == {"account_id": "acctA", "source": "learned"}
+    # GOLDEN RECOVERY: a later fallback reporting '' still resolves to acctA (not stranded)
+    assert c.post("/api/v1/check", json=_checkin(dev="d", account_id="")).json()["update"] is True
+    assert store.device_account("d")["account_id"] == "acctA"          # sticky: not downgraded
+    # SPOOF: a check-in claiming another account can't move the binding either
+    c.post("/api/v1/check", json=_checkin(dev="d", account_id="acctEvil"))
+    assert store.device_account("d")["account_id"] == "acctA"
+    assert store.get_device("d")["account_id"] == "acctA"             # the row reflects the binding
+
+
+def test_never_onboarded_device_stays_unbound(tmp_path):
+    app, store, *_ = _app(tmp_path)
+    TestClient(app).post("/api/v1/check", json=_checkin(dev="d", account_id=""))
+    assert store.device_account("d") is None                          # only '' seen -> no binding
+
+
+def test_unregistered_device_never_binds(tmp_path):
+    app, store, *_ = _app(tmp_path, registered=False)
+    TestClient(app).post("/api/v1/check", json=_checkin(dev="d", account_id="acctA"))
+    assert store.device_account("d") is None                          # gate stands in front
+
+
 def test_success_counted_when_device_runs_offered_release(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, pv=0x02000000, percent=100)

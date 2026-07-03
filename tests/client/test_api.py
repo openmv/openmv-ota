@@ -143,6 +143,12 @@ def test_pin_calls():
     assert c.calls[1][2]["json"] == {"product_id": 7, "cohort": "beta", "release_id": None}
 
 
+def test_bind_call():
+    api, c = _api(_Resp(200, {"account_id": "acctA"}))
+    api.bind_device("d1")
+    assert c.calls[0][:2] == ("POST", "/api/v1/admin/devices/d1/account")
+
+
 def test_empty_body_returns_empty_dict():
     api, _ = _api(_Resp(200, payload={"x": 1}, content=b""))   # no content -> {}
     assert api.fleet() == {}

@@ -173,6 +173,25 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
     return {"device_id": device_id, "pinned_release_id": body.release_id}
 
 
+@admin.post("/devices/{device_id}/account")
+def bind_device(device_id: str, request: Request,
+                principal: Principal = Depends(require_scope("rollout:control"))):
+    """Operator override: (re)bind a device to the caller's account -- the authority for
+    re-accounting a device or recovering one wrongly *learned* onto another account (which the
+    signature already stops from installing anything). A device already *admin*-bound to a different
+    account is 404 (not yours; no existence leak), so one account can't steal another's binding via
+    the API. On a shared server, gate who may call this by proof of ownership (see threat-model)."""
+    ms = request.app.state.metastore
+    cur = ms.device_account(device_id)
+    if cur is not None and cur["source"] == "admin" and cur["account_id"] != principal.account_id:
+        raise HTTPException(status_code=404)
+    ms.bind_device_account(device_id, principal.account_id, source="admin")
+    ms.append_audit(actor=principal.name, action="device.bind", entity_type="device",
+                    entity_id=device_id, data={"account_id": principal.account_id},
+                    account_id=principal.account_id)
+    return {"device_id": device_id, "account_id": principal.account_id}
+
+
 @admin.post("/cohorts/pin")
 def pin_cohort(body: CohortPin, request: Request,
                principal: Principal = Depends(require_scope("rollout:control"))):

@@ -284,6 +284,23 @@ A = {"Authorization": "Bearer tokA"}
 B = {"Authorization": "Bearer tokB"}
 
 
+def test_admin_bind_device_override_and_no_theft(tmp_path):
+    app, store = _two_accounts(tmp_path)
+    c = TestClient(app)
+    # A claims an unbound device -> admin binding
+    assert c.post("/api/v1/admin/devices/d1/account", headers=A).json()["account_id"] == "acctA"
+    assert store.device_account("d1") == {"account_id": "acctA", "source": "admin"}
+    # A recovers a device wrongly *learned* onto acctB (learned is overridable)
+    store.bind_device_account("d2", "acctB", source="learned")
+    assert c.post("/api/v1/admin/devices/d2/account", headers=A).status_code == 200
+    assert store.device_account("d2")["account_id"] == "acctA"
+    # but B cannot STEAL a device A has admin-bound -> 404, and the binding is untouched
+    assert c.post("/api/v1/admin/devices/d1/account", headers=B).status_code == 404
+    assert store.device_account("d1")["account_id"] == "acctA"
+    assert any(e["action"] == "device.bind"
+               for e in c.get("/api/v1/admin/audit", headers=A).json()["events"])
+
+
 def test_injected_website_auth_scopes_by_account(tmp_path):
     # the website injects its own admin_auth that resolves identity -> account; the scoping must
     # honor whatever account that Principal carries (the hosted path, no admin_tokens rows).

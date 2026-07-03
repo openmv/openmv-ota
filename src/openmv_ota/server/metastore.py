@@ -129,6 +129,15 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE admin_tokens ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
     ],
+    [   # v7 -- sticky device->account binding: the authoritative account for a device, so a golden
+        # fallback (which reports the golden's baked account, maybe '') can't strand a device that
+        # was healthy under a real account. 'learned' from the first valid check-in (sticky -- never
+        # downgraded), or 'admin' (an operator override). Only registered devices ever reach the
+        # bind path, so this table is bounded by the registered fleet.
+        """CREATE TABLE device_accounts (
+            device_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, source TEXT NOT NULL,
+            bound_at TEXT NOT NULL)""",
+    ],
 ]
 
 
@@ -284,6 +293,29 @@ class SqlMetadataStore:
 
     def get_device(self, device_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
+
+    # --- sticky device -> account binding (the authoritative account for the device path) ----
+
+    def bind_device_account(self, device_id: str, account_id: str, *, source: str) -> None:
+        """Bind a device to an account. ``source='learned'`` is **sticky** -- it only takes if the
+        device is unbound, so a later (or downgraded '') report never changes it. ``source='admin'``
+        is an operator override and always wins."""
+        now = _now_iso()
+        if source == "admin":
+            self.execute(
+                "INSERT INTO device_accounts (device_id, account_id, source, bound_at) VALUES (?,?,?,?) "
+                "ON CONFLICT (device_id) DO UPDATE SET account_id = excluded.account_id, "
+                "source = excluded.source, bound_at = excluded.bound_at",
+                (device_id, account_id, source, now))
+        else:
+            self.execute(
+                "INSERT INTO device_accounts (device_id, account_id, source, bound_at) VALUES (?,?,?,?) "
+                "ON CONFLICT (device_id) DO NOTHING", (device_id, account_id, source, now))
+
+    def device_account(self, device_id: str) -> dict | None:
+        """The device's binding row ``{account_id, source}`` or None (unbound)."""
+        return _d(self.query_one(
+            "SELECT account_id, source FROM device_accounts WHERE device_id = ?", (device_id,)))
 
     def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
                      cohort=None, offset: int = 0) -> list[dict]:

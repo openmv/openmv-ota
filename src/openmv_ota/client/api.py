@@ -73,6 +73,9 @@ class Api:
         return self._req("PATCH", "/api/v1/admin/devices/%s/pin" % device_id,
                          json={"release_id": release_id})
 
+    def bind_device(self, device_id):
+        return self._req("POST", "/api/v1/admin/devices/%s/account" % device_id)
+
     def pin_cohort(self, product_id, cohort, release_id):
         return self._req("POST", "/api/v1/admin/cohorts/pin",
                          json={"product_id": product_id, "cohort": cohort, "release_id": release_id})

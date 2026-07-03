@@ -182,6 +182,24 @@ def test_pin_device_and_cohort(wired, tmp_path, capsys):
     assert store.get_cohort_pin(BID, "beta") == "rel9"
 
 
+def test_bind_device(wired, tmp_path, capsys):
+    store, _ = wired
+    store.upsert_device(device_id="d1", product_id=BID)
+    assert main(["client", "bind", "--id", "d1"]) == 0
+    assert "device d1 bound to" in capsys.readouterr().out
+    assert store.device_account("d1")["source"] == "admin"
+
+
+def test_bind_error_surfaced(tmp_path, monkeypatch, capsys):
+    app, store = _server(tmp_path, scopes=("fleet:read",))     # token can't control -> bind 403s
+    tc = TestClient(app)
+    monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
+    monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
+    monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
+    assert main(["client", "bind", "--id", "d1"]) == 1
+    assert "403" in capsys.readouterr().err
+
+
 def test_pin_error_surfaced(tmp_path, monkeypatch, capsys):
     app, store = _server(tmp_path, scopes=("fleet:read",))     # token can't control -> pin 403s
     store.upsert_device(device_id="d1", product_id=BID)

@@ -71,6 +71,11 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_coa)
     p_coa.set_defaults(func=cmd_cohort, _command="client cohort assign", action="assign")
 
+    p_bind = sub.add_parser("bind", help="bind a device to your account (re-account / recover)")
+    p_bind.add_argument("--id", required=True)
+    _creds(p_bind)
+    p_bind.set_defaults(func=cmd_bind, _command="client bind")
+
     p_pin = sub.add_parser("pin", help="pin a device/cohort to a release (overrides rollouts)")
     pinsub = p_pin.add_subparsers(dest="_pin")
     p_pd = pinsub.add_parser("device")
@@ -204,6 +209,16 @@ def cmd_pin(args: argparse.Namespace) -> int:
         else:
             res = api.pin_cohort(args.product_id, args.cohort, release)
             print("cohort %s pinned to %s" % (args.cohort, res["release_id"] or "(unpinned)"))
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return 0
+
+
+def cmd_bind(args: argparse.Namespace) -> int:
+    try:
+        res = _make_api(config.resolve(args.server, args.token)).bind_device(args.id)
+        print("device %s bound to %s" % (args.id, res["account_id"] or "(default account)"))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

@@ -80,23 +80,24 @@ def _offer(state, rel):
     return "%s/d/%s/manifest.bin" % (state.settings.base_url.rstrip("/"), token)
 
 
-def _decide(state, checkin, cohort, existing=None):
+def _decide(state, checkin, cohort, existing=None, account_id=""):
     """The release to offer this device (a pin overrides the rollout) and whether to offer it.
+    ``account_id`` is the device's *effective* account (its sticky binding, not the raw report).
     Returns ``(rollout | None, release | None, offered: bool, manifest_url | None)``."""
     ms = state.metastore
     # A pin (device wins over cohort) overrides the rollout: offer the pinned release iff it's an
     # upgrade -- a pin to the current/older version just holds the device (no rollout reaches it).
     pinned = (existing["pinned_release_id"] if existing else None) \
-        or ms.get_cohort_pin(checkin.product_id, cohort, account_id=checkin.account_id)
+        or ms.get_cohort_pin(checkin.product_id, cohort, account_id=account_id)
     if pinned:
         rel = ms.get_release(pinned)
         # a release is only ever offered to a device of its own account (defense in depth behind
         # the admin-side pin check): a cross-account or missing/older pin just holds the device.
-        if (rel is None or rel["account_id"] != checkin.account_id
+        if (rel is None or rel["account_id"] != account_id
                 or rel["payload_version"] <= checkin.payload_version):
             return None, rel, False, None
         return None, rel, True, _offer(state, rel)
-    ro = ms.active_rollout(checkin.product_id, cohort, account_id=checkin.account_id)
+    ro = ms.active_rollout(checkin.product_id, cohort, account_id=account_id)
     if ro is None:
         return None, None, False, None
     rel = ms.get_release(ro["release_id"])
@@ -144,6 +145,21 @@ def _verify(state, req):
     return state.verifier.verify(swd_board, req.device_id)
 
 
+def _effective_account(ms, checkin):
+    """The device's authoritative account for scoping. A binding (learned on the first valid
+    check-in, or an admin override) is **sticky** and wins -- so a later golden fallback reporting
+    a different/empty account can't strand the device. Absent a binding, the first non-empty report
+    is *learned* (and returned); a device that has only ever reported '' stays in the '' account.
+    Only reached for a registered device, so no unregistered id can create a binding."""
+    bound = ms.device_account(checkin.device_id)
+    if bound is not None:
+        return bound["account_id"]
+    if checkin.account_id:
+        ms.bind_device_account(checkin.device_id, checkin.account_id, source="learned")
+        return checkin.account_id
+    return ""
+
+
 @router.get("/healthz")
 def healthz():
     return {"ok": True}
@@ -172,9 +188,10 @@ def check(checkin: CheckIn, request: Request):
     if not reg.registered:
         return nothing                                          # ZERO footprint for unregistered ids
     ms = st.metastore
+    account_id = _effective_account(ms, checkin)                # sticky binding, not the raw report
     existing = ms.get_device(checkin.device_id)
     cohort = existing["cohort"] if existing else "__default__"
-    ro, rel, offered, manifest_url = _decide(st, checkin, cohort, existing)
+    ro, rel, offered, manifest_url = _decide(st, checkin, cohort, existing, account_id)
     _account(ms, ro, rel, checkin, existing, offered)
     release_id = rel["release_id"] if offered else None
     ms.upsert_device(
@@ -183,7 +200,7 @@ def check(checkin: CheckIn, request: Request):
         slot=checkin.slot, representation=checkin.representation,
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
-        account_id=checkin.account_id)
+        account_id=account_id)
     if manifest_url:
         return {"update": True, "manifest_url": manifest_url, "release_id": release_id,
                 "poll_after_s": st.settings.poll_after_s}
