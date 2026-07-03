@@ -20,7 +20,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Registration:
     registered: bool
-    owner_ref: str = ""
+    board_origin_ref: str = ""
 
 
 _NO = Registration(False)
@@ -66,7 +66,7 @@ class RegistrationVerifier:
             return _NO
         if not data.get("registered"):
             return _NO
-        return Registration(True, owner_ref=data.get("owner_ref", "") or "")
+        return Registration(True, board_origin_ref=data.get("board_origin_ref", "") or "")
 
 
 def build_verifier(settings) -> RegistrationVerifier:

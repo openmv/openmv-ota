@@ -21,7 +21,7 @@ __all__ = ["SCOPES", "Principal", "TokenAuth", "hash_token", "require_scope"]
 class Principal:
     name: str
     scopes: list
-    owner_ref: str = ""
+    account_id: str = ""       # the account this admin credential acts for (the website injects it)
 
 
 def hash_token(token: str) -> str:

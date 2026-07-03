@@ -179,7 +179,7 @@ def check(checkin: CheckIn, request: Request):
         current_version=checkin.app_version, current_payload_version=checkin.payload_version,
         slot=checkin.slot, representation=checkin.representation,
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
-        last_offered_release_id=release_id, owner_ref=reg.owner_ref or None,
+        last_offered_release_id=release_id, board_origin_ref=reg.board_origin_ref or None,
         account_id=checkin.account_id)
     if manifest_url:
         return {"update": True, "manifest_url": manifest_url, "release_id": release_id,

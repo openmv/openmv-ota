@@ -40,7 +40,7 @@ class _Clock:
 
 
 def test_registered_parses_and_sends_auth():
-    c = _Client(_Resp(200, {"registered": True, "board": "N6", "id": "abc", "owner_ref": "o1"}))
+    c = _Client(_Resp(200, {"registered": True, "board": "N6", "id": "abc", "board_origin_ref": "o1"}))
     reg = RegistrationVerifier("https://swd/verify", "tok", c).verify("N6", "abc")
     assert reg == Registration(True, "o1")
     url, body, headers, _ = c.calls[0]
