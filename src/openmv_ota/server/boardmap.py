@@ -8,20 +8,24 @@ table (``N6``, ``H7``, ...), so the update server must translate before calling
 swd-ids is the source of truth for these codes; keep this table in sync with it. Boards not in the
 table pass through unchanged (so swd-ids simply won't match -> the device reads unregistered,
 fail-closed) -- add them here, or override at runtime via ``board_code_overrides``, once their
-swd-ids code is confirmed. Deliberately omitted: OPENMV2/OPENMV3 (not OTA-capable), the retired
-Nano boards, the MPS emulator targets, and ARDUINO_PORTENTA_H7 / ARDUINO_GIGA (swd-ids codes
-unconfirmed -- add via override).
+swd-ids code is confirmed. Deliberately unmapped: the retired Nano boards (ARDUINO_NANO_33_BLE_SENSE,
+ARDUINO_NANO_RP2040_CONNECT -- swd-ids tracks these as *unregistered* board types, never in `ids`)
+and the MPS emulator targets (not real devices).
 """
 
 from __future__ import annotations
 
 DEFAULT_BOARD_CODES = {
+    "OPENMV2": "M4",
+    "OPENMV3": "M7",
     "OPENMV4": "H7",
     "OPENMV4P": "H7",
     "OPENMVPT": "H7",
     "OPENMV_RT1060": "IMXRT1060",
     "OPENMV_AE3": "AE3",
     "OPENMV_N6": "N6",
+    "ARDUINO_PORTENTA_H7": "H7",
+    "ARDUINO_GIGA": "H7",
     "ARDUINO_NICLA_VISION": "NICLAV",
 }
 
