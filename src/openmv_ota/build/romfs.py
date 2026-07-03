@@ -438,12 +438,19 @@ def build_factory_romfs(
     firmware: str | Path | None = None,
     factory_key: int | None = None,
     keep_build_dir: bool = False,
+    no_account: bool = False,
 ) -> list[BuildResult]:
     """Compose the factory ROMFS partition image per target: golden BACK + initial
     FRONT, both factory-signed, with status sectors and padding. One
     ``<board>-factory-romfs.img`` per main partition. Coprocessor partitions have no
     golden/trial concept, so they get the same plain ``<board>-coprocessor-romfs.img``
-    as a regular build -- the image the main core writes into the helper slot."""
+    as a regular build -- the image the main core writes into the helper slot.
+
+    The golden BACK slot is **permanent** (never OTA-updatable), so its ``account_id``
+    is baked for the life of the device. This refuses to burn an accountless golden
+    unless ``no_account`` is set -- so a maker who will register with a shared/hosted
+    server can't silently ship ``""`` goldens that later strand on fallback, while a
+    self-hoster opts out explicitly."""
     from openmv_ota.ota.keys import FACTORY_KEY_ID_BASE
 
     project = Path(project)
@@ -454,6 +461,13 @@ def build_factory_romfs(
     if not p.config.ota:
         raise BuildError("factory-romfs needs an OTA project (create with "
                          "`openmv-ota project new --ota`)", exit_code=1)
+    if not p.config.account_id and not no_account:
+        raise BuildError(
+            "no account_id set, and the golden image is permanent -- a device shipped "
+            "without an account can't be cleanly moved to a hosted/shared server later "
+            "(a golden fallback would strand it). Set [product].account_id in "
+            "openmv-ota.toml, or pass --no-account to burn an accountless self-host "
+            "golden on purpose.", exit_code=1)
 
     app_dir = Path(app) if app else project / "app"
     copro_dir = project / COPROCESSOR_APP

@@ -139,6 +139,9 @@ def register(build_parser: argparse.ArgumentParser):
     p_fac.add_argument("-f", "--firmware", help="firmware checkout override")
     p_fac.add_argument("--factory-key", type=lambda s: int(s, 0), metavar="ID",
                        help="factory key id to sign with (default 0x0001)")
+    p_fac.add_argument("--no-account", action="store_true",
+                       help="burn an accountless (self-host) golden on purpose -- required when "
+                            "[product].account_id is unset, since the golden is permanent")
     p_fac.add_argument("--keep-build-dir", action="store_true",
                        help="keep the staging dir for inspection")
     p_fac.set_defaults(func=cmd_factory_romfs, _command="build factory-romfs")
@@ -182,6 +185,7 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
             vela_optimise=args.vela_optimise,
             stedgeai_optimization=args.stedgeai_optimization, firmware=args.firmware,
             factory_key=args.factory_key, keep_build_dir=args.keep_build_dir,
+            no_account=args.no_account,
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)

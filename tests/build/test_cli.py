@@ -274,6 +274,17 @@ def test_build_factory_romfs_non_ota_errors(make_project, capsys):
     assert "needs an OTA project" in capsys.readouterr().err
 
 
+def test_build_factory_romfs_account_rail(make_project, capsys):
+    files = {"main.py": "print(1)\n", "settings.json": '{"app_version": "1.0.0"}\n'}
+    root, repo, app = make_project(ota=True, app_files=files, account="")   # no account
+    base = ["build", "factory-romfs", str(root), "--app", str(app), "-f", str(repo),
+            "--no-compile-py", "--no-convert-models"]
+    assert main(base) == 1                                   # refused: golden is permanent
+    assert "no account_id set" in capsys.readouterr().err
+    assert main(base + ["--no-account"]) == 0                # opt out on purpose -> builds
+    assert "factory image" in capsys.readouterr().out
+
+
 # --- inspect / verify on a factory (dual-slot partition) image --------------
 
 def _build_factory_image(make_project, capsys):

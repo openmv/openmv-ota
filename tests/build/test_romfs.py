@@ -551,6 +551,21 @@ def test_factory_no_matching_targets(make_project):
                                       compile_py=False, convert_models=False)
 
 
+def test_factory_refuses_unset_account(make_project):
+    # the golden is permanent, so refuse to burn an accountless one unless it's on purpose
+    root, repo, app = _build_ota(make_project, account="")
+    with pytest.raises(BuildError, match="no account_id set"):
+        build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                      compile_py=False, convert_models=False)
+
+
+def test_factory_no_account_flag_allows_unset(make_project):
+    root, repo, app = _build_ota(make_project, account="")
+    r = build_mod.build_factory_romfs(root, app=app, firmware=repo, no_account=True,
+                                      compile_py=False, convert_models=False)[0]
+    assert r.output.name == "OPENMV_N6-factory-romfs.img"   # explicit self-host golden is fine
+
+
 def test_factory_coprocessor_is_plain(make_project):
     # An OTA multi-core board: the main partition gets a dual-slot factory image, but the
     # coprocessor (slaved) has no golden/trial concept -- it's the same plain romfs.

@@ -17,7 +17,7 @@ DEFAULT_APP = {
 def make_project(tmp_path, make_firmware, make_sdk):
     """Create a real pegged project + an app dir. Returns (project_dir, repo, app_dir)."""
     def _make(boards=("OPENMV_N6",), app_files=None, with_mpy_cross=True, extra_config="",
-              ota=False, product=None):
+              ota=False, product=None, account="acct_test"):
         from openmv_ota.project import project as proj
 
         repo = make_firmware(with_mpy_cross=with_mpy_cross)
@@ -28,9 +28,14 @@ def make_project(tmp_path, make_firmware, make_sdk):
             sdk_home_override=home, install_sdk=False, allow_dirty=True, force=False, now=NOW,
             ota=ota, ota_keys=2, factory_keys=1,  # small pool: these tests don't exercise keys
         )
-        if extra_config:
-            cfg = proj.ProjectPaths(root).config
-            cfg.write_text(cfg.read_text() + extra_config)
+        # Give the project an account by default (pass account="" for the accountless case);
+        # inject it as the first [product] key so factory builds clear the account rail.
+        cfg = proj.ProjectPaths(root).config
+        text = cfg.read_text()
+        if account:
+            text = text.replace("[product]\n", '[product]\naccount_id = "%s"\n' % account, 1)
+        if account or extra_config:
+            cfg.write_text(text + extra_config)
             proj.sync_project(root, firmware=repo, sdk_home_override=home,
                               install_sdk=False, allow_dirty=True, now=NOW)
 
