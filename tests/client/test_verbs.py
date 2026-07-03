@@ -162,6 +162,31 @@ def test_cohort_error_surfaced(tmp_path, monkeypatch, capsys):
     assert "403" in capsys.readouterr().err
 
 
+def test_pin_device_and_cohort(wired, tmp_path, capsys):
+    store, _ = wired
+    store.upsert_device(device_id="d1", board_id=BID)
+    assert main(["client", "pin", "device", "--id", "d1", "--release", "rel9"]) == 0
+    assert "device d1 pinned to rel9" in capsys.readouterr().out
+    assert store.get_device("d1")["pinned_release_id"] == "rel9"
+    assert main(["client", "pin", "device", "--id", "d1", "--clear"]) == 0
+    assert "(unpinned)" in capsys.readouterr().out
+    assert main(["client", "pin", "cohort", "--board-id", str(BID),
+                 "--cohort", "beta", "--release", "rel9"]) == 0
+    assert "cohort beta pinned to rel9" in capsys.readouterr().out
+    assert store.get_cohort_pin(BID, "beta") == "rel9"
+
+
+def test_pin_error_surfaced(tmp_path, monkeypatch, capsys):
+    app, store = _server(tmp_path, scopes=("fleet:read",))     # token can't control -> pin 403s
+    store.upsert_device(device_id="d1", board_id=BID)
+    tc = TestClient(app)
+    monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
+    monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
+    monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
+    assert main(["client", "pin", "device", "--id", "d1", "--release", "r"]) == 1
+    assert "403" in capsys.readouterr().err
+
+
 def test_missing_creds(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("OPENMV_OTA_SERVER", raising=False)
     monkeypatch.delenv("OPENMV_OTA_TOKEN", raising=False)

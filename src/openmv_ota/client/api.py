@@ -69,6 +69,14 @@ class Api:
         return self._req("POST", "/api/v1/admin/cohorts/assign",
                          json={"cohort": cohort, "device_ids": device_ids})
 
+    def pin_device(self, device_id, release_id):
+        return self._req("PATCH", "/api/v1/admin/devices/%s/pin" % device_id,
+                         json={"release_id": release_id})
+
+    def pin_cohort(self, board_id, cohort, release_id):
+        return self._req("POST", "/api/v1/admin/cohorts/pin",
+                         json={"board_id": board_id, "cohort": cohort, "release_id": release_id})
+
     def fleet(self, board_id=None):
         params = {"board_id": board_id} if board_id is not None else {}
         return self._req("GET", "/api/v1/admin/fleet", params=params)

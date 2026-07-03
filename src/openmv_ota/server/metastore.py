@@ -79,6 +79,12 @@ _MIGRATIONS: list[list[str]] = [
             PRIMARY KEY (device_id, release_id))""",
         "CREATE INDEX idx_deployments_release ON deployments (release_id, status)",
     ],
+    [   # v3 -- version pins: force a specific device or cohort onto a release, overriding rollouts.
+        "ALTER TABLE devices ADD COLUMN pinned_release_id TEXT",
+        """CREATE TABLE cohort_pins (
+            board_id INTEGER NOT NULL, cohort TEXT NOT NULL, release_id TEXT NOT NULL,
+            PRIMARY KEY (board_id, cohort))""",
+    ],
 ]
 
 
@@ -265,6 +271,27 @@ class SqlMetadataStore:
         cur = self.execute("UPDATE devices SET cohort = ? WHERE device_id IN (" + placeholders + ")",
                            (cohort, *device_ids))
         return cur.rowcount
+
+    # --- version pins (device / cohort, override rollouts) ----------------------------------
+
+    def set_device_pin(self, device_id: str, release_id: str | None) -> None:
+        """Pin (or, with None, unpin) a device to a release. Preserved across check-ins."""
+        self.execute("UPDATE devices SET pinned_release_id = ? WHERE device_id = ?",
+                     (release_id, device_id))
+
+    def set_cohort_pin(self, board_id: int, cohort: str, release_id: str | None) -> None:
+        if release_id is None:
+            self.execute("DELETE FROM cohort_pins WHERE board_id = ? AND cohort = ?",
+                         (board_id, cohort))
+        else:
+            self.execute("INSERT INTO cohort_pins (board_id, cohort, release_id) VALUES (?,?,?) "
+                         "ON CONFLICT (board_id, cohort) DO UPDATE SET release_id = excluded.release_id",
+                         (board_id, cohort, release_id))
+
+    def get_cohort_pin(self, board_id: int, cohort: str) -> str | None:
+        row = self.query_one("SELECT release_id FROM cohort_pins WHERE board_id = ? AND cohort = ?",
+                             (board_id, cohort))
+        return row["release_id"] if row else None
 
     # --- deployments (explicit terminal outcome reports) ------------------------------------
 

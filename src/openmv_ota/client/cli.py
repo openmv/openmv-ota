@@ -71,6 +71,24 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_coa)
     p_coa.set_defaults(func=cmd_cohort, _command="client cohort assign", action="assign")
 
+    p_pin = sub.add_parser("pin", help="pin a device/cohort to a release (overrides rollouts)")
+    pinsub = p_pin.add_subparsers(dest="_pin")
+    p_pd = pinsub.add_parser("device")
+    p_pd.add_argument("--id", required=True)
+    gd = p_pd.add_mutually_exclusive_group(required=True)
+    gd.add_argument("--release", help="release id to pin to")
+    gd.add_argument("--clear", action="store_true", help="unpin")
+    _creds(p_pd)
+    p_pd.set_defaults(func=cmd_pin, _command="client pin device", target="device")
+    p_pc = pinsub.add_parser("cohort")
+    p_pc.add_argument("--board-id", type=int, required=True)
+    p_pc.add_argument("--cohort", required=True)
+    gc = p_pc.add_mutually_exclusive_group(required=True)
+    gc.add_argument("--release", help="release id to pin to")
+    gc.add_argument("--clear", action="store_true", help="unpin")
+    _creds(p_pc)
+    p_pc.set_defaults(func=cmd_pin, _command="client pin cohort", target="cohort")
+
     for name, handler in (("fleet", cmd_fleet), ("devices", cmd_devices), ("audit", cmd_audit)):
         p = sub.add_parser(name, help="read %s status" % name)
         if name in ("fleet", "devices"):
@@ -165,6 +183,22 @@ def cmd_cohort(args: argparse.Namespace) -> int:
             res = api.assign_cohort(args.cohort, args.devices)
             print("assigned %d/%d device(s) to cohort %s"
                   % (res["assigned"], len(args.devices), res["cohort"]))
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return 0
+
+
+def cmd_pin(args: argparse.Namespace) -> int:
+    try:
+        api = _make_api(config.resolve(args.server, args.token))
+        release = None if args.clear else args.release
+        if args.target == "device":
+            res = api.pin_device(args.id, release)
+            print("device %s pinned to %s" % (args.id, res["pinned_release_id"] or "(unpinned)"))
+        else:
+            res = api.pin_cohort(args.board_id, args.cohort, release)
+            print("cohort %s pinned to %s" % (args.cohort, res["release_id"] or "(unpinned)"))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

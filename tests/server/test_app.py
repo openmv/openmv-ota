@@ -115,6 +115,48 @@ def test_unverified_board_no_rollout_returns_nothing(tmp_path):
     assert store.get_device("dev1") is None
 
 
+# --- version pins (override rollouts) -------------------------------------------------------
+
+def _seed_rel2(store):
+    store.add_release(release_id="rel2", board_id=BID, product="P", version="3.0.0",
+                      payload_version=0x03000000, min_platform_version=0, image_sha256="cd" * 32,
+                      image_size=5, representations=[{"format": "full", "url": "x.img.gz", "size": 4}],
+                      manifest_key="m/rel2", image_key="i/rel2")
+
+
+def test_device_pin_overrides_rollout(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, storage=storage, percent=100)               # rollout offers rel1
+    _seed_rel2(store)
+    c = TestClient(app)
+    assert c.post("/api/v1/check", json=_checkin()).json()["release_id"] == "rel1"
+    store.set_device_pin("dev1", "rel2")                     # pin this device to a different release
+    assert c.post("/api/v1/check", json=_checkin()).json()["release_id"] == "rel2"
+
+
+def test_cohort_pin_offers_despite_zero_percent(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, storage=storage, percent=0)                 # 0% -> the rollout offers nobody
+    store.set_cohort_pin(BID, "__default__", "rel1")
+    assert TestClient(app).post("/api/v1/check", json=_checkin()).json()["release_id"] == "rel1"
+
+
+def test_pin_to_current_holds(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, storage=storage, percent=100)
+    store.set_cohort_pin(BID, "__default__", "rel1")         # pin to a release the device already runs
+    r = TestClient(app).post("/api/v1/check", json=_checkin(pv=0x02000000))
+    assert r.json() == {"update": False, "poll_after_s": 3600}   # held, rollout bypassed
+
+
+def test_pin_to_unknown_release_holds(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, storage=storage, percent=100)
+    store.set_cohort_pin(BID, "__default__", "ghost")
+    assert TestClient(app).post("/api/v1/check", json=_checkin()).json() == {
+        "update": False, "poll_after_s": 3600}
+
+
 # --- POST /feedback (explicit terminal outcomes) --------------------------------------------
 
 def _feedback(dev="dev1", board_id=BID, release_id="rel1", status="installed", **kw):

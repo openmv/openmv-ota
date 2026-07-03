@@ -85,6 +85,43 @@ def test_cohort_assign_requires_scope(tmp_path):
     assert r.status_code == 403
 
 
+# --- pins -----------------------------------------------------------------------------------
+
+def test_device_pin_set_and_clear(tmp_path):
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="d1", board_id=BID)
+    c = TestClient(app)
+    assert c.patch("/api/v1/admin/devices/d1/pin", headers=AUTH,
+                   json={"release_id": "rel1"}).json() == {"device_id": "d1", "pinned_release_id": "rel1"}
+    assert store.get_device("d1")["pinned_release_id"] == "rel1"
+    c.patch("/api/v1/admin/devices/d1/pin", headers=AUTH, json={"release_id": None})   # unpin
+    assert store.get_device("d1")["pinned_release_id"] is None
+
+
+def test_device_pin_404_when_missing(tmp_path):
+    app, store = _app(tmp_path)
+    assert TestClient(app).patch("/api/v1/admin/devices/ghost/pin", headers=AUTH,
+                                 json={"release_id": "r"}).status_code == 404
+
+
+def test_cohort_pin_set_and_clear(tmp_path):
+    app, store = _app(tmp_path)
+    c = TestClient(app)
+    c.post("/api/v1/admin/cohorts/pin", headers=AUTH,
+           json={"board_id": BID, "cohort": "beta", "release_id": "rel1"})
+    assert store.get_cohort_pin(BID, "beta") == "rel1"
+    c.post("/api/v1/admin/cohorts/pin", headers=AUTH,
+           json={"board_id": BID, "cohort": "beta", "release_id": None})
+    assert store.get_cohort_pin(BID, "beta") is None
+
+
+def test_pin_requires_scope(tmp_path):
+    app, store = _app(tmp_path, scopes=("fleet:read",))
+    store.upsert_device(device_id="d1", board_id=BID)
+    assert TestClient(app).patch("/api/v1/admin/devices/d1/pin", headers=AUTH,
+                                 json={"release_id": "r"}).status_code == 403
+
+
 # --- create rollout -------------------------------------------------------------------------
 
 def test_create_rollout(tmp_path):

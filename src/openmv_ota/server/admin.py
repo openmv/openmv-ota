@@ -37,6 +37,16 @@ class CohortAssign(BaseModel):
     device_ids: list[str]
 
 
+class DevicePin(BaseModel):
+    release_id: str | None = None          # null unpins
+
+
+class CohortPin(BaseModel):
+    board_id: int
+    cohort: str
+    release_id: str | None = None          # null unpins
+
+
 @admin.post("/rollouts")
 def create_rollout(body: RolloutCreate, request: Request,
                    principal: Principal = Depends(require_scope("rollout:control"))):
@@ -131,6 +141,28 @@ def assign_cohort(body: CohortAssign, request: Request,
     ms.append_audit(actor=principal.name, action="cohort.assign", entity_type="cohort",
                     entity_id=body.cohort, data={"assigned": n, "requested": len(body.device_ids)})
     return {"cohort": body.cohort, "assigned": n}
+
+
+@admin.patch("/devices/{device_id}/pin")
+def pin_device(device_id: str, body: DevicePin, request: Request,
+               principal: Principal = Depends(require_scope("rollout:control"))):
+    ms = request.app.state.metastore
+    if ms.get_device(device_id) is None:
+        raise HTTPException(status_code=404)
+    ms.set_device_pin(device_id, body.release_id)            # release_id=None unpins
+    ms.append_audit(actor=principal.name, action="device.pin", entity_type="device",
+                    entity_id=device_id, data={"release_id": body.release_id})
+    return {"device_id": device_id, "pinned_release_id": body.release_id}
+
+
+@admin.post("/cohorts/pin")
+def pin_cohort(body: CohortPin, request: Request,
+               principal: Principal = Depends(require_scope("rollout:control"))):
+    ms = request.app.state.metastore
+    ms.set_cohort_pin(body.board_id, body.cohort, body.release_id)   # release_id=None unpins
+    ms.append_audit(actor=principal.name, action="cohort.pin", entity_type="cohort",
+                    entity_id=body.cohort, data={"board_id": body.board_id, "release_id": body.release_id})
+    return {"board_id": body.board_id, "cohort": body.cohort, "release_id": body.release_id}
 
 
 @admin.get("/fleet")

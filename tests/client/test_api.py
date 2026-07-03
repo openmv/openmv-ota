@@ -122,6 +122,16 @@ def test_cohort_calls():
     assert c.calls[1][2]["json"] == {"cohort": "beta", "device_ids": ["d1", "d2"]}
 
 
+def test_pin_calls():
+    api, c = _api(_Resp(200, {}))
+    api.pin_device("d1", "rel1")
+    api.pin_cohort(7, "beta", None)
+    assert c.calls[0][:2] == ("PATCH", "/api/v1/admin/devices/d1/pin")
+    assert c.calls[0][2]["json"] == {"release_id": "rel1"}
+    assert c.calls[1][:2] == ("POST", "/api/v1/admin/cohorts/pin")
+    assert c.calls[1][2]["json"] == {"board_id": 7, "cohort": "beta", "release_id": None}
+
+
 def test_empty_body_returns_empty_dict():
     api, _ = _api(_Resp(200, payload={"x": 1}, content=b""))   # no content -> {}
     assert api.fleet() == {}

@@ -72,10 +72,25 @@ def _artifact_key(release: dict, filename: str) -> str | None:
     return None
 
 
-def _decide(state, checkin, cohort):
-    """The active rollout + release for this device, and whether to offer it.
+def _offer(state, rel):
+    """Mint a capability manifest URL for a release."""
+    token = capability.mint(state.secret, rel["release_id"], ttl=state.settings.capability_ttl)
+    return "%s/d/%s/manifest.bin" % (state.settings.base_url.rstrip("/"), token)
+
+
+def _decide(state, checkin, cohort, existing=None):
+    """The release to offer this device (a pin overrides the rollout) and whether to offer it.
     Returns ``(rollout | None, release | None, offered: bool, manifest_url | None)``."""
     ms = state.metastore
+    # A pin (device wins over cohort) overrides the rollout: offer the pinned release iff it's an
+    # upgrade -- a pin to the current/older version just holds the device (no rollout reaches it).
+    pinned = (existing["pinned_release_id"] if existing else None) \
+        or ms.get_cohort_pin(checkin.board_id, cohort)
+    if pinned:
+        rel = ms.get_release(pinned)
+        if rel is None or rel["payload_version"] <= checkin.payload_version:
+            return None, rel, False, None
+        return None, rel, True, _offer(state, rel)
     ro = ms.active_rollout(checkin.board_id, cohort)
     if ro is None:
         return None, None, False, None
@@ -88,9 +103,7 @@ def _decide(state, checkin, cohort):
         rollout_percent=ro["percent"], rollout_id=ro["rollout_id"], device_id=checkin.device_id)
     if not offered:
         return ro, rel, False, None
-    token = capability.mint(state.secret, rel["release_id"], ttl=state.settings.capability_ttl)
-    url = "%s/d/%s/manifest.bin" % (state.settings.base_url.rstrip("/"), token)
-    return ro, rel, True, url
+    return ro, rel, True, _offer(state, rel)
 
 
 def _account(ms, ro, rel, checkin, existing, offered):
@@ -156,7 +169,7 @@ def check(checkin: CheckIn, request: Request):
     ms = st.metastore
     existing = ms.get_device(checkin.device_id)
     cohort = existing["cohort"] if existing else "__default__"
-    ro, rel, offered, manifest_url = _decide(st, checkin, cohort)
+    ro, rel, offered, manifest_url = _decide(st, checkin, cohort, existing)
     _account(ms, ro, rel, checkin, existing, offered)
     release_id = rel["release_id"] if offered else None
     ms.upsert_device(
