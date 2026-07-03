@@ -76,7 +76,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_bind)
     p_bind.set_defaults(func=cmd_bind, _command="client bind")
 
-    p_acct = sub.add_parser("account", help="create/list tenant accounts (needs account:admin)")
+    p_acct = sub.add_parser("account", help="create/list tenant accounts (needs accounts)")
     acsub = p_acct.add_subparsers(dest="_acct")
     p_acc = acsub.add_parser("create", help="create an account + get its first admin token")
     p_acc.add_argument("--name", required=True)

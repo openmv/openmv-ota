@@ -28,7 +28,7 @@ class _Verifier:
         return Registration(True)
 
 
-def _server(tmp_path, scopes=("release:write", "rollout:control", "fleet:read")):
+def _server(tmp_path, scopes=("publish", "manage", "observe")):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("cohort_salt", "x")
@@ -159,7 +159,7 @@ def test_cohort_list_and_assign(wired, tmp_path, capsys):
 
 
 def test_cohort_error_surfaced(tmp_path, monkeypatch, capsys):
-    app, store = _server(tmp_path, scopes=("fleet:read",))     # token can't control -> assign 403s
+    app, store = _server(tmp_path, scopes=("observe",))     # token can't control -> assign 403s
     tc = TestClient(app)
     monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
     monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
@@ -200,7 +200,7 @@ def _wire_super_admin(tmp_path, monkeypatch, scopes):
 
 
 def test_account_create_and_list(tmp_path, monkeypatch, capsys):
-    _wire_super_admin(tmp_path, monkeypatch, scopes=("account:admin",))
+    _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts",))
     assert main(["client", "account", "create", "--name", "DroneCo"]) == 0
     out = capsys.readouterr().out
     assert "created" in out and "admin token" in out
@@ -209,13 +209,13 @@ def test_account_create_and_list(tmp_path, monkeypatch, capsys):
 
 
 def test_account_error_surfaced(tmp_path, monkeypatch, capsys):
-    _wire_super_admin(tmp_path, monkeypatch, scopes=("fleet:read",))    # no account:admin -> 403
+    _wire_super_admin(tmp_path, monkeypatch, scopes=("observe",))    # no accounts -> 403
     assert main(["client", "account", "create", "--name", "X"]) == 1
     assert "403" in capsys.readouterr().err
 
 
 def test_bind_error_surfaced(tmp_path, monkeypatch, capsys):
-    app, store = _server(tmp_path, scopes=("fleet:read",))     # token can't control -> bind 403s
+    app, store = _server(tmp_path, scopes=("observe",))     # token can't control -> bind 403s
     tc = TestClient(app)
     monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
     monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
@@ -225,7 +225,7 @@ def test_bind_error_surfaced(tmp_path, monkeypatch, capsys):
 
 
 def test_pin_error_surfaced(tmp_path, monkeypatch, capsys):
-    app, store = _server(tmp_path, scopes=("fleet:read",))     # token can't control -> pin 403s
+    app, store = _server(tmp_path, scopes=("observe",))     # token can't control -> pin 403s
     store.upsert_device(device_id="d1", product_id=BID)
     tc = TestClient(app)
     monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))

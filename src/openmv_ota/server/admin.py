@@ -62,8 +62,8 @@ class AccountCreate(BaseModel):
 
 @admin.post("/accounts")
 def create_account(body: AccountCreate, request: Request,
-                   principal: Principal = Depends(require_scope("account:admin"))):
-    """Operator-only (``account:admin``): create a tenant account + issue its first admin token.
+                   principal: Principal = Depends(require_scope("accounts"))):
+    """Operator-only (``accounts``): create a tenant account + issue its first admin token.
     The remote equivalent of ``server account create``; the website (or a self-host super-admin)
     drives it. The token is returned once and only its hash is stored."""
     ms = request.app.state.metastore
@@ -79,13 +79,13 @@ def create_account(body: AccountCreate, request: Request,
 
 @admin.get("/accounts")
 def list_accounts(request: Request,
-                  principal: Principal = Depends(require_scope("account:admin"))):
+                  principal: Principal = Depends(require_scope("accounts"))):
     return {"accounts": request.app.state.metastore.list_accounts()}
 
 
 @admin.post("/rollouts")
 def create_rollout(body: RolloutCreate, request: Request,
-                   principal: Principal = Depends(require_scope("rollout:control"))):
+                   principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
     rel = _owned(ms.get_release(body.release_id), principal)   # 404 if missing or another account's
     product_id = rel["product_id"]
@@ -108,7 +108,7 @@ def create_rollout(body: RolloutCreate, request: Request,
 
 @admin.patch("/rollouts/{rollout_id}")
 def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
-                  principal: Principal = Depends(require_scope("rollout:control"))):
+                  principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
     ro = _owned(ms.get_rollout(rollout_id), principal)
     changes: dict = {}
@@ -130,7 +130,7 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
 
 @admin.post("/rollouts/{rollout_id}/rollback")
 def rollback_rollout(rollout_id: str, request: Request,
-                     principal: Principal = Depends(require_scope("rollout:control"))):
+                     principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
     _owned(ms.get_rollout(rollout_id), principal)
     ms.update_rollout(rollout_id, state="rolled_back")   # stops offering; does not downgrade
@@ -141,14 +141,14 @@ def rollback_rollout(rollout_id: str, request: Request,
 
 @admin.get("/rollouts")
 def list_rollouts(request: Request, product_id: int | None = None, limit: int | None = None,
-                  offset: int = 0, principal: Principal = Depends(require_scope("fleet:read"))):
+                  offset: int = 0, principal: Principal = Depends(require_scope("observe"))):
     return {"rollouts": request.app.state.metastore.list_rollouts(
         product_id, account_id=principal.account_id, limit=limit, offset=offset)}
 
 
 @admin.get("/rollouts/{rollout_id}/status")
 def rollout_status(rollout_id: str, request: Request,
-                   principal: Principal = Depends(require_scope("fleet:read"))):
+                   principal: Principal = Depends(require_scope("observe"))):
     ro = _owned(request.app.state.metastore.get_rollout(rollout_id), principal)
     rate = (ro["updated"] / ro["attempted"]) if ro["attempted"] else None
     return {"rollout_id": rollout_id, "state": ro["state"], "percent": ro["percent"],
@@ -160,14 +160,14 @@ def rollout_status(rollout_id: str, request: Request,
 
 @admin.get("/cohorts")
 def list_cohorts(request: Request, product_id: int | None = None,
-                 principal: Principal = Depends(require_scope("fleet:read"))):
+                 principal: Principal = Depends(require_scope("observe"))):
     return {"cohorts": request.app.state.metastore.list_cohorts(
         product_id, account_id=principal.account_id)}
 
 
 @admin.post("/cohorts/assign")
 def assign_cohort(body: CohortAssign, request: Request,
-                  principal: Principal = Depends(require_scope("rollout:control"))):
+                  principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
     # scoped to the caller's account: an id belonging to another account is silently skipped
     n = ms.assign_cohort(body.device_ids, body.cohort, account_id=principal.account_id)
@@ -190,7 +190,7 @@ def _check_pin_release(ms, release_id, principal):
 
 @admin.patch("/devices/{device_id}/pin")
 def pin_device(device_id: str, body: DevicePin, request: Request,
-               principal: Principal = Depends(require_scope("rollout:control"))):
+               principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
     _owned(ms.get_device(device_id), principal)              # 404 if missing or another account's
     _check_pin_release(ms, body.release_id, principal)
@@ -203,7 +203,7 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
 
 @admin.post("/devices/{device_id}/account")
 def bind_device(device_id: str, request: Request,
-                principal: Principal = Depends(require_scope("rollout:control"))):
+                principal: Principal = Depends(require_scope("manage"))):
     """Operator override: (re)bind a device to the caller's account -- the authority for
     re-accounting a device or recovering one wrongly *learned* onto another account (which the
     signature already stops from installing anything). A device already *admin*-bound to a different
@@ -223,7 +223,7 @@ def bind_device(device_id: str, request: Request,
 
 @admin.post("/cohorts/pin")
 def pin_cohort(body: CohortPin, request: Request,
-               principal: Principal = Depends(require_scope("rollout:control"))):
+               principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
     _check_pin_release(ms, body.release_id, principal)
     ms.set_cohort_pin(body.product_id, body.cohort, body.release_id,
@@ -237,13 +237,13 @@ def pin_cohort(body: CohortPin, request: Request,
 
 @admin.get("/fleet")
 def fleet(request: Request, product_id: int | None = None,
-          principal: Principal = Depends(require_scope("fleet:read"))):
+          principal: Principal = Depends(require_scope("observe"))):
     return request.app.state.metastore.fleet_summary(product_id, account_id=principal.account_id)
 
 
 @admin.get("/releases")
 def releases(request: Request, product_id: int | None = None, limit: int | None = None,
-             offset: int = 0, principal: Principal = Depends(require_scope("fleet:read"))):
+             offset: int = 0, principal: Principal = Depends(require_scope("observe"))):
     return {"releases": request.app.state.metastore.list_releases(
         product_id, account_id=principal.account_id, limit=limit, offset=offset)}
 
@@ -251,13 +251,13 @@ def releases(request: Request, product_id: int | None = None, limit: int | None 
 @admin.get("/devices")
 def devices(request: Request, product_id: int | None = None, limit: int = 100,
             cohort: str | None = None, offset: int = 0,
-            principal: Principal = Depends(require_scope("fleet:read"))):
+            principal: Principal = Depends(require_scope("observe"))):
     return {"devices": request.app.state.metastore.list_devices(
         product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset)}
 
 
 @admin.get("/audit")
 def audit(request: Request, since: int = 0, limit: int = 100,
-          principal: Principal = Depends(require_scope("fleet:read"))):
+          principal: Principal = Depends(require_scope("observe"))):
     return {"events": request.app.state.metastore.read_audit(
         limit, since, account_id=principal.account_id)}

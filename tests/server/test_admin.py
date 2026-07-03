@@ -17,7 +17,7 @@ class _Verifier:
         return Registration(True)
 
 
-def _app(tmp_path, scopes=("rollout:control", "fleet:read")):
+def _app(tmp_path, scopes=("manage", "observe")):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("cohort_salt", "x")
@@ -51,7 +51,7 @@ def test_no_token_401(tmp_path):
 
 
 def test_wrong_scope_403(tmp_path):
-    app, store = _app(tmp_path, scopes=("fleet:read",))       # can't control rollouts
+    app, store = _app(tmp_path, scopes=("observe",))       # can't control rollouts
     _seed_release(store)
     r = TestClient(app).post("/api/v1/admin/rollouts", headers=AUTH,
                              json={"release_id": "rel1", "percent": 5})
@@ -79,7 +79,7 @@ def test_cohorts_list_and_assign(tmp_path):
 
 
 def test_cohort_assign_requires_scope(tmp_path):
-    app, store = _app(tmp_path, scopes=("fleet:read",))
+    app, store = _app(tmp_path, scopes=("observe",))
     r = TestClient(app).post("/api/v1/admin/cohorts/assign", headers=AUTH,
                              json={"cohort": "b", "device_ids": ["x"]})
     assert r.status_code == 403
@@ -116,7 +116,7 @@ def test_cohort_pin_set_and_clear(tmp_path):
 
 
 def test_pin_requires_scope(tmp_path):
-    app, store = _app(tmp_path, scopes=("fleet:read",))
+    app, store = _app(tmp_path, scopes=("observe",))
     store.upsert_device(device_id="d1", product_id=BID)
     assert TestClient(app).patch("/api/v1/admin/devices/d1/pin", headers=AUTH,
                                  json={"release_id": "r"}).status_code == 403
@@ -243,7 +243,7 @@ def test_releases_and_rollouts_paging(tmp_path):
 
 
 def test_accounts_endpoint_create_list_and_scope(tmp_path):
-    app, store = _app(tmp_path, scopes=("account:admin",))          # a super-admin (operator) token
+    app, store = _app(tmp_path, scopes=("accounts",))          # a super-admin (operator) token
     c = TestClient(app)
     r = c.post("/api/v1/admin/accounts", headers=AUTH, json={"name": "DroneCo"})
     assert r.status_code == 200
@@ -251,13 +251,13 @@ def test_accounts_endpoint_create_list_and_scope(tmp_path):
     assert body["account_id"].startswith("acct_") and body["token"] and body["name"] == "DroneCo"
     assert store.get_account(body["account_id"])["name"] == "DroneCo"
     tok = store.get_token(hash_token(body["token"]))               # its token acts for that account,
-    assert tok["account_id"] == body["account_id"] and "account:admin" not in tok["scopes"]  # not privileged
+    assert tok["account_id"] == body["account_id"] and "accounts" not in tok["scopes"]  # not privileged
     assert body["account_id"] in [a["account_id"]
                                   for a in c.get("/api/v1/admin/accounts", headers=AUTH).json()["accounts"]]
 
 
 def test_accounts_endpoint_requires_super_admin(tmp_path):
-    app, store = _app(tmp_path, scopes=("rollout:control", "fleet:read"))   # no account:admin
+    app, store = _app(tmp_path, scopes=("manage", "observe"))   # no accounts
     c = TestClient(app)
     assert c.post("/api/v1/admin/accounts", headers=AUTH, json={"name": "X"}).status_code == 403
     assert c.get("/api/v1/admin/accounts", headers=AUTH).status_code == 403
@@ -297,7 +297,7 @@ def _two_accounts(tmp_path):
     for acc in ("acctA", "acctB"):
         store.add_account(acc, acc)
         store.add_token(hash_token("tok" + acc[-1]), acc,
-                        ["release:write", "rollout:control", "fleet:read"], account_id=acc)
+                        ["publish", "manage", "observe"], account_id=acc)
     app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
                                     swd_ids_verify_token="t"),
                      metastore=store, storage=LocalArtifactStorage(str(tmp_path / "blobs")),
@@ -349,7 +349,7 @@ def test_injected_website_auth_scopes_by_account(tmp_path):
     class WebsiteAuth:
         def authenticate(self, authorization):
             from openmv_ota.server.auth import Principal
-            return Principal(name="web-user", scopes=["fleet:read"], account_id="acctZ")
+            return Principal(name="web-user", scopes=["observe"], account_id="acctZ")
 
     app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
                                     swd_ids_verify_token="t"),

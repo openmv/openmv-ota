@@ -116,18 +116,18 @@ def test_run_requires_extra(monkeypatch, capsys):
 def test_token_issue_list_revoke(tmp_path, monkeypatch, capsys):
     from openmv_ota.server.auth import hash_token
     monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
-    assert main(["server", "token", "issue", "--name", "ci", "--scope", "release:write"]) == 0
+    assert main(["server", "token", "issue", "--name", "ci", "--scope", "publish"]) == 0
     out = capsys.readouterr()
     token = out.out.strip()
     assert token and "store it now" in out.err
     s = _store(tmp_path)
     t = s.get_token(hash_token(token))
-    assert t["name"] == "ci" and t["scopes"] == ["release:write"]
+    assert t["name"] == "ci" and t["scopes"] == ["publish"]
     thash = t["token_hash"]
     s.close()
     assert main(["server", "token", "list"]) == 0
     listed = capsys.readouterr().out
-    assert thash[:16] in listed and "ci" in listed and "release:write" in listed
+    assert thash[:16] in listed and "ci" in listed and "publish" in listed
     assert main(["server", "token", "revoke", thash]) == 0
     assert "revoked" in capsys.readouterr().out
     s2 = _store(tmp_path)

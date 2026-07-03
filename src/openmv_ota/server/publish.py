@@ -1,4 +1,4 @@
-"""Release publish -- ``POST /api/v1/admin/releases`` (multipart), scope ``release:write``.
+"""Release publish -- ``POST /api/v1/admin/releases`` (multipart), scope ``publish``.
 
 The server derives **all** metadata from the *signed* manifest (never client-asserted JSON),
 verifies the uploaded artifacts are consistent with it, applies publish-time anti-rollback, stores
@@ -69,7 +69,7 @@ def _verify_artifacts(body: dict, image_bytes: bytes, delta_bytes: bytes | None)
 async def publish_release(request: Request, manifest: UploadFile = File(...),
                           image: UploadFile = File(...), delta: UploadFile | None = File(None),
                           allow_republish: bool = False,
-                          principal: Principal = Depends(require_scope("release:write"))):
+                          principal: Principal = Depends(require_scope("publish"))):
     ms = request.app.state.metastore
     storage = request.app.state.storage
     manifest_bytes = await manifest.read()

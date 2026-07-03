@@ -62,14 +62,14 @@ openmv-ota server check      # validate settings (deploy preflight)
 openmv-ota server init       # migrate the schema + seed/print the admin token (idempotent)
 openmv-ota server run        # start the ASGI app (uvicorn), binds $PORT / 0.0.0.0
 openmv-ota server migrate    # apply pending metadata-store migrations
-openmv-ota server token issue --name ci --scope release:write   # mint a scoped token (shown once)
+openmv-ota server token issue --name ci --scope publish   # mint a scoped token (shown once)
 openmv-ota server token list | revoke <hash>
 ```
 
 `server init` seeds one admin token: from `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` if set, otherwise a
 fresh one printed **once** (only the hash is stored — it is not recoverable). Tokens carry scopes:
-`release:write` (publish), `rollout:control` (promote/pause/rollback), `fleet:read` (observe), and
-the privileged operator scope `account:admin` (create/list accounts — held by the bootstrap/root
+`publish` (publish), `manage` (promote/pause/rollback), `observe` (observe), and
+the privileged operator scope `accounts` (create/list accounts — held by the bootstrap/root
 token, not by a regular account's tokens).
 
 ## Accounts (multi-tenancy)
@@ -91,7 +91,7 @@ openmv-ota server account list
 openmv-ota server token issue --name ci --account <account_id>   # more tokens for an account
 ```
 
-The same is available remotely to an `account:admin` token: `POST /api/v1/admin/accounts`
+The same is available remotely to an `accounts` token: `POST /api/v1/admin/accounts`
 (`client account create --name …`) returns the new `account_id` + its first token once, and
 `GET /api/v1/admin/accounts` (`client account list`) lists them. An operator (re)binds a device to
 an account with `POST /api/v1/admin/devices/{id}/account` (`client bind --id …`).

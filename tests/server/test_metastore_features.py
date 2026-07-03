@@ -112,9 +112,9 @@ def test_list_devices_and_fleet_summary():
 def test_tokens():
     s = _store()
     assert s.count_tokens() == 0
-    s.add_token("h1", "ci", ["release:write", "rollout:control"])
+    s.add_token("h1", "ci", ["publish", "manage"])
     t = s.get_token("h1")
-    assert t["scopes"] == ["release:write", "rollout:control"] and t["revoked"] == 0
+    assert t["scopes"] == ["publish", "manage"] and t["revoked"] == 0
     s.revoke_token("h1")
     assert s.get_token("h1")["revoked"] == 1 and s.count_tokens() == 1
     s.add_token("h2", "viewer", [])

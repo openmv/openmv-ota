@@ -12,7 +12,7 @@ from openmv_ota.server.metastore import SqliteMetadataStore
 from openmv_ota.server.scopes import SCOPES
 
 
-def _store(scopes=("release:write",), revoked=False):
+def _store(scopes=("publish",), revoked=False):
     s = SqliteMetadataStore(":memory:")
     s.migrate()
     s.add_token(hash_token("secret-token"), "ci", list(scopes))
@@ -28,8 +28,8 @@ def _req(auth, header=""):
 
 
 def test_authenticate_valid():
-    p = TokenAuth(_store(("release:write", "fleet:read"))).authenticate("Bearer secret-token")
-    assert p.name == "ci" and set(p.scopes) == {"release:write", "fleet:read"}
+    p = TokenAuth(_store(("publish", "observe"))).authenticate("Bearer secret-token")
+    assert p.name == "ci" and set(p.scopes) == {"publish", "observe"}
 
 
 def test_authenticate_missing_or_wrong_scheme():
@@ -50,17 +50,17 @@ def test_authenticate_unknown_and_revoked():
 
 
 def test_require_scope_ok():
-    p = require_scope("release:write")(_req(TokenAuth(_store(("release:write",))),
+    p = require_scope("publish")(_req(TokenAuth(_store(("publish",))),
                                             "Bearer secret-token"))
     assert isinstance(p, Principal)
 
 
 def test_require_scope_missing():
     with pytest.raises(HTTPException) as e:
-        require_scope("release:write")(_req(TokenAuth(_store(("fleet:read",))),
+        require_scope("publish")(_req(TokenAuth(_store(("observe",))),
                                             "Bearer secret-token"))
     assert e.value.status_code == 403
 
 
 def test_scopes_constant():
-    assert SCOPES == ("release:write", "rollout:control", "fleet:read")
+    assert SCOPES == ("publish", "manage", "observe")

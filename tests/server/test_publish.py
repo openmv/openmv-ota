@@ -26,7 +26,7 @@ class _Verifier:
         return Registration(True)
 
 
-def _app(tmp_path, scopes=("release:write", "fleet:read"), account=""):
+def _app(tmp_path, scopes=("publish", "observe"), account=""):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("cohort_salt", "x")
@@ -107,7 +107,7 @@ def test_publish_no_token_401(tmp_path):
 
 
 def test_publish_wrong_scope_403(tmp_path):
-    app, store, storage = _app(tmp_path, scopes=("fleet:read",))
+    app, store, storage = _app(tmp_path, scopes=("observe",))
     img = b"\xA5" * 64
     assert _post(app, _manifest(_body(img)), _gz(img)).status_code == 403
 
