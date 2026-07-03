@@ -76,6 +76,16 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_bind)
     p_bind.set_defaults(func=cmd_bind, _command="client bind")
 
+    p_acct = sub.add_parser("account", help="create/list tenant accounts (needs account:admin)")
+    acsub = p_acct.add_subparsers(dest="_acct")
+    p_acc = acsub.add_parser("create", help="create an account + get its first admin token")
+    p_acc.add_argument("--name", required=True)
+    _creds(p_acc)
+    p_acc.set_defaults(func=cmd_account, _command="client account create", action="create")
+    p_acl = acsub.add_parser("list", help="list accounts")
+    _creds(p_acl)
+    p_acl.set_defaults(func=cmd_account, _command="client account list", action="list")
+
     p_pin = sub.add_parser("pin", help="pin a device/cohort to a release (overrides rollouts)")
     pinsub = p_pin.add_subparsers(dest="_pin")
     p_pd = pinsub.add_parser("device")
@@ -101,10 +111,11 @@ def register(parser: argparse.ArgumentParser) -> None:
             p.add_argument("--product-id", type=int)
         else:
             p.add_argument("--since", type=int, default=0)
+        if name in ("devices", "releases"):
+            p.add_argument("--limit", type=int, help="page size")
+            p.add_argument("--offset", type=int, help="page offset")
         if name == "devices":
             p.add_argument("--cohort", help="only devices in this cohort")
-            p.add_argument("--limit", type=int, help="page size")
-            p.add_argument("--offset", type=int, help="page offset (for paging a large fleet)")
         _creds(p)
         p.set_defaults(func=handler, _command="client " + name)
 
@@ -225,6 +236,21 @@ def cmd_bind(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_account(args: argparse.Namespace) -> int:
+    try:
+        api = _make_api(config.resolve(args.server, args.token))
+        if args.action == "create":
+            res = api.create_account(args.name)
+            print("account %s created" % res["account_id"])
+            print("admin token (store it now -- not recoverable): %s" % res["token"])
+        else:
+            print(json.dumps(api.list_accounts(), indent=2))
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return 0
+
+
 def _read(args, call) -> int:
     try:
         print(json.dumps(call(_make_api(config.resolve(args.server, args.token))), indent=2))
@@ -244,7 +270,8 @@ def cmd_devices(args: argparse.Namespace) -> int:
 
 
 def cmd_releases(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.releases(args.product_id))
+    return _read(args, lambda api: api.releases(args.product_id, limit=args.limit,
+                                                offset=args.offset))
 
 
 def cmd_audit(args: argparse.Namespace) -> int:

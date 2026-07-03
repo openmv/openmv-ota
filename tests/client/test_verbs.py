@@ -190,6 +190,30 @@ def test_bind_device(wired, tmp_path, capsys):
     assert store.device_account("d1")["source"] == "admin"
 
 
+def _wire_super_admin(tmp_path, monkeypatch, scopes):
+    app, store = _server(tmp_path, scopes=scopes)
+    tc = TestClient(app)
+    monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
+    monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
+    monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
+    return store
+
+
+def test_account_create_and_list(tmp_path, monkeypatch, capsys):
+    _wire_super_admin(tmp_path, monkeypatch, scopes=("account:admin",))
+    assert main(["client", "account", "create", "--name", "DroneCo"]) == 0
+    out = capsys.readouterr().out
+    assert "created" in out and "admin token" in out
+    assert main(["client", "account", "list"]) == 0
+    assert "DroneCo" in capsys.readouterr().out
+
+
+def test_account_error_surfaced(tmp_path, monkeypatch, capsys):
+    _wire_super_admin(tmp_path, monkeypatch, scopes=("fleet:read",))    # no account:admin -> 403
+    assert main(["client", "account", "create", "--name", "X"]) == 1
+    assert "403" in capsys.readouterr().err
+
+
 def test_bind_error_surfaced(tmp_path, monkeypatch, capsys):
     app, store = _server(tmp_path, scopes=("fleet:read",))     # token can't control -> bind 403s
     tc = TestClient(app)

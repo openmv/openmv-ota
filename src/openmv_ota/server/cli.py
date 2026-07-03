@@ -16,7 +16,7 @@ import secrets
 import sys
 
 from .errors import ServerError
-from .scopes import SCOPES
+from .scopes import ALL_SCOPES, SCOPES
 
 
 def register(parser: argparse.ArgumentParser) -> None:
@@ -40,7 +40,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     tsub = p_token.add_subparsers(dest="_token_cmd")
     p_ti = tsub.add_parser("issue", help="mint a scoped admin token (printed once)")
     p_ti.add_argument("--name", required=True)
-    p_ti.add_argument("--scope", action="append", default=[], choices=SCOPES,
+    p_ti.add_argument("--scope", action="append", default=[], choices=ALL_SCOPES,
                       help="repeatable; default: all scopes")
     p_ti.add_argument("--account", default="",
                       help="account this token acts for (default: the implicit '' account)")
@@ -201,10 +201,10 @@ def _seed_admin_token(store, settings) -> None:
         return
     from .auth import hash_token
     if settings.admin_bootstrap_token:
-        store.add_token(hash_token(settings.admin_bootstrap_token), "bootstrap", list(SCOPES))
+        store.add_token(hash_token(settings.admin_bootstrap_token), "bootstrap", list(ALL_SCOPES))
         return
     token = secrets.token_urlsafe(32)
-    store.add_token(hash_token(token), "bootstrap", list(SCOPES))
+    store.add_token(hash_token(token), "bootstrap", list(ALL_SCOPES))
     print("admin bootstrap token (store it now): %s" % token, file=sys.stderr)
 
 

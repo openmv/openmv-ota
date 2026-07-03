@@ -149,6 +149,21 @@ def test_bind_call():
     assert c.calls[0][:2] == ("POST", "/api/v1/admin/devices/d1/account")
 
 
+def test_account_calls():
+    api, c = _api(_Resp(200, {"account_id": "acct_x", "token": "t"}))
+    api.create_account("DroneCo")
+    api.list_accounts()
+    assert c.calls[0][:2] == ("POST", "/api/v1/admin/accounts")
+    assert c.calls[0][2]["json"] == {"name": "DroneCo"}
+    assert c.calls[1][:2] == ("GET", "/api/v1/admin/accounts")
+
+
+def test_releases_paging_params():
+    api, c = _api(_Resp(200, {}))
+    api.releases(7, limit=2, offset=4)
+    assert c.calls[0][2]["params"] == {"product_id": 7, "limit": 2, "offset": 4}
+
+
 def test_empty_body_returns_empty_dict():
     api, _ = _api(_Resp(200, payload={"x": 1}, content=b""))   # no content -> {}
     assert api.fleet() == {}

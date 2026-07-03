@@ -11,7 +11,8 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .auth import Principal, require_scope
+from .auth import Principal, hash_token, require_scope
+from .scopes import SCOPES
 
 admin = APIRouter(prefix="/api/v1/admin")
 
@@ -53,6 +54,33 @@ class CohortPin(BaseModel):
     product_id: int
     cohort: str
     release_id: str | None = None          # null unpins (the account comes from the caller's token)
+
+
+class AccountCreate(BaseModel):
+    name: str
+
+
+@admin.post("/accounts")
+def create_account(body: AccountCreate, request: Request,
+                   principal: Principal = Depends(require_scope("account:admin"))):
+    """Operator-only (``account:admin``): create a tenant account + issue its first admin token.
+    The remote equivalent of ``server account create``; the website (or a self-host super-admin)
+    drives it. The token is returned once and only its hash is stored."""
+    ms = request.app.state.metastore
+    account_id = "acct_" + secrets.token_hex(8)
+    token = secrets.token_urlsafe(32)
+    ms.add_account(account_id, body.name)
+    ms.add_token(hash_token(token), body.name, list(SCOPES), account_id=account_id)
+    ms.append_audit(actor=principal.name, action="account.create", entity_type="account",
+                    entity_id=account_id, data={"name": body.name},
+                    account_id=principal.account_id)
+    return {"account_id": account_id, "name": body.name, "token": token}
+
+
+@admin.get("/accounts")
+def list_accounts(request: Request,
+                  principal: Principal = Depends(require_scope("account:admin"))):
+    return {"accounts": request.app.state.metastore.list_accounts()}
 
 
 @admin.post("/rollouts")
@@ -112,10 +140,10 @@ def rollback_rollout(rollout_id: str, request: Request,
 
 
 @admin.get("/rollouts")
-def list_rollouts(request: Request, product_id: int | None = None,
-                  principal: Principal = Depends(require_scope("fleet:read"))):
+def list_rollouts(request: Request, product_id: int | None = None, limit: int | None = None,
+                  offset: int = 0, principal: Principal = Depends(require_scope("fleet:read"))):
     return {"rollouts": request.app.state.metastore.list_rollouts(
-        product_id, account_id=principal.account_id)}
+        product_id, account_id=principal.account_id, limit=limit, offset=offset)}
 
 
 @admin.get("/rollouts/{rollout_id}/status")
@@ -186,6 +214,7 @@ def bind_device(device_id: str, request: Request,
     if cur is not None and cur["source"] == "admin" and cur["account_id"] != principal.account_id:
         raise HTTPException(status_code=404)
     ms.bind_device_account(device_id, principal.account_id, source="admin")
+    ms.set_device_account(device_id, principal.account_id)   # sync the row so fleet views update now
     ms.append_audit(actor=principal.name, action="device.bind", entity_type="device",
                     entity_id=device_id, data={"account_id": principal.account_id},
                     account_id=principal.account_id)
@@ -213,10 +242,10 @@ def fleet(request: Request, product_id: int | None = None,
 
 
 @admin.get("/releases")
-def releases(request: Request, product_id: int | None = None,
-             principal: Principal = Depends(require_scope("fleet:read"))):
+def releases(request: Request, product_id: int | None = None, limit: int | None = None,
+             offset: int = 0, principal: Principal = Depends(require_scope("fleet:read"))):
     return {"releases": request.app.state.metastore.list_releases(
-        product_id, account_id=principal.account_id)}
+        product_id, account_id=principal.account_id, limit=limit, offset=offset)}
 
 
 @admin.get("/devices")

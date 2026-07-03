@@ -230,6 +230,39 @@ def test_list_releases(tmp_path):
             c.get("/api/v1/admin/releases?product_id=999", headers=AUTH).json()["releases"]] == []
 
 
+def test_releases_and_rollouts_paging(tmp_path):
+    app, store = _app(tmp_path)
+    for i in range(3):
+        _seed_release(store, rid="r%d" % i, pv=0x02000000 + i)
+        store.add_rollout(rollout_id="ro%d" % i, release_id="r%d" % i, product_id=BID,
+                          cohort="c%d" % i, percent=5)
+    c = TestClient(app)
+    assert len(c.get("/api/v1/admin/releases?limit=2", headers=AUTH).json()["releases"]) == 2
+    assert len(c.get("/api/v1/admin/releases?limit=2&offset=2", headers=AUTH).json()["releases"]) == 1
+    assert len(c.get("/api/v1/admin/rollouts?limit=1", headers=AUTH).json()["rollouts"]) == 1
+
+
+def test_accounts_endpoint_create_list_and_scope(tmp_path):
+    app, store = _app(tmp_path, scopes=("account:admin",))          # a super-admin (operator) token
+    c = TestClient(app)
+    r = c.post("/api/v1/admin/accounts", headers=AUTH, json={"name": "DroneCo"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["account_id"].startswith("acct_") and body["token"] and body["name"] == "DroneCo"
+    assert store.get_account(body["account_id"])["name"] == "DroneCo"
+    tok = store.get_token(hash_token(body["token"]))               # its token acts for that account,
+    assert tok["account_id"] == body["account_id"] and "account:admin" not in tok["scopes"]  # not privileged
+    assert body["account_id"] in [a["account_id"]
+                                  for a in c.get("/api/v1/admin/accounts", headers=AUTH).json()["accounts"]]
+
+
+def test_accounts_endpoint_requires_super_admin(tmp_path):
+    app, store = _app(tmp_path, scopes=("rollout:control", "fleet:read"))   # no account:admin
+    c = TestClient(app)
+    assert c.post("/api/v1/admin/accounts", headers=AUTH, json={"name": "X"}).status_code == 403
+    assert c.get("/api/v1/admin/accounts", headers=AUTH).status_code == 403
+
+
 def test_devices_cohort_filter_and_paging(tmp_path):
     app, store = _app(tmp_path)
     for i in range(3):
@@ -287,9 +320,12 @@ B = {"Authorization": "Bearer tokB"}
 def test_admin_bind_device_override_and_no_theft(tmp_path):
     app, store = _two_accounts(tmp_path)
     c = TestClient(app)
-    # A claims an unbound device -> admin binding
+    # A claims a device currently in B's fleet -> admin binding + the devices row syncs immediately
+    store.upsert_device(device_id="d1", product_id=BID, account_id="acctB")
     assert c.post("/api/v1/admin/devices/d1/account", headers=A).json()["account_id"] == "acctA"
     assert store.device_account("d1") == {"account_id": "acctA", "source": "admin"}
+    assert store.get_device("d1")["account_id"] == "acctA"         # row synced, not waiting for check-in
+    assert c.get("/api/v1/admin/devices", headers=B).json()["devices"] == []   # B no longer sees it
     # A recovers a device wrongly *learned* onto acctB (learned is overridable)
     store.bind_device_account("d2", "acctB", source="learned")
     assert c.post("/api/v1/admin/devices/d2/account", headers=A).status_code == 200

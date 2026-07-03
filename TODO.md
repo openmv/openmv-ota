@@ -13,13 +13,17 @@ Live list of what's being built next. Done work isn't tracked here (see git log)
 - **#5 fleet richness** — cohort filter + `--limit`/`--offset` paging on the device view.
 - **#6 `GET /admin/releases`** — account-scoped release listing + `client releases`.
 
-## Remaining / optional
+## Done (cleanup of the loose ends)
 
-- **HTTP account-creation endpoint.** Self-host creates accounts via the CLI (`server account
-  create`). A `POST /admin/accounts` for the *hosted* flow would need a super-admin scope (an
-  account that may mint accounts); in practice the website mediates account creation via its own
-  identity, so this is only needed if a programmatic self-host API is wanted. Not built.
-- **Admin-bind row sync.** `POST /devices/{id}/account` sets the binding immediately but the
-  `devices` row's `account_id` (what `list_devices` filters on) syncs on the device's *next*
-  check-in — eventually consistent. Sync the row inline if the admin-visibility lag matters.
-- General admin API polish (consistent error envelopes, list pagination on releases/rollouts).
+- **HTTP account-creation endpoint** — `POST /admin/accounts` + `GET /admin/accounts` behind a new
+  privileged `account:admin` scope (held by the bootstrap/root token, not a regular account's).
+  `client account create/list`. The self-host CLI (`server account create`) still works.
+- **Admin-bind row sync** — `POST /devices/{id}/account` now syncs the `devices` row's account
+  inline, so fleet views update immediately instead of on the next check-in.
+- **Pagination** — `--limit`/`--offset` on the releases + rollouts listings (consistent with the
+  device view).
+
+## Remaining / optional (for the audit pass)
+
+- Consistent error envelopes (FastAPI's `{detail}` is the current shape).
+- Anything surfaced during the section-by-section API audit.

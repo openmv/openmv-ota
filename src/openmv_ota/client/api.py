@@ -76,6 +76,12 @@ class Api:
     def bind_device(self, device_id):
         return self._req("POST", "/api/v1/admin/devices/%s/account" % device_id)
 
+    def create_account(self, name):
+        return self._req("POST", "/api/v1/admin/accounts", json={"name": name})
+
+    def list_accounts(self):
+        return self._req("GET", "/api/v1/admin/accounts")
+
     def pin_cohort(self, product_id, cohort, release_id):
         return self._req("POST", "/api/v1/admin/cohorts/pin",
                          json={"product_id": product_id, "cohort": cohort, "release_id": release_id})
@@ -96,8 +102,14 @@ class Api:
             params["offset"] = offset
         return self._req("GET", "/api/v1/admin/devices", params=params)
 
-    def releases(self, product_id=None):
-        params = {"product_id": product_id} if product_id is not None else {}
+    def releases(self, product_id=None, limit=None, offset=None):
+        params = {}
+        if product_id is not None:
+            params["product_id"] = product_id
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
         return self._req("GET", "/api/v1/admin/releases", params=params)
 
     def audit(self, since: int = 0):

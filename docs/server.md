@@ -68,7 +68,9 @@ openmv-ota server token list | revoke <hash>
 
 `server init` seeds one admin token: from `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` if set, otherwise a
 fresh one printed **once** (only the hash is stored — it is not recoverable). Tokens carry scopes:
-`release:write` (publish), `rollout:control` (promote/pause/rollback), `fleet:read` (observe).
+`release:write` (publish), `rollout:control` (promote/pause/rollback), `fleet:read` (observe), and
+the privileged operator scope `account:admin` (create/list accounts — held by the bootstrap/root
+token, not by a regular account's tokens).
 
 ## Accounts (multi-tenancy)
 
@@ -88,6 +90,11 @@ openmv-ota server account create --name "DroneCo"      # -> an account_id + its 
 openmv-ota server account list
 openmv-ota server token issue --name ci --account <account_id>   # more tokens for an account
 ```
+
+The same is available remotely to an `account:admin` token: `POST /api/v1/admin/accounts`
+(`client account create --name …`) returns the new `account_id` + its first token once, and
+`GET /api/v1/admin/accounts` (`client account list`) lists them. An operator (re)binds a device to
+an account with `POST /api/v1/admin/devices/{id}/account` (`client bind --id …`).
 
 **Hosted identity seam.** `create_app(admin_auth=…)` lets OpenMV's website inject its own auth
 object (`authenticate(header) -> Principal`) that resolves a logged-in maker to their

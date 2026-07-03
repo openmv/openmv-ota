@@ -215,10 +215,13 @@ class SqlMetadataStore:
             r["representations"] = json.loads(r["representations"])
         return r
 
-    def list_releases(self, product_id=None, account_id=None) -> list[dict]:
+    def list_releases(self, product_id=None, account_id=None, limit=None, offset=0) -> list[dict]:
         where, params = _scope(account_id, product_id)
-        rows = [_d(r) for r in self.query_all(
-            "SELECT * FROM releases " + where + " ORDER BY payload_version DESC", params)]
+        sql = "SELECT * FROM releases " + where + " ORDER BY payload_version DESC"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params = (*params, limit, offset)
+        rows = [_d(r) for r in self.query_all(sql, params)]
         for r in rows:
             r["representations"] = json.loads(r["representations"])
         return rows
@@ -247,10 +250,14 @@ class SqlMetadataStore:
             "SELECT * FROM rollouts WHERE account_id = ? AND product_id = ? AND cohort = ? "
             "AND state = 'active' ORDER BY created_at DESC LIMIT 1", (account_id, product_id, cohort)))
 
-    def list_rollouts(self, product_id: int | None = None, account_id=None) -> list[dict]:
+    def list_rollouts(self, product_id: int | None = None, account_id=None, limit=None,
+                      offset=0) -> list[dict]:
         where, params = _scope(account_id, product_id)
-        return [_d(r) for r in self.query_all(
-            "SELECT * FROM rollouts " + where + " ORDER BY created_at DESC", params)]
+        sql = "SELECT * FROM rollouts " + where + " ORDER BY created_at DESC"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params = (*params, limit, offset)
+        return [_d(r) for r in self.query_all(sql, params)]
 
     def update_rollout(self, rollout_id: str, **fields) -> None:
         fields = {**fields, "updated_at": _now_iso()}       # column names are code-controlled
@@ -316,6 +323,11 @@ class SqlMetadataStore:
         """The device's binding row ``{account_id, source}`` or None (unbound)."""
         return _d(self.query_one(
             "SELECT account_id, source FROM device_accounts WHERE device_id = ?", (device_id,)))
+
+    def set_device_account(self, device_id: str, account_id: str) -> None:
+        """Set the ``devices`` row's account (no-op if the row doesn't exist yet). Used by an admin
+        rebind so the fleet views reflect the new account immediately, not on the next check-in."""
+        self.execute("UPDATE devices SET account_id = ? WHERE device_id = ?", (account_id, device_id))
 
     def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
                      cohort=None, offset: int = 0) -> list[dict]:
