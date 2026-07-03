@@ -103,10 +103,10 @@ _MIGRATIONS: list[list[str]] = [
         "SELECT product_id, cohort, release_id FROM cohort_pins_v3",
         "DROP TABLE cohort_pins_v3",
     ],
-    [   # v5 -- rename devices.owner_ref -> board_origin_ref: it holds sha256(form_key), i.e. the
+    [   # v5 -- rename devices.owner_ref -> registrar_ref: it holds sha256(form_key), i.e. the
         # party that *registered* the unit (a factory / form-key holder), not who owns it. Both
         # sqlite (>=3.25) and postgres support RENAME COLUMN.
-        "ALTER TABLE devices RENAME COLUMN owner_ref TO board_origin_ref",
+        "ALTER TABLE devices RENAME COLUMN owner_ref TO registrar_ref",
     ],
 ]
 
@@ -240,26 +240,26 @@ class SqlMetadataStore:
     def upsert_device(self, *, device_id, product_id, board=None, cohort="__default__",
                       current_version=None, current_payload_version=None, slot=None,
                       representation=None, fallback_reason=None, confirmed=None,
-                      last_offered_release_id=None, board_origin_ref=None, account_id="") -> None:
+                      last_offered_release_id=None, registrar_ref=None, account_id="") -> None:
         now = _now_iso()
         if self.query_one("SELECT 1 FROM devices WHERE device_id = ?", (device_id,)) is None:
             self.execute(
                 "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
                 "current_payload_version, slot, representation, fallback_reason, confirmed, "
-                "last_offered_release_id, board_origin_ref, account_id, first_seen, last_seen) "
+                "last_offered_release_id, registrar_ref, account_id, first_seen, last_seen) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (device_id, product_id, board, cohort, current_version, current_payload_version,
                  slot, representation, fallback_reason, confirmed, last_offered_release_id,
-                 board_origin_ref, account_id, now, now))
+                 registrar_ref, account_id, now, now))
         else:                                               # cohort is admin-controlled, not by check-in
             self.execute(
                 "UPDATE devices SET product_id = ?, board = ?, current_version = ?, "
                 "current_payload_version = ?, slot = ?, representation = ?, fallback_reason = ?, "
                 "confirmed = ?, last_offered_release_id = COALESCE(?, last_offered_release_id), "
-                "board_origin_ref = COALESCE(?, board_origin_ref), account_id = ?, last_seen = ? "
+                "registrar_ref = COALESCE(?, registrar_ref), account_id = ?, last_seen = ? "
                 "WHERE device_id = ?",
                 (product_id, board, current_version, current_payload_version, slot, representation,
-                 fallback_reason, confirmed, last_offered_release_id, board_origin_ref, account_id,
+                 fallback_reason, confirmed, last_offered_release_id, registrar_ref, account_id,
                  now, device_id))
 
     def get_device(self, device_id: str) -> dict | None:

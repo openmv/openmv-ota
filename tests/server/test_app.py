@@ -17,8 +17,8 @@ SECRET = "test-secret"
 
 
 class _Verifier:
-    def __init__(self, registered=True, board_origin_ref="o1"):
-        self._reg = Registration(registered, board_origin_ref)
+    def __init__(self, registered=True, registrar_ref="o1"):
+        self._reg = Registration(registered, registrar_ref)
         self.calls = 0
         self.last_board = None
 
