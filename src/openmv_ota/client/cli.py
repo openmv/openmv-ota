@@ -96,6 +96,10 @@ def register(parser: argparse.ArgumentParser) -> None:
             p.add_argument("--product-id", type=int)
         else:
             p.add_argument("--since", type=int, default=0)
+        if name == "devices":
+            p.add_argument("--cohort", help="only devices in this cohort")
+            p.add_argument("--limit", type=int, help="page size")
+            p.add_argument("--offset", type=int, help="page offset (for paging a large fleet)")
         _creds(p)
         p.set_defaults(func=handler, _command="client " + name)
 
@@ -220,7 +224,8 @@ def cmd_fleet(args: argparse.Namespace) -> int:
 
 
 def cmd_devices(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.devices(args.product_id))
+    return _read(args, lambda api: api.devices(args.product_id, cohort=args.cohort,
+                                               limit=args.limit, offset=args.offset))
 
 
 def cmd_releases(args: argparse.Namespace) -> int:

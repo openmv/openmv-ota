@@ -230,6 +230,19 @@ def test_list_releases(tmp_path):
             c.get("/api/v1/admin/releases?product_id=999", headers=AUTH).json()["releases"]] == []
 
 
+def test_devices_cohort_filter_and_paging(tmp_path):
+    app, store = _app(tmp_path)
+    for i in range(3):
+        store.upsert_device(device_id="d%d" % i, product_id=BID, cohort="beta")
+    store.upsert_device(device_id="x", product_id=BID, cohort="__default__")
+    c = TestClient(app)
+    beta = c.get("/api/v1/admin/devices?cohort=beta", headers=AUTH).json()["devices"]
+    assert {d["device_id"] for d in beta} == {"d0", "d1", "d2"}     # cohort filter
+    assert len(c.get("/api/v1/admin/devices?limit=2", headers=AUTH).json()["devices"]) == 2
+    assert len(c.get("/api/v1/admin/devices?limit=2&offset=2",     # 4 total -> 2 left on page 2
+                     headers=AUTH).json()["devices"]) == 2
+
+
 def test_fleet_devices_audit(tmp_path):
     app, store = _app(tmp_path)
     store.upsert_device(device_id="d1", product_id=BID, board="OPENMV_N6", current_version="1.0.0",

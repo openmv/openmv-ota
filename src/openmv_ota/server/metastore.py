@@ -285,10 +285,14 @@ class SqlMetadataStore:
     def get_device(self, device_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
 
-    def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None) -> list[dict]:
+    def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
+                     cohort=None, offset: int = 0) -> list[dict]:
         where, params = _scope(account_id, product_id)
-        rows = self.query_all("SELECT * FROM devices " + where + " ORDER BY last_seen DESC LIMIT ?",
-                              (*params, limit))
+        if cohort is not None:
+            where = (where + " AND cohort = ?") if where else "WHERE cohort = ?"
+            params = (*params, cohort)
+        rows = self.query_all("SELECT * FROM devices " + where
+                              + " ORDER BY last_seen DESC LIMIT ? OFFSET ?", (*params, limit, offset))
         return [_d(r) for r in rows]
 
     def fleet_summary(self, product_id: int | None = None, account_id=None) -> dict:

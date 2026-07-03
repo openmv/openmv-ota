@@ -81,8 +81,16 @@ class Api:
         params = {"product_id": product_id} if product_id is not None else {}
         return self._req("GET", "/api/v1/admin/fleet", params=params)
 
-    def devices(self, product_id=None):
-        params = {"product_id": product_id} if product_id is not None else {}
+    def devices(self, product_id=None, cohort=None, limit=None, offset=None):
+        params = {}
+        if product_id is not None:
+            params["product_id"] = product_id
+        if cohort is not None:
+            params["cohort"] = cohort
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
         return self._req("GET", "/api/v1/admin/devices", params=params)
 
     def releases(self, product_id=None):

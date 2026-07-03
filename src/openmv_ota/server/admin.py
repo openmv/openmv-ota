@@ -202,9 +202,10 @@ def releases(request: Request, product_id: int | None = None,
 
 @admin.get("/devices")
 def devices(request: Request, product_id: int | None = None, limit: int = 100,
+            cohort: str | None = None, offset: int = 0,
             principal: Principal = Depends(require_scope("fleet:read"))):
     return {"devices": request.app.state.metastore.list_devices(
-        product_id, limit, account_id=principal.account_id)}
+        product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset)}
 
 
 @admin.get("/audit")

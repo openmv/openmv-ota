@@ -115,6 +115,14 @@ def test_read_calls_carry_params():
     assert c.calls[3][2]["params"] == {"since": 3}
 
 
+def test_devices_filter_and_paging_params():
+    api, c = _api(_Resp(200, {}))
+    api.devices(7, cohort="beta", limit=2, offset=4)
+    assert c.calls[0][2]["params"] == {"product_id": 7, "cohort": "beta", "limit": 2, "offset": 4}
+    api.devices()                                              # all-None -> no params
+    assert c.calls[1][2]["params"] == {}
+
+
 def test_cohort_calls():
     api, c = _api(_Resp(200, {}))
     api.list_cohorts(7)
