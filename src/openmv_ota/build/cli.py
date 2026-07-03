@@ -255,7 +255,7 @@ def _trailer_summary(t) -> dict:
         "header_version": t.header_version,
         "product": meta.get("product"),
         "board": meta.get("board"),
-        "board_id": t.board_id,
+        "product_id": t.product_id,
         "board_name": meta.get("board_name"),
         "vendor": meta.get("vendor"),
         "app_version": meta.get("app_version"),
@@ -293,7 +293,7 @@ def _romfs_summary(data: bytes) -> str | None:
 def _print_trailer(s: dict) -> None:
     print("OTA trailer (%s, header v%d)" % (s["kind"], s["header_version"]))
     print("  product:        %s" % s["product"])
-    print("  board:          %s  (id %d)" % (s["board"], s["board_id"]))
+    print("  board:          %s  (id %d)" % (s["board"], s["product_id"]))
     print("  board_name:     %s" % s["board_name"])
     print("  app_version:    %s  (payload_version %s)" % (s["app_version"], s["payload_version"]))
     print("  rollback_floor: %s" % s["rollback_floor"])
@@ -345,8 +345,8 @@ def _inspect_manifest(raw: bytes, as_json: bool) -> int:
         print(json.dumps({"key_id": m.key_id, "sig_alg": m.sig_alg, "body": b}, indent=2))
         return 0
     print("manifest  (signed by key 0x%04x, alg %d)" % (m.key_id, m.sig_alg))
-    print("  board_id %s  version %s  (payload_version %s)"
-          % (b.get("board_id"), b.get("version"), b.get("payload_version")))
+    print("  product_id %s  version %s  (payload_version %s)"
+          % (b.get("product_id"), b.get("version"), b.get("payload_version")))
     print("  image %s bytes  sha256 %s" % (b.get("size"), b.get("sha256")))
     for r in b.get("representations", []):
         base = ("  base_payload_version=%s" % r["base_payload_version"]

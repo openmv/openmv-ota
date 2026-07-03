@@ -208,19 +208,19 @@ def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
 
 def _render_ota_config(p, name: str) -> str:
     """Generate ``_ota_config.py`` -- the build-time constants the frozen ``boot.py``
-    reads: the partition geometry, this device's ``board_id`` + the running firmware's
+    reads: the partition geometry, this device's ``product_id`` + the running firmware's
     platform version (both exactly as the romfs build stamps them into trailers), and
     the trusted public keys (revoked keys are dropped, so the device stops trusting
     them after this firmware update)."""
     from openmv_ota.ota import geometry
     from openmv_ota.ota.keys import read_trusted_keys
-    from openmv_ota.project.config import derive_board_id
+    from openmv_ota.project.config import derive_product_id
     from openmv_ota.project.project import ProjectPaths
 
     t = p.board(name)
     override = p.config.overrides.get(name, {})
-    bid = override.get("board_id")
-    board_id = int(bid) if bid is not None else derive_board_id(p.config.name, name)
+    bid = override.get("product_id")
+    product_id = int(bid) if bid is not None else derive_product_id(p.config.name, name)
 
     keys = "".join(
         "    0x%x: %r,\n" % (k.key_id, bytes.fromhex(k.pubkey))
@@ -232,7 +232,7 @@ def _render_ota_config(p, name: str) -> str:
         "PARTITION_SIZE = %d\n" % t.partition_size
         + "FRONT_SIZE = %d\n" % t.front_size
         + "OTA_BLOCK = %d\n" % geometry.ota_block(t.erase_size)
-        + "BOARD_ID = %d\n" % board_id
+        + "PRODUCT_ID = %d\n" % product_id
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
         + "TRUSTED_KEYS = {\n%s}\n" % keys
     )

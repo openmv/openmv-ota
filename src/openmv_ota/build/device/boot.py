@@ -93,7 +93,7 @@ def parse_trailer(data):
     """
     if len(data) < _HEADER_SIZE:
         raise OtaReject("trunc")
-    (magic, header_version, body_size, pad_size, meta_size, sig_size, board_id,
+    (magic, header_version, body_size, pad_size, meta_size, sig_size, product_id,
      min_platform_version, payload_version, payload_version_floor, key_id, sig_alg,
      body_sha256) = struct.unpack_from(_HEADER_STRUCT, data, 0)
     if magic != MAGIC:
@@ -113,7 +113,7 @@ def parse_trailer(data):
     t = Trailer()
     t.body_size = body_size
     t.pad_size = pad_size
-    t.board_id = board_id
+    t.product_id = product_id
     t.min_platform_version = min_platform_version
     t.payload_version = payload_version
     t.payload_version_floor = payload_version_floor
@@ -140,7 +140,7 @@ def _markers(status):
 
 
 def evaluate_slot(body, status, trailer_bytes, is_front, rollback_floor,
-                  board_id, trusted_keys, platform_version, verify):
+                  product_id, trusted_keys, platform_version, verify):
     """Verify one slot and decide whether it may be mounted.
 
     Returns ``(trailer, write_tried)`` -- ``write_tried`` is True only for a FRONT
@@ -148,7 +148,7 @@ def evaluate_slot(body, status, trailer_bytes, is_front, rollback_floor,
     Raises :class:`OtaReject` (reason code) on any failure. ``body`` is the slot's
     body region (a memoryview on device); ``status`` is its status sector.
 
-    The signature is verified *before* any header field is trusted -- ``board_id``,
+    The signature is verified *before* any header field is trusted -- ``product_id``,
     sizes, and versions are only acted on once the signature over ``header || meta``
     checks out.
     """
@@ -161,7 +161,7 @@ def evaluate_slot(body, status, trailer_bytes, is_front, rollback_floor,
         raise OtaReject("sig")
     # The header is authentic from here on.
 
-    if board_id and t.board_id != board_id:             # cross-flash guard (0 = off)
+    if product_id and t.product_id != product_id:             # cross-flash guard (0 = off)
         raise OtaReject("board")
     if t.min_platform_version and t.min_platform_version > platform_version:
         raise OtaReject("compat")
@@ -199,7 +199,7 @@ class OtaBoot:
     """
 
     def __init__(self, read, verify, mount, write_marker, partition_size,
-                 front_size, block, board_id, trusted_keys, platform_version):
+                 front_size, block, product_id, trusted_keys, platform_version):
         self.read = read
         self.verify = verify
         self.mount = mount
@@ -207,7 +207,7 @@ class OtaBoot:
         self.partition_size = partition_size
         self.front_size = front_size
         self.block = block
-        self.board_id = board_id
+        self.product_id = product_id
         self.trusted_keys = trusted_keys
         self.platform_version = platform_version
 
@@ -229,7 +229,7 @@ class OtaBoot:
         status = self.read(offset + slot_size - 2 * blk, blk)
         trailer = self.read(offset + slot_size - blk, blk)
         t, write_tried = evaluate_slot(
-            body, status, trailer, is_front, rollback_floor, self.board_id,
+            body, status, trailer, is_front, rollback_floor, self.product_id,
             self.trusted_keys, self.platform_version, self.verify)
         if write_tried:
             # Arm 'tried' *before* mounting: if the trial image hangs, the next boot
@@ -323,7 +323,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     try:
         slot, trailer, front_reason = OtaBoot(
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
-            cfg.OTA_BLOCK, cfg.BOARD_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
+            cfg.OTA_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
     except OtaReject as e:
         if openmv_log is not None:
             openmv_log.log.error("boot: no bootable slot: %s" % e)

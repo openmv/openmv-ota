@@ -37,30 +37,30 @@ def test_system_json_packed_for_non_ota(make_project):
     root, repo, app = make_project(
         app_files={"main.py": "print(1)\n",
                    "settings.json": '{"app_version": "2.0.0", "vendor": "Acme"}\n'},
-        extra_config='\n[targets.OPENMV_N6]\nboard_id = 7\nboard_name = "Widget"\n',
+        extra_config='\n[targets.OPENMV_N6]\nproduct_id = 7\nboard_name = "Widget"\n',
     )
     out = build_mod.build_romfs(root, app=app, firmware=repo,
                                 compile_py=False, convert_models=False)[0].output
     info = json.loads(_read_file(out.read_bytes(), "system.json"))
     assert info["ota"] is False
-    assert info["board"] == "OPENMV_N6" and info["board_id"] == 7
+    assert info["board"] == "OPENMV_N6" and info["product_id"] == 7
     assert info["board_name"] == "Widget"
     assert info["app_version"] == "2.0.0" and info["vendor"] == "Acme"
     assert info["firmware"]["version"] == "5.0.0"
 
 
-def test_system_json_board_id_derived_for_non_ota(make_project):
-    # With no board_id pinned in config, a non-OTA image still gets a stable,
-    # auto-derived board_id in system.json.
+def test_system_json_product_id_derived_for_non_ota(make_project):
+    # With no product_id pinned in config, a non-OTA image still gets a stable,
+    # auto-derived product_id in system.json.
     import json
 
-    from openmv_ota.project.config import derive_board_id
+    from openmv_ota.project.config import derive_product_id
     root, repo, app = make_project()
     info = json.loads(_read_file(
         build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0].output.read_bytes(),
         "system.json"))
-    assert info["board_id"] == derive_board_id(info["product"], "OPENMV_N6") != 0
+    assert info["product_id"] == derive_product_id(info["product"], "OPENMV_N6") != 0
 
 
 def test_board_name_defaults_to_product(make_project):
@@ -304,11 +304,11 @@ def _build_ota(make_project, **over):
     return root, repo, app
 
 
-def _set_board_id(root, value):
+def _set_product_id(root, value):
     import re
     from openmv_ota.project import ProjectPaths
     cfg = ProjectPaths(root).config
-    cfg.write_text(re.sub(r"board_id   = \d+", "board_id   = %d" % value, cfg.read_text(), count=1))
+    cfg.write_text(re.sub(r"product_id   = \d+", "product_id   = %d" % value, cfg.read_text(), count=1))
 
 
 def _read_bundle(result):
@@ -338,14 +338,14 @@ def test_ota_build_signs_and_verifies(make_project):
     from openmv_ota.project import ProjectPaths
 
     root, repo, app = _build_ota(make_project)
-    _set_board_id(root, 999)  # config-only identity, no drift
+    _set_product_id(root, 999)  # config-only identity, no drift
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
 
     body, trailer_bytes = _read_bundle(r)
     t = parse_trailer(trailer_bytes)
     assert t.payload_version == encode_app_version("1.2.3")
-    assert t.board_id == 999
+    assert t.product_id == 999
     assert t.body_sha256 == hashlib.sha256(body).digest()
     assert t.meta["vendor"] == "Acme" and t.meta["app_version"] == "1.2.3"
     assert t.meta["firmware"]["version"] == "5.0.0"
@@ -380,14 +380,14 @@ def test_ota_trailer_meta_mirrors_system_json(make_project):
     from openmv_ota.ota import parse_trailer
 
     root, repo, app = _build_ota(make_project)
-    _set_board_id(root, 42)
+    _set_product_id(root, 42)
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
     body, trailer_bytes = _read_bundle(r)
     info = json.loads(_read_file(body, "system.json"))
     # The trailer carries a verbatim copy of the ROMFS system.json.
     assert parse_trailer(trailer_bytes).meta == info
-    assert info["ota"] is True and info["board_id"] == 42 and info["app_version"] == "1.2.3"
+    assert info["ota"] is True and info["product_id"] == 42 and info["app_version"] == "1.2.3"
 
 
 def test_ota_build_sets_rollback_floor(make_project):
@@ -417,24 +417,24 @@ def test_ota_build_bad_floor_semver(make_project):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
 
 
-def test_ota_build_warns_on_unset_board_id(make_project, capsys):
+def test_ota_build_warns_on_unset_product_id(make_project, capsys):
     root, repo, app = _build_ota(make_project)
-    _set_board_id(root, 0)  # explicitly clear the auto-assigned id
+    _set_product_id(root, 0)  # explicitly clear the auto-assigned id
     build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
-    assert "board_id 0" in capsys.readouterr().err
+    assert "product_id 0" in capsys.readouterr().err
 
 
-def test_build_warns_on_board_id_collision(capsys):
-    from openmv_ota.build.romfs import _warn_board_id_collisions
+def test_build_warns_on_product_id_collision(capsys):
+    from openmv_ota.build.romfs import _warn_product_id_collisions
     from openmv_ota.project.config import OtaConfig
 
     cfg = OtaConfig(
         name="p", vendor=None, boards=["A", "B", "C"],
-        overrides={"A": {"board_id": 5}, "B": {"board_id": 5}, "C": {"board_id": 0}},
+        overrides={"A": {"product_id": 5}, "B": {"product_id": 5}, "C": {"product_id": 0}},
     )
-    _warn_board_id_collisions(cfg)
+    _warn_product_id_collisions(cfg)
     err = capsys.readouterr().err
-    assert "board_id 5 is shared by A and B" in err
+    assert "product_id 5 is shared by A and B" in err
 
 
 def test_ota_build_missing_settings(make_project):
@@ -488,7 +488,7 @@ def test_factory_build_composes_dual_slot(make_project):
     from openmv_ota.project import load_project
 
     root, repo, app = _build_ota(make_project)
-    _set_board_id(root, 7)
+    _set_product_id(root, 7)
     target = load_project(root, firmware=repo).board("OPENMV_N6")
     r = build_mod.build_factory_romfs(root, app=app, firmware=repo,
                                       compile_py=False, convert_models=False)[0]
@@ -499,8 +499,8 @@ def test_factory_build_composes_dual_slot(make_project):
     block = geometry.ota_block(target.erase_size)
     front, part = target.front_size, target.partition_size
     # both slots carry the same golden body, factory-signed
-    assert parse_trailer(img[front - block:]).board_id == 7        # FRONT trailer
-    assert parse_trailer(img[part - block:]).board_id == 7         # BACK trailer
+    assert parse_trailer(img[front - block:]).product_id == 7        # FRONT trailer
+    assert parse_trailer(img[part - block:]).product_id == 7         # BACK trailer
 
     fs = img[front - 2 * block: front - block]                     # FRONT status sector
     bs = img[part - 2 * block: part - block]                       # BACK status sector
@@ -713,11 +713,11 @@ def test_build_manifest_roundtrip(make_project):
     assert body["sha256"] == hashlib.sha256(image).hexdigest()
     assert body["size"] == len(image)
 
-    # board_id / payload_version are taken from the image's own signed trailer
+    # product_id / payload_version are taken from the image's own signed trailer
     from openmv_ota.ota import bundle as _bundle
     _b, trailer = _bundle.read_bundle(root / "build" / "OPENMV_N6-romfs.zip")
     expect = parse_trailer(trailer)
-    assert body["board_id"] == expect.board_id
+    assert body["product_id"] == expect.product_id
     assert body["payload_version"] == expect.payload_version
 
     rep = select_representation(body, delta_capable=False, golden_payload_version=0)
@@ -751,7 +751,7 @@ def test_build_manifest_no_targets_errors(make_project):
 
 
 def test_build_manifest_bad_bundle_errors(make_project):
-    # the image exists but the bundle it reads board_id/version from is corrupt
+    # the image exists but the bundle it reads product_id/version from is corrupt
     root, repo = _build_n6_ota_artifacts(make_project)
     (root / "build" / "OPENMV_N6-romfs.zip").write_bytes(b"not a zip")
     with pytest.raises(BuildError):
@@ -999,12 +999,12 @@ def test_build_ota_romfs_rejects_golden_not_older(make_project):
 
 
 def test_build_ota_romfs_rejects_wrong_board_golden(make_project):
-    # a factory image for a *different* board passed as the golden -> board_id mismatch
+    # a factory image for a *different* board passed as the golden -> product_id mismatch
     root, repo, _ = make_project(boards=("OPENMV_N6", "OPENMV_AE3"), ota=True)
     build_mod.build_factory_romfs(root, firmware=repo, boards=["OPENMV_AE3"],
                                   compile_py=False, convert_models=False)
     ae3_factory = root / "build" / "OPENMV_AE3-factory-romfs.img"
-    with pytest.raises(BuildError, match="is for board_id"):
+    with pytest.raises(BuildError, match="is for product_id"):
         build_mod.build_ota_romfs(root, firmware=repo, boards=["OPENMV_N6"],
                                   delta_from=ae3_factory,
                                   compile_py=False, convert_models=False)

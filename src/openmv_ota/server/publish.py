@@ -77,9 +77,9 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
         body = parse_manifest(manifest_bytes).body
     except OtaError as e:
         raise HTTPException(status_code=400, detail="bad manifest: %s" % e) from None
-    board_id, payload_version = body["board_id"], body["payload_version"]
+    product_id, payload_version = body["product_id"], body["payload_version"]
 
-    latest = ms.latest_release_payload_version(board_id)
+    latest = ms.latest_release_payload_version(product_id)
     if latest is not None and payload_version <= latest and not allow_republish:
         raise HTTPException(status_code=409, detail="payload_version %d <= latest %d "
                             "(pass allow_republish=true to override)" % (payload_version, latest))
@@ -99,14 +99,14 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
         delta_key = "artifacts/%s/%s" % (release_id, _rep(reps, DELTA_FORMAT)["url"])
         storage.put(delta_key, delta_bytes, "application/gzip")
 
-    ms.add_release(release_id=release_id, board_id=board_id, product=body.get("product"),
+    ms.add_release(release_id=release_id, product_id=product_id, product=body.get("product"),
                    version=body.get("version"), payload_version=payload_version,
                    min_platform_version=body.get("min_platform_version", 0),
                    image_sha256=body["sha256"], image_size=body["size"], representations=reps,
                    manifest_key=manifest_key, image_key=image_key, delta_key=delta_key,
                    uploaded_by=principal.name)
     ms.append_audit(actor=principal.name, action="release.publish", entity_type="release",
-                    entity_id=release_id, data={"board_id": board_id, "version": body.get("version"),
+                    entity_id=release_id, data={"product_id": product_id, "version": body.get("version"),
                                                 "payload_version": payload_version})
-    return {"release_id": release_id, "board_id": board_id, "version": body.get("version"),
+    return {"release_id": release_id, "product_id": product_id, "version": body.get("version"),
             "payload_version": payload_version, "representations": [r["format"] for r in reps]}

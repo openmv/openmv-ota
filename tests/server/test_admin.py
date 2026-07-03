@@ -34,8 +34,8 @@ AUTH = {"Authorization": "Bearer admintok"}
 
 BID = 7
 
-def _seed_release(store, rid="rel1", board_id=BID, pv=0x02000000):
-    store.add_release(release_id=rid, board_id=board_id, product="P", version="2.0.0",
+def _seed_release(store, rid="rel1", product_id=BID, pv=0x02000000):
+    store.add_release(release_id=rid, product_id=product_id, product="P", version="2.0.0",
                       payload_version=pv, min_platform_version=0, image_sha256="ab" * 32,
                       image_size=10, representations=[{"format": "full", "url": "x.img.gz",
                                                        "size": 9}],
@@ -62,8 +62,8 @@ def test_wrong_scope_403(tmp_path):
 
 def test_cohorts_list_and_assign(tmp_path):
     app, store = _app(tmp_path)
-    store.upsert_device(device_id="d1", board_id=BID)
-    store.upsert_device(device_id="d2", board_id=BID)
+    store.upsert_device(device_id="d1", product_id=BID)
+    store.upsert_device(device_id="d2", product_id=BID)
     c = TestClient(app)
     assert c.get("/api/v1/admin/cohorts", headers=AUTH).json() == {
         "cohorts": [{"cohort": "__default__", "devices": 2}]}
@@ -89,7 +89,7 @@ def test_cohort_assign_requires_scope(tmp_path):
 
 def test_device_pin_set_and_clear(tmp_path):
     app, store = _app(tmp_path)
-    store.upsert_device(device_id="d1", board_id=BID)
+    store.upsert_device(device_id="d1", product_id=BID)
     c = TestClient(app)
     assert c.patch("/api/v1/admin/devices/d1/pin", headers=AUTH,
                    json={"release_id": "rel1"}).json() == {"device_id": "d1", "pinned_release_id": "rel1"}
@@ -108,16 +108,16 @@ def test_cohort_pin_set_and_clear(tmp_path):
     app, store = _app(tmp_path)
     c = TestClient(app)
     c.post("/api/v1/admin/cohorts/pin", headers=AUTH,
-           json={"board_id": BID, "cohort": "beta", "release_id": "rel1"})
+           json={"product_id": BID, "cohort": "beta", "release_id": "rel1"})
     assert store.get_cohort_pin(BID, "beta") == "rel1"
     c.post("/api/v1/admin/cohorts/pin", headers=AUTH,
-           json={"board_id": BID, "cohort": "beta", "release_id": None})
+           json={"product_id": BID, "cohort": "beta", "release_id": None})
     assert store.get_cohort_pin(BID, "beta") is None
 
 
 def test_pin_requires_scope(tmp_path):
     app, store = _app(tmp_path, scopes=("fleet:read",))
-    store.upsert_device(device_id="d1", board_id=BID)
+    store.upsert_device(device_id="d1", product_id=BID)
     assert TestClient(app).patch("/api/v1/admin/devices/d1/pin", headers=AUTH,
                                  json={"release_id": "r"}).status_code == 403
 
@@ -131,7 +131,7 @@ def test_create_rollout(tmp_path):
                              json={"release_id": "rel1", "percent": 5})
     assert r.status_code == 200
     body = r.json()
-    assert body["board_id"] == BID and body["state"] == "active" and body["percent"] == 5
+    assert body["product_id"] == BID and body["state"] == "active" and body["percent"] == 5
     assert store.get_rollout(body["rollout_id"])["release_id"] == "rel1"
     assert any(e["action"] == "rollout.create" for e in store.read_audit())
 
@@ -220,7 +220,7 @@ def test_list_rollouts_and_status(tmp_path):
 
 def test_fleet_devices_audit(tmp_path):
     app, store = _app(tmp_path)
-    store.upsert_device(device_id="d1", board_id=BID, board="OPENMV_N6", current_version="1.0.0",
+    store.upsert_device(device_id="d1", product_id=BID, board="OPENMV_N6", current_version="1.0.0",
                         slot="FRONT")
     store.append_audit(actor="ci", action="release.publish", entity_type="release", entity_id="r1")
     c = TestClient(app)

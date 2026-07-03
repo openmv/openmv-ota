@@ -3,7 +3,7 @@
 This is the mirror of what the device's ``boot.py`` does for *authenticity and
 integrity* — verify the signature over the trailer's signed region against a
 trusted (non-revoked) key, and confirm the body matches the signed digest. It does
-**not** check the device-relative fields (``board_id`` vs the device,
+**not** check the device-relative fields (``product_id`` vs the device,
 ``payload_version`` anti-rollback vs the installed image, ``min_platform_version``
 vs the running firmware) — those need a device, not a host. So this is the
 pre-publish / CI gate: "is this image genuine and intact?"

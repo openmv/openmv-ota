@@ -19,12 +19,12 @@ The **signed region** is exactly ``header || json_body`` — the signer signs th
 bytes and the verifier hashes the identical stored bytes, so there is no
 JSON-canonicalisation pitfall. ``key_id``/``sig_alg`` sit in the fixed header so a
 verifier can select the key and algorithm before trusting anything; everything the
-device acts on (board_id, payload_version, representations, the result digest) lives
+device acts on (product_id, payload_version, representations, the result digest) lives
 in the signed JSON body.
 
 The JSON body schema (``schema`` == ``SCHEMA``)::
 
-    board_id              int     device cross-flash guard (0 = any)
+    product_id              int     device cross-flash guard (0 = any)
     product               str     human board/product name (informational)
     version               str     new image's MAJOR.MINOR.PATCH (informational)
     payload_version       int     encoded uint32 -- anti-rollback compare
@@ -162,7 +162,7 @@ def parse_manifest(data: bytes) -> Manifest:
 
 # --- pure policy (mirrored by the device installer, pinned by tests) ---------
 
-def update_reject_reason(body, board_id, platform_version, rollback_floor):
+def update_reject_reason(body, product_id, platform_version, rollback_floor):
     """The device-relative pre-flight check, applied to an *already signature-verified*
     manifest body before any download/erase. Mirrors the image trailer's checks in
     ``boot.evaluate_slot`` (board cross-flash guard, platform floor, anti-rollback), so
@@ -170,7 +170,7 @@ def update_reject_reason(body, board_id, platform_version, rollback_floor):
     earlier. Returns a short reason string to reject, or ``None`` to proceed."""
     if body.get("schema") != SCHEMA:
         return "schema"
-    if board_id and body.get("board_id", 0) != board_id:
+    if product_id and body.get("product_id", 0) != product_id:
         return "board"
     mpv = body.get("min_platform_version", 0)
     if mpv and mpv > platform_version:

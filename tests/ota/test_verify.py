@@ -18,7 +18,7 @@ def _signed(alg=ES256, key_id=0x0100):
     body = b"ROMFS-BODY" * 40
     t = Trailer(
         body_size=len(body), pad_size=16, meta={"product": "p", "app_version": "1.2.3"},
-        board_id=7, min_platform_version=(5 << 24), payload_version=encode_app_version("1.2.3"),
+        product_id=7, min_platform_version=(5 << 24), payload_version=encode_app_version("1.2.3"),
         payload_version_floor=0, key_id=key_id, sig_alg=alg,
         body_sha256=hashlib.sha256(body).digest())
     t.signature = sign_region(priv, signed_region(t), spec)

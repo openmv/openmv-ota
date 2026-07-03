@@ -12,7 +12,7 @@ from pathlib import Path
 
 from openmv_ota.ota import geometry
 from openmv_ota.project import load_project
-from openmv_ota.project.config import derive_board_id
+from openmv_ota.project.config import derive_product_id
 from openmv_ota.project.errors import ProjectError
 from openmv_ota.project.project import COPROCESSOR_APP, ProjectPaths
 from openmv_ota.romfs import boards as boards_mod
@@ -100,18 +100,18 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str) -> _OtaSig
                       algorithm_for(entry.alg), private_key)
 
 
-def _warn_board_id_collisions(config) -> None:
-    """Warn if two different boards were given the same board_id - the cross-flash
+def _warn_product_id_collisions(config) -> None:
+    """Warn if two different boards were given the same product_id - the cross-flash
     guard can't tell them apart. Auto-assigned ids are distinct, so this only fires
-    on a manual edit. (board_id 0 is "unset" and skipped.)"""
+    on a manual edit. (product_id 0 is "unset" and skipped.)"""
     seen: dict[int, str] = {}
     for name, ov in config.overrides.items():
-        bid = int(ov.get("board_id", 0))
+        bid = int(ov.get("product_id", 0))
         if bid == 0:
             continue
         if bid in seen:
-            print("warning: board_id %d is shared by %s and %s; the cross-flash guard "
-                  "can't tell them apart - give each board a distinct board_id"
+            print("warning: product_id %d is shared by %s and %s; the cross-flash guard "
+                  "can't tell them apart - give each board a distinct product_id"
                   % (bid, seen[bid], name), file=sys.stderr)
         else:
             seen[bid] = name
@@ -132,18 +132,18 @@ def _build_system_info(p, t, app_version, vendor: str) -> dict:
     ``system.json`` (read by the app, OTA or not) and mirrored verbatim into the OTA
     trailer's metadata (so host tools can read it without a ROMFS reader). Composed
     from the lock (provenance) + config (per-board identity); never user-edited.
-    ``board_id`` comes from the config when pinned (OTA projects pin it explicitly,
+    ``product_id`` comes from the config when pinned (OTA projects pin it explicitly,
     so it's frozen for the cross-flash guard) and is otherwise auto-derived so even
     a non-OTA image carries a stable product id. ``board_name`` defaults to the
     product name."""
     override = p.config.overrides.get(t.name, {})
     product = p.config.name
-    bid = override.get("board_id")
-    board_id = int(bid) if bid is not None else derive_board_id(product, t.name)
+    bid = override.get("product_id")
+    product_id = int(bid) if bid is not None else derive_product_id(product, t.name)
     return {
         "product": product,
         "board": t.name,
-        "board_id": board_id,
+        "product_id": product_id,
         "board_name": str(override.get("board_name") or product),
         "app_version": app_version,
         "vendor": vendor,
@@ -176,7 +176,7 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_si
         body_size=len(body),
         pad_size=pad_size,
         meta=system_info,
-        board_id=int(system_info["board_id"]),
+        product_id=int(system_info["product_id"]),
         min_platform_version=int(p.lock.firmware.get("version_code", 0)),
         payload_version=signer.payload_version,
         payload_version_floor=signer.payload_version_floor,
@@ -235,7 +235,7 @@ def build_romfs(
     app_dir = Path(app) if app else project / "app"
     copro_dir = project / COPROCESSOR_APP
     out_dir = Path(output) if output else project / "build"
-    _warn_board_id_collisions(p.config)
+    _warn_product_id_collisions(p.config)
 
     targets = _select_targets(p.targets, boards)
     if not targets:
@@ -298,10 +298,10 @@ def _target_name(t) -> str:
     return t.name if t.role == "main" else "%s-%s" % (t.name, t.role)
 
 
-def _warn_unset_board_id(t, system_info: dict) -> None:
-    if system_info["board_id"] == 0:
-        print("warning: %s has board_id 0 (unset); the cross-flash guard is off - set "
-              "board_id under [targets.%s] in openmv-ota.toml" % (t.name, t.name),
+def _warn_unset_product_id(t, system_info: dict) -> None:
+    if system_info["product_id"] == 0:
+        print("warning: %s has product_id 0 (unset); the cross-flash guard is off - set "
+              "product_id under [targets.%s] in openmv-ota.toml" % (t.name, t.name),
               file=sys.stderr)
 
 
@@ -402,7 +402,7 @@ def _build_one(p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, ve
         name = _target_name(t)
         if ota_signer is not None:
             from openmv_ota.ota import bundle
-            _warn_unset_board_id(t, system_info)
+            _warn_unset_product_id(t, system_info)
             pad_size = max(0, capacity - len(body))  # 0xFF gap to the FRONT status sector
             trailer_bytes = _build_trailer(ota_signer, p, body, system_info, pad_size)
             out_path = out_dir / (name + "-romfs.zip")  # body + trailer, one file
@@ -457,7 +457,7 @@ def build_factory_romfs(
     app_dir = Path(app) if app else project / "app"
     copro_dir = project / COPROCESSOR_APP
     out_dir = Path(output) if output else project / "build"
-    _warn_board_id_collisions(p.config)
+    _warn_product_id_collisions(p.config)
 
     targets = _select_targets(p.targets, boards)
     if not targets:
@@ -543,7 +543,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
             raise BuildError(
                 "%s image is %d bytes but a factory slot holds %d (%d over)"
                 % (t.name, len(body), front_cap, len(body) - front_cap), exit_code=1)
-        _warn_unset_board_id(t, system_info)
+        _warn_unset_product_id(t, system_info)
         # seed the anti-rollback floor at the factory version (the device can never be
         # downgraded below it; confirm() advances it as updates are kept).
         floor = rollback.encode_entry(signer.payload_version)
@@ -726,7 +726,7 @@ def build_manifest(
     ``<board>-ota.img.gz`` artifacts -- the descriptor a device's ``install()`` fetches
     *before* it downloads/erases. Each manifest names the reconstructed image's size +
     sha256 and the representations that produce it (the full image; an ``ocdl`` delta when
-    ``delta`` is given), and binds board_id / payload_version / min_platform from the image's
+    ``delta`` is given), and binds product_id / payload_version / min_platform from the image's
     own signed trailer. Signed with the project's OTA key, exactly like the image.
     Representation URLs are **relative filenames by default** (resolved on-device against the
     manifest's own URL, so the signed manifest is host-portable); pass ``url_base`` (an
@@ -806,7 +806,7 @@ def build_manifest(
 
         body = {
             "schema": SCHEMA,
-            "board_id": tr.board_id,
+            "product_id": tr.product_id,
             "product": tr.meta.get("product", p.config.name),
             "version": decode_app_version(tr.payload_version),
             "payload_version": tr.payload_version,
@@ -924,10 +924,10 @@ def build_ota_romfs(
         golden = _resolve_golden(project, name, delta_from, delta_file, delta_dir)
         if golden is not None:
             back_tr = _factory_back_trailer(golden)                 # #2 validate the golden
-            bid = _board_id_for(p, t)
-            if bid and back_tr.board_id and back_tr.board_id != bid:
-                raise BuildError("%s: golden %s is for board_id %d, not this board's %d"
-                                 % (name, golden, back_tr.board_id, bid), exit_code=1)
+            bid = _product_id_for(p, t)
+            if bid and back_tr.product_id and back_tr.product_id != bid:
+                raise BuildError("%s: golden %s is for product_id %d, not this board's %d"
+                                 % (name, golden, back_tr.product_id, bid), exit_code=1)
             if back_tr.payload_version >= new_pv:
                 raise BuildError(
                     "%s: golden version %s is not older than this release %s (deltas go "
@@ -985,7 +985,7 @@ def _factory_back_trailer(golden: Path):
                          exit_code=1) from None
 
 
-def _board_id_for(p, t) -> int:
+def _product_id_for(p, t) -> int:
     ov = p.config.overrides.get(t.name, {})
-    bid = ov.get("board_id")
-    return int(bid) if bid is not None else derive_board_id(p.config.name, t.name)
+    bid = ov.get("product_id")
+    return int(bid) if bid is not None else derive_product_id(p.config.name, t.name)

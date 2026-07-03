@@ -325,14 +325,14 @@ def test_create_ota_project(tmp_path, make_firmware, make_sdk):
     assert "keys/private/" in paths.gitignore.read_text()
 
 
-def test_editing_board_identity_does_not_drift(tmp_path, make_firmware, make_sdk):
+def test_editing_product_identity_does_not_drift(tmp_path, make_firmware, make_sdk):
     import re
     repo = make_firmware()
     root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True,
                       factory_keys=1, ota_keys=2)
     paths = proj.ProjectPaths(root)
     # Override the auto-assigned product id (identity, not firmware geometry).
-    text = re.sub(r"board_id   = \d+", "board_id   = 12345", paths.config.read_text(), count=1)
+    text = re.sub(r"product_id   = \d+", "product_id   = 12345", paths.config.read_text(), count=1)
     paths.config.write_text(text, encoding="utf-8")
     # No drift: identity lives in config, not the firmware-resolved lock.
     assert proj.status_project(root, firmware=repo) == []

@@ -47,7 +47,7 @@ def _body(image, *, pv=0x02000000, size=None, with_delta=False):
     if with_delta:
         reps.append({"format": DELTA_FORMAT, "url": "x-ota.delta.gz", "size": 1,
                      "base_payload_version": 0x01000000})
-    return {"schema": 1, "board_id": BID, "product": "P", "version": "2.0.0", "payload_version": pv,
+    return {"schema": 1, "product_id": BID, "product": "P", "version": "2.0.0", "payload_version": pv,
             "min_platform_version": 0, "size": size if size is not None else len(image),
             "sha256": hashlib.sha256(image).hexdigest(), "representations": reps}
 
@@ -77,7 +77,7 @@ def test_publish_full_release(tmp_path):
     r = _post(app, _manifest(_body(img)), _gz(img))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["board_id"] == BID and body["payload_version"] == 0x02000000
+    assert body["product_id"] == BID and body["payload_version"] == 0x02000000
     assert body["representations"] == ["full"]
     rel = store.get_release(body["release_id"])
     assert rel["image_sha256"] == hashlib.sha256(img).hexdigest()

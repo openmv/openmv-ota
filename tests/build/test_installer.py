@@ -437,7 +437,7 @@ def _host_manifest(body=None, alg=None, key_id=0x0100):
     spec = algorithm_for(alg or ES256)
     priv = generate_private_key(spec)
     if body is None:
-        body = {"schema": 1, "board_id": 7, "payload_version": 33685760,
+        body = {"schema": 1, "product_id": 7, "payload_version": 33685760,
                 "min_platform_version": 0, "sha256": "ab" * 32,
                 "representations": [{"format": "full", "url": "https://x/f.gz", "size": 9}]}
     m = Manifest(body=body, key_id=key_id, sig_alg=spec.cose_id)
@@ -493,11 +493,11 @@ def test_manifest_parse_unknown_alg():
 
 @pytest.mark.parametrize(("body", "board", "plat", "floor"), [
     ({"schema": 2}, 7, 0, 0),
-    ({"schema": 1, "board_id": 9}, 7, 0, 0),
-    ({"schema": 1, "board_id": 7, "min_platform_version": 100}, 7, 50, 0),
-    ({"schema": 1, "board_id": 7, "payload_version": 5}, 7, 0, 10),
-    ({"schema": 1, "board_id": 7, "payload_version": 10}, 7, 0, 5),
-    ({"schema": 1, "board_id": 9}, 0, 0, 0),               # device board_id 0 disables check
+    ({"schema": 1, "product_id": 9}, 7, 0, 0),
+    ({"schema": 1, "product_id": 7, "min_platform_version": 100}, 7, 50, 0),
+    ({"schema": 1, "product_id": 7, "payload_version": 5}, 7, 0, 10),
+    ({"schema": 1, "product_id": 7, "payload_version": 10}, 7, 0, 5),
+    ({"schema": 1, "product_id": 9}, 0, 0, 0),               # device product_id 0 disables check
 ])
 def test_update_reject_mirrors_host(body, board, plat, floor):
     from openmv_ota.ota.manifest import update_reject_reason
@@ -534,7 +534,7 @@ def test_golden_floor_mirrors_trailer():
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
     body = b"B" * 48
-    t = Trailer(body_size=len(body), pad_size=0, meta={}, board_id=7, min_platform_version=0,
+    t = Trailer(body_size=len(body), pad_size=0, meta={}, product_id=7, min_platform_version=0,
                 payload_version=pv, payload_version_floor=0, key_id=0x0100, sig_alg=ES256,
                 body_sha256=hashlib.sha256(body).digest())
     t.signature = sign_region(priv, signed_region(t), spec)

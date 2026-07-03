@@ -27,7 +27,7 @@ def _trailer(**over) -> Trailer:
         body_size=1234,
         pad_size=8,
         meta={"build": "x", "version": 3},
-        board_id=0x1234,
+        product_id=0x1234,
         min_platform_version=(5 << 24),
         payload_version=7,
         payload_version_floor=2,
@@ -44,13 +44,13 @@ def _raw_header(**over) -> bytes:
     """A raw 80-byte header with valid-ES256 defaults; override any field."""
     f = dict(
         magic=MAGIC_ROMFS_APP, header_version=1, body_size=0, pad_size=0, meta_size=0,
-        sig_size=64, board_id=0, min_platform_version=0, payload_version=0,
+        sig_size=64, product_id=0, min_platform_version=0, payload_version=0,
         payload_version_floor=0, key_id=0, sig_alg=ES256, body_sha256=b"\x00" * 32,
     )
     f.update(over)
     return struct.pack(
         trailer_mod.HEADER_STRUCT, f["magic"], f["header_version"], f["body_size"],
-        f["pad_size"], f["meta_size"], f["sig_size"], f["board_id"],
+        f["pad_size"], f["meta_size"], f["sig_size"], f["product_id"],
         f["min_platform_version"], f["payload_version"], f["payload_version_floor"],
         f["key_id"], f["sig_alg"], f["body_sha256"],
     )

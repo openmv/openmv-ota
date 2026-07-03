@@ -61,8 +61,8 @@ class Api:
     def rollback_rollout(self, rollout_id: str):
         return self._req("POST", "/api/v1/admin/rollouts/%s/rollback" % rollout_id)
 
-    def list_cohorts(self, board_id=None):
-        params = {"board_id": board_id} if board_id is not None else {}
+    def list_cohorts(self, product_id=None):
+        params = {"product_id": product_id} if product_id is not None else {}
         return self._req("GET", "/api/v1/admin/cohorts", params=params)
 
     def assign_cohort(self, cohort, device_ids):
@@ -73,16 +73,16 @@ class Api:
         return self._req("PATCH", "/api/v1/admin/devices/%s/pin" % device_id,
                          json={"release_id": release_id})
 
-    def pin_cohort(self, board_id, cohort, release_id):
+    def pin_cohort(self, product_id, cohort, release_id):
         return self._req("POST", "/api/v1/admin/cohorts/pin",
-                         json={"board_id": board_id, "cohort": cohort, "release_id": release_id})
+                         json={"product_id": product_id, "cohort": cohort, "release_id": release_id})
 
-    def fleet(self, board_id=None):
-        params = {"board_id": board_id} if board_id is not None else {}
+    def fleet(self, product_id=None):
+        params = {"product_id": product_id} if product_id is not None else {}
         return self._req("GET", "/api/v1/admin/fleet", params=params)
 
-    def devices(self, board_id=None):
-        params = {"board_id": board_id} if board_id is not None else {}
+    def devices(self, product_id=None):
+        params = {"product_id": product_id} if product_id is not None else {}
         return self._req("GET", "/api/v1/admin/devices", params=params)
 
     def audit(self, since: int = 0):

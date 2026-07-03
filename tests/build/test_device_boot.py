@@ -23,7 +23,7 @@ from openmv_ota.ota.algorithms import ES256, algorithm_for
 BLOCK = 4096
 FRONT_SIZE = 5 * BLOCK           # body cap = FRONT_SIZE - 4*BLOCK (rollback/spare/status/trailer)
 PARTITION_SIZE = 2 * FRONT_SIZE  # BACK slot is the other half
-BOARD_ID = 0x1234
+PRODUCT_ID = 0x1234
 PLATFORM = (5 << 24)             # running firmware version code
 V1 = (1 << 24)                   # payload_version 1.0.0
 
@@ -40,13 +40,13 @@ def _verify(alg, pubkey_bytes, sig, msg):
     return sign.verify_region(pub, msg, sig, spec)
 
 
-def _trailer(priv, key_id, body, *, board_id=BOARD_ID, min_platform=0,
+def _trailer(priv, key_id, body, *, product_id=PRODUCT_ID, min_platform=0,
              payload_version=V1, floor=0, body_size=None, alg=ES256, meta=None):
     spec = algorithm_for(alg)
     t = host_trailer.Trailer(
         body_size=len(body) if body_size is None else body_size,
         pad_size=0, meta=meta if meta is not None else {"k": 1},
-        board_id=board_id, min_platform_version=min_platform,
+        product_id=product_id, min_platform_version=min_platform,
         payload_version=payload_version, payload_version_floor=floor,
         key_id=key_id, sig_alg=alg, body_sha256=hashlib.sha256(body).digest())
     t.signature = sign.sign_region(priv, host_trailer.signed_region(t), spec)
@@ -97,7 +97,7 @@ def test_parse_trailer_valid():
     priv, _pub = _key()
     body = b"romfs-body" * 5
     t = B.parse_trailer(_trailer(priv, 0x100, body, payload_version=V1))
-    assert t.body_size == len(body) and t.board_id == BOARD_ID
+    assert t.body_size == len(body) and t.product_id == PRODUCT_ID
     assert t.key_id == 0x100 and t.sig_alg == ES256 and t.payload_version == V1
     assert t.body_sha256 == hashlib.sha256(body).digest()
     assert len(t.signature) == 64
@@ -132,9 +132,9 @@ def test_parse_trailer_bad_crc():
 
 # --- evaluate_slot ----------------------------------------------------------
 
-def _eval(trailer_bytes, body, status, *, is_front=True, floor=0, board_id=BOARD_ID,
+def _eval(trailer_bytes, body, status, *, is_front=True, floor=0, product_id=PRODUCT_ID,
           trusted=None, platform=PLATFORM, verify=_verify):
-    return B.evaluate_slot(body, status, trailer_bytes, is_front, floor, board_id,
+    return B.evaluate_slot(body, status, trailer_bytes, is_front, floor, product_id,
                            trusted if trusted is not None else {}, platform, verify)
 
 
@@ -206,16 +206,16 @@ def test_evaluate_board_mismatch():
     priv, pub = _key()
     body = b"app" * 40
     with pytest.raises(B.OtaReject, match="board"):
-        _eval(_trailer(priv, 0x100, body, board_id=0x9999), body,
-              _status(True, True, True), board_id=BOARD_ID, trusted={0x100: pub})
+        _eval(_trailer(priv, 0x100, body, product_id=0x9999), body,
+              _status(True, True, True), product_id=PRODUCT_ID, trusted={0x100: pub})
 
 
 def test_evaluate_board_guard_off_accepts_any():
     priv, pub = _key()
     body = b"app" * 40
-    t, _ = _eval(_trailer(priv, 0x100, body, board_id=0xABCD), body,
-                 _status(True, True, True), board_id=0, trusted={0x100: pub})
-    assert t.board_id == 0xABCD
+    t, _ = _eval(_trailer(priv, 0x100, body, product_id=0xABCD), body,
+                 _status(True, True, True), product_id=0, trusted={0x100: pub})
+    assert t.product_id == 0xABCD
 
 
 def test_evaluate_incompatible_platform():
@@ -273,9 +273,9 @@ class _Dev:
         self.partition[off:off + len(marker)] = marker
         self.writes.append((off, marker))
 
-    def boot(self, trusted, *, board_id=BOARD_ID, platform=PLATFORM):
+    def boot(self, trusted, *, product_id=PRODUCT_ID, platform=PLATFORM):
         return B.OtaBoot(self.read, _verify, self.mount, self.write_marker,
-                         PARTITION_SIZE, FRONT_SIZE, BLOCK, board_id, trusted,
+                         PARTITION_SIZE, FRONT_SIZE, BLOCK, product_id, trusted,
                          platform).run()
 
 

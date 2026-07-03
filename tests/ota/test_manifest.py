@@ -30,7 +30,7 @@ from openmv_ota.ota.version import encode_app_version
 def _body(**over):
     body = {
         "schema": 1,
-        "board_id": 7,
+        "product_id": 7,
         "product": "OPENMV_N6",
         "version": "2.1.0",
         "payload_version": encode_app_version("2.1.0"),
@@ -203,34 +203,34 @@ def test_verify_bad_signature():
 # --- update_reject_reason (device-relative pre-flight) ----------------------
 
 def test_reject_schema():
-    assert update_reject_reason(_body(schema=2), board_id=7, platform_version=0,
+    assert update_reject_reason(_body(schema=2), product_id=7, platform_version=0,
                                 rollback_floor=0) == "schema"
 
 
 def test_reject_board_mismatch():
-    assert update_reject_reason(_body(board_id=9), board_id=7, platform_version=0,
+    assert update_reject_reason(_body(product_id=9), product_id=7, platform_version=0,
                                 rollback_floor=0) == "board"
 
 
 def test_reject_compat_floor():
-    assert update_reject_reason(_body(min_platform_version=(6 << 24)), board_id=7,
+    assert update_reject_reason(_body(min_platform_version=(6 << 24)), product_id=7,
                                 platform_version=(5 << 24), rollback_floor=0) == "compat"
 
 
 def test_reject_rollback():
     floor = encode_app_version("3.0.0")
-    assert update_reject_reason(_body(), board_id=7, platform_version=0,
+    assert update_reject_reason(_body(), product_id=7, platform_version=0,
                                 rollback_floor=floor) == "rollback"
 
 
 def test_accept_when_all_clear():
-    assert update_reject_reason(_body(), board_id=7, platform_version=(9 << 24),
+    assert update_reject_reason(_body(), product_id=7, platform_version=(9 << 24),
                                 rollback_floor=0) is None
 
 
-def test_accept_board_id_zero_disables_check():
-    # device board_id 0 == "don't check": a manifest for another board still passes
-    assert update_reject_reason(_body(board_id=9), board_id=0, platform_version=0,
+def test_accept_product_id_zero_disables_check():
+    # device product_id 0 == "don't check": a manifest for another board still passes
+    assert update_reject_reason(_body(product_id=9), product_id=0, platform_version=0,
                                 rollback_floor=0) is None
 
 

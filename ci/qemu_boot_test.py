@@ -46,7 +46,7 @@ from openmv_ota.romfs.builder import build_image
 BOOT_PY = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
            / "build" / "device" / "boot.py")
 BLOCK = 4096
-BOARD = 0x1234            # the trailer board_id the path cases use (a test value)
+BOARD = 0x1234            # the trailer product_id the path cases use (a test value)
 PLAT = 5 << 24
 V1 = 1 << 24
 
@@ -63,7 +63,7 @@ def _trailer(body, *, board=BOARD, minplat=0, pv=V1, floor=0, body_size=None, ke
     spec = algorithm_for(ES256)
     t = host_trailer.Trailer(
         body_size=len(body) if body_size is None else body_size, pad_size=0,
-        meta={"k": 1}, board_id=board, min_platform_version=minplat, payload_version=pv,
+        meta={"k": 1}, product_id=board, min_platform_version=minplat, payload_version=pv,
         payload_version_floor=floor, key_id=key_id, sig_alg=ES256,
         body_sha256=hashlib.sha256(body).digest())
     t.signature = b"\x11" * spec.sig_size       # arbitrary; verify is injected on-device
@@ -220,7 +220,7 @@ def _runtime_partition(part: int, front: int) -> bytes:
     (src / "system.json").write_text('{"board": "qemu", "app_version": "1.2.3"}')
     (src / "_ota_config.py").write_text(
         "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nOTA_BLOCK=%d\n"
-        "BOARD_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
+        "PRODUCT_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
     body = build_image(str(src))
     shutil.rmtree(src, ignore_errors=True)
     img = bytearray(b"\xff" * part)
@@ -292,7 +292,7 @@ def _installer_partition(fw: Path, part: int, front: int) -> bytes:
     (src / "logging.py").write_text(logging_lib.read_text())
     (src / "_ota_config.py").write_text(
         "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nOTA_BLOCK=%d\n"
-        "BOARD_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
+        "PRODUCT_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
     body = build_image(str(src))
     shutil.rmtree(src, ignore_errors=True)
     img = bytearray(b"\xff" * part)
@@ -485,7 +485,7 @@ def _installer_script() -> str:
 
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
-    body = {"schema": 1, "board_id": 0, "payload_version": 0, "min_platform_version": 0,
+    body = {"schema": 1, "product_id": 0, "payload_version": 0, "min_platform_version": 0,
             "sha256": "ab" * 32,
             "representations": [{"format": "full", "url": "https://x/f.gz", "size": 9}]}
     man = Manifest(body=body, key_id=0x0100, sig_alg=ES256)

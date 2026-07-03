@@ -102,7 +102,7 @@ def load_local(path: Path) -> LocalConfig | None:
     )
 
 
-def derive_board_id(product: str, board: str) -> int:
+def derive_product_id(product: str, board: str) -> int:
     """A stable, auto-assigned product id for a target, so the user never has to
     invent or track a number. Seeded deterministically from ``product:board`` —
     distinct per board within a project, and reproducible (two machines, or a lost
@@ -114,14 +114,14 @@ def derive_board_id(product: str, board: str) -> int:
 
 
 def _render_target(product: str, board: str) -> str:
-    """An active ``[targets.<board>]`` section with an auto-assigned board_id and a
+    """An active ``[targets.<board>]`` section with an auto-assigned product_id and a
     board_name that defaults to the product (aligned comments)."""
-    bid = str(derive_board_id(product, board))
+    bid = str(derive_product_id(product, board))
     name_val = '"%s"' % product
     w = max(len(bid), len(name_val))
     return (
         "[targets.%s]\n" % board
-        + "board_id   = %s%s  # stable product id (auto-assigned; keep it once devices ship)\n"
+        + "product_id   = %s%s  # stable product id (auto-assigned; keep it once devices ship)\n"
         % (bid, " " * (w - len(bid)))
         + "board_name = %s%s  # human label; defaults to the product name, rename freely\n\n"
         % (name_val, " " * (w - len(name_val)))
@@ -152,8 +152,8 @@ def render_config(
             "#                           usable image size (regular + golden image)\n\n"
         )
     if ota:
-        # Active per-board sections with an auto-assigned board_id (the cross-flash
-        # guard); the user can rename board_name and override board_id.
+        # Active per-board sections with an auto-assigned product_id (the cross-flash
+        # guard); the user can rename board_name and override product_id.
         targets = (
             "[targets]\nboards = [%s]\n\n" % board_list
             + "".join(_render_target(name, b) for b in boards)
@@ -167,7 +167,7 @@ def render_config(
             + "# Optional per-board settings (add one table per board to configure):\n"
             "# [targets.OPENMV_AE3]\n"
             "# partition_size = 25165824 # override the main partition geometry\n"
-            "# board_id   = 1234         # product id in /rom/system.json (auto-set in OTA mode)\n"
+            "# product_id   = 1234         # product id in /rom/system.json (auto-set in OTA mode)\n"
         )
     return (
         "# openmv-ota project config (committed, shared with your team / CI).\n"

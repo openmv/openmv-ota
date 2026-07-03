@@ -42,7 +42,7 @@ class DevicePin(BaseModel):
 
 
 class CohortPin(BaseModel):
-    board_id: int
+    product_id: int
     cohort: str
     release_id: str | None = None          # null unpins
 
@@ -54,20 +54,20 @@ def create_rollout(body: RolloutCreate, request: Request,
     rel = ms.get_release(body.release_id)
     if rel is None:
         raise HTTPException(status_code=404, detail="no such release")
-    board_id = rel["board_id"]
-    prior = ms.active_rollout(board_id, body.cohort)     # only one active per (board_id, cohort)
+    product_id = rel["product_id"]
+    prior = ms.active_rollout(product_id, body.cohort)     # only one active per (product_id, cohort)
     if prior is not None:
         ms.update_rollout(prior["rollout_id"], state="paused")
         ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
                         entity_id=prior["rollout_id"])
     rid = new_id("ro")
-    ms.add_rollout(rollout_id=rid, release_id=body.release_id, board_id=board_id,
+    ms.add_rollout(rollout_id=rid, release_id=body.release_id, product_id=product_id,
                    cohort=body.cohort, percent=body.percent,
                    failure_threshold=body.failure_threshold)
     ms.append_audit(actor=principal.name, action="rollout.create", entity_type="rollout",
                     entity_id=rid, data={"release_id": body.release_id, "cohort": body.cohort,
                                          "percent": body.percent})
-    return {"rollout_id": rid, "board_id": board_id, "cohort": body.cohort,
+    return {"rollout_id": rid, "product_id": product_id, "cohort": body.cohort,
             "percent": body.percent, "state": "active"}
 
 
@@ -108,9 +108,9 @@ def rollback_rollout(rollout_id: str, request: Request,
 
 
 @admin.get("/rollouts")
-def list_rollouts(request: Request, board_id: int | None = None,
+def list_rollouts(request: Request, product_id: int | None = None,
                   principal: Principal = Depends(require_scope("fleet:read"))):
-    return {"rollouts": request.app.state.metastore.list_rollouts(board_id)}
+    return {"rollouts": request.app.state.metastore.list_rollouts(product_id)}
 
 
 @admin.get("/rollouts/{rollout_id}/status")
@@ -128,9 +128,9 @@ def rollout_status(rollout_id: str, request: Request,
 
 
 @admin.get("/cohorts")
-def list_cohorts(request: Request, board_id: int | None = None,
+def list_cohorts(request: Request, product_id: int | None = None,
                  principal: Principal = Depends(require_scope("fleet:read"))):
-    return {"cohorts": request.app.state.metastore.list_cohorts(board_id)}
+    return {"cohorts": request.app.state.metastore.list_cohorts(product_id)}
 
 
 @admin.post("/cohorts/assign")
@@ -159,22 +159,22 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
 def pin_cohort(body: CohortPin, request: Request,
                principal: Principal = Depends(require_scope("rollout:control"))):
     ms = request.app.state.metastore
-    ms.set_cohort_pin(body.board_id, body.cohort, body.release_id)   # release_id=None unpins
+    ms.set_cohort_pin(body.product_id, body.cohort, body.release_id)   # release_id=None unpins
     ms.append_audit(actor=principal.name, action="cohort.pin", entity_type="cohort",
-                    entity_id=body.cohort, data={"board_id": body.board_id, "release_id": body.release_id})
-    return {"board_id": body.board_id, "cohort": body.cohort, "release_id": body.release_id}
+                    entity_id=body.cohort, data={"product_id": body.product_id, "release_id": body.release_id})
+    return {"product_id": body.product_id, "cohort": body.cohort, "release_id": body.release_id}
 
 
 @admin.get("/fleet")
-def fleet(request: Request, board_id: int | None = None,
+def fleet(request: Request, product_id: int | None = None,
           principal: Principal = Depends(require_scope("fleet:read"))):
-    return request.app.state.metastore.fleet_summary(board_id)
+    return request.app.state.metastore.fleet_summary(product_id)
 
 
 @admin.get("/devices")
-def devices(request: Request, board_id: int | None = None, limit: int = 100,
+def devices(request: Request, product_id: int | None = None, limit: int = 100,
             principal: Principal = Depends(require_scope("fleet:read"))):
-    return {"devices": request.app.state.metastore.list_devices(board_id, limit)}
+    return {"devices": request.app.state.metastore.list_devices(product_id, limit)}
 
 
 @admin.get("/audit")

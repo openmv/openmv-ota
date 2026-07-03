@@ -107,7 +107,7 @@ def test_read_calls_carry_params():
     api.fleet(7)
     api.devices()
     api.audit(3)
-    assert c.calls[0][2]["params"] == {"board_id": 7}
+    assert c.calls[0][2]["params"] == {"product_id": 7}
     assert c.calls[1][2]["params"] == {}
     assert c.calls[2][2]["params"] == {"since": 3}
 
@@ -117,7 +117,7 @@ def test_cohort_calls():
     api.list_cohorts(7)
     api.assign_cohort("beta", ["d1", "d2"])
     assert c.calls[0][:2] == ("GET", "/api/v1/admin/cohorts")
-    assert c.calls[0][2]["params"] == {"board_id": 7}
+    assert c.calls[0][2]["params"] == {"product_id": 7}
     assert c.calls[1][:2] == ("POST", "/api/v1/admin/cohorts/assign")
     assert c.calls[1][2]["json"] == {"cohort": "beta", "device_ids": ["d1", "d2"]}
 
@@ -129,7 +129,7 @@ def test_pin_calls():
     assert c.calls[0][:2] == ("PATCH", "/api/v1/admin/devices/d1/pin")
     assert c.calls[0][2]["json"] == {"release_id": "rel1"}
     assert c.calls[1][:2] == ("POST", "/api/v1/admin/cohorts/pin")
-    assert c.calls[1][2]["json"] == {"board_id": 7, "cohort": "beta", "release_id": None}
+    assert c.calls[1][2]["json"] == {"product_id": 7, "cohort": "beta", "release_id": None}
 
 
 def test_empty_body_returns_empty_dict():

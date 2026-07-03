@@ -204,7 +204,7 @@ def ensure_sdk(repo: Path, override: Path | None, install_sdk: bool) -> sdk_res.
 # Per-board override keys that are pure identity (not firmware-resolved geometry):
 # editing them must not invalidate the lock, so they're excluded from the digest and
 # read straight from the config by the build.
-_IDENTITY_OVERRIDE_KEYS = ("board_id", "board_name")
+_IDENTITY_OVERRIDE_KEYS = ("product_id", "board_name")
 
 
 def _ensure_ota_capable(lock: lock_mod.Lock) -> None:
@@ -250,7 +250,7 @@ def _ensure_ota_mbedtls(lock: lock_mod.Lock) -> None:
 def _digest(config: OtaConfig) -> str:
     """Digest the *firmware-relevant* config — the fields that, if changed, would
     invalidate the resolved lock. Excludes release/identity state (``version``,
-    ``board_id``, ``board_name``), metadata (name/vendor), and cosmetic edits, so
+    ``product_id``, ``board_name``), metadata (name/vendor), and cosmetic edits, so
     setting a product id or bumping the version never trips drift."""
     geometry = {
         board: {k: v for k, v in ov.items() if k not in _IDENTITY_OVERRIDE_KEYS}

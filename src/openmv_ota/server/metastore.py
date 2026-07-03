@@ -38,24 +38,24 @@ def _audit_hash(prev: str, ts: str, actor: str, action: str, etype: str, eid: st
 
 # Each entry is a list of DDL statements; its 1-based index is the schema version it defines.
 _MIGRATIONS: list[list[str]] = [
-    [   # v1 -- the MVP feature tables. Everything groups by board_id (int): the manifest carries
-        # board_id (not a camera-model string), and the device check-in sends the same value, so
+    [   # v1 -- the MVP feature tables. Everything groups by product_id (int): the manifest carries
+        # product_id (not a camera-model string), and the device check-in sends the same value, so
         # it's the reliable release<->device join. product/board are display-only.
         """CREATE TABLE releases (
-            release_id TEXT PRIMARY KEY, board_id INTEGER NOT NULL, product TEXT,
+            release_id TEXT PRIMARY KEY, product_id INTEGER NOT NULL, product TEXT,
             version TEXT NOT NULL, payload_version INTEGER NOT NULL,
             min_platform_version INTEGER NOT NULL DEFAULT 0,
             image_sha256 TEXT NOT NULL, image_size INTEGER NOT NULL, representations TEXT NOT NULL,
             manifest_key TEXT NOT NULL, image_key TEXT NOT NULL, delta_key TEXT,
             key_id INTEGER, uploaded_by TEXT, uploaded_at TEXT NOT NULL)""",
         """CREATE TABLE rollouts (
-            rollout_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, board_id INTEGER NOT NULL,
+            rollout_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, product_id INTEGER NOT NULL,
             cohort TEXT NOT NULL, percent REAL NOT NULL, state TEXT NOT NULL,
             failure_threshold REAL NOT NULL DEFAULT 0.05, attempted INTEGER NOT NULL DEFAULT 0,
             updated INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
         """CREATE TABLE devices (
-            device_id TEXT PRIMARY KEY, board_id INTEGER NOT NULL, board TEXT,
+            device_id TEXT PRIMARY KEY, product_id INTEGER NOT NULL, board TEXT,
             cohort TEXT NOT NULL DEFAULT '__default__', current_version TEXT,
             current_payload_version INTEGER, slot TEXT, representation TEXT, fallback_reason TEXT,
             confirmed INTEGER, last_offered_release_id TEXT, owner_ref TEXT,
@@ -67,14 +67,14 @@ _MIGRATIONS: list[list[str]] = [
             seq INTEGER PRIMARY KEY, ts TEXT NOT NULL, actor TEXT, action TEXT NOT NULL,
             entity_type TEXT, entity_id TEXT, data TEXT NOT NULL, prev_hash TEXT NOT NULL,
             entry_hash TEXT NOT NULL)""",
-        "CREATE INDEX idx_rollouts_board_cohort ON rollouts (board_id, cohort, state)",
-        "CREATE INDEX idx_devices_board ON devices (board_id)",
-        "CREATE INDEX idx_releases_board ON releases (board_id, payload_version)",
+        "CREATE INDEX idx_rollouts_board_cohort ON rollouts (product_id, cohort, state)",
+        "CREATE INDEX idx_devices_board ON devices (product_id)",
+        "CREATE INDEX idx_releases_board ON releases (product_id, payload_version)",
     ],
     [   # v2 -- explicit device->server outcome reports (POST /feedback). One authoritative row per
         # (device_id, release_id); bounded by the registered fleet x releases, so still zero-footprint.
         """CREATE TABLE deployments (
-            device_id TEXT NOT NULL, release_id TEXT NOT NULL, board_id INTEGER NOT NULL,
+            device_id TEXT NOT NULL, release_id TEXT NOT NULL, product_id INTEGER NOT NULL,
             status TEXT NOT NULL, reason TEXT, reported_at TEXT NOT NULL,
             PRIMARY KEY (device_id, release_id))""",
         "CREATE INDEX idx_deployments_release ON deployments (release_id, status)",
@@ -82,8 +82,8 @@ _MIGRATIONS: list[list[str]] = [
     [   # v3 -- version pins: force a specific device or cohort onto a release, overriding rollouts.
         "ALTER TABLE devices ADD COLUMN pinned_release_id TEXT",
         """CREATE TABLE cohort_pins (
-            board_id INTEGER NOT NULL, cohort TEXT NOT NULL, release_id TEXT NOT NULL,
-            PRIMARY KEY (board_id, cohort))""",
+            product_id INTEGER NOT NULL, cohort TEXT NOT NULL, release_id TEXT NOT NULL,
+            PRIMARY KEY (product_id, cohort))""",
     ],
 ]
 
@@ -143,15 +143,15 @@ class SqlMetadataStore:
 
     # --- releases ---------------------------------------------------------------------------
 
-    def add_release(self, *, release_id, board_id, product, version, payload_version,
+    def add_release(self, *, release_id, product_id, product, version, payload_version,
                     min_platform_version, image_sha256, image_size, representations,
                     manifest_key, image_key, delta_key=None, key_id=None, uploaded_by=None) -> None:
         self.execute(
-            "INSERT INTO releases (release_id, board_id, product, version, payload_version, "
+            "INSERT INTO releases (release_id, product_id, product, version, payload_version, "
             "min_platform_version, image_sha256, image_size, representations, manifest_key, "
             "image_key, delta_key, key_id, uploaded_by, uploaded_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (release_id, board_id, product, version, payload_version, min_platform_version,
+            (release_id, product_id, product, version, payload_version, min_platform_version,
              image_sha256, image_size, json.dumps(representations), manifest_key, image_key,
              delta_key, key_id, uploaded_by, _now_iso()))
 
@@ -161,39 +161,39 @@ class SqlMetadataStore:
             r["representations"] = json.loads(r["representations"])
         return r
 
-    def list_releases(self, board_id: int) -> list[dict]:
+    def list_releases(self, product_id: int) -> list[dict]:
         rows = [_d(r) for r in self.query_all(
-            "SELECT * FROM releases WHERE board_id = ? ORDER BY payload_version DESC", (board_id,))]
+            "SELECT * FROM releases WHERE product_id = ? ORDER BY payload_version DESC", (product_id,))]
         for r in rows:
             r["representations"] = json.loads(r["representations"])
         return rows
 
-    def latest_release_payload_version(self, board_id: int) -> int | None:
+    def latest_release_payload_version(self, product_id: int) -> int | None:
         return self.query_one(
-            "SELECT MAX(payload_version) AS m FROM releases WHERE board_id = ?", (board_id,))["m"]
+            "SELECT MAX(payload_version) AS m FROM releases WHERE product_id = ?", (product_id,))["m"]
 
     # --- rollouts ---------------------------------------------------------------------------
 
-    def add_rollout(self, *, rollout_id, release_id, board_id, cohort, percent, state="active",
+    def add_rollout(self, *, rollout_id, release_id, product_id, cohort, percent, state="active",
                     failure_threshold=0.05) -> None:
         now = _now_iso()
         self.execute(
-            "INSERT INTO rollouts (rollout_id, release_id, board_id, cohort, percent, state, "
+            "INSERT INTO rollouts (rollout_id, release_id, product_id, cohort, percent, state, "
             "failure_threshold, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (rollout_id, release_id, board_id, cohort, percent, state, failure_threshold, now, now))
+            (rollout_id, release_id, product_id, cohort, percent, state, failure_threshold, now, now))
 
     def get_rollout(self, rollout_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM rollouts WHERE rollout_id = ?", (rollout_id,)))
 
-    def active_rollout(self, board_id: int, cohort: str) -> dict | None:
+    def active_rollout(self, product_id: int, cohort: str) -> dict | None:
         return _d(self.query_one(
-            "SELECT * FROM rollouts WHERE board_id = ? AND cohort = ? AND state = 'active' "
-            "ORDER BY created_at DESC LIMIT 1", (board_id, cohort)))
+            "SELECT * FROM rollouts WHERE product_id = ? AND cohort = ? AND state = 'active' "
+            "ORDER BY created_at DESC LIMIT 1", (product_id, cohort)))
 
-    def list_rollouts(self, board_id: int | None = None) -> list[dict]:
-        if board_id is not None:
+    def list_rollouts(self, product_id: int | None = None) -> list[dict]:
+        if product_id is not None:
             rows = self.query_all(
-                "SELECT * FROM rollouts WHERE board_id = ? ORDER BY created_at DESC", (board_id,))
+                "SELECT * FROM rollouts WHERE product_id = ? ORDER BY created_at DESC", (product_id,))
         else:
             rows = self.query_all("SELECT * FROM rollouts ORDER BY created_at DESC")
         return [_d(r) for r in rows]
@@ -212,42 +212,42 @@ class SqlMetadataStore:
 
     # --- the device registry (registered devices only) --------------------------------------
 
-    def upsert_device(self, *, device_id, board_id, board=None, cohort="__default__",
+    def upsert_device(self, *, device_id, product_id, board=None, cohort="__default__",
                       current_version=None, current_payload_version=None, slot=None,
                       representation=None, fallback_reason=None, confirmed=None,
                       last_offered_release_id=None, owner_ref=None) -> None:
         now = _now_iso()
         if self.query_one("SELECT 1 FROM devices WHERE device_id = ?", (device_id,)) is None:
             self.execute(
-                "INSERT INTO devices (device_id, board_id, board, cohort, current_version, "
+                "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
                 "current_payload_version, slot, representation, fallback_reason, confirmed, "
                 "last_offered_release_id, owner_ref, first_seen, last_seen) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (device_id, board_id, board, cohort, current_version, current_payload_version,
+                (device_id, product_id, board, cohort, current_version, current_payload_version,
                  slot, representation, fallback_reason, confirmed, last_offered_release_id,
                  owner_ref, now, now))
         else:                                               # cohort is admin-controlled, not by check-in
             self.execute(
-                "UPDATE devices SET board_id = ?, board = ?, current_version = ?, "
+                "UPDATE devices SET product_id = ?, board = ?, current_version = ?, "
                 "current_payload_version = ?, slot = ?, representation = ?, fallback_reason = ?, "
                 "confirmed = ?, last_offered_release_id = COALESCE(?, last_offered_release_id), "
                 "owner_ref = COALESCE(?, owner_ref), last_seen = ? WHERE device_id = ?",
-                (board_id, board, current_version, current_payload_version, slot, representation,
+                (product_id, board, current_version, current_payload_version, slot, representation,
                  fallback_reason, confirmed, last_offered_release_id, owner_ref, now, device_id))
 
     def get_device(self, device_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
 
-    def list_devices(self, board_id: int | None = None, limit: int = 100) -> list[dict]:
-        if board_id is not None:
-            rows = self.query_all("SELECT * FROM devices WHERE board_id = ? ORDER BY last_seen "
-                                  "DESC LIMIT ?", (board_id, limit))
+    def list_devices(self, product_id: int | None = None, limit: int = 100) -> list[dict]:
+        if product_id is not None:
+            rows = self.query_all("SELECT * FROM devices WHERE product_id = ? ORDER BY last_seen "
+                                  "DESC LIMIT ?", (product_id, limit))
         else:
             rows = self.query_all("SELECT * FROM devices ORDER BY last_seen DESC LIMIT ?", (limit,))
         return [_d(r) for r in rows]
 
-    def fleet_summary(self, board_id: int | None = None) -> dict:
-        where, params = ("WHERE board_id = ?", (board_id,)) if board_id is not None else ("", ())
+    def fleet_summary(self, product_id: int | None = None) -> dict:
+        where, params = ("WHERE product_id = ?", (product_id,)) if product_id is not None else ("", ())
         by_version = {r["current_version"]: r["n"] for r in self.query_all(
             "SELECT current_version, COUNT(*) AS n FROM devices " + where
             + " GROUP BY current_version", params)}
@@ -256,9 +256,9 @@ class SqlMetadataStore:
         total = self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
         return {"total": total, "by_version": by_version, "by_slot": by_slot}
 
-    def list_cohorts(self, board_id: int | None = None) -> list[dict]:
+    def list_cohorts(self, product_id: int | None = None) -> list[dict]:
         """The cohorts in use (per board), with a device count each."""
-        where, params = ("WHERE board_id = ?", (board_id,)) if board_id is not None else ("", ())
+        where, params = ("WHERE product_id = ?", (product_id,)) if product_id is not None else ("", ())
         rows = self.query_all("SELECT cohort, COUNT(*) AS devices FROM devices " + where
                               + " GROUP BY cohort ORDER BY cohort", params)
         return [{"cohort": r["cohort"], "devices": r["devices"]} for r in rows]
@@ -279,29 +279,29 @@ class SqlMetadataStore:
         self.execute("UPDATE devices SET pinned_release_id = ? WHERE device_id = ?",
                      (release_id, device_id))
 
-    def set_cohort_pin(self, board_id: int, cohort: str, release_id: str | None) -> None:
+    def set_cohort_pin(self, product_id: int, cohort: str, release_id: str | None) -> None:
         if release_id is None:
-            self.execute("DELETE FROM cohort_pins WHERE board_id = ? AND cohort = ?",
-                         (board_id, cohort))
+            self.execute("DELETE FROM cohort_pins WHERE product_id = ? AND cohort = ?",
+                         (product_id, cohort))
         else:
-            self.execute("INSERT INTO cohort_pins (board_id, cohort, release_id) VALUES (?,?,?) "
-                         "ON CONFLICT (board_id, cohort) DO UPDATE SET release_id = excluded.release_id",
-                         (board_id, cohort, release_id))
+            self.execute("INSERT INTO cohort_pins (product_id, cohort, release_id) VALUES (?,?,?) "
+                         "ON CONFLICT (product_id, cohort) DO UPDATE SET release_id = excluded.release_id",
+                         (product_id, cohort, release_id))
 
-    def get_cohort_pin(self, board_id: int, cohort: str) -> str | None:
-        row = self.query_one("SELECT release_id FROM cohort_pins WHERE board_id = ? AND cohort = ?",
-                             (board_id, cohort))
+    def get_cohort_pin(self, product_id: int, cohort: str) -> str | None:
+        row = self.query_one("SELECT release_id FROM cohort_pins WHERE product_id = ? AND cohort = ?",
+                             (product_id, cohort))
         return row["release_id"] if row else None
 
     # --- deployments (explicit terminal outcome reports) ------------------------------------
 
-    def record_deployment(self, *, device_id, release_id, board_id, status, reason=None) -> None:
+    def record_deployment(self, *, device_id, release_id, product_id, status, reason=None) -> None:
         """Upsert the authoritative outcome for (device_id, release_id) -- one row per pair."""
         self.execute(
-            "INSERT INTO deployments (device_id, release_id, board_id, status, reason, reported_at) "
+            "INSERT INTO deployments (device_id, release_id, product_id, status, reason, reported_at) "
             "VALUES (?,?,?,?,?,?) ON CONFLICT (device_id, release_id) DO UPDATE SET "
             "status = excluded.status, reason = excluded.reason, reported_at = excluded.reported_at",
-            (device_id, release_id, board_id, status, reason, _now_iso()))
+            (device_id, release_id, product_id, status, reason, _now_iso()))
 
     def deployment_counts(self, release_id: str) -> dict:
         """Reported {installed, failed} counts for a release (from explicit /feedback)."""

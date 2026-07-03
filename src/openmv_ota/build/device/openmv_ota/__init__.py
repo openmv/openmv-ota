@@ -319,7 +319,7 @@ def status():  # pragma: no cover
 
 def identity():  # pragma: no cover
     """The running image's identity/provenance from ``/rom/system.json`` (board, product,
-    board_id, app_version, vendor, toolchain, ...) plus ``device_id`` -- this unit's unique
+    product_id, app_version, vendor, toolchain, ...) plus ``device_id`` -- this unit's unique
     hardware id (``machine.unique_id()``) -- so an update server can address the specific
     device, not just the model. ``{}`` (minus device_id) if there's no system.json."""
     import json

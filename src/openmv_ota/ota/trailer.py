@@ -21,7 +21,7 @@ verifier trusts comes from authenticated fields, not from the flexible blob.
 The fixed header, in order (see the plan for per-field semantics)::
 
     magic(4s) header_version body_size pad_size meta_size sig_size
-    board_id min_platform_version payload_version payload_version_floor
+    product_id min_platform_version payload_version payload_version_floor
     key_id sig_alg(int32) body_sha256(32s)
 
 ``magic`` doubles as the payload-kind discriminator (``OMVR`` = ROMFS app,
@@ -67,7 +67,7 @@ class Trailer:
     body_size: int
     pad_size: int
     meta: dict
-    board_id: int
+    product_id: int
     min_platform_version: int
     payload_version: int
     payload_version_floor: int
@@ -101,7 +101,7 @@ def _build_signed_region(t: Trailer) -> tuple[bytes, AlgSpec]:
         t.pad_size,
         len(meta_bytes),
         spec.sig_size,
-        t.board_id,
+        t.product_id,
         t.min_platform_version,
         t.payload_version,
         t.payload_version_floor,
@@ -168,7 +168,7 @@ def parse_trailer(data: bytes) -> Trailer:
         pad_size,
         meta_size,
         sig_size,
-        board_id,
+        product_id,
         min_platform_version,
         payload_version,
         payload_version_floor,
@@ -207,7 +207,7 @@ def parse_trailer(data: bytes) -> Trailer:
         body_size=body_size,
         pad_size=pad_size,
         meta=meta,
-        board_id=board_id,
+        product_id=product_id,
         min_platform_version=min_platform_version,
         payload_version=payload_version,
         payload_version_floor=payload_version_floor,

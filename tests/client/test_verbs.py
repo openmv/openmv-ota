@@ -55,7 +55,7 @@ def _build_release(project, board="OPENMV_N6", pv=0x02000000):
     build.mkdir(parents=True, exist_ok=True)
     img = b"\xA5" * 64
     image_gz = gzip.compress(img, mtime=0)
-    body = {"schema": 1, "board_id": BID, "product": "P", "version": "2.0.0", "payload_version": pv,
+    body = {"schema": 1, "product_id": BID, "product": "P", "version": "2.0.0", "payload_version": pv,
             "min_platform_version": 0, "size": len(img), "sha256": hashlib.sha256(img).hexdigest(),
             "representations": [{"format": "full", "url": "%s-ota.img.gz" % board,
                                  "size": len(image_gz)}]}
@@ -132,11 +132,11 @@ def test_rollout_server_error_surfaced(wired, tmp_path, capsys):
 def test_fleet_devices_audit(wired, tmp_path, capsys):
     import json
     store, _ = wired
-    store.upsert_device(device_id="d1", board_id=BID, current_version="1.0.0", slot="FRONT")
+    store.upsert_device(device_id="d1", product_id=BID, current_version="1.0.0", slot="FRONT")
     store.append_audit(actor="ci", action="release.publish")
     assert main(["client", "fleet"]) == 0
     assert json.loads(capsys.readouterr().out)["total"] == 1
-    assert main(["client", "devices", "--board-id", str(BID)]) == 0
+    assert main(["client", "devices", "--product-id", str(BID)]) == 0
     assert json.loads(capsys.readouterr().out)["devices"][0]["device_id"] == "d1"
     assert main(["client", "audit"]) == 0
     assert json.loads(capsys.readouterr().out)["events"][0]["action"] == "release.publish"
@@ -145,7 +145,7 @@ def test_fleet_devices_audit(wired, tmp_path, capsys):
 def test_cohort_list_and_assign(wired, tmp_path, capsys):
     import json
     store, _ = wired
-    store.upsert_device(device_id="d1", board_id=BID)
+    store.upsert_device(device_id="d1", product_id=BID)
     assert main(["client", "cohort", "assign", "--cohort", "beta", "--device", "d1"]) == 0
     assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
     assert main(["client", "cohort", "list"]) == 0
@@ -164,13 +164,13 @@ def test_cohort_error_surfaced(tmp_path, monkeypatch, capsys):
 
 def test_pin_device_and_cohort(wired, tmp_path, capsys):
     store, _ = wired
-    store.upsert_device(device_id="d1", board_id=BID)
+    store.upsert_device(device_id="d1", product_id=BID)
     assert main(["client", "pin", "device", "--id", "d1", "--release", "rel9"]) == 0
     assert "device d1 pinned to rel9" in capsys.readouterr().out
     assert store.get_device("d1")["pinned_release_id"] == "rel9"
     assert main(["client", "pin", "device", "--id", "d1", "--clear"]) == 0
     assert "(unpinned)" in capsys.readouterr().out
-    assert main(["client", "pin", "cohort", "--board-id", str(BID),
+    assert main(["client", "pin", "cohort", "--product-id", str(BID),
                  "--cohort", "beta", "--release", "rel9"]) == 0
     assert "cohort beta pinned to rel9" in capsys.readouterr().out
     assert store.get_cohort_pin(BID, "beta") == "rel9"
@@ -178,7 +178,7 @@ def test_pin_device_and_cohort(wired, tmp_path, capsys):
 
 def test_pin_error_surfaced(tmp_path, monkeypatch, capsys):
     app, store = _server(tmp_path, scopes=("fleet:read",))     # token can't control -> pin 403s
-    store.upsert_device(device_id="d1", board_id=BID)
+    store.upsert_device(device_id="d1", product_id=BID)
     tc = TestClient(app)
     monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
     monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")

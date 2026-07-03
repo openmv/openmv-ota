@@ -215,7 +215,7 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     # the real boot.py (not a placeholder) + the generated config + device modules are present
     assert "OtaBoot" in (r.build_dir / "boot.py").read_text()
     cfg = (r.build_dir / "_ota_config.py").read_text()
-    assert "TRUSTED_KEYS" in cfg and "PARTITION_SIZE" in cfg and "BOARD_ID" in cfg
+    assert "TRUSTED_KEYS" in cfg and "PARTITION_SIZE" in cfg and "PRODUCT_ID" in cfg
     assert "ENABLED" in (r.build_dir / "openmv_log.py").read_text()   # the project's copy
     assert "def relax(" in (r.build_dir / "openmv_wdt.py").read_text()
 
@@ -237,7 +237,7 @@ def test_ota_config_values(make_project, monkeypatch):
     exec((r.build_dir / "_ota_config.py").read_text(), ns)  # noqa: S102 (generated code)
     assert ns["PARTITION_SIZE"] > 0 and 0 < ns["FRONT_SIZE"] < ns["PARTITION_SIZE"]
     assert ns["OTA_BLOCK"] == 4096
-    assert isinstance(ns["BOARD_ID"], int) and ns["BOARD_ID"] != 0   # OTA pins it
+    assert isinstance(ns["PRODUCT_ID"], int) and ns["PRODUCT_ID"] != 0   # OTA pins it
     assert isinstance(ns["PLATFORM_VERSION"], int)
     keys = ns["TRUSTED_KEYS"]
     assert isinstance(keys, dict) and len(keys) == 3   # 2 ota + 1 factory provisioned

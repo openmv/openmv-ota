@@ -38,7 +38,7 @@ _MEDIA = {"manifest.bin": "application/octet-stream"}
 
 class CheckIn(BaseModel):
     device_id: str
-    board_id: int                          # the release<->device join key (from identity())
+    product_id: int                          # the release<->device join key (from identity())
     board: str | None = None               # camera model, display-only
     product: str | None = None
     app_version: str | None = None
@@ -51,7 +51,7 @@ class CheckIn(BaseModel):
 
 class Feedback(BaseModel):
     device_id: str
-    board_id: int
+    product_id: int
     board: str | None = None               # firmware board name (for the registration gate)
     release_id: str
     status: str                            # terminal outcome: 'installed' | 'failed'
@@ -85,13 +85,13 @@ def _decide(state, checkin, cohort, existing=None):
     # A pin (device wins over cohort) overrides the rollout: offer the pinned release iff it's an
     # upgrade -- a pin to the current/older version just holds the device (no rollout reaches it).
     pinned = (existing["pinned_release_id"] if existing else None) \
-        or ms.get_cohort_pin(checkin.board_id, cohort)
+        or ms.get_cohort_pin(checkin.product_id, cohort)
     if pinned:
         rel = ms.get_release(pinned)
         if rel is None or rel["payload_version"] <= checkin.payload_version:
             return None, rel, False, None
         return None, rel, True, _offer(state, rel)
-    ro = ms.active_rollout(checkin.board_id, cohort)
+    ro = ms.active_rollout(checkin.product_id, cohort)
     if ro is None:
         return None, None, False, None
     rel = ms.get_release(ro["release_id"])
@@ -173,7 +173,7 @@ def check(checkin: CheckIn, request: Request):
     _account(ms, ro, rel, checkin, existing, offered)
     release_id = rel["release_id"] if offered else None
     ms.upsert_device(
-        device_id=checkin.device_id, board_id=checkin.board_id, board=checkin.board, cohort=cohort,
+        device_id=checkin.device_id, product_id=checkin.product_id, board=checkin.board, cohort=cohort,
         current_version=checkin.app_version, current_payload_version=checkin.payload_version,
         slot=checkin.slot, representation=checkin.representation,
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
@@ -199,7 +199,7 @@ def feedback(report: Feedback, request: Request):
     if report.board in st.settings.unverified_boards or not _verify(st, report).registered:
         return {"ok": False}                                    # untracked / unregistered -> no write
     st.metastore.record_deployment(
-        device_id=report.device_id, release_id=report.release_id, board_id=report.board_id,
+        device_id=report.device_id, release_id=report.release_id, product_id=report.product_id,
         status=report.status, reason=report.reason)
     return {"ok": True}
 

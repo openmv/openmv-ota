@@ -152,7 +152,7 @@ def _make_image_files(tmp_path):
         meta={"product": "p", "board": "OPENMV_N6", "board_name": "P", "app_version": "1.2.3",
               "firmware": {"version": "5.0.0", "commit": "abc123def456"}, "micropython": "1.28.0",
               "toolchain": {"mpy_cross": "1.28.0", "vela": None, "stedgeai": None, "sdk": "1.6.0"}},
-        board_id=7, min_platform_version=(5 << 24), payload_version=encode_app_version("1.2.3"),
+        product_id=7, min_platform_version=(5 << 24), payload_version=encode_app_version("1.2.3"),
         payload_version_floor=0, key_id=0x0100, sig_alg=ES256,
         body_sha256=hashlib.sha256(body).digest())
     t.signature = sign_region(priv, signed_region(t), spec)
@@ -177,7 +177,7 @@ def test_build_inspect_json(tmp_path, capsys):
     _romfs, trailer, _keys = _make_image_files(tmp_path)
     assert main(["build", "inspect", str(trailer), "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["board_id"] == 7 and data["sig_alg"] == "ES256" and data["app_version"] == "1.2.3"
+    assert data["product_id"] == 7 and data["sig_alg"] == "ES256" and data["app_version"] == "1.2.3"
 
 
 def test_build_inspect_bad_trailer(tmp_path, capsys):
@@ -388,7 +388,7 @@ def _write_manifest_and_keys(d, *, key_id=0x0100, sign_key_id=None, with_delta=T
     if with_delta:
         reps.append({"format": "ocdl", "url": "https://x/n6.delta.gz", "size": 1200,
                      "base_payload_version": 16777216})
-    body = {"schema": 1, "board_id": 7, "product": "OPENMV_N6", "version": "2.1.0",
+    body = {"schema": 1, "product_id": 7, "product": "OPENMV_N6", "version": "2.1.0",
             "payload_version": 33685760, "min_platform_version": 0, "size": 16384,
             "sha256": "ab" * 32, "representations": reps}
     m = Manifest(body=body, key_id=key_id, sig_alg=ES256)
@@ -408,7 +408,7 @@ def test_inspect_manifest(tmp_path, capsys):
     _write_manifest_and_keys(tmp_path)
     assert main(["build", "inspect", str(tmp_path / "m.bin")]) == 0
     out = capsys.readouterr().out
-    assert "manifest" in out and "board_id 7" in out and "ocdl" in out and "full" in out
+    assert "manifest" in out and "product_id 7" in out and "ocdl" in out and "full" in out
 
 
 def test_inspect_manifest_json(tmp_path, capsys):
@@ -416,7 +416,7 @@ def test_inspect_manifest_json(tmp_path, capsys):
     assert main(["build", "inspect", str(tmp_path / "m.bin"), "--json"]) == 0
     import json
     out = json.loads(capsys.readouterr().out)
-    assert out["body"]["board_id"] == 7 and out["key_id"] == 0x0100
+    assert out["body"]["product_id"] == 7 and out["key_id"] == 0x0100
 
 
 def test_inspect_manifest_corrupt(tmp_path, capsys):

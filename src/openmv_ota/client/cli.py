@@ -61,7 +61,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_co = sub.add_parser("cohort", help="list cohorts / assign devices to one")
     cosub = p_co.add_subparsers(dest="_co")
     p_col = cosub.add_parser("list")
-    p_col.add_argument("--board-id", type=int)
+    p_col.add_argument("--product-id", type=int)
     _creds(p_col)
     p_col.set_defaults(func=cmd_cohort, _command="client cohort list", action="list")
     p_coa = cosub.add_parser("assign")
@@ -81,7 +81,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_pd)
     p_pd.set_defaults(func=cmd_pin, _command="client pin device", target="device")
     p_pc = pinsub.add_parser("cohort")
-    p_pc.add_argument("--board-id", type=int, required=True)
+    p_pc.add_argument("--product-id", type=int, required=True)
     p_pc.add_argument("--cohort", required=True)
     gc = p_pc.add_mutually_exclusive_group(required=True)
     gc.add_argument("--release", help="release id to pin to")
@@ -92,7 +92,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     for name, handler in (("fleet", cmd_fleet), ("devices", cmd_devices), ("audit", cmd_audit)):
         p = sub.add_parser(name, help="read %s status" % name)
         if name in ("fleet", "devices"):
-            p.add_argument("--board-id", type=int)
+            p.add_argument("--product-id", type=int)
         else:
             p.add_argument("--since", type=int, default=0)
         _creds(p)
@@ -178,7 +178,7 @@ def cmd_cohort(args: argparse.Namespace) -> int:
     try:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "list":
-            print(json.dumps(api.list_cohorts(args.board_id), indent=2))
+            print(json.dumps(api.list_cohorts(args.product_id), indent=2))
         else:
             res = api.assign_cohort(args.cohort, args.devices)
             print("assigned %d/%d device(s) to cohort %s"
@@ -197,7 +197,7 @@ def cmd_pin(args: argparse.Namespace) -> int:
             res = api.pin_device(args.id, release)
             print("device %s pinned to %s" % (args.id, res["pinned_release_id"] or "(unpinned)"))
         else:
-            res = api.pin_cohort(args.board_id, args.cohort, release)
+            res = api.pin_cohort(args.product_id, args.cohort, release)
             print("cohort %s pinned to %s" % (args.cohort, res["release_id"] or "(unpinned)"))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -215,11 +215,11 @@ def _read(args, call) -> int:
 
 
 def cmd_fleet(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.fleet(args.board_id))
+    return _read(args, lambda api: api.fleet(args.product_id))
 
 
 def cmd_devices(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.devices(args.board_id))
+    return _read(args, lambda api: api.devices(args.product_id))
 
 
 def cmd_audit(args: argparse.Namespace) -> int:

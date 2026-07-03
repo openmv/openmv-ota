@@ -44,21 +44,21 @@ def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0, unve
 BID = 7
 
 def _seed(store, *, pv=0x02000000, percent=100, storage=None, manifest=b"MANI", image=b"IMG"):
-    store.add_release(release_id="rel1", board_id=BID, product="P", version="2.0.0",
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
                       payload_version=pv, min_platform_version=0, image_sha256="ab" * 32,
                       image_size=len(image),
                       representations=[{"format": "full", "url": "OPENMV_N6-ota.img.gz",
                                         "size": len(image)}],
                       manifest_key="manifest/rel1", image_key="image/rel1")
-    store.add_rollout(rollout_id="ro1", release_id="rel1", board_id=BID, cohort="__default__",
+    store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID, cohort="__default__",
                       percent=percent)
     if storage is not None:
         storage.put("manifest/rel1", manifest, "application/octet-stream")
         storage.put("image/rel1", image, "application/gzip")
 
 
-def _checkin(dev="dev1", board_id=BID, pv=0x01000000, **kw):
-    return {"device_id": dev, "board_id": board_id, "payload_version": pv, **kw}
+def _checkin(dev="dev1", product_id=BID, pv=0x01000000, **kw):
+    return {"device_id": dev, "product_id": product_id, "payload_version": pv, **kw}
 
 
 # --- health + validation --------------------------------------------------------------------
@@ -118,7 +118,7 @@ def test_unverified_board_no_rollout_returns_nothing(tmp_path):
 # --- version pins (override rollouts) -------------------------------------------------------
 
 def _seed_rel2(store):
-    store.add_release(release_id="rel2", board_id=BID, product="P", version="3.0.0",
+    store.add_release(release_id="rel2", product_id=BID, product="P", version="3.0.0",
                       payload_version=0x03000000, min_platform_version=0, image_sha256="cd" * 32,
                       image_size=5, representations=[{"format": "full", "url": "x.img.gz", "size": 4}],
                       manifest_key="m/rel2", image_key="i/rel2")
@@ -159,8 +159,8 @@ def test_pin_to_unknown_release_holds(tmp_path):
 
 # --- POST /feedback (explicit terminal outcomes) --------------------------------------------
 
-def _feedback(dev="dev1", board_id=BID, release_id="rel1", status="installed", **kw):
-    return {"device_id": dev, "board_id": board_id, "release_id": release_id, "status": status, **kw}
+def _feedback(dev="dev1", product_id=BID, release_id="rel1", status="installed", **kw):
+    return {"device_id": dev, "product_id": product_id, "release_id": release_id, "status": status, **kw}
 
 
 def test_feedback_records_for_registered_device(tmp_path):
@@ -239,7 +239,7 @@ def test_anti_rollback_not_offered(tmp_path):
 
 def test_rollout_pointing_at_missing_release(tmp_path):
     app, store, storage, v = _app(tmp_path)
-    store.add_rollout(rollout_id="ro1", release_id="ghost", board_id=BID,
+    store.add_rollout(rollout_id="ro1", release_id="ghost", product_id=BID,
                       cohort="__default__", percent=100)
     assert TestClient(app).post("/api/v1/check", json=_checkin(pv=1)).json()["update"] is False
 

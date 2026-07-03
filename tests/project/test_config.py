@@ -103,9 +103,9 @@ def test_render_config_ota_roundtrips(tmp_path):
     assert "[targets.OPENMV_N6]" in text
     c = cfg.load_config(_write(tmp_path / cfg.CONFIG_NAME, text))
     assert c.ota is True and c.signing_key_id == 256
-    # board_id is auto-assigned (nonzero, deterministic); board_name defaults to product.
-    bid = cfg.derive_board_id("prod", "OPENMV_N6")
-    assert bid != 0 and c.overrides["OPENMV_N6"]["board_id"] == bid
+    # product_id is auto-assigned (nonzero, deterministic); board_name defaults to product.
+    bid = cfg.derive_product_id("prod", "OPENMV_N6")
+    assert bid != 0 and c.overrides["OPENMV_N6"]["product_id"] == bid
     assert c.overrides["OPENMV_N6"]["board_name"] == "prod"
 
 
@@ -113,16 +113,16 @@ def test_non_ota_config_has_no_signing_key(tmp_path):
     text = cfg.render_config("prod", None, ["OPENMV_N6"])
     c = cfg.load_config(_write(tmp_path / cfg.CONFIG_NAME, text))
     assert c.signing_key_id is None
-    # A non-OTA project has no active per-board table (board_id is the OTA guard).
+    # A non-OTA project has no active per-board table (product_id is the OTA guard).
     assert "OPENMV_N6" not in c.overrides
 
 
-def test_derive_board_id_distinct_and_stable():
+def test_derive_product_id_distinct_and_stable():
     # Distinct per board, reproducible, never 0.
-    a = cfg.derive_board_id("prod", "OPENMV_N6")
-    b = cfg.derive_board_id("prod", "OPENMV_AE3")
+    a = cfg.derive_product_id("prod", "OPENMV_N6")
+    b = cfg.derive_product_id("prod", "OPENMV_AE3")
     assert a != b
-    assert a == cfg.derive_board_id("prod", "OPENMV_N6")  # deterministic
+    assert a == cfg.derive_product_id("prod", "OPENMV_N6")  # deterministic
     assert a != 0 and 0 < a <= 0xFFFFFFFF
 
 
