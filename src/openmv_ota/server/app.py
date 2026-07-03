@@ -123,6 +123,17 @@ def check(checkin: CheckIn, request: Request):
     if not st.ratelimit.allow(ip):
         return JSONResponse(nothing, status_code=429,
                             headers={"Retry-After": str(st.settings.poll_after_s)})
+
+    if checkin.board in st.settings.unverified_boards:
+        # A board type swd-ids never registers (legacy Arduino, pre-registration M4). Serve OTA
+        # READ-ONLY: skip the registration check AND the device-registry write, so a fake id can't
+        # grow the DB -- zero footprint preserved, at the cost of no fleet tracking for these boards.
+        _, rel, offered, manifest_url = _decide(st, checkin, "__default__")
+        if manifest_url:
+            return {"update": True, "manifest_url": manifest_url,
+                    "release_id": rel["release_id"], "poll_after_s": st.settings.poll_after_s}
+        return nothing
+
     # swd-ids matches on its own board codes (N6, H7), not firmware names (OPENMV_N6) -- translate.
     swd_board = swd_ids_board_code(checkin.board, st.settings.board_code_overrides)
     reg = st.verifier.verify(swd_board, checkin.device_id)

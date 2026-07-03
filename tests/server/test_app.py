@@ -28,13 +28,14 @@ class _Verifier:
         return self._reg
 
 
-def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0):
+def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0, unverified=()):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("cohort_salt", SECRET)
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))
     settings = ServerSettings(base_url=base_url, checkin_rate_per_min=rate,
-                              swd_ids_verify_url="u", swd_ids_verify_token="t")
+                              swd_ids_verify_url="u", swd_ids_verify_token="t",
+                              unverified_boards=set(unverified))
     verifier = _Verifier(registered)
     app = create_app(settings, storage=storage, metastore=store, verifier=verifier)
     return app, store, storage, verifier
@@ -94,6 +95,24 @@ def test_firmware_board_translated_to_swd_ids_code(tmp_path):
     TestClient(app).post("/api/v1/check", json=_checkin(board="OPENMV_N6"))
     assert v.last_board == "N6"                              # verify() got the swd-ids code, not OPENMV_N6
     assert store.get_device("dev1")["board"] == "OPENMV_N6"  # the raw firmware name is still stored
+
+
+def test_unverified_board_served_readonly_zero_footprint(tmp_path):
+    # verifier would say NO, but a bypassed board is served anyway — read-only, no writes.
+    app, store, storage, v = _app(tmp_path, registered=False, unverified=["ARDUINO_GIGA"])
+    _seed(store, storage=storage, percent=100)
+    r = TestClient(app).post("/api/v1/check", json=_checkin(board="ARDUINO_GIGA"))
+    assert r.json()["update"] is True                        # got the update
+    assert v.calls == 0                                      # verify was skipped
+    assert store.get_device("dev1") is None                 # zero footprint — no device row
+    assert store.get_rollout("ro1")["attempted"] == 0       # and no rollout accounting
+
+
+def test_unverified_board_no_rollout_returns_nothing(tmp_path):
+    app, store, *_ = _app(tmp_path, unverified=["ARDUINO_GIGA"])
+    r = TestClient(app).post("/api/v1/check", json=_checkin(board="ARDUINO_GIGA"))
+    assert r.json() == {"update": False, "poll_after_s": 3600}
+    assert store.get_device("dev1") is None
 
 
 # --- the rollout decision -------------------------------------------------------------------

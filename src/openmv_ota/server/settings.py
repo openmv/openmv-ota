@@ -54,6 +54,11 @@ class ServerSettings(BaseSettings):
     # Add/correct firmware-board-name -> swd-ids code mappings without a redeploy (JSON in env),
     # e.g. OPENMV_OTA_BOARD_CODE_OVERRIDES='{"ARDUINO_PORTENTA_H7":"H7"}'. Merged over boardmap defaults.
     board_code_overrides: dict[str, str] = {}
+    # Firmware board names swd-ids never registers (legacy Arduino boards, the pre-registration M4).
+    # For these the registration check is BYPASSED and OTA is served read-only -- no device-registry
+    # write, so they stay zero-footprint (can't be flooded). No fleet tracking for them. Default off.
+    # e.g. OPENMV_OTA_UNVERIFIED_BOARDS='["ARDUINO_PORTENTA_H7","ARDUINO_GIGA","ARDUINO_NICLA_VISION","OPENMV2"]'
+    unverified_boards: set[str] = set()
 
     def missing(self) -> list[str]:
         """Settings required before the server can serve devices (used by ``server check``)."""
