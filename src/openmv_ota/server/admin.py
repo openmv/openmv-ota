@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from .auth import Principal, hash_token, require_scope
-from .scopes import SCOPES
+from .scopes import ALL_SCOPES, SCOPES
 
 admin = APIRouter(prefix="/api/v1/admin")
 
@@ -81,6 +81,75 @@ def create_account(body: AccountCreate, request: Request,
 def list_accounts(request: Request,
                   principal: Principal = Depends(require_scope("accounts"))):
     return {"accounts": request.app.state.metastore.list_accounts()}
+
+
+# --- token management (operator-only: 'accounts' scope) ------------------------------------
+# Deliberately NOT reachable by a normal worker token -- so a stolen publish/manage/observe token
+# can't mint a second, revocation-surviving token. A token secret is returned ONLY here (issue /
+# rotate), never in a list/get; the store keeps only the hash. token_hash is the non-secret id.
+
+class TokenIssue(BaseModel):
+    name: str
+    scopes: list[str] | None = None        # default: the worker set (publish/manage/observe)
+
+
+def _mint(ms, principal, name, scopes, account_id, action, extra=None):
+    token = secrets.token_urlsafe(32)
+    th = hash_token(token)
+    ms.add_token(th, name, scopes, account_id=account_id)
+    ms.append_audit(actor=principal.name, action=action, entity_type="token", entity_id=th,
+                    data={"account_id": account_id, "name": name, **(extra or {})},
+                    account_id=principal.account_id)
+    return {"token_hash": th, "name": name, "scopes": scopes, "account_id": account_id, "token": token}
+
+
+@admin.post("/accounts/{account_id}/tokens")
+def issue_token(account_id: str, body: TokenIssue, request: Request,
+                principal: Principal = Depends(require_scope("accounts"))):
+    ms = request.app.state.metastore
+    if ms.get_account(account_id) is None:
+        raise HTTPException(status_code=404)
+    scopes = body.scopes if body.scopes is not None else list(SCOPES)
+    bad = [s for s in scopes if s not in ALL_SCOPES]
+    if bad:
+        raise HTTPException(status_code=400, detail="unknown scope(s): %s" % ", ".join(bad))
+    return _mint(ms, principal, body.name, scopes, account_id, "token.issue")
+
+
+@admin.get("/accounts/{account_id}/tokens")
+def list_account_tokens(account_id: str, request: Request,
+                        principal: Principal = Depends(require_scope("accounts"))):
+    ms = request.app.state.metastore
+    if ms.get_account(account_id) is None:
+        raise HTTPException(status_code=404)
+    return {"tokens": ms.list_tokens(account_id=account_id)}   # metadata only -- never the secret
+
+
+@admin.post("/tokens/{token_hash}/revoke")
+def revoke_token(token_hash: str, request: Request,
+                 principal: Principal = Depends(require_scope("accounts"))):
+    ms = request.app.state.metastore
+    if ms.get_token(token_hash) is None:
+        raise HTTPException(status_code=404)
+    ms.revoke_token(token_hash)
+    ms.append_audit(actor=principal.name, action="token.revoke", entity_type="token",
+                    entity_id=token_hash, account_id=principal.account_id)
+    return {"token_hash": token_hash, "revoked": True}
+
+
+@admin.post("/tokens/{token_hash}/rotate")
+def rotate_token(token_hash: str, request: Request,
+                 principal: Principal = Depends(require_scope("accounts"))):
+    """Issue a replacement (same name/scopes/account) and revoke the old one -- the recovery path
+    for a lost/leaked token. Returns the new secret once."""
+    ms = request.app.state.metastore
+    old = ms.get_token(token_hash)
+    if old is None:
+        raise HTTPException(status_code=404)
+    fresh = _mint(ms, principal, old["name"], old["scopes"], old["account_id"], "token.rotate",
+                  extra={"replaced": token_hash})
+    ms.revoke_token(token_hash)
+    return fresh
 
 
 @admin.post("/rollouts")

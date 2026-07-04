@@ -263,6 +263,58 @@ def test_accounts_endpoint_requires_super_admin(tmp_path):
     assert c.get("/api/v1/admin/accounts", headers=AUTH).status_code == 403
 
 
+def test_token_management_api(tmp_path):
+    app, store = _app(tmp_path, scopes=("accounts",))
+    store.add_account("acctA", "A")
+    c = TestClient(app)
+    # issue with default (worker) scopes; the secret is returned exactly here
+    body = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH, json={"name": "ci"}).json()
+    assert body["scopes"] == ["publish", "manage", "observe"] and body["account_id"] == "acctA"
+    th = body["token_hash"]
+    assert body["token"] and store.get_token(th)["account_id"] == "acctA"
+    # explicit scopes, a bad scope, and a missing account
+    assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                  json={"name": "ro", "scopes": ["observe"]}).json()["scopes"] == ["observe"]
+    assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                  json={"name": "x", "scopes": ["god"]}).status_code == 400
+    assert c.post("/api/v1/admin/accounts/ghost/tokens", headers=AUTH,
+                  json={"name": "x"}).status_code == 404
+    # list is metadata only -- never the secret
+    toks = c.get("/api/v1/admin/accounts/acctA/tokens", headers=AUTH).json()["tokens"]
+    assert len(toks) == 2 and all("token" not in t for t in toks)
+    assert c.get("/api/v1/admin/accounts/ghost/tokens", headers=AUTH).status_code == 404
+    # revoke
+    assert c.post("/api/v1/admin/tokens/%s/revoke" % th, headers=AUTH).json()["revoked"] is True
+    assert store.get_token(th)["revoked"] == 1
+    assert c.post("/api/v1/admin/tokens/ghosthash/revoke", headers=AUTH).status_code == 404
+
+
+def test_token_rotate_api(tmp_path):
+    app, store = _app(tmp_path, scopes=("accounts",))
+    store.add_account("acctA", "A")
+    c = TestClient(app)
+    th = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                json={"name": "ci", "scopes": ["manage"]}).json()["token_hash"]
+    new = c.post("/api/v1/admin/tokens/%s/rotate" % th, headers=AUTH).json()
+    assert new["token"] and new["scopes"] == ["manage"] and new["account_id"] == "acctA"
+    assert new["token_hash"] != th
+    assert store.get_token(th)["revoked"] == 1                  # old revoked
+    assert store.get_token(new["token_hash"])["revoked"] == 0   # replacement live
+    assert c.post("/api/v1/admin/tokens/ghost/rotate", headers=AUTH).status_code == 404
+
+
+def test_token_management_needs_accounts_scope(tmp_path):
+    # a worker token (manage) must NOT mint/list/revoke/rotate -> a stolen worker token is a dead end
+    app, store = _app(tmp_path, scopes=("manage", "observe"))
+    store.add_account("acctA", "A")
+    c = TestClient(app)
+    assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                  json={"name": "x"}).status_code == 403
+    assert c.get("/api/v1/admin/accounts/acctA/tokens", headers=AUTH).status_code == 403
+    assert c.post("/api/v1/admin/tokens/h/revoke", headers=AUTH).status_code == 403
+    assert c.post("/api/v1/admin/tokens/h/rotate", headers=AUTH).status_code == 403
+
+
 def test_devices_cohort_filter_and_paging(tmp_path):
     app, store = _app(tmp_path)
     for i in range(3):

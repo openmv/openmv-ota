@@ -215,6 +215,27 @@ def test_account_error_surfaced(tmp_path, monkeypatch, capsys):
     assert "403" in capsys.readouterr().err
 
 
+def test_token_verbs(tmp_path, monkeypatch, capsys):
+    store = _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts",))
+    store.add_account("acctA", "A")
+    assert main(["client", "token", "issue", "--account", "acctA", "--name", "ci"]) == 0
+    assert "issued for acctA" in capsys.readouterr().out
+    th = store.list_tokens(account_id="acctA")[0]["token_hash"]
+    assert main(["client", "token", "list", "--account", "acctA"]) == 0
+    assert "acctA" in capsys.readouterr().out
+    assert main(["client", "token", "rotate", th]) == 0
+    assert "rotated ->" in capsys.readouterr().out
+    live = [t for t in store.list_tokens(account_id="acctA") if not t["revoked"]][0]["token_hash"]
+    assert main(["client", "token", "revoke", live]) == 0
+    assert "revoked" in capsys.readouterr().out
+
+
+def test_token_verb_error_surfaced(tmp_path, monkeypatch, capsys):
+    _wire_super_admin(tmp_path, monkeypatch, scopes=("manage",))    # no accounts scope -> 403
+    assert main(["client", "token", "issue", "--account", "acctA", "--name", "x"]) == 1
+    assert "403" in capsys.readouterr().err
+
+
 def test_bind_error_surfaced(tmp_path, monkeypatch, capsys):
     app, store = _server(tmp_path, scopes=("observe",))     # token can't control -> bind 403s
     tc = TestClient(app)

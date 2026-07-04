@@ -82,6 +82,21 @@ class Api:
     def list_accounts(self):
         return self._req("GET", "/api/v1/admin/accounts")
 
+    def issue_token(self, account_id, name, scopes=None):
+        body = {"name": name}
+        if scopes is not None:
+            body["scopes"] = scopes
+        return self._req("POST", "/api/v1/admin/accounts/%s/tokens" % account_id, json=body)
+
+    def list_account_tokens(self, account_id):
+        return self._req("GET", "/api/v1/admin/accounts/%s/tokens" % account_id)
+
+    def revoke_token(self, token_hash):
+        return self._req("POST", "/api/v1/admin/tokens/%s/revoke" % token_hash)
+
+    def rotate_token(self, token_hash):
+        return self._req("POST", "/api/v1/admin/tokens/%s/rotate" % token_hash)
+
     def pin_cohort(self, product_id, cohort, release_id):
         return self._req("POST", "/api/v1/admin/cohorts/pin",
                          json={"product_id": product_id, "cohort": cohort, "release_id": release_id})

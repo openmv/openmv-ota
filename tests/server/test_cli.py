@@ -173,6 +173,27 @@ def test_account_create_and_list(tmp_path, monkeypatch, capsys):
     assert account_id in listed and "DroneCo" in listed
 
 
+def test_token_rotate_and_list_account(tmp_path, monkeypatch, capsys):
+    from openmv_ota.server.auth import hash_token
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    assert main(["server", "token", "issue", "--name", "ci", "--account", "acctA"]) == 0
+    token = capsys.readouterr().out.strip()
+    s = _store(tmp_path)
+    th = hash_token(token)
+    s.close()
+    assert main(["server", "token", "list"]) == 0
+    assert "acctA" in capsys.readouterr().out                   # the account column now shows
+    assert main(["server", "token", "rotate", th]) == 0
+    new = capsys.readouterr().out.strip()
+    s2 = _store(tmp_path)
+    assert s2.get_token(th)["revoked"] == 1                     # old revoked
+    fresh = s2.get_token(hash_token(new))
+    assert fresh["revoked"] == 0 and fresh["account_id"] == "acctA"   # replacement keeps the account
+    s2.close()
+    assert main(["server", "token", "rotate", "nope"]) == 1
+    assert "no such token" in capsys.readouterr().err
+
+
 def test_account_no_subcommand(capsys):
     assert main(["server", "account"]) == 1
 
@@ -195,6 +216,7 @@ def test_token_requires_extra(monkeypatch, capsys):
     assert main(["server", "token", "issue", "--name", "x"]) == 2
     assert main(["server", "token", "revoke", "abc"]) == 2
     assert main(["server", "token", "list"]) == 2
+    assert main(["server", "token", "rotate", "abc"]) == 2
     assert "need extra" in capsys.readouterr().err
 
 

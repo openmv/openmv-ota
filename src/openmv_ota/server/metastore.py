@@ -439,13 +439,19 @@ class SqlMetadataStore:
     def revoke_token(self, token_hash: str) -> None:
         self.execute("UPDATE admin_tokens SET revoked = 1 WHERE token_hash = ?", (token_hash,))
 
-    def list_tokens(self) -> list[dict]:
+    def list_tokens(self, account_id=None) -> list[dict]:
+        where, params = ("WHERE account_id = ?", (account_id,)) if account_id is not None else ("", ())
         rows = [_d(r) for r in self.query_all(
-            "SELECT token_hash, name, scopes, created_at, revoked FROM admin_tokens "
-            "ORDER BY created_at")]
+            "SELECT token_hash, name, scopes, account_id, created_at, revoked FROM admin_tokens "
+            + where + " ORDER BY created_at", params)]
         for r in rows:
             r["scopes"] = r["scopes"].split(",") if r["scopes"] else []
         return rows
+
+    def revoke_account_tokens(self, account_id: str) -> int:
+        """Revoke every live token for an account (the token half of deactivation). Returns count."""
+        return self.execute("UPDATE admin_tokens SET revoked = 1 WHERE account_id = ? AND revoked = 0",
+                            (account_id,)).rowcount
 
     def count_tokens(self) -> int:
         return self.query_one("SELECT COUNT(*) AS n FROM admin_tokens")["n"]

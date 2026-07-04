@@ -123,6 +123,21 @@ def test_tokens():
     assert s.get_token("nope") is None
 
 
+def test_tokens_by_account_and_bulk_revoke():
+    s = _store()
+    s.add_token("a1", "ci", ["publish"], account_id="acctA")
+    s.add_token("a2", "laptop", ["manage"], account_id="acctA")
+    s.add_token("b1", "ci", ["publish"], account_id="acctB")
+    # list_tokens carries account_id and filters by it
+    assert {t["token_hash"] for t in s.list_tokens(account_id="acctA")} == {"a1", "a2"}
+    assert all(t["account_id"] == "acctA" for t in s.list_tokens(account_id="acctA"))
+    # bulk-revoke one account's tokens; the other account is untouched
+    assert s.revoke_account_tokens("acctA") == 2
+    assert s.get_token("a1")["revoked"] == 1 and s.get_token("a2")["revoked"] == 1
+    assert s.get_token("b1")["revoked"] == 0
+    assert s.revoke_account_tokens("acctA") == 0                # idempotent: already revoked
+
+
 # --- the hash-chained audit log -------------------------------------------------------------
 
 def test_audit_chain_and_read():

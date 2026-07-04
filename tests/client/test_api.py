@@ -164,6 +164,21 @@ def test_releases_paging_params():
     assert c.calls[0][2]["params"] == {"product_id": 7, "limit": 2, "offset": 4}
 
 
+def test_token_calls():
+    api, c = _api(_Resp(200, {"token_hash": "th", "token": "t"}))
+    api.issue_token("acctA", "ci")
+    api.issue_token("acctA", "ro", scopes=["observe"])
+    api.list_account_tokens("acctA")
+    api.revoke_token("th")
+    api.rotate_token("th")
+    assert c.calls[0][:2] == ("POST", "/api/v1/admin/accounts/acctA/tokens")
+    assert c.calls[0][2]["json"] == {"name": "ci"}                       # no scopes -> server default
+    assert c.calls[1][2]["json"] == {"name": "ro", "scopes": ["observe"]}
+    assert c.calls[2][:2] == ("GET", "/api/v1/admin/accounts/acctA/tokens")
+    assert c.calls[3][:2] == ("POST", "/api/v1/admin/tokens/th/revoke")
+    assert c.calls[4][:2] == ("POST", "/api/v1/admin/tokens/th/rotate")
+
+
 def test_empty_body_returns_empty_dict():
     api, _ = _api(_Resp(200, payload={"x": 1}, content=b""))   # no content -> {}
     assert api.fleet() == {}

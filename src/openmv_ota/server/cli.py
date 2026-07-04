@@ -50,6 +50,9 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_tr.set_defaults(func=cmd_token_revoke, _command="server token revoke")
     p_tl = tsub.add_parser("list", help="list admin tokens (hashes + scopes, never secrets)")
     p_tl.set_defaults(func=cmd_token_list, _command="server token list")
+    p_trot = tsub.add_parser("rotate", help="issue a replacement token + revoke the old (by hash)")
+    p_trot.add_argument("token_hash")
+    p_trot.set_defaults(func=cmd_token_rotate, _command="server token rotate")
 
     p_acct = sub.add_parser("account", help="manage tenant accounts (self-host)")
     asub = p_acct.add_subparsers(dest="_account_cmd")
@@ -166,9 +169,31 @@ def cmd_token_list(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     for t in store.list_tokens():
-        print("%s  %-24s [%s]%s" % (t["token_hash"][:16], t["name"], ",".join(t["scopes"]),
-                                    "  REVOKED" if t["revoked"] else ""))
+        print("%s  %-20s %-16s [%s]%s"
+              % (t["token_hash"][:16], t["name"], t["account_id"] or "(unassigned)",
+                 ",".join(t["scopes"]), "  REVOKED" if t["revoked"] else ""))
     store.close()
+    return 0
+
+
+def cmd_token_rotate(args: argparse.Namespace) -> int:
+    try:
+        store = _open()
+    except ServerError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    from .auth import hash_token
+    old = store.get_token(args.token_hash)
+    if old is None:
+        store.close()
+        print("error: no such token", file=sys.stderr)
+        return 1
+    token = secrets.token_urlsafe(32)
+    store.add_token(hash_token(token), old["name"], old["scopes"], account_id=old["account_id"])
+    store.revoke_token(args.token_hash)
+    store.close()
+    print("rotated (old revoked); store the new token now -- not recoverable:", file=sys.stderr)
+    print(token)
     return 0
 
 

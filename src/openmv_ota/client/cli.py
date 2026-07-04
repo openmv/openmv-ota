@@ -86,6 +86,28 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_acl)
     p_acl.set_defaults(func=cmd_account, _command="client account list", action="list")
 
+    p_tok = sub.add_parser("token", help="manage account API tokens (needs accounts scope)")
+    tksub = p_tok.add_subparsers(dest="_tok")
+    p_tki = tksub.add_parser("issue", help="issue a token for an account")
+    p_tki.add_argument("--account", required=True)
+    p_tki.add_argument("--name", required=True)
+    p_tki.add_argument("--scope", action="append", default=[],
+                       help="repeatable; default: the worker scopes")
+    _creds(p_tki)
+    p_tki.set_defaults(func=cmd_token, _command="client token issue", action="issue")
+    p_tkl = tksub.add_parser("list", help="list an account's tokens (metadata only, no secrets)")
+    p_tkl.add_argument("--account", required=True)
+    _creds(p_tkl)
+    p_tkl.set_defaults(func=cmd_token, _command="client token list", action="list")
+    p_tkr = tksub.add_parser("revoke", help="revoke a token by its hash")
+    p_tkr.add_argument("hash")
+    _creds(p_tkr)
+    p_tkr.set_defaults(func=cmd_token, _command="client token revoke", action="revoke")
+    p_tkrot = tksub.add_parser("rotate", help="issue a replacement + revoke the old (by hash)")
+    p_tkrot.add_argument("hash")
+    _creds(p_tkrot)
+    p_tkrot.set_defaults(func=cmd_token, _command="client token rotate", action="rotate")
+
     p_pin = sub.add_parser("pin", help="pin a device/cohort to a release (overrides rollouts)")
     pinsub = p_pin.add_subparsers(dest="_pin")
     p_pd = pinsub.add_parser("device")
@@ -251,6 +273,28 @@ def cmd_account(args: argparse.Namespace) -> int:
             print("admin token (store it now -- not recoverable): %s" % res["token"])
         else:
             print(json.dumps(api.list_accounts(), indent=2))
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return 0
+
+
+def cmd_token(args: argparse.Namespace) -> int:
+    try:
+        api = _make_api(config.resolve(args.server, args.token))
+        if args.action == "issue":
+            res = api.issue_token(args.account, args.name, args.scope or None)
+            print("token %s issued for %s" % (res["token_hash"][:16], res["account_id"]))
+            print("token (store it now -- not recoverable): %s" % res["token"])
+        elif args.action == "rotate":
+            res = api.rotate_token(args.hash)
+            print("rotated -> %s (old revoked)" % res["token_hash"][:16])
+            print("token (store it now -- not recoverable): %s" % res["token"])
+        elif args.action == "revoke":
+            api.revoke_token(args.hash)
+            print("revoked %s" % args.hash[:16])
+        else:
+            print(json.dumps(api.list_account_tokens(args.account), indent=2))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
