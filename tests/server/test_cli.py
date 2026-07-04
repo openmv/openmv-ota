@@ -194,6 +194,25 @@ def test_token_rotate_and_list_account(tmp_path, monkeypatch, capsys):
     assert "no such token" in capsys.readouterr().err
 
 
+def test_account_lifecycle_cli(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    assert main(["server", "account", "create", "--name", "DroneCo"]) == 0
+    account_id = capsys.readouterr().out.strip().split()[0]
+    assert main(["server", "account", "rename", "--id", account_id, "--name", "New"]) == 0
+    assert "renamed" in capsys.readouterr().out
+    assert main(["server", "account", "deactivate", "--id", account_id]) == 0
+    assert "deactivated" in capsys.readouterr().out
+    s = _store(tmp_path)
+    assert s.get_account(account_id)["active"] == 0
+    s.close()
+    assert main(["server", "account", "list"]) == 0
+    assert "(inactive)" in capsys.readouterr().out
+    assert main(["server", "account", "activate", "--id", account_id]) == 0
+    assert "activated" in capsys.readouterr().out
+    assert main(["server", "account", "rename", "--id", "ghost", "--name", "x"]) == 1   # missing -> 1
+    assert "no such account" in capsys.readouterr().err
+
+
 def test_account_no_subcommand(capsys):
     assert main(["server", "account"]) == 1
 
@@ -203,6 +222,9 @@ def test_account_requires_extra(monkeypatch, capsys):
                         lambda *a, **k: (_ for _ in ()).throw(ServerError("need extra", 2)))
     assert main(["server", "account", "create", "--name", "x"]) == 2
     assert main(["server", "account", "list"]) == 2
+    assert main(["server", "account", "rename", "--id", "a", "--name", "x"]) == 2
+    assert main(["server", "account", "deactivate", "--id", "a"]) == 2
+    assert main(["server", "account", "activate", "--id", "a"]) == 2
     assert "need extra" in capsys.readouterr().err
 
 

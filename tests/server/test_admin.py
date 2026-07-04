@@ -303,6 +303,31 @@ def test_token_rotate_api(tmp_path):
     assert c.post("/api/v1/admin/tokens/ghost/rotate", headers=AUTH).status_code == 404
 
 
+def test_account_lifecycle_api(tmp_path):
+    app, store = _app(tmp_path, scopes=("accounts",))
+    store.add_account("acctA", "A")
+    c = TestClient(app)
+    # rename
+    assert c.patch("/api/v1/admin/accounts/acctA", headers=AUTH,
+                   json={"name": "Renamed"}).json()["name"] == "Renamed"
+    assert store.get_account("acctA")["name"] == "Renamed"
+    assert c.patch("/api/v1/admin/accounts/ghost", headers=AUTH, json={"name": "x"}).status_code == 404
+    # deactivate -> revokes the account's tokens + flips active; then no mint (issue/rotate -> 409)
+    th = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH, json={"name": "ci"}).json()["token_hash"]
+    d = c.post("/api/v1/admin/accounts/acctA/deactivate", headers=AUTH).json()
+    assert d["active"] is False and d["tokens_revoked"] == 1
+    assert store.get_token(th)["revoked"] == 1 and store.get_account("acctA")["active"] == 0
+    assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                  json={"name": "x"}).status_code == 409
+    assert c.post("/api/v1/admin/tokens/%s/rotate" % th, headers=AUTH).status_code == 409
+    # activate -> minting works again
+    assert c.post("/api/v1/admin/accounts/acctA/activate", headers=AUTH).json()["active"] is True
+    assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                  json={"name": "y"}).status_code == 200
+    assert c.post("/api/v1/admin/accounts/ghost/deactivate", headers=AUTH).status_code == 404
+    assert c.post("/api/v1/admin/accounts/ghost/activate", headers=AUTH).status_code == 404
+
+
 def test_token_management_needs_accounts_scope(tmp_path):
     # a worker token (manage) must NOT mint/list/revoke/rotate -> a stolen worker token is a dead end
     app, store = _app(tmp_path, scopes=("manage", "observe"))

@@ -85,6 +85,19 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_acl = acsub.add_parser("list", help="list accounts")
     _creds(p_acl)
     p_acl.set_defaults(func=cmd_account, _command="client account list", action="list")
+    p_acr = acsub.add_parser("rename", help="rename an account")
+    p_acr.add_argument("--id", required=True)
+    p_acr.add_argument("--name", required=True)
+    _creds(p_acr)
+    p_acr.set_defaults(func=cmd_account, _command="client account rename", action="rename")
+    p_acd = acsub.add_parser("deactivate", help="revoke all tokens + disable an account")
+    p_acd.add_argument("--id", required=True)
+    _creds(p_acd)
+    p_acd.set_defaults(func=cmd_account, _command="client account deactivate", action="deactivate")
+    p_aca = acsub.add_parser("activate", help="re-enable an account (issue fresh tokens after)")
+    p_aca.add_argument("--id", required=True)
+    _creds(p_aca)
+    p_aca.set_defaults(func=cmd_account, _command="client account activate", action="activate")
 
     p_tok = sub.add_parser("token", help="manage account API tokens (needs accounts scope)")
     tksub = p_tok.add_subparsers(dest="_tok")
@@ -271,6 +284,15 @@ def cmd_account(args: argparse.Namespace) -> int:
             res = api.create_account(args.name)
             print("account %s created" % res["account_id"])
             print("admin token (store it now -- not recoverable): %s" % res["token"])
+        elif args.action == "rename":
+            api.rename_account(args.id, args.name)
+            print("account %s renamed to %s" % (args.id, args.name))
+        elif args.action == "deactivate":
+            res = api.deactivate_account(args.id)
+            print("account %s deactivated (%d token(s) revoked)" % (args.id, res["tokens_revoked"]))
+        elif args.action == "activate":
+            api.activate_account(args.id)
+            print("account %s activated" % args.id)
         else:
             print(json.dumps(api.list_accounts(), indent=2))
     except ClientError as e:

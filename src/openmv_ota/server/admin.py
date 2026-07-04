@@ -83,6 +83,51 @@ def list_accounts(request: Request,
     return {"accounts": request.app.state.metastore.list_accounts()}
 
 
+class AccountPatch(BaseModel):
+    name: str
+
+
+@admin.patch("/accounts/{account_id}")
+def patch_account(account_id: str, body: AccountPatch, request: Request,
+                  principal: Principal = Depends(require_scope("accounts"))):
+    ms = request.app.state.metastore
+    if ms.get_account(account_id) is None:
+        raise HTTPException(status_code=404)
+    ms.rename_account(account_id, body.name)
+    ms.append_audit(actor=principal.name, action="account.rename", entity_type="account",
+                    entity_id=account_id, data={"name": body.name}, account_id=principal.account_id)
+    return {"account_id": account_id, "name": body.name}
+
+
+@admin.post("/accounts/{account_id}/deactivate")
+def deactivate_account(account_id: str, request: Request,
+                       principal: Principal = Depends(require_scope("accounts"))):
+    """Soft off-switch: revoke every token + set active=0. Admin access dies; fielded devices keep
+    being served (a billing lapse doesn't brick a fleet), and no new token can be minted until the
+    account is reactivated."""
+    ms = request.app.state.metastore
+    if ms.get_account(account_id) is None:
+        raise HTTPException(status_code=404)
+    n = ms.revoke_account_tokens(account_id)
+    ms.set_account_active(account_id, False)
+    ms.append_audit(actor=principal.name, action="account.deactivate", entity_type="account",
+                    entity_id=account_id, data={"tokens_revoked": n}, account_id=principal.account_id)
+    return {"account_id": account_id, "active": False, "tokens_revoked": n}
+
+
+@admin.post("/accounts/{account_id}/activate")
+def activate_account(account_id: str, request: Request,
+                     principal: Principal = Depends(require_scope("accounts"))):
+    """Re-enable an account (active=1). Does NOT un-revoke old tokens -- issue fresh ones."""
+    ms = request.app.state.metastore
+    if ms.get_account(account_id) is None:
+        raise HTTPException(status_code=404)
+    ms.set_account_active(account_id, True)
+    ms.append_audit(actor=principal.name, action="account.activate", entity_type="account",
+                    entity_id=account_id, account_id=principal.account_id)
+    return {"account_id": account_id, "active": True}
+
+
 # --- token management (operator-only: 'accounts' scope) ------------------------------------
 # Deliberately NOT reachable by a normal worker token -- so a stolen publish/manage/observe token
 # can't mint a second, revocation-surviving token. A token secret is returned ONLY here (issue /
@@ -103,12 +148,22 @@ def _mint(ms, principal, name, scopes, account_id, action, extra=None):
     return {"token_hash": th, "name": name, "scopes": scopes, "account_id": account_id, "token": token}
 
 
+def _active_account(ms, account_id):
+    """The account, requiring it to exist (404) and be active (409). Gate for minting tokens --
+    a deactivated account must never get a fresh working credential (issue *or* rotate)."""
+    acc = ms.get_account(account_id)
+    if acc is None:
+        raise HTTPException(status_code=404)
+    if not acc["active"]:
+        raise HTTPException(status_code=409, detail="account is deactivated")
+    return acc
+
+
 @admin.post("/accounts/{account_id}/tokens")
 def issue_token(account_id: str, body: TokenIssue, request: Request,
                 principal: Principal = Depends(require_scope("accounts"))):
     ms = request.app.state.metastore
-    if ms.get_account(account_id) is None:
-        raise HTTPException(status_code=404)
+    _active_account(ms, account_id)                            # 404 missing / 409 deactivated
     scopes = body.scopes if body.scopes is not None else list(SCOPES)
     bad = [s for s in scopes if s not in ALL_SCOPES]
     if bad:
@@ -146,6 +201,7 @@ def rotate_token(token_hash: str, request: Request,
     old = ms.get_token(token_hash)
     if old is None:
         raise HTTPException(status_code=404)
+    _active_account(ms, old["account_id"])                     # can't rotate into a deactivated account
     fresh = _mint(ms, principal, old["name"], old["scopes"], old["account_id"], "token.rotate",
                   extra={"replaced": token_hash})
     ms.revoke_token(token_hash)

@@ -61,6 +61,16 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_ac.set_defaults(func=cmd_account_create, _command="server account create")
     p_al = asub.add_parser("list", help="list accounts")
     p_al.set_defaults(func=cmd_account_list, _command="server account list")
+    p_arn = asub.add_parser("rename", help="rename an account")
+    p_arn.add_argument("--id", required=True)
+    p_arn.add_argument("--name", required=True)
+    p_arn.set_defaults(func=cmd_account_rename, _command="server account rename")
+    p_ade = asub.add_parser("deactivate", help="revoke all tokens + disable an account")
+    p_ade.add_argument("--id", required=True)
+    p_ade.set_defaults(func=cmd_account_deactivate, _command="server account deactivate")
+    p_aac = asub.add_parser("activate", help="re-enable an account")
+    p_aac.add_argument("--id", required=True)
+    p_aac.set_defaults(func=cmd_account_activate, _command="server account activate")
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -145,9 +155,45 @@ def cmd_account_list(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     for a in store.list_accounts():
-        print("%s  %s" % (a["account_id"], a["name"]))
+        print("%s  %-20s %s" % (a["account_id"], a["name"], "" if a["active"] else "(inactive)"))
     store.close()
     return 0
+
+
+def _account_action(args, do, ok):
+    """Open the store, 404-guard the account, run ``do(store)``, print ``ok``. Shared by the
+    account rename/deactivate/activate CLI verbs."""
+    try:
+        store = _open()
+    except ServerError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if store.get_account(args.id) is None:
+        store.close()
+        print("error: no such account", file=sys.stderr)
+        return 1
+    msg = do(store)
+    store.close()
+    print(ok if msg is None else msg)
+    return 0
+
+
+def cmd_account_rename(args: argparse.Namespace) -> int:
+    return _account_action(args, lambda s: s.rename_account(args.id, args.name),
+                           "renamed %s to %s" % (args.id, args.name))
+
+
+def cmd_account_deactivate(args: argparse.Namespace) -> int:
+    def do(s):
+        n = s.revoke_account_tokens(args.id)
+        s.set_account_active(args.id, False)
+        return "deactivated %s (%d token(s) revoked)" % (args.id, n)
+    return _account_action(args, do, None)
+
+
+def cmd_account_activate(args: argparse.Namespace) -> int:
+    return _account_action(args, lambda s: s.set_account_active(args.id, True),
+                           "activated %s" % args.id)
 
 
 def cmd_token_revoke(args: argparse.Namespace) -> int:

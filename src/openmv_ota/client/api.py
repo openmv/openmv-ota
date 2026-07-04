@@ -82,6 +82,15 @@ class Api:
     def list_accounts(self):
         return self._req("GET", "/api/v1/admin/accounts")
 
+    def rename_account(self, account_id, name):
+        return self._req("PATCH", "/api/v1/admin/accounts/%s" % account_id, json={"name": name})
+
+    def deactivate_account(self, account_id):
+        return self._req("POST", "/api/v1/admin/accounts/%s/deactivate" % account_id)
+
+    def activate_account(self, account_id):
+        return self._req("POST", "/api/v1/admin/accounts/%s/activate" % account_id)
+
     def issue_token(self, account_id, name, scopes=None):
         body = {"name": name}
         if scopes is not None:

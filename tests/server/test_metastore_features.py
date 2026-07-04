@@ -138,6 +138,18 @@ def test_tokens_by_account_and_bulk_revoke():
     assert s.revoke_account_tokens("acctA") == 0                # idempotent: already revoked
 
 
+def test_account_rename_and_active():
+    s = _store()
+    s.add_account("acctA", "A")
+    assert s.get_account("acctA")["active"] == 1                # active by default
+    s.rename_account("acctA", "B")
+    assert s.get_account("acctA")["name"] == "B"
+    s.set_account_active("acctA", False)
+    assert s.get_account("acctA")["active"] == 0
+    s.set_account_active("acctA", True)
+    assert s.get_account("acctA")["active"] == 1
+
+
 # --- the hash-chained audit log -------------------------------------------------------------
 
 def test_audit_chain_and_read():

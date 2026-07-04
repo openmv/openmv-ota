@@ -138,6 +138,11 @@ _MIGRATIONS: list[list[str]] = [
             device_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, source TEXT NOT NULL,
             bound_at TEXT NOT NULL)""",
     ],
+    [   # v8 -- account deactivation: a soft on/off flag. Deactivate = revoke all the account's
+        # tokens + set active=0 (admin access dies; fielded devices keep being served, so a billing
+        # lapse never bricks a fleet). No new token can be issued/rotated for an inactive account.
+        "ALTER TABLE accounts ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
+    ],
 ]
 
 
@@ -423,6 +428,13 @@ class SqlMetadataStore:
 
     def list_accounts(self) -> list[dict]:
         return [_d(r) for r in self.query_all("SELECT * FROM accounts ORDER BY created_at")]
+
+    def rename_account(self, account_id: str, name: str) -> None:
+        self.execute("UPDATE accounts SET name = ? WHERE account_id = ?", (name, account_id))
+
+    def set_account_active(self, account_id: str, active: bool) -> None:
+        self.execute("UPDATE accounts SET active = ? WHERE account_id = ?",
+                     (1 if active else 0, account_id))
 
     # --- admin tokens (stored hashed) -------------------------------------------------------
 

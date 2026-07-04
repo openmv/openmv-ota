@@ -164,6 +164,17 @@ def test_releases_paging_params():
     assert c.calls[0][2]["params"] == {"product_id": 7, "limit": 2, "offset": 4}
 
 
+def test_account_lifecycle_calls():
+    api, c = _api(_Resp(200, {"tokens_revoked": 0}))
+    api.rename_account("acctA", "New")
+    api.deactivate_account("acctA")
+    api.activate_account("acctA")
+    assert c.calls[0][:2] == ("PATCH", "/api/v1/admin/accounts/acctA")
+    assert c.calls[0][2]["json"] == {"name": "New"}
+    assert c.calls[1][:2] == ("POST", "/api/v1/admin/accounts/acctA/deactivate")
+    assert c.calls[2][:2] == ("POST", "/api/v1/admin/accounts/acctA/activate")
+
+
 def test_token_calls():
     api, c = _api(_Resp(200, {"token_hash": "th", "token": "t"}))
     api.issue_token("acctA", "ci")

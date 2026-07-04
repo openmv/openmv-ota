@@ -215,6 +215,18 @@ def test_account_error_surfaced(tmp_path, monkeypatch, capsys):
     assert "403" in capsys.readouterr().err
 
 
+def test_account_lifecycle_verbs(tmp_path, monkeypatch, capsys):
+    store = _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts",))
+    store.add_account("acctA", "A")
+    store.add_token(hash_token("x"), "t", ["observe"], account_id="acctA")   # a token to revoke
+    assert main(["client", "account", "rename", "--id", "acctA", "--name", "New"]) == 0
+    assert "renamed to New" in capsys.readouterr().out
+    assert main(["client", "account", "deactivate", "--id", "acctA"]) == 0
+    assert "deactivated" in capsys.readouterr().out and store.get_account("acctA")["active"] == 0
+    assert main(["client", "account", "activate", "--id", "acctA"]) == 0
+    assert "activated" in capsys.readouterr().out
+
+
 def test_token_verbs(tmp_path, monkeypatch, capsys):
     store = _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts",))
     store.add_account("acctA", "A")
