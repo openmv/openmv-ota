@@ -130,17 +130,33 @@ def cmd_token_issue(args: argparse.Namespace) -> int:
     return 0
 
 
+def _clean_name(store, name, except_id=None):
+    """A non-empty, unique (case-insensitive) account name, or an error string. Shared by the
+    account create + rename CLI verbs (mirrors the API's _clean_name)."""
+    name = (name or "").strip()
+    if not name:
+        return None, "account name must not be empty"
+    if store.account_name_exists(name, except_id):
+        return None, "an account named %r already exists" % name
+    return name, None
+
+
 def cmd_account_create(args: argparse.Namespace) -> int:
     try:
         store = _open()
     except ServerError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
+    name, err = _clean_name(store, args.name)
+    if err:
+        store.close()
+        print("error: %s" % err, file=sys.stderr)
+        return 1
     from .auth import hash_token
     account_id = "acct_" + secrets.token_hex(8)
     token = secrets.token_urlsafe(32)
-    store.add_account(account_id, args.name)
-    store.add_token(hash_token(token), args.name, list(SCOPES), account_id=account_id)
+    store.add_account(account_id, name)
+    store.add_token(hash_token(token), name, list(SCOPES), account_id=account_id)
     store.close()
     print("account created: %s" % account_id, file=sys.stderr)
     print("admin token (store it now -- it is not recoverable):", file=sys.stderr)
@@ -179,8 +195,24 @@ def _account_action(args, do, ok):
 
 
 def cmd_account_rename(args: argparse.Namespace) -> int:
-    return _account_action(args, lambda s: s.rename_account(args.id, args.name),
-                           "renamed %s to %s" % (args.id, args.name))
+    try:
+        store = _open()
+    except ServerError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if store.get_account(args.id) is None:
+        store.close()
+        print("error: no such account", file=sys.stderr)
+        return 1
+    name, err = _clean_name(store, args.name, except_id=args.id)
+    if err:
+        store.close()
+        print("error: %s" % err, file=sys.stderr)
+        return 1
+    store.rename_account(args.id, name)
+    store.close()
+    print("renamed %s to %s" % (args.id, name))
+    return 0
 
 
 def cmd_account_deactivate(args: argparse.Namespace) -> int:

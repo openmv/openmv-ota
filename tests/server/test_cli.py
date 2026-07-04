@@ -211,6 +211,27 @@ def test_account_lifecycle_cli(tmp_path, monkeypatch, capsys):
     assert "activated" in capsys.readouterr().out
     assert main(["server", "account", "rename", "--id", "ghost", "--name", "x"]) == 1   # missing -> 1
     assert "no such account" in capsys.readouterr().err
+    assert main(["server", "account", "deactivate", "--id", "ghost"]) == 1              # shared 404 guard
+    assert "no such account" in capsys.readouterr().err
+
+
+def test_account_name_validation_cli(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    assert main(["server", "account", "create", "--name", "  "]) == 1
+    assert "must not be empty" in capsys.readouterr().err
+    assert main(["server", "account", "create", "--name", "DroneCo"]) == 0
+    account_id = capsys.readouterr().out.strip().split()[0]
+    assert main(["server", "account", "create", "--name", "droneco"]) == 1   # case-insensitive dup
+    assert "already exists" in capsys.readouterr().err
+    assert main(["server", "account", "rename", "--id", account_id, "--name", " "]) == 1
+    assert "must not be empty" in capsys.readouterr().err
+    s = _store(tmp_path)
+    s.add_account("acctX", "LockCo")
+    s.close()
+    assert main(["server", "account", "rename", "--id", "acctX", "--name", "DroneCo"]) == 1   # dup
+    assert "already exists" in capsys.readouterr().err
+    assert main(["server", "account", "rename", "--id", "acctX", "--name", "LockCo"]) == 0    # self ok
+    assert "renamed" in capsys.readouterr().out
 
 
 def test_account_no_subcommand(capsys):

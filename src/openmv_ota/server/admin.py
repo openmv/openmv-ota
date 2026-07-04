@@ -60,6 +60,17 @@ class AccountCreate(BaseModel):
     name: str
 
 
+def _clean_name(ms, name, except_id=None):
+    """A non-empty, unique (case-insensitive) account name, or an HTTPException (400 empty / 409
+    taken). Shared by create + rename so both enforce the same rule."""
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="account name must not be empty")
+    if ms.account_name_exists(name, except_id):
+        raise HTTPException(status_code=409, detail="an account named %r already exists" % name)
+    return name
+
+
 @admin.post("/accounts")
 def create_account(body: AccountCreate, request: Request,
                    principal: Principal = Depends(require_scope("accounts"))):
@@ -67,14 +78,15 @@ def create_account(body: AccountCreate, request: Request,
     The remote equivalent of ``server account create``; the website (or a self-host super-admin)
     drives it. The token is returned once and only its hash is stored."""
     ms = request.app.state.metastore
+    name = _clean_name(ms, body.name)
     account_id = "acct_" + secrets.token_hex(8)
     token = secrets.token_urlsafe(32)
-    ms.add_account(account_id, body.name)
-    ms.add_token(hash_token(token), body.name, list(SCOPES), account_id=account_id)
+    ms.add_account(account_id, name)
+    ms.add_token(hash_token(token), name, list(SCOPES), account_id=account_id)
     ms.append_audit(actor=principal.name, action="account.create", entity_type="account",
-                    entity_id=account_id, data={"name": body.name},
+                    entity_id=account_id, data={"name": name},
                     account_id=principal.account_id)
-    return {"account_id": account_id, "name": body.name, "token": token}
+    return {"account_id": account_id, "name": name, "token": token}
 
 
 @admin.get("/accounts")
@@ -93,10 +105,11 @@ def patch_account(account_id: str, body: AccountPatch, request: Request,
     ms = request.app.state.metastore
     if ms.get_account(account_id) is None:
         raise HTTPException(status_code=404)
-    ms.rename_account(account_id, body.name)
+    name = _clean_name(ms, body.name, except_id=account_id)
+    ms.rename_account(account_id, name)
     ms.append_audit(actor=principal.name, action="account.rename", entity_type="account",
-                    entity_id=account_id, data={"name": body.name}, account_id=principal.account_id)
-    return {"account_id": account_id, "name": body.name}
+                    entity_id=account_id, data={"name": name}, account_id=principal.account_id)
+    return {"account_id": account_id, "name": name}
 
 
 @admin.post("/accounts/{account_id}/deactivate")

@@ -429,6 +429,13 @@ class SqlMetadataStore:
     def list_accounts(self) -> list[dict]:
         return [_d(r) for r in self.query_all("SELECT * FROM accounts ORDER BY created_at")]
 
+    def account_name_exists(self, name: str, except_id: str | None = None) -> bool:
+        """Whether another account already uses ``name`` (case-insensitive). ``except_id`` excludes
+        one account (so a rename to the same name is fine)."""
+        return self.query_one(
+            "SELECT 1 FROM accounts WHERE LOWER(name) = LOWER(?) AND account_id <> ?",
+            (name, except_id or "")) is not None
+
     def rename_account(self, account_id: str, name: str) -> None:
         self.execute("UPDATE accounts SET name = ? WHERE account_id = ?", (name, account_id))
 

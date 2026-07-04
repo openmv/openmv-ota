@@ -328,6 +328,21 @@ def test_account_lifecycle_api(tmp_path):
     assert c.post("/api/v1/admin/accounts/ghost/activate", headers=AUTH).status_code == 404
 
 
+def test_account_name_validation_api(tmp_path):
+    app, store = _app(tmp_path, scopes=("accounts",))
+    c = TestClient(app)
+    assert c.post("/api/v1/admin/accounts", headers=AUTH, json={"name": "  "}).status_code == 400
+    assert c.post("/api/v1/admin/accounts", headers=AUTH, json={"name": "DroneCo"}).status_code == 200
+    assert c.post("/api/v1/admin/accounts", headers=AUTH,       # case-insensitive dup
+                  json={"name": "droneco"}).status_code == 409
+    store.add_account("acctX", "LockCo")
+    assert c.patch("/api/v1/admin/accounts/acctX", headers=AUTH, json={"name": " "}).status_code == 400
+    assert c.patch("/api/v1/admin/accounts/acctX", headers=AUTH,
+                   json={"name": "DroneCo"}).status_code == 409
+    assert c.patch("/api/v1/admin/accounts/acctX", headers=AUTH,   # renaming to its own name is fine
+                   json={"name": "LockCo"}).status_code == 200
+
+
 def test_token_management_needs_accounts_scope(tmp_path):
     # a worker token (manage) must NOT mint/list/revoke/rotate -> a stolen worker token is a dead end
     app, store = _app(tmp_path, scopes=("manage", "observe"))
