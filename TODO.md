@@ -23,7 +23,25 @@ Live list of what's being built next. Done work isn't tracked here (see git log)
 - **Pagination** — `--limit`/`--offset` on the releases + rollouts listings (consistent with the
   device view).
 
-## Remaining / optional (for the audit pass)
+## Surfaced during the API audit
+
+- **Token-issue API endpoint + rotation.** Today `POST /admin/accounts` mints an account's *first*
+  token, and issuing/revoking *further* tokens is CLI-only (`server token issue --account` /
+  `server token revoke`), which needs host access. The cloud website can't add or replace a maker's
+  token over the API. Add:
+  - an endpoint to **issue an additional token** for an account (so a maker/website can have >1, or
+    replace one), and
+  - **rotation** = issue-fresh + revoke-old over the API.
+  Context: we chose the cloud model where the website provisions via the API and lets the maker
+  **view their token any time** (website keeps a retrievable copy; the server still stores only the
+  hash). That makes rotation a *convenience* for the leaked-token case, not required for a lost
+  token — so this is wanted but not a blocker.
+- **Scope naming** flattened to `publish`/`manage`/`observe`/`accounts` (done).
+- **`''` account** stays a sentinel (no row), rendered `(unassigned)` by the tools (done).
+
+## Remaining / optional
 
 - Consistent error envelopes (FastAPI's `{detail}` is the current shape).
-- Anything surfaced during the section-by-section API audit.
+- Account-scoped read indexes lag multi-tenancy (indexes lead with `product_id`, not `account_id`);
+  additive index-only migration when fleets/accounts grow.
+- Anything else surfaced during the section-by-section API audit.
