@@ -186,7 +186,8 @@ def test_bind_device(wired, tmp_path, capsys):
     store, _ = wired
     store.upsert_device(device_id="d1", product_id=BID)
     assert main(["client", "bind", "--id", "d1"]) == 0
-    assert "device d1 bound to" in capsys.readouterr().out
+    # the wired token acts for the implicit '' account -> renders as (unassigned)
+    assert "device d1 bound to (unassigned)" in capsys.readouterr().out
     assert store.device_account("d1")["source"] == "admin"
 
 

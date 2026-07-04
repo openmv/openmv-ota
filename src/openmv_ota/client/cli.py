@@ -120,6 +120,12 @@ def register(parser: argparse.ArgumentParser) -> None:
         p.set_defaults(func=handler, _command="client " + name)
 
 
+def _account_label(account_id: str) -> str:
+    """How an account_id reads in human output. '' is the sentinel for 'no account assigned'
+    (unset firmware / a self-host that never made accounts) -- render it, never store a row for it."""
+    return account_id or "(unassigned)"
+
+
 def cmd_login(args: argparse.Namespace) -> int:
     token = args.token or os.environ.get("OPENMV_OTA_TOKEN") or sys.stdin.readline().strip()
     if not token:
@@ -229,7 +235,7 @@ def cmd_pin(args: argparse.Namespace) -> int:
 def cmd_bind(args: argparse.Namespace) -> int:
     try:
         res = _make_api(config.resolve(args.server, args.token)).bind_device(args.id)
-        print("device %s bound to %s" % (args.id, res["account_id"] or "(default account)"))
+        print("device %s bound to %s" % (args.id, _account_label(res["account_id"])))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
