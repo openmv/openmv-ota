@@ -51,11 +51,22 @@ def test_public_key_from_hex_rejects_garbage():
 def test_private_key_pem_round_trips():
     alg = algorithm_for(ES384)
     priv = generate_private_key(alg)
-    pem = private_key_pem(priv)
-    assert pem.startswith(b"-----BEGIN PRIVATE KEY-----")
-    loaded = load_private_key_pem(pem)
+    pem = private_key_pem(priv, "s3cret")
+    assert pem.startswith(b"-----BEGIN ENCRYPTED PRIVATE KEY-----")   # never plaintext
+    loaded = load_private_key_pem(pem, "s3cret")
     sig = sign_region(loaded, REGION, alg)
     assert verify_region(priv.public_key(), REGION, sig, alg) is True
+
+
+def test_private_key_pem_requires_passphrase():
+    with pytest.raises(OtaError, match="passphrase is required"):
+        private_key_pem(generate_private_key(algorithm_for(ES256)), "")
+
+
+def test_load_encrypted_wrong_passphrase():
+    pem = private_key_pem(generate_private_key(algorithm_for(ES256)), "right")
+    with pytest.raises(OtaError, match="could not load private key"):
+        load_private_key_pem(pem, "wrong")
 
 
 def test_load_private_key_pem_rejects_garbage():
@@ -97,7 +108,7 @@ def test_read_trusted_keys_bad_json(tmp_path):
 
 def test_provision_key_set():
     alg = algorithm_for(ES256)
-    prov = provision_key_set(alg, n_factory=2, n_ota=3)
+    prov = provision_key_set(alg, n_factory=2, n_ota=3, passphrase="pw")
 
     # 2 factory + 3 ota, with separated, sequential key_ids and correct roles.
     assert [k.role for k in prov.trusted] == ["factory", "factory", "ota", "ota", "ota"]
@@ -112,10 +123,10 @@ def test_provision_key_set():
 
 def test_provisioned_private_keys_match_public_set():
     alg = algorithm_for(ES256)
-    prov = provision_key_set(alg, n_factory=1, n_ota=1)
+    prov = provision_key_set(alg, n_factory=1, n_ota=1, passphrase="pw")
     by_id = {k.key_id: k for k in prov.trusted}
     region = b"provisioned-region"
     for key_id, pem in prov.private_pems.items():
-        priv = load_private_key_pem(pem)
+        priv = load_private_key_pem(pem, "pw")
         pub = public_key_from_hex(by_id[key_id].pubkey, alg)
         assert verify_region(pub, region, sign_region(priv, region, alg), alg) is True

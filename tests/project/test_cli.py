@@ -9,6 +9,9 @@ from openmv_ota.project import project as proj
 def _new(tmp_path, make_firmware, make_sdk, *extra, root="proj", repo=None):
     repo = repo or make_firmware()
     home = make_sdk()
+    # OTA projects need a key passphrase; default to throwaway --dev unless the test set its own.
+    if "--ota" in extra and "--dev" not in extra and "--key-passphrase-file" not in extra:
+        extra = (*extra, "--dev")
     rc = main(["project", "new", str(tmp_path / root),
                "-f", str(repo), "-b", "OPENMV_N6", "-b", "OPENMV_AE3",
                "--sdk-home", str(home), "--allow-dirty", *extra])
@@ -31,6 +34,20 @@ def test_new_ota(tmp_path, make_firmware, make_sdk, capsys):
     capsys.readouterr()
     assert main(["project", "show", str(root)]) == 0
     assert "mode:        OTA" in capsys.readouterr().out
+
+
+def test_new_ota_with_key_passphrase_file(tmp_path, make_firmware, make_sdk):
+    pf = tmp_path / "kp"
+    pf.write_text("my-real-passphrase")
+    rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--key-passphrase-file", str(pf))
+    assert rc == 0 and not (root / "keys" / ".dev-passphrase").exists()   # non-dev: no dev cache
+
+
+def test_new_ota_requires_a_passphrase(tmp_path, make_firmware, make_sdk, capsys):
+    repo, home = make_firmware(), make_sdk()
+    rc = main(["project", "new", str(tmp_path / "p"), "-f", str(repo), "-b", "OPENMV_N6",
+               "--sdk-home", str(home), "--allow-dirty", "--ota"])   # no --dev, no passphrase
+    assert rc != 0 and "encrypted" in capsys.readouterr().err
 
 
 def test_new_not_git(tmp_path, make_sdk, capsys):

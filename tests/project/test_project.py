@@ -20,6 +20,7 @@ def _create(tmp_path, make_firmware, make_sdk, **over):
     kwargs = dict(
         firmware=repo, boards=["OPENMV_N6", "OPENMV_AE3"], product=None, vendor=None,
         sdk_home_override=make_sdk(), install_sdk=False, allow_dirty=True, force=False, now=NOW,
+        dev=True,   # throwaway dev keys by default (no passphrase to manage); ota-only, else ignored
     )
     kwargs.update(over)
     return root, proj.create_project(root, **kwargs)
@@ -393,6 +394,11 @@ def test_create_ota_small_pool_warns(tmp_path, make_firmware, make_sdk):
     _, (_, warnings) = _create(tmp_path, make_firmware, make_sdk, ota=True,
                                factory_keys=1, ota_keys=2)
     assert any("small rotation pool" in w for w in warnings)
+
+
+def test_ota_requires_key_passphrase(tmp_path, make_firmware, make_sdk):
+    with pytest.raises(ProjectError, match="signing keys are encrypted"):
+        _create(tmp_path, make_firmware, make_sdk, ota=True, ota_keys=2, factory_keys=1, dev=False)
 
 
 def test_create_not_git(tmp_path, make_sdk):

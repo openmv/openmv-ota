@@ -42,6 +42,9 @@ AE3_BOARD = (
 FAKE_CA_BUNDLE = b"-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
 
 
+TEST_KEY_PASSPHRASE = "test-passphrase"
+
+
 @pytest.fixture(autouse=True)
 def _stub_ca_bundle(monkeypatch):
     """Creating an OTA project downloads the CA root bundle; stub that network call
@@ -49,6 +52,14 @@ def _stub_ca_bundle(monkeypatch):
     function directly, so this attribute swap doesn't affect them."""
     from openmv_ota.project import project as _proj
     monkeypatch.setattr(_proj, "_fetch_ca_bundle", lambda *a, **k: FAKE_CA_BUNDLE)
+
+
+@pytest.fixture(autouse=True)
+def _key_passphrase_env(monkeypatch):
+    """Signing keys are always encrypted; give the whole suite a fixed build-time passphrase via
+    the env resolver so build tests don't each have to thread one (a real user passes
+    --key-passphrase-file). A test that needs the 'no passphrase' path deletes this itself."""
+    monkeypatch.setenv("OPENMV_OTA_KEY_PASSPHRASE", TEST_KEY_PASSPHRASE)
 
 
 def git(repo, *args):

@@ -24,6 +24,16 @@ from . import romfs as build_mod
 from .errors import BuildError
 
 
+def _add_signing_flags(p: argparse.ArgumentParser) -> None:
+    """The --key-passphrase-file / --allow-dev-key flags shared by every signing build verb."""
+    p.add_argument("--key-passphrase-file", metavar="FILE",
+                   help="passphrase (from a file) that decrypts the signing key (else the "
+                        "OPENMV_OTA_KEY_PASSPHRASE env var, or an interactive prompt)")
+    p.add_argument("--allow-dev-key", action="store_true",
+                   help="allow signing with a throwaway --dev key (refused by default for a "
+                        "production image)")
+
+
 def register(build_parser: argparse.ArgumentParser):
     sub = build_parser.add_subparsers(dest="_subcommand")
 
@@ -52,6 +62,7 @@ def register(build_parser: argparse.ArgumentParser):
                    help="warn instead of failing when an image exceeds its capacity")
     p.add_argument("--keep-build-dir", action="store_true",
                    help="keep the staging dir for inspection")
+    _add_signing_flags(p)
     p.set_defaults(func=cmd_romfs, _command="build romfs")
 
     p_fw = sub.add_parser("firmware", help="build firmware per board (OTA projects freeze boot.py)")
@@ -96,6 +107,7 @@ def register(build_parser: argparse.ArgumentParser):
     p_otr.add_argument("--allow-republish", action="store_true",
                        help="allow a version <= the last published (re-sign / downgrade)")
     p_otr.add_argument("-f", "--firmware", help="firmware checkout override")
+    _add_signing_flags(p_otr)
     p_otr.set_defaults(func=cmd_ota_romfs, _command="build ota-romfs")
 
     p_ins = sub.add_parser("inspect", help="decode + print an OTA artifact "
@@ -144,6 +156,7 @@ def register(build_parser: argparse.ArgumentParser):
                             "[product].account_id is unset, since the golden is permanent")
     p_fac.add_argument("--keep-build-dir", action="store_true",
                        help="keep the staging dir for inspection")
+    _add_signing_flags(p_fac)
     p_fac.set_defaults(func=cmd_factory_romfs, _command="build factory-romfs")
     return sub
 
@@ -158,6 +171,7 @@ def cmd_romfs(args: argparse.Namespace) -> int:
             vela_optimise=args.vela_optimise,
             stedgeai_optimization=args.stedgeai_optimization, firmware=args.firmware,
             allow_oversize=args.allow_oversize, keep_build_dir=args.keep_build_dir,
+            key_passphrase_file=args.key_passphrase_file, allow_dev_key=args.allow_dev_key,
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -186,6 +200,7 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
             stedgeai_optimization=args.stedgeai_optimization, firmware=args.firmware,
             factory_key=args.factory_key, keep_build_dir=args.keep_build_dir,
             no_account=args.no_account,
+            key_passphrase_file=args.key_passphrase_file, allow_dev_key=args.allow_dev_key,
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -212,6 +227,7 @@ def cmd_ota_romfs(args: argparse.Namespace) -> int:
             vela_optimise=args.vela_optimise,
             stedgeai_optimization=args.stedgeai_optimization, firmware=args.firmware,
             allow_republish=args.allow_republish,
+            key_passphrase_file=args.key_passphrase_file, allow_dev_key=args.allow_dev_key,
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)

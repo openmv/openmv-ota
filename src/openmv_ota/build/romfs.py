@@ -39,7 +39,7 @@ class _OtaSigner:
 
 
 def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
-                 passphrase_provider=None) -> _OtaSigner:
+                 key_passphrase_file=None, allow_dev_key: bool = False) -> _OtaSigner:
     """Resolve a signing context: the app version + rollback floor from
     ``app/settings.json``, plus the trusted key ``key_id`` (which must have role
     ``require_role`` and not be revoked) and a ``Signer`` for it. Shared by ``build
@@ -48,6 +48,7 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
     from openmv_ota.ota.errors import OtaError
     from openmv_ota.ota.signer import build_signer
     from openmv_ota.ota.version import encode_app_version
+    from openmv_ota.project.passphrase import resolve_passphrase
 
     settings_path = app_dir / "settings.json"
     try:
@@ -89,16 +90,21 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
                 if require_role == "ota" else "")
         raise BuildError("%s key 0x%04x is revoked%s" % (require_role, key_id, hint), exit_code=1)
     alg = algorithm_for(entry.alg)
+    provider = lambda: resolve_passphrase(p.root, passphrase_file=key_passphrase_file)  # noqa: E731
     try:
         backend = build_signer(entry, alg, private_keys_dir=ProjectPaths(p.root).private_keys_dir,
-                               passphrase_provider=passphrase_provider)
-    except OtaError as e:
+                               passphrase_provider=provider)
+    except (OtaError, ProjectError) as e:
         raise BuildError(str(e), exit_code=1) from None
     # the signer's key must be the one the devices trust -- catches a wrong/stale PEM, a swapped
     # token, or a mis-mapped KMS key before it signs a release nothing can install.
     if backend.public_point_hex() != entry.pubkey:
         raise BuildError("key 0x%04x: the signer's public key does not match "
                          "keys/trusted_keys.json (wrong key material?)" % key_id, exit_code=1)
+    if backend.is_dev_key and not allow_dev_key:
+        raise BuildError(
+            "refusing to sign a production image with a dev signing key (0x%04x); use a real "
+            "encrypted key, or pass --allow-dev-key for a throwaway build" % key_id, exit_code=1)
     return _OtaSigner(app_version, payload_version, payload_version_floor,
                       str(settings.get("vendor", "")), key_id, entry.alg, alg, backend)
 
@@ -228,6 +234,8 @@ def build_romfs(
     firmware: str | Path | None = None,
     allow_oversize: bool = False,
     keep_build_dir: bool = False,
+    key_passphrase_file: str | Path | None = None,
+    allow_dev_key: bool = False,
 ) -> list[BuildResult]:
     project = Path(project)
     try:
@@ -245,7 +253,8 @@ def build_romfs(
         raise BuildError("no matching targets in this project")
 
     mpy_cmd = mpy.resolve_mpy_cross(p) if compile_py else None
-    ota_signer = (_load_signer(p, app_dir, p.config.signing_key_id, require_role="ota")
+    ota_signer = (_load_signer(p, app_dir, p.config.signing_key_id, require_role="ota",
+                               key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
                   if p.config.ota else None)
     if ota_signer is not None:
         app_version, vendor = ota_signer.app_version, ota_signer.vendor
@@ -441,6 +450,8 @@ def build_factory_romfs(
     factory_key: int | None = None,
     keep_build_dir: bool = False,
     no_account: bool = False,
+    key_passphrase_file: str | Path | None = None,
+    allow_dev_key: bool = False,
 ) -> list[BuildResult]:
     """Compose the factory ROMFS partition image per target: golden BACK + initial
     FRONT, both factory-signed, with status sectors and padding. One
@@ -482,7 +493,8 @@ def build_factory_romfs(
 
     mpy_cmd = mpy.resolve_mpy_cross(p) if compile_py else None
     key_id = factory_key if factory_key is not None else FACTORY_KEY_ID_BASE
-    signer = _load_signer(p, app_dir, key_id, require_role="factory")
+    signer = _load_signer(p, app_dir, key_id, require_role="factory",
+                          key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
     ctx = ModelContext(
         sdk_home=p.sdk_home, vela_path=p.vela_path, stedgeai_path=p.stedgeai_path,
         vela_optimise=vela_optimise, stedgeai_optimization=stedgeai_optimization,
@@ -738,6 +750,8 @@ def build_manifest(
     firmware: str | Path | None = None,
     delta: str | Path | None = None,
     delta_base_version: str | None = None,
+    key_passphrase_file: str | Path | None = None,
+    allow_dev_key: bool = False,
 ) -> list[OtaManifestResult]:
     """Build + sign an update manifest per OTA main target from the already-built
     ``<board>-ota.img.gz`` artifacts -- the descriptor a device's ``install()`` fetches
@@ -778,7 +792,8 @@ def build_manifest(
                          "`openmv-ota project new --ota`)", exit_code=1)
 
     app_dir = Path(app) if app else project / "app"
-    signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota")
+    signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota",
+                          key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
 
     out_dir = Path(output) if output else project / "build"
     targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
@@ -870,6 +885,8 @@ def build_ota_romfs(
     stedgeai_optimization: int = 3,
     firmware: str | Path | None = None,
     allow_republish: bool = False,
+    key_passphrase_file: str | Path | None = None,
+    allow_dev_key: bool = False,
 ) -> list[OtaRomfsResult]:
     """Produce the complete **cloud-published** OTA set per main board, from app source in
     one shot (like ``build factory-romfs``): compile + sign the romfs bundle, render the
@@ -914,14 +931,16 @@ def build_ota_romfs(
 
     from openmv_ota.project import ledger
     app_dir = Path(app) if app else project / "app"
-    signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota")
+    signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota",
+                          key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
     new_pv = signer.payload_version
 
     # 1) compile + sign the romfs bundle, then render the download image(s) from it.
     build_romfs(project, app=app, output=output, boards=boards, compile_py=compile_py,
                 convert_models=convert_models, mpy_extra=mpy_extra, vela_extra=vela_extra,
                 stedgeai_extra=stedgeai_extra, vela_optimise=vela_optimise,
-                stedgeai_optimization=stedgeai_optimization, firmware=firmware)
+                stedgeai_optimization=stedgeai_optimization, firmware=firmware,
+                key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
     build_ota_image(project, output=output, boards=boards, firmware=firmware)
 
     results = []
@@ -957,7 +976,8 @@ def build_ota_romfs(
 
         [mres] = build_manifest(project, output=output, app=app,
                                 boards=[name], firmware=firmware,
-                                delta=delta_path, delta_base_version=base_version)
+                                delta=delta_path, delta_base_version=base_version,
+                                key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
         ledger.record_release(project, name, version=signer.app_version, payload_version=new_pv,
                               sha256=hashlib.sha256(image).hexdigest(), key_id=mres.key_id)
         results.append(OtaRomfsResult(t.name, t.partition_index, img_path, delta_path,

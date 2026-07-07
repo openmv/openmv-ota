@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import secrets
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -14,7 +15,7 @@ from openmv_ota.ota import geometry
 from openmv_ota.ota.algorithms import ES256, algorithm_for
 from openmv_ota.romfs import boards as boards_mod
 
-from . import cache, config as config_mod, gitrepo, lock as lock_mod, sdk_install
+from . import cache, config as config_mod, gitrepo, lock as lock_mod, passphrase as passphrase_mod, sdk_install
 from .config import LOCAL_NAME, OtaConfig
 from .errors import ProjectError
 from .resolve import firmware as fw_res
@@ -42,6 +43,7 @@ openmv-ota.local.toml
 keys/*.pem
 keys/*.key
 keys/private/
+keys/.dev-passphrase
 keys-backup.enc
 
 # build artefacts
@@ -281,6 +283,8 @@ def create_project(
     ota_keys: int = 32,
     factory_keys: int = 8,
     app_version: str = "1.0.0",
+    key_passphrase: str | None = None,
+    dev: bool = False,
 ) -> tuple[lock_mod.Lock, list[str]]:
     repo = firmware.expanduser().resolve()
     if not gitrepo.is_git_repo(repo):
@@ -305,7 +309,14 @@ def create_project(
                 "this regenerates the signing keys; devices already in the field trust the "
                 "OLD keys and will REJECT updates signed by the new ones (you'd have to "
                 "re-flash them). Only do this for a fresh fleet -- back up the old keys first")
-        provisioned, w = _provision_keys(sig_alg, factory_keys, ota_keys)
+        if dev:
+            key_passphrase = secrets.token_hex(16)   # random throwaway passphrase, cached in-project
+        elif not key_passphrase:
+            raise ProjectError(
+                "an OTA project's signing keys are encrypted -- pass --key-passphrase-file, or "
+                "--dev for a throwaway key (which the production build rail then refuses)",
+                exit_code=1)
+        provisioned, w = _provision_keys(sig_alg, factory_keys, ota_keys, key_passphrase)
         signing_key_id = provisioned.signing_key_id
         warnings += w
 
@@ -331,6 +342,10 @@ def create_project(
     lock_mod.write(paths.lock, lock)
     if provisioned is not None:
         _write_keys(paths, provisioned)
+        if dev:
+            dp = passphrase_mod.dev_passphrase_path(root)
+            dp.write_text(key_passphrase, encoding="utf-8")
+            dp.chmod(0o600)
     _scaffold_app(paths, app_version)  # every project gets a starter app/ (OTA or not)
     if _boards_have_coprocessor(boards):  # a slaved second core (e.g. AE3's M55_HE)
         _scaffold_coprocessor(paths, app_version)
@@ -346,7 +361,7 @@ def create_project(
 OTA_KEYS_WARN_FLOOR = 4
 
 
-def _provision_keys(sig_alg: int, factory_keys: int, ota_keys: int):
+def _provision_keys(sig_alg: int, factory_keys: int, ota_keys: int, passphrase: str):
     """Generate the OTA project's key set (raises on a missing factory key)."""
     if factory_keys < 1:
         raise ProjectError(
@@ -355,7 +370,8 @@ def _provision_keys(sig_alg: int, factory_keys: int, ota_keys: int):
         )
     from openmv_ota.ota.keys import provision_key_set
 
-    prov = provision_key_set(algorithm_for(sig_alg), n_factory=factory_keys, n_ota=ota_keys)
+    prov = provision_key_set(algorithm_for(sig_alg), n_factory=factory_keys, n_ota=ota_keys,
+                             passphrase=passphrase)
     warnings: list[str] = []
     if ota_keys < OTA_KEYS_WARN_FLOOR:
         warnings.append(

@@ -53,6 +53,12 @@ def register(project_parser: argparse.ArgumentParser):
     p_new.add_argument("--factory-keys", type=int, default=8, metavar="N",
                        help="factory-key reserve to provision, one per site (default 8)")
     p_new.add_argument("--force", action="store_true", help="overwrite an existing project")
+    p_new.add_argument("--key-passphrase-file", metavar="FILE",
+                       help="passphrase (from a file) to encrypt the signing keys at rest; keys "
+                            "are never stored plaintext")
+    p_new.add_argument("--dev", action="store_true",
+                       help="throwaway dev keys: a random cached passphrase (keys/.dev-passphrase), "
+                            "no passphrase to manage -- the production build rail refuses these")
     p_new.add_argument("--backup-passphrase-file", metavar="FILE",
                        help="auto-write an encrypted key backup using this passphrase (else a "
                             "reminder is printed for OTA projects)")
@@ -211,6 +217,9 @@ def cmd_new(args: argparse.Namespace) -> int:
             ota_keys=args.ota_keys,
             factory_keys=args.factory_keys,
             now=_now(),
+            key_passphrase=(_read_passphrase(args.key_passphrase_file)
+                            if args.key_passphrase_file else None),
+            dev=args.dev,
         )
     except ProjectError as e:
         print("error: %s" % e, file=sys.stderr)

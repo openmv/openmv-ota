@@ -59,12 +59,15 @@ def public_key_from_hex(point_hex: str, alg: AlgSpec):
         raise OtaError("invalid public point: %s" % e) from None
 
 
-def private_key_pem(private_key) -> bytes:
-    """Serialize a private key as unencrypted PKCS#8 PEM."""
+def private_key_pem(private_key, passphrase: str) -> bytes:
+    """Serialize a private key as **encrypted** PKCS#8 PEM under ``passphrase``. There is no
+    plaintext-write path: the tool never emits an unencrypted private key."""
+    if not passphrase:
+        raise OtaError("a passphrase is required to write a private key (keys are never plaintext)")
     return private_key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
+        serialization.BestAvailableEncryption(passphrase.encode("utf-8")),
     )
 
 
@@ -140,10 +143,10 @@ class ProvisionedKeys:
     signing_key_id: int             # the current OTA signer (first ota key)
 
 
-def provision_key_set(alg: AlgSpec, n_factory: int, n_ota: int) -> ProvisionedKeys:
+def provision_key_set(alg: AlgSpec, n_factory: int, n_ota: int, passphrase: str) -> ProvisionedKeys:
     """Generate the whole key set for a new OTA project: ``n_factory`` factory keys
-    + an ``n_ota`` OTA rotation pool, all on ``alg``'s curve. The device trusts the
-    public set; the current signer is the first OTA key."""
+    + an ``n_ota`` OTA rotation pool, all on ``alg``'s curve. Private PEMs are encrypted
+    under ``passphrase``. The device trusts the public set; the current signer is the first OTA key."""
     trusted: list[TrustedKey] = []
     private_pems: dict[int, bytes] = {}
 
@@ -152,7 +155,7 @@ def provision_key_set(alg: AlgSpec, n_factory: int, n_ota: int) -> ProvisionedKe
         trusted.append(
             TrustedKey(key_id, alg.cose_id, role, public_point_hex(priv.public_key()))
         )
-        private_pems[key_id] = private_key_pem(priv)
+        private_pems[key_id] = private_key_pem(priv, passphrase)
 
     for i in range(n_factory):
         _mint(FACTORY_KEY_ID_BASE + i, "factory")

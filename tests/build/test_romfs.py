@@ -551,6 +551,19 @@ def test_factory_no_matching_targets(make_project):
                                       compile_py=False, convert_models=False)
 
 
+def test_dev_key_refused_for_production(make_project):
+    # a --dev project's keys are dev-graded (encrypted under keys/.dev-passphrase); the production
+    # build rail refuses them unless --allow-dev-key.
+    root, repo, app = _build_ota(make_project, dev=True)
+    assert (root / "keys" / ".dev-passphrase").exists()
+    with pytest.raises(BuildError, match="dev signing key"):
+        build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                      compile_py=False, convert_models=False)
+    r = build_mod.build_factory_romfs(root, app=app, firmware=repo, allow_dev_key=True,
+                                      compile_py=False, convert_models=False)[0]
+    assert r.output.name == "OPENMV_N6-factory-romfs.img"
+
+
 def test_signer_pubkey_must_match_trusted(make_project):
     # the consistency check: a signer whose public key != keys/trusted_keys.json is refused,
     # so you can't sign a release nothing on the fleet would trust.

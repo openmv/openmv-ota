@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from cryptography.hazmat.primitives import serialization
 
 from openmv_ota.ota import algorithm_for
 from openmv_ota.ota.algorithms import ES256
@@ -27,19 +26,17 @@ class _FakeSigner(Signer):
         return "aa"
 
 
-def _entry_and_key(tmp_path, role="ota", key_id=0x0100, enc=None):
+def _entry_and_key(tmp_path, role="ota", key_id=0x0100, passphrase="pw"):
     key = generate_private_key(ALG)
-    pem = (private_key_pem(key) if enc is None else key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-        serialization.BestAvailableEncryption(enc.encode())))
-    (tmp_path / ("%s-%04x.pem" % (role, key_id))).write_bytes(pem)
+    (tmp_path / ("%s-%04x.pem" % (role, key_id))).write_bytes(private_key_pem(key, passphrase))
     entry = TrustedKey(key_id=key_id, alg=ES256, role=role, pubkey=public_point_hex(key.public_key()))
     return entry, key
 
 
 def test_local_signer_signs_and_exposes_point(tmp_path):
     entry, key = _entry_and_key(tmp_path)
-    s = build_signer(entry, ALG, private_keys_dir=tmp_path, backend={})
+    s = build_signer(entry, ALG, private_keys_dir=tmp_path, backend={},
+                     passphrase_provider=lambda: ("pw", "user"))
     assert isinstance(s, LocalSigner) and not s.is_dev_key
     region = b"a signed region"
     sig = s.sign(region)
@@ -61,9 +58,9 @@ def test_local_signer_missing_pem(tmp_path):
 
 
 def test_passphrase_provider_marks_dev(tmp_path):
-    entry, _ = _entry_and_key(tmp_path, enc="secret")     # an encrypted PEM
+    entry, _ = _entry_and_key(tmp_path, passphrase="secret")
     s = build_signer(entry, ALG, private_keys_dir=tmp_path,
-                     passphrase_provider=lambda: ("secret", "dev"))
+                     passphrase_provider=lambda: ("secret", "dev"))     # source 'dev' -> is_dev_key
     assert s.is_dev_key and s.public_point_hex() == entry.pubkey
 
 

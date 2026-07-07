@@ -18,7 +18,7 @@ def _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=4, factory_keys=2):
     proj.create_project(
         root, firmware=repo, boards=["OPENMV_N6"], product=None, vendor=None,
         sdk_home_override=make_sdk(), install_sdk=False, allow_dirty=True, force=False, now=NOW,
-        ota=True, ota_keys=ota_keys, factory_keys=factory_keys)
+        ota=True, ota_keys=ota_keys, factory_keys=factory_keys, dev=True)
     return root
 
 

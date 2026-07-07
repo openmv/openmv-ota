@@ -17,7 +17,9 @@ DEFAULT_APP = {
 def make_project(tmp_path, make_firmware, make_sdk):
     """Create a real pegged project + an app dir. Returns (project_dir, repo, app_dir)."""
     def _make(boards=("OPENMV_N6",), app_files=None, with_mpy_cross=True, extra_config="",
-              ota=False, product=None, account="acct_test"):
+              ota=False, product=None, account="acct_test", dev=False):
+        import os
+
         from openmv_ota.project import project as proj
 
         repo = make_firmware(with_mpy_cross=with_mpy_cross)
@@ -27,6 +29,9 @@ def make_project(tmp_path, make_firmware, make_sdk):
             root, firmware=repo, boards=list(boards), product=product, vendor=None,
             sdk_home_override=home, install_sdk=False, allow_dirty=True, force=False, now=NOW,
             ota=ota, ota_keys=2, factory_keys=1,  # small pool: these tests don't exercise keys
+            # keys are encrypted; non-dev projects sign with the suite's env passphrase, and the
+            # build resolver reads the same env, so builds don't hit the dev rail.
+            key_passphrase=os.environ.get("OPENMV_OTA_KEY_PASSPHRASE"), dev=dev,
         )
         # Give the project an account by default (pass account="" for the accountless case);
         # inject it as the first [product] key so factory builds clear the account rail.
