@@ -80,6 +80,51 @@ def test_custom_signer_hook(tmp_path, monkeypatch):
                      backend={"backend": "custom", "factory": "any.mod:not_a_signer"})
 
 
+class _FakePriv:
+    def __init__(self, sig):
+        self._sig = sig
+
+    def sign(self, digest):
+        return self._sig
+
+
+class _FakeSession:
+    def __init__(self, sig, point):
+        self._sig, self._point = sig, point
+
+    def private_key(self, label):
+        return _FakePriv(self._sig)
+
+    def public_point(self, label):
+        return self._point
+
+
+def test_pkcs11_signer_via_fake_session():
+    from openmv_ota.ota import signer_pkcs11
+    entry = TrustedKey(key_id=0x0100, alg=ES256, role="ota", pubkey="")
+    session = _FakeSession(b"\x11" * ALG.sig_size, b"\x04" + b"\xab" * 64)
+    s = signer_pkcs11.build(entry, ALG, {"object_label": "k"}, session=session)
+    assert s.sign(b"a region") == b"\x11" * ALG.sig_size
+    assert s.public_point_hex() == "04" + "ab" * 64
+
+
+def test_pkcs11_signer_bad_sig_length():
+    from openmv_ota.ota import signer_pkcs11
+    entry = TrustedKey(key_id=1, alg=ES256, role="ota", pubkey="")
+    s = signer_pkcs11.build(entry, ALG, {}, session=_FakeSession(b"\x00" * 10, b"\x04\xab"))
+    with pytest.raises(OtaError, match="expected"):
+        s.sign(b"x")
+
+
+def test_build_signer_pkcs11_dispatch(tmp_path, monkeypatch):
+    from openmv_ota.ota import signer_pkcs11
+    entry = TrustedKey(key_id=1, alg=ES256, role="ota", pubkey="")
+    sentinel = _FakeSigner()
+    monkeypatch.setattr(signer_pkcs11, "build", lambda e, a, b: sentinel)
+    assert build_signer(entry, ALG, private_keys_dir=tmp_path,
+                        backend={"backend": "pkcs11"}) is sentinel
+
+
 def test_custom_signer_bad_ref(tmp_path):
     entry, _ = _entry_and_key(tmp_path)
     with pytest.raises(OtaError, match="needs a 'factory'"):

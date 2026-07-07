@@ -580,6 +580,18 @@ def test_prod_provenance_not_dev(make_project):
     assert _built_manifest_dev(make_project, dev=False) is False
 
 
+def test_backends_json_selects_the_signer(make_project):
+    # keys/backends.json routes a key to a backend; an unknown tag proves _load_signer read it.
+    from openmv_ota.project.backends import write_backends
+    from openmv_ota.project.config import load_config
+    root, repo, app = _build_ota(make_project, dev=True)
+    kid = load_config(root / "openmv-ota.toml").signing_key_id
+    write_backends(root, {kid: {"backend": "bogus"}})
+    with pytest.raises(BuildError, match="unknown signer backend"):
+        build_mod.build_ota_romfs(root, app=app, firmware=repo, allow_dev_key=True,
+                                  compile_py=False, convert_models=False)
+
+
 def test_signer_pubkey_must_match_trusted(make_project):
     # the consistency check: a signer whose public key != keys/trusted_keys.json is refused,
     # so you can't sign a release nothing on the fleet would trust.

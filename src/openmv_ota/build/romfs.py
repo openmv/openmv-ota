@@ -48,6 +48,7 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
     from openmv_ota.ota.errors import OtaError
     from openmv_ota.ota.signer import build_signer
     from openmv_ota.ota.version import encode_app_version
+    from openmv_ota.project.backends import read_backends
     from openmv_ota.project.passphrase import resolve_passphrase
 
     settings_path = app_dir / "settings.json"
@@ -93,7 +94,7 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
     provider = lambda: resolve_passphrase(p.root, passphrase_file=key_passphrase_file)  # noqa: E731
     try:
         backend = build_signer(entry, alg, private_keys_dir=ProjectPaths(p.root).private_keys_dir,
-                               passphrase_provider=provider)
+                               backend=read_backends(p.root).get(key_id), passphrase_provider=provider)
     except (OtaError, ProjectError) as e:
         raise BuildError(str(e), exit_code=1) from None
     # the signer's key must be the one the devices trust -- catches a wrong/stale PEM, a swapped
