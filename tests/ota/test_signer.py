@@ -169,3 +169,47 @@ def test_custom_signer_bad_ref(tmp_path):
     with pytest.raises(OtaError, match="not importable"):
         build_signer(entry, ALG, private_keys_dir=tmp_path,
                      backend={"backend": "custom", "factory": "no_such_pkg.mod:x"})
+
+
+class _FakeProvisioner:
+    def __init__(self):
+        self.calls = []
+
+    def provision(self, key_id, role, alg):
+        self.calls.append((key_id, role))
+        return "04%02x" % (key_id & 0xFF), {"backend": "pkcs11", "object_label": "%s-%04x" % (role, key_id)}
+
+
+def test_provision_external_key_set():
+    from openmv_ota.ota.keys import FACTORY_KEY_ID_BASE, OTA_KEY_ID_BASE
+    from openmv_ota.ota.signer import provision_external_key_set
+    fake = _FakeProvisioner()
+    trusted, records, signing = provision_external_key_set(ALG, 2, 3, fake)
+    assert [k.role for k in trusted] == ["factory", "factory", "ota", "ota", "ota"]
+    assert [k.key_id for k in trusted] == [
+        FACTORY_KEY_ID_BASE, FACTORY_KEY_ID_BASE + 1,
+        OTA_KEY_ID_BASE, OTA_KEY_ID_BASE + 1, OTA_KEY_ID_BASE + 2]
+    assert signing == OTA_KEY_ID_BASE
+    assert set(records) == {k.key_id for k in trusted}
+    assert all(records[k.key_id]["object_label"].endswith("%04x" % k.key_id) for k in trusted)
+    assert len(fake.calls) == 5
+
+
+def test_build_provisioner_dispatch(monkeypatch):
+    from openmv_ota.ota import signer, signer_kms, signer_pkcs11
+    sentinel = _FakeProvisioner()
+    monkeypatch.setattr(signer_pkcs11, "provisioner", lambda backend: sentinel)
+    monkeypatch.setattr(signer_kms, "provisioner", lambda backend: sentinel)
+    assert signer.build_provisioner({"backend": "pkcs11"}) is sentinel
+    for tag in ("aws-kms", "gcp-kms", "azure-kms"):
+        assert signer.build_provisioner({"backend": tag}) is sentinel
+
+
+def test_build_provisioner_rejects_local_and_unknown():
+    from openmv_ota.ota.signer import build_provisioner
+    with pytest.raises(OtaError, match="can't provision keys externally"):
+        build_provisioner({"backend": "encrypted-pem"})
+    with pytest.raises(OtaError, match="can't provision keys externally"):
+        build_provisioner({})
+    with pytest.raises(OtaError, match="unknown provisioning backend"):
+        build_provisioner({"backend": "nope"})

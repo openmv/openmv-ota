@@ -52,6 +52,38 @@ def build(entry, alg: AlgSpec, backend: dict, *, session=None) -> Pkcs11Signer:
                         priv=session.private_key(label), point=session.public_point(label))
 
 
+def provisioner(backend: dict):  # pragma: no cover  (needs a real PKCS#11 token)
+    """A ``KeyProvisioner`` that generates each keypair on the token via ``C_GenerateKeyPair`` and
+    returns its public point + the per-key ``backends.json`` record."""
+    from ._extras import require_extra
+    from .signer import KeyProvisioner
+    require_extra("hsm")
+    import pkcs11
+    from pkcs11.util.ec import encode_named_curve_parameters
+
+    lib = pkcs11.lib(backend["pkcs11_module"])
+    token = lib.get_token(token_label=backend.get("token_label"))
+    session = token.open(user_pin=backend.get("pin"), rw=True)
+    curve = {"sha256": "secp256r1", "sha384": "secp384r1", "sha512": "secp521r1"}
+
+    class _Pkcs11Provisioner(KeyProvisioner):
+        def provision(self, key_id, role, alg):
+            label = "%s-%04x" % (role, key_id)
+            params = session.create_domain_parameters(
+                pkcs11.KeyType.EC,
+                {pkcs11.Attribute.EC_PARAMS: encode_named_curve_parameters(curve[alg.hash_name])},
+                local=True)
+            pub, _priv = params.generate_keypair(store=True, label=label)
+            point = _der_octet_string(bytes(pub[pkcs11.Attribute.EC_POINT]))
+            record = {"backend": "pkcs11", "object_label": label,
+                      "pkcs11_module": backend["pkcs11_module"]}
+            if backend.get("token_label"):
+                record["token_label"] = backend["token_label"]
+            return point.hex(), record
+
+    return _Pkcs11Provisioner()
+
+
 # --- real PKCS#11 session (host-coverage excluded -- no token in CI) --------------------------
 
 def _open_session(backend):  # pragma: no cover

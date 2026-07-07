@@ -38,7 +38,37 @@ Live list of what's being built next. Done work isn't tracked here (see git log)
   (revoke all tokens + `active=0`; soft — fielded devices keep being served), `.../activate`.
   Minting into a deactivated account (issue/rotate) → 409. Client + server-CLI parity.
 
+## Done (pluggable signer + enforced key hygiene — CRA-grade)
+
+- **`Signer` abstraction** (`ota/signer.py`) — `build_signer` factory dispatching on
+  `keys/backends.json`; `sign()` returns raw `R||S`, `public_point_hex()` feeds the build-time
+  consistency check. Backends: encrypted-PEM floor, PKCS#11 (any HSM/token), AWS/GCP/Azure KMS,
+  `custom` dotted-path hook. Heavy SDKs behind pip extras (`hsm`/`aws-kms`/`gcp-kms`/`azure-kms`)
+  guarded by `ota/_extras.py`; real hardware/cloud paths `pragma: no cover`, logic fully tested via
+  injectable `session=`/`client=` seams.
+- **No plaintext, ever** — `private_key_pem` is encrypt-only (`BestAvailableEncryption`); no
+  `NoEncryption` write path exists. `project new --dev` mints a random passphrase in gitignored
+  `keys/.dev-passphrase`; non-dev requires `--key-passphrase-file`/env/prompt, never written.
+  `project keys encrypt` migrates legacy plaintext projects.
+- **Dev-key rail** — `Signer.is_dev_key` set *structurally* (passphrase came from `.dev-passphrase`);
+  the production build refuses a dev key unless `--allow-dev-key` (per-build, loud, audited).
+- **Dev provenance** — `"dev": true` stamped into the *signed* system.json + trailer + manifest;
+  `releases.dev` column; server serves + surfaces it (visibility only, never a gate — the whole
+  pipeline stays testable with dev keys).
+- **External key provisioning** — `KeyProvisioner` ABC + `provision_external_key_set`; PKCS#11
+  `C_GenerateKeyPair` / AWS `CreateKey` / GCP `CreateCryptoKeyVersion` / Azure `create_ec_key`
+  (`pragma: no cover`). `project keys backend show|configure|provision`: `configure` points a
+  trusted key at an externally-held key (bring-your-own-key); `provision` mints a fresh pool
+  in-token/KMS and re-keys — no private PEM ever on disk. `backends.json` is committed (non-secret).
+
 ## Remaining / optional
+
+- **Real-hardware/cloud acceptance** for the signer backends (SoftHSM opt-in test exists; AWS/GCP/
+  Azure + provisioning are unit-covered via fakes but need one live end-to-end pass each).
+- **KMS bulk-provisioning cost** — `keys backend provision` defaults to a small pool (1 factory +
+  4 ota) because external keys are billable; document per-provider pricing before recommending it.
+- `configure` with an explicit `DIR` must place it *before* `--set`/`--backend` (argparse can't
+  split two positionals across value options); the default `.` covers the common in-project case.
 
 - Consistent error envelopes (FastAPI's `{detail}` is the current shape).
 - Account-scoped read indexes lag multi-tenancy (indexes lead with `product_id`, not `account_id`);

@@ -159,3 +159,113 @@ def test_set_signing_key_id_missing_line(tmp_path):
     p.write_text("[product]\nname = 'x'\n")
     with pytest.raises(ProjectError, match="could not find signing_key_id"):
         cfg.set_signing_key_id(p, 5)
+
+
+class _FakeProvisioner:
+    """Mints real local keypairs so the returned public points are valid, but hands back an
+    external-style backend record (no PEM written)."""
+
+    def __init__(self, tag="aws-kms"):
+        self.tag = tag
+        self.calls: list[tuple[int, str]] = []
+
+    def provision(self, key_id, role, alg):
+        from openmv_ota.ota.keys import generate_private_key, public_point_hex
+        self.calls.append((key_id, role))
+        pub = generate_private_key(alg).public_key()
+        return public_point_hex(pub), {"backend": self.tag, "uri": "res:%s-%04x" % (role, key_id)}
+
+
+def test_backend_summary_defaults_and_after_configure(tmp_path, make_firmware, make_sdk):
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=2, factory_keys=1)
+    rows = keys_mod.backend_summary(root)
+    assert [r[2] for r in rows] == ["encrypted-pem"] * 3          # every key is a local PEM
+    ota_id = _signing_id(root)
+    keys_mod.set_backend(root, ota_id, {"backend": "aws-kms", "uri": "arn:x"})
+    after = {kid: backend for kid, _role, backend in keys_mod.backend_summary(root)}
+    assert after[ota_id] == "aws-kms" and after[0x0001] == "encrypted-pem"
+
+
+def test_set_backend_unknown_key(tmp_path, make_firmware, make_sdk):
+    root = _ota_project(tmp_path, make_firmware, make_sdk)
+    with pytest.raises(ProjectError, match="no key with id"):
+        keys_mod.set_backend(root, 0x9999, {"backend": "pkcs11"})
+
+
+def test_provision_backend_rekeys(tmp_path, make_firmware, make_sdk):
+    from openmv_ota.ota import read_trusted_keys
+    from openmv_ota.project.backends import read_backends
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=4, factory_keys=2)
+    fake = _FakeProvisioner()
+    signing = keys_mod.provision_backend(root, fake, n_factory=1, n_ota=2)
+
+    trusted = read_trusted_keys(proj.ProjectPaths(root).trusted_keys)
+    assert [k.role for k in trusted] == ["factory", "ota", "ota"]     # the whole set replaced
+    assert signing == _signing_id(root)                              # config advanced to new signer
+    records = read_backends(root)
+    assert {k.key_id for k in trusted} == set(records)               # every key has a backend record
+    assert all(r["backend"] == "aws-kms" for r in records.values())
+    assert len(fake.calls) == 3
+
+
+def test_keys_backend_show_and_configure_cli(tmp_path, make_firmware, make_sdk, capsys):
+    from openmv_ota.cli import main
+    from openmv_ota.project.backends import read_backends
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=2, factory_keys=1)
+    ota_id = _signing_id(root)
+    assert main(["project", "keys", "backend", "configure", "0x%04x" % ota_id, str(root),
+                 "--backend", "aws-kms", "--set", "uri=arn:aws:kms:x"]) == 0
+    assert read_backends(root)[ota_id] == {"backend": "aws-kms", "uri": "arn:aws:kms:x"}
+    assert main(["project", "keys", "backend", "show", str(root)]) == 0
+    out = capsys.readouterr().out
+    assert "aws-kms" in out and ("0x%04x" % ota_id) in out
+
+
+def test_keys_backend_configure_bad_set(tmp_path, make_firmware, make_sdk):
+    from openmv_ota.cli import main
+    root = _ota_project(tmp_path, make_firmware, make_sdk)
+    assert main(["project", "keys", "backend", "configure", "0x0100", str(root),
+                 "--backend", "pkcs11", "--set", "noequals"]) == 2
+
+
+def test_keys_backend_provision_cli(tmp_path, make_firmware, make_sdk, capsys, monkeypatch):
+    from openmv_ota.cli import main
+    from openmv_ota.ota import signer
+    from openmv_ota.project.backends import read_backends
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=4, factory_keys=2)
+    fake = _FakeProvisioner(tag="pkcs11")
+    captured = {}
+
+    def _fake_build(record):
+        captured["record"] = record
+        return fake
+
+    monkeypatch.setattr(signer, "build_provisioner", _fake_build)
+    assert main(["project", "keys", "backend", "provision", "--backend", "pkcs11",
+                 "--set", "pkcs11_module=/usr/lib/softhsm.so",
+                 "--ota-keys", "2", "--factory-keys", "1", str(root)]) == 0
+    assert captured["record"] == {"backend": "pkcs11", "pkcs11_module": "/usr/lib/softhsm.so"}
+    assert len(read_backends(root)) == 3
+    assert "no private key on disk" in capsys.readouterr().out
+
+
+def test_keys_backend_provision_error_not_ota(tmp_path, make_firmware, make_sdk, monkeypatch):
+    from openmv_ota.cli import main
+    from openmv_ota.ota import signer
+    monkeypatch.setattr(signer, "build_provisioner", lambda record: _FakeProvisioner())
+    repo = make_firmware()
+    root = tmp_path / "plain"
+    proj.create_project(root, firmware=repo, boards=["OPENMV_N6"], product=None, vendor=None,
+                        sdk_home_override=make_sdk(), install_sdk=False, allow_dirty=True,
+                        force=False, now=NOW, ota=False)
+    assert main(["project", "keys", "backend", "provision", "--backend", "aws-kms", str(root)]) == 2
+
+
+def test_keys_backend_show_not_ota(tmp_path, make_firmware, make_sdk):
+    from openmv_ota.cli import main
+    repo = make_firmware()
+    root = tmp_path / "plain"
+    proj.create_project(root, firmware=repo, boards=["OPENMV_N6"], product=None, vendor=None,
+                        sdk_home_override=make_sdk(), install_sdk=False, allow_dirty=True,
+                        force=False, now=NOW, ota=False)
+    assert main(["project", "keys", "backend", "show", str(root)]) == 2

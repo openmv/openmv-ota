@@ -70,6 +70,44 @@ def _ota_index(trusted: list, signing_key_id: int) -> tuple[list[int], int]:
     return ota_ids, ota_ids.index(signing_key_id)
 
 
+def backend_summary(root: Path) -> list[tuple[int, str, str]]:
+    """``(key_id, role, backend-tag)`` per trusted key -- ``encrypted-pem`` when there's no record."""
+    from .backends import read_backends
+    _config, trusted, _paths = _load(root)
+    records = read_backends(root)
+    return [(k.key_id, k.role, records.get(k.key_id, {}).get("backend", "encrypted-pem"))
+            for k in sorted(trusted, key=lambda k: k.key_id)]
+
+
+def set_backend(root: Path, key_id: int, record: dict) -> None:
+    """Point a trusted key at an external backend by writing its ``keys/backends.json`` record.
+    (The build's consistency check verifies the backend's public key matches ``trusted_keys.json``.)"""
+    from .backends import read_backends, write_backends
+    _config, trusted, _paths = _load(root)
+    _find(trusted, key_id)   # 404 if unknown
+    records = read_backends(root)
+    records[key_id] = record
+    write_backends(root, records)
+
+
+def provision_backend(root: Path, provisioner, *, n_factory: int, n_ota: int) -> int:
+    """Generate a fresh key set **inside** an external backend and replace ``trusted_keys.json`` +
+    ``backends.json`` with it (no private PEM ever touches disk). Keeps the current signing
+    algorithm. Re-keys the fleet -- devices trust the new set only after a firmware update. Returns
+    the new signing key id."""
+    from openmv_ota.ota.signer import provision_external_key_set
+
+    from .backends import write_backends
+    _config, existing, paths = _load(root)
+    alg = algorithm_for(existing[0].alg)
+    trusted, records, signing_key_id = provision_external_key_set(
+        alg, n_factory, n_ota, provisioner)
+    write_trusted_keys(paths.trusted_keys, trusted)
+    write_backends(root, records)
+    config_mod.set_signing_key_id(paths.config, signing_key_id)
+    return signing_key_id
+
+
 def encrypt_private_keys(root: Path, passphrase: str) -> list[str]:
     """Migrate a project created before encryption-at-rest: re-write each **plaintext** private PEM
     as an encrypted PEM under ``passphrase``. Keys that are already encrypted are left untouched (we

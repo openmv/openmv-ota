@@ -139,6 +139,39 @@ def register(project_parser: argparse.ArgumentParser):
     p_ke.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_ke.set_defaults(func=cmd_keys_encrypt, _command="project keys encrypt")
 
+    p_kbk = keys_sub.add_parser("backend",
+                                help="inspect / configure external signing backends (HSM, KMS)")
+    kbk_sub = p_kbk.add_subparsers(dest="_backend_action", required=True)
+
+    p_kbs = kbk_sub.add_parser("show", help="list each key's signing backend")
+    p_kbs.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kbs.set_defaults(func=cmd_keys_backend_show, _command="project keys backend show")
+
+    p_kbc = kbk_sub.add_parser("configure",
+                               help="point a trusted key at an external backend (bring your own key)")
+    p_kbc.add_argument("key_id", type=lambda s: int(s, 0), help="key id (e.g. 0x0100 or 256)")
+    p_kbc.add_argument("--backend", required=True,
+                       choices=["encrypted-pem", "pkcs11", "aws-kms", "gcp-kms", "azure-kms",
+                                "custom"],
+                       help="backend tag")
+    p_kbc.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", dest="settings",
+                       help="a backend record field (repeatable), e.g. --set uri=arn:aws:...")
+    p_kbc.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kbc.set_defaults(func=cmd_keys_backend_configure, _command="project keys backend configure")
+
+    p_kbp = kbk_sub.add_parser("provision",
+                               help="generate a fresh key set inside an external backend (re-keys)")
+    p_kbp.add_argument("--backend", required=True,
+                       choices=["pkcs11", "aws-kms", "gcp-kms", "azure-kms"], help="backend tag")
+    p_kbp.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", dest="settings",
+                       help="a backend config field (repeatable), e.g. --set pkcs11_module=/usr/...")
+    p_kbp.add_argument("--ota-keys", type=int, default=4, metavar="N",
+                       help="OTA keys to mint (default: 4 — external keys are often billable)")
+    p_kbp.add_argument("--factory-keys", type=int, default=1, metavar="N",
+                       help="factory keys to mint (default: 1)")
+    p_kbp.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kbp.set_defaults(func=cmd_keys_backend_provision, _command="project keys backend provision")
+
     p_hist = sub.add_parser("history", help="print the project's operations history")
     p_hist.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_hist.add_argument("-n", "--limit", type=int, default=0,
@@ -217,6 +250,66 @@ def cmd_keys_encrypt(args: argparse.Namespace) -> int:
         print("Encrypted %d plaintext key(s): %s" % (len(done), ", ".join(done)))
     else:
         print("No plaintext keys to encrypt (all already encrypted).")
+    return 0
+
+
+def _parse_settings(pairs: list[str]) -> dict:
+    record: dict = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise ProjectError("--set expects KEY=VALUE, got %r" % pair)
+        key, _, value = pair.partition("=")
+        record[key.strip()] = value
+    return record
+
+
+def cmd_keys_backend_show(args: argparse.Namespace) -> int:
+    from . import keys as keys_mod
+    try:
+        rows = keys_mod.backend_summary(Path(args.dir))
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    print("%-8s  %-8s  %s" % ("key_id", "role", "backend"))
+    for key_id, role, backend in rows:
+        print("0x%04x    %-8s  %s" % (key_id, role, backend))
+    return 0
+
+
+def cmd_keys_backend_configure(args: argparse.Namespace) -> int:
+    from . import keys as keys_mod
+    try:
+        record = {"backend": args.backend, **_parse_settings(args.settings)}
+        keys_mod.set_backend(Path(args.dir), args.key_id, record)
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    history.record(args.dir, "keys-backend-configure", key_id=args.key_id, backend=args.backend)
+    print("Key 0x%04x now signs via the %s backend (keys/backends.json). The build verifies its "
+          "public key matches keys/trusted_keys.json." % (args.key_id, args.backend))
+    return 0
+
+
+def cmd_keys_backend_provision(args: argparse.Namespace) -> int:
+    from openmv_ota.ota import signer
+    from openmv_ota.ota.errors import OtaError
+
+    from . import keys as keys_mod
+    try:
+        record = {"backend": args.backend, **_parse_settings(args.settings)}
+        provisioner = signer.build_provisioner(record)
+        signing = keys_mod.provision_backend(
+            Path(args.dir), provisioner, n_factory=args.factory_keys, n_ota=args.ota_keys)
+    except (ProjectError, OtaError) as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    history.record(args.dir, "keys-backend-provision", backend=args.backend,
+                   factory=args.factory_keys, ota=args.ota_keys)
+    print("Provisioned %d factory + %d ota keys in the %s backend -> keys/trusted_keys.json + "
+          "keys/backends.json (no private key on disk). Now signing with 0x%04x."
+          % (args.factory_keys, args.ota_keys, args.backend, signing))
+    print("IMPORTANT: this re-keyed the fleet — fielded devices trust the new keys only after a "
+          "firmware update carrying the new trusted set. Commit both files.")
     return 0
 
 

@@ -50,6 +50,78 @@ def build(entry, alg: AlgSpec, backend: dict, *, client=None) -> KmsSigner:
     return KmsSigner(entry.key_id, entry.alg, alg, client=client)
 
 
+def provisioner(backend: dict):  # pragma: no cover  (needs cloud credentials)
+    """A ``KeyProvisioner`` that creates a fresh signing key in the provider and returns its public
+    point + the per-key ``backends.json`` record. NOTE: each key is billable -- mint a small pool."""
+    from ._extras import require_extra
+    from .signer import KeyProvisioner
+    tag = backend["backend"]
+    require_extra(tag)
+    make = _PROVISIONERS[tag]
+
+    class _KmsProvisioner(KeyProvisioner):
+        def provision(self, key_id, role, alg):
+            return make(backend, key_id, role, alg)
+
+    return _KmsProvisioner()
+
+
+def _aws_provision(backend, key_id, role, alg):  # pragma: no cover
+    import boto3
+
+    from .keys import spki_to_point_hex
+    kms = boto3.client("kms", region_name=backend.get("region"))
+    spec = {"sha256": "ECC_NIST_P256", "sha384": "ECC_NIST_P384", "sha512": "ECC_NIST_P521"}
+    meta = kms.create_key(KeyUsage="SIGN_VERIFY", KeySpec=spec[alg.hash_name],
+                          Description="openmv-ota %s-%04x" % (role, key_id))["KeyMetadata"]
+    arn = meta["Arn"]
+    point = spki_to_point_hex(kms.get_public_key(KeyId=arn)["PublicKey"])
+    record = {"backend": "aws-kms", "uri": arn}
+    if backend.get("region"):
+        record["region"] = backend["region"]
+    return point, record
+
+
+def _gcp_provision(backend, key_id, role, alg):  # pragma: no cover
+    from cryptography.hazmat.primitives import serialization
+    from google.cloud import kms as gkms
+
+    from .keys import spki_to_point_hex
+    client = gkms.KeyManagementServiceClient()
+    parent = backend["key_ring"]   # projects/*/locations/*/keyRings/*
+    algo = {"sha256": "EC_SIGN_P256_SHA256", "sha384": "EC_SIGN_P384_SHA384",
+            "sha512": "EC_SIGN_P521_SHA512"}
+    ck = client.create_crypto_key(request={
+        "parent": parent, "crypto_key_id": "openmv-ota-%s-%04x" % (role, key_id),
+        "crypto_key": {"purpose": gkms.CryptoKey.CryptoKeyPurpose.ASYMMETRIC_SIGN,
+                       "version_template": {"algorithm": algo[alg.hash_name]}}})
+    version = client.list_crypto_key_versions(request={"parent": ck.name}).crypto_key_versions[0].name
+    pem = client.get_public_key(request={"name": version}).pem.encode()
+    der = serialization.load_pem_public_key(pem).public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return spki_to_point_hex(der), {"backend": "gcp-kms", "uri": version}
+
+
+def _azure_provision(backend, key_id, role, alg):  # pragma: no cover
+    from azure.identity import DefaultAzureCredential
+    from azure.keyvault.keys import KeyClient
+
+    from .keys import public_point_hex
+    from cryptography.hazmat.primitives.asymmetric import ec
+    kc = KeyClient(backend["vault_url"], DefaultAzureCredential())
+    curve = {"sha256": "P-256", "sha384": "P-384", "sha512": "P-521"}
+    key = kc.create_ec_key("openmv-ota-%s-%04x" % (role, key_id), curve=curve[alg.hash_name])
+    jwk = key.key
+    pub = ec.EllipticCurvePublicNumbers(
+        int.from_bytes(jwk.x, "big"), int.from_bytes(jwk.y, "big"),
+        {"P-256": ec.SECP256R1, "P-384": ec.SECP384R1, "P-521": ec.SECP521R1}[curve[alg.hash_name]]()
+    ).public_key()
+    return public_point_hex(pub), {"backend": "azure-kms", "uri": key.id}
+
+
+_PROVISIONERS = {"aws-kms": _aws_provision, "gcp-kms": _gcp_provision, "azure-kms": _azure_provision}
+
+
 # --- real provider adapters (host-coverage excluded -- no cloud creds in CI) ------------------
 
 def _aws(backend):  # pragma: no cover

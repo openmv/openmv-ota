@@ -89,6 +89,53 @@ def _local_signer(entry, alg, private_keys_dir, passphrase_provider):
                        is_dev_key=(source == "dev"))
 
 
+class KeyProvisioner(abc.ABC):
+    """Generates a keypair **inside** an external backend (token/KMS) and returns its public point +
+    the ``keys/backends.json`` record for reaching it -- so the private key never lands on disk."""
+
+    @abc.abstractmethod
+    def provision(self, key_id: int, role: str, alg: AlgSpec) -> tuple[str, dict]:
+        """Return ``(uncompressed_public_point_hex, backend_record)`` for a freshly generated key."""
+
+
+def provision_external_key_set(alg: AlgSpec, n_factory: int, n_ota: int,
+                               provisioner: KeyProvisioner):
+    """Mint the whole pool in an external backend. Returns ``(trusted_keys, backend_records,
+    signing_key_id)`` -- the public set for ``keys/trusted_keys.json`` and the per-key records for
+    ``keys/backends.json``. No private PEM is ever produced."""
+    from .keys import FACTORY_KEY_ID_BASE, OTA_KEY_ID_BASE, TrustedKey
+    trusted: list = []
+    records: dict[int, dict] = {}
+
+    def _mint(key_id: int, role: str) -> None:
+        pubkey, record = provisioner.provision(key_id, role, alg)
+        trusted.append(TrustedKey(key_id, alg.cose_id, role, pubkey))
+        records[key_id] = record
+
+    for i in range(n_factory):
+        _mint(FACTORY_KEY_ID_BASE + i, "factory")
+    for i in range(n_ota):
+        _mint(OTA_KEY_ID_BASE + i, "ota")
+    return trusted, records, OTA_KEY_ID_BASE
+
+
+def build_provisioner(backend: dict) -> KeyProvisioner:
+    """Resolve the ``KeyProvisioner`` for a ``keys/backends.json``-shaped ``backend`` record.
+    Only external backends can provision (a local PEM would defeat the purpose). Mirrors
+    ``build_signer`` dispatch; raises ``OtaError`` for a local/unknown tag."""
+    tag = (backend or {}).get("backend")
+    if tag == "pkcs11":
+        from . import signer_pkcs11
+        return signer_pkcs11.provisioner(backend)
+    if tag in ("aws-kms", "gcp-kms", "azure-kms"):
+        from . import signer_kms
+        return signer_kms.provisioner(backend)
+    if tag in (None, "encrypted-pem"):
+        raise OtaError("the %s backend can't provision keys externally; it writes a local "
+                       "encrypted PEM. Use `project new` for local keys." % (tag or "encrypted-pem"))
+    raise OtaError("unknown provisioning backend: %r" % tag)
+
+
 def _custom_signer(entry, alg, backend):
     ref = backend.get("factory")
     if not ref or ":" not in ref:
