@@ -109,7 +109,8 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
                    min_platform_version=body.get("min_platform_version", 0),
                    image_sha256=body["sha256"], image_size=body["size"], representations=reps,
                    manifest_key=manifest_key, image_key=image_key, delta_key=delta_key,
-                   uploaded_by=principal.name, account_id=account_id)
+                   uploaded_by=principal.name, account_id=account_id,
+                   dev=1 if body.get("dev") else 0)   # dev-signed provenance (visibility only)
     ms.append_audit(actor=principal.name, action="release.publish", entity_type="release",
                     entity_id=release_id, data={"product_id": product_id, "version": body.get("version"),
                                                 "payload_version": payload_version},

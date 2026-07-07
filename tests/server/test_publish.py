@@ -86,6 +86,18 @@ def test_publish_full_release(tmp_path):
     assert any(e["action"] == "release.publish" for e in store.read_audit())
 
 
+def test_publish_stores_dev_flag(tmp_path):
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    body = _body(img)
+    body["dev"] = True                                     # a dev-signed manifest
+    r = _post(app, _manifest(body), _gz(img))
+    assert r.status_code == 200 and store.get_release(r.json()["release_id"])["dev"] == 1
+    # a normal release defaults to dev=0
+    assert store.get_release(_post(app, _manifest(_body(img, pv=0x02010000)),
+                                   _gz(img)).json()["release_id"])["dev"] == 0
+
+
 def test_publish_with_delta(tmp_path):
     app, store, storage = _app(tmp_path)
     img = b"\xA5" * 128

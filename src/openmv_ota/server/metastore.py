@@ -143,6 +143,11 @@ _MIGRATIONS: list[list[str]] = [
         # lapse never bricks a fleet). No new token can be issued/rotated for an inactive account.
         "ALTER TABLE accounts ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
     ],
+    [   # v9 -- dev-signed provenance: a release built with a throwaway --dev key carries dev=1 (read
+        # from the signed manifest). Visibility only -- never a gate -- so operators can spot a dev
+        # image published to a real fleet.
+        "ALTER TABLE releases ADD COLUMN dev INTEGER NOT NULL DEFAULT 0",
+    ],
 ]
 
 
@@ -204,15 +209,15 @@ class SqlMetadataStore:
     def add_release(self, *, release_id, product_id, product, version, payload_version,
                     min_platform_version, image_sha256, image_size, representations,
                     manifest_key, image_key, delta_key=None, key_id=None, uploaded_by=None,
-                    account_id="") -> None:
+                    account_id="", dev=0) -> None:
         self.execute(
             "INSERT INTO releases (release_id, product_id, product, version, payload_version, "
             "min_platform_version, image_sha256, image_size, representations, manifest_key, "
-            "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id, dev) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (release_id, product_id, product, version, payload_version, min_platform_version,
              image_sha256, image_size, json.dumps(representations), manifest_key, image_key,
-             delta_key, key_id, uploaded_by, _now_iso(), account_id))
+             delta_key, key_id, uploaded_by, _now_iso(), account_id, dev))
 
     def get_release(self, release_id: str) -> dict | None:
         r = _d(self.query_one("SELECT * FROM releases WHERE release_id = ?", (release_id,)))

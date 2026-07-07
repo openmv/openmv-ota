@@ -564,6 +564,22 @@ def test_dev_key_refused_for_production(make_project):
     assert r.output.name == "OPENMV_N6-factory-romfs.img"
 
 
+def _built_manifest_dev(make_project, dev):
+    from openmv_ota.ota.manifest import parse_manifest
+    root, repo, app = _build_ota(make_project, dev=dev)
+    build_mod.build_ota_romfs(root, app=app, firmware=repo, allow_dev_key=dev,
+                              compile_py=False, convert_models=False)
+    return parse_manifest((root / "build" / "OPENMV_N6-manifest.bin").read_bytes()).body["dev"]
+
+
+def test_dev_provenance_stamped_in_manifest(make_project):
+    assert _built_manifest_dev(make_project, dev=True) is True
+
+
+def test_prod_provenance_not_dev(make_project):
+    assert _built_manifest_dev(make_project, dev=False) is False
+
+
 def test_signer_pubkey_must_match_trusted(make_project):
     # the consistency check: a signer whose public key != keys/trusted_keys.json is refused,
     # so you can't sign a release nothing on the fleet would trust.

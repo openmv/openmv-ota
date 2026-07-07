@@ -136,7 +136,7 @@ def _read_settings(app_dir: Path) -> dict:
         return {}
 
 
-def _build_system_info(p, t, app_version, vendor: str) -> dict:
+def _build_system_info(p, t, app_version, vendor: str, dev: bool = False) -> dict:
     """The derived system/identity info for a target. Written into the ROMFS as
     ``system.json`` (read by the app, OTA or not) and mirrored verbatim into the OTA
     trailer's metadata (so host tools can read it without a ROMFS reader). Composed
@@ -154,6 +154,7 @@ def _build_system_info(p, t, app_version, vendor: str) -> dict:
         "board": t.name,
         "product_id": product_id,
         "account_id": p.config.account_id,
+        "dev": dev,     # signed with a throwaway --dev key -> visibility flag, never a gate
         "board_name": str(override.get("board_name") or product),
         "app_version": app_version,
         "vendor": vendor,
@@ -318,7 +319,7 @@ def _warn_unset_product_id(t, system_info: dict) -> None:
 
 
 def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_models, mpy_extra,
-                inject=None):
+                inject=None, dev=False):
     """Stage + compile + convert + system.json + pack. Returns ``(body, system_info,
     tmp_dir)``; the caller is responsible for removing ``tmp_dir``. ``inject(stage)``,
     if given, runs right after staging (before compile) -- used by a main build to nest
@@ -346,7 +347,7 @@ def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_mod
 
     # The read-only system.json (board identity + provenance) goes into the staged
     # app, so every image - OTA or not - carries it at /rom/system.json.
-    system_info = _build_system_info(p, t, app_version, vendor)
+    system_info = _build_system_info(p, t, app_version, vendor, dev=dev)
     (stage / "system.json").write_text(
         json.dumps(system_info, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -403,7 +404,8 @@ def _build_one(p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, ve
                convert_models, mpy_extra, allow_oversize, keep_build_dir, inject=None) -> BuildResult:
     body, system_info, tmp = _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor,
                                          convert_models=convert_models, mpy_extra=mpy_extra,
-                                         inject=inject)
+                                         inject=inject,
+                                         dev=bool(ota_signer and ota_signer.backend.is_dev_key))
     try:
         capacity, bound = _capacity(p, t)
         if len(body) > capacity and not allow_oversize:
@@ -560,7 +562,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
 
     body, system_info, tmp = _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor,
                                          convert_models=convert_models, mpy_extra=mpy_extra,
-                                         inject=inject)
+                                         inject=inject, dev=signer.backend.is_dev_key)
     try:
         block = geometry.ota_block(t.erase_size)
         front_size = t.front_size
@@ -839,6 +841,7 @@ def build_manifest(
             "schema": SCHEMA,
             "product_id": tr.product_id,
             "account_id": tr.meta.get("account_id", ""),   # rides in the trailer's JSON meta, not the binary header
+            "dev": tr.meta.get("dev", False),              # dev-signed provenance (visibility only)
             "product": tr.meta.get("product", p.config.name),
             "version": decode_app_version(tr.payload_version),
             "payload_version": tr.payload_version,
