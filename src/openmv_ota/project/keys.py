@@ -70,6 +70,23 @@ def _ota_index(trusted: list, signing_key_id: int) -> tuple[list[int], int]:
     return ota_ids, ota_ids.index(signing_key_id)
 
 
+def encrypt_private_keys(root: Path, passphrase: str) -> list[str]:
+    """Migrate a project created before encryption-at-rest: re-write each **plaintext** private PEM
+    as an encrypted PEM under ``passphrase``. Keys that are already encrypted are left untouched (we
+    can't decrypt them without their passphrase). Returns the filenames re-encrypted."""
+    from openmv_ota.ota.keys import load_private_key_pem, private_key_pem
+    _config, _trusted, paths = _load(root)   # validates it's an OTA project
+    done: list[str] = []
+    for pem_path in sorted(paths.private_keys_dir.glob("*.pem")):
+        try:
+            key = load_private_key_pem(pem_path.read_bytes(), None)   # a plaintext PEM?
+        except OtaError:
+            continue                                                 # already encrypted -> skip
+        pem_path.write_bytes(private_key_pem(key, passphrase))
+        done.append(pem_path.name)
+    return done
+
+
 def key_status(root: Path) -> KeyStatus:
     """Resolve the project's OTA key status (read-only)."""
     config, trusted, paths = _load(root)

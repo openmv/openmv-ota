@@ -26,6 +26,51 @@ def _signing_id(root):
     return cfg.load_config(proj.ProjectPaths(root).config).signing_key_id
 
 
+def _make_plaintext(root, pattern="ota-*.pem"):
+    """Overwrite one private PEM with a plaintext one, simulating a pre-encryption project."""
+    from cryptography.hazmat.primitives import serialization
+
+    from openmv_ota.ota import algorithm_for
+    from openmv_ota.ota.algorithms import ES256
+    from openmv_ota.ota.keys import generate_private_key
+    target = sorted((root / "keys" / "private").glob(pattern))[0]
+    key = generate_private_key(algorithm_for(ES256))
+    target.write_bytes(key.private_bytes(serialization.Encoding.PEM,
+                                         serialization.PrivateFormat.PKCS8,
+                                         serialization.NoEncryption()))
+    return target
+
+
+def test_encrypt_private_keys_migrates_and_is_idempotent(tmp_path, make_firmware, make_sdk):
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.keys import load_private_key_pem
+    root = _ota_project(tmp_path, make_firmware, make_sdk)
+    target = _make_plaintext(root)
+    assert target.name in keys_mod.encrypt_private_keys(root, "newpw")   # migrated
+    with pytest.raises(OtaError):
+        load_private_key_pem(target.read_bytes(), None)                  # no longer plaintext
+    assert load_private_key_pem(target.read_bytes(), "newpw") is not None
+    assert keys_mod.encrypt_private_keys(root, "newpw") == []            # idempotent (all encrypted)
+
+
+def test_keys_encrypt_cli(tmp_path, make_firmware, make_sdk, capsys):
+    from openmv_ota.cli import main
+    from openmv_ota.project.passphrase import dev_passphrase_path
+    root = _ota_project(tmp_path, make_firmware, make_sdk)
+    _make_plaintext(root)
+    assert main(["project", "keys", "encrypt", str(root)]) == 2          # needs a passphrase source
+    assert "--key-passphrase-file" in capsys.readouterr().err
+    assert main(["project", "keys", "encrypt", "--dev", str(root)]) == 0  # dev path caches a passphrase
+    assert "Encrypted 1" in capsys.readouterr().out and dev_passphrase_path(root).exists()
+    _make_plaintext(root, "factory-*.pem")
+    pf = tmp_path / "pf"
+    pf.write_text("realpw")
+    assert main(["project", "keys", "encrypt", "--key-passphrase-file", str(pf), str(root)]) == 0
+    assert "Encrypted 1" in capsys.readouterr().out
+    assert main(["project", "keys", "encrypt", "--dev", str(root)]) == 0  # nothing plaintext left
+    assert "No plaintext keys" in capsys.readouterr().out
+
+
 def test_status_fresh(tmp_path, make_firmware, make_sdk):
     root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=4, factory_keys=2)
     st = keys_mod.key_status(root)

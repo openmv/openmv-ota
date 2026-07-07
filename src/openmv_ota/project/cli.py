@@ -130,6 +130,15 @@ def register(project_parser: argparse.ArgumentParser):
     p_krs.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_krs.set_defaults(func=cmd_keys_restore, _command="project keys restore")
 
+    p_ke = keys_sub.add_parser("encrypt",
+                               help="encrypt an old project's plaintext private keys at rest")
+    p_ke.add_argument("--key-passphrase-file", metavar="FILE",
+                      help="passphrase (from a file) to encrypt under")
+    p_ke.add_argument("--dev", action="store_true",
+                      help="use a random cached dev passphrase (keys/.dev-passphrase) instead")
+    p_ke.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_ke.set_defaults(func=cmd_keys_encrypt, _command="project keys encrypt")
+
     p_hist = sub.add_parser("history", help="print the project's operations history")
     p_hist.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_hist.add_argument("-n", "--limit", type=int, default=0,
@@ -180,6 +189,34 @@ def cmd_keys_restore(args: argparse.Namespace) -> int:
         return e.exit_code
     history.record(args.dir, "keys-restore", count=len(names))
     print("Restored %d private key(s): %s" % (len(names), ", ".join(names)))
+    return 0
+
+
+def cmd_keys_encrypt(args: argparse.Namespace) -> int:
+    import secrets
+
+    from . import keys as keys_mod
+    from . import passphrase as passphrase_mod
+    try:
+        if args.dev:
+            passphrase = secrets.token_hex(16)
+        elif args.key_passphrase_file:
+            passphrase = _read_passphrase(args.key_passphrase_file)
+        else:
+            raise ProjectError("pass --key-passphrase-file (a real passphrase) or --dev")
+        done = keys_mod.encrypt_private_keys(args.dir, passphrase)
+        if args.dev:
+            dp = passphrase_mod.dev_passphrase_path(args.dir)
+            dp.write_text(passphrase, encoding="utf-8")
+            dp.chmod(0o600)
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    history.record(args.dir, "keys-encrypt", count=len(done))
+    if done:
+        print("Encrypted %d plaintext key(s): %s" % (len(done), ", ".join(done)))
+    else:
+        print("No plaintext keys to encrypt (all already encrypted).")
     return 0
 
 
