@@ -68,11 +68,13 @@ def private_key_pem(private_key) -> bytes:
     )
 
 
-def load_private_key_pem(data: bytes):
-    """Load a PKCS#8 PEM private key."""
+def load_private_key_pem(data: bytes, passphrase: str | None = None):
+    """Load a PKCS#8 PEM private key, decrypting with ``passphrase`` if the PEM is encrypted.
+    ``TypeError`` = a passphrase was given for a plaintext PEM (or missing for an encrypted one)."""
+    pw = passphrase.encode("utf-8") if passphrase else None
     try:
-        return serialization.load_pem_private_key(data, password=None)
-    except ValueError as e:
+        return serialization.load_pem_private_key(data, password=pw)
+    except (ValueError, TypeError) as e:
         raise OtaError("could not load private key: %s" % e) from None
 
 

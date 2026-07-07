@@ -35,17 +35,18 @@ class _OtaSigner:
     key_id: int
     sig_alg: int        # COSE id
     alg: object         # AlgSpec
-    private_key: object  # loaded private key
+    backend: object     # a Signer (encrypted PEM / PKCS#11 / KMS / custom)
 
 
-def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str) -> _OtaSigner:
+def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
+                 passphrase_provider=None) -> _OtaSigner:
     """Resolve a signing context: the app version + rollback floor from
     ``app/settings.json``, plus the trusted key ``key_id`` (which must have role
-    ``require_role`` and not be revoked) and its private PEM. Shared by ``build
+    ``require_role`` and not be revoked) and a ``Signer`` for it. Shared by ``build
     romfs`` (the OTA signing key) and ``build factory-romfs`` (a factory key)."""
     from openmv_ota.ota import algorithm_for, read_trusted_keys
     from openmv_ota.ota.errors import OtaError
-    from openmv_ota.ota.keys import load_private_key_pem
+    from openmv_ota.ota.signer import build_signer
     from openmv_ota.ota.version import encode_app_version
 
     settings_path = app_dir / "settings.json"
@@ -87,17 +88,19 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str) -> _OtaSig
         hint = ("; run `openmv-ota project keys rotate` to move to the next key"
                 if require_role == "ota" else "")
         raise BuildError("%s key 0x%04x is revoked%s" % (require_role, key_id, hint), exit_code=1)
-    pem_path = ProjectPaths(p.root).private_keys_dir / ("%s-%04x.pem" % (entry.role, key_id))
+    alg = algorithm_for(entry.alg)
     try:
-        private_key = load_private_key_pem(pem_path.read_bytes())
-    except OSError:
-        raise BuildError(
-            "private key %s not found - only the signing machine has it; build the body "
-            "without signing elsewhere, or provision the key here" % pem_path,
-            exit_code=1) from None
+        backend = build_signer(entry, alg, private_keys_dir=ProjectPaths(p.root).private_keys_dir,
+                               passphrase_provider=passphrase_provider)
+    except OtaError as e:
+        raise BuildError(str(e), exit_code=1) from None
+    # the signer's key must be the one the devices trust -- catches a wrong/stale PEM, a swapped
+    # token, or a mis-mapped KMS key before it signs a release nothing can install.
+    if backend.public_point_hex() != entry.pubkey:
+        raise BuildError("key 0x%04x: the signer's public key does not match "
+                         "keys/trusted_keys.json (wrong key material?)" % key_id, exit_code=1)
     return _OtaSigner(app_version, payload_version, payload_version_floor,
-                      str(settings.get("vendor", "")), key_id, entry.alg,
-                      algorithm_for(entry.alg), private_key)
+                      str(settings.get("vendor", "")), key_id, entry.alg, alg, backend)
 
 
 def _warn_product_id_collisions(config) -> None:
@@ -171,7 +174,6 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_si
     these bytes to the slot's last erase block; the 0xFF that fills the rest of that
     block comes from the erase, not from this file."""
     from openmv_ota.ota import Trailer, pack_trailer, signed_region
-    from openmv_ota.ota.sign import sign_region
 
     trailer = Trailer(
         body_size=len(body),
@@ -185,7 +187,7 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_si
         sig_alg=signer.sig_alg,
         body_sha256=hashlib.sha256(body).digest(),
     )
-    trailer.signature = sign_region(signer.private_key, signed_region(trailer), signer.alg)
+    trailer.signature = signer.backend.sign(signed_region(trailer))
     return pack_trailer(trailer)
 
 
@@ -754,7 +756,6 @@ def build_manifest(
     from openmv_ota.ota.delta import target_size as delta_target_size
     from openmv_ota.ota.errors import OtaError
     from openmv_ota.ota.manifest import DELTA_FORMAT, SCHEMA, Manifest, pack_manifest, signed_region
-    from openmv_ota.ota.sign import sign_region
     from openmv_ota.ota.trailer import parse_trailer
     from openmv_ota.ota.version import decode_app_version, encode_app_version
 
@@ -832,7 +833,7 @@ def build_manifest(
             "representations": reps,
         }
         m = Manifest(body=body, key_id=signer.key_id, sig_alg=signer.sig_alg)
-        m.signature = sign_region(signer.private_key, signed_region(m), signer.alg)
+        m.signature = signer.backend.sign(signed_region(m))
         raw = pack_manifest(m)
         out_path = out_dir / (name + "-manifest.bin")
         out_path.write_bytes(raw)

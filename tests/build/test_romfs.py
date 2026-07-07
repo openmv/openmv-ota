@@ -551,6 +551,22 @@ def test_factory_no_matching_targets(make_project):
                                       compile_py=False, convert_models=False)
 
 
+def test_signer_pubkey_must_match_trusted(make_project):
+    # the consistency check: a signer whose public key != keys/trusted_keys.json is refused,
+    # so you can't sign a release nothing on the fleet would trust.
+    import json
+    root, repo, app = _build_ota(make_project)
+    tk = root / "keys" / "trusted_keys.json"
+    data = json.loads(tk.read_text())
+    for k in data["keys"]:
+        if k["role"] == "factory":
+            k["pubkey"] = "04" + "11" * ((len(k["pubkey"]) - 2) // 2)   # right length, wrong point
+    tk.write_text(json.dumps(data))
+    with pytest.raises(BuildError, match="does not match"):
+        build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                      compile_py=False, convert_models=False)
+
+
 def test_factory_refuses_unset_account(make_project):
     # the golden is permanent, so refuse to burn an accountless one unless it's on purpose
     root, repo, app = _build_ota(make_project, account="")
