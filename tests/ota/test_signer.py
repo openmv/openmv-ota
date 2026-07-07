@@ -125,6 +125,43 @@ def test_build_signer_pkcs11_dispatch(tmp_path, monkeypatch):
                         backend={"backend": "pkcs11"}) is sentinel
 
 
+class _FakeKmsClient:
+    def __init__(self, sig, point):
+        self._sig, self._point = sig, point
+
+    def sign(self, region, alg):
+        return self._sig
+
+    def public_point_hex(self):
+        return self._point
+
+
+def test_kms_signer_via_fake_client():
+    from openmv_ota.ota import signer_kms
+    entry = TrustedKey(key_id=0x0100, alg=ES256, role="ota", pubkey="")
+    client = _FakeKmsClient(b"\x22" * ALG.sig_size, "04" + "cd" * 64)
+    s = signer_kms.build(entry, ALG, {"backend": "aws-kms"}, client=client)
+    assert s.sign(b"a region") == b"\x22" * ALG.sig_size and s.public_point_hex() == "04" + "cd" * 64
+
+
+def test_kms_signer_bad_sig_length():
+    from openmv_ota.ota import signer_kms
+    entry = TrustedKey(key_id=1, alg=ES256, role="ota", pubkey="")
+    s = signer_kms.build(entry, ALG, {"backend": "aws-kms"}, client=_FakeKmsClient(b"\x00" * 3, ""))
+    with pytest.raises(OtaError, match="expected"):
+        s.sign(b"x")
+
+
+def test_build_signer_kms_dispatch(tmp_path, monkeypatch):
+    from openmv_ota.ota import signer_kms
+    entry = TrustedKey(key_id=1, alg=ES256, role="ota", pubkey="")
+    sentinel = _FakeSigner()
+    monkeypatch.setattr(signer_kms, "build", lambda e, a, b: sentinel)
+    for tag in ("aws-kms", "gcp-kms", "azure-kms"):
+        assert build_signer(entry, ALG, private_keys_dir=tmp_path,
+                            backend={"backend": tag}) is sentinel
+
+
 def test_custom_signer_bad_ref(tmp_path):
     entry, _ = _entry_and_key(tmp_path)
     with pytest.raises(OtaError, match="needs a 'factory'"):

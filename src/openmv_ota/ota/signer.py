@@ -68,6 +68,9 @@ def build_signer(entry, alg: AlgSpec, *, private_keys_dir: Path, backend: dict |
     if tag == "pkcs11":
         from . import signer_pkcs11
         return signer_pkcs11.build(entry, alg, backend)
+    if tag in ("aws-kms", "gcp-kms", "azure-kms"):
+        from . import signer_kms
+        return signer_kms.build(entry, alg, backend)
     if tag == "custom":
         return _custom_signer(entry, alg, backend or {})
     raise OtaError("unknown signer backend: %r" % tag)

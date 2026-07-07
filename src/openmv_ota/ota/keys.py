@@ -49,6 +49,16 @@ def public_point_hex(public_key) -> str:
     return point.hex()
 
 
+def spki_to_point_hex(der: bytes) -> str:
+    """The uncompressed EC point (hex) from a SubjectPublicKeyInfo DER -- what a cloud KMS
+    ``GetPublicKey`` returns for an EC key."""
+    try:
+        pub = serialization.load_der_public_key(der)
+    except (ValueError, TypeError) as e:
+        raise OtaError("could not parse public key DER: %s" % e) from None
+    return public_point_hex(pub)
+
+
 def public_key_from_hex(point_hex: str, alg: AlgSpec):
     """Reconstruct a public key from an uncompressed-point hex string."""
     try:

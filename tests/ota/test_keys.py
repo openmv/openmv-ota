@@ -74,6 +74,22 @@ def test_load_private_key_pem_rejects_garbage():
         load_private_key_pem(b"not a pem")
 
 
+def test_spki_to_point_hex_round_trips():
+    from cryptography.hazmat.primitives import serialization
+
+    from openmv_ota.ota.keys import spki_to_point_hex
+    pub = generate_private_key(algorithm_for(ES256)).public_key()
+    der = pub.public_bytes(serialization.Encoding.DER,
+                           serialization.PublicFormat.SubjectPublicKeyInfo)
+    assert spki_to_point_hex(der) == public_point_hex(pub)   # KMS GetPublicKey output -> point
+
+
+def test_spki_to_point_hex_rejects_garbage():
+    from openmv_ota.ota.keys import spki_to_point_hex
+    with pytest.raises(OtaError, match="could not parse public key DER"):
+        spki_to_point_hex(b"not der")
+
+
 def test_trusted_key_dict_round_trip():
     k = TrustedKey(key_id=0x10, alg=ES256, role="ota", pubkey="04abcd")
     assert TrustedKey.from_dict(k.to_dict()) == k
