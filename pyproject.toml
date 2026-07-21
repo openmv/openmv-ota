@@ -66,6 +66,7 @@ where = ["src"]
     "build/device/openmv_ota/data/*",  # the installer source, scaffolded into projects
     "romfs/sdk/**/*",
     "server/deploy/*",           # Dockerfile + render.yaml Blueprint for self-hosters
+    "server/docs_static/*",      # self-hosted /docs API reference (ReDoc bundle + logo)
 ]
 
 [tool.pytest.ini_options]

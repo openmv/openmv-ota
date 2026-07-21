@@ -17,9 +17,14 @@ hints under ``from __future__ import annotations``; per-request collaborators co
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
+
+from openmv_ota import __version__
 
 from . import capability
 from .auth import TokenAuth
@@ -34,6 +39,306 @@ from .verify import build_verifier
 router = APIRouter()
 
 _MEDIA = {"manifest.bin": "application/octet-stream"}
+
+# --- human-readable API reference (ReDoc, self-hosted) --------------------------------------
+
+_DOCS_DIR = Path(__file__).parent / "docs_static"
+
+_API_DESCRIPTION = """\
+The OpenMV OTA update server delivers **signed, over-the-air ROMFS updates** to OpenMV
+cameras. Release bundles are signed at build time with the project's keys and verified
+on-device before install; the server distributes artifacts and decides rollouts — it never
+holds signing keys.
+
+## How a device updates
+
+1. The camera checks in with `POST /api/v1/check` (rate-limited per IP). The server verifies
+   the camera's **registration** with the OpenMV device registry, records the check-in, and
+   applies the rollout rules for the camera's product and cohort.
+2. If an update is offered, the response carries a short-lived **capability URL**. The camera
+   fetches the manifest and image through `GET /d/{token}/{filename}` — one token guards the
+   whole bundle, and artifact downloads redirect to presigned object-storage URLs.
+3. After installing (or failing), the camera reports the terminal outcome with
+   `POST /api/v1/feedback`, which feeds rollout health and auto-pause.
+
+## Authentication
+
+* **Device endpoints** are unauthenticated but rate-limited, and gated by device
+  registration.
+* **Admin and publishing endpoints** use `Authorization: Bearer <token>`. Tokens belong to
+  an account and carry scopes (`publish`, `manage`, `observe`, `accounts`); every read and
+  write is scoped to the token's account.
+
+Self-hosting, storage backends, and operations are covered in the
+[server manual](https://github.com/openmv/openmv-ota/blob/main/docs/server.md).
+"""
+
+_OPENAPI_TAGS = [
+    {"name": "Device API",
+     "description": "Called by cameras in the field: check-in, capability-URL downloads, "
+                    "and install feedback."},
+    {"name": "Admin",
+     "description": "Account-scoped management of accounts, tokens, rollouts, cohorts, and "
+                    "devices. Bearer-token auth with scopes."},
+    {"name": "Publishing",
+     "description": "Upload and publish signed release bundles built by `openmv-ota build`."},
+    {"name": "Health", "description": "Liveness probe."},
+]
+
+# The docs page carries OpenMV's standard theme toggle (same button graphics, same
+# Auto -> Light -> Dark cycle, same `theme-preference` localStorage key as the other
+# OpenMV sites). ReDoc takes its colors at init time, so the toggle re-inits ReDoc
+# with the matching theme object; the logo swaps to the white variant on dark.
+_REDOC_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<title>OpenMV OTA Update Server — API Reference</title>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="color-scheme" content="light dark"/>
+<link rel="icon" type="image/x-icon" href="/favicon.ico"/>
+<script>
+/* Apply theme before first paint to avoid a flash of the wrong theme. */
+(function () {
+  try {
+    var pref = localStorage.getItem('theme-preference') || 'auto';
+    var resolved = pref === 'auto'
+      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : pref;
+    document.documentElement.dataset.theme = resolved;
+    document.documentElement.dataset.themePref = pref;
+  } catch (e) {
+    document.documentElement.dataset.theme = 'light';
+    document.documentElement.dataset.themePref = 'auto';
+  }
+})();
+</script>
+<style>
+  body { margin: 0; padding: 0; }
+  :root[data-theme="dark"] body { background: #0f172a; }
+  :root[data-theme="dark"] .menu-content input { color: #e7eefb; }
+  /* Schema header labels ("REQUEST BODY SCHEMA:", the content-type chip) keep
+     ReDoc's default dark ink regardless of theme — lift them in dark mode. */
+  :root[data-theme="dark"] .api-content h5,
+  :root[data-theme="dark"] .api-content h5 span { color: #9fb8d8; }
+  /* Sample tabs: ReDoc's selected tab is white-on-anything by default. Restyle
+     for dark; response tabs (.tab-success/.tab-error) keep their status colors. */
+  :root[data-theme="dark"] .react-tabs__tab--selected {
+    background: #0f172a;
+    border: 1px solid #475569;
+  }
+  :root[data-theme="dark"] .react-tabs__tab--selected:not(.tab-success):not(.tab-error) {
+    color: #e7eefb;
+  }
+  :root[data-theme="dark"] .react-tabs__tab--selected.tab-success { color: #34d399; }
+  :root[data-theme="dark"] .react-tabs__tab--selected.tab-error { color: #f87171; }
+  /* Tighten only the intro prose: the markdown sections of info.description get
+     `section/` ids, and the title/description block is .api-content's first child
+     (40px bottom padding by default). The endpoint groups (`tag/` ids) keep
+     ReDoc's default spacing. */
+  div[id^="section/"] { padding-top: 16px; padding-bottom: 16px; }
+  .api-content > div:first-child { padding-bottom: 16px; }
+
+  /* Slim fixed header bar: the toggle lives here (never floats over content).
+     ReDoc is told about it via scrollYOffset, so its sticky sidebar and
+     endpoint headers start below the bar. */
+  .topbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 3.25rem; z-index: 1000;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 1rem; box-sizing: border-box;
+    background: #ffffff; border-bottom: 1px solid #d1d5db;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  :root[data-theme="dark"] .topbar { background: #1e293b; border-bottom-color: #475569; }
+  .topbar-title {
+    display: flex; align-items: center; gap: 0.75rem;
+    color: #6b7280; font-size: 0.875rem; font-weight: 600;
+  }
+  :root[data-theme="dark"] .topbar-title { color: #94a3b8; }
+  /* The full wordmark: blue in light mode, swapped to the white variant in dark. */
+  .topbar-logo { height: 1.75rem; width: auto; display: block; }
+  :root[data-theme="dark"] img.topbar-logo { content: url("/docs/logo-dark.png"); }
+  /* Nudge the label down so it sits on the wordmark's visual baseline. */
+  .topbar-label { margin-top: 0.3rem; }
+  #redoc-container { padding-top: 3.25rem; }
+
+  .theme-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 2.25rem; height: 2.25rem; padding: 0; flex-shrink: 0;
+    background: transparent; border: 1px solid #d1d5db; border-radius: 50%;
+    color: #6b7280; cursor: pointer;
+  }
+  .theme-toggle:hover { color: #111827; border-color: #9ca3af; }
+  :root[data-theme="dark"] .theme-toggle { border-color: #475569; color: #94a3b8; }
+  :root[data-theme="dark"] .theme-toggle:hover { color: #f1f5f9; border-color: #64748b; }
+  .theme-toggle svg { width: 1rem; height: 1rem; display: none; }
+  :root[data-theme-pref="auto"]  .theme-toggle .icon-auto,
+  :root[data-theme-pref="light"] .theme-toggle .icon-light,
+  :root[data-theme-pref="dark"]  .theme-toggle .icon-dark { display: block; }
+
+  /* Language switcher: the globe borrows .theme-toggle's button styling (it has
+     no icon-auto/light/dark class, so un-hide its svg). English-only for now —
+     the menu is the standard rail for future translations. */
+  .topbar-controls { display: flex; align-items: center; gap: 0.5rem; }
+  .lang-toggle svg { display: block; }
+  .lang-switcher { position: relative; }
+  .lang-menu {
+    position: absolute; top: calc(100% + 0.375rem); right: 0; z-index: 1100;
+    min-width: 11rem; max-height: 70vh; overflow-y: auto;
+    margin: 0; padding: 0.25rem; list-style: none;
+    background: #ffffff; border: 1px solid #d1d5db; border-radius: 0.5rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  }
+  :root[data-theme="dark"] .lang-menu {
+    background: #1e293b; border-color: #475569; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+  .lang-menu[hidden] { display: none; }
+  .lang-menu li { margin: 0; padding: 0; }
+  .lang-option {
+    display: block; width: 100%; margin: 0; padding: 0.375rem 0.75rem;
+    font-size: 0.875rem; font-family: inherit; text-align: left;
+    background: transparent; border: none; border-radius: 0.375rem;
+    color: #111827; cursor: pointer;
+  }
+  :root[data-theme="dark"] .lang-option { color: #f1f5f9; }
+  .lang-option:hover { background: rgba(0, 0, 0, 0.04); }
+  :root[data-theme="dark"] .lang-option:hover { background: rgba(255, 255, 255, 0.06); }
+  .lang-option[aria-current="true"] { font-weight: 600; color: #2563eb; }
+  :root[data-theme="dark"] .lang-option[aria-current="true"] { color: #60a5fa; }
+</style>
+</head>
+<body>
+<div class="topbar">
+<span class="topbar-title"><img class="topbar-logo" src="/docs/logo.png" alt="OpenMV"> <span class="topbar-label">API Reference</span></span>
+<div class="topbar-controls">
+<div class="lang-switcher">
+<button type="button" class="theme-toggle lang-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Language" title="Language">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+</button>
+<ul class="lang-menu" role="menu" hidden>
+<li role="none"><button type="button" role="menuitem" class="lang-option" data-lang="en" aria-current="true">English</button></li>
+</ul>
+</div>
+<button type="button" class="theme-toggle" aria-label="Toggle theme" title="Theme">
+<svg class="icon-auto"  width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2"/><line x1="8" y1="20" x2="16" y2="20"/><line x1="12" y1="16" x2="12" y2="20"/></svg>
+<svg class="icon-light" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.93" y1="4.93" x2="7.05" y2="7.05"/><line x1="16.95" y1="16.95" x2="19.07" y2="19.07"/><line x1="4.93" y1="19.07" x2="7.05" y2="16.95"/><line x1="16.95" y1="7.05" x2="19.07" y2="4.93"/></svg>
+<svg class="icon-dark"  width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+</button>
+</div>
+</div>
+<div id="redoc-container"></div>
+<script src="/docs/redoc.standalone.js"></script>
+<script>
+(function () {
+  var LIGHT = {};
+  var DARK = {
+    colors: {
+      primary: { main: "#60a5fa" },
+      success: { main: "#34d399" },
+      error: { main: "#f87171" },
+      warning: { main: "#fbbf24" },
+      text: { primary: "#e7eefb", secondary: "#9fb8d8" },
+      border: { dark: "#334155", light: "#1e293b" }
+    },
+    sidebar: { backgroundColor: "#1e293b", textColor: "#e7eefb" },
+    rightPanel: { backgroundColor: "#1e293b" },
+    schema: { nestedBackground: "#273449", typeNameColor: "#9fb8d8",
+              typeTitleColor: "#9fb8d8" },
+    typography: { code: { backgroundColor: "#1e293b", color: "#e7eefb" } }
+  };
+  var media = window.matchMedia('(prefers-color-scheme: dark)');
+
+  function resolve(pref) { return pref === 'auto' ? (media.matches ? 'dark' : 'light') : pref; }
+
+  function render() {
+    var dark = document.documentElement.dataset.theme === 'dark';
+    Redoc.init('/openapi.json', { scrollYOffset: 52, theme: dark ? DARK : LIGHT },
+               document.getElementById('redoc-container'));
+  }
+
+  function apply(pref) {
+    document.documentElement.dataset.themePref = pref;
+    document.documentElement.dataset.theme = resolve(pref);
+    render();
+  }
+
+  // The globe borrows .theme-toggle styling but is not a theme control.
+  document.querySelector('.theme-toggle:not(.lang-toggle)').addEventListener('click', function () {
+    var order = ['auto', 'light', 'dark'], current;
+    try { current = localStorage.getItem('theme-preference') || 'auto'; } catch (e) { current = 'auto'; }
+    var next = order[(order.indexOf(current) + 1) % order.length];
+    try { localStorage.setItem('theme-preference', next); } catch (e) {}
+    apply(next);
+  });
+
+  // Language switcher (same behavior as OpenMV's other sites: cookie + reload).
+  var langBtn = document.querySelector('.lang-toggle');
+  var langMenu = document.querySelector('.lang-menu');
+  function closeLangMenu() { langMenu.hidden = true; langBtn.setAttribute('aria-expanded', 'false'); }
+  langBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    var willOpen = langMenu.hidden;
+    langMenu.hidden = !willOpen;
+    langBtn.setAttribute('aria-expanded', String(willOpen));
+  });
+  langMenu.querySelectorAll('.lang-option').forEach(function (opt) {
+    opt.addEventListener('click', function () {
+      var code = opt.getAttribute('data-lang');
+      if (!code) return;
+      document.cookie = 'lang=' + encodeURIComponent(code) + ';path=/;max-age=31536000;samesite=Lax';
+      location.reload();
+    });
+  });
+  document.addEventListener('click', function () { if (!langMenu.hidden) closeLangMenu(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !langMenu.hidden) closeLangMenu();
+  });
+
+  if (media.addEventListener) {
+    media.addEventListener('change', function () {
+      var pref;
+      try { pref = localStorage.getItem('theme-preference') || 'auto'; } catch (e) { pref = 'auto'; }
+      if (pref === 'auto') apply(pref);
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
+"""
+
+
+@router.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse("/docs")
+
+
+@router.get("/docs", include_in_schema=False)
+def docs_page():
+    # no-cache: revalidate on every visit so deploys (and reviews) show current HTML;
+    # the heavy assets (redoc bundle, logos) remain cacheable.
+    return HTMLResponse(_REDOC_HTML, headers={"Cache-Control": "no-cache"})
+
+
+@router.get("/docs/redoc.standalone.js", include_in_schema=False)
+def docs_js():
+    return FileResponse(_DOCS_DIR / "redoc.standalone.js", media_type="text/javascript")
+
+
+@router.get("/docs/logo.png", include_in_schema=False)
+def docs_logo():
+    return FileResponse(_DOCS_DIR / "logo.png", media_type="image/png")
+
+
+@router.get("/docs/logo-dark.png", include_in_schema=False)
+def docs_logo_dark():
+    return FileResponse(_DOCS_DIR / "logo-dark.png", media_type="image/png")
+
+
+@router.get("/favicon.ico", include_in_schema=False)
+def favicon():  # the OpenMV aperture icon mark (browsers request this path by default)
+    return FileResponse(_DOCS_DIR / "favicon.ico", media_type="image/x-icon")
 
 
 class CheckIn(BaseModel):
@@ -160,12 +465,12 @@ def _effective_account(ms, checkin):
     return ""
 
 
-@router.get("/healthz")
+@router.get("/healthz", tags=["Health"])
 def healthz():
     return {"ok": True}
 
 
-@router.post("/api/v1/check")
+@router.post("/api/v1/check", tags=["Device API"])
 def check(checkin: CheckIn, request: Request):
     st = request.app.state
     nothing = {"update": False, "poll_after_s": st.settings.poll_after_s}
@@ -207,7 +512,7 @@ def check(checkin: CheckIn, request: Request):
     return nothing
 
 
-@router.post("/api/v1/feedback")
+@router.post("/api/v1/feedback", tags=["Device API"])
 def feedback(report: Feedback, request: Request):
     """Explicit terminal outcome of an offered update (precise success/failure vs. inferring it
     from the next check-in). Recorded ONLY for a registered device -- an unregistered or bypassed
@@ -227,7 +532,7 @@ def feedback(report: Feedback, request: Request):
     return {"ok": True}
 
 
-@router.get("/d/{token}/{filename}")
+@router.get("/d/{token}/{filename}", tags=["Device API"])
 def artifact(token: str, filename: str, request: Request):
     st = request.app.state
     release_id = capability.verify(st.secret, token)
@@ -259,7 +564,9 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
         raise ServerError("no server secret -- run `server init` or set OPENMV_OTA_COHORT_SALT",
                           exit_code=2)
 
-    app = FastAPI(title="openmv-ota update server", docs_url=None, redoc_url=None)
+    app = FastAPI(title="OpenMV OTA Update Server", version=__version__,
+                  description=_API_DESCRIPTION, openapi_tags=_OPENAPI_TAGS,
+                  docs_url=None, redoc_url=None)  # /docs is our self-hosted ReDoc page
     app.state.settings = settings
     app.state.storage = storage
     app.state.metastore = metastore
@@ -270,6 +577,22 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.include_router(router)
     from .admin import admin
     from .publish import publish
-    app.include_router(admin)
-    app.include_router(publish)
+    app.include_router(admin, tags=["Admin"])
+    app.include_router(publish, tags=["Publishing"])
+
+    def _openapi():
+        """The stock schema plus this deployment's public server URL (when ``base_url``
+        is configured) so examples show real endpoints. No x-logo: the page's header
+        bar carries the wordmark, so the sidebar starts at search."""
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(title=app.title, version=app.version,
+                             description=app.description, routes=app.routes,
+                             tags=_OPENAPI_TAGS)
+        if settings.base_url:
+            schema["servers"] = [{"url": settings.base_url}]
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = _openapi
     return app
