@@ -7,11 +7,12 @@
 # For each board it knows the expected capability (the table below) and asserts
 # the CLI's behaviour:
 #
-#   full     (OTA-capable):    project new --ota; build firmware + romfs +
-#                              factory-romfs; inspect + verify the OTA bundle
-#                              (bundle and loose body+trailer); a corrupted body
-#                              must FAIL verify; the factory image is the full
-#                              partition.
+#   full     (OTA-capable):    project new --ota --dev (throwaway CI signing key;
+#                              the signing builds then need --allow-dev-key);
+#                              build firmware + romfs + factory-romfs; inspect +
+#                              verify the OTA bundle (bundle and loose
+#                              body+trailer); a corrupted body must FAIL verify;
+#                              the factory image is the full partition.
 #   classic  (romfs, not OTA): project new; build firmware + single-image romfs;
 #                              `project new --ota` must fail cleanly (not
 #                              OTA-capable); `build factory-romfs` must fail
@@ -174,13 +175,14 @@ verify_coprocessor() {  # proj  board  img
 do_full() {  # board  work
   local board="$1" work="$2" proj="$2/ota" keys
   expect_success "project new --ota" \
-    $OTA project new "$proj" -f "$FW" -b "$board" --ota $SDK_FLAG
+    $OTA project new "$proj" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
   [ "$LAST_RC" -eq 0 ] || return 0
   keys="$proj/keys/trusted_keys.json"
 
   build_firmware "$proj" "$board"
 
-  expect_success "build romfs (OTA bundle)" $OTA build romfs "$proj" -b "$board"
+  expect_success "build romfs (OTA bundle)" \
+    $OTA build romfs "$proj" -b "$board" --allow-dev-key
   local zip="$proj/build/$board-romfs.zip"
   expect_file "OTA bundle written (<board>-romfs.zip)" "$zip"
   [ -f "$zip" ] || return 0
@@ -204,7 +206,8 @@ do_full() {  # board  work
     $OTA build verify "$ud/romfs.img" "$ud/trailer.bin" --trusted-keys "$keys"
 
   rm -f "$cimg"   # so the next check proves factory-romfs regenerates it too
-  expect_success "build factory-romfs" $OTA build factory-romfs "$proj" -b "$board"
+  expect_success "build factory-romfs" \
+    $OTA build factory-romfs "$proj" -b "$board" --allow-dev-key
   local img="$proj/build/$board-factory-romfs.img"
   expect_file "factory image written (<board>-factory-romfs.img)" "$img"
   if [ -f "$img" ]; then

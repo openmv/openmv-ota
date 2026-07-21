@@ -302,8 +302,23 @@ def create_project(
 
     warnings: list[str] = []
     provisioned = None
-    signing_key_id = None
-    if ota:
+
+    config_text = config_mod.render_config(
+        name, vendor, boards, ota=ota, signing_key_id=None,
+    )
+    # Parse the rendered text so the digest/resolve see exactly what lands on disk
+    # (incl. the scaffolded per-board sections) — otherwise `verify` would see drift.
+    config = config_mod.parse_config(config_text, name)
+    digest = _digest(config)
+    lock, w = resolve_snapshot(
+        repo, config, sdk_home_override=sdk_home_override, config_digest=digest, now=now,
+    )
+    warnings += w
+    if config.ota:
+        # Capability first, keys second: a board that can't host OTA at all should say
+        # so, not complain about key passphrases (and no keys get generated for it).
+        _ensure_ota_capable(lock)  # fail before writing anything for an impossible board
+        _ensure_ota_mbedtls(lock)
         if force and paths.trusted_keys.exists():
             warnings.append(
                 "this regenerates the signing keys; devices already in the field trust the "
@@ -317,23 +332,14 @@ def create_project(
                 "--dev for a throwaway key (which the production build rail then refuses)",
                 exit_code=1)
         provisioned, w = _provision_keys(sig_alg, factory_keys, ota_keys, key_passphrase)
-        signing_key_id = provisioned.signing_key_id
         warnings += w
-
-    config_text = config_mod.render_config(
-        name, vendor, boards, ota=ota, signing_key_id=signing_key_id,
-    )
-    # Parse the rendered text so the digest/resolve see exactly what lands on disk
-    # (incl. the scaffolded per-board sections) — otherwise `verify` would see drift.
-    config = config_mod.parse_config(config_text, name)
-    digest = _digest(config)
-    lock, w = resolve_snapshot(
-        repo, config, sdk_home_override=sdk_home_override, config_digest=digest, now=now,
-    )
-    warnings += w
-    if config.ota:
-        _ensure_ota_capable(lock)  # fail before writing anything for an impossible board
-        _ensure_ota_mbedtls(lock)
+        # Re-render with the real signing key id. Key identity is digest-neutral (rotation
+        # updates it in place via set_signing_key_id without invalidating the lock), so the
+        # digest/lock resolved above still match the final on-disk config.
+        config_text = config_mod.render_config(
+            name, vendor, boards, ota=ota, signing_key_id=provisioned.signing_key_id,
+        )
+        config = config_mod.parse_config(config_text, name)
     if lock.firmware["dirty"] and not allow_dirty:
         warnings.append("firmware checkout is dirty; the pinned commit does not "
                         "fully capture the build. Commit or pass --allow-dirty.")
