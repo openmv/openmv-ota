@@ -48,6 +48,17 @@ class ServerSettings(BaseSettings):
     checkin_rate_per_min: int = 60         # per-IP device check-in rate limit (0 = disabled)
     poll_after_s: int = 3600               # backoff the device is told to wait before polling again
     capability_ttl: int = 3600             # lifetime of an artifact capability token
+    # OpenMV Live: when BOTH are set, every registered device's check-in response carries a
+    # `live` grant (ready-made relay URLs + a camera token). The secret is shared with the
+    # live-relay worker (openmv-cloud services/live-relay), which accepts either env name so
+    # one value works fleet-wide.
+    live_relay_url: str = Field(           # public origin, e.g. https://live.cloud.openmv.io
+        default="",
+        validation_alias=AliasChoices("OPENMV_OTA_LIVE_RELAY_URL", "OPENMV_LIVE_RELAY_URL"))
+    live_token_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENMV_OTA_LIVE_TOKEN_SECRET", "OPENMV_LIVE_TOKEN_SECRET"))
+    live_token_ttl: int = 86400            # seconds; outlives a deep-sleep cycle, renewed each check-in
     # uvicorn forwarded-allow-ips: which upstream peers may set X-Forwarded-For. Behind a PaaS proxy
     # (Render/Fly) set "*" so the rate limiter sees the real client IP, not the proxy's single IP.
     trusted_proxy_ips: str = "127.0.0.1"

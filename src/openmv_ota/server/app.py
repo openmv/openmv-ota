@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from openmv_ota import __version__
 
 from . import capability
+from . import live as live_mod
 from .auth import TokenAuth
 from .boardmap import swd_ids_board_code
 from .errors import ServerError
@@ -507,9 +508,16 @@ def check(checkin: CheckIn, request: Request):
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
         account_id=account_id)
     if manifest_url:
-        return {"update": True, "manifest_url": manifest_url, "release_id": release_id,
+        resp = {"update": True, "manifest_url": manifest_url, "release_id": release_id,
                 "poll_after_s": st.settings.poll_after_s}
-    return nothing
+    else:
+        resp = dict(nothing)
+    # OpenMV Live: registered devices get a fresh camera grant each check-in (the
+    # unverified-board bypass above never reaches here -- Live requires registration).
+    grant = live_mod.camera_grant(st.settings, checkin.device_id)
+    if grant is not None:
+        resp["live"] = grant
+    return resp
 
 
 @router.post("/api/v1/feedback", tags=["Device API"])
