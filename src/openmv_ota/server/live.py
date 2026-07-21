@@ -4,21 +4,31 @@ The live relay (openmv-cloud ``services/live-relay``) verifies tokens of the for
 ``exp.hex(hmac_sha256(secret, "role:device_id:exp"))`` -- this module is the minting
 side and MUST stay in lockstep with the relay's ``src/auth.ts``.
 
-The camera gets ready-made URLs (WebSocket stream + the deep-sleep ``/poll`` check)
-so the on-device client never builds URLs. Tokens renew on every check-in and the
-TTL outlives a sleep cycle, so a waking camera always holds a valid credential.
+A device has ONE credential but any number of image **streams** (multi-camera
+boards, virtual streams fed from frame buffers): relay rooms are per
+``{device}/{stream}``, the token authenticates the device segment only. The
+check-in reports its stream names and the grant returns ready-made URLs per
+stream (WebSocket push + the deep-sleep ``/poll`` check), so the on-device client
+never builds URLs. Tokens renew on every check-in and the TTL outlives a sleep
+cycle, so a waking camera always holds a valid credential.
 
 Entitlement seam: :func:`camera_grant` is where per-plan gating lands (does this
-account's plan include Live? how many cameras?). Today every registered device on
-a deployment that configures the relay gets a token; unregistered/bypassed boards
-never do.
+account's plan include Live? how many cameras/streams?). Today every registered
+device on a deployment that configures the relay gets a grant;
+unregistered/bypassed boards never do.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import time
+
+# Must stay within the relay's stream-segment charset ([A-Za-z0-9_.-]{1,64}).
+_STREAM_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_DEFAULT_STREAMS = ("0",)
+_MAX_STREAMS = 8                     # a device reporting more is malformed/abusive
 
 
 def mint_token(secret: str, role: str, device_id: str, ttl_s: int,
@@ -29,7 +39,16 @@ def mint_token(secret: str, role: str, device_id: str, ttl_s: int,
     return "%d.%s" % (exp, mac.hexdigest())
 
 
-def camera_grant(settings, device_id: str) -> dict | None:
+def _clean_streams(streams) -> list[str]:
+    """The reported stream names that are safe to put in a URL path -- invalid
+    names are dropped (not an error: the rest of the grant still works), the
+    list is capped, and an empty result falls back to the default stream."""
+    good = [s for s in (streams or []) if isinstance(s, str) and _STREAM_NAME.match(s)]
+    good = list(dict.fromkeys(good))[:_MAX_STREAMS]        # dedupe, keep order, cap
+    return good or list(_DEFAULT_STREAMS)
+
+
+def camera_grant(settings, device_id: str, streams=None) -> dict | None:
     """The ``live`` object for a check-in response, or None when Live is not
     configured (no relay URL / no secret) -- the response simply omits the key."""
     if not (settings.live_relay_url and settings.live_token_secret):
@@ -38,8 +57,11 @@ def camera_grant(settings, device_id: str) -> dict | None:
                        settings.live_token_ttl)
     base = settings.live_relay_url.rstrip("/")
     ws_base = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
-    return {
-        "camera_url": "%s/camera/%s?token=%s" % (ws_base, device_id, token),
-        "poll_url": "%s/poll/%s?token=%s" % (base, device_id, token),
-        "expires_in_s": settings.live_token_ttl,
+    per_stream = {
+        s: {
+            "camera_url": "%s/camera/%s/%s?token=%s" % (ws_base, device_id, s, token),
+            "poll_url": "%s/poll/%s/%s?token=%s" % (base, device_id, s, token),
+        }
+        for s in _clean_streams(streams)
     }
+    return {"streams": per_stream, "expires_in_s": settings.live_token_ttl}

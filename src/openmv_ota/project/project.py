@@ -580,6 +580,17 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str]) -> None:
         if not out.exists():
             out.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
 
+    # openmv_cloud: the on-device Cloud SDK package (csi + future wrappers like
+    # datalog). Deliberately separate from openmv_ota (the update runtime); same
+    # app/lib romfs home, so it stays OTA-updatable -- unlike the frozen
+    # top-level survival modules (openmv_log/openmv_wdt).
+    cloud_dst = paths.app_dir / "lib" / "openmv_cloud"
+    cloud_dst.mkdir(parents=True, exist_ok=True)
+    for src in sorted((_RUNTIME_LIB_SRC.parent / "openmv_cloud").glob("*.py")):
+        out = cloud_dst / src.name
+        if not out.exists():
+            out.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
     data = dst / "data"
     data.mkdir(exist_ok=True)
     installer = data / "installer.py"

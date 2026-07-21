@@ -73,25 +73,49 @@ def test_camera_grant_none_unless_fully_configured(overrides):
     assert live.camera_grant(settings, "cam-42") is None
 
 
-def test_camera_grant_builds_ready_made_urls():
+def test_camera_grant_builds_ready_made_urls_per_stream():
     settings = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
                               live_relay_url=RELAY + "/", live_token_secret=SECRET,
                               live_token_ttl=1234)
-    g = live.camera_grant(settings, "cam-42")
+    g = live.camera_grant(settings, "cam-42", ["0", "tele"])
     assert g["expires_in_s"] == 1234
-    assert g["camera_url"].startswith("wss://live.cloud.openmv.io/camera/cam-42?token=")
-    assert g["poll_url"].startswith("https://live.cloud.openmv.io/poll/cam-42?token=")
-    token = g["camera_url"].rsplit("token=", 1)[1]
+    assert set(g["streams"]) == {"0", "tele"}
+    s0, tele = g["streams"]["0"], g["streams"]["tele"]
+    assert s0["camera_url"].startswith("wss://live.cloud.openmv.io/camera/cam-42/0?token=")
+    assert s0["poll_url"].startswith("https://live.cloud.openmv.io/poll/cam-42/0?token=")
+    assert tele["camera_url"].startswith("wss://live.cloud.openmv.io/camera/cam-42/tele?token=")
+    token = s0["camera_url"].rsplit("token=", 1)[1]
     assert relay_verify(token, "camera", "cam-42")
-    assert g["poll_url"].rsplit("token=", 1)[1] == token  # one credential for both
+    # ONE device credential: every stream URL carries the same token.
+    assert tele["camera_url"].rsplit("token=", 1)[1] == token
+    assert s0["poll_url"].rsplit("token=", 1)[1] == token
+
+
+def test_camera_grant_defaults_to_the_single_stream():
+    settings = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
+                              live_relay_url=RELAY, live_token_secret=SECRET)
+    assert set(live.camera_grant(settings, "d1")["streams"]) == {"0"}
+    assert set(live.camera_grant(settings, "d1", [])["streams"]) == {"0"}
+
+
+def test_camera_grant_sanitizes_stream_names():
+    settings = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
+                              live_relay_url=RELAY, live_token_secret=SECRET)
+    # path-hostile / non-string / duplicate names are dropped, the cap applies,
+    # and an all-invalid report falls back to the default stream.
+    g = live.camera_grant(settings, "d1", ["ok", "../evil", "a/b", "", 7, "ok", "x" * 65])
+    assert set(g["streams"]) == {"ok"}
+    assert set(live.camera_grant(settings, "d1", ["../e"])["streams"]) == {"0"}
+    over = live.camera_grant(settings, "d1", ["s%d" % i for i in range(20)])
+    assert len(over["streams"]) == live._MAX_STREAMS
 
 
 def test_camera_grant_http_relay_becomes_ws():  # local/dev relays (wrangler dev)
     settings = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
                               live_relay_url="http://localhost:8787", live_token_secret=SECRET)
     g = live.camera_grant(settings, "d1")
-    assert g["camera_url"].startswith("ws://localhost:8787/camera/d1?token=")
-    assert g["poll_url"].startswith("http://localhost:8787/poll/d1?token=")
+    assert g["streams"]["0"]["camera_url"].startswith("ws://localhost:8787/camera/d1/0?token=")
+    assert g["streams"]["0"]["poll_url"].startswith("http://localhost:8787/poll/d1/0?token=")
 
 
 # --- the check-in integration ----------------------------------------------------------------
@@ -101,7 +125,14 @@ def test_checkin_carries_live_grant_when_configured(tmp_path):
     r = TestClient(app).post("/api/v1/check", json=CHECKIN)
     assert r.status_code == 200
     g = r.json()["live"]
-    assert relay_verify(g["camera_url"].rsplit("token=", 1)[1], "camera", "cam-42")
+    url = g["streams"]["0"]["camera_url"]
+    assert relay_verify(url.rsplit("token=", 1)[1], "camera", "cam-42")
+
+
+def test_checkin_reported_streams_shape_the_grant(tmp_path):
+    app = _app(tmp_path, live_relay_url=RELAY, live_token_secret=SECRET)
+    r = TestClient(app).post("/api/v1/check", json=dict(CHECKIN, streams=["front", "tele"]))
+    assert set(r.json()["live"]["streams"]) == {"front", "tele"}
 
 
 def test_checkin_without_live_config_omits_the_key(tmp_path):

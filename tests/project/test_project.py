@@ -210,6 +210,9 @@ def test_create_ota_runtime_lib_no_coprocessor_data_without_coprocessor(
     lib = proj.ProjectPaths(root).app_dir / "lib" / "openmv_ota"
     data = lib / "data"
     assert (lib / "__init__.py").exists()
+    # the openmv_cloud SDK package scaffolds beside openmv_ota (from openmv_cloud import csi).
+    assert "class CSI" in (lib.parent / "openmv_cloud" / "csi.py").read_text()
+    assert (lib.parent / "openmv_cloud" / "__init__.py").exists()
     assert "def run(" in (data / "installer.py").read_text()
     assert (data / "ca.pem").read_bytes() == proj._fetch_ca_bundle()  # the stubbed bundle
     assert not (data / "coprocessor.romfs").exists()

@@ -354,6 +354,8 @@ class CheckIn(BaseModel):
     representation: str | None = None
     fallback_reason: str | None = None
     confirmed: bool = False
+    streams: list[str] = []                  # live image stream names (multi-camera boards);
+    #                                          empty -> the default single stream
 
 
 class Feedback(BaseModel):
@@ -514,7 +516,7 @@ def check(checkin: CheckIn, request: Request):
         resp = dict(nothing)
     # OpenMV Live: registered devices get a fresh camera grant each check-in (the
     # unverified-board bypass above never reaches here -- Live requires registration).
-    grant = live_mod.camera_grant(st.settings, checkin.device_id)
+    grant = live_mod.camera_grant(st.settings, checkin.device_id, checkin.streams)
     if grant is not None:
         resp["live"] = grant
     return resp
