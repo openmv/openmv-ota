@@ -206,8 +206,9 @@ do_full() {  # board  work
     $OTA build verify "$ud/romfs.img" "$ud/trailer.bin" --trusted-keys "$keys"
 
   rm -f "$cimg"   # so the next check proves factory-romfs regenerates it too
+  # --no-account: CI burns a self-host golden on purpose (no [product].account_id).
   expect_success "build factory-romfs" \
-    $OTA build factory-romfs "$proj" -b "$board" --allow-dev-key
+    $OTA build factory-romfs "$proj" -b "$board" --allow-dev-key --no-account
   local img="$proj/build/$board-factory-romfs.img"
   expect_file "factory image written (<board>-factory-romfs.img)" "$img"
   if [ -f "$img" ]; then
