@@ -505,6 +505,7 @@ def check(checkin: CheckIn, request: Request):
         device_id=checkin.device_id, product_id=checkin.product_id, board=checkin.board, cohort=cohort,
         current_version=checkin.app_version, current_payload_version=checkin.payload_version,
         slot=checkin.slot, representation=checkin.representation,
+        streams=checkin.streams,
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
         account_id=account_id)

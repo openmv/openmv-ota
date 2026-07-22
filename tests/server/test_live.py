@@ -163,3 +163,54 @@ def test_settings_accept_the_fleet_wide_env_names(monkeypatch):
     s = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t")
     assert s.live_relay_url == RELAY
     assert s.live_token_secret == SECRET
+
+
+# --- viewer grants: the dashboard's credential ----------------------------------------------
+
+def _settings(**kw):
+    kw.setdefault("base_url", "https://ota.test")
+    kw.setdefault("live_relay_url", RELAY)
+    kw.setdefault("live_token_secret", SECRET)
+    return ServerSettings(**kw)
+
+
+def test_viewer_grant_mints_a_viewer_role_token_the_relay_will_accept():
+    st = _settings()
+    grant = live.viewer_grant(st, "dev1", ["0", "thermal"])
+    exp, _, mac = grant["token"].partition(".")
+    want = hmac.new(SECRET.encode(), b"viewer:dev1:%s" % exp.encode(),
+                    hashlib.sha256).hexdigest()
+    assert mac == want                       # same MAC the relay computes for role "viewer"
+    assert set(grant["streams"]) == {"0", "thermal"}
+    assert grant["streams"]["thermal"]["watch_url"].startswith(
+        "wss://live.cloud.openmv.io/watch/dev1/thermal?token=")
+
+
+def test_a_viewer_token_is_not_a_camera_token():
+    # the roles are distinct MACs, so a viewer can never publish frames or poll
+    st = _settings()
+    viewer = live.viewer_grant(st, "dev1")["token"]
+    camera = live.camera_grant(st, "dev1")["streams"]["0"]["camera_url"]
+    assert viewer not in camera
+
+
+def test_viewer_grant_is_scoped_to_one_device():
+    st = _settings()
+    a = live.viewer_grant(st, "devA")["token"]
+    b = live.viewer_grant(st, "devB")["token"]
+    assert a != b                            # the device id is inside the MAC
+
+
+def test_viewer_grant_includes_the_datalake_read_urls_when_configured():
+    grant = live.viewer_grant(_settings(), "dev1", datalake_url="https://data.test/")
+    assert grant["topics_url"] == "https://data.test/api/v1/topics/dev1"
+    assert grant["logs_url"] == "https://data.test/api/v1/logs/dev1"
+    assert grant["series_url"] == "https://data.test/api/v1/series/dev1"
+
+
+def test_viewer_grant_omits_read_urls_without_a_datalake():
+    assert "topics_url" not in live.viewer_grant(_settings(), "dev1")
+
+
+def test_viewer_grant_is_none_when_live_is_unconfigured():
+    assert live.viewer_grant(ServerSettings(base_url="https://ota.test"), "dev1") is None

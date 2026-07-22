@@ -488,3 +488,76 @@ def test_account_isolation(tmp_path):
     assert b_events and all(e["action"] != "rollout.create" for e in b_events)
     assert any(e["action"] == "rollout.create" for e in
                c.get("/api/v1/admin/audit", headers=A).json()["events"])
+
+
+# --- viewer grants: the dashboard's issuer ---------------------------------------------------
+
+def _live_app(tmp_path, scopes=("manage", "observe")):
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    store.set_meta("cohort_salt", "x")
+    store.add_token(hash_token("admintok"), "ci", list(scopes))
+    app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
+                                    swd_ids_verify_token="t",
+                                    live_relay_url="https://live.test",
+                                    live_token_secret="s3cret",
+                                    datalake_url="https://data.test"),
+                     metastore=store, storage=LocalArtifactStorage(str(tmp_path / "blobs")),
+                     verifier=_Verifier())
+    return app, store
+
+
+def _seed_device(store, device_id="dev1", account_id="", streams="0,thermal"):
+    store.upsert_device(device_id=device_id, product_id=BID, board="B",
+                        account_id=account_id, streams=streams.split(","))
+    return device_id
+
+
+def test_viewer_grant_returns_watch_and_read_urls(tmp_path):
+    app, store = _live_app(tmp_path)
+    _seed_device(store)
+    store.bind_device_account("dev1", "", source="learned")
+    r = TestClient(app).post("/api/v1/admin/devices/dev1/viewer-grant", headers=AUTH)
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body["streams"]) == {"0", "thermal"}      # persisted at check-in
+    assert body["streams"]["0"]["watch_url"].startswith("wss://live.test/watch/dev1/0?token=")
+    assert body["topics_url"] == "https://data.test/api/v1/topics/dev1"
+    assert body["token"]
+
+
+def test_viewer_grant_needs_the_observe_scope(tmp_path):
+    app, store = _live_app(tmp_path, scopes=("publish",))
+    _seed_device(store)
+    r = TestClient(app).post("/api/v1/admin/devices/dev1/viewer-grant", headers=AUTH)
+    assert r.status_code == 403
+
+
+def test_viewer_grant_hides_another_accounts_device_as_a_404(tmp_path):
+    # a device that exists but isn't ours must be indistinguishable from one that
+    # doesn't -- otherwise this endpoint enumerates the fleet
+    app, store = _live_app(tmp_path)
+    _seed_device(store, account_id="acct_other")
+    store.bind_device_account("dev1", "acct_other", source="admin")
+    r = TestClient(app).post("/api/v1/admin/devices/dev1/viewer-grant", headers=AUTH)
+    assert r.status_code == 404
+    missing = TestClient(app).post("/api/v1/admin/devices/nope/viewer-grant", headers=AUTH)
+    assert missing.status_code == 404
+
+
+def test_viewer_grant_uses_the_sticky_binding_not_the_reported_account(tmp_path):
+    # a device reporting someone else's account (or a golden's blank one) must not
+    # move ownership -- the binding is authoritative
+    app, store = _live_app(tmp_path)
+    _seed_device(store, account_id="acct_other")
+    store.bind_device_account("dev1", "", source="admin")     # really ours
+    r = TestClient(app).post("/api/v1/admin/devices/dev1/viewer-grant", headers=AUTH)
+    assert r.status_code == 200
+
+
+def test_viewer_grant_503s_when_live_is_not_configured(tmp_path):
+    app, store = _app(tmp_path)                              # no relay configured
+    _seed_device(store)
+    store.bind_device_account("dev1", "", source="learned")
+    r = TestClient(app).post("/api/v1/admin/devices/dev1/viewer-grant", headers=AUTH)
+    assert r.status_code == 503

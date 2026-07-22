@@ -22,6 +22,8 @@ import os
 _UA = "openmv-cam/1.0"            # Cloudflare edge rejects default library UAs
 _CHUNK = 4096                     # the universal bounded read/copy window
 _SKIP_MAX = 64 * 1024             # give up framing a record after this much
+_CA_MAX = 256 * 1024              # the shipped PEM trust bundle
+_ca_pem = None                    # cached PEM text (False = looked, absent)
 
 
 class _Limits:
@@ -201,15 +203,37 @@ def _batch_window(window, max_bytes):
 
 # --- device network plumbing (exercised on hardware, not host) ---------------
 
+def _ca():  # pragma: no cover  (device: filesystem)
+    """The PEM trust anchors, read once and cached: the same bundle the OTA
+    runtime verifies updates against (``openmv_ota/data/ca.pem``). Returns None
+    if the OTA runtime is not installed alongside us, in which case the platform
+    default applies."""
+    global _ca_pem
+    if _ca_pem is None:
+        try:
+            import openmv_ota
+            here = openmv_ota.__file__.rsplit("/", 1)[0]
+            f = open(here + "/data/ca.pem", "r")
+            try:
+                _ca_pem = f.read(_CA_MAX)
+            finally:
+                f.close()
+        except (ImportError, OSError):
+            _ca_pem = False                          # looked, not available
+    return _ca_pem or None
+
+
 async def _open(host, port, tls):  # pragma: no cover
     import asyncio
     if tls:
         import ssl
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        # LIMITATION: server certificates are not yet verified against the
-        # bundled CA store (the OTA runtime's data/ca.pem) -- MicroPython's
-        # default context applies. Ingest tokens are still required, so this
-        # protects the data, not the endpoint's identity.
+        ca = _ca()
+        if ca:
+            # Verify the server against the same trust anchors the OTA runtime
+            # uses for updates -- one bundle, one behaviour across the device.
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.load_verify_locations(cadata=ca)
         return await asyncio.open_connection(host, port, ssl=ctx)
     return await asyncio.open_connection(host, port)
 

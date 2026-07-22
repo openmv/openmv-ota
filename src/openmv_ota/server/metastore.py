@@ -148,6 +148,11 @@ _MIGRATIONS: list[list[str]] = [
         # image published to a real fleet.
         "ALTER TABLE releases ADD COLUMN dev INTEGER NOT NULL DEFAULT 0",
     ],
+    [   # v10 -- the live image streams a device reported at its last check-in, comma-separated.
+        # The camera grant already uses them; persisting lets a *viewer* grant enumerate a device's
+        # panes without waiting for the device to be online, which is what a dashboard needs.
+        "ALTER TABLE devices ADD COLUMN streams TEXT NOT NULL DEFAULT ''",
+    ],
 ]
 
 
@@ -286,27 +291,28 @@ class SqlMetadataStore:
     def upsert_device(self, *, device_id, product_id, board=None, cohort="__default__",
                       current_version=None, current_payload_version=None, slot=None,
                       representation=None, fallback_reason=None, confirmed=None,
-                      last_offered_release_id=None, registrar_ref=None, account_id="") -> None:
+                      last_offered_release_id=None, registrar_ref=None, account_id="",
+                      streams=None) -> None:
         now = _now_iso()
         if self.query_one("SELECT 1 FROM devices WHERE device_id = ?", (device_id,)) is None:
             self.execute(
                 "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
                 "current_payload_version, slot, representation, fallback_reason, confirmed, "
-                "last_offered_release_id, registrar_ref, account_id, first_seen, last_seen) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "last_offered_release_id, registrar_ref, account_id, streams, first_seen, "
+                "last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (device_id, product_id, board, cohort, current_version, current_payload_version,
                  slot, representation, fallback_reason, confirmed, last_offered_release_id,
-                 registrar_ref, account_id, now, now))
+                 registrar_ref, account_id, ",".join(streams or ()), now, now))
         else:                                               # cohort is admin-controlled, not by check-in
             self.execute(
                 "UPDATE devices SET product_id = ?, board = ?, current_version = ?, "
                 "current_payload_version = ?, slot = ?, representation = ?, fallback_reason = ?, "
                 "confirmed = ?, last_offered_release_id = COALESCE(?, last_offered_release_id), "
-                "registrar_ref = COALESCE(?, registrar_ref), account_id = ?, last_seen = ? "
-                "WHERE device_id = ?",
+                "registrar_ref = COALESCE(?, registrar_ref), account_id = ?, "
+                "streams = COALESCE(?, streams), last_seen = ? WHERE device_id = ?",
                 (product_id, board, current_version, current_payload_version, slot, representation,
                  fallback_reason, confirmed, last_offered_release_id, registrar_ref, account_id,
-                 now, device_id))
+                 ",".join(streams) if streams else None, now, device_id))
 
     def get_device(self, device_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))

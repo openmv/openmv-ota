@@ -11,6 +11,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from . import live as live_mod
 from .auth import Principal, hash_token, require_scope
 from .scopes import ALL_SCOPES, SCOPES
 
@@ -392,6 +393,36 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
             principal: Principal = Depends(require_scope("observe"))):
     return {"devices": request.app.state.metastore.list_devices(
         product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset)}
+
+
+@admin.post("/devices/{device_id}/viewer-grant")
+def viewer_grant(device_id: str, request: Request,
+                 principal: Principal = Depends(require_scope("observe"))):
+    """Mint a short-lived, single-device ``viewer`` credential for a dashboard.
+
+    This is the issuer for the read side: the relay and the datalake both refuse
+    anything without a viewer token, and the signing secret lives only here. A
+    dashboard backend authenticates its own user however it likes, then calls
+    this with its account's ``observe`` token to get a credential it can hand to
+    that user's browser.
+
+    Ownership comes from the sticky device->account binding, not from whatever
+    the device last claimed, and an unowned device is a 404 like any other
+    entity -- so this cannot be used to discover other accounts' devices."""
+    st = request.app.state
+    ms = st.metastore
+    device = ms.get_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404)
+    bound = ms.device_account(device_id)          # the sticky binding wins
+    owner = bound["account_id"] if bound else device.get("account_id", "")
+    _owned({"account_id": owner}, principal)
+    grant = live_mod.viewer_grant(
+        st.settings, device_id, (device.get("streams") or "").split(","),
+        datalake_url=getattr(st.settings, "datalake_url", "") or "")
+    if grant is None:
+        raise HTTPException(status_code=503, detail="live/viewing is not configured")
+    return grant
 
 
 @admin.get("/audit")
