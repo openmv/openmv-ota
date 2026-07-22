@@ -277,6 +277,24 @@ def test_batch_end_packs_records_within_max_bytes():
     assert lg._batch_end(recs, 1, 6) == 2             # from the middle
 
 
+def _env(sid, seq):
+    return lg._envelope(sid, seq, "x\n")
+
+
+def test_batch_end_never_crosses_a_sid_boundary():
+    # a spool spanning a reboot: two sid runs, seq resets. A byte budget that
+    # would swallow both runs must still stop at the boundary (one sid per batch).
+    recs = [_env("aa00", 0), _env("aa00", 1), _env("bb11", 0), _env("bb11", 1)]
+    assert lg._batch_end(recs, 0, 10_000) == 2        # stops at the reboot boundary
+    assert lg._batch_end(recs, 2, 10_000) == 4        # the second run drains next
+
+
+def test_rec_sid_of_a_non_record_line_is_none():
+    assert lg._rec_sid(b"12345") is None              # bare int
+    assert lg._rec_sid(b"not json") is None
+    assert lg._rec_sid(lg._envelope("aa00", 0, "x\n")) == "aa00"
+
+
 def test_overflow_spills_the_whole_backlog_to_disk_and_clears_ram():
     disk = _FakeDisk()
     ob = lg._Outbox(sid="aa00", cap_bytes=20, disk=disk)

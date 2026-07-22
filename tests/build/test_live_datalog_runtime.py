@@ -135,6 +135,17 @@ def test_empty_outbox_take_is_none():
     assert dl._ByteOutbox().take(100) is None
 
 
+def test_drain_batching_never_crosses_a_sid_boundary():
+    # a per-topic spool spanning a reboot: this boot's records carry _sid, an
+    # older boot's carry a different sid. The shared _batch_end must split at the
+    # boundary so no batch mixes sids (the datalake rejects that).
+    recs = [dl._record("oldsid0000000000", 0, 1),
+            dl._record("oldsid0000000000", 1, 2),
+            dl._record(dl._sid, 0, 3)]
+    assert dl._batch_end(recs, 0, 10_000) == 2        # old-boot run only
+    assert dl._batch_end(recs, 2, 10_000) == 3        # this boot next
+
+
 # --- post() -----------------------------------------------------------------
 
 def test_post_sequences_per_topic_and_wraps():

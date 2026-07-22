@@ -148,12 +148,28 @@ def _ndjson(sid, records):
     return b"\n".join(_envelope(sid, seq, line) for seq, line in records)
 
 
+def _rec_sid(record):
+    """The ``sid`` of an encoded record, or None if it isn't a JSON object with a
+    string sid (a non-record line packs as its own None-sid run). Pure."""
+    try:
+        sid = json.loads(record).get("sid")
+    except (ValueError, AttributeError):
+        return None
+    return sid if isinstance(sid, str) else None
+
+
 def _batch_end(records, start, max_bytes):
     """Index one past the last record of a batch starting at ``start`` that fits
-    in ``max_bytes`` (counting the joining newlines); at least one record. Pure,
-    for the disk drain."""
+    in ``max_bytes`` (counting the joining newlines); at least one record. Never
+    crosses a sid boundary: the datalake requires one sid per batch, and a spool
+    that spans a reboot holds runs of different sids (with seq resetting at each).
+    Batching by contiguous sid run keeps every batch single-sid and seq-ordered.
+    Pure, for the disk drain."""
+    sid = _rec_sid(records[start])
     end, size = start, 0
     while end < len(records):
+        if end > start and _rec_sid(records[end]) != sid:
+            break                                    # a reboot boundary in the spool
         n = len(records[end]) + 1                    # +1 for the NDJSON separator
         if end > start and size + n > max_bytes:
             break
