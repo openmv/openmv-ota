@@ -237,7 +237,7 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
     # Auto-wire persistence into openmv_ota.run() so it flows with zero app code.
     try:
         import openmv_ota
-        openmv_ota.register_checkin(on_response=_on_checkin)
+        openmv_ota.register_checkin(on_response=_on_checkin, key="openmv_cloud.logs")
     except (ImportError, AttributeError):
         pass
 

@@ -173,7 +173,8 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
     # On the host `import openmv_ota` is the CLI package (no seam) -> skipped.
     try:
         import openmv_ota
-        openmv_ota.register_checkin(contribute=_contribute, on_response=_on_checkin)
+        openmv_ota.register_checkin(contribute=_contribute, on_response=_on_checkin,
+                                    key="openmv_cloud.csi")
     except (ImportError, AttributeError):
         pass
 

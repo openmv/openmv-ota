@@ -341,19 +341,25 @@ def identity():  # pragma: no cover
 # (the live + ingest grants). It registers here on import; the updater NEVER
 # imports openmv_cloud, so a pure-OTA device (no cloud SDK) just does OTA.
 
-_checkin_contributors = []
-_checkin_observers = []
+_checkin_contributors = {}
+_checkin_observers = {}
 
 
-def register_checkin(contribute=None, on_response=None):
+def register_checkin(contribute=None, on_response=None, key=None):
     """The openmv_cloud extension seam. ``contribute() -> dict`` is merged into
     the check-in body each poll; ``on_response(resp)`` is called with each
     check-in response. Both optional; both isolated (a raising extension can't
-    break the OTA loop)."""
+    break the OTA loop).
+
+    ``key`` makes registration IDEMPOTENT: re-registering with the same key
+    REPLACES the prior handlers, so a module re-imported or reloaded never
+    double-registers. Omit ``key`` for an independent (always-added)
+    registration."""
+    ident = key if key is not None else object()
     if contribute is not None:
-        _checkin_contributors.append(contribute)
+        _checkin_contributors[ident] = contribute
     if on_response is not None:
-        _checkin_observers.append(on_response)
+        _checkin_observers[ident] = on_response
 
 
 def _checkin_body(info, st):
@@ -376,7 +382,7 @@ def _checkin_body(info, st):
 
 def _collect_body(info, st):
     body = _checkin_body(info, st)
-    for contribute in _checkin_contributors:
+    for contribute in list(_checkin_contributors.values()):
         try:
             extra = contribute()
         except Exception:
@@ -387,7 +393,7 @@ def _collect_body(info, st):
 
 
 def _notify(resp):
-    for on_response in _checkin_observers:
+    for on_response in list(_checkin_observers.values()):
         try:
             on_response(resp)
         except Exception:

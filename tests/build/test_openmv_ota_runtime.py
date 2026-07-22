@@ -225,6 +225,18 @@ def test_observers_all_fire_and_a_raising_one_is_isolated():
     assert seen == [("a", 42), ("b", 42)]            # both good ones ran
 
 
+def test_register_with_a_key_is_idempotent_replaces_not_appends():
+    calls = []
+    rt.register_checkin(contribute=lambda: {"v": 1},
+                        on_response=lambda r: calls.append(1), key="ext")
+    rt.register_checkin(contribute=lambda: {"v": 2},   # re-import/reload: same key
+                        on_response=lambda r: calls.append(2), key="ext")
+    body = rt._collect_body({}, {})
+    assert body["v"] == 2                              # replaced, not both
+    rt._notify({})
+    assert calls == [2]                                # only the latest observer
+
+
 @pytest.mark.parametrize(("resp", "expect"), [
     ({"update": True, "manifest_url": "https://s/m.bin"}, "https://s/m.bin"),
     ({"update": False, "manifest_url": "https://s/m.bin"}, None),
