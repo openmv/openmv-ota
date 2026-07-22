@@ -27,6 +27,13 @@ On every OpenMV port ``machine.Timer`` is the virtual/soft timer (id ``-1`` -- t
 id it accepts), and ``hard=True`` runs its callback in the SysTick/PendSV interrupt
 handler. That is what lets the feed fire *while the CPU is blocked* in a flash erase; a
 soft (scheduled) callback would wait for the main loop and never run during the op.
+
+RAM BUDGET: this runs on the device inside the *user's* app -- our memory is
+their memory. No allocation may be sized by something we don't control (a file's
+size, a response body, a length field off the wire, a queue that grows while the
+network is down). Use bounded windows of a few KB, stream anything larger, and
+alias with memoryview/bytearray_at instead of copying. Every buffer needs a
+ceiling you can point at. See the RAM budget section in CLAUDE.md.
 """
 
 ENABLED = False        # master switch

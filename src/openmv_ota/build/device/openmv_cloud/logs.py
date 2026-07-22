@@ -47,6 +47,11 @@ promise that (RTC jumps, batching); sequence numbers can.
 
 print() and tracebacks are NOT captured -- only logger records (v1; a dupterm
 tee for full-terminal capture is a documented later option).
+
+RAM BUDGET: this runs inside the *user's* app -- our memory is their memory.
+Every queue here is byte-capped (ring, pending, outbox) and the spool spills
+piece-by-piece rather than joining a backlog into one buffer. A stalled network
+must cost a bounded number of bytes, never unbounded growth. See CLAUDE.md.
 """
 
 import json
@@ -95,6 +100,7 @@ class _Console:
         self._ring = []               # [(seq, line str)], newest last
         self._ring_size = 0
         self._pending = []            # [(seq, line/chunk str)] awaiting upload
+        self._pending_size = 0        # ...byte-capped like the ring (see _trim_pending)
         self._was_active = False
 
     def add(self, line, active):
@@ -111,7 +117,18 @@ class _Console:
             self._ring_size -= len(self._ring.pop(0)[1])
         if active:
             self._pending.append(entry)
+            self._pending_size += len(line)
+            self._trim_pending()
         return seq
+
+    def _trim_pending(self):
+        """The live mirror is BEST-EFFORT: if the relay stalls while we're being
+        watched, drop the oldest pending lines instead of growing without bound
+        (a watched console on a chatty app could otherwise eat the heap while
+        flush() keeps failing). The datalake outbox is the durable copy, so a
+        dropped line is missing from the live tail only -- not from history."""
+        while self._pending_size > self._cap and len(self._pending) > 1:
+            self._pending_size -= len(self._pending.pop(0)[1])
 
     def on_tick(self, active):
         """Called each flusher tick: on the unwatched->watched transition the
@@ -119,18 +136,22 @@ class _Console:
         pending. Returns ``(first_seq, text)`` to upload, or None."""
         if active and not self._was_active:
             self._pending = list(self._ring)
+            self._pending_size = self._ring_size
         self._was_active = active
         if not active or not self._pending:
             return None
         first_seq = self._pending[0][0]
         text = "".join(line for _seq, line in self._pending)
         self._pending = []
+        self._pending_size = 0
         return first_seq, text
 
     def requeue(self, first_seq, text):
         """An upload that couldn't go out yet (send in flight / fps cap): put it
         back so it coalesces into the next batch instead of being lost."""
         self._pending.insert(0, (first_seq, text))
+        self._pending_size += len(text)
+        self._trim_pending()
 
 
 def _ndjson(sid, records):
@@ -183,12 +204,19 @@ class _Outbox:
             self._trim()              # RAM-only: drop oldest
 
     def _spill(self):
-        # One append of the entire RAM backlog (encoded with its sid), then RAM
-        # clears -- atomic, no torn middle. Newline-terminated so consecutive
-        # spills stay record-delimited in the file.
-        self._disk.append(_ndjson(self._sid, self._buf) + b"\n")
+        # The entire RAM backlog moves to disk in ONE open (encoded with its
+        # sid), then RAM clears -- no torn middle. Newline-terminated so
+        # consecutive spills stay record-delimited in the file.
+        self._disk.append_iter(self._pieces())
         self._buf = []
         self._bytes = 0
+
+    def _pieces(self):
+        """The backlog as encoded pieces, one record at a time -- the spill's
+        transient stays a single record instead of the whole joined queue."""
+        for seq, line in self._buf:
+            yield _envelope(self._sid, seq, line)
+            yield b"\n"
 
     def _trim(self):
         while self._bytes > self._cap and len(self._buf) > 1:

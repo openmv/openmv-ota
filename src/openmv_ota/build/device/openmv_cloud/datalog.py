@@ -14,6 +14,10 @@ in the dashboard. Same durability model as :mod:`openmv_cloud.logs` -- RAM-first
 an OPT-IN disk spool (``enable(spool_path=...)``), at-least-once delivery made
 safe by the datalake's ``(sid, seq)`` dedup. Idle until an ingest grant arrives
 (auto-wired from the OTA check-in); ``post()`` before then just buffers (bounded).
+
+RAM BUDGET: this runs inside the *user's* app -- our memory is their memory. The
+per-topic outbox is byte-capped, the spool spills record-by-record rather than
+joining the backlog, and drains stream in bounded windows. See CLAUDE.md.
 """
 
 import json
@@ -70,9 +74,16 @@ class _ByteOutbox:
             self._trim()
 
     def _spill(self):
-        self._disk.append(b"\n".join(self._buf) + b"\n")
+        self._disk.append_iter(self._pieces())
         self._buf = []
         self._bytes = 0
+
+    def _pieces(self):
+        """The backlog one record at a time -- the spill never joins the whole
+        queue into a single buffer."""
+        for rec in self._buf:
+            yield rec
+            yield b"\n"
 
     def _trim(self):
         while self._bytes > self._cap and len(self._buf) > 1:

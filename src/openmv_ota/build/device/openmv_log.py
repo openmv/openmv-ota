@@ -24,6 +24,13 @@ It's **off by default** (the logger's level is set above CRITICAL, so nothing em
 nothing leaks to the REPL). To debug on hardware, edit the config block below -- set
 ``ENABLED = True`` and ``UART`` to your board's ``machine.UART`` id -- and rebuild
 firmware. Or change ``_configure`` to log to a file/socket/the REPL.
+
+RAM BUDGET: this runs on the device inside the *user's* app -- our memory is
+their memory. No allocation may be sized by something we don't control (a file's
+size, a response body, a length field off the wire, a queue that grows while the
+network is down). Use bounded windows of a few KB, stream anything larger, and
+alias with memoryview/bytearray_at instead of copying. Every buffer needs a
+ceiling you can point at. See the RAM budget section in CLAUDE.md.
 """
 
 import logging

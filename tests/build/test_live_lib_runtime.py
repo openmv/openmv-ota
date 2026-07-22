@@ -69,3 +69,43 @@ def test_rec_sid_of_a_non_record_line_is_none():
     assert _lib._rec_sid(b"12345") is None            # bare int
     assert _lib._rec_sid(b"not json") is None
     assert _lib._rec_sid(_rec("aa00", 0)) == "aa00"
+
+
+# --- _batch_window: the streaming drain's decision function -----------------
+
+def _win(*recs):
+    return b"".join(r + b"\n" for r in recs)
+
+
+def test_batch_window_takes_whole_records_only():
+    win = _win(_rec("aa00", 0), _rec("aa00", 1))
+    assert _lib._batch_window(win, 10_000) == len(win)      # both, exactly
+
+
+def test_batch_window_ignores_a_trailing_partial_record():
+    # a crash mid-append leaves a record with no newline: it must not be sent
+    win = _win(_rec("aa00", 0)) + _rec("aa00", 1)[:10]
+    assert _lib._batch_window(win, 10_000) == len(_win(_rec("aa00", 0)))
+
+
+def test_batch_window_stops_at_a_sid_boundary():
+    first = _win(_rec("aa00", 0))
+    win = first + _win(_rec("bb11", 0))
+    assert _lib._batch_window(win, 10_000) == len(first)
+
+
+def test_batch_window_respects_the_byte_budget():
+    one = _win(_rec("aa00", 0))
+    win = one + _win(_rec("aa00", 1))
+    assert _lib._batch_window(win, len(one)) == len(one)     # second won't fit
+
+
+def test_batch_window_always_takes_at_least_one_record():
+    # an oversize record must not wedge the drain forever
+    win = _win(_rec("aa00", 0))
+    assert _lib._batch_window(win, 1) == len(win)
+
+
+def test_batch_window_returns_zero_when_no_record_is_complete():
+    assert _lib._batch_window(_rec("aa00", 0)[:12], 10_000) == 0
+    assert _lib._batch_window(b"", 10_000) == 0

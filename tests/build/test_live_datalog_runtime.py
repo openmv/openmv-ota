@@ -18,18 +18,24 @@ from openmv_ota.build.device.openmv_cloud import datalog as dl
 
 
 class _FakeDisk:
+    """Mirrors _lib._FileDisk: bounded read_at + streaming compact, no read_all."""
     def __init__(self):
         self.data = b""
     def append(self, d):
         self.data += d
+    def append_iter(self, pieces):
+        for piece in pieces:
+            self.data += piece
     def size(self):
         return len(self.data)
-    def read_all(self):
-        return self.data
+    def read_at(self, off, n):
+        return self.data[off:off + n]
     def clear(self):
         self.data = b""
-    def rewrite(self, d):
-        self.data = d
+    def compact(self, off):
+        if off <= 0:
+            return
+        self.data = b"" if off >= len(self.data) else self.data[off:]
 
 
 def _records(disk):

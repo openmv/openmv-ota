@@ -246,18 +246,24 @@ def test_on_checkin_without_ingest_leaves_it_unset():
 # --- the two-tier durable spool ------------------------------------------------------------
 
 class _FakeDisk:
+    """Mirrors _lib._FileDisk: bounded read_at + streaming compact, no read_all."""
     def __init__(self):
         self.data = b""
     def append(self, d):
         self.data += d
+    def append_iter(self, pieces):
+        for piece in pieces:
+            self.data += piece
     def size(self):
         return len(self.data)
-    def read_all(self):
-        return self.data
+    def read_at(self, off, n):
+        return self.data[off:off + n]
     def clear(self):
         self.data = b""
-    def rewrite(self, d):
-        self.data = d
+    def compact(self, off):
+        if off <= 0:
+            return
+        self.data = b"" if off >= len(self.data) else self.data[off:]
 
 
 def _records(disk):
@@ -310,3 +316,44 @@ def test_requeue_over_cap_with_disk_present_does_not_drop():
     ob.requeue([(0, "a" * 8 + "\n"), (1, "b" * 8 + "\n")])   # 18 bytes > cap 10
     # with a disk present, requeue keeps everything (next add spills); no drop
     assert ob.pending_bytes() == 18
+
+
+# --- the pending batch is byte-capped like the ring -------------------------
+
+def test_pending_is_bounded_when_the_relay_stalls():
+    # watched + a chatty app + flush() failing forever must NOT grow without
+    # bound: the live mirror is best-effort, the datalake copy is the durable one
+    c = _console(ring_bytes=20)
+    c.on_tick(active=True)                        # become watched
+    for i in range(50):
+        c.add("line%d\n" % i, active=True)        # 7 bytes each, never flushed
+    assert c._pending_size <= 20
+    assert len(c._pending) <= 4
+
+
+def test_requeue_of_a_huge_batch_is_also_bounded():
+    c = _console(ring_bytes=20)
+    c.on_tick(active=True)
+    c.requeue(0, "x" * 500)                       # a failed upload comes back
+    c.add("new\n", active=True)
+    assert c._pending_size <= 20                  # trimmed, not accumulated
+
+
+def test_pending_size_tracks_the_ring_on_viewer_arrival():
+    c = _console(ring_bytes=100)
+    c.add("a\n", active=False)
+    c.add("b\n", active=False)
+    c.on_tick(active=True)                        # replay sets pending from ring
+    assert c._pending_size == 0                   # ...and the tick drained it
+
+
+def test_spill_writes_record_by_record_not_one_joined_buffer():
+    disk = _FakeDisk()
+    ob = lg._Outbox(sid="aa00", cap_bytes=20, disk=disk)
+    pieces = []
+    disk.append_iter = lambda it: pieces.extend(it)   # capture what's handed over
+    for i in range(4):
+        ob.add(i, "line%d\n" % i)
+    # each record is its own piece (plus its separator) -- never one big join
+    assert len(pieces) >= 4
+    assert all(len(p) < 200 for p in pieces)

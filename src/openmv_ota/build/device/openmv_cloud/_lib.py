@@ -11,6 +11,12 @@ feature-agnostic and flows one way: features import ``_lib``, never each other.
 (The one legitimate feature dependency that remains is ``logs`` using
 ``csi.Stream`` to mirror the console as a real Live stream.)
 
+RAM BUDGET: this runs inside the *user's* app -- our memory is their memory. No
+allocation may be sized by something we don't control (a file's size, a response
+body, a length field off the wire, a queue that grows while the network is
+down). Bounded windows, streaming, and memoryview aliasing instead of copies.
+See the RAM budget section in CLAUDE.md.
+
 Pure helpers are host-tested; the socket/filesystem entry points are exercised
 on hardware and marked ``# pragma: no cover``.
 """
@@ -19,6 +25,8 @@ import json
 import os
 
 _UA = "openmv-cam/1.0"            # Cloudflare edge rejects default library UAs
+_CHUNK = 4096                     # the universal bounded read/copy window
+_SKIP_MAX = 64 * 1024             # give up framing a record after this much
 
 
 # --- URL handling (pure) -----------------------------------------------------
@@ -62,18 +70,42 @@ def _batch_end(records, start, max_bytes):
     in ``max_bytes`` (counting the joining newlines); at least one record. Never
     crosses a sid boundary: the datalake requires one sid per batch, and a spool
     that spans a reboot holds runs of different sids (with seq resetting at each).
-    Batching by contiguous sid run keeps every batch single-sid and seq-ordered.
-    Pure, for the disk drain."""
+    Pure; used for the in-RAM tier, where the record list already exists."""
     sid = _rec_sid(records[start])
     end, size = start, 0
     while end < len(records):
         if end > start and _rec_sid(records[end]) != sid:
-            break                                    # a reboot boundary in the spool
+            break                                    # a reboot boundary
         n = len(records[end]) + 1                    # +1 for the NDJSON separator
         if end > start and size + n > max_bytes:
             break
         size += n
         end += 1
+    return end
+
+
+def _batch_window(window, max_bytes):
+    """How many bytes at the head of ``window`` form ONE complete, single-sid
+    NDJSON batch of at most ``max_bytes``; 0 if there is no complete record
+    (no newline yet). Pure -- this is the streaming drain's decision function,
+    so the drain never needs the file, nor even the batch's record list, in RAM.
+    Always takes at least one record, so an oversize record can't wedge it."""
+    end = 0                                          # bytes committed so far
+    sid = None
+    while end < len(window):
+        nl = window.find(b"\n", end)
+        if nl < 0:
+            break                                    # no complete record left
+        if end and nl + 1 > max_bytes:
+            break                                    # would blow the batch budget
+        rec = window[end:nl]
+        if rec.strip():                              # blank lines just ride along
+            rsid = _rec_sid(rec)
+            if sid is None:
+                sid = rsid
+            elif rsid != sid:
+                break                                # a reboot boundary
+        end = nl + 1
     return end
 
 
@@ -91,9 +123,26 @@ async def _open(host, port, tls):  # pragma: no cover
     return await asyncio.open_connection(host, port)
 
 
+async def _read_capped(reader, limit):  # pragma: no cover  (device network)
+    """Read a response body to EOF, capped at ``limit``. Never ``read(-1)``: a
+    captive portal or a broken proxy must not be able to size our allocation.
+    Collects bounded chunks and joins once (no quadratic ``+=`` growth)."""
+    chunks, total = [], 0
+    while True:
+        d = await reader.read(_CHUNK)
+        if not d:
+            return b"".join(chunks)
+        total += len(d)
+        if total > limit:
+            raise OSError("response body over %d bytes" % limit)
+        chunks.append(d)
+
+
 async def _post_ndjson(target, topic, body):  # pragma: no cover  (device network)
     """POST already-encoded NDJSON ``body`` to ``{base}/{topic}`` with the ingest
-    token. ``target`` is the ``(base_url, token)`` from an ingest grant."""
+    token. ``target`` is the ``(base_url, token)`` from an ingest grant. Header
+    and body are written separately so the body is never copied to concatenate
+    it -- callers may hand us a memoryview straight off the spool window."""
     url, token = target
     tls, host, port, path = _split_url(url + "/" + topic)
     reader, writer = await _open(host, port, tls)
@@ -102,7 +151,8 @@ async def _post_ndjson(target, topic, body):  # pragma: no cover  (device networ
             "POST %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
             "Authorization: Bearer %s\r\nContent-Type: application/x-ndjson\r\n"
             "Content-Length: %d\r\nConnection: close\r\n\r\n"
-            % (path, host, _UA, token, len(body))).encode() + body)
+            % (path, host, _UA, token, len(body))).encode())
+        writer.write(body)
         await writer.drain()
         status = await reader.readline()
         if b" 200 " not in status and not status.rstrip().endswith(b" 200"):
@@ -117,7 +167,9 @@ async def _post_ndjson(target, topic, body):  # pragma: no cover  (device networ
 class _FileDisk:  # pragma: no cover  (device: filesystem)
     """The durable spool tier over a MicroPython vfs path -- an SD card (e.g.
     the AE3's SPI SD on the battery shield), flash-as-disk, or SPI-NAND, all the
-    same to us. Append-only during an outage; read + clear/rewrite on drain."""
+    same to us. Append-only during an outage; read in bounded windows and
+    compacted (never slurped) on drain -- the file can outgrow RAM by design, so
+    nothing here may be sized by ``size()``."""
 
     def __init__(self, path):
         self._path = path
@@ -129,16 +181,30 @@ class _FileDisk:  # pragma: no cover  (device: filesystem)
         finally:
             f.close()
 
+    def append_iter(self, pieces):
+        """Append many small pieces in ONE open. Lets a caller spill a backlog
+        without ever joining it into a single big buffer -- each piece is written
+        straight out, so the transient is one record, not the whole queue."""
+        f = open(self._path, "ab")
+        try:
+            for piece in pieces:
+                f.write(piece)
+        finally:
+            f.close()
+
     def size(self):
         try:
             return os.stat(self._path)[6]
         except OSError:
             return 0
 
-    def read_all(self):
+    def read_at(self, off, n):
+        """At most ``n`` bytes from ``off`` -- the only read this class offers,
+        so no caller can accidentally load the whole spool."""
         f = open(self._path, "rb")
         try:
-            return f.read()
+            f.seek(off)
+            return f.read(n)
         finally:
             f.close()
 
@@ -148,12 +214,32 @@ class _FileDisk:  # pragma: no cover  (device: filesystem)
         except OSError:
             pass
 
-    def rewrite(self, data):
-        f = open(self._path, "wb")
+    def compact(self, off):
+        """Drop the first ``off`` bytes, streaming the remainder through a temp
+        file in ``_CHUNK`` pieces -- the tail is never held in RAM. Re-reads the
+        live size, so records appended while a drain was in flight survive."""
+        if off <= 0:
+            return
+        if off >= self.size():                       # nothing new arrived: done
+            self.clear()
+            return
+        tmp = self._path + ".tmp"
+        src = open(self._path, "rb")
         try:
-            f.write(data)
+            src.seek(off)
+            dst = open(tmp, "wb")
+            try:
+                while True:
+                    chunk = src.read(_CHUNK)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+            finally:
+                dst.close()
         finally:
-            f.close()
+            src.close()
+        os.remove(self._path)
+        os.rename(tmp, self._path)
 
 
 def _open_disk(spool_path, name):  # pragma: no cover  (device: filesystem)
@@ -175,24 +261,45 @@ def _open_disk(spool_path, name):  # pragma: no cover  (device: filesystem)
         return None
 
 
+def _skip_record(disk, off, size):  # pragma: no cover  (device: filesystem)
+    """Offset just past the next newline at/after ``off``, scanning in bounded
+    steps; ``size`` if none within ``_SKIP_MAX``. Only reached for a record too
+    big to frame in one batch -- which the datalake would reject anyway -- or a
+    torn tail, so skipping it is the one way to keep the spool from wedging."""
+    scanned = 0
+    while off + scanned < size and scanned < _SKIP_MAX:
+        buf = disk.read_at(off + scanned, _CHUNK)
+        if not buf:
+            break
+        nl = buf.find(b"\n")
+        if nl >= 0:
+            return off + scanned + nl + 1
+        scanned += len(buf)
+    return size
+
+
 async def _drain_disk(target, topic, disk, max_bytes):  # pragma: no cover  (file+net)
-    """Upload a spool file oldest-first, in batches that never mix sids. Fully
-    sent -> delete the file (back to the RAM-only fast path). A batch failing
-    part-way -> rewrite just the un-sent remainder (one write) and stop. A crash
-    mid-drain replays the whole file next boot; the datalake dedupes by
-    ``(sid, seq)``, so at-least-once delivery is safe."""
-    if disk is None or disk.size() == 0:
+    """Upload a spool file oldest-first in batches that never mix sids, reading
+    ONE batch-sized window at a time -- peak RAM is one batch, whatever the file
+    grew to during the outage. Fully sent -> the file goes away; partial ->
+    compact off what was sent and stop. A crash mid-drain replays from the last
+    compaction; the datalake dedupes by ``(sid, seq)``, so that is harmless."""
+    if disk is None:
         return
-    records = [r for r in disk.read_all().split(b"\n") if r]
-    i = 0
+    size = disk.size()
+    if size == 0:
+        return
+    off = 0
     try:
-        while i < len(records):
-            end = _batch_end(records, i, max_bytes)
-            await _post_ndjson(target, topic, b"\n".join(records[i:end]))
-            i = end
+        while off < size:
+            window = disk.read_at(off, max_bytes)
+            if not window:
+                break
+            n = _batch_window(window, max_bytes)
+            if n == 0:                               # unframeable record or torn tail
+                off = _skip_record(disk, off, size)
+                continue
+            await _post_ndjson(target, topic, memoryview(window)[:n])
+            off += n
     finally:
-        if i >= len(records):
-            disk.clear()
-        elif i > 0:                                   # partial progress persists
-            disk.rewrite(b"\n".join(records[i:]))
-        # i == 0 (first batch failed): leave the file untouched
+        disk.compact(off)                            # also clears when fully drained

@@ -75,6 +75,11 @@ host-testable and the network/device entry points are exercised on hardware. The
 WebSocket client is self-contained (MicroPython has none): RFC 6455, client
 frames masked, text frames are relay control JSON, binary is never received
 (viewers can't publish).
+
+RAM BUDGET: this runs inside the *user's* app -- our memory is their memory. The
+JPEG path is deliberately zero-copy (``memoryview`` over the encoder's buffer,
+one reused bytearray sized by _fit_size), and every wire-declared length is
+ceilinged before it can size an allocation. See CLAUDE.md.
 """
 
 import binascii
@@ -82,7 +87,13 @@ import json
 import os
 import struct
 
-from ._lib import _UA, _open, _split_url
+from ._lib import _UA, _open, _read_capped, _split_url
+
+# Ceilings on anything the wire declares. We only ever RECEIVE small
+# control JSON, so a frame bigger than this is a broken or hostile relay --
+# never a reason to attempt a huge allocation inside the user's app.
+_FRAME_MAX = 16 * 1024
+_POLL_BODY_MAX = 4 * 1024
 
 try:
     from openmv_log import log
@@ -551,7 +562,7 @@ async def poll_watch(stream=_DEFAULT_STREAM, grant=None):  # pragma: no cover  (
             line = await reader.readline()
             if line in (b"\r\n", b"\n", b""):
                 break
-        return parse_poll_response(await reader.read(-1))
+        return parse_poll_response(await _read_capped(reader, _POLL_BODY_MAX))
     finally:
         writer.close()
         await writer.wait_closed()
@@ -588,6 +599,10 @@ async def _ws_recv(reader):  # pragma: no cover
         length = struct.unpack("!Q", await reader.readexactly(8))[0]
     else:
         length = len7
+    if length > _FRAME_MAX:
+        # Refuse rather than allocate: `length` is a 64-bit field straight off
+        # the wire. The relay task turns this into a reconnect.
+        raise OSError("relay frame of %d bytes exceeds %d" % (length, _FRAME_MAX))
     return opcode, await reader.readexactly(length) if length else b""
 
 

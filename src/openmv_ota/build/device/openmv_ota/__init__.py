@@ -25,6 +25,13 @@ host ``openmv_ota.ota.*`` packages under MicroPython, so the status-marker const
 are duplicated here and pinned against the originals by ``test_openmv_ota_runtime``.
 The pure logic takes injected I/O so it is host-testable; the device entry points
 wire the real ``vfs``/``uctypes``/``_ota_config``.
+
+RAM BUDGET: this runs on the device inside the *user's* app -- our memory is
+their memory. No allocation may be sized by something we don't control (a file's
+size, a response body, a length field off the wire, a queue that grows while the
+network is down). Use bounded windows of a few KB, stream anything larger, and
+alias with memoryview/bytearray_at instead of copying. Every buffer needs a
+ceiling you can point at. See the RAM budget section in CLAUDE.md.
 """
 
 import hashlib
@@ -184,6 +191,8 @@ def _should_confirm(slot, status_sector):
 # alignment, so chunked writes never need per-port re-alignment, and only one chunk
 # is ever held in RAM -- never a whole (up to ~1 MiB) image.
 _CHUNK = 4096
+_RESP_MAX = 16 * 1024        # a check-in reply is grants + version info
+_ASSET_MAX = 256 * 1024      # our own shipped installer.py / ca.pem
 
 
 def _streams_equal(file_chunks, read_target, feed=None):
@@ -438,6 +447,21 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
         await asyncio.sleep(wait)
 
 
+async def _read_capped(reader, limit):  # pragma: no cover  (device network)
+    """Read a response body to EOF, capped at ``limit``. Never ``read(-1)``: a
+    captive portal or broken proxy must not get to size our allocation. Bounded
+    chunks joined once (no quadratic ``+=``)."""
+    chunks, total = [], 0
+    while True:
+        d = await reader.read(_CHUNK)
+        if not d:
+            return b"".join(chunks)
+        total += len(d)
+        if total > limit:
+            raise OSError("check-in response over %d bytes" % limit)
+        chunks.append(d)
+
+
 async def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
     """POST the check-in body to ``/api/v1/check`` and return the parsed JSON."""
     import asyncio
@@ -464,7 +488,7 @@ async def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
             line = await reader.readline()
             if line in (b"\r\n", b"\n", b""):
                 break
-        return json.loads(await reader.read(-1))
+        return json.loads(await _read_capped(reader, _RESP_MAX))
     finally:
         writer.close()
         await writer.wait_closed()
@@ -625,9 +649,15 @@ def install(url, ca=None):  # pragma: no cover
     ns["run"](url, ca, cfg)
 
 
-def _read_file(path, mode):  # pragma: no cover
+def _read_file(path, mode, limit=_ASSET_MAX):  # pragma: no cover
+    """Read one of our OWN shipped assets (installer.py, ca.pem) whole -- they
+    have to be whole to exec()/parse. Still bounded: these are fixed build
+    artifacts, so exceeding the ceiling means a corrupt romfs, not a big input."""
     f = open(path, mode)
     try:
-        return f.read()
+        data = f.read(limit + 1)
+        if len(data) > limit:
+            raise OSError("%s exceeds the %d-byte asset ceiling" % (path, limit))
+        return data
     finally:
         f.close()

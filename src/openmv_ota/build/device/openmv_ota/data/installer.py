@@ -18,6 +18,13 @@ flash write loop -- all I/O injected, host-tested) and a device entry (``run`` /
 ``vfs``/``machine`` and is excluded from host coverage. ``hashlib`` is the only
 import that runs on the host (to derive the PENDING marker, pinned against
 ``openmv_ota.ota.status`` by a test); the device imports are lazy.
+
+RAM BUDGET: this runs on the device inside the *user's* app -- our memory is
+their memory. No allocation may be sized by something we don't control (a file's
+size, a response body, a length field off the wire, a queue that grows while the
+network is down). Use bounded windows of a few KB, stream anything larger, and
+alias with memoryview/bytearray_at instead of copying. Every buffer needs a
+ceiling you can point at. See the RAM budget section in CLAUDE.md.
 """
 
 import binascii
@@ -276,15 +283,16 @@ def _read_all(body, limit):
     """Read a whole (small) response body into bytes, capped at ``limit`` -- for the
     manifest, which is fetched into RAM rather than streamed to flash. Raises if it
     exceeds ``limit`` (a runaway/oversized manifest)."""
-    out = b""
+    parts, total = [], 0
     buf = bytearray(512)
     while True:
         n = body.readinto(buf)
         if not n:
-            return out
-        out += bytes(buf[:n])
-        if len(out) > limit:
+            return b"".join(parts)
+        total += n
+        if total > limit:
             raise ValueError("manifest larger than %d bytes" % limit)
+        parts.append(bytes(buf[:n]))                 # collect + join once, not o(n^2) +=
 
 
 # --- pure: signed manifest (mirror of openmv_ota.ota.manifest, pinned by tests) ----
@@ -459,9 +467,12 @@ def _delta_stream(reader, old_read, chunk):
         extra_len = reader.read_uvarint()
         diff_len = reader.read_uvarint()
         old += reader.read_svarint()
-        if extra_len:
-            yield reader.read_exact(extra_len)
-            produced += extra_len
+        left = extra_len
+        while left:                                  # chunked like the diff run
+            m = left if left < chunk else chunk      # never one huge read_exact:
+            yield reader.read_exact(m)               # extra_len is patch-declared
+            produced += m                            # and only hash-checked after
+            left -= m
         o = old
         left = diff_len
         while left:
