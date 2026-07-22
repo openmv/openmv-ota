@@ -45,10 +45,11 @@ MAKE = "make"
 # The device sources the OTA firmware build freezes / compiles in.
 _DEVICE_DIR = Path(__file__).parent / "device"
 _BOOT_PY = _DEVICE_DIR / "boot.py"
-# Editable device modules frozen alongside boot.py: the logger + the watchdog helper.
+# Editable device modules frozen alongside boot.py: the logger, the watchdog helper,
+# and the clock (openmv_rtc, which reads BUILD_TIME out of the generated _ota_config).
 # The project's device/<name> copy is preferred; the bundled build/device/<name> default
 # is the fallback.
-_FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py")
+_FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py")
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 
@@ -235,8 +236,28 @@ def _render_ota_config(p, name: str) -> str:
         + "PRODUCT_ID = %d\n" % product_id
         + "ACCOUNT_ID = %r\n" % p.config.account_id
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
+        + "BUILD_TIME = %d\n" % _build_time(p)
         + "TRUSTED_KEYS = {\n%s}\n" % keys
     )
+
+
+def _build_time(p) -> int:
+    """The clock floor for ``openmv_rtc``: Unix seconds for the lock's
+    ``generated_at``. A device's clock cannot legitimately read earlier than
+    this, which is how the firmware detects a dead or unset RTC without a
+    network round trip.
+
+    Taken from the LOCK rather than the wall clock at build time, so a build
+    stays reproducible: the same lock yields the same firmware. 0 if the lock
+    predates the field or cannot be parsed -- openmv_rtc then reports the clock
+    untrusted rather than trusting a floor it doesn't have."""
+    stamp = getattr(p.lock, "generated_at", "") or ""
+    try:
+        from datetime import datetime, timezone
+        return int(datetime.fromisoformat(
+            stamp.replace("Z", "+00:00")).replace(tzinfo=timezone.utc).timestamp())
+    except (ValueError, TypeError):
+        return 0
 
 
 def _install_verify_module(repo: Path) -> Path | None:

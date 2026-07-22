@@ -60,7 +60,8 @@ import json
 import logging
 
 from . import csi as _csi          # for csi.Stream only (console as a Live stream)
-from ._lib import _Conn, _drain_disk, _open_disk, _session_id, budget, limits
+from ._lib import (_Conn, _drain_disk, _open_disk, _session_id, _timestamp, budget,
+                   limits)
 
 _STREAM_NAME = "console"
 _FLUSH_MS = 500                   # relay batcher tick while watched
@@ -82,9 +83,14 @@ def _now_stamp():  # pragma: no cover  (device clock)
     return _stamp(time.localtime(), time.ticks_ms())
 
 
-def _envelope(sid, seq, text):
-    """One relay/datalake console batch -- THE shared backscroll contract."""
-    return json.dumps({"sid": sid, "seq": seq, "text": text}).encode()
+def _envelope(sid, seq, text, ts=None):
+    """One relay/datalake console batch -- THE shared backscroll contract, plus
+    ``ts`` (Unix seconds) when the clock is trustworthy. ``ts`` is omitted rather
+    than guessed, so its presence means it is real."""
+    rec = {"sid": sid, "seq": seq, "text": text}
+    if ts is not None:
+        rec["ts"] = ts
+    return json.dumps(rec).encode()
 
 
 class _Console:
@@ -158,7 +164,8 @@ def _ndjson(sid, records):
     records -- one per line, so history pages at exact per-line seq granularity.
     The datalake requires one sid + non-decreasing seq per batch, which the
     monotonic console counter guarantees."""
-    return b"\n".join(_envelope(sid, seq, line) for seq, line in records)
+    ts = _timestamp()
+    return b"\n".join(_envelope(sid, seq, line, ts) for seq, line in records)
 
 
 class _Outbox:
@@ -233,8 +240,9 @@ class _Outbox:
     def _pieces(self):
         """The backlog as encoded pieces, one record at a time -- the spill's
         transient stays a single record instead of the whole joined queue."""
+        ts = _timestamp()
         for seq, line in self._buf:
-            yield _envelope(self._sid, seq, line)
+            yield _envelope(self._sid, seq, line, ts)
             yield b"\n"
 
     def pending_bytes(self):

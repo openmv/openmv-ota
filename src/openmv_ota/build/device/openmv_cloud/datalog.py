@@ -24,7 +24,8 @@ low-rate topics is the intended use. The ceilings are yours to set; see
 
 import json
 
-from ._lib import _Conn, _drain_disk, _open_disk, _session_id, budget, limits
+from ._lib import (_Conn, _drain_disk, _open_disk, _session_id, _timestamp, budget,
+                   limits)
 
 _FLUSH_MS = 5000
 _SPOOL_NAME = "openmv_cloud_datalog_%s.ndjson"   # per topic
@@ -44,10 +45,14 @@ def _valid_topic(topic):
     return topic[0].islower() or topic[0].isdigit()
 
 
-def _record(sid, seq, obj):
+def _record(sid, seq, obj, ts=None):
     """One datalake record: the app's object wrapped under ``data`` beside the
-    ``(sid, seq)`` key -- pure."""
-    return json.dumps({"sid": sid, "seq": seq, "data": obj}).encode()
+    ``(sid, seq)`` key, plus ``ts`` (Unix seconds) when the clock is trustworthy.
+    ``ts`` is omitted rather than guessed, so its presence means it is real. Pure."""
+    rec = {"sid": sid, "seq": seq, "data": obj}
+    if ts is not None:
+        rec["ts"] = ts
+    return json.dumps(rec).encode()
 
 
 class _ByteOutbox:
@@ -153,7 +158,7 @@ def post(topic, obj):
         disk = _open_disk(_spool_path, _SPOOL_NAME % topic)
         t = {"seq": 0, "box": _ByteOutbox(disk=disk, write_through=_write_through)}
         _topics[topic] = t
-    t["box"].add(_record(_sid, t["seq"], obj))
+    t["box"].add(_record(_sid, t["seq"], obj, _timestamp()))
     t["seq"] += 1
     return True
 

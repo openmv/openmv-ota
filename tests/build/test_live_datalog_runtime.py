@@ -231,3 +231,10 @@ def test_post_refuses_new_topics_past_the_cap(monkeypatch):
     assert dl.post("three", {"v": 3}) is False     # over the cap
     assert dl.post("one", {"v": 4})                # existing topics still work
     assert sorted(dl._topics) == ["one", "two"]
+
+
+def test_record_carries_a_timestamp_only_when_one_is_given():
+    # presence of ts MEANS the clock was trustworthy, so it is never defaulted
+    stamped = json.loads(dl._record("aa00", 0, {"ax": 1}, 1700000000.5))
+    assert stamped["ts"] == 1700000000.5
+    assert "ts" not in json.loads(dl._record("aa00", 0, {"ax": 1}))

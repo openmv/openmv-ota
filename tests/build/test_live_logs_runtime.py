@@ -366,3 +366,9 @@ def test_shed_on_an_empty_outbox_is_a_noop():
     ob = lg._Outbox(sid="aa00", budget_=_lib._Budget(10))
     ob.shed()                                      # nothing buffered: no error
     assert ob.pending_bytes() == 0
+
+
+def test_envelope_carries_a_timestamp_only_when_one_is_given():
+    # presence of ts MEANS the clock was trustworthy, so it is never defaulted
+    assert json.loads(lg._envelope("aa00", 0, "x\n", 1700000000.5))["ts"] == 1700000000.5
+    assert "ts" not in json.loads(lg._envelope("aa00", 0, "x\n"))

@@ -442,3 +442,21 @@ def test_copy_wifi_blobs_missing_blob_raises(tmp_path):
     out.mkdir()
     with pytest.raises(BuildError, match="not found in the firmware tree"):
         fw._copy_wifi_blobs(tmp_path / "repo", "ARDUINO_PORTENTA_H7", out)
+
+
+# --- the clock floor stamped into _ota_config -------------------------------
+
+def test_build_time_is_the_locks_timestamp_not_the_wall_clock():
+    # taken from the lock so a build stays reproducible: same lock, same firmware
+    from openmv_ota.build.firmware import _build_time
+    lock = type("L", (), {"generated_at": "2026-01-01T00:00:00Z"})()
+    assert _build_time(type("P", (), {"lock": lock})()) == 1767225600
+
+
+def test_build_time_is_zero_when_the_lock_has_no_usable_stamp():
+    # no floor is better than a wrong one -- openmv_rtc then reports the clock
+    # untrusted rather than trusting a floor it doesn't have
+    from openmv_ota.build.firmware import _build_time
+    for stamp in ("", "not-a-date", None):
+        lock = type("L", (), {"generated_at": stamp})()
+        assert _build_time(type("P", (), {"lock": lock})()) == 0

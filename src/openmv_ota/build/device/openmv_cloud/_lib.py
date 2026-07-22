@@ -24,6 +24,7 @@ _CHUNK = 4096                     # the universal bounded read/copy window
 _SKIP_MAX = 64 * 1024             # give up framing a record after this much
 _CA_MAX = 256 * 1024              # the shipped PEM trust bundle
 _ca_pem = None                    # cached PEM text (False = looked, absent)
+_rtc = None                       # cached openmv_rtc (False = looked, absent)
 
 
 class _Limits:
@@ -145,6 +146,22 @@ def _session_id(rand8=None):
     backscroll key (sid, seq) stays unambiguous when seq restarts at 0."""
     rand8 = os.urandom(8) if rand8 is None else rand8
     return "".join("%02x" % b for b in rand8)
+
+
+def _timestamp():
+    """The Unix timestamp to stamp on a record, or None when the clock is not
+    trustworthy. ``openmv_rtc`` decides; a device whose RTC never came up simply
+    records ``(sid, seq)`` and the server falls back to arrival time, because a
+    wrong timestamp is worse than an absent one -- nothing downstream can tell a
+    wrong one is wrong."""
+    global _rtc
+    if _rtc is None:
+        try:
+            import openmv_rtc
+            _rtc = openmv_rtc
+        except ImportError:                          # no OTA firmware: no clock
+            _rtc = False
+    return _rtc.timestamp() if _rtc else None
 
 
 def _rec_sid(record):

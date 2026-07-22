@@ -217,3 +217,27 @@ def test_budget_stops_if_a_member_sheds_nothing():
     b.join(_Stuck())
     b.charge(50)                                  # triggers enforce -> one attempt
     assert b.total() == 50
+
+
+# --- the record timestamp seam ----------------------------------------------
+
+def test_timestamp_comes_from_openmv_rtc_when_present(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "openmv_rtc",
+                        type("m", (), {"timestamp": staticmethod(lambda: 1234.5)}))
+    monkeypatch.setattr(_lib, "_rtc", None)          # re-look
+    assert _lib._timestamp() == 1234.5
+
+
+def test_timestamp_is_none_when_the_clock_says_untrusted(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "openmv_rtc",
+                        type("m", (), {"timestamp": staticmethod(lambda: None)}))
+    monkeypatch.setattr(_lib, "_rtc", None)
+    assert _lib._timestamp() is None
+
+
+def test_timestamp_is_none_without_the_clock_module(monkeypatch):
+    # a non-OTA firmware has no openmv_rtc; records simply carry (sid, seq)
+    monkeypatch.setattr(_lib, "_rtc", False)
+    assert _lib._timestamp() is None
