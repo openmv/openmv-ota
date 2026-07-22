@@ -76,10 +76,11 @@ WebSocket client is self-contained (MicroPython has none): RFC 6455, client
 frames masked, text frames are relay control JSON, binary is never received
 (viewers can't publish).
 
-RAM BUDGET: this runs inside the *user's* app -- our memory is their memory. The
-JPEG path is deliberately zero-copy (``memoryview`` over the encoder's buffer,
-one reused bytearray sized by _fit_size), and every wire-declared length is
-ceilinged before it can size an allocation. See CLAUDE.md.
+RAM BUDGET: this module runs inside your application, so its memory is your
+memory. The JPEG path is zero-copy -- a ``memoryview`` over the encoder's buffer
+and a single reused bytearray -- and every length declared by the far end is
+checked against a ceiling before it can size an allocation. The ceilings are
+yours to set; see ``openmv_cloud.configure()``.
 """
 
 import binascii
@@ -87,13 +88,8 @@ import json
 import os
 import struct
 
-from ._lib import _UA, _open, _read_capped, _split_url
+from ._lib import _UA, _open, _read_capped, _split_url, limits
 
-# Ceilings on anything the wire declares. We only ever RECEIVE small
-# control JSON, so a frame bigger than this is a broken or hostile relay --
-# never a reason to attempt a huge allocation inside the user's app.
-_FRAME_MAX = 16 * 1024
-_POLL_BODY_MAX = 4 * 1024
 
 try:
     from openmv_log import log
@@ -125,8 +121,8 @@ _CLOSE_REPLACED = 1012            # relay: a newer camera socket took the room
 def __getattr__(name):
     """Constant pass-through (PEP 562): ``csi.RGB565``, ``csi.VGA``, ... come
     straight from the builtin ``csi`` module, so this module is a drop-in import.
-    NOTE (audit me): needs MicroPython with module-__getattr__ support; if a
-    target port lacks it, replace with explicit constant re-exports."""
+    Requires a MicroPython build with module-level ``__getattr__`` (PEP 562); on
+    a port without it, re-export the constants explicitly instead."""
     import csi as _builtin
     return getattr(_builtin, name)
 
@@ -350,8 +346,10 @@ class Stream:
     the image's own buffer; flush() then memcpys that view into the stream's
     preallocated ``bufsize`` buffer and the image is done with -- the fb
     recycles immediately, the upload runs from the stream's own memory.
-    NOTE (audit me): confirm to_jpeg(quality=) + .bytearray() zero-copy
-    semantics on rt1062/ae3/n6.
+
+    This relies on ``to_jpeg(quality=)`` encoding in place and ``.bytearray()``
+    aliasing the image buffer rather than copying it. A port where either copies
+    still works -- it just costs one extra frame-sized allocation per frame.
     """
 
     def __init__(self, name, quality=50, fps=_DEFAULT_FPS, encoder=None,
@@ -455,10 +453,9 @@ class CSI:
 
     Multi-camera boards create one per sensor; each gets its own stream. The
     stream name is ``stream=`` if given, else the ``cid`` (the builtin's sensor
-    selector) as a string, else ``"0"``.
-    NOTE (audit me): the builtin's default cid is -1 ("the default sensor") --
-    we map missing/-1 to stream "0"; confirm that matches the cid values apps
-    actually pass on multi-sensor boards.
+    selector) as a string, else ``"0"``. The builtin's default cid is -1 ("the
+    default sensor"); both a missing cid and -1 map to stream ``"0"``, so a
+    single-camera app always gets the same stream name.
 
     Construction is cheap and network-silent; the machinery starts on the first
     ``await snapshot()``. Frames are encoded at DISPOSAL time: entering
@@ -562,7 +559,7 @@ async def poll_watch(stream=_DEFAULT_STREAM, grant=None):  # pragma: no cover  (
             line = await reader.readline()
             if line in (b"\r\n", b"\n", b""):
                 break
-        return parse_poll_response(await _read_capped(reader, _POLL_BODY_MAX))
+        return parse_poll_response(await _read_capped(reader, limits.resp_max))
     finally:
         writer.close()
         await writer.wait_closed()
@@ -599,10 +596,11 @@ async def _ws_recv(reader):  # pragma: no cover
         length = struct.unpack("!Q", await reader.readexactly(8))[0]
     else:
         length = len7
-    if length > _FRAME_MAX:
+    if length > limits.frame_max:
         # Refuse rather than allocate: `length` is a 64-bit field straight off
         # the wire. The relay task turns this into a reconnect.
-        raise OSError("relay frame of %d bytes exceeds %d" % (length, _FRAME_MAX))
+        raise OSError("relay frame of %d bytes exceeds %d"
+                      % (length, limits.frame_max))
     return opcode, await reader.readexactly(length) if length else b""
 
 

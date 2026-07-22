@@ -4,21 +4,16 @@ One home for what isn't specific to any single feature: URL parsing, the TLS
 connect, the NDJSON ingest POST, the boot session id, record batching (the
 datalake's one-sid-per-batch rule), and the durable disk spool tier.
 
-Before this module, ``logs``/``datalog`` imported ``csi`` just to borrow its
-networking and ``datalog`` imported ``logs`` just to borrow its spool -- sibling
-feature modules reaching into each other for plumbing. Everything here is
-feature-agnostic and flows one way: features import ``_lib``, never each other.
-(The one legitimate feature dependency that remains is ``logs`` using
-``csi.Stream`` to mirror the console as a real Live stream.)
+Everything here is feature-agnostic, and dependencies flow one way: the feature
+modules import ``_lib``, never each other. (``logs`` does use ``csi.Stream``,
+which is a genuine feature dependency -- the console is mirrored as a real Live
+stream -- not shared plumbing.)
 
-RAM BUDGET: this runs inside the *user's* app -- our memory is their memory. No
-allocation may be sized by something we don't control (a file's size, a response
-body, a length field off the wire, a queue that grows while the network is
-down). Bounded windows, streaming, and memoryview aliasing instead of copies.
-See the RAM budget section in CLAUDE.md.
-
-Pure helpers are host-tested; the socket/filesystem entry points are exercised
-on hardware and marked ``# pragma: no cover``.
+RAM BUDGET: this module runs inside your application, so its memory is your
+memory. Nothing here is sized by a file's length, a response body, or a length
+field off the wire: reads use bounded windows, larger data is streamed, and the
+sinks share one byte budget. The ceilings are yours to set; see
+``openmv_cloud.configure()``.
 """
 
 import json
@@ -27,6 +22,101 @@ import os
 _UA = "openmv-cam/1.0"            # Cloudflare edge rejects default library UAs
 _CHUNK = 4096                     # the universal bounded read/copy window
 _SKIP_MAX = 64 * 1024             # give up framing a record after this much
+
+
+class _Limits:
+    """Every RAM ceiling in the SDK, in one place. These are defaults, not
+    policy -- it is your application and your heap, so retune any of them with
+    ``openmv_cloud.configure(...)`` before enabling a sink.
+
+    The defaults are sized against the device's TLS cost: mbedTLS allocates
+    IN 16 KiB + OUT 4 KiB of record buffers per connection (MicroPython's
+    mbedtls_config_common.h, which does not enable variable-length buffers), so
+    ~20 KiB is live for the duration of any POST regardless of these settings.
+    ``batch_bytes`` matches the 4 KiB TLS *output* record: a larger batch buys no
+    wire efficiency, since it is fragmented into 4 KiB records on the way out."""
+
+    budget_bytes = 16 * 1024      # TOTAL RAM buffered across every sink
+    batch_bytes = 4 * 1024        # max bytes per ingest POST (= one TLS record)
+    ring_bytes = 8 * 1024         # console backlog replayed to a new viewer
+    frame_max = 2 * 1024          # ceiling on a relay-declared frame length
+    resp_max = 8 * 1024           # ceiling on a response body we read
+    topics_max = 32               # datalog topics (each spooled topic = a file)
+
+
+limits = _Limits()
+
+
+def configure(**kw):
+    """Retune the SDK's RAM knobs (see :class:`_Limits`). Unknown names raise --
+    a silently ignored typo would leave the app thinking it had set a budget."""
+    for name, value in kw.items():
+        if not hasattr(_Limits, name) or name.startswith("_"):
+            raise ValueError("unknown limit: " + name)
+        if not isinstance(value, int) or value <= 0:
+            raise ValueError("%s must be a positive int" % name)
+        setattr(limits, name, value)
+    budget.cap = limits.budget_bytes
+    budget.enforce()                                 # a smaller cap sheds now
+
+
+# --- the shared RAM budget ---------------------------------------------------
+
+class _Budget:
+    """ONE byte budget shared by every buffering sink (the console outbox and
+    each datalog topic). Sinks register with :meth:`join` and report
+    ``pending_bytes()``; when the total exceeds ``cap`` the LARGEST sink sheds
+    first.
+
+    Largest-first is what makes a shared pool workable: with a plain global sum,
+    one chatty topic would swallow the pool and starve twenty quiet ones. Max-min
+    shedding never touches a small queue while a big one exists, so fairness
+    falls out and no sink needs a cap of its own -- which is exactly what "lots
+    of topics, each at a low rate" wants."""
+
+    def __init__(self, cap_bytes):
+        self.cap = cap_bytes
+        self._members = []
+        self._total = 0
+
+    def join(self, member):
+        if member not in self._members:
+            self._members.append(member)
+
+    def leave(self, member):
+        if member in self._members:
+            self._members.remove(member)
+
+    def total(self):
+        return self._total
+
+    def charge(self, n):
+        self._total += n
+        if self._total > self.cap:
+            self.enforce()
+
+    def release(self, n):
+        self._total -= n
+        if self._total < 0:                          # defensive: never go negative
+            self._total = 0
+
+    def enforce(self):
+        """Shed from the largest member until we are back under cap."""
+        while self._total > self.cap:
+            biggest, most = None, 0
+            for m in self._members:
+                pending = m.pending_bytes()
+                if pending > most:
+                    biggest, most = m, pending
+            if biggest is None:
+                return                               # nothing buffered anywhere
+            before = self._total
+            biggest.shed()
+            if self._total >= before:                # shed freed nothing: don't spin
+                return
+
+
+budget = _Budget(_Limits.budget_bytes)
 
 
 # --- URL handling (pure) -----------------------------------------------------
@@ -116,9 +206,10 @@ async def _open(host, port, tls):  # pragma: no cover
     if tls:
         import ssl
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        # NOTE (audit me): server auth should use the bundled CA store (the OTA
-        # runtime's data/ca.pem) once the OTA client lands; until wired,
-        # MicroPython's default context applies.
+        # LIMITATION: server certificates are not yet verified against the
+        # bundled CA store (the OTA runtime's data/ca.pem) -- MicroPython's
+        # default context applies. Ingest tokens are still required, so this
+        # protects the data, not the endpoint's identity.
         return await asyncio.open_connection(host, port, ssl=ctx)
     return await asyncio.open_connection(host, port)
 
@@ -138,28 +229,96 @@ async def _read_capped(reader, limit):  # pragma: no cover  (device network)
         chunks.append(d)
 
 
-async def _post_ndjson(target, topic, body):  # pragma: no cover  (device network)
-    """POST already-encoded NDJSON ``body`` to ``{base}/{topic}`` with the ingest
-    token. ``target`` is the ``(base_url, token)`` from an ingest grant. Header
-    and body are written separately so the body is never copied to concatenate
-    it -- callers may hand us a memoryview straight off the spool window."""
-    url, token = target
-    tls, host, port, path = _split_url(url + "/" + topic)
-    reader, writer = await _open(host, port, tls)
-    try:
-        writer.write((
-            "POST %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
+class _Conn:  # pragma: no cover  (device network)
+    """A KEEP-ALIVE HTTP/1.1 connection to the ingest base URL, reused for every
+    batch of one flush.
+
+    Measured: each fresh TLS handshake allocates ~20 KiB of mbedTLS record
+    buffers (IN 16 KiB + OUT 4 KiB; MicroPython does not enable
+    MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH, so they stay full size for the
+    connection's life) plus a couple of round trips. Reusing one connection
+    across N batches pays that once instead of N times, which is what makes a
+    small ``batch_bytes`` cheap: draining a large spool in 4 KiB posts costs the
+    same handshake as draining it in 16 KiB posts.
+
+    The response is fully consumed after each POST so the stream stays in sync
+    for the next one; anything we can't cheaply resync from (a body over
+    ``resp_max``, chunked encoding, ``Connection: close``) just drops the socket
+    and the next post reconnects."""
+
+    def __init__(self, target):
+        self._url, self._token = target
+        self._reader = self._writer = None
+        self._used = False
+
+    async def _connect(self):
+        tls, host, port, path = _split_url(self._url)
+        self._reader, self._writer = await _open(host, port, tls)
+        self._host, self._base, self._used = host, path.rstrip("/"), False
+
+    async def post(self, topic, body):
+        """POST one NDJSON batch. Retries once on a REUSED socket -- the server
+        may have closed an idle keep-alive connection between batches, which is
+        not an error, just a reconnect."""
+        if self._reader is None:
+            await self._connect()
+        try:
+            await self._send(topic, body)
+        except OSError:
+            if not self._used:
+                raise                                # a fresh socket failing is real
+            await self.close()
+            await self._connect()
+            await self._send(topic, body)
+
+    async def _send(self, topic, body):
+        self._writer.write((
+            "POST %s/%s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
             "Authorization: Bearer %s\r\nContent-Type: application/x-ndjson\r\n"
-            "Content-Length: %d\r\nConnection: close\r\n\r\n"
-            % (path, host, _UA, token, len(body))).encode())
-        writer.write(body)
-        await writer.drain()
-        status = await reader.readline()
+            "Content-Length: %d\r\n\r\n"
+            % (self._base, topic, self._host, _UA, self._token, len(body))).encode())
+        self._writer.write(body)                     # separate write: no body copy
+        await self._writer.drain()
+        self._used = True
+        await self._read_response()
+
+    async def _read_response(self):
+        status = await self._reader.readline()
         if b" 200 " not in status and not status.rstrip().endswith(b" 200"):
+            await self.close()                       # mid-response: can't reuse
             raise OSError("datalake HTTP %s" % status)
-    finally:
-        writer.close()
-        await writer.wait_closed()
+        length, drop = 0, False
+        while True:
+            line = await self._reader.readline()
+            if line in (b"\r\n", b"\n", b""):
+                break
+            low = line.lower()
+            if low.startswith(b"content-length:"):
+                try:
+                    length = int(line.split(b":", 1)[1].strip())
+                except ValueError:
+                    drop = True
+            elif low.startswith(b"transfer-encoding:"):
+                drop = True                          # chunked: not worth resyncing
+            elif low.startswith(b"connection:") and b"close" in low:
+                drop = True
+        if drop or length > limits.resp_max:
+            await self.close()
+            return
+        left = length                                # consume the body to resync
+        while left > 0:
+            got = await self._reader.readexactly(left if left < _CHUNK else _CHUNK)
+            left -= len(got)
+
+    async def close(self):
+        if self._writer is not None:
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except OSError:
+                pass
+        self._reader = self._writer = None
+        self._used = False
 
 
 # --- the durable spool tier (device filesystem) ------------------------------
@@ -278,7 +437,7 @@ def _skip_record(disk, off, size):  # pragma: no cover  (device: filesystem)
     return size
 
 
-async def _drain_disk(target, topic, disk, max_bytes):  # pragma: no cover  (file+net)
+async def _drain_disk(conn, topic, disk, max_bytes):  # pragma: no cover  (file+net)
     """Upload a spool file oldest-first in batches that never mix sids, reading
     ONE batch-sized window at a time -- peak RAM is one batch, whatever the file
     grew to during the outage. Fully sent -> the file goes away; partial ->
@@ -299,7 +458,7 @@ async def _drain_disk(target, topic, disk, max_bytes):  # pragma: no cover  (fil
             if n == 0:                               # unframeable record or torn tail
                 off = _skip_record(disk, off, size)
                 continue
-            await _post_ndjson(target, topic, memoryview(window)[:n])
+            await conn.post(topic, memoryview(window)[:n])
             off += n
     finally:
         disk.compact(off)                            # also clears when fully drained

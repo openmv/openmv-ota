@@ -90,7 +90,7 @@ def test_record_payload_is_opaque():
 
 def test_overflow_spills_the_whole_backlog_and_clears_ram():
     disk = _FakeDisk()
-    ob = dl._ByteOutbox(cap_bytes=20, disk=disk)
+    ob = dl._ByteOutbox(disk=disk, budget_=_lib._Budget(20))
     for i in range(4):
         ob.add(dl._record("aa00", i, i))           # each record well over 5 bytes
     assert ob.pending_bytes() == 0                 # RAM cleared on spill
@@ -99,7 +99,7 @@ def test_overflow_spills_the_whole_backlog_and_clears_ram():
 
 def test_write_through_spills_every_record():
     disk = _FakeDisk()
-    ob = dl._ByteOutbox(cap_bytes=1_000_000, disk=disk, write_through=True)
+    ob = dl._ByteOutbox(disk=disk, write_through=True, budget_=_lib._Budget(1_000_000))
     ob.add(dl._record("aa00", 0, "one"))
     ob.add(dl._record("aa00", 1, "two"))
     assert ob.pending_bytes() == 0
@@ -107,7 +107,7 @@ def test_write_through_spills_every_record():
 
 
 def test_no_disk_is_ram_only_drop_oldest():
-    ob = dl._ByteOutbox(cap_bytes=40, disk=None)
+    ob = dl._ByteOutbox(disk=None, budget_=_lib._Budget(40))
     for i in range(8):
         ob.add(dl._record("aa00", i, i))
     seqs = [json.loads(r)["seq"] for r in ob.take(10_000)]
@@ -115,7 +115,7 @@ def test_no_disk_is_ram_only_drop_oldest():
 
 
 def test_take_packs_up_to_max_bytes_but_always_one():
-    ob = dl._ByteOutbox(cap_bytes=1_000_000, disk=None)
+    ob = dl._ByteOutbox(disk=None, budget_=_lib._Budget(1_000_000))
     recs = [dl._record("aa00", i, i) for i in range(3)]
     for r in recs:
         ob.add(r)
@@ -124,23 +124,24 @@ def test_take_packs_up_to_max_bytes_but_always_one():
     assert ob.pending_bytes() == len(recs[1]) + len(recs[2])
 
 
-def test_requeue_over_cap_with_disk_does_not_drop():
+def test_requeue_over_budget_with_a_disk_spills_rather_than_drops():
     disk = _FakeDisk()
-    ob = dl._ByteOutbox(cap_bytes=10, disk=disk)
-    big = [b"a" * 8, b"b" * 8]
-    ob.requeue(big)
-    assert ob.pending_bytes() == 16                # disk present -> keep, no trim
+    ob = dl._ByteOutbox(disk=disk, budget_=_lib._Budget(10))
+    ob.requeue([b"a" * 8, b"b" * 8])               # 16 bytes > cap 10
+    # over budget with a spool: shed by spilling -- RAM freed, nothing dropped
+    assert ob.pending_bytes() == 0
+    assert disk.data == b"a" * 8 + b"\n" + b"b" * 8 + b"\n"
 
 
 def test_requeue_puts_records_back_at_the_front():
-    ob = dl._ByteOutbox(cap_bytes=1_000_000, disk=None)
+    ob = dl._ByteOutbox(disk=None, budget_=_lib._Budget(1_000_000))
     ob.add(b"third")
     ob.requeue([b"first", b"second"])
     assert ob.take(1_000_000) == [b"first", b"second", b"third"]
 
 
 def test_empty_outbox_take_is_none():
-    assert dl._ByteOutbox().take(100) is None
+    assert dl._ByteOutbox(budget_=_lib._Budget(1_000_000)).take(100) is None
 
 
 def test_drain_batching_never_crosses_a_sid_boundary():
@@ -214,3 +215,19 @@ def test_on_checkin_pulls_the_ingest_grant():
 def test_on_checkin_without_a_grant_is_a_noop():
     dl._on_checkin({"live": {"whatever": 1}})
     assert dl._ingest is None
+
+
+def test_shed_on_an_empty_outbox_is_a_noop():
+    ob = dl._ByteOutbox(budget_=_lib._Budget(10))
+    ob.shed()                                      # nothing buffered: no error
+    assert ob.pending_bytes() == 0
+
+
+def test_post_refuses_new_topics_past_the_cap(monkeypatch):
+    # the cap is about spool FILES per topic, not bytes -- topics are cheap
+    monkeypatch.setattr(_lib.limits, "topics_max", 2)
+    assert dl.post("one", {"v": 1})
+    assert dl.post("two", {"v": 2})
+    assert dl.post("three", {"v": 3}) is False     # over the cap
+    assert dl.post("one", {"v": 4})                # existing topics still work
+    assert sorted(dl._topics) == ["one", "two"]

@@ -26,12 +26,12 @@ are duplicated here and pinned against the originals by ``test_openmv_ota_runtim
 The pure logic takes injected I/O so it is host-testable; the device entry points
 wire the real ``vfs``/``uctypes``/``_ota_config``.
 
-RAM BUDGET: this runs on the device inside the *user's* app -- our memory is
-their memory. No allocation may be sized by something we don't control (a file's
-size, a response body, a length field off the wire, a queue that grows while the
-network is down). Use bounded windows of a few KB, stream anything larger, and
-alias with memoryview/bytearray_at instead of copying. Every buffer needs a
-ceiling you can point at. See the RAM budget section in CLAUDE.md.
+RAM BUDGET: this module runs inside your application, so its memory is your
+memory. Every buffer here has a ceiling. Nothing is sized by a file's length, a
+response body, a length field off the wire, or a queue that grows while the
+network is down: reads use bounded windows of a few KB, anything larger is
+streamed, and large data is aliased with memoryview/bytearray_at rather than
+copied.
 """
 
 import hashlib
@@ -191,7 +191,9 @@ def _should_confirm(slot, status_sector):
 # alignment, so chunked writes never need per-port re-alignment, and only one chunk
 # is ever held in RAM -- never a whole (up to ~1 MiB) image.
 _CHUNK = 4096
-_RESP_MAX = 16 * 1024        # a check-in reply is grants + version info
+_RESP_MAX = 8 * 1024         # a check-in reply is grants + version info;
+                             # kept roomy on purpose -- rejecting a real
+                             # reply breaks OTA, the costlier failure
 _ASSET_MAX = 256 * 1024      # our own shipped installer.py / ca.pem
 
 

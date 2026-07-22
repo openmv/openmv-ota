@@ -48,24 +48,23 @@ promise that (RTC jumps, batching); sequence numbers can.
 print() and tracebacks are NOT captured -- only logger records (v1; a dupterm
 tee for full-terminal capture is a documented later option).
 
-RAM BUDGET: this runs inside the *user's* app -- our memory is their memory.
-Every queue here is byte-capped (ring, pending, outbox) and the spool spills
-piece-by-piece rather than joining a backlog into one buffer. A stalled network
-must cost a bounded number of bytes, never unbounded growth. See CLAUDE.md.
+RAM BUDGET: this module runs inside your application, so its memory is your
+memory. Every queue here is byte-capped -- the replay ring, the pending live
+batch, and the persistence outbox -- and the spool writes record by record
+rather than joining a backlog into one buffer. A stalled network costs a bounded
+number of bytes, never unbounded growth. The ceilings are yours to set; see
+``openmv_cloud.configure()``.
 """
 
 import json
 import logging
 
 from . import csi as _csi          # for csi.Stream only (console as a Live stream)
-from ._lib import _drain_disk, _open_disk, _post_ndjson, _session_id
+from ._lib import _Conn, _drain_disk, _open_disk, _session_id, budget, limits
 
 _STREAM_NAME = "console"
-_RING_BYTES = 8192                # recent-line backlog replayed to a new viewer
 _FLUSH_MS = 500                   # relay batcher tick while watched
-_OUTBOX_BYTES = 32 * 1024         # datalake outbox cap (drops oldest over this)
 _DATALAKE_FLUSH_MS = 5000         # datalake batcher tick (persistence, not live)
-_DATALAKE_BATCH_BYTES = 16 * 1024 # POST early once the outbox reaches this
 _SPOOL_NAME = "openmv_cloud_console.ndjson"   # this sink's spool file
 
 try:                              # the frozen formatter helpers, when present
@@ -93,9 +92,9 @@ class _Console:
     pairs plus the pending (unsent) batch. Line-granular so the ring never
     tears a line; seq is the per-boot monotonic line counter."""
 
-    def __init__(self, ring_bytes=_RING_BYTES, sid=None):
+    def __init__(self, ring_bytes=None, sid=None):
         self.sid = sid if sid is not None else _session_id()
-        self._cap = ring_bytes
+        self._cap = ring_bytes if ring_bytes else limits.ring_bytes
         self._seq = 0
         self._ring = []               # [(seq, line str)], newest last
         self._ring_size = 0
@@ -176,16 +175,19 @@ class _Outbox:
     file replays whole. Disk records carry their ORIGINAL ``sid`` (they belong
     to the boot that wrote them).
 
-    ``disk=None`` -> RAM-only, dropping the oldest over ``cap_bytes`` (the
+    ``disk=None`` -> RAM-only, dropping the oldest when the budget says to (the
     graceful fallback when no writable spool path is available). The only data
     ever lost when a disk IS present is the sub-cap, about-to-send RAM window on
     a sudden power cut -- avoiding even that means write-through, which the
-    no-constant-writes rule rules out."""
+    no-constant-writes rule rules out.
 
-    def __init__(self, sid=None, cap_bytes=_OUTBOX_BYTES, disk=None,
-                 write_through=False):
+    This outbox holds NO cap of its own: it is a member of the SDK-wide
+    :data:`~openmv_cloud._lib.budget`, which sheds from whichever sink is
+    largest. So the console competes with the datalog topics for one shared
+    pool instead of each reserving its own."""
+
+    def __init__(self, sid=None, disk=None, write_through=False, budget_=None):
         self._sid = sid
-        self._cap = cap_bytes
         self._disk = disk
         # write_through: spill on EVERY line, not just on overflow -- zero-loss
         # (even the RAM window survives a power cut) at the cost of a disk write
@@ -193,15 +195,31 @@ class _Outbox:
         self._write_through = write_through
         self._buf = []                # RAM tier: [(seq, line)], oldest first
         self._bytes = 0
+        self._budget = budget if budget_ is None else budget_
+        self._budget.join(self)
 
     def add(self, seq, line):
         self._buf.append((seq, line))
         self._bytes += len(line)
+        # Charging may push the pool over cap and shed from the largest member
+        # -- possibly us -- so append and account BEFORE charging.
+        self._budget.charge(len(line))
+        if self._disk is not None and self._write_through and self._buf:
+            self._spill()             # every line durable, at a disk write each
+
+    def shed(self):
+        """Give RAM back at the budget's request: spill the whole backlog to
+        disk if we have one (nothing lost) else drop the oldest line."""
+        if not self._buf:
+            return
         if self._disk is not None:
-            if self._write_through or self._bytes > self._cap:
-                self._spill()         # move the backlog to disk, durably
-        elif self._bytes > self._cap:
-            self._trim()              # RAM-only: drop oldest
+            self._spill()
+        else:
+            self._release(self._buf.pop(0)[1])
+
+    def _release(self, line):
+        self._bytes -= len(line)
+        self._budget.release(len(line))
 
     def _spill(self):
         # The entire RAM backlog moves to disk in ONE open (encoded with its
@@ -209,7 +227,8 @@ class _Outbox:
         # consecutive spills stay record-delimited in the file.
         self._disk.append_iter(self._pieces())
         self._buf = []
-        self._bytes = 0
+        freed, self._bytes = self._bytes, 0
+        self._budget.release(freed)
 
     def _pieces(self):
         """The backlog as encoded pieces, one record at a time -- the spill's
@@ -217,10 +236,6 @@ class _Outbox:
         for seq, line in self._buf:
             yield _envelope(self._sid, seq, line)
             yield b"\n"
-
-    def _trim(self):
-        while self._bytes > self._cap and len(self._buf) > 1:
-            self._bytes -= len(self._buf.pop(0)[1])
 
     def pending_bytes(self):
         return self._bytes
@@ -237,7 +252,7 @@ class _Outbox:
         out, size = [], 0
         while self._buf and (not out or size + len(self._buf[0][1]) <= max_bytes):
             seq, line = self._buf.pop(0)
-            self._bytes -= len(line)
+            self._release(line)       # in flight: held by the caller, not by us
             out.append((seq, line))
             size += len(line)
         return out
@@ -247,9 +262,9 @@ class _Outbox:
         overflows and a disk is present, the next add() spills it -- so nothing
         is dropped while a spool exists."""
         self._buf[0:0] = records
-        self._bytes += sum(len(line) for _seq, line in records)
-        if self._disk is None:
-            self._trim()              # RAM-only: bound memory by dropping oldest
+        back = sum(len(line) for _seq, line in records)
+        self._bytes += back
+        self._budget.charge(back)     # back on our books; may shed if over cap
 
 
 class CloudLogHandler(logging.Handler):
@@ -264,7 +279,7 @@ class CloudLogHandler(logging.Handler):
 
     def emit(self, record):
         # CPython builds the message via getMessage(); MicroPython's logging
-        # pre-bakes record.message. NOTE (audit me): confirm on-device field.
+        # pre-bakes it into record.message. Support both.
         msg = record.getMessage() if hasattr(record, "getMessage") else record.message
         line = _format(self._stamper(), record.levelname, record.name, msg) + "\n"
         active = self.stream is not None and self.stream.live_active
@@ -310,7 +325,7 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
 _register()
 
 
-def enable(level=logging.INFO, logger=None, ring_bytes=_RING_BYTES, fps=5,
+def enable(level=logging.INFO, logger=None, ring_bytes=None, fps=5,
            spool_path=None,
            write_through=False):  # pragma: no cover  (device: spawns tasks)
     """Mirror the logging tree to the cloud: attach the handler (root logger by
@@ -336,7 +351,7 @@ def enable(level=logging.INFO, logger=None, ring_bytes=_RING_BYTES, fps=5,
         # One-time, BEFORE attaching our handler (so it doesn't self-ingest).
         logging.getLogger("openmv_cloud").warning(
             "logs: write_through on -- a disk write per line; expect slowdown")
-    console = _Console(ring_bytes)
+    console = _Console(ring_bytes if ring_bytes else limits.ring_bytes)
     outbox = _Outbox(sid=console.sid, disk=disk, write_through=write_through)
     handler = CloudLogHandler(console, outbox)
     handler.setLevel(level)
@@ -364,26 +379,35 @@ async def _flusher(console, stream):  # pragma: no cover  (device loop)
 
 
 async def _datalake_flusher(sid, outbox):  # pragma: no cover  (device loop)
-    """Persistence loop: while an ingest grant is set, drain the DISK tier first
-    (oldest, records carry their own sid) then the RAM tier. Idle until
-    configured; failures leave data in place (nothing lost short of the outbox
-    cap / spool). NOT logged -- our handler is on the logging tree, so a warning
-    here would recurse."""
+    """Push the persistence tiers to the datalake: the disk spool first (oldest,
+    records carry their own sid) then the RAM tier. Idle until configured;
+    failures leave data in place (nothing lost short of the budget / spool). NOT
+    logged -- our handler is on the logging tree, so a warning here would recurse.
+
+    One :class:`_Conn` serves the whole cycle: every batch rides the same TLS
+    session, so a long spool drain pays one ~20 KiB handshake instead of one per
+    batch. That is what allows a small ``batch_bytes`` at no extra cost."""
     import asyncio
     while True:
         await asyncio.sleep_ms(_DATALAKE_FLUSH_MS)  # type: ignore[attr-defined]
         target = _ingest
         if target is None:
             continue
+        batch = limits.batch_bytes
+        conn = _Conn(target)
         try:
-            await _drain_disk(target, _STREAM_NAME, outbox._disk,
-                              _DATALAKE_BATCH_BYTES)   # older tier first
-        except Exception:
-            continue                                  # network down -> retry next tick
-        while outbox.pending_bytes():                 # then the RAM tier
-            records = outbox.take(_DATALAKE_BATCH_BYTES)
             try:
-                await _post_ndjson(target, _STREAM_NAME, _ndjson(sid, records))
+                await _drain_disk(conn, _STREAM_NAME, outbox._disk, batch)
             except Exception:
-                outbox.requeue(records)
-                break
+                continue                              # network down: retry next tick
+            while outbox.pending_bytes():
+                records = outbox.take(batch)
+                try:
+                    await conn.post(_STREAM_NAME, _ndjson(sid, records))
+                except Exception:
+                    outbox.requeue(records)
+                    break
+        finally:
+            await conn.close()
+
+

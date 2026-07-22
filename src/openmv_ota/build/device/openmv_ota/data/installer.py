@@ -19,12 +19,12 @@ flash write loop -- all I/O injected, host-tested) and a device entry (``run`` /
 import that runs on the host (to derive the PENDING marker, pinned against
 ``openmv_ota.ota.status`` by a test); the device imports are lazy.
 
-RAM BUDGET: this runs on the device inside the *user's* app -- our memory is
-their memory. No allocation may be sized by something we don't control (a file's
-size, a response body, a length field off the wire, a queue that grows while the
-network is down). Use bounded windows of a few KB, stream anything larger, and
-alias with memoryview/bytearray_at instead of copying. Every buffer needs a
-ceiling you can point at. See the RAM budget section in CLAUDE.md.
+RAM BUDGET: this module runs inside your application, so its memory is your
+memory. Every buffer here has a ceiling. Nothing is sized by a file's length, a
+response body, a length field off the wire, or a queue that grows while the
+network is down: reads use bounded windows of a few KB, anything larger is
+streamed, and large data is aliased with memoryview/bytearray_at rather than
+copied.
 """
 
 import binascii
@@ -295,7 +295,7 @@ def _read_all(body, limit):
         parts.append(bytes(buf[:n]))                 # collect + join once, not o(n^2) +=
 
 
-# --- pure: signed manifest (mirror of openmv_ota.ota.manifest, pinned by tests) ----
+# --- pure: signed manifest (kept in sync with openmv_ota.ota.manifest) ------------
 # The installer parses + selects from the manifest here (pre-erase, /rom intact); run()
 # verifies the signature with the frozen ecdsa_verify C module + cfg.TRUSTED_KEYS, exactly
 # as boot.py verifies an image trailer.
@@ -387,7 +387,7 @@ def _golden_floor(trailer):
     return fields[8]                              # payload_version (9th header field)
 
 
-# --- pure: delta apply (mirror of openmv_ota.ota.delta, pinned by tests) -----
+# --- pure: delta apply (kept in sync with openmv_ota.ota.delta) --------------
 # A selected delta is reconstructed against the golden BACK slot: for each op, emit the
 # `extra` literals, seek the base cursor, then emit the diff region = BACK + diff (mod 256).
 # The diff stream is image-sized (mostly zeros), so the patch is *streamed* through the

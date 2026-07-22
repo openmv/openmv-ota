@@ -13,6 +13,7 @@ import logging
 
 import pytest
 
+from openmv_ota.build.device.openmv_cloud import _lib
 from openmv_ota.build.device.openmv_cloud import logs as lg
 
 
@@ -134,7 +135,7 @@ def test_console_add_returns_seq():
 # --- the datalake outbox (persistence) -----------------------------------------------------
 
 def test_outbox_accumulates_all_lines_regardless_of_watching():
-    ob = lg._Outbox(cap_bytes=1000)
+    ob = lg._Outbox(budget_=_lib._Budget(1000))
     for i in range(4):
         ob.add(i, "line%d\n" % i)
     assert ob.pending_bytes() == sum(len("line%d\n" % i) for i in range(4))
@@ -145,7 +146,7 @@ def test_outbox_accumulates_all_lines_regardless_of_watching():
 
 
 def test_outbox_is_byte_bounded_drops_oldest():
-    ob = lg._Outbox(cap_bytes=20)                 # holds ~3 six-byte lines
+    ob = lg._Outbox(budget_=_lib._Budget(20))                 # holds ~3 six-byte lines
     for i in range(6):
         ob.add(i, "line%d\n" % i)                 # 6 bytes each
     seqs = [seq for seq, _ in ob.take(1000)]
@@ -153,7 +154,7 @@ def test_outbox_is_byte_bounded_drops_oldest():
 
 
 def test_outbox_take_respects_max_bytes_but_always_one():
-    ob = lg._Outbox(cap_bytes=1000)
+    ob = lg._Outbox(budget_=_lib._Budget(1000))
     for i in range(4):
         ob.add(i, "123456\n")                      # 7 bytes each
     first = ob.take(10)                            # only one line fits under 10
@@ -166,7 +167,7 @@ def test_outbox_take_respects_max_bytes_but_always_one():
 
 
 def test_outbox_requeue_puts_batch_back_at_front():
-    ob = lg._Outbox(cap_bytes=1000)
+    ob = lg._Outbox(budget_=_lib._Budget(1000))
     ob.add(0, "a\n")
     ob.add(1, "b\n")
     batch = ob.take(1)                             # takes seq 0
@@ -176,7 +177,7 @@ def test_outbox_requeue_puts_batch_back_at_front():
 
 
 def test_outbox_requeue_re_trims_under_a_persistent_outage():
-    ob = lg._Outbox(cap_bytes=14)                 # ~2 seven-byte lines
+    ob = lg._Outbox(budget_=_lib._Budget(14))                 # ~2 seven-byte lines
     ob.add(0, "aaaaaa\n")
     ob.add(1, "bbbbbb\n")
     batch = ob.take(1000)                          # drains both
@@ -272,7 +273,7 @@ def _records(disk):
 
 def test_overflow_spills_the_whole_backlog_to_disk_and_clears_ram():
     disk = _FakeDisk()
-    ob = lg._Outbox(sid="aa00", cap_bytes=20, disk=disk)
+    ob = lg._Outbox(sid="aa00", disk=disk, budget_=_lib._Budget(20))
     for i in range(4):
         ob.add(i, "line%d\n" % i)                     # 6 bytes each -> spills past 20
     # RAM cleared on spill; every line is durable on disk, in order, with the sid
@@ -284,10 +285,10 @@ def test_overflow_spills_the_whole_backlog_to_disk_and_clears_ram():
 
 def test_disk_records_keep_their_own_sid_across_a_reboot():
     disk = _FakeDisk()
-    old = lg._Outbox(sid="oldsid00", cap_bytes=1, disk=disk)   # a previous boot
+    old = lg._Outbox(sid="oldsid00", disk=disk, budget_=_lib._Budget(1))   # a previous boot
     old.add(0, "x\n")                                 # over cap -> spill with old sid
     # a "new boot" reuses the SAME disk file but a new sid
-    new = lg._Outbox(sid="newsid11", cap_bytes=1, disk=disk)
+    new = lg._Outbox(sid="newsid11", disk=disk, budget_=_lib._Budget(1))
     new.add(0, "z\n")
     sids = {r["sid"] for r in _records(disk)}
     assert sids == {"oldsid00", "newsid11"}           # each boot's lines keep their sid
@@ -295,7 +296,7 @@ def test_disk_records_keep_their_own_sid_across_a_reboot():
 
 def test_write_through_spills_every_line():
     disk = _FakeDisk()
-    ob = lg._Outbox(sid="aa00", cap_bytes=1_000_000, disk=disk, write_through=True)
+    ob = lg._Outbox(sid="aa00", disk=disk, write_through=True, budget_=_lib._Budget(1_000_000))
     ob.add(0, "one\n")
     ob.add(1, "two\n")
     assert ob.pending_bytes() == 0                     # nothing left in RAM
@@ -303,19 +304,21 @@ def test_write_through_spills_every_line():
 
 
 def test_no_disk_is_ram_only_drop_oldest():
-    ob = lg._Outbox(sid="aa00", cap_bytes=20, disk=None)
+    ob = lg._Outbox(sid="aa00", disk=None, budget_=_lib._Budget(20))
     for i in range(6):
         ob.add(i, "line%d\n" % i)
     assert ob.disk_bytes() == 0
     assert [s for s, _ in ob.take(1000)] == [3, 4, 5]  # oldest dropped, no spill
 
 
-def test_requeue_over_cap_with_disk_present_does_not_drop():
+def test_requeue_over_budget_with_a_disk_spills_rather_than_drops():
     disk = _FakeDisk()
-    ob = lg._Outbox(sid="aa00", cap_bytes=10, disk=disk)
+    ob = lg._Outbox(sid="aa00", disk=disk, budget_=_lib._Budget(10))
     ob.requeue([(0, "a" * 8 + "\n"), (1, "b" * 8 + "\n")])   # 18 bytes > cap 10
-    # with a disk present, requeue keeps everything (next add spills); no drop
-    assert ob.pending_bytes() == 18
+    # over budget with a spool: shed by spilling, so RAM is freed and NOTHING is
+    # lost -- the records are durable on disk with their seqs intact
+    assert ob.pending_bytes() == 0
+    assert [r["seq"] for r in _records(disk)] == [0, 1]
 
 
 # --- the pending batch is byte-capped like the ring -------------------------
@@ -349,7 +352,7 @@ def test_pending_size_tracks_the_ring_on_viewer_arrival():
 
 def test_spill_writes_record_by_record_not_one_joined_buffer():
     disk = _FakeDisk()
-    ob = lg._Outbox(sid="aa00", cap_bytes=20, disk=disk)
+    ob = lg._Outbox(sid="aa00", disk=disk, budget_=_lib._Budget(20))
     pieces = []
     disk.append_iter = lambda it: pieces.extend(it)   # capture what's handed over
     for i in range(4):
@@ -357,3 +360,9 @@ def test_spill_writes_record_by_record_not_one_joined_buffer():
     # each record is its own piece (plus its separator) -- never one big join
     assert len(pieces) >= 4
     assert all(len(p) < 200 for p in pieces)
+
+
+def test_shed_on_an_empty_outbox_is_a_noop():
+    ob = lg._Outbox(sid="aa00", budget_=_lib._Budget(10))
+    ob.shed()                                      # nothing buffered: no error
+    assert ob.pending_bytes() == 0

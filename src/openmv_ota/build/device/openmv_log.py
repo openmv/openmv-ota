@@ -25,12 +25,12 @@ nothing leaks to the REPL). To debug on hardware, edit the config block below --
 ``ENABLED = True`` and ``UART`` to your board's ``machine.UART`` id -- and rebuild
 firmware. Or change ``_configure`` to log to a file/socket/the REPL.
 
-RAM BUDGET: this runs on the device inside the *user's* app -- our memory is
-their memory. No allocation may be sized by something we don't control (a file's
-size, a response body, a length field off the wire, a queue that grows while the
-network is down). Use bounded windows of a few KB, stream anything larger, and
-alias with memoryview/bytearray_at instead of copying. Every buffer needs a
-ceiling you can point at. See the RAM budget section in CLAUDE.md.
+RAM BUDGET: this module runs inside your application, so its memory is your
+memory. Every buffer here has a ceiling. Nothing is sized by a file's length, a
+response body, a length field off the wire, or a queue that grows while the
+network is down: reads use bounded windows of a few KB, anything larger is
+streamed, and large data is aliased with memoryview/bytearray_at rather than
+copied.
 """
 
 import logging

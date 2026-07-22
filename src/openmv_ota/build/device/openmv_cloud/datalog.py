@@ -15,18 +15,18 @@ an OPT-IN disk spool (``enable(spool_path=...)``), at-least-once delivery made
 safe by the datalake's ``(sid, seq)`` dedup. Idle until an ingest grant arrives
 (auto-wired from the OTA check-in); ``post()`` before then just buffers (bounded).
 
-RAM BUDGET: this runs inside the *user's* app -- our memory is their memory. The
-per-topic outbox is byte-capped, the spool spills record-by-record rather than
-joining the backlog, and drains stream in bounded windows. See CLAUDE.md.
+RAM BUDGET: this module runs inside your application, so its memory is your
+memory. Topics share ONE byte budget rather than each reserving its own, the
+spool writes record by record, and drains read in bounded windows. Keeping many
+low-rate topics is the intended use. The ceilings are yours to set; see
+``openmv_cloud.configure()``.
 """
 
 import json
 
-from ._lib import _drain_disk, _open_disk, _post_ndjson, _session_id
+from ._lib import _Conn, _drain_disk, _open_disk, _session_id, budget, limits
 
-_OUTBOX_BYTES = 32 * 1024
 _FLUSH_MS = 5000
-_BATCH_BYTES = 16 * 1024
 _SPOOL_NAME = "openmv_cloud_datalog_%s.ndjson"   # per topic
 
 # One boot session id, shared across topics. Topic names are validated to the
@@ -53,30 +53,49 @@ def _record(sid, seq, obj):
 class _ByteOutbox:
     """Two-tier durable FIFO of pre-encoded record bytes -- the telemetry twin of
     the logs outbox (records already carry ``sid``/``seq``, so no re-encoding).
-    RAM-first; on overflow the whole backlog spills to ``disk`` at once. Disk is
-    written only on overflow and drain (``write_through`` spills per record).
-    ``disk=None`` -> RAM-only, dropping oldest over ``cap_bytes``."""
+    RAM-first; when the shared budget says so the whole backlog spills to
+    ``disk`` at once. Disk is written only on overflow and drain
+    (``write_through`` spills per record). ``disk=None`` -> RAM-only, dropping
+    oldest when asked to shed.
 
-    def __init__(self, cap_bytes=_OUTBOX_BYTES, disk=None, write_through=False):
-        self._cap = cap_bytes
+    Holds NO cap of its own: every topic is a member of the SDK-wide
+    :data:`~openmv_cloud._lib.budget`, which sheds from whichever sink is
+    biggest. That is what lets an app keep MANY topics -- an idle topic costs a
+    few bytes, and a chatty one can't starve the quiet ones."""
+
+    def __init__(self, disk=None, write_through=False, budget_=None):
         self._disk = disk
         self._write_through = write_through
         self._buf = []                # [record_bytes], oldest first
         self._bytes = 0
+        self._budget = budget if budget_ is None else budget_
+        self._budget.join(self)
 
     def add(self, record):
         self._buf.append(record)
         self._bytes += len(record)
+        # Charging may shed from the largest member (maybe us), so account first.
+        self._budget.charge(len(record))
+        if self._disk is not None and self._write_through and self._buf:
+            self._spill()
+
+    def shed(self):
+        """Give RAM back at the budget's request: spill to disk if we have one,
+        else drop our oldest record."""
+        if not self._buf:
+            return
         if self._disk is not None:
-            if self._write_through or self._bytes > self._cap:
-                self._spill()
-        elif self._bytes > self._cap:
-            self._trim()
+            self._spill()
+        else:
+            rec = self._buf.pop(0)
+            self._bytes -= len(rec)
+            self._budget.release(len(rec))
 
     def _spill(self):
         self._disk.append_iter(self._pieces())
         self._buf = []
-        self._bytes = 0
+        freed, self._bytes = self._bytes, 0
+        self._budget.release(freed)
 
     def _pieces(self):
         """The backlog one record at a time -- the spill never joins the whole
@@ -84,10 +103,6 @@ class _ByteOutbox:
         for rec in self._buf:
             yield rec
             yield b"\n"
-
-    def _trim(self):
-        while self._bytes > self._cap and len(self._buf) > 1:
-            self._bytes -= len(self._buf.pop(0))
 
     def pending_bytes(self):
         return self._bytes
@@ -99,15 +114,16 @@ class _ByteOutbox:
         while self._buf and (not out or size + len(self._buf[0]) <= max_bytes):
             rec = self._buf.pop(0)
             self._bytes -= len(rec)
+            self._budget.release(len(rec))   # in flight: the caller holds it
             out.append(rec)
             size += len(rec)
         return out
 
     def requeue(self, records):
         self._buf[0:0] = records
-        self._bytes += sum(len(r) for r in records)
-        if self._disk is None:
-            self._trim()
+        back = sum(len(r) for r in records)
+        self._bytes += back
+        self._budget.charge(back)            # back on our books; may shed
 
 
 # --- module state (topics + config + the ingest grant) -----------------------
@@ -121,11 +137,19 @@ _write_through = False
 def post(topic, obj):
     """Queue ``obj`` as a telemetry record under ``topic`` (validated to
     ``[a-z0-9][a-z0-9_-]{0,31}``, not ``"console"``). Returns True if queued,
-    False on a bad topic. Cheap and sync -- the background flusher uploads it."""
+    False on a bad topic or once ``limits.topics_max`` topics exist. Cheap and
+    sync -- the background flusher uploads it.
+
+    Topics are cheap on purpose: an idle one costs a dict entry and an empty
+    list, and they all share ONE byte budget, so "many topics, each at a low
+    rate" is the case this is built for. The count cap is not about RAM -- it is
+    that every spooled topic is its own FILE on the card."""
     if not _valid_topic(topic):
         return False
     t = _topics.get(topic)
     if t is None:
+        if len(_topics) >= limits.topics_max:
+            return False
         disk = _open_disk(_spool_path, _SPOOL_NAME % topic)
         t = {"seq": 0, "box": _ByteOutbox(disk=disk, write_through=_write_through)}
         _topics[topic] = t
@@ -174,22 +198,30 @@ def enable(spool_path=None, write_through=False):  # pragma: no cover  (device)
 
 
 async def _flusher():  # pragma: no cover  (device loop)
+    """Drain every topic: its disk spool first, then its RAM tier. ONE
+    :class:`_Conn` serves the whole cycle across ALL topics, so N topics cost
+    one ~20 KiB TLS handshake per tick rather than N of them."""
     import asyncio
     while True:
         await asyncio.sleep_ms(_FLUSH_MS)  # type: ignore[attr-defined]
         target = _ingest
         if target is None:
             continue
-        for topic, t in list(_topics.items()):
-            box = t["box"]
-            try:
-                await _drain_disk(target, topic, box._disk, _BATCH_BYTES)
-            except Exception:
-                continue
-            while box.pending_bytes():
-                records = box.take(_BATCH_BYTES)
+        batch = limits.batch_bytes
+        conn = _Conn(target)
+        try:
+            for topic, t in list(_topics.items()):
+                box = t["box"]
                 try:
-                    await _post_ndjson(target, topic, b"\n".join(records))
+                    await _drain_disk(conn, topic, box._disk, batch)
                 except Exception:
-                    box.requeue(records)
-                    break
+                    continue
+                while box.pending_bytes():
+                    records = box.take(batch)
+                    try:
+                        await conn.post(topic, b"\n".join(records))
+                    except Exception:
+                        box.requeue(records)
+                        break
+        finally:
+            await conn.close()
