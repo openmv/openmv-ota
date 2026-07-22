@@ -46,31 +46,24 @@ _MEDIA = {"manifest.bin": "application/octet-stream"}
 _DOCS_DIR = Path(__file__).parent / "docs_static"
 
 _API_DESCRIPTION = """\
-The OpenMV OTA update server delivers **signed, over-the-air ROMFS updates** to OpenMV
-cameras. Release bundles are signed at build time with the project's keys and verified
-on-device before install; the server distributes artifacts and decides rollouts — it never
-holds signing keys.
+The OpenMV OTA update server delivers **signed over-the-air updates** to OpenMV
+cameras. Update bundles are signed at build time and verified on-device; the
+server distributes them and manages rollouts, and never holds signing keys.
 
-## How a device updates
+## Device flow
 
-1. The camera checks in with `POST /api/v1/check` (rate-limited per IP). The server verifies
-   the camera's **registration** with the OpenMV device registry, records the check-in, and
-   applies the rollout rules for the camera's product and cohort.
-2. If an update is offered, the response carries a short-lived **capability URL**. The camera
-   fetches the manifest and image through `GET /d/{token}/{filename}` — one token guards the
-   whole bundle, and artifact downloads redirect to presigned object-storage URLs.
-3. After installing (or failing), the camera reports the terminal outcome with
-   `POST /api/v1/feedback`, which feeds rollout health and auto-pause.
+A camera checks in at `POST /api/v1/check`; if an update is offered it downloads
+the bundle over a short-lived link, then reports the result at
+`POST /api/v1/feedback`.
 
 ## Authentication
 
-* **Device endpoints** are unauthenticated but rate-limited, and gated by device
-  registration.
-* **Admin and publishing endpoints** use `Authorization: Bearer <token>`. Tokens belong to
-  an account and carry scopes (`publish`, `manage`, `observe`, `accounts`); every read and
-  write is scoped to the token's account.
+* **Device endpoints** are rate-limited and gated by device registration.
+* **Admin and publishing endpoints** use `Authorization: Bearer <token>`; tokens
+  belong to an account and carry scopes (`publish`, `manage`, `observe`,
+  `accounts`), and every operation is scoped to the token's account.
 
-Self-hosting, storage backends, and operations are covered in the
+Self-hosting and operations are covered in the
 [server manual](https://github.com/openmv/openmv-ota/blob/main/docs/server.md).
 """
 
