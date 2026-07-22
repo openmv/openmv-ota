@@ -102,7 +102,7 @@ except ImportError:               # host, or a build without the frozen logger
 
 # The relay rejects default library user-agents at the edge (Cloudflare bot
 # protection) -- every request this module makes MUST carry a real UA.
-_UA = "openmv-camera/1.0"
+_UA = "openmv-cam/1.0"
 
 _DEFAULT_FPS = 5                  # upload cap while watched; ~1-2 Mbit/s at VGA
 _DEFAULT_STREAM = "0"

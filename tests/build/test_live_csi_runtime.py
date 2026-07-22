@@ -111,7 +111,7 @@ def test_handshake_request_and_key():
     assert b"Upgrade: websocket\r\n" in req
     assert ("Sec-WebSocket-Key: %s\r\n" % key).encode() in req
     # Cloudflare bot protection rejects default library UAs -- pin ours in place.
-    assert b"User-Agent: openmv-camera/1.0\r\n" in req
+    assert b"User-Agent: openmv-cam/1.0\r\n" in req
     assert req.endswith(b"\r\n\r\n")
 
 

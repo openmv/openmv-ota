@@ -54,7 +54,7 @@ _FLUSH_MS = 500                   # relay batcher tick while watched
 _OUTBOX_BYTES = 32 * 1024         # datalake outbox cap (drops oldest over this)
 _DATALAKE_FLUSH_MS = 5000         # datalake batcher tick (persistence, not live)
 _DATALAKE_BATCH_BYTES = 16 * 1024 # POST early once the outbox reaches this
-_UA = "openmv-camera/1.0"         # Cloudflare edge rejects default library UAs
+_UA = "openmv-cam/1.0"         # Cloudflare edge rejects default library UAs
 
 try:                              # the frozen formatter helpers, when present
     from openmv_log import _format, _stamp
