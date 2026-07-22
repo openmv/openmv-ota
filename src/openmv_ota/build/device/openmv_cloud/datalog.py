@@ -18,13 +18,12 @@ safe by the datalake's ``(sid, seq)`` dedup. Idle until an ingest grant arrives
 
 import json
 
-from . import csi as _csi
-from .logs import _FileDisk, _batch_end, _open_disk, _session_id
+from ._lib import _drain_disk, _open_disk, _post_ndjson, _session_id
 
 _OUTBOX_BYTES = 32 * 1024
 _FLUSH_MS = 5000
 _BATCH_BYTES = 16 * 1024
-_UA = "openmv-cam/1.0"
+_SPOOL_NAME = "openmv_cloud_datalog_%s.ndjson"   # per topic
 
 # One boot session id, shared across topics. Topic names are validated to the
 # datalake's charset; "console" is reserved for the logs sink.
@@ -116,18 +115,12 @@ def post(topic, obj):
         return False
     t = _topics.get(topic)
     if t is None:
-        disk = _open_disk(_spool_path) if _spool_path else None
-        if disk is not None:                          # per-topic spool file
-            disk = _FileDisk(_topic_spool(_spool_path, topic))
+        disk = _open_disk(_spool_path, _SPOOL_NAME % topic)
         t = {"seq": 0, "box": _ByteOutbox(disk=disk, write_through=_write_through)}
         _topics[topic] = t
     t["box"].add(_record(_sid, t["seq"], obj))
     t["seq"] += 1
     return True
-
-
-def _topic_spool(spool_path, topic):  # pragma: no cover  (device path building)
-    return spool_path.rstrip("/") + "/openmv_cloud_datalog_" + topic + ".ndjson"
 
 
 def set_ingest(url, token):
@@ -179,50 +172,13 @@ async def _flusher():  # pragma: no cover  (device loop)
         for topic, t in list(_topics.items()):
             box = t["box"]
             try:
-                await _drain_disk(target, topic, box)
+                await _drain_disk(target, topic, box._disk, _BATCH_BYTES)
             except Exception:
                 continue
             while box.pending_bytes():
                 records = box.take(_BATCH_BYTES)
                 try:
-                    await _post(target, topic, b"\n".join(records))
+                    await _post_ndjson(target, topic, b"\n".join(records))
                 except Exception:
                     box.requeue(records)
                     break
-
-
-async def _drain_disk(target, topic, box):  # pragma: no cover  (device file+net)
-    disk = box._disk
-    if disk is None or disk.size() == 0:
-        return
-    records = [r for r in disk.read_all().split(b"\n") if r]
-    i = 0
-    try:
-        while i < len(records):
-            end = _batch_end(records, i, _BATCH_BYTES)
-            await _post(target, topic, b"\n".join(records[i:end]))
-            i = end
-    finally:
-        if i >= len(records):
-            disk.clear()
-        elif i > 0:
-            disk.rewrite(b"\n".join(records[i:]))
-
-
-async def _post(target, topic, body):  # pragma: no cover  (device network)
-    url, token = target
-    tls, host, port, path = _csi._split_url(url + "/" + topic)
-    reader, writer = await _csi._open(host, port, tls)
-    try:
-        writer.write((
-            "POST %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
-            "Authorization: Bearer %s\r\nContent-Type: application/x-ndjson\r\n"
-            "Content-Length: %d\r\nConnection: close\r\n\r\n"
-            % (path, host, _UA, token, len(body))).encode() + body)
-        await writer.drain()
-        status = await reader.readline()
-        if b" 200 " not in status and not status.rstrip().endswith(b" 200"):
-            raise OSError("datalake HTTP %s" % status)
-    finally:
-        writer.close()
-        await writer.wait_closed()

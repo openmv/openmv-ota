@@ -51,9 +51,9 @@ tee for full-terminal capture is a documented later option).
 
 import json
 import logging
-import os
 
-from . import csi as _csi
+from . import csi as _csi          # for csi.Stream only (console as a Live stream)
+from ._lib import _drain_disk, _open_disk, _post_ndjson, _session_id
 
 _STREAM_NAME = "console"
 _RING_BYTES = 8192                # recent-line backlog replayed to a new viewer
@@ -61,7 +61,7 @@ _FLUSH_MS = 500                   # relay batcher tick while watched
 _OUTBOX_BYTES = 32 * 1024         # datalake outbox cap (drops oldest over this)
 _DATALAKE_FLUSH_MS = 5000         # datalake batcher tick (persistence, not live)
 _DATALAKE_BATCH_BYTES = 16 * 1024 # POST early once the outbox reaches this
-_UA = "openmv-cam/1.0"         # Cloudflare edge rejects default library UAs
+_SPOOL_NAME = "openmv_cloud_console.ndjson"   # this sink's spool file
 
 try:                              # the frozen formatter helpers, when present
     from openmv_log import _format, _stamp
@@ -76,13 +76,6 @@ except ImportError:               # host / no frozen openmv_log: minimal fallbac
 def _now_stamp():  # pragma: no cover  (device clock)
     import time
     return _stamp(time.localtime(), time.ticks_ms())
-
-
-def _session_id(rand8=None):
-    """The boot session id: 8 random bytes, hex. Distinguishes reboots so the
-    backscroll key (sid, seq) stays unambiguous when seq restarts at 0."""
-    rand8 = os.urandom(8) if rand8 is None else rand8
-    return "".join("%02x" % b for b in rand8)
 
 
 def _envelope(sid, seq, text):
@@ -146,36 +139,6 @@ def _ndjson(sid, records):
     The datalake requires one sid + non-decreasing seq per batch, which the
     monotonic console counter guarantees."""
     return b"\n".join(_envelope(sid, seq, line) for seq, line in records)
-
-
-def _rec_sid(record):
-    """The ``sid`` of an encoded record, or None if it isn't a JSON object with a
-    string sid (a non-record line packs as its own None-sid run). Pure."""
-    try:
-        sid = json.loads(record).get("sid")
-    except (ValueError, AttributeError):
-        return None
-    return sid if isinstance(sid, str) else None
-
-
-def _batch_end(records, start, max_bytes):
-    """Index one past the last record of a batch starting at ``start`` that fits
-    in ``max_bytes`` (counting the joining newlines); at least one record. Never
-    crosses a sid boundary: the datalake requires one sid per batch, and a spool
-    that spans a reboot holds runs of different sids (with seq resetting at each).
-    Batching by contiguous sid run keeps every batch single-sid and seq-ordered.
-    Pure, for the disk drain."""
-    sid = _rec_sid(records[start])
-    end, size = start, 0
-    while end < len(records):
-        if end > start and _rec_sid(records[end]) != sid:
-            break                                    # a reboot boundary in the spool
-        n = len(records[end]) + 1                    # +1 for the NDJSON separator
-        if end > start and size + n > max_bytes:
-            break
-        size += n
-        end += 1
-    return end
 
 
 class _Outbox:
@@ -319,69 +282,6 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
 _register()
 
 
-class _FileDisk:  # pragma: no cover  (device: filesystem)
-    """The durable spool tier over a MicroPython vfs path -- an SD card (e.g.
-    the AE3's SPI SD on the battery shield), flash-as-disk, or SPI-NAND, all the
-    same to us. Append-only during an outage; read + clear/rewrite on drain."""
-
-    def __init__(self, path):
-        self._path = path
-
-    def append(self, data):
-        f = open(self._path, "ab")
-        try:
-            f.write(data)
-        finally:
-            f.close()
-
-    def size(self):
-        import os
-        try:
-            return os.stat(self._path)[6]
-        except OSError:
-            return 0
-
-    def read_all(self):
-        f = open(self._path, "rb")
-        try:
-            return f.read()
-        finally:
-            f.close()
-
-    def clear(self):
-        import os
-        try:
-            os.remove(self._path)
-        except OSError:
-            pass
-
-    def rewrite(self, data):
-        f = open(self._path, "wb")
-        try:
-            f.write(data)
-        finally:
-            f.close()
-
-
-def _open_disk(spool_path):  # pragma: no cover  (device: filesystem)
-    """A _FileDisk at ``spool_path`` if it's a writable mount, else None (which
-    degrades the outbox to RAM-only). Never raises -- a missing/unmounted card
-    must not break logging."""
-    if not spool_path:
-        return None
-    try:
-        import os
-        try:
-            os.mkdir(spool_path)                     # ensure the dir; ok if it exists
-        except OSError:
-            pass
-        disk = _FileDisk(spool_path.rstrip("/") + "/openmv_cloud_console.ndjson")
-        disk.append(b"")                             # prove it's writable
-        return disk
-    except OSError:
-        return None
-
-
 def enable(level=logging.INFO, logger=None, ring_bytes=_RING_BYTES, fps=5,
            spool_path=None,
            write_through=False):  # pragma: no cover  (device: spawns tasks)
@@ -403,7 +303,7 @@ def enable(level=logging.INFO, logger=None, ring_bytes=_RING_BYTES, fps=5,
     buffer disk writes, so it will slow the app noticeably. Off unless zero-loss
     matters more than speed."""
     import asyncio
-    disk = _open_disk(spool_path)
+    disk = _open_disk(spool_path, _SPOOL_NAME)
     if write_through and disk is not None:
         # One-time, BEFORE attaching our handler (so it doesn't self-ingest).
         logging.getLogger("openmv_cloud").warning(
@@ -448,57 +348,14 @@ async def _datalake_flusher(sid, outbox):  # pragma: no cover  (device loop)
         if target is None:
             continue
         try:
-            await _drain_disk(target, outbox)         # older tier first
+            await _drain_disk(target, _STREAM_NAME, outbox._disk,
+                              _DATALAKE_BATCH_BYTES)   # older tier first
         except Exception:
             continue                                  # network down -> retry next tick
         while outbox.pending_bytes():                 # then the RAM tier
             records = outbox.take(_DATALAKE_BATCH_BYTES)
             try:
-                await _post_raw(target, _ndjson(sid, records))
+                await _post_ndjson(target, _STREAM_NAME, _ndjson(sid, records))
             except Exception:
                 outbox.requeue(records)
                 break
-
-
-async def _drain_disk(target, outbox):  # pragma: no cover  (device: file + net)
-    """Upload the disk spool oldest-first, in batches. Fully sent -> delete the
-    file (back to the RAM-only fast path). A batch failing part-way -> rewrite
-    just the un-sent remainder (one write) and stop. Crash mid-drain replays the
-    whole file next boot; the datalake dedupes by (sid, seq)."""
-    disk = outbox._disk
-    if disk is None or disk.size() == 0:
-        return
-    records = [r for r in disk.read_all().split(b"\n") if r]
-    i = 0
-    try:
-        while i < len(records):
-            end = _batch_end(records, i, _DATALAKE_BATCH_BYTES)
-            await _post_raw(target, b"\n".join(records[i:end]))
-            i = end
-    finally:
-        if i >= len(records):
-            disk.clear()
-        elif i > 0:                                   # partial progress persists
-            disk.rewrite(b"\n".join(records[i:]))
-        # i == 0 (first batch failed): leave the file untouched
-
-
-async def _post_raw(target, body):  # pragma: no cover  (device network)
-    """POST already-encoded NDJSON ``body`` to ``{base}/{console}`` with the
-    ingest token. Reuses the csi module's TLS connect + URL split."""
-    url, token = target
-    tls, host, port, path = _csi._split_url(url + "/" + _STREAM_NAME)
-    reader, writer = await _csi._open(host, port, tls)
-    try:
-        writer.write((
-            "POST %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
-            "Authorization: Bearer %s\r\nContent-Type: application/x-ndjson\r\n"
-            "Content-Length: %d\r\nConnection: close\r\n\r\n"
-            % (path, host, _UA, token, len(body))).encode() + body)
-        await writer.drain()
-        status = await reader.readline()
-        if b" 200 " not in status and not status.rstrip().endswith(b" 200"):
-            raise OSError("datalake HTTP %s" % status)
-    finally:
-        writer.close()
-        await writer.wait_closed()

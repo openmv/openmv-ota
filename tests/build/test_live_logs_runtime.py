@@ -30,11 +30,6 @@ def _reset_ingest():
 
 # --- envelope: the backscroll contract ------------------------------------------
 
-def test_session_id_is_hex_of_the_random_bytes():
-    assert lg._session_id(bytes(range(8))) == "0001020304050607"
-    assert len(lg._session_id()) == 16
-
-
 def test_envelope_shape():
     env = json.loads(lg._envelope("abc123", 42, "line1\nline2\n"))
     assert env == {"sid": "abc123", "seq": 42, "text": "line1\nline2\n"}
@@ -267,32 +262,6 @@ class _FakeDisk:
 
 def _records(disk):
     return [json.loads(x) for x in disk.data.split(b"\n") if x.strip()]
-
-
-def test_batch_end_packs_records_within_max_bytes():
-    recs = [b"12345", b"6789", b"abc"]                # +1 newline each when joined
-    assert lg._batch_end(recs, 0, 100) == 3           # all fit
-    assert lg._batch_end(recs, 0, 6) == 1             # only the first (5+1)
-    assert lg._batch_end(recs, 0, 1) == 1             # oversize still takes one
-    assert lg._batch_end(recs, 1, 6) == 2             # from the middle
-
-
-def _env(sid, seq):
-    return lg._envelope(sid, seq, "x\n")
-
-
-def test_batch_end_never_crosses_a_sid_boundary():
-    # a spool spanning a reboot: two sid runs, seq resets. A byte budget that
-    # would swallow both runs must still stop at the boundary (one sid per batch).
-    recs = [_env("aa00", 0), _env("aa00", 1), _env("bb11", 0), _env("bb11", 1)]
-    assert lg._batch_end(recs, 0, 10_000) == 2        # stops at the reboot boundary
-    assert lg._batch_end(recs, 2, 10_000) == 4        # the second run drains next
-
-
-def test_rec_sid_of_a_non_record_line_is_none():
-    assert lg._rec_sid(b"12345") is None              # bare int
-    assert lg._rec_sid(b"not json") is None
-    assert lg._rec_sid(lg._envelope("aa00", 0, "x\n")) == "aa00"
 
 
 def test_overflow_spills_the_whole_backlog_to_disk_and_clears_ram():

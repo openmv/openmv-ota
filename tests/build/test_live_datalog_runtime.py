@@ -2,8 +2,9 @@
 
 Pure logic: topic validation, the ``{sid, seq, data}`` record envelope, the
 per-topic byte-record two-tier outbox (RAM ring, whole-backlog spill, take/
-requeue), and ``post()`` sequencing + spool wiring. The flusher task, ``enable()``
-and the HTTP ``_post`` wire device asyncio/sockets and are covered on hardware.
+requeue), and ``post()`` sequencing + spool wiring. The flusher task and
+``enable()`` wire device asyncio; the shared network/spool plumbing lives in
+``_lib`` (tested in test_live_lib_runtime.py) and is exercised on hardware.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 
 import pytest
 
+from openmv_ota.build.device.openmv_cloud import _lib
 from openmv_ota.build.device.openmv_cloud import datalog as dl
 
 
@@ -142,8 +144,8 @@ def test_drain_batching_never_crosses_a_sid_boundary():
     recs = [dl._record("oldsid0000000000", 0, 1),
             dl._record("oldsid0000000000", 1, 2),
             dl._record(dl._sid, 0, 3)]
-    assert dl._batch_end(recs, 0, 10_000) == 2        # old-boot run only
-    assert dl._batch_end(recs, 2, 10_000) == 3        # this boot next
+    assert _lib._batch_end(recs, 0, 10_000) == 2        # old-boot run only
+    assert _lib._batch_end(recs, 2, 10_000) == 3        # this boot next
 
 
 # --- post() -----------------------------------------------------------------
@@ -168,12 +170,12 @@ def test_post_rejects_a_bad_topic_and_queues_nothing():
 def test_post_wires_a_per_topic_spool_when_configured(monkeypatch):
     # with a spool path set, each topic's outbox gets its own disk file
     made = {}
-    monkeypatch.setattr(dl, "_open_disk", lambda p: _FakeDisk())
-    monkeypatch.setattr(dl, "_FileDisk", lambda path: made.setdefault(path, _FakeDisk()))
+    monkeypatch.setattr(dl, "_open_disk",
+                        lambda path, name: made.setdefault(name, _FakeDisk()))
     dl._spool_path = "/sdcard"
     dl.post("imu", {"ax": 1})
     assert dl._topics["imu"]["box"]._disk is not None
-    assert any("imu" in path for path in made)     # per-topic file name
+    assert any("imu" in name for name in made)     # its own per-topic spool file
 
 
 def test_post_buffers_before_any_ingest_grant():

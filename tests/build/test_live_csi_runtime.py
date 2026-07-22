@@ -29,27 +29,6 @@ def _fresh_module_state():
     rt.set_grant(None)
 
 
-# --- URL parsing -----------------------------------------------------------------
-
-@pytest.mark.parametrize(("url", "want"), [
-    ("wss://live.cloud.openmv.io/camera/d1/0?token=t",
-     (True, "live.cloud.openmv.io", 443, "/camera/d1/0?token=t")),
-    ("https://live.cloud.openmv.io/poll/d1/tele?token=t",
-     (True, "live.cloud.openmv.io", 443, "/poll/d1/tele?token=t")),
-    ("ws://localhost:8787/camera/d1/0?token=t",
-     (False, "localhost", 8787, "/camera/d1/0?token=t")),
-    ("http://relay:8080/poll/d1/0", (False, "relay", 8080, "/poll/d1/0")),
-])
-def test_split_url(url, want):
-    assert rt._split_url(url) == want
-
-
-@pytest.mark.parametrize("bad", ["ftp://x/y", "no-scheme", "https://"])
-def test_split_url_rejects(bad):
-    with pytest.raises(ValueError):
-        rt._split_url(bad)
-
-
 # --- WebSocket codec ---------------------------------------------------------------
 
 def _unmask(frame, header_len):

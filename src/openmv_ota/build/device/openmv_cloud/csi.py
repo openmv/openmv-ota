@@ -82,6 +82,8 @@ import json
 import os
 import struct
 
+from ._lib import _UA, _open, _split_url
+
 try:
     from openmv_log import log
 except ImportError:               # host, or a build without the frozen logger
@@ -102,7 +104,6 @@ except ImportError:               # host, or a build without the frozen logger
 
 # The relay rejects default library user-agents at the edge (Cloudflare bot
 # protection) -- every request this module makes MUST carry a real UA.
-_UA = "openmv-cam/1.0"
 
 _DEFAULT_FPS = 5                  # upload cap while watched; ~1-2 Mbit/s at VGA
 _DEFAULT_STREAM = "0"
@@ -186,23 +187,6 @@ def _register(stream):
     if stream.name in _streams:
         raise ValueError("stream name already in use: " + stream.name)
     _streams[stream.name] = stream
-
-
-# --- URL handling (pure) ------------------------------------------------------
-
-def _split_url(url):
-    """``(tls, host, port, path)`` for an http(s)/ws(s) URL. Only what the relay
-    grant produces -- no auth/fragment support, and the query string stays in
-    ``path`` (the token rides there)."""
-    scheme, _, rest = url.partition("://")
-    if scheme not in ("http", "https", "ws", "wss"):
-        raise ValueError("unsupported url scheme: " + scheme)
-    tls = scheme in ("https", "wss")
-    hostport, _, tail = rest.partition("/")
-    host, _, port = hostport.partition(":")
-    if not host:
-        raise ValueError("no host in url")
-    return tls, host, int(port) if port else (443 if tls else 80), "/" + tail
 
 
 # --- WebSocket codec (pure; RFC 6455) ----------------------------------------
@@ -574,18 +558,6 @@ async def poll_watch(stream=_DEFAULT_STREAM, grant=None):  # pragma: no cover  (
 
 
 # --- device network plumbing (exercised on hardware, not host) -----------------
-
-async def _open(host, port, tls):  # pragma: no cover
-    import asyncio
-    if tls:
-        import ssl
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        # NOTE (audit me): server auth should use the bundled CA store (the OTA
-        # runtime's data/ca.pem) once the OTA client lands; until wired,
-        # MicroPython's default context applies.
-        return await asyncio.open_connection(host, port, ssl=ctx)
-    return await asyncio.open_connection(host, port)
-
 
 async def _ws_connect(url):  # pragma: no cover
     """Open + upgrade a relay WebSocket; returns ``(reader, writer)``."""
