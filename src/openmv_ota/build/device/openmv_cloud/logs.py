@@ -24,13 +24,15 @@ TWO independent sinks, same lines:
 * **Persistence (datalake).** When an ingest grant is set (:func:`set_ingest`,
   wired by the OTA check-in), EVERY line is also batched to NDJSON and POSTed to
   the datalake -- regardless of viewers, so history exists even when nobody is
-  watching. A two-tier durable store backs it: recent lines in RAM, and on
-  overflow the whole backlog SPILLS to a disk spool (default ``/sdcard``,
-  configurable) that survives power loss. Delivery is at-least-once (the
-  datalake's ``(sid, seq)`` dedup makes re-sends harmless). Disk is written only
-  on overflow and on drain -- never per line, since MicroPython doesn't buffer
-  disk writes (``write_through=True`` opts into per-line durability, with a
-  performance warning). No writable spool -> RAM-only fallback. Idle until an
+  watching. Persistence is RAM-first; passing ``enable(spool_path=...)`` opts
+  into a two-tier store whose backlog SPILLS to a durable disk spool (e.g.
+  ``/sdcard``) on overflow and survives power loss -- OFF by default (spooling
+  to the user's card is deliberate, not automatic; RAM-only drops oldest under a
+  long outage). Delivery is at-least-once (the datalake's ``(sid, seq)`` dedup
+  makes re-sends harmless). Disk is written only on overflow and on drain --
+  never per line, since MicroPython doesn't buffer disk writes
+  (``write_through=True`` opts into per-line durability, with a performance
+  warning). Idle until an
   ingest grant is set.
 
 SEAMLESS BACKSCROLL CONTRACT: every batch is a JSON envelope
@@ -365,22 +367,25 @@ def _open_disk(spool_path):  # pragma: no cover  (device: filesystem)
 
 
 def enable(level=logging.INFO, logger=None, ring_bytes=_RING_BYTES, fps=5,
-           spool_path="/sdcard",
+           spool_path=None,
            write_through=False):  # pragma: no cover  (device: spawns tasks)
     """Mirror the logging tree to the cloud: attach the handler (root logger by
     default -- the app's loggers AND openmv_ota's flow through it) and start the
     background flushers (live mirror + datalake persistence). Call once, from
     the app's async world. Returns the handler. ``fps`` caps live batches/sec.
 
-    ``spool_path`` is the durable-overflow location (default ``/sdcard``; any
-    writable mount -- SD, flash-as-disk, SPI-NAND). If it's not writable the
-    persistence tier is RAM-only (drops oldest under a long outage). Disk is
-    written only on overflow and on drain, never per line.
+    Persistence is RAM-first and by default NEVER touches storage (a long outage
+    drops the oldest lines). Pass ``spool_path`` to opt into a durable disk
+    overflow -- e.g. ``spool_path="/sdcard"``; any writable mount works (SD,
+    flash-as-disk, SPI-NAND). It's your card, so spooling to it is deliberate,
+    not automatic. Disk is then written only on overflow and on drain, never per
+    line.
 
-    ``write_through=True`` writes EVERY line to disk immediately, so even the
-    in-RAM window survives a sudden power cut -- WARNING: that's a disk write
-    per log line, and MicroPython does not buffer disk writes, so it will slow
-    the app noticeably. Leave it off unless zero-loss matters more than speed."""
+    ``write_through=True`` (meaningful only with a ``spool_path``) writes EVERY
+    line to disk immediately, so even the in-RAM window survives a sudden power
+    cut -- WARNING: that's a disk write per log line, and MicroPython does not
+    buffer disk writes, so it will slow the app noticeably. Off unless zero-loss
+    matters more than speed."""
     import asyncio
     disk = _open_disk(spool_path)
     if write_through and disk is not None:
