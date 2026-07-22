@@ -246,3 +246,80 @@ def test_on_checkin_sets_ingest_from_the_grant():
 def test_on_checkin_without_ingest_leaves_it_unset():
     lg._on_checkin({"update": False})
     assert lg._ingest is None
+
+
+# --- the two-tier durable spool ------------------------------------------------------------
+
+class _FakeDisk:
+    def __init__(self):
+        self.data = b""
+    def append(self, d):
+        self.data += d
+    def size(self):
+        return len(self.data)
+    def read_all(self):
+        return self.data
+    def clear(self):
+        self.data = b""
+    def rewrite(self, d):
+        self.data = d
+
+
+def _records(disk):
+    return [json.loads(x) for x in disk.data.split(b"\n") if x.strip()]
+
+
+def test_batch_end_packs_records_within_max_bytes():
+    recs = [b"12345", b"6789", b"abc"]                # +1 newline each when joined
+    assert lg._batch_end(recs, 0, 100) == 3           # all fit
+    assert lg._batch_end(recs, 0, 6) == 1             # only the first (5+1)
+    assert lg._batch_end(recs, 0, 1) == 1             # oversize still takes one
+    assert lg._batch_end(recs, 1, 6) == 2             # from the middle
+
+
+def test_overflow_spills_the_whole_backlog_to_disk_and_clears_ram():
+    disk = _FakeDisk()
+    ob = lg._Outbox(sid="aa00", cap_bytes=20, disk=disk)
+    for i in range(4):
+        ob.add(i, "line%d\n" % i)                     # 6 bytes each -> spills past 20
+    # RAM cleared on spill; every line is durable on disk, in order, with the sid
+    assert ob.pending_bytes() < 20
+    recs = _records(disk)
+    assert [r["seq"] for r in recs][:4] == [0, 1, 2, 3]
+    assert all(r["sid"] == "aa00" for r in recs)
+
+
+def test_disk_records_keep_their_own_sid_across_a_reboot():
+    disk = _FakeDisk()
+    old = lg._Outbox(sid="oldsid00", cap_bytes=1, disk=disk)   # a previous boot
+    old.add(0, "x\n")                                 # over cap -> spill with old sid
+    # a "new boot" reuses the SAME disk file but a new sid
+    new = lg._Outbox(sid="newsid11", cap_bytes=1, disk=disk)
+    new.add(0, "z\n")
+    sids = {r["sid"] for r in _records(disk)}
+    assert sids == {"oldsid00", "newsid11"}           # each boot's lines keep their sid
+
+
+def test_write_through_spills_every_line():
+    disk = _FakeDisk()
+    ob = lg._Outbox(sid="aa00", cap_bytes=1_000_000, disk=disk, write_through=True)
+    ob.add(0, "one\n")
+    ob.add(1, "two\n")
+    assert ob.pending_bytes() == 0                     # nothing left in RAM
+    assert [r["seq"] for r in _records(disk)] == [0, 1]
+
+
+def test_no_disk_is_ram_only_drop_oldest():
+    ob = lg._Outbox(sid="aa00", cap_bytes=20, disk=None)
+    for i in range(6):
+        ob.add(i, "line%d\n" % i)
+    assert ob.disk_bytes() == 0
+    assert [s for s, _ in ob.take(1000)] == [3, 4, 5]  # oldest dropped, no spill
+
+
+def test_requeue_over_cap_with_disk_present_does_not_drop():
+    disk = _FakeDisk()
+    ob = lg._Outbox(sid="aa00", cap_bytes=10, disk=disk)
+    ob.requeue([(0, "a" * 8 + "\n"), (1, "b" * 8 + "\n")])   # 18 bytes > cap 10
+    # with a disk present, requeue keeps everything (next add spills); no drop
+    assert ob.pending_bytes() == 18

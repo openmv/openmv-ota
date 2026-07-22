@@ -24,9 +24,14 @@ TWO independent sinks, same lines:
 * **Persistence (datalake).** When an ingest grant is set (:func:`set_ingest`,
   wired by the OTA check-in), EVERY line is also batched to NDJSON and POSTed to
   the datalake -- regardless of viewers, so history exists even when nobody is
-  watching. The outbox is memory-bounded (drops oldest under a sustained
-  outage; the SD-card spool is the durable-under-outage upgrade later) and
-  requeues a failed POST. Configure nothing and this sink is simply idle.
+  watching. A two-tier durable store backs it: recent lines in RAM, and on
+  overflow the whole backlog SPILLS to a disk spool (default ``/sdcard``,
+  configurable) that survives power loss. Delivery is at-least-once (the
+  datalake's ``(sid, seq)`` dedup makes re-sends harmless). Disk is written only
+  on overflow and on drain -- never per line, since MicroPython doesn't buffer
+  disk writes (``write_through=True`` opts into per-line durability, with a
+  performance warning). No writable spool -> RAM-only fallback. Idle until an
+  ingest grant is set.
 
 SEAMLESS BACKSCROLL CONTRACT: every batch is a JSON envelope
 
@@ -141,22 +146,68 @@ def _ndjson(sid, records):
     return b"\n".join(_envelope(sid, seq, line) for seq, line in records)
 
 
-class _Outbox:
-    """The datalake persistence buffer: a byte-bounded FIFO of ``(seq, line)``.
-    Accumulates EVERY line (unlike the watched-only relay pending); the flusher
-    drains it to NDJSON POSTs. Bounded so a sustained network outage drops the
-    OLDEST lines rather than exhausting the heap (durable-under-outage is the
-    later SD-card spool)."""
+def _batch_end(records, start, max_bytes):
+    """Index one past the last record of a batch starting at ``start`` that fits
+    in ``max_bytes`` (counting the joining newlines); at least one record. Pure,
+    for the disk drain."""
+    end, size = start, 0
+    while end < len(records):
+        n = len(records[end]) + 1                    # +1 for the NDJSON separator
+        if end > start and size + n > max_bytes:
+            break
+        size += n
+        end += 1
+    return end
 
-    def __init__(self, cap_bytes=_OUTBOX_BYTES):
+
+class _Outbox:
+    """The datalake persistence store -- a TWO-TIER durable FIFO. Recent lines
+    live in RAM; on overflow the whole RAM backlog is SPILLED to a disk file
+    (``disk``), the older, power-loss-durable tier. One logical oldest->newest
+    queue: every disk record is older than every RAM line.
+
+    Writes to disk happen ONLY on overflow (a single append of the whole
+    backlog) and on drain -- never per line (MicroPython doesn't buffer disk
+    writes, so per-line writes would wreck app performance). Delivery is
+    at-least-once; the datalake's ``(sid, seq)`` dedup makes a re-send after a
+    crash harmless, so the drain needs no persisted read cursor -- on reboot the
+    file replays whole. Disk records carry their ORIGINAL ``sid`` (they belong
+    to the boot that wrote them).
+
+    ``disk=None`` -> RAM-only, dropping the oldest over ``cap_bytes`` (the
+    graceful fallback when no writable spool path is available). The only data
+    ever lost when a disk IS present is the sub-cap, about-to-send RAM window on
+    a sudden power cut -- avoiding even that means write-through, which the
+    no-constant-writes rule rules out."""
+
+    def __init__(self, sid=None, cap_bytes=_OUTBOX_BYTES, disk=None,
+                 write_through=False):
+        self._sid = sid
         self._cap = cap_bytes
-        self._buf = []                # [(seq, line)], oldest first
+        self._disk = disk
+        # write_through: spill on EVERY line, not just on overflow -- zero-loss
+        # (even the RAM window survives a power cut) at the cost of a disk write
+        # per line. Off by default; see enable()'s warning.
+        self._write_through = write_through
+        self._buf = []                # RAM tier: [(seq, line)], oldest first
         self._bytes = 0
 
     def add(self, seq, line):
         self._buf.append((seq, line))
         self._bytes += len(line)
-        self._trim()
+        if self._disk is not None:
+            if self._write_through or self._bytes > self._cap:
+                self._spill()         # move the backlog to disk, durably
+        elif self._bytes > self._cap:
+            self._trim()              # RAM-only: drop oldest
+
+    def _spill(self):
+        # One append of the entire RAM backlog (encoded with its sid), then RAM
+        # clears -- atomic, no torn middle. Newline-terminated so consecutive
+        # spills stay record-delimited in the file.
+        self._disk.append(_ndjson(self._sid, self._buf) + b"\n")
+        self._buf = []
+        self._bytes = 0
 
     def _trim(self):
         while self._bytes > self._cap and len(self._buf) > 1:
@@ -165,10 +216,13 @@ class _Outbox:
     def pending_bytes(self):
         return self._bytes
 
+    def disk_bytes(self):
+        return self._disk.size() if self._disk is not None else 0
+
     def take(self, max_bytes):
-        """Pull the oldest lines up to ``max_bytes`` (at least one) as a batch;
-        returns ``[(seq, line)]`` or None when empty. Taken lines leave the
-        outbox -- the flusher requeues them if the POST fails."""
+        """Pull the oldest RAM lines up to ``max_bytes`` (at least one) as a
+        batch; returns ``[(seq, line)]`` or None when empty. Taken lines leave
+        the RAM tier -- the flusher requeues them if the POST fails."""
         if not self._buf:
             return None
         out, size = [], 0
@@ -180,11 +234,13 @@ class _Outbox:
         return out
 
     def requeue(self, records):
-        """A failed POST: put the batch back at the FRONT (oldest), then re-trim
-        -- so a persistent outage still bounds memory by dropping the oldest."""
+        """A failed RAM POST: put the batch back at the FRONT (oldest). If that
+        overflows and a disk is present, the next add() spills it -- so nothing
+        is dropped while a spool exists."""
         self._buf[0:0] = records
         self._bytes += sum(len(line) for _seq, line in records)
-        self._trim()
+        if self._disk is None:
+            self._trim()              # RAM-only: bound memory by dropping oldest
 
 
 class CloudLogHandler(logging.Handler):
@@ -245,15 +301,94 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
 _register()
 
 
-def enable(level=logging.INFO, logger=None, ring_bytes=_RING_BYTES,
-           fps=5):  # pragma: no cover  (device: spawns the flusher tasks)
+class _FileDisk:  # pragma: no cover  (device: filesystem)
+    """The durable spool tier over a MicroPython vfs path -- an SD card (e.g.
+    the AE3's SPI SD on the battery shield), flash-as-disk, or SPI-NAND, all the
+    same to us. Append-only during an outage; read + clear/rewrite on drain."""
+
+    def __init__(self, path):
+        self._path = path
+
+    def append(self, data):
+        f = open(self._path, "ab")
+        try:
+            f.write(data)
+        finally:
+            f.close()
+
+    def size(self):
+        import os
+        try:
+            return os.stat(self._path)[6]
+        except OSError:
+            return 0
+
+    def read_all(self):
+        f = open(self._path, "rb")
+        try:
+            return f.read()
+        finally:
+            f.close()
+
+    def clear(self):
+        import os
+        try:
+            os.remove(self._path)
+        except OSError:
+            pass
+
+    def rewrite(self, data):
+        f = open(self._path, "wb")
+        try:
+            f.write(data)
+        finally:
+            f.close()
+
+
+def _open_disk(spool_path):  # pragma: no cover  (device: filesystem)
+    """A _FileDisk at ``spool_path`` if it's a writable mount, else None (which
+    degrades the outbox to RAM-only). Never raises -- a missing/unmounted card
+    must not break logging."""
+    if not spool_path:
+        return None
+    try:
+        import os
+        try:
+            os.mkdir(spool_path)                     # ensure the dir; ok if it exists
+        except OSError:
+            pass
+        disk = _FileDisk(spool_path.rstrip("/") + "/openmv_cloud_console.ndjson")
+        disk.append(b"")                             # prove it's writable
+        return disk
+    except OSError:
+        return None
+
+
+def enable(level=logging.INFO, logger=None, ring_bytes=_RING_BYTES, fps=5,
+           spool_path="/sdcard",
+           write_through=False):  # pragma: no cover  (device: spawns tasks)
     """Mirror the logging tree to the cloud: attach the handler (root logger by
     default -- the app's loggers AND openmv_ota's flow through it) and start the
     background flushers (live mirror + datalake persistence). Call once, from
-    the app's async world. Returns the handler. ``fps`` caps live batches/sec."""
+    the app's async world. Returns the handler. ``fps`` caps live batches/sec.
+
+    ``spool_path`` is the durable-overflow location (default ``/sdcard``; any
+    writable mount -- SD, flash-as-disk, SPI-NAND). If it's not writable the
+    persistence tier is RAM-only (drops oldest under a long outage). Disk is
+    written only on overflow and on drain, never per line.
+
+    ``write_through=True`` writes EVERY line to disk immediately, so even the
+    in-RAM window survives a sudden power cut -- WARNING: that's a disk write
+    per log line, and MicroPython does not buffer disk writes, so it will slow
+    the app noticeably. Leave it off unless zero-loss matters more than speed."""
     import asyncio
+    disk = _open_disk(spool_path)
+    if write_through and disk is not None:
+        # One-time, BEFORE attaching our handler (so it doesn't self-ingest).
+        logging.getLogger("openmv_cloud").warning(
+            "logs: write_through on -- a disk write per line; expect slowdown")
     console = _Console(ring_bytes)
-    outbox = _Outbox()
+    outbox = _Outbox(sid=console.sid, disk=disk, write_through=write_through)
     handler = CloudLogHandler(console, outbox)
     handler.setLevel(level)
     target = logging.getLogger(logger)
@@ -280,35 +415,60 @@ async def _flusher(console, stream):  # pragma: no cover  (device loop)
 
 
 async def _datalake_flusher(sid, outbox):  # pragma: no cover  (device loop)
-    """Persistence loop: while an ingest grant is set, drain the outbox to
-    NDJSON POSTs. Idle (no drain) until configured; a failed POST requeues the
-    batch so nothing is lost short of the outbox cap."""
+    """Persistence loop: while an ingest grant is set, drain the DISK tier first
+    (oldest, records carry their own sid) then the RAM tier. Idle until
+    configured; failures leave data in place (nothing lost short of the outbox
+    cap / spool). NOT logged -- our handler is on the logging tree, so a warning
+    here would recurse."""
     import asyncio
     while True:
         await asyncio.sleep_ms(_DATALAKE_FLUSH_MS)  # type: ignore[attr-defined]
         target = _ingest
         if target is None:
             continue
-        while outbox.pending_bytes():
+        try:
+            await _drain_disk(target, outbox)         # older tier first
+        except Exception:
+            continue                                  # network down -> retry next tick
+        while outbox.pending_bytes():                 # then the RAM tier
             records = outbox.take(_DATALAKE_BATCH_BYTES)
             try:
-                await _post_ndjson(target, sid, records)
+                await _post_raw(target, _ndjson(sid, records))
             except Exception:
-                # Requeue and retry next tick. Deliberately NOT logged: our
-                # handler is on the logging tree, so logging here would recurse
-                # (emit -> outbox -> fail -> log -> emit...).
                 outbox.requeue(records)
                 break
 
 
-async def _post_ndjson(target, sid, records):  # pragma: no cover  (device net)
-    """POST one NDJSON batch to ``{base}/{console}`` with the ingest token.
-    Reuses the csi module's TLS connect + URL split."""
+async def _drain_disk(target, outbox):  # pragma: no cover  (device: file + net)
+    """Upload the disk spool oldest-first, in batches. Fully sent -> delete the
+    file (back to the RAM-only fast path). A batch failing part-way -> rewrite
+    just the un-sent remainder (one write) and stop. Crash mid-drain replays the
+    whole file next boot; the datalake dedupes by (sid, seq)."""
+    disk = outbox._disk
+    if disk is None or disk.size() == 0:
+        return
+    records = [r for r in disk.read_all().split(b"\n") if r]
+    i = 0
+    try:
+        while i < len(records):
+            end = _batch_end(records, i, _DATALAKE_BATCH_BYTES)
+            await _post_raw(target, b"\n".join(records[i:end]))
+            i = end
+    finally:
+        if i >= len(records):
+            disk.clear()
+        elif i > 0:                                   # partial progress persists
+            disk.rewrite(b"\n".join(records[i:]))
+        # i == 0 (first batch failed): leave the file untouched
+
+
+async def _post_raw(target, body):  # pragma: no cover  (device network)
+    """POST already-encoded NDJSON ``body`` to ``{base}/{console}`` with the
+    ingest token. Reuses the csi module's TLS connect + URL split."""
     url, token = target
     tls, host, port, path = _csi._split_url(url + "/" + _STREAM_NAME)
     reader, writer = await _csi._open(host, port, tls)
     try:
-        body = _ndjson(sid, records)
         writer.write((
             "POST %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
             "Authorization: Bearer %s\r\nContent-Type: application/x-ndjson\r\n"
