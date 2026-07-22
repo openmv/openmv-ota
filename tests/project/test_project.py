@@ -648,3 +648,18 @@ def test_load_project_verify_false_skips(tmp_path, make_firmware, make_sdk, git_
     git_cmd(repo, "commit", "-q", "-m", "c2")
     p = proj.load_project(root, firmware=repo, verify=False)
     assert p.board("OPENMV_N6").front_size == (0x01800000 // 2)
+
+
+def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, make_sdk):
+    root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, ota_keys=2, factory_keys=1)
+    main = (proj.ProjectPaths(root).app_dir / "main.py").read_text()
+    assert "openmv_ota.run(" in main
+    assert "from openmv_cloud import csi, logs" in main
+    assert "logs.enable()" in main
+
+
+def test_non_ota_project_scaffolds_the_bare_main(tmp_path, make_firmware, make_sdk):
+    root, _ = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV_N6"])
+    main = (proj.ProjectPaths(root).app_dir / "main.py").read_text()
+    assert "openmv_ota" not in main               # no OTA lib in a non-OTA project
+    assert "time.sleep_ms" in main

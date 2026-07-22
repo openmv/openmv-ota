@@ -352,7 +352,7 @@ def create_project(
             dp = passphrase_mod.dev_passphrase_path(root)
             dp.write_text(key_passphrase, encoding="utf-8")
             dp.chmod(0o600)
-    _scaffold_app(paths, app_version)  # every project gets a starter app/ (OTA or not)
+    _scaffold_app(paths, app_version, config.ota)  # starter app/ (cloud-wired for OTA)
     if _boards_have_coprocessor(boards):  # a slaved second core (e.g. AE3's M55_HE)
         _scaffold_coprocessor(paths, app_version)
     if config.ota:  # the device OTA runtime lib (status/confirm/sync) for the app to use
@@ -444,14 +444,57 @@ while True:
     time.sleep_ms(1000)
 """
 
+# OTA projects get a starter that wires the whole cloud stack in one line.
+# Importing openmv_cloud registers OTA updates, live view, and cloud logging
+# with openmv_ota.run() -- you manage none of it.
+_APP_MAIN_OTA = """\
+# main.py - your OpenMV app. Replace the snapshot loop with your code.
+#
+# OTA updates, OpenMV Live (on-demand video), and cloud logging are wired up
+# for you: importing openmv_cloud registers them with openmv_ota.run(). You
+# don't touch tokens, streams, or uploads -- it just works.
+#
+# Your version + settings live in settings.json; put your own modules in lib/.
+import asyncio
+import logging
 
-def _scaffold_app(paths: ProjectPaths, app_version: str) -> None:
+import openmv_ota
+from openmv_cloud import csi, logs
+
+logs.enable()   # your logs go live to the dashboard (and are stored if your
+#                 account has the datalake). Add spool_path="/sdcard" for
+#                 durable offline logging.
+
+
+async def main():
+    # OTA + the cloud grants, in the background. Point it at your update server
+    # (OpenMV-hosted shown; change if you self-host). self_test= a function that
+    # returns True when your app is healthy, so a bad update rolls back.
+    asyncio.create_task(openmv_ota.run("https://ota.cloud.openmv.io"))
+
+    csi0 = csi.CSI()          # a drop-in for the builtin `csi`, Live built in
+    csi0.reset()
+    csi0.pixformat(csi.RGB565)
+    csi0.framesize(csi.VGA)
+
+    log = logging.getLogger("app")
+    while True:
+        img = await csi0.snapshot()   # <-- your computer-vision code here
+        log.info("frame %dx%d", img.width(), img.height())
+
+
+asyncio.run(main())
+"""
+
+
+def _scaffold_app(paths: ProjectPaths, app_version: str, ota: bool = False) -> None:
     """Scaffold a starter ``app/`` for any project: the user-editable settings file
     (version + vendor), a placeholder ``main.py``, and a ``lib/`` directory for the
     app's own importable modules. Useful for every project — the app reads its own
     settings on-device — and for OTA the build also reads the version from here.
-    Existing files are left alone, so re-running ``new --force`` never clobbers the
-    user's app."""
+    ``ota`` picks the starter ``main.py``: the cloud-wired one-liner for OTA
+    projects, a bare loop otherwise. Existing files are left alone, so re-running
+    ``new --force`` never clobbers the user's app."""
     paths.app_dir.mkdir(parents=True, exist_ok=True)
     if not paths.app_settings.exists():
         # rollback_floor starts equal to the version (no real constraint yet); see the
@@ -460,7 +503,7 @@ def _scaffold_app(paths: ProjectPaths, app_version: str) -> None:
         paths.app_settings.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     main_py = paths.app_dir / "main.py"
     if not main_py.exists():
-        main_py.write_text(_APP_MAIN, encoding="utf-8")
+        main_py.write_text(_APP_MAIN_OTA if ota else _APP_MAIN, encoding="utf-8")
     lib_dir = paths.app_dir / "lib"
     if not lib_dir.exists():
         # A starter directory for the app's own library modules. The .gitkeep keeps
