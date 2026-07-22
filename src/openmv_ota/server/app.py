@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from openmv_ota import __version__
 
 from . import capability
+from . import datalog as datalog_mod
 from . import live as live_mod
 from .auth import TokenAuth
 from .boardmap import swd_ids_board_code
@@ -517,6 +518,10 @@ def check(checkin: CheckIn, request: Request):
     grant = live_mod.camera_grant(st.settings, checkin.device_id, checkin.streams)
     if grant is not None:
         resp["live"] = grant
+    # Datalake: registered devices get a fresh ingest grant each check-in too.
+    ingest = datalog_mod.ingest_grant(st.settings, account_id, checkin.device_id)
+    if ingest is not None:
+        resp["ingest"] = ingest
     return resp
 
 

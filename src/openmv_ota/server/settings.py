@@ -59,6 +59,11 @@ class ServerSettings(BaseSettings):
         default="",
         validation_alias=AliasChoices("OPENMV_OTA_LIVE_TOKEN_SECRET", "OPENMV_LIVE_TOKEN_SECRET"))
     live_token_ttl: int = 86400            # seconds; outlives a deep-sleep cycle, renewed each check-in
+    # OpenMV datalake: when set (with the shared secret above), registered devices get an
+    # `ingest` grant each check-in -- a ready-made ingest URL + token for logs/telemetry.
+    datalake_url: str = Field(             # public origin, e.g. https://data.cloud.openmv.io
+        default="",
+        validation_alias=AliasChoices("OPENMV_OTA_DATALAKE_URL", "OPENMV_DATALAKE_URL"))
     # uvicorn forwarded-allow-ips: which upstream peers may set X-Forwarded-For. Behind a PaaS proxy
     # (Render/Fly) set "*" so the rate limiter sees the real client IP, not the proxy's single IP.
     trusted_proxy_ips: str = "127.0.0.1"
