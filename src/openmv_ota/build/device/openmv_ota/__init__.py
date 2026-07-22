@@ -335,6 +335,135 @@ def identity():  # pragma: no cover
     return info
 
 
+# --- the check-in loop + the openmv_cloud extension seam --------------------
+# run() polls the update server. openmv_cloud (csi/logs) needs to (a) add fields
+# to the check-in -- e.g. its live stream names -- and (b) receive the response
+# (the live + ingest grants). It registers here on import; the updater NEVER
+# imports openmv_cloud, so a pure-OTA device (no cloud SDK) just does OTA.
+
+_checkin_contributors = []
+_checkin_observers = []
+
+
+def register_checkin(contribute=None, on_response=None):
+    """The openmv_cloud extension seam. ``contribute() -> dict`` is merged into
+    the check-in body each poll; ``on_response(resp)`` is called with each
+    check-in response. Both optional; both isolated (a raising extension can't
+    break the OTA loop)."""
+    if contribute is not None:
+        _checkin_contributors.append(contribute)
+    if on_response is not None:
+        _checkin_observers.append(on_response)
+
+
+def _checkin_body(info, st):
+    """The base check-in payload from identity() + status() -- pure, so it's
+    host-testable; extension fields (e.g. streams) are merged by contributors."""
+    return {
+        "device_id": info.get("device_id", ""),
+        "product_id": int(info.get("product_id", 0) or 0),
+        "account_id": info.get("account_id", ""),
+        "board": info.get("board"),
+        "product": info.get("product"),
+        "app_version": info.get("app_version"),
+        "payload_version": int(st.get("payload_version", 0) or 0),
+        "slot": st.get("slot"),
+        "representation": st.get("representation"),
+        "fallback_reason": st.get("fallback_reason"),
+        "confirmed": bool(st.get("confirmed", False)),
+    }
+
+
+def _collect_body(info, st):
+    body = _checkin_body(info, st)
+    for contribute in _checkin_contributors:
+        try:
+            extra = contribute()
+        except Exception:
+            continue                                 # a broken extension is skipped
+        if extra:
+            body.update(extra)
+    return body
+
+
+def _notify(resp):
+    for on_response in _checkin_observers:
+        try:
+            on_response(resp)
+        except Exception:
+            pass                                     # never break the loop
+
+
+def _offer(resp):
+    """The manifest URL to install, or None -- pure."""
+    return resp.get("manifest_url") if resp.get("update") else None
+
+
+async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
+              ca=None):  # pragma: no cover  (device: the network loop)
+    """The OTA lifecycle loop (async, so it coexists with the app's asyncio work
+    and openmv_cloud's background tasks). On boot it confirms a healthy trial
+    (via ``self_test``, or unconditionally if none), then forever: poll the
+    update server, hand the response to registered extensions (the live + ingest
+    grants flow to openmv_cloud here), install any offered update, and back off.
+    Never returns. ``ca`` are TLS anchors (PEM/path); ``None`` uses the bundled
+    ``data/ca.pem``."""
+    import asyncio
+    boot = status()
+    if boot.get("trial") and (self_test is None or self_test()):
+        confirm()
+    if ca is None:
+        here = __file__.rsplit("/", 1)[0]
+        ca = _read_file(here + "/data/ca.pem", "rb")
+    elif isinstance(ca, str):
+        ca = _read_file(ca, "rb")
+    while True:
+        wait = poll_after_s
+        try:
+            resp = await _checkin(server_url, _collect_body(identity(), status()), ca)
+            _notify(resp)
+            wait = resp.get("poll_after_s", poll_after_s)
+            manifest_url = _offer(resp)
+            if manifest_url:
+                install(manifest_url, ca)            # does not return on success
+        except Exception:
+            pass                                     # transient failure -> retry next poll
+        _wdt_feed()
+        await asyncio.sleep(wait)
+
+
+async def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
+    """POST the check-in body to ``/api/v1/check`` and return the parsed JSON."""
+    import asyncio
+    import json
+    import ssl
+    scheme, _, rest = server_url.rstrip("/").partition("://")
+    hostport, _, _ = rest.partition("/")
+    host, _, port = hostport.partition(":")
+    port = int(port) if port else (443 if scheme == "https" else 80)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.load_verify_locations(cadata=ca.decode() if isinstance(ca, bytes) else ca)
+    reader, writer = await asyncio.open_connection(host, port, ssl=ctx)
+    try:
+        payload = json.dumps(body).encode()
+        writer.write((
+            "POST /api/v1/check HTTP/1.1\r\nHost: %s\r\nUser-Agent: openmv-cam/1.0\r\n"
+            "Content-Type: application/json\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n" % (host, len(payload))).encode() + payload)
+        await writer.drain()
+        status_line = await reader.readline()
+        if b" 200 " not in status_line and not status_line.rstrip().endswith(b" 200"):
+            raise OSError("check-in HTTP %s" % status_line)
+        while True:                                  # skip headers
+            line = await reader.readline()
+            if line in (b"\r\n", b"\n", b""):
+                break
+        return json.loads(await reader.read(-1))
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 def _advance_rollback(cfg, version):  # pragma: no cover (device)
     """Raise the anti-rollback floor to ``version`` by appending it to BACK's rollback
     sector (a 1->0 program, no erase). A no-op if the floor already covers ``version`` or

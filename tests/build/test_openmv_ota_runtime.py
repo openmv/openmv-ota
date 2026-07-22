@@ -171,3 +171,65 @@ def test_check_readback_mismatch_raises():
     import pytest
     with pytest.raises(OSError):
         rt._check_readback(b"\xff\x00", b"\xff\xff")      # erase/write didn't take
+
+
+# --- the check-in extension seam (registry + pure body/offer helpers) -----------------------
+
+@pytest.fixture(autouse=True)
+def _reset_checkin_registry():
+    rt._checkin_contributors.clear()
+    rt._checkin_observers.clear()
+    yield
+    rt._checkin_contributors.clear()
+    rt._checkin_observers.clear()
+
+
+def test_checkin_body_maps_identity_and_status():
+    info = {"device_id": "d1", "product_id": 7, "account_id": "acct",
+            "board": "OPENMV_N6", "product": "robot", "app_version": "1.2.0"}
+    st = {"payload_version": 5, "slot": "FRONT", "representation": "full",
+          "fallback_reason": None, "confirmed": True}
+    body = rt._checkin_body(info, st)
+    assert body == {
+        "device_id": "d1", "product_id": 7, "account_id": "acct",
+        "board": "OPENMV_N6", "product": "robot", "app_version": "1.2.0",
+        "payload_version": 5, "slot": "FRONT", "representation": "full",
+        "fallback_reason": None, "confirmed": True,
+    }
+
+
+def test_checkin_body_defaults_for_missing_fields():
+    body = rt._checkin_body({}, {})
+    assert body["device_id"] == "" and body["product_id"] == 0
+    assert body["account_id"] == "" and body["confirmed"] is False
+    assert body["payload_version"] == 0
+
+
+def test_contributors_merge_into_the_body_and_bad_ones_are_skipped():
+    rt.register_checkin(contribute=lambda: {"streams": ["0", "tele"]})
+    def boom():
+        raise RuntimeError("nope")
+    rt.register_checkin(contribute=boom)             # must not break collection
+    rt.register_checkin(contribute=lambda: None)     # falsy -> ignored
+    body = rt._collect_body({"device_id": "d1"}, {})
+    assert body["streams"] == ["0", "tele"]
+    assert body["device_id"] == "d1"
+
+
+def test_observers_all_fire_and_a_raising_one_is_isolated():
+    seen = []
+    rt.register_checkin(on_response=lambda r: seen.append(("a", r["x"])))
+    rt.register_checkin(on_response=lambda r: (_ for _ in ()).throw(ValueError()))
+    rt.register_checkin(on_response=lambda r: seen.append(("b", r["x"])))
+    rt._notify({"x": 42})
+    assert seen == [("a", 42), ("b", 42)]            # both good ones ran
+
+
+@pytest.mark.parametrize(("resp", "expect"), [
+    ({"update": True, "manifest_url": "https://s/m.bin"}, "https://s/m.bin"),
+    ({"update": False, "manifest_url": "https://s/m.bin"}, None),
+    ({"update": True}, None),
+    ({}, None),
+])
+def test_offer(resp, expect):
+    assert rt._offer(resp) == expect

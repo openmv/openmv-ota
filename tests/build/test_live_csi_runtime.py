@@ -433,3 +433,19 @@ def test_live_active_mirrors_the_stream_session():
     assert w.live_active is False
     w._stream._session.streaming = True
     assert w.live_active is True
+
+
+# --- the OTA check-in extension handlers ---------------------------------------------------
+
+def test_on_checkin_sets_the_live_grant():
+    rt.set_grant(None)
+    rt._on_checkin({"live": {"streams": {"0": {"camera_url": "wss://r/camera/d/0?token=t"}}}})
+    assert rt._stream_grant("0")["camera_url"].endswith("token=t")
+    rt._on_checkin({"update": False})                # no live key -> grant cleared
+    assert rt._stream_grant("0") is None
+
+
+def test_contribute_reports_the_stream_names():
+    rt.Stream("0")
+    rt.Stream("tele")
+    assert set(rt._contribute()["streams"]) == {"0", "tele"}

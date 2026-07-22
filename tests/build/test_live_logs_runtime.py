@@ -233,3 +233,16 @@ def test_set_ingest_stores_and_clears_target():
     lg.set_ingest("u", "t")
     lg.clear_ingest()
     assert lg._ingest is None
+
+
+# --- the OTA check-in extension handler ----------------------------------------------------
+
+def test_on_checkin_sets_ingest_from_the_grant():
+    lg._on_checkin({"ingest": {"url": "https://data.test/api/v1/ingest/acct/dev",
+                               "token": "tok"}})
+    assert lg._ingest == ("https://data.test/api/v1/ingest/acct/dev", "tok")
+
+
+def test_on_checkin_without_ingest_leaves_it_unset():
+    lg._on_checkin({"update": False})
+    assert lg._ingest is None

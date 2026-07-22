@@ -226,6 +226,25 @@ def clear_ingest():
     set_ingest(None, None)
 
 
+def _on_checkin(resp):
+    """Pull the ``ingest`` grant out of an OTA check-in response (pure)."""
+    g = resp.get("ingest")
+    if g:
+        set_ingest(g.get("url"), g.get("token"))
+
+
+def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
+    # Auto-wire persistence into openmv_ota.run() so it flows with zero app code.
+    try:
+        import openmv_ota
+        openmv_ota.register_checkin(on_response=_on_checkin)
+    except (ImportError, AttributeError):
+        pass
+
+
+_register()
+
+
 def enable(level=logging.INFO, logger=None, ring_bytes=_RING_BYTES,
            fps=5):  # pragma: no cover  (device: spawns the flusher tasks)
     """Mirror the logging tree to the cloud: attach the handler (root logger by

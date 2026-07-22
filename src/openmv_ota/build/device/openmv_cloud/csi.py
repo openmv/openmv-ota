@@ -157,6 +157,30 @@ def streams():
     return list(_streams)
 
 
+def _on_checkin(resp):
+    """Pull the ``live`` grant out of an OTA check-in response (pure)."""
+    set_grant(resp.get("live"))
+
+
+def _contribute():
+    """The check-in fields this module adds: its live stream names (pure)."""
+    return {"streams": streams()}
+
+
+def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
+    # Auto-wire into openmv_ota.run() so grants flow with zero app code. The
+    # updater never imports us; we register into it (openmv_cloud -> openmv_ota).
+    # On the host `import openmv_ota` is the CLI package (no seam) -> skipped.
+    try:
+        import openmv_ota
+        openmv_ota.register_checkin(contribute=_contribute, on_response=_on_checkin)
+    except (ImportError, AttributeError):
+        pass
+
+
+_register()
+
+
 def _register(stream):
     if stream.name in _streams:
         raise ValueError("stream name already in use: " + stream.name)
