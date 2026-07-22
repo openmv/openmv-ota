@@ -481,6 +481,9 @@ async def main():
     while True:
         img = await csi0.snapshot()   # <-- your computer-vision code here
         log.info("frame %dx%d", img.width(), img.height())
+        # Structured telemetry to the datalake (chart it in the dashboard):
+        #   from openmv_cloud import datalog
+        #   datalog.post("frames", {"w": img.width(), "h": img.height()})
 
 
 asyncio.run(main())
