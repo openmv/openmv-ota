@@ -125,6 +125,11 @@ _REDOC_HTML = """<!DOCTYPE html>
   }
   :root[data-theme="dark"] .react-tabs__tab--selected.tab-success { color: #34d399; }
   :root[data-theme="dark"] .react-tabs__tab--selected.tab-error { color: #f87171; }
+  /* Deep-link anchor icon in section/tag headings: ReDoc's default (~#9E9EFF)
+     is too low-contrast on the dark slate -- use the theme accent. */
+  :root[data-theme="dark"] .api-content h1 > a,
+  :root[data-theme="dark"] .api-content h2 > a,
+  :root[data-theme="dark"] .api-content h3 > a { color: #60a5fa; }
   /* Tighten only the intro prose: the markdown sections of info.description get
      `section/` ids, and the title/description block is .api-content's first child
      (40px bottom padding by default). The endpoint groups (`tag/` ids) keep
