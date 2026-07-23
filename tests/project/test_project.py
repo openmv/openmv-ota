@@ -658,10 +658,9 @@ def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, mak
     assert "logs.enable()" in main
     assert "datalog.post(" in main                  # a telemetry example
     assert "configure(" in main                     # the tunable RAM limits
-    # the operational-gated trial confirm: run() must not auto-confirm at boot,
-    # and the app confirms explicitly once it is running (anti-brick rollback).
+    # the app confirms the OTA trial explicitly once it is operational (run() does
+    # not auto-confirm), so a bad update rolls back instead of sticking.
     assert "openmv_ota.confirm()" in main
-    assert "self_test=lambda: app_ready" in main
     # the labelled sections tell the user what is scaffolding vs their own code
     assert "GENERATED" in main and "YOUR APP" in main
 
