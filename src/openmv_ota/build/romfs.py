@@ -337,6 +337,12 @@ def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_mod
             # it must survive as .py, not be compiled to .mpy.
             if src.parent.name == "data" and src.parent.parent.name == "openmv_ota":
                 continue
+            # The app entry point must survive as main.py: the firmware auto-runs it with
+            # pyexec_file_if_exists("main.py") from the mounted slot (cwd = the romfs), and
+            # that looks for main.py by name -- a compiled main.mpy would never launch, so
+            # the app (and its OTA confirm) would never run on a real boot.
+            if src.parent == stage and src.name == "main.py":
+                continue
             mpy.compile_py(mpy_cmd, t.mpy_args + mpy_extra, src, src.with_suffix(".mpy"))
             src.unlink()
 

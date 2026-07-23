@@ -74,13 +74,16 @@ def test_board_name_defaults_to_product(make_project):
     assert info["product"] == "Gadget" and info["board_name"] == "Gadget"
 
 
-def test_compiles_all_py(monkeypatch, make_project):
+def test_compiles_py_but_keeps_app_main(monkeypatch, make_project):
+    # lib compiles to .mpy, but the app entry point stays main.py: the firmware
+    # auto-runs it via pyexec_file_if_exists("main.py") from the mounted slot, and
+    # that runs main.py BY NAME -- a compiled main.mpy would never launch the app.
     monkeypatch.setattr(build_mod.mpy, "compile_py", _fake_compile)
     root, repo, app = make_project()
     results = build_mod.build_romfs(root, app=app, firmware=repo, convert_models=False)
     names = _names(results[0].output)
-    assert "main.mpy" in names and "lib/util.mpy" in names  # main.py compiled too
-    assert "main.py" not in names and "lib/util.py" not in names
+    assert "lib/util.mpy" in names and "lib/util.py" not in names  # lib is compiled
+    assert "main.py" in names and "main.mpy" not in names          # app entry stays .py
 
 
 def test_converts_models(monkeypatch, make_project):
