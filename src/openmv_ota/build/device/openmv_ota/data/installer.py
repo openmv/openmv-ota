@@ -708,40 +708,90 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # Log-only progress, built from RAM + the frozen logger so it survives the FRONT erase.
     progress = _Progress(log) if log is not None else None
     front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
-    base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # FRONT partition XIP base
 
-    def readback(off, n):
-        return uctypes.bytearray_at(base + off, n)
+    # The romfs write path has two flavours across ports; detect which from the
+    # FRONT partition object. An XIP-mapped port (stm32/alif/samd) returns a
+    # buffer we address directly and erase/write via rom_ioctl(3/4/5). A
+    # block-device port (mimxrt) returns a Flash object with the block protocol,
+    # driven via ioctl(6)=erase-block + the extended (3-arg) writeblocks/readblocks
+    # for byte-granular access. _install_stream is agnostic -- it only sees
+    # erase/write/readback/back_read -- so all the divergence lives here.
+    front = vfs.rom_ioctl(2, 0)
+    if hasattr(front, "ioctl"):                       # block-device romfs (e.g. mimxrt)
+        _bs = front.ioctl(5, 0)                       # block size
+        _back = vfs.rom_ioctl(2, 1)                   # BACK slot: the delta base
 
-    def erase(total):
-        # Erase INCREMENTALLY where the port supports the ranged prepare
-        # (rom_ioctl 6 = min-prepare size, and the 4-arg rom_ioctl 3 with an
-        # offset -- micropython PR #19348). One whole-slot erase is seconds of
-        # dead time in a single C call: nothing services USB or the scheduler,
-        # and on the N6 (12 MiB slot on XSPI) the device faults partway through.
-        # Per-block calls return to the VM between blocks, so events run and the
-        # watchdog is fed. Older firmware without the ranged form falls back to
-        # the legacy single-shot erase under relax().
-        bs = vfs.rom_ioctl(6, 0)
-        if isinstance(bs, int) and bs > 0:
-            off = 0
-            while off < total:
-                n = bs if total - off > bs else total - off
-                rc = vfs.rom_ioctl(3, 0, off, n)
+        def erase(total):
+            nb = (total + _bs - 1) // _bs
+            b = 0
+            while b < nb:                             # one block per call -> returns to the
+                front.ioctl(6, b)                     # VM between blocks (no dead-time erase);
+                b += 1                                # this port is already chunk-granular
+                feed()
+
+        def write(off, data):                         # extended writeblocks: byte-granular,
+            front.writeblocks(off // _bs, data, off % _bs)   # so sub-block markers work too
+
+        def readback(off, n):
+            b = bytearray(n)                          # n <= _CHUNK: a bounded readback buffer.
+            front.readblocks(off // _bs, b, off % _bs)  # reads REAL flash, not an XIP cache
+            return b
+
+        def back_read(off, n):                        # arbitrary range from BACK, block-safe
+            out = bytearray(n)
+            done = 0
+            while done < n:
+                blk, o = (off + done) // _bs, (off + done) % _bs
+                take = _bs - o
+                if take > n - done:
+                    take = n - done
+                _back.readblocks(blk, memoryview(out)[done:done + take], o)
+                done += take
+            return out
+
+        def complete():
+            pass                                      # writeblocks persists; no flush ioctl
+
+    else:                                             # XIP-mapped romfs (stm32/alif/samd)
+        base = uctypes.addressof(front)               # FRONT partition XIP base
+
+        def readback(off, n):
+            return uctypes.bytearray_at(base + off, n)
+
+        def back_read(off, n):
+            return uctypes.bytearray_at(base + front_size + off, n)   # BACK at front_size
+
+        def erase(total):
+            # Erase INCREMENTALLY where the port supports the ranged prepare
+            # (rom_ioctl 6 = min-prepare size, and the 4-arg rom_ioctl 3 with an
+            # offset -- micropython PR #19348). One whole-slot erase is seconds of
+            # dead time in a single C call: nothing services USB or the scheduler,
+            # and on the N6 (12 MiB slot on XSPI) the device faults partway through.
+            # Older firmware without the ranged form falls back to the legacy
+            # single-shot erase under relax().
+            bs = vfs.rom_ioctl(6, 0)
+            if isinstance(bs, int) and bs > 0:
+                o = 0
+                while o < total:
+                    n = bs if total - o > bs else total - o
+                    rc = vfs.rom_ioctl(3, 0, o, n)
+                    if rc < 0:
+                        raise OSError(-rc)
+                    o += n
+                    feed()
+                return
+            with relax():                             # the one op we can't feed in a loop
+                rc = vfs.rom_ioctl(3, 0, total)
                 if rc < 0:
                     raise OSError(-rc)
-                off += n
-                feed()
-            return
-        with relax():                                 # the one op we can't feed in a loop
-            rc = vfs.rom_ioctl(3, 0, total)
+
+        def write(off, data):
+            rc = vfs.rom_ioctl(4, 0, off, data)
             if rc < 0:
                 raise OSError(-rc)
 
-    def write(off, data):
-        rc = vfs.rom_ioctl(4, 0, off, data)
-        if rc < 0:
-            raise OSError(-rc)
+        def complete():
+            vfs.rom_ioctl(5, 0)                       # flush cached sub-page writes
 
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the
     # app (the FRONT slot is untouched).
@@ -756,9 +806,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         # Delta: stream-decompress the patch and reconstruct the image against the golden
         # BACK slot (copy-with-diff, ulab add) -- both the patch and the output are streamed
         # into FRONT, neither is materialised.
-        def _old_read(off, n):
-            return uctypes.bytearray_at(base + front_size + off, n)   # BACK slot at front_size
-        source = _GenReader(_delta_stream(_PatchReader(dio), _old_read, _CHUNK)).read
+        source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK)).read
         repr_marker = REPR_DELTA
     else:
         source = dio.read
@@ -771,13 +819,12 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     try:
         _install_stream(source, erase, write, readback, front_size, block, feed,
                         progress, expect_sha, repr_marker)
-        # Commit the write: ports whose ROMFS lives on external SPI/XSPI flash
-        # cache sub-page writes in the flash driver (the trailer block and the
-        # arm markers are exactly such writes), and rom_ioctl(5) is the flush --
-        # mpremote's romfs deploy ends with the same call. Without it the final
-        # cached page is lost at reset and boot rejects the slot. Ports without
-        # the op return -EINVAL, which is fine: their writes are direct.
-        vfs.rom_ioctl(5, 0)
+        # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
+        # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
+        # ports cache the final sub-page writes -- the trailer + arm markers -- and
+        # lose them at reset without it. Block-device ports persist on writeblocks,
+        # so complete() there is a no-op.
+        complete()
     except Exception as e:
         sock.close()
         if log:
