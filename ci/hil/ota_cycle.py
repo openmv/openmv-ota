@@ -130,6 +130,19 @@ COVERAGE = {
 }
 
 
+# NOTE -- adding the next scenario. Today there is ONE scenario: the happy-path DELTA
+# install, whose required paths are expected_coverage() below. As we add scenarios, give
+# each its OWN expected set and select it (e.g. a --scenario arg or a SCENARIOS dict), and
+# have the scenario drive the conditions that make its paths run:
+#   * full-image  -> publish a full (non-delta) release / device with no matching base
+#                    => expects install.full instead of install.delta
+#   * retry       -> kill the download mid-stream (drop the connection once)
+#                    => expects install.retry (then install.armed on the retry)
+#   * rollback    -> publish an update whose trial self-test fails (or never confirms)
+#                    => expects boot.front_reject / boot.mount.back, NOT confirm.promoted
+#   * block-device (RT1062) -> expects install.blockdev instead of install.xip
+# Every marker in COVERAGE above should be an expected path of SOME scenario, so the union
+# of the scenarios' expected sets is the full matrix -- that's the "all paths hit" gate.
 def expected_coverage(board):
     """The coverage points a happy-path DELTA install on this board MUST hit. Missing any
     means either the path did not run OR its log line drifted -- both fail the run, so a
