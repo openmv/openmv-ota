@@ -581,7 +581,9 @@ def _install_stream(read, erase, write, readback, front_size, block, feed,
     if off != front_size:
         raise ValueError("image is %d bytes, expected a full %d-byte slot"
                          % (off, front_size))
-    if digest is not None and digest.hexdigest() != expect_sha:
+    # MicroPython's hashlib has no .hexdigest() (CPython-only) -- hexlify the raw
+    # digest instead, so the check runs identically on-device and on the host.
+    if digest is not None and binascii.hexlify(digest.digest()).decode() != expect_sha:
         raise OSError("image sha256 does not match the manifest")
 
     pending_off = front_size - 2 * block             # the status sector
@@ -712,6 +714,25 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         return uctypes.bytearray_at(base + off, n)
 
     def erase(total):
+        # Erase INCREMENTALLY where the port supports the ranged prepare
+        # (rom_ioctl 6 = min-prepare size, and the 4-arg rom_ioctl 3 with an
+        # offset -- micropython PR #19348). One whole-slot erase is seconds of
+        # dead time in a single C call: nothing services USB or the scheduler,
+        # and on the N6 (12 MiB slot on XSPI) the device faults partway through.
+        # Per-block calls return to the VM between blocks, so events run and the
+        # watchdog is fed. Older firmware without the ranged form falls back to
+        # the legacy single-shot erase under relax().
+        bs = vfs.rom_ioctl(6, 0)
+        if isinstance(bs, int) and bs > 0:
+            off = 0
+            while off < total:
+                n = bs if total - off > bs else total - off
+                rc = vfs.rom_ioctl(3, 0, off, n)
+                if rc < 0:
+                    raise OSError(-rc)
+                off += n
+                feed()
+            return
         with relax():                                 # the one op we can't feed in a loop
             rc = vfs.rom_ioctl(3, 0, total)
             if rc < 0:
@@ -750,6 +771,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     try:
         _install_stream(source, erase, write, readback, front_size, block, feed,
                         progress, expect_sha, repr_marker)
+        # Commit the write: ports whose ROMFS lives on external SPI/XSPI flash
+        # cache sub-page writes in the flash driver (the trailer block and the
+        # arm markers are exactly such writes), and rom_ioctl(5) is the flush --
+        # mpremote's romfs deploy ends with the same call. Without it the final
+        # cached page is lost at reset and boot rejects the slot. Ports without
+        # the op return -EINVAL, which is fine: their writes are direct.
+        vfs.rom_ioctl(5, 0)
     except Exception as e:
         sock.close()
         if log:
