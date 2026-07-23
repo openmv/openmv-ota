@@ -1,0 +1,65 @@
+name: HIL OTA cycle
+
+# The live-hardware OTA gate: provision a golden board from this ref, publish an
+# update, and verify the device installs -> trials -> confirms -> promotes it fully
+# autonomously, capturing the HILCOV coverage markers off the board's P4/P5 UART.
+#
+# Manual-trigger ONLY while the harness is in development -- it runs on the bench
+# and each board cycle is minutes (the AE3's OSPI flash alone is ~10). This will
+# become the required gate for OTA-touching PRs once the path matrix is built out.
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: which board to run (or all)
+        default: all
+        type: choice
+        options: [all, OPENMV_N6, OPENMV_AE3]
+      target:
+        description: update version to install over golden 1.0.0
+        default: "1.1.0"
+
+concurrency:
+  group: hil-ota-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ota-cycle:
+    name: ota-cycle ${{ matrix.board }}
+    if: ${{ github.event.inputs.board == 'all' || github.event.inputs.board == matrix.board }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: OPENMV_N6
+            label: board-openmv-n6
+          - board: OPENMV_AE3
+            label: board-openmv-ae3
+    runs-on: [self-hosted, hil, "${{ matrix.label }}"]
+    # One board at a time; never cancel a running flash/cycle.
+    concurrency:
+      group: hil-ota-${{ matrix.label }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: OTA cycle + coverage trace
+        env:
+          OTA_SERVER: ${{ vars.HIL_OTA_SERVER }}
+          OTA_TOKEN: ${{ secrets.HIL_OTA_TOKEN }}
+          WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
+          WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
+        run: |
+          # Run with the node's venv python (has pyserial + the openmv-ota tooling).
+          "$HOME/ota-venv/bin/python" ci/hil/ota_cycle.py \
+            --board "${{ matrix.board }}" \
+            --target "${{ github.event.inputs.target || '1.1.0' }}" \
+            --checkout "$GITHUB_WORKSPACE" \
+            --trace "hil-trace-${{ matrix.board }}.json"
+
+      - name: Upload trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hil-trace-${{ matrix.board }}
+          path: hil-trace-${{ matrix.board }}.json
