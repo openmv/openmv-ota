@@ -463,6 +463,12 @@ _APP_MAIN_OTA = '''\
 # uploads, or the RTC.
 #
 # Your version and settings live in settings.json; put importable modules in lib/.
+#
+# KEEP THIS FILE SMALL. Unlike lib/, main.py ships to the device as source (the
+# firmware launches your app by running main.py by name), so it is parsed at every
+# boot instead of loading precompiled bytecode. Keep main.py to wiring + your main
+# loop and put real code in lib/ modules -- they are compiled to .mpy and import
+# fast.
 
 import asyncio
 import logging
