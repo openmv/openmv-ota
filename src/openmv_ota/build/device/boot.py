@@ -305,7 +305,13 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     # large") for any off >= 16 MiB -- which is the BACK slot on the 24 MiB N6/AE3
     # partitions. bytearray_at aliases the address with an internal offset of 0, so
     # the body's own [:body_size] slices below stay small regardless of the slot.
-    base = uctypes.addressof(vfs.rom_ioctl(2, 0))    # the partition's XIP base address
+    part = vfs.rom_ioctl(2, 0)
+    base = uctypes.addressof(part)                   # the partition's XIP base address
+    # A block-device port (mimxrt) has no rom_ioctl WRITE (rom_ioctl(4) returns -EINVAL);
+    # it exposes the partition as a Flash block device instead. Reads stay XIP (the whole
+    # partition is memory-mapped, so bytearray_at works on every port), but the marker
+    # WRITE must go through the block device. None on the XIP/ioctl ports (stm32/alif/samd).
+    bdev = part if hasattr(part, "ioctl") else None
 
     def read(off, size):
         return uctypes.bytearray_at(base + off, size)
@@ -316,8 +322,12 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     def write_marker(off, marker):
         # Write, then read back and verify. A rejected (negative rc) or silently failed
         # write raises OSError, which _try_slot turns into a fall-back to BACK -- we
-        # never run a trial we couldn't record.
-        if vfs.rom_ioctl(4, 0, off, marker) < 0:
+        # never run a trial we couldn't record. The status sector is pre-erased, so the
+        # block-device path writes the marker byte-granularly (3-arg writeblocks, no erase).
+        if bdev is not None:
+            _bs = bdev.ioctl(5, 0)
+            bdev.writeblocks(off // _bs, marker, off % _bs)
+        elif vfs.rom_ioctl(4, 0, off, marker) < 0:
             raise OSError("rom_ioctl write failed")
         if read(off, len(marker)) != marker:
             raise OSError("marker write verify failed")

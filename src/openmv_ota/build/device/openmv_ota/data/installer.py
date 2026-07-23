@@ -521,6 +521,9 @@ class _Progress:
         self._log = log
         self._step = -1
 
+    def reset(self):
+        self._step = -1                            # restart the 10% steps for a retried download
+
     def __call__(self, done, total):
         pct = done * 100 // total if total else 100
         step = pct // 10
@@ -724,7 +727,10 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     front = vfs.rom_ioctl(2, 0)
     if hasattr(front, "ioctl"):                       # block-device romfs (e.g. mimxrt)
         _bs = front.ioctl(5, 0)                       # block size
-        _back = vfs.rom_ioctl(2, 1)                   # BACK slot: the delta base
+        # A block-device port exposes ONE segment covering the WHOLE partition, and
+        # rom_ioctl(2, <id>) ignores the id (mimxrt returns the same object for 0 and 1).
+        # So FRONT and BACK are the same device addressed by offset: FRONT at 0, BACK at
+        # front_size -- exactly as the XIP branch does with base / base+front_size.
 
         def erase(total):
             nb = (total + _bs - 1) // _bs
@@ -739,18 +745,19 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
 
         def readback(off, n):
             b = bytearray(n)                          # n <= _CHUNK: a bounded readback buffer.
-            front.readblocks(off // _bs, b, off % _bs)  # reads REAL flash, not an XIP cache
+            front.readblocks(off // _bs, b, off % _bs)  # FRONT at partition offset off
             return b
 
         def back_read(off, n):                        # arbitrary range from BACK, block-safe
-            out = bytearray(n)
-            done = 0
-            while done < n:
-                blk, o = (off + done) // _bs, (off + done) % _bs
+            out = bytearray(n)                        # BACK lives at front_size within the one
+            done = 0                                  # partition (NOT a separate rom_ioctl(2,1)
+            while done < n:                           # segment -- that returns FRONT on mimxrt)
+                a = front_size + off + done
+                blk, o = a // _bs, a % _bs
                 take = _bs - o
                 if take > n - done:
                     take = n - done
-                _back.readblocks(blk, memoryview(out)[done:done + take], o)
+                front.readblocks(blk, memoryview(out)[done:done + take], o)
                 done += take
             return out
 
@@ -813,40 +820,59 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # erase means it is read continuously. (A download-open failure here is rare --
     # the manifest was just fetched from the same server -- and lands cleanly in
     # golden.)
+    # A flaky link (WiFi power-save, a slow OSPI flash, cellular) drops the download
+    # mid-stream -- a transient transport error, not a bad update. Since the installer
+    # already runs from RAM (exec'd before the erase) and re-erase + re-download is
+    # idempotent, retry the whole download a bounded number of times before giving up.
+    # Only an EXHAUSTED retry (or a non-transient failure surfacing every attempt)
+    # reboots into golden BACK -- so one hiccup no longer costs a reboot + a full poll
+    # cycle. Anything raised here (short body, TLS/ECONNRESET/ECONNABORTED/timeout,
+    # verify miscompare) is treated the same: retry, then fall back.
+    attempts = getattr(cfg, "INSTALL_RETRIES", 3)
     sock = None
-    try:
-        if log:
-            log.info("install: erasing FRONT (%d bytes)" % front_size)
-        erase(front_size)
-        if log:
-            log.info("install: downloading %s (%s)" % (image_url, fmt))
-        sock, body = _open(image_url, ca_pem, socket, ssl)
-        dio = deflate.DeflateIO(body, deflate.GZIP)
-        if fmt == _DELTA_FORMAT:
-            # Delta: stream-decompress the patch and reconstruct the image against the
-            # golden BACK slot (copy-with-diff, ulab add) -- both the patch and the output
-            # are streamed into FRONT, neither is materialised.
-            source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK)).read
-            repr_marker = REPR_DELTA
-        else:
-            source = dio.read
-            repr_marker = REPR_FULL
-        if log:
-            log.info("install: writing FRONT")
-        _install_stream(source, write, readback, front_size, block, feed,
-                        progress, expect_sha, repr_marker)
-        # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
-        # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
-        # ports cache the final sub-page writes -- the trailer + arm markers -- and
-        # lose them at reset without it. Block-device ports persist on writeblocks,
-        # so complete() there is a no-op.
-        complete()
-    except Exception as e:
-        if sock is not None:
-            sock.close()
-        if log:
-            log.error("install: FAILED after erase (%s); rebooting to golden BACK" % e)
-        machine.reset()
+    for attempt in range(attempts):
+        try:
+            if log:
+                log.info("install: erasing FRONT (%d bytes)" % front_size)
+            erase(front_size)
+            if log:
+                log.info("install: downloading %s (%s)" % (image_url, fmt))
+            sock, body = _open(image_url, ca_pem, socket, ssl)
+            dio = deflate.DeflateIO(body, deflate.GZIP)
+            if fmt == _DELTA_FORMAT:
+                # Delta: stream-decompress the patch and reconstruct the image against the
+                # golden BACK slot (copy-with-diff, ulab add) -- both the patch and the output
+                # are streamed into FRONT, neither is materialised.
+                source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK)).read
+                repr_marker = REPR_DELTA
+            else:
+                source = dio.read
+                repr_marker = REPR_FULL
+            if log:
+                log.info("install: writing FRONT")
+            _install_stream(source, write, readback, front_size, block, feed,
+                            progress, expect_sha, repr_marker)
+            # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
+            # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
+            # ports cache the final sub-page writes -- the trailer + arm markers -- and
+            # lose them at reset without it. Block-device ports persist on writeblocks,
+            # so complete() there is a no-op.
+            complete()
+            break                                    # success -> arm + reboot into the trial
+        except Exception as e:
+            if sock is not None:
+                sock.close()
+                sock = None
+            if attempt + 1 >= attempts:
+                if log:
+                    log.error("install: FAILED after %d attempts (%s); rebooting to golden BACK"
+                              % (attempts, e))
+                machine.reset()
+            if log:
+                log.error("install: attempt %d/%d failed (%s); retrying"
+                          % (attempt + 1, attempts, e))
+            if progress is not None:
+                progress.reset()                     # restart % for the fresh re-download
     if log:
         log.info("install: installed + armed; rebooting into the trial")
     machine.reset()
