@@ -36,3 +36,15 @@ def test_logger_is_off_by_default():
     # No handler + level above CRITICAL == silent until the user enables it.
     import logging
     assert _mod.log.level > logging.CRITICAL
+
+
+def test_bench_uart_absent_is_none():
+    # Production board (no bench file) -> the log stays off, no UART opened.
+    assert _mod._bench_uart("/no/such/hilcov_uart") is None
+
+
+def test_bench_uart_reads_the_bus(tmp_path):
+    # The HIL bench opt-in: the file names the P4/P5 UART bus to stream the log to.
+    f = tmp_path / ".hilcov_uart"
+    f.write_text("3\n")
+    assert _mod._bench_uart(str(f)) == 3

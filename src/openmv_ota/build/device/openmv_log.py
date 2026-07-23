@@ -81,5 +81,22 @@ def _configure():  # pragma: no cover  (device: handler/UART; runs only when ena
     log.setLevel(LEVEL)
 
 
-if ENABLED:  # pragma: no cover  (enabling is a manual edit + firmware rebuild)
+def _bench_uart(path="/flash/.hilcov_uart"):
+    """A HIL bench opt-in: this file (bench-written) names a UART to stream the log to --
+    the P4/P5 side-channel -- so the harness can watch boot/install/confirm (and the
+    HILCOV coverage markers) across every reboot, without the USB REPL (opening which
+    DTR-resets the board). Absent on a production board -> None. Host-testable."""
+    try:
+        with open(path) as f:
+            return int(f.read(8).strip())   # bounded: the file is a single UART bus number
+    except Exception:
+        return None
+
+
+_bench = _bench_uart()                 # a bench board opts into UART logging via the file
+if ENABLED or _bench is not None:  # pragma: no cover  (device: handler / UART, or the bench file)
+    if _bench is not None:
+        # HIL wants the WHOLE trace (every path, incl. the DEBUG branch lines the coverage
+        # checklist keys on) on the side-channel UART -- so bench mode logs at DEBUG.
+        UART, LEVEL = _bench, logging.DEBUG
     _configure()
