@@ -529,26 +529,31 @@ class _Progress:
             self._log.info("install: %d%% (%d/%d bytes)" % (pct, done, total))
 
 
-def _install_stream(read, erase, write, readback, front_size, block, feed,
+def _install_stream(read, write, readback, front_size, block, feed,
                     progress=None, expect_sha=None, repr_marker=None):
-    """Erase the FRONT slot, stream the decompressed image into it 1:1 (verifying
-    every write by read-back, skipping already-erased 0xFF runs), then arm the trial.
+    """Stream the decompressed image into the ALREADY-ERASED FRONT slot 1:1
+    (verifying every write by read-back, skipping already-erased 0xFF runs), then
+    arm the trial.
 
-    ``read(n)`` yields decompressed image bytes (``b''`` at end); ``erase(total)``
-    erases ``total`` bytes from offset 0 (the caller feeds the watchdog *inside* this one
-    long call, via a timer ISR); ``write(off, data)`` programs flash; ``readback(off, n)``
-    returns the ``n`` bytes at ``off``; ``feed()`` is called once per chunk so the
-    watchdog stays alive through the loops *without* masking a hang (if the loop stops
-    iterating, feeding stops); ``progress(done, front_size)`` (if given) is called once per
-    written chunk so the caller can log/report how far the install has got; ``expect_sha``
-    (if given, the manifest's hex sha256 of the reconstructed image) is checked over the
-    streamed bytes and must match; ``repr_marker`` (if given) records which representation
-    was applied (REPR_FULL / REPR_DELTA) for status() to report. Raises on any size/hash
-    mismatch or read-back miscompare; this runs after the erase, so the caller turns any
-    exception into a reboot into golden."""
-    erase(front_size)
+    The caller MUST erase the FRONT slot BEFORE calling this AND before opening the
+    download stream ``read`` draws from -- so the download socket is never left idle
+    during the multi-second erase (a slow flash on a power-saving link drops an idle
+    connection, and the write loop would then read a truncated body). This function
+    starts by read-back verifying the slot is fully erased.
+
+    ``read(n)`` yields decompressed image bytes (``b''`` at end); ``write(off, data)``
+    programs flash; ``readback(off, n)`` returns the ``n`` bytes at ``off``; ``feed()``
+    is called once per chunk so the watchdog stays alive through the loops *without*
+    masking a hang (if the loop stops iterating, feeding stops); ``progress(done,
+    front_size)`` (if given) is called once per written chunk so the caller can
+    log/report how far the install has got; ``expect_sha`` (if given, the manifest's hex
+    sha256 of the reconstructed image) is checked over the streamed bytes and must match;
+    ``repr_marker`` (if given) records which representation was applied (REPR_FULL /
+    REPR_DELTA) for status() to report. Raises on any size/hash mismatch or read-back
+    miscompare; this runs after the erase, so the caller turns any exception into a
+    reboot into golden."""
     off = 0
-    while off < front_size:                          # confirm the erase took
+    while off < front_size:                          # confirm the caller's erase took
         n = _CHUNK if front_size - off >= _CHUNK else front_size - off
         if not _is_blank(readback(off, n)):
             raise OSError("erase verify failed at %d" % off)
@@ -798,26 +803,37 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     if log:
         log.info("install: fetching manifest %s" % manifest_url)
     image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
-    if log:
-        log.info("install: downloading %s (%s)" % (image_url, fmt))
-    sock, body = _open(image_url, ca_pem, socket, ssl)
-    dio = deflate.DeflateIO(body, deflate.GZIP)
-    if fmt == _DELTA_FORMAT:
-        # Delta: stream-decompress the patch and reconstruct the image against the golden
-        # BACK slot (copy-with-diff, ulab add) -- both the patch and the output are streamed
-        # into FRONT, neither is materialised.
-        source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK)).read
-        repr_marker = REPR_DELTA
-    else:
-        source = dio.read
-        repr_marker = REPR_FULL
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
-    # failure reboots into the golden image instead of propagating.
-    if log:
-        log.info("install: erasing + writing FRONT (%d bytes)" % front_size)
+    # failure reboots into the golden image instead of propagating. ERASE FIRST,
+    # THEN open the download: the whole-slot erase takes seconds, and if the socket
+    # were already open it would sit idle that whole time -- a slow flash (the AE3's
+    # external OSPI) on a power-saving WiFi link drops an idle connection, and the
+    # write loop then reads a truncated body. Opening the download only after the
+    # erase means it is read continuously. (A download-open failure here is rare --
+    # the manifest was just fetched from the same server -- and lands cleanly in
+    # golden.)
+    sock = None
     try:
-        _install_stream(source, erase, write, readback, front_size, block, feed,
+        if log:
+            log.info("install: erasing FRONT (%d bytes)" % front_size)
+        erase(front_size)
+        if log:
+            log.info("install: downloading %s (%s)" % (image_url, fmt))
+        sock, body = _open(image_url, ca_pem, socket, ssl)
+        dio = deflate.DeflateIO(body, deflate.GZIP)
+        if fmt == _DELTA_FORMAT:
+            # Delta: stream-decompress the patch and reconstruct the image against the
+            # golden BACK slot (copy-with-diff, ulab add) -- both the patch and the output
+            # are streamed into FRONT, neither is materialised.
+            source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK)).read
+            repr_marker = REPR_DELTA
+        else:
+            source = dio.read
+            repr_marker = REPR_FULL
+        if log:
+            log.info("install: writing FRONT")
+        _install_stream(source, write, readback, front_size, block, feed,
                         progress, expect_sha, repr_marker)
         # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
         # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
@@ -826,11 +842,11 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         # so complete() there is a no-op.
         complete()
     except Exception as e:
-        sock.close()
+        if sock is not None:
+            sock.close()
         if log:
             log.error("install: FAILED after erase (%s); rebooting to golden BACK" % e)
         machine.reset()
-        sock.close()
     if log:
         log.info("install: installed + armed; rebooting into the trial")
     machine.reset()
