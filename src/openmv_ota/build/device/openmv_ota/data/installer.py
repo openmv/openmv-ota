@@ -43,6 +43,16 @@ try:                                   # ...and openmv_wdt (the watchdog helper)
 except ImportError:
     openmv_wdt = None
 
+try:                                   # ...and the frozen HIL coverage markers (inert unless enabled)
+    import openmv_hilcov
+except ImportError:
+    openmv_hilcov = None
+
+
+def _cov(point):                       # pragma: no cover  (device only)
+    if openmv_hilcov is not None:
+        openmv_hilcov.mark(point)
+
 
 class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is frozen)
     def __enter__(self):
@@ -726,6 +736,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # erase/write/readback/back_read -- so all the divergence lives here.
     front = vfs.rom_ioctl(2, 0)
     if hasattr(front, "ioctl"):                       # block-device romfs (e.g. mimxrt)
+        _cov("install.blockdev")
         _bs = front.ioctl(5, 0)                       # block size
         # A block-device port exposes ONE segment covering the WHOLE partition, and
         # rom_ioctl(2, <id>) ignores the id (mimxrt returns the same object for 0 and 1).
@@ -765,6 +776,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             pass                                      # writeblocks persists; no flush ioctl
 
     else:                                             # XIP-mapped romfs (stm32/alif/samd)
+        _cov("install.xip")
         base = uctypes.addressof(front)               # FRONT partition XIP base
 
         def readback(off, n):
@@ -832,6 +844,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     sock = None
     for attempt in range(attempts):
         try:
+            _cov("install.retry" if attempt else "install.start")
             if log:
                 log.info("install: erasing FRONT (%d bytes)" % front_size)
             erase(front_size)
@@ -845,9 +858,11 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 # are streamed into FRONT, neither is materialised.
                 source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK)).read
                 repr_marker = REPR_DELTA
+                _cov("install.delta")
             else:
                 source = dio.read
                 repr_marker = REPR_FULL
+                _cov("install.full")
             if log:
                 log.info("install: writing FRONT")
             _install_stream(source, write, readback, front_size, block, feed,
@@ -858,12 +873,14 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # lose them at reset without it. Block-device ports persist on writeblocks,
             # so complete() there is a no-op.
             complete()
+            _cov("install.armed")
             break                                    # success -> arm + reboot into the trial
         except Exception as e:
             if sock is not None:
                 sock.close()
                 sock = None
             if attempt + 1 >= attempts:
+                _cov("install.fallback")
                 if log:
                     log.error("install: FAILED after %d attempts (%s); rebooting to golden BACK"
                               % (attempts, e))

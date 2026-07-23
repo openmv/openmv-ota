@@ -49,7 +49,8 @@ _BOOT_PY = _DEVICE_DIR / "boot.py"
 # and the clock (openmv_rtc, which reads BUILD_TIME out of the generated _ota_config).
 # The project's device/<name> copy is preferred; the bundled build/device/<name> default
 # is the fallback.
-_FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py")
+_FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py",
+                          "openmv_hilcov.py")
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 
