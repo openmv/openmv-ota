@@ -133,20 +133,25 @@ jobs:
         run: python ci/qemu_boot_test.py --firmware "$RUNNER_TEMP/openmv"
 
   # ---------------------------------------------------------------------------
-  # 2) Exercise the tool end to end on every board, on Linux and macOS:
+  # 2) Exercise the tool end to end on every board (Linux only):
   #    `project new` pegs the project, `--install-sdk` fetches the OpenMV SDK
   #    (pure-Python download), and the firmware build uses the toolchain bundled
   #    *inside that SDK* -- no external arm-gcc / make is installed here. Boards
   #    the tool can't serve must fail cleanly (asserted by the driver).
+  #
+  #    macOS board builds are disabled: a full 13-board matrix on macOS runners
+  #    is ~an hour of the slowest jobs in the run, for little marginal signal
+  #    (the macOS host CLI is already covered by the `test` job above; the SDK's
+  #    bundled toolchain is the same download on both OSes). Re-enable behind a
+  #    scheduled/regression workflow if a macOS-only build break ever surfaces.
   # ---------------------------------------------------------------------------
   build:
-    name: build ${{ matrix.board }} (${{ matrix.os }})
+    name: build ${{ matrix.board }}
     needs: test
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         board:
           - OPENMV2
           - OPENMV3
@@ -170,16 +175,6 @@ jobs:
 
       - name: Install openmv-ota
         run: pip install -e .
-
-      # The firmware build calls GNU `realpath --relative-to` / `stat -c%s`; macOS
-      # ships the BSD versions, which reject those flags. The SDK provides the
-      # compiler toolchain but not GNU coreutils, so install them and put their
-      # un-prefixed (realpath/stat/readlink/...) front of PATH.
-      - name: Install GNU coreutils (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install coreutils
-          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Check out openmv firmware (latest) + submodules
         run: |
