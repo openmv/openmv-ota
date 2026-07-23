@@ -17,9 +17,14 @@ BUILD = 1_700_000_000          # a plausible build timestamp (Nov 2023)
 
 @pytest.fixture(autouse=True)
 def _restore():
-    build, source = rtc.BUILD_TIME, rtc._source
+    build, source, bad = rtc.BUILD_TIME, rtc._source, rtc._bad
     yield
-    rtc.BUILD_TIME, rtc._source = build, source
+    rtc.BUILD_TIME, rtc._source, rtc._bad = build, source, bad
+
+
+def _at(monkeypatch, unix):
+    """Pin what the clock reads."""
+    monkeypatch.setattr(rtc, "now", lambda: unix)
 
 
 def _epoch(monkeypatch, year):
@@ -52,45 +57,98 @@ def test_now_returns_unix_seconds_on_a_1970_epoch_port(monkeypatch):
     assert rtc.now() == 12345
 
 
-# --- the trust rule ---------------------------------------------------------
+# --- the window predicate (pure) --------------------------------------------
 
-def test_a_clock_at_or_past_the_build_is_trusted():
+def test_in_window_accepts_the_build_and_a_bit_after():
     rtc.BUILD_TIME = BUILD
-    assert rtc.trusted(at=BUILD)
-    assert rtc.trusted(at=BUILD + 60)
+    assert rtc._in_window(BUILD)
+    assert rtc._in_window(BUILD + 60)
 
 
-def test_a_clock_before_the_build_is_not_trusted():
+def test_in_window_rejects_before_the_build():
     # the firmware cannot have run before it was built: a dead RTC reads the
     # epoch year and fails this with no network needed
     rtc.BUILD_TIME = BUILD
-    assert not rtc.trusted(at=BUILD - 1)
-    assert not rtc.trusted(at=0)
+    assert not rtc._in_window(BUILD - 1)
+    assert not rtc._in_window(0)
 
 
-def test_an_absurdly_future_clock_is_not_trusted():
+def test_in_window_rejects_an_absurd_future():
     # a corrupt RTC latching all ones must not read as a valid far-future time
     rtc.BUILD_TIME = BUILD
-    assert not rtc.trusted(at=BUILD + rtc._MAX_AHEAD + 1)
+    assert not rtc._in_window(BUILD + rtc._MAX_AHEAD + 1)
 
 
-def test_without_a_build_stamp_nothing_is_trusted():
+# --- trust, with the count-up latch -----------------------------------------
+
+def test_a_clock_valid_from_the_first_reading_is_trusted(monkeypatch):
+    # survived deep sleep / a coin cell: valid at boot, trusted with no sync
+    rtc.BUILD_TIME, rtc._bad = BUILD, False
+    _at(monkeypatch, BUILD + 60)
+    assert rtc.trusted()
+
+
+def test_a_clock_below_the_build_is_not_trusted(monkeypatch):
+    rtc.BUILD_TIME, rtc._bad = BUILD, False
+    _at(monkeypatch, BUILD - 1)
+    assert not rtc.trusted()
+
+
+def test_a_clock_that_counts_up_into_the_window_is_still_not_trusted(monkeypatch):
+    # THE case this latch exists for: a dead RTC starts near the epoch and, left
+    # running long enough, counts past the build. The first out-of-window reading
+    # latches it bad, so the later in-window reading is refused -- it is really
+    # epoch + uptime, not a real time.
+    rtc.BUILD_TIME, rtc._bad = BUILD, False
+    _at(monkeypatch, BUILD - 1000)                 # boot: below the build
+    assert not rtc.trusted()                       # ...latches bad
+    _at(monkeypatch, BUILD + 1000)                 # later: counted up into range
+    assert not rtc.trusted()                       # ...still refused
+
+
+def test_one_bad_reading_latches_even_after_recovery(monkeypatch):
+    # "one invalid reading and we don't trust it": a transient garbage read from
+    # an external RTC poisons trust until the clock is actually re-set
+    rtc.BUILD_TIME, rtc._bad = BUILD, False
+    _at(monkeypatch, BUILD + 60)
+    assert rtc.trusted()                           # fine so far
+    _at(monkeypatch, 0)                            # one garbage reading
+    assert not rtc.trusted()
+    _at(monkeypatch, BUILD + 120)                  # back to a sane reading
+    assert not rtc.trusted()                       # ...but trust is gone
+
+
+def test_setting_the_clock_clears_the_latch(monkeypatch):
+    # a real set (what NTP sync does) rescues a latched-bad clock
+    rtc.BUILD_TIME, rtc._bad = BUILD, True         # latched from a bad boot
+    _at(monkeypatch, BUILD + 60)
+    assert not rtc.trusted()                       # refused despite a good reading
+    _epoch(monkeypatch, 1970)
+    monkeypatch.setitem(__import__("sys").modules, "machine",
+                        type("m", (), {"RTC": type("r", (), {"datetime": lambda s, t: None})})())
+    rtc.set_time(BUILD + 60)
+    assert not rtc._bad
+    assert rtc.trusted()
+
+
+def test_without_a_build_stamp_nothing_is_trusted(monkeypatch):
     # a non-OTA firmware has no floor to compare against, so the clock is
     # reported untrusted rather than assumed good
     rtc.BUILD_TIME = 0
-    assert not rtc.trusted(at=BUILD)
+    _at(monkeypatch, BUILD)
+    assert not rtc.trusted()
 
 
 # --- what gets attached to a record -----------------------------------------
 
 def test_timestamp_is_none_when_untrusted(monkeypatch):
-    rtc.BUILD_TIME = BUILD
+    rtc.BUILD_TIME, rtc._bad = BUILD, False
     monkeypatch.setattr(rtc, "now", lambda: BUILD - 1000)
     assert rtc.timestamp() is None                 # absent beats wrong
 
 
 def test_timestamp_is_the_time_when_trusted(monkeypatch):
-    rtc.BUILD_TIME = BUILD
+    rtc.BUILD_TIME, rtc._bad = BUILD, False
     monkeypatch.setattr(rtc, "now", lambda: BUILD + 5)
     assert rtc.timestamp() == BUILD + 5
 

@@ -18,6 +18,13 @@ immediately, with no NTP round trip; a board that cold-booted with a dead RTC
 reads January 1st of the epoch year, fails the test, and stays untrusted until
 :func:`sync` succeeds.
 
+The check is LATCHED, because the RTC counts monotonically: a dead clock left
+running long enough would eventually count up past the build and a bare window
+test would start believing it (though the reading is really epoch-plus-uptime).
+So one out-of-window reading marks the clock bad until it is actually re-set --
+a clock that has ever looked wrong is never trusted just because it later looks
+right.
+
 WHY AN UNTRUSTED CLOCK REPORTS NOTHING: a wrong timestamp is worse than no
 timestamp, because nothing downstream can tell it is wrong. When the clock is
 untrusted, records carry only ``(sid, seq)`` and the server falls back to its own
@@ -55,6 +62,7 @@ _EPOCH_2000 = 946684800
 _MAX_AHEAD = 20 * 365 * 24 * 3600
 
 _source = "none"                      # "rtc" | "ntp" | "none"
+_bad = False                          # latched: an out-of-window reading was seen
 
 
 def _epoch_offset():
@@ -69,16 +77,35 @@ def now():
     return time.time() + _epoch_offset()
 
 
-def trusted(at=None):
-    """True if the clock reads at or after the build timestamp (and not absurdly
-    far past it). ``at`` overrides the reading, for testing.
+def _in_window(unix):
+    """True if ``unix`` reads at or after the build and not absurdly far past it.
+    Pure -- the window arithmetic, without the session latch :func:`trusted`
+    applies over it."""
+    return BUILD_TIME <= unix <= BUILD_TIME + _MAX_AHEAD
 
-    With no build stamp (a non-OTA firmware) there is no floor to compare
-    against, so the clock is reported untrusted rather than assumed good."""
+
+def trusted():
+    """True only when the clock is one we can believe: it reads inside the window
+    now AND has never read outside it this session (unless re-set since).
+
+    THE LATCH IS THE POINT. The RTC counts monotonically, so a board that cold-
+    boots with a dead RTC starts near the epoch -- far below the build -- but
+    left running long enough it would eventually *count up past* the build, and a
+    bare window check would then believe a time that is really epoch-plus-uptime.
+    So a single out-of-window reading marks the clock bad for the rest of the
+    session; only setting it from a real source (:func:`set_time`, which NTP sync
+    calls) clears that. A clock valid from its very first reading -- one that
+    survived deep sleep, or a coin cell -- is trusted with no sync.
+
+    With no build stamp (a non-OTA firmware) there is no floor, so the clock is
+    reported untrusted rather than assumed good."""
+    global _bad
     if not BUILD_TIME:
         return False
-    unix = now() if at is None else at
-    return BUILD_TIME <= unix <= BUILD_TIME + _MAX_AHEAD
+    if not _in_window(now()):
+        _bad = True                   # one bad reading and we stop believing it
+        return False
+    return not _bad
 
 
 def source():
@@ -97,10 +124,15 @@ def timestamp():
 def set_time(unix_s):
     """Set the RTC from Unix seconds. Uses ``RTC().datetime()``, the only setter
     available on every port; the tuple is ``(year, month, day, weekday, hour,
-    minute, second, subseconds)`` with weekday 1-7."""
+    minute, second, subseconds)`` with weekday 1-7.
+
+    Setting the clock is a known-good time, so it clears the bad-reading latch --
+    this is how an NTP sync rescues a clock that :func:`trusted` had given up on."""
+    global _bad
     import machine
     tm = time.gmtime(int(unix_s) - _epoch_offset())
     machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
+    _bad = False
 
 
 def sync(host=None):  # pragma: no cover  (device: network + RTC)
