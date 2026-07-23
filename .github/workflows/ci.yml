@@ -105,11 +105,17 @@ jobs:
       - name: Install QEMU
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-arm
 
-      - name: Check out openmv firmware (latest) + submodules
+      - name: Check out openmv firmware (latest) + direct submodules
         run: |
           git clone https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"
           git -C "$RUNNER_TEMP/openmv" checkout "$OPENMV_REF"
-          git -C "$RUNNER_TEMP/openmv" submodule update --init --recursive
+          # Direct submodules only, shallow -- openmv's, then micropython's
+          # (mbedtls / lwip / tinyusb / ... are micropython's DIRECT submodules,
+          # which is what the firmware build needs). NOT --recursive, which also
+          # pulls every port's nested tree. Mirrors openmv's own tools/ci.sh
+          # ci_update_submodules exactly, so it's what their firmware CI builds on.
+          git -C "$RUNNER_TEMP/openmv" submodule update --init --depth=1 --no-single-branch
+          git -C "$RUNNER_TEMP/openmv/lib/micropython" submodule update --init --depth=1
 
       - name: Use the SDK's bundled make
         run: |
@@ -179,11 +185,12 @@ jobs:
         run: |
           git clone https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"
           git -C "$RUNNER_TEMP/openmv" checkout "$OPENMV_REF"
-          # --recursive: the board build needs micropython's *nested* submodules
-          # (lwip, mbedtls, mynewt-nimble, cyw43-driver, ...), not just openmv's.
-          # Full (not --depth 1): shallow recursive can't always fetch a submodule's
-          # pinned commit when it isn't the remote's branch tip.
-          git -C "$RUNNER_TEMP/openmv" submodule update --init --recursive
+          # Direct submodules only, shallow (openmv's, then micropython's own --
+          # mbedtls/lwip/tinyusb/... are micropython's direct submodules). NOT
+          # --recursive, which also pulls every port's nested tree for nothing.
+          # Mirrors openmv's tools/ci.sh ci_update_submodules.
+          git -C "$RUNNER_TEMP/openmv" submodule update --init --depth=1 --no-single-branch
+          git -C "$RUNNER_TEMP/openmv/lib/micropython" submodule update --init --depth=1
 
       - name: Use the SDK's bundled toolchain
         run: |
@@ -252,9 +259,12 @@ jobs:
         run: |
           git clone https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"
           git -C "$RUNNER_TEMP/openmv" checkout "$OPENMV_REF"
-          # --recursive: the board build needs micropython's nested submodules;
-          # full (not shallow) so a submodule's pinned commit is always fetchable.
-          git -C "$RUNNER_TEMP/openmv" submodule update --init --recursive
+          # Direct submodules only, shallow (openmv's, then micropython's own --
+          # mbedtls/lwip/tinyusb/... are micropython's direct submodules). NOT
+          # --recursive, which also pulls every port's nested tree. Mirrors
+          # openmv's tools/ci.sh ci_update_submodules.
+          git -C "$RUNNER_TEMP/openmv" submodule update --init --depth=1 --no-single-branch
+          git -C "$RUNNER_TEMP/openmv/lib/micropython" submodule update --init --depth=1
 
       - name: Use the SDK's bundled make
         run: |
