@@ -37,6 +37,11 @@ try:                                   # the firmware freezes openmv_log beside 
 except ImportError:                    # host / tests / a build without logging
     openmv_log = None
 
+try:                                   # frozen HIL coverage markers; inert unless enabled
+    import openmv_hilcov
+except ImportError:                    # host / tests / a production build
+    openmv_hilcov = None
+
 # --- Trailer format (mirror of openmv_ota.ota.trailer) ----------------------
 
 MAGIC = b"OMVR"                         # ROMFS application image
@@ -342,9 +347,15 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
             cfg.OTA_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
     except OtaReject as e:
+        if openmv_hilcov is not None:
+            openmv_hilcov.mark("boot.no_slot." + str(e).split(":", 1)[0])
         if openmv_log is not None:
             openmv_log.log.error("boot: no bootable slot: %s" % e)
         raise
+    if openmv_hilcov is not None:
+        openmv_hilcov.mark("boot.mount." + slot)          # FRONT (trial/confirmed) or BACK (golden)
+        if front_reason is not None:
+            openmv_hilcov.mark("boot.front_reject." + front_reason)
     if openmv_log is not None:
         if front_reason is None:
             openmv_log.log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
