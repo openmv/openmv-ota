@@ -419,19 +419,27 @@ def _offer(resp):
 async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
               ca=None, ntp_host=None):  # pragma: no cover  (device: the network loop)
     """The OTA lifecycle loop (async, so it coexists with the app's asyncio work
-    and openmv_cloud's background tasks). On boot it confirms a healthy trial
-    (via ``self_test``, or unconditionally if none), then forever: resolve the
-    clock, poll the update server, hand the response to registered extensions
-    (the live + ingest grants flow to openmv_cloud here), install any offered
-    update, and back off. Never returns.
+    and openmv_cloud's background tasks). Forever: resolve the clock, poll the
+    update server, hand the response to registered extensions (the live + ingest
+    grants flow to openmv_cloud here), install any offered update, and back off.
+    Never returns.
+
+    Confirming a freshly-installed update (promoting it off trial so it can't roll
+    back) is the APP's call, not run()'s: run() does NOT auto-confirm, because "it
+    booted far enough to start run()" is a weak health signal. Your app calls
+    ``openmv_ota.confirm()`` once it is actually operational (the generated main.py
+    does this in its loop). ``self_test`` is an OPTIONAL boot-time shortcut: pass a
+    function and run() confirms at boot iff it returns True -- for apps whose health
+    is knowable immediately and that would rather not confirm in their own loop.
+    Leave it None (the default) to confirm explicitly.
 
     ``ca`` are TLS anchors (PEM/path); ``None`` uses the bundled ``data/ca.pem``.
     ``ntp_host`` overrides the NTP server used to set the clock when the RTC is
     not already trustworthy (``None`` = ntptime's default pool)."""
     import asyncio
     boot = status()
-    if boot.get("trial") and (self_test is None or self_test()):
-        confirm()
+    if boot.get("trial") and self_test is not None and self_test():
+        confirm()                                    # opt-in boot-time confirm only
     if ca is None:
         here = __file__.rsplit("/", 1)[0]
         ca = _read_file(here + "/data/ca.pem", "rb")

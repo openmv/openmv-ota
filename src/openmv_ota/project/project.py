@@ -501,16 +501,8 @@ async def main():
     # One task runs the entire cloud lifecycle in the background: it resolves the
     # clock (kept across deep sleep, else set from NTP), polls for updates, and
     # delivers the Live/telemetry grants. Point the URL at your own server if you
-    # self-host.
-    #
-    # A freshly-installed update boots ON TRIAL. If the board reboots before your
-    # app confirms it (in the main loop below), it AUTOMATICALLY rolls back to the
-    # last known-good firmware -- your anti-brick safety net. `app_ready` starts
-    # False so run() does NOT confirm the update just because the board powered
-    # on; it is confirmed only once your app has actually run.
-    app_ready = False
-    asyncio.create_task(openmv_ota.run("https://ota.cloud.openmv.io",
-                                       self_test=lambda: app_ready))
+    # self-host. It does NOT confirm updates -- your app does that, below.
+    asyncio.create_task(openmv_ota.run("https://ota.cloud.openmv.io"))
     # ==== END GENERATED ====================================================
 
     # ==== YOUR APP: camera setup ===========================================
@@ -525,19 +517,22 @@ async def main():
     # Your program goes here -- run your vision code on each `img`. As an
     # example, every 30th frame logs a line (live in the dashboard) and posts a
     # telemetry sample (charted in the dashboard). Keep them or delete them.
+    confirmed = False
     frames = 0
     while True:
         img = await cam.snapshot()
         frames += 1
         # ==== GENERATED: confirm a healthy update ==========================
-        # Your app is running, so promote a freshly-installed update from "on
-        # trial" to permanent. IMPORTANT: confirm ONLY once you are sure the board
-        # is fully operational for YOUR app -- camera, sensors, and any network or
-        # peripherals it depends on -- because a confirmed update can never roll
-        # back. Move this to wherever "everything works" is true for you; it is a
-        # no-op when this boot is not a trial.
-        if not app_ready:
-            app_ready = True
+        # A freshly-installed update boots ON TRIAL: if the board reboots before
+        # this runs, it AUTOMATICALLY rolls back to the last known-good firmware
+        # (your anti-brick safety net). Your app is now running, so keep it.
+        # IMPORTANT: confirm ONLY once you are sure the board is fully operational
+        # for YOUR app -- camera, sensors, and any network/peripherals it depends
+        # on -- because a confirmed update can never roll back. Move this to
+        # wherever "everything works" is true for you; confirm() is a no-op when
+        # this boot is not a trial.
+        if not confirmed:
+            confirmed = True
             openmv_ota.confirm()
         # ==== END GENERATED ================================================
         if frames % 30 == 0:
