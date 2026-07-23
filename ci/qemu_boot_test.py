@@ -398,7 +398,8 @@ class _RecLog:
         self.n += 1
 
 plog = _RecLog()
-P["_install_stream"](reader_of(bytes(img)), erase, write, readback, FRONT, BLOCK,
+erase(FRONT)                             # the caller erases before _install_stream now
+P["_install_stream"](reader_of(bytes(img)), write, readback, FRONT, BLOCK,
                      lambda: fed.append(1), P["_Progress"](plog),   # the real RAM reporter
                      None, P["REPR_DELTA"])                         # record the representation
 so = FRONT - 2 * BLOCK

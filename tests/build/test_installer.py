@@ -313,7 +313,8 @@ def _noop():
 def _run_install(image, front_size, block, feed=_noop, progress=None, expect_sha=None,
                  repr_marker=None):
     flash = _FakeFlash(front_size)
-    inst("_install_stream")(_reader_of(image), flash.erase, flash.write,
+    flash.erase(front_size)                 # the caller erases before _install_stream now
+    inst("_install_stream")(_reader_of(image), flash.write,
                             flash.readback, front_size, block, feed, progress, expect_sha,
                             repr_marker)
     return flash
@@ -403,8 +404,9 @@ def test_install_stream_repr_marker_verify_fails():
     image = bytearray(b"\xff" * front)
     image[:4] = b"DATA"
     flash = DropRepr(front)
+    flash.erase(front)
     with pytest.raises(OSError):
-        inst("_install_stream")(_reader_of(bytes(image)), flash.erase, flash.write,
+        inst("_install_stream")(_reader_of(bytes(image)), flash.write,
                                 flash.readback, front, block, _noop, None, None,
                                 inst("REPR_FULL"))
 
@@ -675,8 +677,9 @@ def test_install_stream_erase_verify_fails():
             pass                                  # erase silently does nothing
 
     flash = BadErase(front)
-    with pytest.raises(OSError):
-        inst("_install_stream")(_reader_of(b"\xff" * front), flash.erase, flash.write,
+    flash.erase(front)                      # the caller's erase silently did nothing
+    with pytest.raises(OSError):            # _install_stream's read-back verify catches it
+        inst("_install_stream")(_reader_of(b"\xff" * front), flash.write,
                                 flash.readback, front, block, _noop)
 
 
@@ -691,8 +694,9 @@ def test_install_stream_write_verify_fails():
     image = bytearray(b"\xff" * front)
     image[:4] = b"DATA"
     flash = BadWrite(front)
+    flash.erase(front)
     with pytest.raises(OSError):
-        inst("_install_stream")(_reader_of(bytes(image)), flash.erase, flash.write,
+        inst("_install_stream")(_reader_of(bytes(image)), flash.write,
                                 flash.readback, front, block, _noop)
 
 
@@ -707,6 +711,7 @@ def test_install_stream_arm_verify_fails():
             super().write(off, data)
 
     flash = DropPending(front)
+    flash.erase(front)
     with pytest.raises(OSError):
-        inst("_install_stream")(_reader_of(b"\xff" * front), flash.erase, flash.write,
+        inst("_install_stream")(_reader_of(b"\xff" * front), flash.write,
                                 flash.readback, front, block, _noop)
