@@ -417,14 +417,17 @@ def _offer(resp):
 
 
 async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
-              ca=None):  # pragma: no cover  (device: the network loop)
+              ca=None, ntp_host=None):  # pragma: no cover  (device: the network loop)
     """The OTA lifecycle loop (async, so it coexists with the app's asyncio work
     and openmv_cloud's background tasks). On boot it confirms a healthy trial
-    (via ``self_test``, or unconditionally if none), then forever: poll the
-    update server, hand the response to registered extensions (the live + ingest
-    grants flow to openmv_cloud here), install any offered update, and back off.
-    Never returns. ``ca`` are TLS anchors (PEM/path); ``None`` uses the bundled
-    ``data/ca.pem``."""
+    (via ``self_test``, or unconditionally if none), then forever: resolve the
+    clock, poll the update server, hand the response to registered extensions
+    (the live + ingest grants flow to openmv_cloud here), install any offered
+    update, and back off. Never returns.
+
+    ``ca`` are TLS anchors (PEM/path); ``None`` uses the bundled ``data/ca.pem``.
+    ``ntp_host`` overrides the NTP server used to set the clock when the RTC is
+    not already trustworthy (``None`` = ntptime's default pool)."""
     import asyncio
     boot = status()
     if boot.get("trial") and (self_test is None or self_test()):
@@ -436,6 +439,7 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
         ca = _read_file(ca, "rb")
     while True:
         wait = poll_after_s
+        _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
         try:
             resp = await _checkin(server_url, _collect_body(identity(), status()), ca)
             _notify(resp)
@@ -447,6 +451,19 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
             pass                                     # transient failure -> retry next poll
         _wdt_feed()
         await asyncio.sleep(wait)
+
+
+def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
+    """Establish a trustworthy wall clock so records can carry real timestamps.
+    A no-op once the clock is good (the deep-sleep / coin-cell case resolves on
+    the first pass with no network); otherwise it retries NTP each poll until the
+    network is up. Defensive: a missing clock module or a failed sync just leaves
+    timestamps absent -- ``seq`` still orders every record."""
+    try:
+        import openmv_rtc
+        openmv_rtc.resolve(ntp_host)
+    except Exception:
+        pass
 
 
 async def _read_capped(reader, limit):  # pragma: no cover  (device network)

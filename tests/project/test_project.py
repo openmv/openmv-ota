@@ -653,9 +653,13 @@ def test_load_project_verify_false_skips(tmp_path, make_firmware, make_sdk, git_
 def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, make_sdk):
     root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, ota_keys=2, factory_keys=1)
     main = (proj.ProjectPaths(root).app_dir / "main.py").read_text()
-    assert "openmv_ota.run(" in main
-    assert "from openmv_cloud import csi, logs" in main
+    assert "openmv_ota.run(" in main               # the cloud lifecycle task
+    assert "from openmv_cloud import" in main       # the SDK wrappers
     assert "logs.enable()" in main
+    assert "datalog.post(" in main                  # a telemetry example
+    assert "configure(" in main                     # the tunable RAM limits
+    # the labelled sections tell the user what is scaffolding vs their own code
+    assert "GENERATED" in main and "YOUR APP" in main
 
 
 def test_non_ota_project_scaffolds_the_bare_main(tmp_path, make_firmware, make_sdk):
