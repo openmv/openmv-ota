@@ -200,3 +200,69 @@ jobs:
           INSTALL_SDK: "1"
           WORKDIR: ${{ runner.temp }}/projects
         run: bash ci/build_boards.sh "$RUNNER_TEMP/openmv" "${{ matrix.board }}"
+
+  # ---------------------------------------------------------------------------
+  # 3) Hardware-in-the-loop (first milestone: build on the real board's runner).
+  #    Gated on `test`, so the bench only ever runs already-green code -- the HIL
+  #    jobs launch after the unit tests in the same run. Limited to main pushes +
+  #    manual dispatch so pull requests don't tie up the hardware.
+  #
+  #    Each board maps to its self-hosted runner by label (the bench lives behind
+  #    a NAT on Tailscale; runners poll out). This milestone proves the node can
+  #    install the toolchain (the SDK, userspace -- no root on these runners) and
+  #    compile the OTA firmware on the board's own machine. Flashing over the
+  #    attached J-Link and the on-device checks build on top of this next; when
+  #    they land, HIL moves to its own workflow so a new push can't cancel a job
+  #    mid-flash (this workflow's concurrency cancels in progress).
+  # ---------------------------------------------------------------------------
+  hil:
+    name: hil ${{ matrix.board }}
+    needs: test
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.ref == 'refs/heads/main'
+      || github.ref == 'refs/heads/master'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: OPENMV_AE3
+            label: board-openmv-ae3      # runner openmv-ae3-pag7936
+          - board: OPENMV_N6
+            label: board-openmv-n6       # runner openmv-n6-pag7936
+          - board: OPENMV_RT1060
+            label: board-openmv-rt1062   # runner openmv-rt1060-ov5640 (RT1062 silicon)
+    runs-on: [self-hosted, hil, "${{ matrix.label }}"]
+    # Serialize per physical board and never cancel a running bench job.
+    concurrency:
+      group: hil-${{ matrix.label }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      # The nodes ship system python3.12; use a throwaway venv in RUNNER_TEMP
+      # (wiped per job) so a job never pollutes the shared interpreter.
+      - name: Install openmv-ota (venv)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q -e .
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: Check out openmv firmware + submodules
+        run: |
+          git clone https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"
+          git -C "$RUNNER_TEMP/openmv" checkout "$OPENMV_REF"
+          # --recursive: the board build needs micropython's nested submodules;
+          # full (not shallow) so a submodule's pinned commit is always fetchable.
+          git -C "$RUNNER_TEMP/openmv" submodule update --init --recursive
+
+      - name: Use the SDK's bundled make
+        run: |
+          SDK_VERSION="$(cat "$RUNNER_TEMP/openmv/SDK_VERSION")"
+          echo "$HOME/openmv-sdk-$SDK_VERSION/make" >> "$GITHUB_PATH"
+
+      - name: Build + verify the OTA firmware on the board's own runner
+        env:
+          INSTALL_SDK: "1"
+          WORKDIR: ${{ runner.temp }}/projects
+        run: bash ci/build_boards.sh "$RUNNER_TEMP/openmv" "${{ matrix.board }}"
