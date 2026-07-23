@@ -61,6 +61,7 @@ CFG = {
 BOARDS = {
     "OPENMV_N6": {
         "cov_uart": 3,                       # UART(3) on P4/P5
+        "cov_write": "install.xip",          # this board's write path (block-dev boards differ)
         "network": "lan",
         "flash": "jlink_stm32",
         "jlink_device": "STM32N657L0",
@@ -70,6 +71,7 @@ BOARDS = {
     },
     "OPENMV_AE3": {
         "cov_uart": 1,                       # UART(1) on P4/P5
+        "cov_write": "install.xip",
         "network": "wifi",
         "flash": "dfu_alif",
         "romfs_alt": "6",                    # external OSPI romfs partition
@@ -104,6 +106,42 @@ def log(msg):
     print("[hil] " + msg, flush=True)
 
 
+# The coverage checklist: an OTA code path is "covered" when its (stable) log line shows
+# up on the UART. Keyed on a substring so the timestamp/level prefix and args don't matter.
+# These are the SAME lines the device logs normally -- the bench just captures them at DEBUG.
+# Update this when a path's log wording changes (the one coupling we accept for a single,
+# no-special-markers logging channel).
+COVERAGE = {
+    "boot: mounted FRONT": "boot.mount.front",
+    "boot: mounted BACK": "boot.mount.back",
+    "boot: FRONT rejected": "boot.front_reject",
+    "boot: no bootable slot": "boot.no_slot",
+    "install: erasing FRONT": "install.start",
+    "install: write path block-device": "install.blockdev",
+    "install: write path XIP": "install.xip",
+    "install: representation delta": "install.delta",
+    "install: representation full": "install.full",
+    "install: attempt": "install.retry",
+    "install: installed + armed": "install.armed",
+    "install: FAILED after": "install.fallback",
+    "checkin: response received": "run.checkin",
+    "checkin: update offered": "run.offer",
+    "confirm: kept running FRONT": "confirm.promoted",
+}
+
+
+def expected_coverage(board):
+    """The coverage points a happy-path DELTA install on this board MUST hit. Missing any
+    means either the path did not run OR its log line drifted -- both fail the run, so a
+    covered log line can't silently disappear without the HIL checklist being updated.
+    (Other paths -- rollback, retry, full, the other write model -- belong to their own
+    scenarios; this default scenario is not expected to hit them.)"""
+    return {
+        "boot.mount.front", "run.checkin", "run.offer", "install.start",
+        BOARDS[board]["cov_write"], "install.delta", "install.armed", "confirm.promoted",
+    }
+
+
 # ---------------------------------------------------------------------------
 # UART marker capture -- a background reader that records every HILCOV line for the
 # whole cycle, independent of the USB-CDC console and surviving every reboot.
@@ -135,8 +173,12 @@ class UartCapture:
                 if not s:
                     continue
                 self.raw.append(s)
-                if s.startswith("HILCOV "):
-                    self.markers.append((round(time.time() - self._t0, 1), s[7:]))
+                # Coverage = the device's own log lines (captured at DEBUG on the UART):
+                #   "[  12.345] INFO openmv_ota: install: representation delta"
+                for sub, cid in COVERAGE.items():
+                    if sub in s:
+                        self.markers.append((round(time.time() - self._t0, 1), cid))
+                        break
 
     def points(self):
         return sorted({p for _, p in self.markers})
@@ -208,8 +250,12 @@ def prepare(board, checkout):
     log("prepare: install checkout + refresh vendored runtime + bench app")
     sh([ota("pip"), "install", "-q", "-e", checkout], timeout=300)
     dev = checkout + "/src/openmv_ota/build/device"
+    # The project VENDORS its own copies -- the build reads those, not the package: the
+    # romfs app lib (openmv_ota/openmv_cloud) AND the frozen survival modules in device/
+    # (openmv_log/openmv_wdt/openmv_rtc). Refresh both so the run tests the checkout.
     sh("cp -rf %s/openmv_ota/. %s/app/lib/openmv_ota/" % (dev, CFG["project"]))
     sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
+    sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board))
     # enable the coverage UART on the board (bench-only file; survives across the OTA)
     device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["ca_board"].rsplit("/", 1)[0] +
@@ -395,8 +441,19 @@ def main():
             phase("publish", lambda: publish_update(args.board, args.target))
         cap = UartCapture(CFG["uart"])
         cap.start(time.time())
-        passed = run_cycle(devid, "1.0.0", args.target, cap, args.timeout)
-        trace["passed"] = passed
+        version_ok = run_cycle(devid, "1.0.0", args.target, cap, args.timeout)
+        time.sleep(2)                            # let the last UART lines land
+        expected = expected_coverage(args.board)
+        missing = sorted(expected - set(cap.points()))
+        trace["version_reached"] = version_ok
+        trace["expected"] = sorted(expected)
+        trace["missing_expected"] = missing
+        # PASS requires BOTH: the device promoted the update AND every expected path was
+        # logged (a dropped/renamed coverage line -> missing_expected -> FAIL, by design).
+        trace["passed"] = version_ok and not missing
+        if version_ok and missing:
+            log("FAIL: promoted %s but missing expected coverage: %s"
+                % (args.target, ", ".join(missing)))
     except Exception as e:
         trace["error"] = str(e)
         log("ERROR: " + str(e))
@@ -404,14 +461,17 @@ def main():
         if cap is not None:
             cap.stop()
             trace["markers"] = cap.points()
+            trace["missed"] = sorted(set(COVERAGE.values()) - set(cap.points()))
             trace["marker_trace"] = cap.markers
-            trace["raw_tail"] = cap.raw[-40:]
+            trace["log"] = cap.raw                # the full device log for this run
         trace["elapsed_s"] = round(time.time() - t0, 1)
         json.dump(trace, open(args.trace, "w"), indent=2)
 
     log("=" * 60)
     log("RESULT: %s  (%.0fs)" % ("PASS" if trace["passed"] else "FAIL", trace["elapsed_s"]))
-    log("coverage markers hit (%d): %s" % (len(trace["markers"]), ", ".join(trace["markers"])))
+    log("coverage %d/%d: %s" % (len(trace["markers"]), len(COVERAGE), ", ".join(trace["markers"])))
+    if trace.get("missed"):
+        log("not covered this run: " + ", ".join(trace["missed"]))
     log("trace -> " + args.trace)
     return 0 if trace["passed"] else 1
 

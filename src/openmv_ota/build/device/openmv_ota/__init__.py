@@ -70,17 +70,6 @@ try:
 except ImportError:
     _wdt = None
 
-try:                                   # frozen HIL coverage markers; inert unless enabled
-    import openmv_hilcov as _hilcov
-except ImportError:
-    _hilcov = None
-
-
-def _cov(point):  # pragma: no cover  (device only)
-    if _hilcov is not None:
-        _hilcov.mark(point)
-
-
 class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is frozen)
     def __enter__(self):
         return self
@@ -460,12 +449,12 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
         _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
         try:
             resp = await _checkin(server_url, _collect_body(identity(), status()), ca)
-            _cov("run.checkin")
+            log.debug("checkin: response received")
             _notify(resp)
             wait = resp.get("poll_after_s", poll_after_s)
             manifest_url = _offer(resp)
             if manifest_url:
-                _cov("run.offer")
+                log.debug("checkin: update offered")
                 install(manifest_url, ca)            # does not return on success
         except Exception:
             pass                                     # transient failure -> retry next poll
@@ -565,7 +554,6 @@ def confirm():  # pragma: no cover
         return False
     _advance_rollback(_ota_config, version)
     _write_verified(0, off + _CONFIRMED_OFF, CONFIRMED)
-    _cov("confirm.promoted")
     log.info("confirm: kept running FRONT image")
     return True
 
