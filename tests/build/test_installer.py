@@ -391,6 +391,20 @@ def test_progress_zero_total_is_full():
     assert rec.lines == ["install: 100% (0/0 bytes)"]
 
 
+def test_progress_reset_restarts_the_ten_percent_steps():
+    # A retried download re-streams from 0; reset() rewinds the step counter so the
+    # fresh attempt logs its 10% marks again instead of staying silent past the old high.
+    rec = _RecordLog()
+    p = inst("_Progress")(rec)
+    p(50, 100)
+    p.reset()
+    p(10, 100)                                 # would be suppressed (< 50%) without reset
+    assert rec.lines == [
+        "install: 50% (50/100 bytes)",
+        "install: 10% (10/100 bytes)",
+    ]
+
+
 def test_install_stream_repr_marker_verify_fails():
     block, front = 4096, 2 * 4096
     so = front - 2 * block
