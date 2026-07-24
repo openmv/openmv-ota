@@ -150,6 +150,8 @@ COVERAGE = {
     "install: installed + armed": "install.armed",
     "install: FAILED after": "install.fallback",
     "install: rejected before erase": "install.reject",
+    "install: reject bad signature": "install.reject_sig",   # sig verify failed (the trust boundary)
+    "install: reject vetting": "install.reject_vet",         # anti-rollback/board/platform rejected
     "install: TLS up": "install.tls",                    # a verified TLS socket to the server
     "install: fetched body": "install.fetched",          # a 2xx download body (manifest/image)
     "install: manifest accepted": "install.manifest_ok",  # sig + board/version/platform vetting passed
@@ -245,9 +247,9 @@ SCENARIOS = {
         "forbid": ["confirm.promoted"],
     },
     "bad_sig": {
-        "desc": "manifest signed by an untrusted key -> refused pre-erase, stays golden",
+        "desc": "manifest signature does not verify -> refused pre-erase, stays golden",
         "publish": "bad_sig", "app": "confirm", "end": "golden",
-        "expect": ["run.offer", "install.reject"],
+        "expect": ["run.offer", "install.reject", "install.reject_sig"],
         "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
     },
     "bad_version": {
@@ -255,7 +257,7 @@ SCENARIOS = {
         # A full image (not a delta): a delta must go golden->newer, but here the release is
         # OLDER than golden -- the device rejects it at the version check, before rep selection.
         "publish": "full", "app": "confirm", "end": "golden", "version": "0.9.0",
-        "expect": ["run.offer", "install.reject"],
+        "expect": ["run.offer", "install.reject", "install.reject_vet"],
         "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
         # NEEDS the bench server started with test_offer_downgrades on
         # (OPENMV_OTA_TEST_OFFER_DOWNGRADES=1). A correct server never OFFERS a release <= a
@@ -696,11 +698,32 @@ def _tamper(board, which):
     newest = imgs[-1]                                    # the release we just published
     rel = os.path.basename(os.path.dirname(newest))      # rel_<id>, shared by image + manifest
     if which == "manifest":
+        # Corrupt the SIGNATURE specifically, then re-seal the CRC, so the device reaches
+        # the actual signature-verify boundary. A naive mid-stream flip lands in the header
+        # (key_id -> "untrusted key") or body (-> "crc mismatch") depending on manifest size,
+        # so it rejects BEFORE verify() ever runs -- the sig path (the trust boundary we mean
+        # to test) is never exercised. Flip one signature byte, recompute the trailing crc32
+        # over header+body+sig: parse + key lookup pass, only verify() fails.
+        import struct
+        import binascii
         target = "%s/manifests/%s/manifest.bin" % (root, rel)
-    else:
-        # prefer the delta blob (the device picks it over full when the base matches)
-        deltas = [p for p in imgs if os.path.dirname(p).endswith(rel) and p.endswith(".delta.gz")]
-        target = deltas[-1] if deltas else newest
+        with open(target, "r+b") as f:
+            data = bytearray(f.read())
+        hdr = "<4sIIIIi"                                 # magic, hver, body_size, sig_size, key, alg
+        hsize = struct.calcsize(hdr)                     # 24
+        _, _, body_size, sig_size, _, _ = struct.unpack_from(hdr, data, 0)
+        sig_off = hsize + body_size                      # signature region start
+        body_end = sig_off + sig_size                    # crc covers data[:body_end]
+        data[sig_off] ^= 0xFF                            # break the signature, nothing else
+        crc = binascii.crc32(bytes(data[:body_end])) & 0xFFFFFFFF
+        struct.pack_into("<I", data, body_end, crc)      # re-seal so parse + key pass
+        with open(target, "r+b") as f:
+            f.write(data)
+        log("  tampered signature byte@%d of %s (crc re-sealed)" % (sig_off, os.path.basename(target)))
+        return
+    # image: mid-stream flip -> the download decompress/sha256 fails AFTER the FRONT erase.
+    deltas = [p for p in imgs if os.path.dirname(p).endswith(rel) and p.endswith(".delta.gz")]
+    target = deltas[-1] if deltas else newest
     with open(target, "r+b") as f:
         f.seek(0, 2)
         n = f.tell()
