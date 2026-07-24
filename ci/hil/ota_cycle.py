@@ -209,8 +209,7 @@ class UartCapture:
 # Bench app (main.py) -- minimal: bring the network up, run the OTA loop against the
 # bench server, and confirm the trial once operational. LAN or WiFi per board.
 # ---------------------------------------------------------------------------
-def bench_main_py(board):
-    net = BOARDS[board]["network"]
+def bench_main_py(board, net):
     if net == "wifi":
         bring_up = (
             'wl = network.WLAN(network.STA_IF)\n'
@@ -259,7 +258,7 @@ def set_version(v):
     json.dump(d, open(p, "w"), indent=2)
 
 
-def prepare(board, checkout):
+def prepare(board, checkout, network):
     log("prepare: install checkout + refresh vendored runtime + bench app")
     sh([ota("pip"), "install", "-q", "-e", checkout], timeout=300)
     dev = checkout + "/src/openmv_ota/build/device"
@@ -269,7 +268,7 @@ def prepare(board, checkout):
     sh("cp -rf %s/openmv_ota/. %s/app/lib/openmv_ota/" % (dev, CFG["project"]))
     sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
     sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
-    open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board))
+    open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network))
     # enable the coverage UART on the board (bench-only file; survives across the OTA)
     device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["ca_board"].rsplit("/", 1)[0] +
                 "/.hilcov_uart", BOARDS[board]["cov_uart"]))
@@ -308,41 +307,58 @@ def _flash_jlink_stm32(board):
             raise RuntimeError("J-Link %s flash failed:\n%s" % (name, out[-1500:]))
 
 
-def _flash_dfu_alif(board):
-    b = BOARDS[board]
-    build = CFG["project"] + "/build"
-    img = "%s/%s-factory-romfs.img" % (build, board)
-    rimg = "%s/%s-romfs.img" % (build, board)
-    sh("cp -f %s %s" % (img, rimg))
-    log("flash romfs -> OSPI alt %s (DFU, ~10 min)" % b["romfs_alt"])
-    device_exec("import machine; machine.bootloader()", timeout=30)
-    time.sleep(6)
-    # write WITHOUT --reset (that hangs after the write); poll the piped log, then leave DFU.
-    logf = "/tmp/dfu_romfs.out"
-    proc = subprocess.Popen([CFG["dfu"], "-d", ",37c5:96e3", "-a", b["romfs_alt"], "-D", rimg],
+def _dfu_write(alt, path, timeout_s):
+    """One DFU download to an alt setting, WITHOUT --reset (that hangs the AE3 after the
+    write completes). Poll the piped output for 'Done!', then return -- the caller leaves
+    DFU once. Raises if the write didn't finish."""
+    logf = "/tmp/dfu_a%s.out" % alt
+    proc = subprocess.Popen([CFG["dfu"], "-d", ",37c5:96e3", "-a", alt, "-D", path],
                             stdout=open(logf, "w"), stderr=subprocess.STDOUT)
-    deadline = time.time() + 1200
+    deadline = time.time() + timeout_s
     while time.time() < deadline:
-        time.sleep(15)
-        tail = open(logf, errors="replace").read()
-        if "Done!" in tail or proc.poll() is not None:
+        time.sleep(10)
+        if "Done!" in open(logf, errors="replace").read() or proc.poll() is not None:
             break
     proc.kill()
     if "Done!" not in open(logf, errors="replace").read():
-        raise RuntimeError("DFU romfs write did not complete:\n" +
-                           open(logf, errors="replace").read()[-1500:])
+        raise RuntimeError("DFU alt %s write did not complete:\n%s" % (
+            alt, open(logf, errors="replace").read()[-1500:]))
+
+
+def _flash_dfu_alif(board):
+    b = BOARDS[board]
+    build = CFG["project"] + "/build"
+    fw = "%s/%s-firmware-M55_HP.bin" % (build, board)     # the main core (carries the frozen
+    img = "%s/%s-factory-romfs.img" % (build, board)      # boot.py + openmv_log)
+    rimg = "%s/%s-romfs.img" % (build, board)
+    sh("cp -f %s %s" % (img, rimg))
+    # One DFU session: firmware (MRAM alt 1, fast) THEN romfs (OSPI, ~10 min), then leave.
+    log("flash: reset to DFU")
+    device_exec("import machine; machine.bootloader()", timeout=30, check=False)
+    time.sleep(6)
+    log("flash firmware -> MRAM alt 1 (DFU)")
+    _dfu_write("1", fw, 300)
+    log("flash romfs -> OSPI alt %s (DFU, ~10 min)" % b["romfs_alt"])
+    _dfu_write(b["romfs_alt"], rimg, 1200)
     sh([CFG["dfu"], "-d", ",37c5:96e3", "-a", b["romfs_alt"], "-e"], check=False, timeout=60)
-    time.sleep(8)
+    time.sleep(15)                           # the AE3 (Alif) takes longer to boot + re-enumerate
 
 
 def verify_golden():
     log("verify: golden boots + /rom mounts + main.py present (uncompiled)")
-    time.sleep(3)
-    rc, out = device_exec(
-        'import os; r=os.listdir("/"); '
-        'print("ROMOK", ("rom" in r) and ("main.py" in os.listdir("/rom")))')
-    if "ROMOK True" not in out:
-        raise RuntimeError("golden did not mount a valid romfs:\n" + out)
+    last = ""
+    for _ in range(8):                       # the board may still be (re)booting after a flash
+        time.sleep(5)
+        try:
+            _rc, last = device_exec(
+                'import os; r=os.listdir("/"); '
+                'print("ROMOK", ("rom" in r) and ("main.py" in os.listdir("/rom")))',
+                timeout=30, check=False)
+            if "ROMOK True" in last:
+                return
+        except Exception as e:
+            last = str(e)
+    raise RuntimeError("golden did not mount a valid romfs:\n" + last)
 
 
 def publish_update(board, version):
@@ -425,15 +441,20 @@ def main():
     ap.add_argument("--target", default="1.1.0", help="the update version to install")
     ap.add_argument("--timeout", type=int, default=int(env("HIL_TIMEOUT", "600")))
     ap.add_argument("--trace", default=env("HIL_TRACE", "hil-trace.json"))
+    ap.add_argument("--network", choices=["lan", "wifi"], default=None,
+                    help="override the board's default network for the bench app (e.g. N6 wifi)")
     ap.add_argument("--skip-provision", action="store_true",
-                    help="reuse the already-flashed golden (skip build/flash/verify)")
+                    help="reuse the already-flashed golden (skip build/flash/verify). Use WITH "
+                         "--skip-publish: a fresh publish rebuilds the golden, and a delta's base "
+                         "must match the flashed golden or the install fails the sha256 check.")
     ap.add_argument("--skip-publish", action="store_true",
                     help="reuse the already-published update")
     args = ap.parse_args()
 
+    network = args.network or BOARDS[args.board]["network"]
     t0 = time.time()
-    trace = {"board": args.board, "target": args.target, "passed": False, "markers": [],
-             "phases": {}, "raw_tail": []}
+    trace = {"board": args.board, "network": network, "target": args.target,
+             "passed": False, "markers": [], "phases": {}}
     cap = None
 
     def phase(name, fn):
@@ -442,8 +463,9 @@ def main():
         trace["phases"][name] = round(time.time() - s, 1)
 
     try:
+        log("board %s, network %s, target %s" % (args.board, network, args.target))
         if not args.skip_provision:
-            phase("prepare", lambda: prepare(args.board, args.checkout))
+            phase("prepare", lambda: prepare(args.board, args.checkout, network))
             phase("build_golden", lambda: build_golden(args.board))
             phase("flash_golden", lambda: flash_golden(args.board))
             phase("verify_golden", verify_golden)
