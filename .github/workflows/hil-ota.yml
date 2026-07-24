@@ -33,32 +33,42 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Resolve which board/network legs to run from the `board` input. A job-level `if` can't see
+  # `matrix` (that context isn't available there -- it was an invalid-workflow error), and a
+  # static matrix can't be filtered inline, so build the matrix here and feed it via fromJSON.
+  plan:
+    name: plan legs
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.f.outputs.matrix }}
+    steps:
+      - id: f
+        env:
+          BOARD: ${{ github.event.inputs.board }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          # The N6 and RT1062 have both interfaces, so each runs twice (lan + wifi). The RT1062
+          # is the block-device (mimxrt) model, provisioned via blhost (machine.bootloader ->
+          # resident SBL); its runner label is board-openmv-rt1062 (RT1062 silicon), as in ci.yml.
+          legs = [
+              {"board": "OPENMV_N6", "network": "lan", "label": "board-openmv-n6"},
+              {"board": "OPENMV_N6", "network": "wifi", "label": "board-openmv-n6"},
+              {"board": "OPENMV_AE3", "network": "wifi", "label": "board-openmv-ae3"},
+              {"board": "OPENMV_RT1060", "network": "lan", "label": "board-openmv-rt1062"},
+              {"board": "OPENMV_RT1060", "network": "wifi", "label": "board-openmv-rt1062"},
+          ]
+          board = os.environ.get("BOARD") or "all"
+          sel = legs if board == "all" else [l for l in legs if l["board"] == board]
+          print("matrix=" + json.dumps({"include": sel}))
+          PY
+
   ota-cycle:
     name: ota-cycle ${{ matrix.board }} ${{ matrix.network }}
-    if: ${{ github.event.inputs.board == 'all' || github.event.inputs.board == matrix.board }}
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # The N6 has both interfaces, so it runs twice (lan + wifi) on the same runner.
-          - board: OPENMV_N6
-            network: lan
-            label: board-openmv-n6
-          - board: OPENMV_N6
-            network: wifi
-            label: board-openmv-n6
-          - board: OPENMV_AE3
-            network: wifi
-            label: board-openmv-ae3
-          # The RT1062 is the block-device write model (mimxrt) -- provisioned via blhost
-          # (machine.bootloader -> resident SBL). Like the N6 it has both interfaces, so it
-          # runs the cycle over each (lan + wifi) on the same runner.
-          - board: OPENMV_RT1060
-            network: lan
-            label: board-openmv-rt1060
-          - board: OPENMV_RT1060
-            network: wifi
-            label: board-openmv-rt1060
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: [self-hosted, hil, "${{ matrix.label }}"]
     # One board at a time; never cancel a running flash/cycle.
     concurrency:

@@ -205,9 +205,10 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 3) Hardware-in-the-loop (first milestone: build on the real board's runner).
-  #    Gated on `test`, so the bench only ever runs already-green code -- the HIL
-  #    jobs launch after the unit tests in the same run. Limited to main pushes +
-  #    manual dispatch so pull requests don't tie up the hardware.
+  #    Gated on `build`, so the bench only runs AFTER every board build is green --
+  #    the HIL jobs launch once the build matrix finishes (not alongside it), so a
+  #    broken build never reaches the hardware and the two don't contend. Limited to
+  #    main pushes + manual dispatch so pull requests don't tie up the hardware.
   #
   #    Each board maps to its self-hosted runner by label (the bench lives behind
   #    a NAT on Tailscale; runners poll out). This milestone proves the node can
@@ -219,7 +220,7 @@ jobs:
   # ---------------------------------------------------------------------------
   hil:
     name: hil ${{ matrix.board }}
-    needs: test
+    needs: build
     if: >-
       github.event_name == 'workflow_dispatch'
       || github.ref == 'refs/heads/main'
