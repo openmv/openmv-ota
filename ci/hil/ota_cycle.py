@@ -188,10 +188,12 @@ class UartCapture:
                 self.raw.append(s)
                 # Coverage = the device's own log lines (captured at DEBUG on the UART):
                 #   "[  12.345] INFO openmv_ota: install: representation delta"
+                # No break: the last line before a machine.reset() can be truncated and
+                # concatenated with the next boot's line, so one captured line may carry
+                # more than one marker -- record them all.
                 for sub, cid in COVERAGE.items():
                     if sub in s:
                         self.markers.append((round(time.time() - self._t0, 1), cid))
-                        break
 
     def points(self):
         return sorted({p for _, p in self.markers})
