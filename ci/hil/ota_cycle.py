@@ -150,6 +150,10 @@ COVERAGE = {
     "install: installed + armed": "install.armed",
     "install: FAILED after": "install.fallback",
     "install: rejected before erase": "install.reject",
+    "install: TLS up": "install.tls",                    # a verified TLS socket to the server
+    "install: fetched body": "install.fetched",          # a 2xx download body (manifest/image)
+    "install: manifest accepted": "install.manifest_ok",  # sig + board/version/platform vetting passed
+    "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
     "checkin: response received": "run.checkin",
     "checkin: update offered": "run.offer",
     "confirm: kept running FRONT": "confirm.promoted",
@@ -173,7 +177,8 @@ SCENARIOS = {
     "delta": {
         "desc": "happy path: delta install -> trial -> confirm -> promote",
         "publish": "delta", "app": "confirm", "end": "promoted",
-        "expect": ["boot.mount.front", "run.checkin", "run.offer", "install.start",
+        "expect": ["boot.mount.front", "run.checkin_http", "run.checkin", "run.offer",
+                   "install.tls", "install.fetched", "install.manifest_ok", "install.start",
                    "{cov_write}", "install.delta", "install.armed", "confirm.promoted"],
         "forbid": ["install.full", "install.fallback", "install.reject", "boot.mount.back"],
     },
