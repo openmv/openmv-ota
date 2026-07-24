@@ -327,10 +327,17 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         if bdev is not None:
             _bs = bdev.ioctl(5, 0)
             bdev.writeblocks(off // _bs, marker, off % _bs)
-        elif vfs.rom_ioctl(4, 0, off, marker) < 0:
-            raise OSError("rom_ioctl write failed")
+            if openmv_log is not None:
+                openmv_log.log.debug("boot: marked slot block-device")
+        else:
+            if vfs.rom_ioctl(4, 0, off, marker) < 0:
+                raise OSError("rom_ioctl write failed")
+            if openmv_log is not None:
+                openmv_log.log.debug("boot: marked slot XIP")
         if read(off, len(marker)) != marker:
             raise OSError("marker write verify failed")
+        if openmv_log is not None:
+            openmv_log.log.debug("boot: slot marker verified")
 
     try:
         vfs.umount("/rom")           # drop mp_init's whole-partition auto-mount
@@ -364,6 +371,8 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     os.chdir("/rom")
     sys.path.append("/rom")
     sys.path.append("/rom/lib")
+    if openmv_log is not None:
+        openmv_log.log.info("boot: ready, running app")
 
 
 try:                                   # the build generates _ota_config beside boot.py

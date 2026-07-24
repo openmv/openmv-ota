@@ -745,8 +745,9 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # for byte-granular access. _install_stream is agnostic -- it only sees
     # erase/write/readback/back_read -- so all the divergence lives here.
     front = vfs.rom_ioctl(2, 0)
-    if hasattr(front, "ioctl"):                       # block-device romfs (e.g. mimxrt)
-        if log:
+    _seen = set()                                     # one-shot log guard: emit each per-chunk
+    if hasattr(front, "ioctl"):                       # write marker once (bounded, RAM-safe)
+        if log:                                       # block-device romfs (e.g. mimxrt)
             log.debug("install: write path block-device")
         _bs = front.ioctl(5, 0)                       # block size
         # A block-device port exposes ONE segment covering the WHOLE partition, and
@@ -761,13 +762,24 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 front.ioctl(6, b)                     # VM between blocks (no dead-time erase);
                 b += 1                                # this port is already chunk-granular
                 feed()
+                if log and "e" not in _seen:          # witness the in-loop erase op once
+                    _seen.add("e")
+                    log.debug("install: erasing block block-device")
+            if log:
+                log.debug("install: erased FRONT block-device")
 
         def write(off, data):                         # extended writeblocks: byte-granular,
             front.writeblocks(off // _bs, data, off % _bs)   # so sub-block markers work too
+            if log and "w" not in _seen:
+                _seen.add("w")
+                log.debug("install: wrote block block-device")
 
         def readback(off, n):
             b = bytearray(n)                          # n <= _CHUNK: a bounded readback buffer.
             front.readblocks(off // _bs, b, off % _bs)  # FRONT at partition offset off
+            if log and "r" not in _seen:
+                _seen.add("r")
+                log.debug("install: readback block-device")
             return b
 
         def back_read(off, n):                        # arbitrary range from BACK, block-safe
@@ -781,10 +793,19 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                     take = n - done
                 front.readblocks(blk, memoryview(out)[done:done + take], o)
                 done += take
+                if log and "brl" not in _seen:        # witness the in-loop BACK read once
+                    _seen.add("brl")
+                    log.debug("install: back reading block-device")
+            if log and "br" not in _seen:
+                _seen.add("br")
+                log.debug("install: back read block-device")
             return out
 
         def complete():
-            pass                                      # writeblocks persists; no flush ioctl
+            if log:                                   # writeblocks persists; no flush ioctl
+                log.debug("install: complete block-device")
+        if log:
+            log.debug("install: write path ready block-device")
 
     else:                                             # XIP-mapped romfs (stm32/alif/samd)
         if log:
@@ -792,10 +813,18 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         base = uctypes.addressof(front)               # FRONT partition XIP base
 
         def readback(off, n):
-            return uctypes.bytearray_at(base + off, n)
+            r = uctypes.bytearray_at(base + off, n)
+            if log and "r" not in _seen:
+                _seen.add("r")
+                log.debug("install: readback XIP")
+            return r
 
         def back_read(off, n):
-            return uctypes.bytearray_at(base + front_size + off, n)   # BACK at front_size
+            r = uctypes.bytearray_at(base + front_size + off, n)   # BACK at front_size
+            if log and "br" not in _seen:
+                _seen.add("br")
+                log.debug("install: back read XIP")
+            return r
 
         def erase(total):
             # Erase INCREMENTALLY where the port supports the ranged prepare
@@ -815,6 +844,11 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                         raise OSError(-rc)
                     o += n
                     feed()
+                    if log and "e" not in _seen:      # witness the in-loop erase op once
+                        _seen.add("e")
+                        log.debug("install: erasing block XIP")
+                if log:
+                    log.debug("install: erased FRONT XIP")
                 return
             with relax():                             # the one op we can't feed in a loop
                 rc = vfs.rom_ioctl(3, 0, total)
@@ -825,9 +859,16 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             rc = vfs.rom_ioctl(4, 0, off, data)
             if rc < 0:
                 raise OSError(-rc)
+            if log and "w" not in _seen:
+                _seen.add("w")
+                log.debug("install: wrote block XIP")
 
         def complete():
             vfs.rom_ioctl(5, 0)                       # flush cached sub-page writes
+            if log:
+                log.debug("install: complete XIP")
+        if log:
+            log.debug("install: write path ready XIP")
 
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the
     # app (the FRONT slot is untouched). Log the reason first: run() swallows this exception
@@ -894,6 +935,8 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # lose them at reset without it. Block-device ports persist on writeblocks,
             # so complete() there is a no-op.
             complete()
+            if log:
+                log.debug("install: committed FRONT")
             break                                    # success -> arm + reboot into the trial
         except Exception as e:
             if sock is not None:
