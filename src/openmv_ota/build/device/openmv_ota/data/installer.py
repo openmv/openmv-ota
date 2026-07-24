@@ -677,6 +677,8 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     m = _manifest_parse(raw)                          # structure + crc (raises on bad)
     pubkey = cfg.TRUSTED_KEYS.get(m["key_id"])
     if pubkey is None:
+        if openmv_log is not None:                        # key not in the trusted allowlist: witness
+            openmv_log.log.warning("install: reject untrusted key")
         raise OSError("manifest signed by an untrusted key")
     if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
         if openmv_log is not None:                        # the signature boundary rejected: witness
