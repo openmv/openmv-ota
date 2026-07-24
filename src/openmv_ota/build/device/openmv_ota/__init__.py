@@ -300,9 +300,11 @@ def _write_verified(part_index, off, data):  # pragma: no cover
         back = bytearray(len(data))                   # len(data) is a marker/entry: bounded
         part.readblocks(off // bs, back, off % bs)
         _check_readback(back, data)
+        log.debug("verify: write block-device")        # the confirm/rollback write path witness
     else:                                             # XIP/ioctl ports (stm32/alif/samd)
         _rom_write(4, part_index, off, data)
         _check_readback(_read_at(part_index, off, len(data)), data)
+        log.debug("verify: write XIP")                 # the confirm/rollback write path witness
 
 
 def _verify_erased(part_index, total):  # pragma: no cover

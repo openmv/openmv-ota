@@ -154,6 +154,34 @@ COVERAGE = {
     "install: fetched body": "install.fetched",          # a 2xx download body (manifest/image)
     "install: manifest accepted": "install.manifest_ok",  # sig + board/version/platform vetting passed
     "install: staged installer": "install.staged",       # installer exec'd into RAM, about to run
+    # Installer write-path primitives. The block-device (mimxrt) and XIP (stm32/alif) branches
+    # each log a variant of the same step; both map to ONE semantic id, so a scenario expects
+    # the step (board-agnostic) and whichever branch runs satisfies it.
+    "install: fetching manifest": "install.fetch_manifest",  # pre-erase manifest GET starting
+    "install: downloading": "install.download",              # image download opened post-erase
+    "install: writing FRONT": "install.writing",             # streamed write loop starting
+    "install: write path ready block-device": "write.ready",  # closures bound (def lines witnessed)
+    "install: write path ready XIP": "write.ready",
+    "install: erased FRONT block-device": "write.erased",     # FRONT slot erased before the write
+    "install: erased FRONT XIP": "write.erased",
+    "install: erasing block block-device": "write.erased",    # in-loop erase op (loop body witness)
+    "install: erasing block XIP": "write.erased",
+    "install: back reading block-device": "write.backread",   # in-loop BACK read (delta loop body)
+    "install: wrote block block-device": "write.wrote",       # a data block written to FRONT
+    "install: wrote block XIP": "write.wrote",
+    "install: readback block-device": "write.readback",       # written data read back for verify
+    "install: readback XIP": "write.readback",
+    "install: back read block-device": "write.backread",      # golden BACK read (delta reconstruct)
+    "install: back read XIP": "write.backread",
+    "install: complete block-device": "write.complete",       # write committed (flush / no-op)
+    "install: complete XIP": "write.complete",
+    "install: committed FRONT": "install.committed",          # commit point passed, arming next
+    "verify: write block-device": "verify.write",             # confirm/rollback write+readback
+    "verify: write XIP": "verify.write",
+    "boot: ready, running app": "boot.ready",                 # boot.py finished, handing off to app
+    "boot: marked slot block-device": "boot.marked",          # trial slot marked TRIED (pre-run)
+    "boot: marked slot XIP": "boot.marked",
+    "boot: slot marker verified": "boot.marked_verify",       # marker read back + verified
     "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
     "checkin: body read": "run.body_read",               # response body read to EOF (capped)
     "checkin: parsed": "run.checkin_parsed",             # headers skipped + JSON parsed
@@ -185,11 +213,15 @@ SCENARIOS = {
     "delta": {
         "desc": "happy path: delta install -> trial -> confirm -> promote",
         "publish": "delta", "app": "confirm", "end": "promoted",
-        "expect": ["boot.mount.front", "run.clock", "run.checkin_http", "run.body_read",
-                   "run.checkin_parsed", "run.checkin", "run.status", "run.identity", "run.offer",
-                   "run.asset_read", "install.tls", "install.fetched", "install.manifest_ok",
-                   "install.staged", "install.start", "{cov_write}", "install.delta",
-                   "install.armed", "confirm.floor", "confirm.promoted"],
+        "expect": ["boot.mount.front", "boot.ready", "run.clock", "run.checkin_http",
+                   "run.body_read", "run.checkin_parsed", "run.checkin", "run.status",
+                   "run.identity", "run.offer", "run.asset_read", "install.fetch_manifest",
+                   "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
+                   "install.start", "{cov_write}", "install.download", "install.delta",
+                   "install.writing", "write.ready", "write.erased", "write.wrote",
+                   "write.readback", "write.backread", "write.complete", "install.committed",
+                   "install.armed", "boot.marked", "boot.marked_verify", "verify.write",
+                   "confirm.floor", "confirm.promoted"],
         "forbid": ["install.full", "install.fallback", "install.reject", "boot.mount.back"],
     },
     "full": {
