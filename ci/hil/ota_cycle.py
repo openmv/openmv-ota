@@ -52,6 +52,7 @@ CFG = {
     "sdk": env("SDK_HOME", HOME + "/openmv-sdk-1.6.0"),
     "jlink": env("JLINK", HOME + "/jlink/JLinkExe"),
     "dfu": env("DFU_UTIL", HOME + "/openmv-sdk-1.6.0/bin/dfu-util"),
+    "blhost": env("BLHOST", HOME + "/openmv-sdk-1.6.0/python/bin/blhost"),
     "acm": env("BOARD_ACM", "/dev/ttyACM0"),
     "uart": env("BOARD_UART", "/dev/ttyUSB0"),
 }
@@ -75,6 +76,22 @@ BOARDS = {
         "network": "wifi",
         "flash": "dfu_alif",
         "romfs_alt": "6",                    # external OSPI romfs partition
+    },
+    "OPENMV_RT1060": {
+        "cov_uart": 1,                       # UART(1) on P4/P5
+        "cov_write": "install.blockdev",     # mimxrt: the block-device write model, not XIP
+        "network": "lan",
+        "flash": "blhost_imx",
+        # The FlexSPI NOR flash. We write ONLY the app regions; the ROM's flash-config
+        # block (0x60000000) and the resident secure bootloader / flashloader (0x60001000)
+        # are NEVER touched -- machine.bootloader() drops into that resident SBL to flash.
+        "fw_addr": "0x60040000",
+        "romfs_addr": "0x60800000",
+        "blhost_usb": "0x15A2,0x0073",       # the MCU-bootloader (blhost) device the SBL exposes
+        "blhost_lsusb": "15a2:0073",         # ...same, as lsusb prints it (for the enumerate poll)
+        "cfg_addr": "0x2000",                # FlexSPI config option word + apply target
+        "cfg_spi": "0xC0000008",
+        "cfg_type": "9",
     },
 }
 
@@ -230,13 +247,22 @@ def bench_main_py(board, net):
             '        await asyncio.sleep_ms(200)\n'
             '    print("BENCH up", lan.ifconfig()[0])\n'
         )
+    # The app logs its OWN progress to the openmv_ota logger (-> the coverage UART at DEBUG),
+    # and wraps the whole run so any crash is VISIBLE there. Without this a trial that boots
+    # but faults in the app is invisible: an uncaught exception prints to the USB REPL, not
+    # the UART, so a corrupt-trial hang looks identical to a silent network stall.
     return (
         "import asyncio\n"
+        "import logging\n"
+        "import sys\n"
         "import network\n"
-        "import openmv_ota\n\n\n"
+        "import openmv_ota\n"
+        "_blog = logging.getLogger('openmv_ota')\n\n\n"
         "async def main():\n"
         "    confirmed = False\n"
+        "    _blog.info('app: main() started')\n"
         "    " + bring_up +
+        "    _blog.info('app: network up, starting run()')\n"
         "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
             CFG["server"], CFG["ca_board"]) +
         "    while True:\n"
@@ -244,7 +270,12 @@ def bench_main_py(board, net):
         "            confirmed = True\n"
         "            openmv_ota.confirm()\n"
         "        await asyncio.sleep(2)\n\n\n"
-        "asyncio.run(main())\n"
+        "try:\n"
+        "    _blog.info('app: booting ' + str(openmv_ota.status().get('version')))\n"
+        "    asyncio.run(main())\n"
+        "except Exception as e:\n"
+        "    _blog.error('app: CRASHED %r' % (e,))\n"
+        "    sys.print_exception(e)\n"
     )
 
 
@@ -271,6 +302,11 @@ def prepare(board, checkout, network):
     sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
     sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network))
+    # the bench server's CA must be on the board for run()'s TLS (survives the OTA, lives on
+    # /flash not the romfs). Push it so the harness doesn't assume a hand-placed cert.
+    if os.path.exists(CFG["ca_node"]):
+        sh([ota("mpremote"), "connect", CFG["acm"], "fs", "cp", CFG["ca_node"],
+            ":" + CFG["ca_board"]], timeout=30, check=False)
     # enable the coverage UART on the board (bench-only file; survives across the OTA)
     device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["ca_board"].rsplit("/", 1)[0] +
                 "/.hilcov_uart", BOARDS[board]["cov_uart"]))
@@ -344,6 +380,96 @@ def _flash_dfu_alif(board):
     _dfu_write(b["romfs_alt"], rimg, 1200)
     sh([CFG["dfu"], "-d", ",37c5:96e3", "-a", b["romfs_alt"], "-e"], check=False, timeout=60)
     time.sleep(15)                           # the AE3 (Alif) takes longer to boot + re-enumerate
+
+
+def _aligned(n, sector=0x1000):
+    """Round up to the FlexSPI NOR erase granularity (erase-region needs a sector multiple)."""
+    return (n + sector - 1) & ~(sector - 1)
+
+
+def _wait_usb(lsusb_id, timeout_s):
+    """Poll ``lsusb`` until a device with this ``vid:pid`` enumerates. Returns on success,
+    raises on timeout. Used to catch the RT's resident SBL/blhost after machine.bootloader()."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        _rc, out = sh("lsusb", timeout=10, check=False, quiet=True)
+        if lsusb_id.lower() in out.lower():
+            return
+        time.sleep(0.1)
+    raise RuntimeError("USB device %s did not enumerate within %ss" % (lsusb_id, timeout_s))
+
+
+def _blhost(usb, *sub, timeout_ms=None):
+    argv = [CFG["blhost"], "-u", usb]
+    if timeout_ms is not None:
+        argv += ["-t", str(timeout_ms)]
+    return argv + ["--", *sub]
+
+
+def _blhost_run(label, usb, *sub, timeout_ms=None):
+    """Run one blhost sub-command and require it reported success (blhost exits 0 even when
+    the target NAKs, so we parse the response status, mirroring the JLink 'never trust the
+    exit code' lesson)."""
+    log("  blhost: " + label)
+    _rc, out = sh(_blhost(usb, *sub, timeout_ms=timeout_ms), timeout=180, check=False, quiet=True)
+    if "0 (0x0) Success" not in out:
+        raise RuntimeError("blhost %s failed:\n%s" % (label, out[-1200:]))
+
+
+def _enter_blhost(b):
+    """Drop into the resident SBL's serial-download (blhost) mode and wait until blhost can
+    actually talk to it, retrying the whole entry as needed. Two things fight us: the SBL
+    idle-times-out back to runtime if no command arrives, and the /dev/hidraw node's group
+    perms lag USB enumeration (so a too-eager open races udev). We settle briefly for udev,
+    probe with get-property, and re-enter on any miss. Once we return, the caller must keep
+    blhost busy (back-to-back commands) so the idle timeout never fires mid-provision."""
+    usb = b["blhost_usb"]
+    out = ""
+    for attempt in range(6):
+        # Fire the bootloader entry fire-and-forget: machine.bootloader() drops the USB-CDC,
+        # so a synchronous mpremote would block on the dead port's teardown -- and every idle
+        # second risks the SBL timing back out to runtime. Backgrounded, mpremote connects +
+        # sends the call (~1-2s) while we poll for the blhost device to appear.
+        subprocess.Popen([ota("mpremote"), "connect", CFG["acm"], "exec",
+                          "import machine; machine.bootloader()"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            _wait_usb(b["blhost_lsusb"], timeout_s=15)
+        except RuntimeError:
+            continue                                     # never enumerated -> re-issue bootloader
+        # Fire blhost IMMEDIATELY -- no perm settle needed (the 0666 hidraw udev rule sets
+        # access at node creation), and the SBL idle-times-out fast, so don't dawdle.
+        _rc, out = sh(_blhost(usb, "get-property", "1"), timeout=30, check=False, quiet=True)
+        if "0 (0x0) Success" in out:
+            return
+        tail = (out.strip().splitlines() or ["?"])[-1][:90]
+        log("  (blhost entry retry %d/6: %s)" % (attempt + 1, tail))
+        time.sleep(1)
+    raise RuntimeError("could not reach the SBL/blhost after 6 tries:\n" + out[-800:])
+
+
+def _flash_blhost_imx(board):
+    """Provision golden on the mimxrt (RT1062): drop into the resident SBL via
+    machine.bootloader() (no SBL jumper -- that's only for restoring a wiped bootloader),
+    then drive blhost to (re)write ONLY the firmware + romfs regions of the FlexSPI NOR.
+    The FCB (0x60000000) and the SBL/flashloader (0x60001000) are left untouched."""
+    b = BOARDS[board]
+    build = CFG["project"] + "/build"
+    fw = "%s/%s-firmware.bin" % (build, board)          # self-contained (its own FCB+IVT+app)
+    romfs = "%s/%s-factory-romfs.img" % (build, board)
+    usb = b["blhost_usb"]
+    log("flash: reset into the resident SBL (blhost)")
+    _enter_blhost(b)                                     # ...and keep it busy from here on
+    _blhost_run("configure FlexSPI NOR", usb, "fill-memory", b["cfg_addr"], "4", b["cfg_spi"], "word")
+    _blhost_run("apply FlexSPI config", usb, "configure-memory", b["cfg_type"], b["cfg_addr"])
+    for name, addr, f in (("firmware", b["fw_addr"], fw), ("romfs", b["romfs_addr"], romfs)):
+        length = "0x%X" % _aligned(os.path.getsize(f))
+        log("flash %s -> %s (%s, blhost)" % (name, addr, length))
+        _blhost_run("erase %s %s" % (name, length), usb, "flash-erase-region", addr, length,
+                    timeout_ms=120000)
+        _blhost_run("write %s" % name, usb, "write-memory", addr, f)
+    _blhost_run("reset", usb, "reset")
+    time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
 
 
 def verify_golden():

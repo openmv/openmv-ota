@@ -692,6 +692,19 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     return _resolve_url(manifest_url, rep["url"]), rep.get("format"), body_dict.get("sha256")
 
 
+def _reset():  # pragma: no cover
+    """Reboot into the freshly-selected slot, but let the frozen logger's handler drain
+    first. ``machine.reset()`` cuts an in-flight UART TX, so the final line -- e.g.
+    'installed + armed' -- is truncated mid-string and lost on a side-channel UART (the FIFO
+    is only tens of bytes; most of the line is still buffered at reset). A short settle drains
+    it. Harmless in production: a reboot is never time-critical, and it makes the last log line
+    reliably land wherever the logger points (UART/socket/REPL)."""
+    import time
+    import machine
+    time.sleep_ms(50)
+    machine.reset()
+
+
 def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     """Fetch the signed manifest at ``manifest_url``, verify + vet it, then download and
     install the chosen image. Never returns: reboots into the new image's trial on
@@ -700,7 +713,6 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     ``/rom`` intact. Progress is logged from here (RAM + the frozen logger) at every 10%
     step -- it can't be a caller callback, whose code is being erased."""
     import deflate
-    import machine
     import socket
     import ssl
 
@@ -876,7 +888,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 if log:
                     log.error("install: FAILED after %d attempts (%s); rebooting to golden BACK"
                               % (attempts, e))
-                machine.reset()
+                _reset()
             if log:
                 log.error("install: attempt %d/%d failed (%s); retrying"
                           % (attempt + 1, attempts, e))
@@ -884,4 +896,4 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 progress.reset()                     # restart % for the fresh re-download
     if log:
         log.info("install: installed + armed; rebooting into the trial")
-    machine.reset()
+    _reset()

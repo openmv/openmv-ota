@@ -280,9 +280,29 @@ def _file_chunks(path):  # pragma: no cover
 
 def _write_verified(part_index, off, data):  # pragma: no cover
     """WRITE then read back and verify -- raises OSError on a bad rc or a read-back
-    mismatch, so a failed/partial flash write never passes silently."""
-    _rom_write(4, part_index, off, data)
-    _check_readback(_read_at(part_index, off, len(data)), data)
+    mismatch, so a failed/partial flash write never passes silently.
+
+    Handles BOTH romfs write models, the same split boot.py and the installer make:
+      * XIP/ioctl ports (stm32/alif/samd): the ranged ``rom_ioctl(4)`` WRITE, read back
+        through the XIP mapping.
+      * block-device ports (mimxrt): ``rom_ioctl(4)`` is -EINVAL, so program byte-granularly
+        through the block device (3-arg ``writeblocks``, no erase -- markers/rollback entries
+        are 1->0 programs into an already-erased region) and read back through the SAME
+        device's ``readblocks`` (an immediate write-then-read is coherent -- what the
+        installer's per-chunk verify relies on; the XIP mapping can lag a fresh write).
+    Without the block-device branch, confirm() crashed with OSError(EINVAL) on mimxrt -- the
+    trial installed + booted but could never confirm, so it always rolled back to golden."""
+    import vfs
+    part = vfs.rom_ioctl(2, part_index)
+    if hasattr(part, "ioctl"):                        # block-device (mimxrt)
+        bs = part.ioctl(5, 0)                         # MP_BLOCKDEV_IOCTL_BLOCK_SIZE
+        part.writeblocks(off // bs, data, off % bs)   # 3-arg: byte-granular, no erase
+        back = bytearray(len(data))                   # len(data) is a marker/entry: bounded
+        part.readblocks(off // bs, back, off % bs)
+        _check_readback(back, data)
+    else:                                             # XIP/ioctl ports (stm32/alif/samd)
+        _rom_write(4, part_index, off, data)
+        _check_readback(_read_at(part_index, off, len(data)), data)
 
 
 def _verify_erased(part_index, total):  # pragma: no cover
