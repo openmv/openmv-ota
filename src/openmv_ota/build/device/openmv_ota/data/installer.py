@@ -679,6 +679,8 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     if pubkey is None:
         raise OSError("manifest signed by an untrusted key")
     if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
+        if openmv_log is not None:                        # the signature boundary rejected: witness
+            openmv_log.log.warning("install: reject bad signature")
         raise OSError("manifest signature does not verify")
 
     body_dict = m["body"]
@@ -688,6 +690,8 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
                             getattr(cfg, "ACCOUNT_ID", ""))
     if reason is not None:
+        if openmv_log is not None:                        # anti-rollback / board / platform vetting
+            openmv_log.log.warning("install: reject vetting")   # rejected: witness the boundary
         raise OSError("manifest rejected (%s)" % reason)
     # The delta applier is pure Python (no ulab/C), so every board is delta-capable; the
     # delta is used only when its base matches this device's golden (BACK) version.
