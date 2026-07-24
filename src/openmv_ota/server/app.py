@@ -17,6 +17,7 @@ hints under ``from __future__ import annotations``; per-request collaborators co
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
@@ -413,7 +414,8 @@ def _decide(state, checkin, cohort, existing=None, account_id=""):
     offered = offers_update(
         current_payload_version=checkin.payload_version,
         release_payload_version=rel["payload_version"], rollout_state=ro["state"],
-        rollout_percent=ro["percent"], rollout_id=ro["rollout_id"], device_id=checkin.device_id)
+        rollout_percent=ro["percent"], rollout_id=ro["rollout_id"], device_id=checkin.device_id,
+        allow_downgrade=state.settings.test_offer_downgrades)
     if not offered:
         return ro, rel, False, None
     return ro, rel, True, _offer(state, rel)
@@ -577,6 +579,10 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     if not secret:
         raise ServerError("no server secret -- run `server init` or set OPENMV_OTA_COHORT_SALT",
                           exit_code=2)
+    if settings.test_offer_downgrades:      # loud: a real deployment must never boot with this on
+        print("WARNING: test_offer_downgrades is ON -- the server will OFFER anti-rollback "
+              "downgrades (a TEST-ONLY hook; devices still reject them). Never in production.",
+              file=sys.stderr)
 
     app = FastAPI(title="OpenMV OTA Update Server", version=__version__,
                   description=_API_DESCRIPTION, openapi_tags=_OPENAPI_TAGS,

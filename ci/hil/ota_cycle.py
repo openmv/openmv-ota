@@ -91,6 +91,7 @@ BOARDS = {
         # are NEVER touched -- machine.bootloader() drops into that resident SBL to flash.
         "fw_addr": "0x60040000",
         "romfs_addr": "0x60800000",
+        "romfs_size": "0x800000",            # the whole dual-slot romfs region (for no_slot brick)
         "blhost_usb": "0x15A2,0x0073",       # the MCU-bootloader (blhost) device the SBL exposes
         "blhost_lsusb": "15a2:0073",         # ...same, as lsusb prints it (for the enumerate poll)
         "cfg_addr": "0x2000",                # FlexSPI config option word + apply target
@@ -202,14 +203,33 @@ SCENARIOS = {
         "expect": ["run.offer", "install.reject"],
         "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
     },
-    # NOTE -- no "bad_version" scenario, deliberately. The device's own anti-rollback (reject a
-    # manifest whose version <= the rollback floor) can't be triggered through the server: the
-    # server ENFORCES the same rule first (rollout.offers_update: never offer a release <= the
-    # device's current version), and a device's floor is always <= its current, so any release
-    # the server will offer is already > the floor -> the device accepts it. The device check is
-    # pure defense-in-depth against a malicious/buggy server, is fully HOST-tested
-    # (update_reject_reason), and its reject PATH (install.reject) is HIL-covered by bad_sig
-    # above -- so a distinct bad_version HIL run is neither achievable nor needed.
+    "bad_version": {
+        "desc": "version <= anti-rollback floor -> device refuses pre-erase, stays golden",
+        # A full image (not a delta): a delta must go golden->newer, but here the release is
+        # OLDER than golden -- the device rejects it at the version check, before rep selection.
+        "publish": "full", "app": "confirm", "end": "golden", "version": "0.9.0",
+        "expect": ["run.offer", "install.reject"],
+        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
+        # NEEDS the bench server started with test_offer_downgrades on
+        # (OPENMV_OTA_TEST_OFFER_DOWNGRADES=1). A correct server never OFFERS a release <= a
+        # device's current version (its own anti-rollback), so the device's anti-rollback --
+        # the real safety boundary -- can't otherwise be reached on hardware. The flag relaxes
+        # only the server's OFFER; the device still rejects the downgrade (what we're testing).
+    },
+    "no_slot": {
+        "desc": "both romfs slots invalid -> boot finds nothing bootable (the brick floor)",
+        # No OTA: erase BOTH slots (the whole romfs region) on an otherwise-provisioned board --
+        # firmware + /flash/.hilcov_uart stay intact -- reset, and watch boot.py fail to mount
+        # anything. RUN AFTER another scenario (the board must be bootable so it still has the
+        # bench logger + the coverage-UART file). Flash-only; block-device (RT1062) for now.
+        "publish": "none", "app": "confirm", "end": "no_slot",
+        "expect": ["boot.no_slot"],
+        # NOT boot.mount.front: entering the SBL via machine.bootloader() boots the (still-valid)
+        # golden ONCE before blhost erases it, so a FRONT mount precedes the brick -- expected.
+        # Forbid the things that prove the device is genuinely bricked if ABSENT: it ran no app
+        # (no check-in) and did no OTA.
+        "forbid": ["run.checkin", "install.start", "confirm.promoted"],
+    },
 }
 
 
@@ -352,12 +372,20 @@ def bench_main_py(board, net, app="confirm"):
 # ---------------------------------------------------------------------------
 # Phases
 # ---------------------------------------------------------------------------
+def _ver(v):
+    return tuple(int(x) for x in v.split("."))
+
+
 def set_version(v):
     p = CFG["project"] + "/app/settings.json"
     d = json.load(open(p))
     d["app_version"] = v
-    if "rollback_floor" not in d:
-        d["rollback_floor"] = "1.0.0"
+    # The project's BUILD-time rollback floor can't exceed the version being built, so a
+    # bad_version publish (0.9.0) needs it lowered. This is only the build's sanity gate -- the
+    # DEVICE's own floor (baked into the flashed golden's BACK slot) is what a bad_version run
+    # actually tests, and that stays at 1.0.0, so the device still rejects the 0.9.0 offer.
+    floor = d.get("rollback_floor", "1.0.0")
+    d["rollback_floor"] = v if _ver(v) < _ver(floor) else floor
     json.dump(d, open(p, "w"), indent=2)
 
 
@@ -392,12 +420,14 @@ def build_golden(board):
                        env=penv, check=True, timeout=900)
 
 
-def flash_golden(board):
+def flash_golden(board, bad_romfs=False):
     fn = globals()["_flash_" + BOARDS[board]["flash"]]
-    fn(board)
+    fn(board, bad_romfs) if bad_romfs else fn(board)
 
 
-def _flash_jlink_stm32(board):
+def _flash_jlink_stm32(board, bad_romfs=False):
+    if bad_romfs:
+        raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
     b = BOARDS[board]
     build = CFG["project"] + "/build"
     img = "%s/%s-factory-romfs.img" % (build, board)
@@ -433,7 +463,9 @@ def _dfu_write(alt, path, timeout_s):
             alt, open(logf, errors="replace").read()[-1500:]))
 
 
-def _flash_dfu_alif(board):
+def _flash_dfu_alif(board, bad_romfs=False):
+    if bad_romfs:
+        raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
     b = BOARDS[board]
     build = CFG["project"] + "/build"
     fw = "%s/%s-firmware-M55_HP.bin" % (build, board)     # the main core (carries the frozen
@@ -518,26 +550,36 @@ def _enter_blhost(b):
     raise RuntimeError("could not reach the SBL/blhost after 6 tries:\n" + out[-800:])
 
 
-def _flash_blhost_imx(board):
+def _flash_blhost_imx(board, bad_romfs=False):
     """Provision golden on the mimxrt (RT1062): drop into the resident SBL via
     machine.bootloader() (no SBL jumper -- that's only for restoring a wiped bootloader),
     then drive blhost to (re)write ONLY the firmware + romfs regions of the FlexSPI NOR.
-    The FCB (0x60000000) and the SBL/flashloader (0x60001000) are left untouched."""
+    The FCB (0x60000000) and the SBL/flashloader (0x60001000) are left untouched.
+
+    bad_romfs=True is the no_slot brick: ERASE the whole romfs region (both slots -> blank ->
+    no valid trailer in either) and leave firmware + /flash untouched, so boot.py runs (bench
+    logger intact) and finds nothing bootable. No firmware/romfs write."""
     b = BOARDS[board]
     build = CFG["project"] + "/build"
     fw = "%s/%s-firmware.bin" % (build, board)          # self-contained (its own FCB+IVT+app)
     romfs = "%s/%s-factory-romfs.img" % (build, board)
     usb = b["blhost_usb"]
-    log("flash: reset into the resident SBL (blhost)")
+    log("flash: reset into the resident SBL (blhost)%s" % (" [no_slot brick]" if bad_romfs else ""))
     _enter_blhost(b)                                     # ...and keep it busy from here on
     _blhost_run("configure FlexSPI NOR", usb, "fill-memory", b["cfg_addr"], "4", b["cfg_spi"], "word")
     _blhost_run("apply FlexSPI config", usb, "configure-memory", b["cfg_type"], b["cfg_addr"])
-    for name, addr, f in (("firmware", b["fw_addr"], fw), ("romfs", b["romfs_addr"], romfs)):
-        length = "0x%X" % _aligned(os.path.getsize(f))
-        log("flash %s -> %s (%s, blhost)" % (name, addr, length))
-        _blhost_run("erase %s %s" % (name, length), usb, "flash-erase-region", addr, length,
+    if bad_romfs:
+        length = b["romfs_size"]                             # the whole dual-slot region
+        log("brick: erase romfs -> %s (%s), no write (both slots blank)" % (b["romfs_addr"], length))
+        _blhost_run("erase romfs %s" % length, usb, "flash-erase-region", b["romfs_addr"], length,
                     timeout_ms=120000)
-        _blhost_run("write %s" % name, usb, "write-memory", addr, f)
+    else:
+        for name, addr, f in (("firmware", b["fw_addr"], fw), ("romfs", b["romfs_addr"], romfs)):
+            length = "0x%X" % _aligned(os.path.getsize(f))
+            log("flash %s -> %s (%s, blhost)" % (name, addr, length))
+            _blhost_run("erase %s %s" % (name, length), usb, "flash-erase-region", addr, length,
+                        timeout_ms=120000)
+            _blhost_run("write %s" % name, usb, "write-memory", addr, f)
     _blhost_run("reset", usb, "reset")
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
 
@@ -650,6 +692,29 @@ def device_id():
     raise RuntimeError("could not read device_id:\n" + out)
 
 
+def run_cycle_no_slot(cap, expect, timeout_s):
+    """The no_slot watcher: both romfs slots are already bricked (the brick flash reset the
+    board into boot.py). There is no server traffic -- the device can't mount /rom, so it never
+    checks in -- we only watch the UART for boot.py's 'no bootable slot'. Re-reset once via the
+    REPL (boot.py failing still leaves the USB console up) in case the first boot's line landed
+    before capture was ready. PASS = the marker appears."""
+    log("cycle: bricked both slots -> watching UART for 'no bootable slot'")
+    reset_tried = False
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(5)
+        if expect <= set(cap.points()):
+            break
+        if not reset_tried and time.time() - (deadline - timeout_s) > 20:
+            reset_tried = True                   # nudge a fresh boot if we didn't catch the first
+            try:
+                device_exec("import machine; machine.reset()", timeout=20, check=False)
+            except Exception:
+                pass
+    return {"saw_golden": False, "saw_target": False, "version": None, "slot": None,
+            "reached_end": expect <= set(cap.points())}
+
+
 def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
     """Hard-reset the device and watch the server record + UART until the scenario's end
     state is reached (early exit) or the timeout elapses. Returns the observed state; the
@@ -711,7 +776,7 @@ def main():
                     help="override the board's default network for the bench app (e.g. N6 wifi)")
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="delta",
                     help="which OTA path to exercise (see SCENARIOS): delta/full happy paths, "
-                         "corrupt/rollback/bad_sig negative paths")
+                         "corrupt/rollback/bad_sig/bad_version negative paths")
     ap.add_argument("--skip-provision", action="store_true",
                     help="reuse the already-flashed golden (skip build/flash/verify). Use WITH "
                          "--skip-publish: a fresh publish rebuilds the golden, and a delta's base "
@@ -723,7 +788,7 @@ def main():
     network = args.network or BOARDS[args.board]["network"]
     spec = SCENARIOS[args.scenario]
     expect, forbid = scenario_markers(args.board, args.scenario)
-    pub_version = args.target
+    pub_version = spec.get("version", args.target)     # bad_version publishes below the floor
     t0 = time.time()
     trace = {"board": args.board, "network": network, "scenario": args.scenario,
              "target": args.target, "end": spec["end"], "passed": False,
@@ -738,19 +803,29 @@ def main():
     try:
         log("board %s, network %s, scenario %s (%s)"
             % (args.board, network, args.scenario, spec["desc"]))
-        if not args.skip_provision:
-            phase("prepare", lambda: prepare(args.board, args.checkout, network, spec["app"]))
-            phase("build_golden", lambda: build_golden(args.board))
-            phase("flash_golden", lambda: flash_golden(args.board))
-            phase("verify_golden", verify_golden)
-        devid = device_id()
-        trace["device_id"] = devid
-        log("device_id: " + devid)
-        if not args.skip_publish:
-            phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
-        cap = UartCapture(CFG["uart"])
-        cap.start(time.time())
-        result = run_cycle(devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout)
+        if spec["end"] == "no_slot":
+            # No OTA: brick BOTH romfs slots, then watch for boot.py's 'no bootable slot'. Start
+            # capture BEFORE the brick flash so the reset it triggers (-> boot -> the log line)
+            # is caught. Requires the board already provisioned + bootable (firmware carries the
+            # bench logger and /flash/.hilcov_uart is set) -- run it after another scenario.
+            cap = UartCapture(CFG["uart"])
+            cap.start(time.time())
+            phase("flash_brick", lambda: flash_golden(args.board, bad_romfs=True))
+            result = run_cycle_no_slot(cap, expect, args.timeout)
+        else:
+            if not args.skip_provision:
+                phase("prepare", lambda: prepare(args.board, args.checkout, network, spec["app"]))
+                phase("build_golden", lambda: build_golden(args.board))
+                phase("flash_golden", lambda: flash_golden(args.board))
+                phase("verify_golden", verify_golden)
+            devid = device_id()
+            trace["device_id"] = devid
+            log("device_id: " + devid)
+            if not args.skip_publish:
+                phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
+            cap = UartCapture(CFG["uart"])
+            cap.start(time.time())
+            result = run_cycle(devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout)
         time.sleep(2)                            # let the last UART lines land
         marks = set(cap.points())
         missing = sorted(expect - marks)

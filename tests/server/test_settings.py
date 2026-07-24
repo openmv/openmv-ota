@@ -39,6 +39,13 @@ def test_summary_redacts_secrets():
     assert "swd_ids_verify_url = u" in text
 
 
+def test_summary_hides_test_downgrade_hook_when_off_shouts_when_on():
+    off = "\n".join(ServerSettings(swd_ids_verify_url="u").summary())
+    assert "test_offer_downgrades" not in off               # not a normal knob -> hidden while off
+    on = "\n".join(ServerSettings(swd_ids_verify_url="u", test_offer_downgrades=True).summary())
+    assert "test_offer_downgrades = True  <-- TEST MODE, never in production" in on
+
+
 def test_render_port_and_database_url_aliases(monkeypatch):
     monkeypatch.delenv("OPENMV_OTA_PORT", raising=False)
     monkeypatch.delenv("OPENMV_OTA_DATABASE_URL", raising=False)
