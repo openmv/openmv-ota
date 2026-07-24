@@ -621,7 +621,10 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.verify_mode = ssl.CERT_REQUIRED
         ctx.load_verify_locations(cadata=ca_pem)
-        return ctx.wrap_socket(sock, server_hostname=host)
+        tls = ctx.wrap_socket(sock, server_hostname=host)
+        if openmv_log is not None:                   # milestone + HIL path witness
+            openmv_log.log.debug("install: TLS up")
+        return tls
     except Exception:
         sock.close()
         raise
@@ -651,6 +654,8 @@ def _open(url, ca_pem, socket, ssl, max_redirects=5):  # pragma: no cover
         if not (200 <= code < 300):
             sock.close()
             raise OSError("HTTP %d" % code)
+        if openmv_log is not None:                   # milestone + HIL path witness
+            openmv_log.log.debug("install: fetched body")
         return sock, _make_body(reader, headers)
     raise OSError("too many redirects")
 
@@ -689,6 +694,8 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     rep = _select_rep(body_dict, True, floor)
     if rep is None:
         raise OSError("manifest has no usable representation")
+    if openmv_log is not None:                        # the security boundary passed: witness it
+        openmv_log.log.debug("install: manifest accepted")
     return _resolve_url(manifest_url, rep["url"]), rep.get("format"), body_dict.get("sha256")
 
 

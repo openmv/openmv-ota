@@ -532,6 +532,7 @@ async def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         status_line = await reader.readline()
         if b" 200 " not in status_line and not status_line.rstrip().endswith(b" 200"):
             raise OSError("check-in HTTP %s" % status_line)
+        log.debug("checkin: server ok")              # milestone + HIL path witness
         while True:                                  # skip headers
             line = await reader.readline()
             if line in (b"\r\n", b"\n", b""):
