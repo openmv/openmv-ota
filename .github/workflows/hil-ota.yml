@@ -25,15 +25,21 @@ concurrency:
 
 jobs:
   ota-cycle:
-    name: ota-cycle ${{ matrix.board }}
+    name: ota-cycle ${{ matrix.board }} ${{ matrix.network }}
     if: ${{ github.event.inputs.board == 'all' || github.event.inputs.board == matrix.board }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # The N6 has both interfaces, so it runs twice (lan + wifi) on the same runner.
           - board: OPENMV_N6
+            network: lan
+            label: board-openmv-n6
+          - board: OPENMV_N6
+            network: wifi
             label: board-openmv-n6
           - board: OPENMV_AE3
+            network: wifi
             label: board-openmv-ae3
     runs-on: [self-hosted, hil, "${{ matrix.label }}"]
     # One board at a time; never cancel a running flash/cycle.
@@ -53,13 +59,14 @@ jobs:
           # Run with the node's venv python (has pyserial + the openmv-ota tooling).
           "$HOME/ota-venv/bin/python" ci/hil/ota_cycle.py \
             --board "${{ matrix.board }}" \
+            --network "${{ matrix.network }}" \
             --target "${{ github.event.inputs.target || '1.1.0' }}" \
             --checkout "$GITHUB_WORKSPACE" \
-            --trace "hil-trace-${{ matrix.board }}.json"
+            --trace "hil-trace-${{ matrix.board }}-${{ matrix.network }}.json"
 
       - name: Upload trace
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hil-trace-${{ matrix.board }}
-          path: hil-trace-${{ matrix.board }}.json
+          name: hil-trace-${{ matrix.board }}-${{ matrix.network }}
+          path: hil-trace-${{ matrix.board }}-${{ matrix.network }}.json
