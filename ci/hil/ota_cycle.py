@@ -153,7 +153,12 @@ COVERAGE = {
     "install: TLS up": "install.tls",                    # a verified TLS socket to the server
     "install: fetched body": "install.fetched",          # a 2xx download body (manifest/image)
     "install: manifest accepted": "install.manifest_ok",  # sig + board/version/platform vetting passed
+    "install: staged installer": "install.staged",       # installer exec'd into RAM, about to run
     "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
+    "status: read": "run.status",                        # boot-result + trial markers read
+    "identity: ready": "run.identity",                   # device_id + system.json read
+    "clock: resolved": "run.clock",                      # NTP/RTC resolve each poll
+    "confirm: floor advanced": "confirm.floor",          # anti-rollback floor raised on confirm
     "checkin: response received": "run.checkin",
     "checkin: update offered": "run.offer",
     "confirm: kept running FRONT": "confirm.promoted",
@@ -177,9 +182,11 @@ SCENARIOS = {
     "delta": {
         "desc": "happy path: delta install -> trial -> confirm -> promote",
         "publish": "delta", "app": "confirm", "end": "promoted",
-        "expect": ["boot.mount.front", "run.checkin_http", "run.checkin", "run.offer",
-                   "install.tls", "install.fetched", "install.manifest_ok", "install.start",
-                   "{cov_write}", "install.delta", "install.armed", "confirm.promoted"],
+        "expect": ["boot.mount.front", "run.clock", "run.checkin_http", "run.checkin",
+                   "run.status", "run.identity", "run.offer",
+                   "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
+                   "install.start", "{cov_write}", "install.delta", "install.armed",
+                   "confirm.floor", "confirm.promoted"],
         "forbid": ["install.full", "install.fallback", "install.reject", "boot.mount.back"],
     },
     "full": {
