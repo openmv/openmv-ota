@@ -2,7 +2,8 @@
 #
 # Black-box CI driver: exercise the *installed* openmv-ota CLI exactly as a
 # pip-installed user would -- only `openmv-ota ...` plus standard unix tools
-# (unzip, awk, wc, grep). Nothing here imports the package.
+# (awk, wc, grep, python3). Nothing here imports the package; zip extraction uses
+# python3 -m zipfile so no external `unzip` binary is required.
 #
 # For each board it knows the expected capability (the table below) and asserts
 # the CLI's behaviour:
@@ -32,6 +33,7 @@
 set -uo pipefail
 
 OTA="${OPENMV_OTA_BIN:-openmv-ota}"
+PY="${PYTHON:-python3}"   # for stdlib helpers (zipfile) -- no external unzip needed
 FW="${1:?usage: build_boards.sh <firmware-checkout> <board> [<board> ...]}"; shift
 [ "$#" -ge 1 ] || { echo "error: at least one board is required" >&2; exit 2; }
 
@@ -198,7 +200,9 @@ do_full() {  # board  work
   fi
 
   local ud="$work/unzip"; rm -rf "$ud"; mkdir -p "$ud"
-  expect_success "unzip bundle -> romfs.img + trailer.bin" unzip -o "$zip" -d "$ud"
+  # Extract with Python's stdlib zipfile (always present -- the toolchain is Python), so the
+  # minimal self-hosted HIL runners don't need the `unzip` binary installed.
+  expect_success "unzip bundle -> romfs.img + trailer.bin" "$PY" -m zipfile -e "$zip" "$ud"
   expect_success "build verify (loose body + trailer)" \
     $OTA build verify "$ud/romfs.img" "$ud/trailer.bin" --trusted-keys "$keys"
   printf 'X' >> "$ud/romfs.img"   # append one byte: body no longer matches the trailer
