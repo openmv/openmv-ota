@@ -114,11 +114,21 @@ def _dominators_for(filename):
 def provable_lines(filename, marker_lines):
     """The device lines PROVEN executed if the given marker lines fired: the union of their
     dominators (positive source lines) intersected with the executable set. Sound -- a marker
-    firing means every line that dominates it ran. Used to back-fill the HIL lcov per run."""
+    firing means every line that dominates it ran.
+
+    Dominance is INTRAPROCEDURAL by definition (a marker's dominators all live in its own
+    function), so we constrain each marker's credit to its own function. That is not just a
+    scoping nicety: coverage.py's arc graph can mis-model some intra-function control flow (a
+    for-loop body whose entry arc it renders oddly, an except pseudo-entry), which at the whole
+    -file level can make an UNRELATED function's line look like a dominator -- an over-credit,
+    the unsafe direction. Clipping to the marker's own function makes the result robust to that
+    regardless of graph quirks: we only ever credit lines in the function that emitted the print."""
     dom, stmts = _dominators_for(filename)
+    owner = _func_owner(open(filename).read())
     out = set()
     for m in marker_lines:
-        out |= {d for d in dom.get(m, ()) if d > 0}
+        fn = owner.get(m)
+        out |= {d for d in dom.get(m, ()) if d > 0 and owner.get(d) == fn}
     return out & stmts
 
 
@@ -153,8 +163,10 @@ def analyze(filename):
     markers = [n for n in stmts if is_marker(n)]
     coverable = set()
     for m in markers:
-        coverable |= {d for d in dom.get(m, ()) if d > 0}   # positive = real source lines
-    coverable &= stmts
+        fn = owner.get(m)                                   # intraprocedural: a marker's real
+        coverable |= {d for d in dom.get(m, ())             # dominators are all in its own
+                      if d > 0 and owner.get(d) == fn}      # function -- clip to it (robust to
+    coverable &= stmts                                      # coverage.py arc-graph quirks)
     # Restrict to RUNTIME PATHS -- statements inside a function body. Module-level scaffolding
     # (imports, def/class headers, constants) runs at load, not on a path, and isn't something
     # a UART print witnesses.
