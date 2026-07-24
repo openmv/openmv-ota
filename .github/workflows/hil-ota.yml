@@ -23,7 +23,7 @@ on:
         type: choice
         # NOTE: corrupt/bad_sig tamper the server's artifact store, so they only run where the
         # harness is CO-LOCATED with the update server (the RT1060 bench node); pick that board.
-        options: [delta, full, corrupt, rollback, bad_sig, bad_version]
+        options: [delta, full, corrupt, rollback, bad_sig]
       target:
         description: update version to install over golden 1.0.0
         default: "1.1.0"

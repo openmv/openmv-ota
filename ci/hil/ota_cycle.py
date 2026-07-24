@@ -202,12 +202,14 @@ SCENARIOS = {
         "expect": ["run.offer", "install.reject"],
         "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
     },
-    "bad_version": {
-        "desc": "version <= anti-rollback floor -> refused pre-erase, stays golden",
-        "publish": "bad_version", "app": "confirm", "end": "golden",
-        "expect": ["run.offer", "install.reject"],
-        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
-    },
+    # NOTE -- no "bad_version" scenario, deliberately. The device's own anti-rollback (reject a
+    # manifest whose version <= the rollback floor) can't be triggered through the server: the
+    # server ENFORCES the same rule first (rollout.offers_update: never offer a release <= the
+    # device's current version), and a device's floor is always <= its current, so any release
+    # the server will offer is already > the floor -> the device accepts it. The device check is
+    # pure defense-in-depth against a malicious/buggy server, is fully HOST-tested
+    # (update_reject_reason), and its reject PATH (install.reject) is HIL-covered by bad_sig
+    # above -- so a distinct bad_version HIL run is neither achievable nor needed.
 }
 
 
@@ -709,7 +711,7 @@ def main():
                     help="override the board's default network for the bench app (e.g. N6 wifi)")
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="delta",
                     help="which OTA path to exercise (see SCENARIOS): delta/full happy paths, "
-                         "corrupt/rollback/bad_sig/bad_version negative paths")
+                         "corrupt/rollback/bad_sig negative paths")
     ap.add_argument("--skip-provision", action="store_true",
                     help="reuse the already-flashed golden (skip build/flash/verify). Use WITH "
                          "--skip-publish: a fresh publish rebuilds the golden, and a delta's base "
@@ -721,7 +723,7 @@ def main():
     network = args.network or BOARDS[args.board]["network"]
     spec = SCENARIOS[args.scenario]
     expect, forbid = scenario_markers(args.board, args.scenario)
-    pub_version = spec.get("version", args.target)     # bad_version publishes below the floor
+    pub_version = args.target
     t0 = time.time()
     trace = {"board": args.board, "network": network, "scenario": args.scenario,
              "target": args.target, "end": spec["end"], "passed": False,
