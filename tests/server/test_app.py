@@ -28,14 +28,16 @@ class _Verifier:
         return self._reg
 
 
-def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0, unverified=()):
+def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0, unverified=(),
+         downgrades=False):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("cohort_salt", SECRET)
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))
     settings = ServerSettings(base_url=base_url, checkin_rate_per_min=rate,
                               swd_ids_verify_url="u", swd_ids_verify_token="t",
-                              unverified_boards=set(unverified))
+                              unverified_boards=set(unverified),
+                              test_offer_downgrades=downgrades)
     verifier = _Verifier(registered)
     app = create_app(settings, storage=storage, metastore=store, verifier=verifier)
     return app, store, storage, verifier
@@ -289,6 +291,15 @@ def test_anti_rollback_not_offered(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, pv=0x02000000, percent=100)
     assert TestClient(app).post("/api/v1/check", json=_checkin(pv=0x02000000)).json()["update"] is False
+
+
+def test_test_offer_downgrades_offers_anti_rollback(tmp_path, capsys):
+    # The TEST-ONLY hook: the server offers an equal/older release so the device's own
+    # anti-rollback can be exercised on hardware. create_app also warns loudly when it is on.
+    app, store, storage, v = _app(tmp_path, downgrades=True)
+    assert "test_offer_downgrades is ON" in capsys.readouterr().err
+    _seed(store, pv=0x02000000, percent=100, storage=storage)
+    assert TestClient(app).post("/api/v1/check", json=_checkin(pv=0x02000000)).json()["update"] is True
 
 
 def test_rollout_pointing_at_missing_release(tmp_path):

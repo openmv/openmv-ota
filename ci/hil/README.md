@@ -50,12 +50,23 @@ dropped log line, a safety path that stopped running, or a wrong path firing all
 | `corrupt` | flip a byte in the published image blob | integrity fails → **retries** → **fallback** to golden BACK |
 | `rollback` | bench app that never confirms + self-resets | trial boot → next boot **rejects FRONT** → golden BACK |
 | `bad_sig` | flip a byte in the published manifest | signature fails → **refused pre-erase**, stays golden |
+| `bad_version` | publish a version ≤ the floor (needs the server test hook) | version fails → **refused pre-erase**, stays golden |
+| `no_slot` | erase BOTH romfs slots (no OTA) | boot finds **no bootable slot** (the brick floor) |
 
-Two deliberate omissions: **no `bad_version`** — the device's version anti-rollback can't be
-triggered through the server (it refuses to offer a release `<=` the device's current version
-first, and a floor is always `<=` current), so it's pure defense-in-depth, host-tested in
-`update_reject_reason`, with its reject *path* HIL-covered by `bad_sig`; **no `boot.no_slot`** —
-it needs both slots bricked, too destructive on real hardware.
+Together the scenarios cover **every** marker in `COVERAGE` — the full 16-point matrix.
+
+Two scenarios need a bench-only assist:
+
+- **`bad_version`** exercises the device's version anti-rollback, which a correct server won't
+  let you reach: it refuses to OFFER a release `≤` a device's current version (and a device's
+  floor is always `≤` current). The server's `test_offer_downgrades` setting
+  (`OPENMV_OTA_TEST_OFFER_DOWNGRADES=1`) relaxes only that OFFER gate so the downgrade reaches
+  the device — which still rejects it (the point). Safe by construction: it can't cause a
+  rollback (the device is the boundary); the server logs a loud warning while it's on. Start the
+  bench server with it set.
+- **`no_slot`** bricks the board (erases both slots), so run it **after** another scenario (the
+  board must be bootable — its firmware carries the bench logger and `/flash/.hilcov_uart` is
+  set) and **reflash golden afterwards**. Block-device (RT1062) only for now.
 
 ## Bench topology note
 
@@ -94,5 +105,5 @@ python3 ci/hil/hil_coverage.py --traces ~/hil-traces --md cov.md --lcov cov.info
 ```
 
 Validated on real hardware across all three OTA boards (N6/XIP, AE3/alif-XIP, RT1062/
-block-device): the happy delta/full paths and the corrupt/rollback/bad_sig safety paths —
-**15/16** device markers (all but `boot.no_slot`).
+block-device): the happy delta/full paths and the corrupt/rollback/bad_sig/bad_version/no_slot
+safety paths — **all 16** device markers (the full matrix).

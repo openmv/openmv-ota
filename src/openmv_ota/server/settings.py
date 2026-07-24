@@ -45,6 +45,16 @@ class ServerSettings(BaseSettings):
     swd_ids_verify_url: str = ""           # the registration dependency -- required to serve
     swd_ids_verify_token: str = ""
     cohort_salt: str = ""                  # the server HMAC secret (capability tokens); persisted if unset
+    # TEST-ONLY. Relaxes the server's OFFER-side anti-rollback (rollout.offers_update) so a
+    # rollout can offer a release at/below a device's current version -- the one condition a
+    # correct server never produces, which is exactly why the DEVICE's own anti-rollback (the
+    # real safety boundary, always on) can't otherwise be exercised on real hardware. This is
+    # SAFE to expose because it cannot cause a rollback: it only makes the server OFFER a
+    # downgrade; every device still rejects it itself (that rejection is what it lets us test).
+    # Misuse in production just wastes an offer the fleet declines -- never a downgrade. Off by
+    # default; when on, create_app() logs a loud warning and `server check` flags it. Never set
+    # it on a production deployment.
+    test_offer_downgrades: bool = False
     checkin_rate_per_min: int = 60         # per-IP device check-in rate limit (0 = disabled)
     poll_after_s: int = 3600               # backoff the device is told to wait before polling again
     capability_ttl: int = 3600             # lifetime of an artifact capability token
@@ -103,6 +113,12 @@ class ServerSettings(BaseSettings):
         out = []
         for name in type(self).model_fields:
             val = getattr(self, name)
+            # The test-only downgrade hook is hidden while off (it is not a normal knob), and
+            # shouts when on so a misconfigured deployment can't miss it.
+            if name == "test_offer_downgrades":
+                if val:
+                    out.append("test_offer_downgrades = True  <-- TEST MODE, never in production")
+                continue
             if name in _SECRET_FIELDS and val:
                 val = "***"
             out.append("%s = %s" % (name, val))

@@ -23,11 +23,16 @@ def staged_in(rollout_id: str, device_id: str, percent: float) -> bool:
 
 def offers_update(*, current_payload_version: int, release_payload_version: int,
                   rollout_state: str, rollout_percent: float, rollout_id: str,
-                  device_id: str) -> bool:
-    """Whether the active rollout's release should be offered to this device (all gates pure)."""
+                  device_id: str, allow_downgrade: bool = False) -> bool:
+    """Whether the active rollout's release should be offered to this device (all gates pure).
+
+    ``allow_downgrade`` (the server's TEST-ONLY ``test_offer_downgrades``) relaxes the
+    anti-rollback gate so a rollout can offer an older/equal release -- the input a correct
+    server never generates, needed to exercise the DEVICE's own anti-rollback on hardware. It
+    only affects what is OFFERED; the device still rejects the downgrade itself."""
     if rollout_state != "active":
         return False
-    if release_payload_version <= current_payload_version:      # anti-rollback: never older/equal
+    if not allow_downgrade and release_payload_version <= current_payload_version:  # anti-rollback
         return False
     return staged_in(rollout_id, device_id, rollout_percent)
 

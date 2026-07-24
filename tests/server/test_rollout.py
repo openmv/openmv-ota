@@ -42,6 +42,18 @@ def test_offers_update_gates():
     assert offers_update(**{**base, "rollout_percent": 0}) is False           # not staged
 
 
+def test_offers_update_allow_downgrade():
+    # test-only hook: an older/equal release is offered ONLY with allow_downgrade set, and even
+    # then only when the other gates pass (active + staged). It never bypasses those.
+    base = dict(current_payload_version=2, release_payload_version=1, rollout_state="active",
+                rollout_percent=100, rollout_id="r", device_id="d")
+    assert offers_update(**base) is False                                     # gated off by default
+    assert offers_update(**base, allow_downgrade=True) is True                # downgrade offered
+    assert offers_update(**{**base, "release_payload_version": 2}, allow_downgrade=True) is True
+    assert offers_update(**{**base, "rollout_state": "paused"}, allow_downgrade=True) is False
+    assert offers_update(**{**base, "rollout_percent": 0}, allow_downgrade=True) is False
+
+
 def test_should_autopause():
     assert should_autopause(6, 100, 0.05) is True
     assert should_autopause(4, 100, 0.05) is False
