@@ -344,6 +344,7 @@ def status():  # pragma: no cover
     s["fallback_reason"] = reason
     s["payload_version"] = version
     s["representation"] = _representation_of(sector)
+    log.debug("status: read")                         # HIL path witness (runs every boot/checkin)
     return s
 
 
@@ -362,6 +363,7 @@ def identity():  # pragma: no cover
         info["device_id"] = machine.unique_id().hex()
     except (ImportError, AttributeError):
         pass
+    log.debug("identity: ready")                      # HIL path witness (runs every check-in)
     return info
 
 
@@ -491,6 +493,7 @@ def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
     try:
         import openmv_rtc
         openmv_rtc.resolve(ntp_host)
+        log.debug("clock: resolved")                  # HIL path witness (NTP/RTC each poll)
     except Exception:
         pass
 
@@ -558,6 +561,7 @@ def _advance_rollback(cfg, version):  # pragma: no cover (device)
     if pos is None:
         return
     _write_verified(0, off + pos, _rollback_entry(version))
+    log.debug("confirm: floor advanced")             # HIL path witness (the confirm write path)
 
 
 def confirm():  # pragma: no cover
@@ -695,6 +699,7 @@ def install(url, ca=None):  # pragma: no cover
         ca = _read_file(ca, "rb")
     ns = {}
     exec(_read_file(here + "/data/installer.py", "r"), ns)
+    log.debug("install: staged installer")           # milestone + HIL path witness
     ns["run"](url, ca, cfg)
 
 
