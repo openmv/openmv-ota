@@ -151,6 +151,7 @@ COVERAGE = {
     "install: FAILED after": "install.fallback",
     "install: rejected before erase": "install.reject",
     "install: reject bad signature": "install.reject_sig",   # sig verify failed (the trust boundary)
+    "install: reject untrusted key": "install.reject_key",   # key_id not in the trusted allowlist
     "install: reject vetting": "install.reject_vet",         # anti-rollback/board/platform rejected
     "install: TLS up": "install.tls",                    # a verified TLS socket to the server
     "install: fetched body": "install.fetched",          # a 2xx download body (manifest/image)
@@ -250,6 +251,15 @@ SCENARIOS = {
         "desc": "manifest signature does not verify -> refused pre-erase, stays golden",
         "publish": "bad_sig", "app": "confirm", "end": "golden",
         "expect": ["run.offer", "install.reject", "install.reject_sig"],
+        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
+    },
+    "bad_key": {
+        "desc": "manifest signed by a key not in the trusted allowlist -> refused pre-erase",
+        # Distinct trust gate from bad_sig: bad_sig is a VALID trusted key with a broken
+        # signature (crypto verify fails); bad_key is a key the device never trusted (allowlist
+        # miss) -- an attacker signing with their own key. Both must reject pre-erase.
+        "publish": "bad_key", "app": "confirm", "end": "golden",
+        "expect": ["run.offer", "install.reject", "install.reject_key"],
         "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
     },
     "bad_version": {
@@ -677,6 +687,8 @@ def publish_update(board, version, variant="delta"):
         _tamper(board, "image")        # post-erase integrity failure -> retry -> golden BACK
     elif variant == "bad_sig":
         _tamper(board, "manifest")     # pre-erase signature failure -> reject, stays golden
+    elif variant == "bad_key":
+        _tamper(board, "manifest_key")  # pre-erase untrusted-key failure -> reject, stays golden
 
 
 def _tamper(board, which):
@@ -697,29 +709,29 @@ def _tamper(board, which):
                            "harness on the server node (co-located store)" % (board, root))
     newest = imgs[-1]                                    # the release we just published
     rel = os.path.basename(os.path.dirname(newest))      # rel_<id>, shared by image + manifest
-    if which == "manifest":
-        # Corrupt the SIGNATURE specifically, then re-seal the CRC, so the device reaches
-        # the actual signature-verify boundary. A naive mid-stream flip lands in the header
+    if which in ("manifest", "manifest_key"):
+        # Corrupt one FIELD, then re-seal the trailing crc32, so the device reaches the
+        # specific reject gate we mean to test. A naive mid-stream flip lands in the header
         # (key_id -> "untrusted key") or body (-> "crc mismatch") depending on manifest size,
-        # so it rejects BEFORE verify() ever runs -- the sig path (the trust boundary we mean
-        # to test) is never exercised. Flip one signature byte, recompute the trailing crc32
-        # over header+body+sig: parse + key lookup pass, only verify() fails.
+        # rejecting BEFORE the target check runs -- the boundary we mean to test is never hit.
+        #   which="manifest"     -> flip a SIGNATURE byte: parse + key pass, verify() fails (682).
+        #   which="manifest_key" -> flip a KEY_ID byte: parse passes, key lookup misses (680).
         import struct
         import binascii
         target = "%s/manifests/%s/manifest.bin" % (root, rel)
         with open(target, "r+b") as f:
             data = bytearray(f.read())
         hdr = "<4sIIIIi"                                 # magic, hver, body_size, sig_size, key, alg
-        hsize = struct.calcsize(hdr)                     # 24
+        hsize = struct.calcsize(hdr)                     # 24; key_id field at offset 16
         _, _, body_size, sig_size, _, _ = struct.unpack_from(hdr, data, 0)
-        sig_off = hsize + body_size                      # signature region start
-        body_end = sig_off + sig_size                    # crc covers data[:body_end]
-        data[sig_off] ^= 0xFF                            # break the signature, nothing else
+        body_end = hsize + body_size + sig_size          # crc covers data[:body_end]
+        off = 16 if which == "manifest_key" else hsize + body_size   # key_id vs signature region
+        data[off] ^= 0xFF                                # break exactly that field, nothing else
         crc = binascii.crc32(bytes(data[:body_end])) & 0xFFFFFFFF
-        struct.pack_into("<I", data, body_end, crc)      # re-seal so parse + key pass
+        struct.pack_into("<I", data, body_end, crc)      # re-seal so parse (+ key, for sig) pass
         with open(target, "r+b") as f:
             f.write(data)
-        log("  tampered signature byte@%d of %s (crc re-sealed)" % (sig_off, os.path.basename(target)))
+        log("  tampered %s byte@%d of %s (crc re-sealed)" % (which, off, os.path.basename(target)))
         return
     # image: mid-stream flip -> the download decompress/sha256 fails AFTER the FRONT erase.
     deltas = [p for p in imgs if os.path.dirname(p).endswith(rel) and p.endswith(".delta.gz")]
