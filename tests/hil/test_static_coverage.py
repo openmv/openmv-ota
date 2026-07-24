@@ -66,3 +66,12 @@ def test_coverable_is_a_subset_of_reachable_body():
     for f in static_coverage.DEFAULT_FILES:
         r = static_coverage.analyze(f)
         assert r["coverable"] <= r["body"]
+
+
+def test_gaps_are_hil_only_never_unit_tested():
+    # A gap must be a `# pragma: no cover` (HIL-only) line -- unit tests + HIL are additive, so
+    # a unit-tested line is already covered and never a "add a print here" gap.
+    for f in static_coverage.DEFAULT_FILES:
+        r = static_coverage.analyze(f)
+        assert set(r["gaps"]) <= r["hil_only"]
+        assert not (set(r["gaps"]) & r["unit"])

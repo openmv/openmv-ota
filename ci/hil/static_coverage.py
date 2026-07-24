@@ -88,7 +88,16 @@ def analyze(filename):
     source = open(filename).read()
     p = PythonParser(filename=filename)
     p.parse_source()
-    stmts = set(p.statements)
+    stmts = set(p.statements)                             # ALL executable device lines
+    # Unit tests + HIL are ADDITIVE and cover disjoint sets by design: the pure logic is
+    # host-unit-tested (in the 100% gate), and the real-I/O glue is `# pragma: no cover`
+    # (sockets/flash -- only HIL can reach it). Parsing WITH the no-cover exclude gives the
+    # unit-tested lines; the rest are the HIL-only lines. A unit-tested line needs no print;
+    # the true coverage gap is a HIL-only line that ALSO no marker witnesses.
+    pe = PythonParser(filename=filename, exclude=r"#\s*pragma:\s*no cover")
+    pe.parse_source()
+    unit = set(pe.statements)                             # covered by the host unit suite
+    hil_only = stmts - unit                               # only HIL can cover these
     arcs = set(p.arcs()) | _exception_edges(source)
 
     # Build the graph. Nodes include coverage's negative entry/exit sentinels. A synthetic ROOT
@@ -125,13 +134,20 @@ def analyze(filename):
     for m in markers:
         coverable |= {d for d in dom.get(m, ()) if d > 0}   # positive = real source lines
     coverable &= stmts
-    # Restrict the metric to RUNTIME PATHS -- statements inside a function body. Module-level
-    # scaffolding (imports, def/class headers, constants) runs at load, not on a path, and
-    # isn't something a UART print witnesses; counting it would just bury the signal.
+    # Restrict to RUNTIME PATHS -- statements inside a function body. Module-level scaffolding
+    # (imports, def/class headers, constants) runs at load, not on a path, and isn't something
+    # a UART print witnesses.
     body = {ln for ln in stmts if ln in owner}
+    unit_body = unit & body                               # covered by the host unit suite
+    hil_body = hil_only & body                            # HIL-only runtime lines
+    hil_covered = coverable & hil_body                    # ...a marker's dominators witness these
+    # TRUE gap: a HIL-only line that no marker can witness -> tested on NEITHER axis -> a UART
+    # print is the only way to cover it. (Unit-tested lines are already covered; excluded.)
+    gaps = sorted(hil_body - coverable)
     return {"file": os.path.relpath(filename, _REPO), "stmts": stmts, "body": body,
             "markers": sorted(markers), "coverable": coverable & body,
-            "gaps": sorted(body - coverable), "owner": owner, "src": src}
+            "unit": unit_body, "hil_only": hil_body, "hil_covered": hil_covered,
+            "gaps": gaps, "owner": owner, "src": src}
 
 
 def _func_owner(source):
@@ -161,40 +177,35 @@ def _fmt_ranges(nums):
 
 def main():
     files = sys.argv[1:] or DEFAULT_FILES
-    tot_b = tot_c = 0
+    t_unit = t_hil = t_hilcov = t_gap = 0
     for f in files:
         r = analyze(f)
         owner, src = r["owner"], r["src"]
-        nb, nc = len(r["body"]), len(r["coverable"])
-        tot_b += nb
-        tot_c += nc
-        marker_funcs = {owner.get(m) for m in r["markers"]}
+        nu, nh, nhc, ng = len(r["unit"]), len(r["hil_only"]), len(r["hil_covered"]), len(r["gaps"])
+        t_unit += nu
+        t_hil += nh
+        t_hilcov += nhc
+        t_gap += ng
         print("\n=== %s ===" % r["file"])
-        print("  in-function lines: %d | provable by current prints: %d (%.0f%%) | watched functions: %d"
-              % (nb, nc, 100.0 * nc / nb if nb else 0.0, len(marker_funcs)))
-        # Actionable, ranked highest-value first: gaps INSIDE functions we already watch (a run
-        # can reach these without any print). Group by function so each is one place to look.
+        print("  unit-tested (host 100%% gate): %d | HIL-only (# pragma: no cover): %d "
+              "-> witnessed by a print: %d, GAP: %d" % (nu, nh, nhc, ng))
+        # The actionable list: HIL-only lines no print witnesses -> where a UART print is the
+        # ONLY way to cover them. Grouped by function so each is one place to look.
         by_func = {}
         for ln in r["gaps"]:
             by_func.setdefault(owner.get(ln), []).append(ln)
-        watched = {fn: g for fn, g in by_func.items() if fn in marker_funcs}
-        unwatched = {fn: g for fn, g in by_func.items() if fn not in marker_funcs}
-        if watched:
-            print("  un-witnessed branches in WATCHED functions (a print here closes a real gap):")
-            for fn in sorted(watched, key=lambda x: -len(watched[x])):
-                g = watched[fn]
-                print("    %s(): %d lines [%s]" % (fn, len(g), ", ".join(_fmt_ranges(g))))
-                for ln in g[:3]:
-                    print("        %4d | %s" % (ln, src[ln - 1].strip()[:80]))
-        if unwatched:
-            fns = sorted(unwatched, key=lambda x: -len(unwatched[x]))
-            print("  functions with NO witnessing print at all (%d): %s"
-                  % (len(fns), ", ".join("%s(%d)" % (fn, len(unwatched[fn])) for fn in fns[:10])))
-    if tot_b:
-        print("\n=== TOTAL: %d/%d in-function device lines provable by the current print set (%.0f%%) ==="
-              % (tot_c, tot_b, 100.0 * tot_c / tot_b))
-        print("(sound + conservative: it only ever UNDER-counts coverage -> OVER-reports gaps, "
-              "never the reverse -- an un-witnessed line is treated as untested.)")
+        for fn in sorted(by_func, key=lambda x: -len(by_func[x])):
+            g = by_func[fn]
+            print("    %s(): %d un-witnessed line(s) [%s]" % (fn, len(g), ", ".join(_fmt_ranges(g))))
+            for ln in g[:3]:
+                print("        %4d | %s" % (ln, src[ln - 1].strip()[:80]))
+    denom = t_hil or 1
+    print("\n=== HIL coverage of the hardware-only paths: %d/%d (%.0f%%) witnessed; %d gap lines ==="
+          % (t_hilcov, t_hil, 100.0 * t_hilcov / denom, t_gap))
+    print("  (%d more lines are unit-tested -- covered on the host, additive with HIL. The gap is"
+          " HIL-only lines tested on NEITHER axis: a print is the only way to reach them.)" % t_unit)
+    print("  Sound + conservative: dominators only UNDER-count coverage -> this only OVER-reports"
+          " gaps, never the reverse.")
     return 0
 
 
