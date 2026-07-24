@@ -75,3 +75,18 @@ def test_gaps_are_hil_only_never_unit_tested():
         r = static_coverage.analyze(f)
         assert set(r["gaps"]) <= r["hil_only"]
         assert not (set(r["gaps"]) & r["unit"])
+
+
+def test_credit_is_intraprocedural_no_cross_function():
+    # Dominance is intraprocedural: a marker's credited lines must all live in the marker's OWN
+    # function. Guards against coverage.py arc-graph quirks (a for-loop body / except handler
+    # that, at whole-file scope, made an UNRELATED function's line look like a dominator -- an
+    # over-credit, the unsafe direction, which shipped once).
+    for f in static_coverage.DEFAULT_FILES:
+        r = static_coverage.analyze(f)
+        for m in r["markers"]:
+            fn = r["owner"].get(m)
+            for line in static_coverage.provable_lines(f, [m]):
+                assert r["owner"].get(line) == fn, (
+                    "%s: marker on line %d (%s) credits line %d in a DIFFERENT function (%s) -- "
+                    "cross-function over-credit" % (f, m, fn, line, r["owner"].get(line)))
