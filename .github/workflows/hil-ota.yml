@@ -116,10 +116,21 @@ jobs:
           merge-multiple: true
       - name: Build HIL coverage report
         run: |
+          # coverage.py provides the arc graph the dominator back-fill needs (device paths ->
+          # the whole proven line set, not just the marker lines). Absent, it degrades to
+          # marker-lines-only, so it's a soft dep.
+          pip install coverage
           python3 ci/hil/hil_coverage.py --traces traces \
             --md hil-coverage.md --lcov hil-coverage.info
           cat hil-coverage.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload coverage
+      - name: Upload HIL coverage to Codecov (flag=hil, informational + carryforward)
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: hil-coverage.info
+          flags: hil
+          disable_search: true
+      - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: hil-coverage
