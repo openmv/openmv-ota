@@ -506,6 +506,7 @@ async def _read_capped(reader, limit):  # pragma: no cover  (device network)
     while True:
         d = await reader.read(_CHUNK)
         if not d:
+            log.debug("checkin: body read")           # HIL path witness (response body to EOF)
             return b"".join(chunks)
         total += len(d)
         if total > limit:
@@ -540,7 +541,9 @@ async def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
             line = await reader.readline()
             if line in (b"\r\n", b"\n", b""):
                 break
-        return json.loads(await _read_capped(reader, _RESP_MAX))
+        resp = json.loads(await _read_capped(reader, _RESP_MAX))
+        log.debug("checkin: parsed")                  # HIL path witness (headers skipped + JSON)
+        return resp
     finally:
         writer.close()
         await writer.wait_closed()
@@ -712,6 +715,7 @@ def _read_file(path, mode, limit=_ASSET_MAX):  # pragma: no cover
         data = f.read(limit + 1)
         if len(data) > limit:
             raise OSError("%s exceeds the %d-byte asset ceiling" % (path, limit))
+        log.debug("asset: read")                      # HIL path witness (installer/ca asset read)
         return data
     finally:
         f.close()

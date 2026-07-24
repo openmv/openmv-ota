@@ -155,6 +155,9 @@ COVERAGE = {
     "install: manifest accepted": "install.manifest_ok",  # sig + board/version/platform vetting passed
     "install: staged installer": "install.staged",       # installer exec'd into RAM, about to run
     "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
+    "checkin: body read": "run.body_read",               # response body read to EOF (capped)
+    "checkin: parsed": "run.checkin_parsed",             # headers skipped + JSON parsed
+    "asset: read": "run.asset_read",                     # a shipped asset (installer.py/ca.pem) read
     "status: read": "run.status",                        # boot-result + trial markers read
     "identity: ready": "run.identity",                   # device_id + system.json read
     "clock: resolved": "run.clock",                      # NTP/RTC resolve each poll
@@ -182,11 +185,11 @@ SCENARIOS = {
     "delta": {
         "desc": "happy path: delta install -> trial -> confirm -> promote",
         "publish": "delta", "app": "confirm", "end": "promoted",
-        "expect": ["boot.mount.front", "run.clock", "run.checkin_http", "run.checkin",
-                   "run.status", "run.identity", "run.offer",
-                   "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
-                   "install.start", "{cov_write}", "install.delta", "install.armed",
-                   "confirm.floor", "confirm.promoted"],
+        "expect": ["boot.mount.front", "run.clock", "run.checkin_http", "run.body_read",
+                   "run.checkin_parsed", "run.checkin", "run.status", "run.identity", "run.offer",
+                   "run.asset_read", "install.tls", "install.fetched", "install.manifest_ok",
+                   "install.staged", "install.start", "{cov_write}", "install.delta",
+                   "install.armed", "confirm.floor", "confirm.promoted"],
         "forbid": ["install.full", "install.fallback", "install.reject", "boot.mount.back"],
     },
     "full": {
