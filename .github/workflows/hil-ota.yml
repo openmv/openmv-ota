@@ -14,7 +14,7 @@ on:
         description: which board to run (or all)
         default: all
         type: choice
-        options: [all, OPENMV_N6, OPENMV_AE3]
+        options: [all, OPENMV_N6, OPENMV_AE3, OPENMV_RT1060]
       target:
         description: update version to install over golden 1.0.0
         default: "1.1.0"
@@ -41,6 +41,15 @@ jobs:
           - board: OPENMV_AE3
             network: wifi
             label: board-openmv-ae3
+          # The RT1062 is the block-device write model (mimxrt) -- provisioned via blhost
+          # (machine.bootloader -> resident SBL). Like the N6 it has both interfaces, so it
+          # runs the cycle over each (lan + wifi) on the same runner.
+          - board: OPENMV_RT1060
+            network: lan
+            label: board-openmv-rt1060
+          - board: OPENMV_RT1060
+            network: wifi
+            label: board-openmv-rt1060
     runs-on: [self-hosted, hil, "${{ matrix.label }}"]
     # One board at a time; never cancel a running flash/cycle.
     concurrency:
