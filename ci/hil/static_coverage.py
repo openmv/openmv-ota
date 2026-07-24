@@ -83,6 +83,45 @@ def _exception_edges(source):
     return edges
 
 
+def _dominators_for(filename):
+    """(dom, stmts): dom[line] = the nodes that dominate it (must run to reach it), over
+    coverage.py's arc graph with the except/finally pseudo-entries repaired; stmts = the
+    executable lines. Shared by analyze() and provable_lines()."""
+    from coverage.parser import PythonParser
+    source = open(filename).read()
+    p = PythonParser(filename=filename)
+    p.parse_source()
+    stmts = set(p.statements)
+    arcs = set(p.arcs()) | _exception_edges(source)
+    # Build the graph. Nodes include coverage's negative entry/exit sentinels. A synthetic ROOT
+    # feeds every node with no real predecessor (the module start + each function's entry), so
+    # dominance is computed per entry and functions don't falsely dominate one another.
+    nodes = {a for arc in arcs for a in arc}
+    preds = {}
+    for a, b in arcs:
+        preds.setdefault(b, set()).add(a)
+    ROOT = 0
+    while ROOT in nodes:
+        ROOT -= 1
+    nodes.add(ROOT)
+    for n in list(nodes):
+        if n != ROOT and not preds.get(n):
+            preds.setdefault(n, set()).add(ROOT)
+    order = [ROOT] + sorted(n for n in nodes if n != ROOT)   # any order converges to the fixpoint
+    return _dominators(preds, order, ROOT), stmts
+
+
+def provable_lines(filename, marker_lines):
+    """The device lines PROVEN executed if the given marker lines fired: the union of their
+    dominators (positive source lines) intersected with the executable set. Sound -- a marker
+    firing means every line that dominates it ran. Used to back-fill the HIL lcov per run."""
+    dom, stmts = _dominators_for(filename)
+    out = set()
+    for m in marker_lines:
+        out |= {d for d in dom.get(m, ()) if d > 0}
+    return out & stmts
+
+
 def analyze(filename):
     from coverage.parser import PythonParser
     source = open(filename).read()
@@ -98,25 +137,7 @@ def analyze(filename):
     pe.parse_source()
     unit = set(pe.statements)                             # covered by the host unit suite
     hil_only = stmts - unit                               # only HIL can cover these
-    arcs = set(p.arcs()) | _exception_edges(source)
-
-    # Build the graph. Nodes include coverage's negative entry/exit sentinels. A synthetic ROOT
-    # feeds every node with no real predecessor (the module start + each function's entry), so
-    # dominance is computed per entry and functions don't falsely dominate one another.
-    nodes = {a for arc in arcs for a in arc}
-    preds = {}
-    for a, b in arcs:
-        preds.setdefault(b, set()).add(a)
-    ROOT = 0
-    while ROOT in nodes:
-        ROOT -= 1
-    nodes.add(ROOT)
-    for n in list(nodes):
-        if n != ROOT and not preds.get(n):
-            preds.setdefault(n, set()).add(ROOT)
-    # order: root first (stable-ish; the fixpoint converges regardless of order)
-    order = [ROOT] + sorted(n for n in nodes if n != ROOT)
-    dom = _dominators(preds, order, ROOT)
+    dom, _ = _dominators_for(filename)
 
     src = source.splitlines()
     owner = _func_owner(source)                            # line -> enclosing function name

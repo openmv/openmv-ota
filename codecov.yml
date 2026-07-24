@@ -1,0 +1,22 @@
+# Codecov config. Two coverage sources, additive and clearly separated by flag:
+#   * the per-OS unit flags (ubuntu-latest / macos-latest) -- the host suite, the 100% gate;
+#     the device code is `# pragma: no cover` there (real sockets/flash), so it's excluded.
+#   * the `hil` flag -- device-path coverage from REAL HARDWARE (ci/hil/hil_coverage.py's
+#     dominator-back-filled lcov). It's the ONLY source for those `# pragma: no cover` device
+#     lines, so the combined view shows them as covered-by-bench. Together: unit UNION hil.
+comment:
+  layout: "reach, flags, files"
+
+flag_management:
+  individual_flags:
+    - name: hil
+      # HIL runs on physical hardware, manual-dispatch -- not every push. Carryforward keeps
+      # the last bench run's coverage on commits that didn't run it (so the flag is never
+      # blank); it can be stale, which is expected for a hardware flag.
+      carryforward: true
+      statuses:
+        # Never fail a PR on the sporadic hardware flag -- it's informational only.
+        - type: project
+          informational: true
+        - type: patch
+          informational: true

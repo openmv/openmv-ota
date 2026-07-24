@@ -156,23 +156,38 @@ def render_md(cov, traces, loc, hit):
 
 
 def render_lcov(loc, hit):
-    """Minimal lcov: one record per device file, DA lines for each marker's source line with a
-    hit count = number of distinct board/net/scenario runs that executed it. Foldable into a
-    combined report (genhtml, lcov merge) next to the host coverage."""
-    by_file = {}
+    """lcov, DOMINATOR-BACK-FILLED: for each marker that actually FIRED in some trace, credit
+    not just the marker's own line but every line that DOMINATES it -- the lines that provably
+    ran to reach it (static_coverage). A marker firing on hardware is proof those lines ran, so
+    this is sound, and turns "16 marker lines" into the whole proven path per file. Foldable
+    next to the host coverage (genhtml / Codecov flag). Falls back to marker-lines-only if the
+    static analyzer or coverage.py isn't importable."""
+    fired = {}                                   # rel -> {marker line: hit count}
     for mid, (_sub, rel, ln) in loc.items():
-        if rel and ln:
-            by_file.setdefault(rel, {})
-            by_file[rel][ln] = max(by_file[rel].get(ln, 0), len(hit.get(mid, [])))
+        n = len(hit.get(mid, []))
+        if rel and ln and n:                     # only markers that fired in >=1 trace
+            fired.setdefault(rel, {})[ln] = max(fired.get(rel, {}).get(ln, 0), n)
+    try:
+        sys.path.insert(0, HERE)
+        import static_coverage
+    except Exception:
+        static_coverage = None
     out = []
-    for rel in sorted(by_file):
+    for rel in sorted(fired):
+        marks = fired[rel]
+        cnt = max(marks.values())                # coarse per-file hit count (lcov only needs >0)
+        lines = set(marks)
+        if static_coverage is not None:
+            try:
+                lines |= static_coverage.provable_lines(os.path.join(REPO, rel), list(marks))
+            except Exception:
+                pass                             # keep marker lines if the file can't be analyzed
         out.append("TN:")
         out.append("SF:" + rel)
-        da = by_file[rel]
-        for ln in sorted(da):
-            out.append("DA:%d,%d" % (ln, da[ln]))
-        out.append("LF:%d" % len(da))
-        out.append("LH:%d" % sum(1 for ln in da if da[ln] > 0))
+        for ln in sorted(lines):
+            out.append("DA:%d,%d" % (ln, cnt))
+        out.append("LF:%d" % len(lines))
+        out.append("LH:%d" % len(lines))
         out.append("end_of_record")
     return "\n".join(out) + "\n"
 
