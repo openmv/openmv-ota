@@ -823,10 +823,18 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             vfs.rom_ioctl(5, 0)                       # flush cached sub-page writes
 
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the
-    # app (the FRONT slot is untouched).
+    # app (the FRONT slot is untouched). Log the reason first: run() swallows this exception
+    # (transient failures retry next poll), so without a line here a REJECTED update -- bad
+    # signature, untrusted key, failed board/version/platform vetting -- is invisible in the
+    # field, exactly when an operator most needs to know why a release won't take.
     if log:
         log.info("install: fetching manifest %s" % manifest_url)
-    image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
+    try:
+        image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
+    except Exception as e:
+        if log:
+            log.warning("install: rejected before erase (%s)" % e)   # /rom untouched
+        raise
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
     # failure reboots into the golden image instead of propagating. ERASE FIRST,

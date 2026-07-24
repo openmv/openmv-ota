@@ -30,6 +30,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -55,6 +56,9 @@ CFG = {
     "blhost": env("BLHOST", HOME + "/openmv-sdk-1.6.0/python/bin/blhost"),
     "acm": env("BOARD_ACM", "/dev/ttyACM0"),
     "uart": env("BOARD_UART", "/dev/ttyUSB0"),
+    # the update server's local artifact store, for tamper scenarios (corrupt/bad_sig) --
+    # only reachable when the harness runs ON the server node (co-located store).
+    "artifacts": env("OTA_ARTIFACTS", HOME + "/otasrv/artifacts"),
 }
 
 # Per-board: which side-channel UART carries markers, how it reaches the network, and
@@ -130,7 +134,10 @@ def log(msg):
 # no-special-markers logging channel).
 COVERAGE = {
     "boot: mounted FRONT": "boot.mount.front",
-    "boot: mounted BACK": "boot.mount.back",
+    # BACK is only ever mounted as a FALLBACK (FRONT rejected), which boot.py logs as one
+    # line -- "boot: FRONT rejected (<reason>) -> mounted BACK ..." -- so key on that tail,
+    # not a standalone "boot: mounted BACK" line (which never occurs).
+    "-> mounted BACK": "boot.mount.back",
     "boot: FRONT rejected": "boot.front_reject",
     "boot: no bootable slot": "boot.no_slot",
     "install: erasing FRONT": "install.start",
@@ -141,35 +148,75 @@ COVERAGE = {
     "install: attempt": "install.retry",
     "install: installed + armed": "install.armed",
     "install: FAILED after": "install.fallback",
+    "install: rejected before erase": "install.reject",
     "checkin: response received": "run.checkin",
     "checkin: update offered": "run.offer",
     "confirm: kept running FRONT": "confirm.promoted",
 }
 
 
-# NOTE -- adding the next scenario. Today there is ONE scenario: the happy-path DELTA
-# install, whose required paths are expected_coverage() below. As we add scenarios, give
-# each its OWN expected set and select it (e.g. a --scenario arg or a SCENARIOS dict), and
-# have the scenario drive the conditions that make its paths run:
-#   * full-image  -> publish a full (non-delta) release / device with no matching base
-#                    => expects install.full instead of install.delta
-#   * retry       -> kill the download mid-stream (drop the connection once)
-#                    => expects install.retry (then install.armed on the retry)
-#   * rollback    -> publish an update whose trial self-test fails (or never confirms)
-#                    => expects boot.front_reject / boot.mount.back, NOT confirm.promoted
-#   * block-device (RT1062) -> expects install.blockdev instead of install.xip
-# Every marker in COVERAGE above should be an expected path of SOME scenario, so the union
-# of the scenarios' expected sets is the full matrix -- that's the "all paths hit" gate.
-def expected_coverage(board):
-    """The coverage points a happy-path DELTA install on this board MUST hit. Missing any
-    means either the path did not run OR its log line drifted -- both fail the run, so a
-    covered log line can't silently disappear without the HIL checklist being updated.
-    (Other paths -- rollback, retry, full, the other write model -- belong to their own
-    scenarios; this default scenario is not expected to hit them.)"""
-    return {
-        "boot.mount.front", "run.checkin", "run.offer", "install.start",
-        BOARDS[board]["cov_write"], "install.delta", "install.armed", "confirm.promoted",
-    }
+# ---------------------------------------------------------------------------
+# The scenario catalog. Each entry drives the conditions that make its code paths run and
+# declares what it MUST cover ("expect") and what it must NOT ("forbid"), plus how it ends:
+#   end="promoted" -- device installs, trials, confirms, and promotes to the target version
+#                     on FRONT (the happy paths).
+#   end="golden"   -- device stays on / falls back to the golden (the negative paths): the
+#                     update is refused pre-erase, or installs then rolls back / falls back.
+# "publish" picks how the update is produced (see publish_update); "app" picks the bench app
+# variant (see bench_main_py). "{cov_write}" resolves per-board to install.xip / .blockdev.
+# A run PASSES iff the end state matches AND every expect marker fired AND no forbid marker
+# did -- so a dropped/renamed log line, or a safety path that silently stops running, fails.
+# The union of every scenario's expect set is the full COVERAGE matrix (bar boot.no_slot,
+# which needs both slots bricked -- too destructive to trigger on real hardware).
+SCENARIOS = {
+    "delta": {
+        "desc": "happy path: delta install -> trial -> confirm -> promote",
+        "publish": "delta", "app": "confirm", "end": "promoted",
+        "expect": ["boot.mount.front", "run.checkin", "run.offer", "install.start",
+                   "{cov_write}", "install.delta", "install.armed", "confirm.promoted"],
+        "forbid": ["install.full", "install.fallback", "install.reject", "boot.mount.back"],
+    },
+    "full": {
+        "desc": "full (non-delta) image install -> trial -> confirm -> promote",
+        "publish": "full", "app": "confirm", "end": "promoted",
+        "expect": ["boot.mount.front", "run.offer", "install.start",
+                   "{cov_write}", "install.full", "install.armed", "confirm.promoted"],
+        "forbid": ["install.delta", "install.fallback", "install.reject"],
+    },
+    "corrupt": {
+        "desc": "tampered image fails integrity -> retries exhausted -> golden BACK",
+        "publish": "corrupt", "app": "confirm", "end": "golden",
+        "expect": ["install.start", "install.retry", "install.fallback",
+                   "boot.front_reject", "boot.mount.back"],
+        "forbid": ["install.armed", "confirm.promoted"],
+    },
+    "rollback": {
+        "desc": "trial never confirms -> next boot rejects FRONT -> golden BACK",
+        "publish": "delta", "app": "no_confirm", "end": "golden",
+        "expect": ["install.armed", "boot.front_reject", "boot.mount.back"],
+        "forbid": ["confirm.promoted"],
+    },
+    "bad_sig": {
+        "desc": "manifest signed by an untrusted key -> refused pre-erase, stays golden",
+        "publish": "bad_sig", "app": "confirm", "end": "golden",
+        "expect": ["run.offer", "install.reject"],
+        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
+    },
+    "bad_version": {
+        "desc": "version <= anti-rollback floor -> refused pre-erase, stays golden",
+        "publish": "bad_version", "app": "confirm", "end": "golden",
+        "expect": ["run.offer", "install.reject"],
+        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
+    },
+}
+
+
+def scenario_markers(board, key):
+    """(expect, forbid) marker sets for a scenario, with {cov_write} resolved per board."""
+    def resolve(names):
+        return {BOARDS[board]["cov_write"] if n == "{cov_write}" else n for n in names}
+    s = SCENARIOS[key]
+    return resolve(s["expect"]), resolve(s["forbid"])
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +275,7 @@ class UartCapture:
 # Bench app (main.py) -- minimal: bring the network up, run the OTA loop against the
 # bench server, and confirm the trial once operational. LAN or WiFi per board.
 # ---------------------------------------------------------------------------
-def bench_main_py(board, net):
+def bench_main_py(board, net, app="confirm"):
     if net == "wifi":
         bring_up = (
             'wl = network.WLAN(network.STA_IF)\n'
@@ -247,6 +294,32 @@ def bench_main_py(board, net):
             '        await asyncio.sleep_ms(200)\n'
             '    print("BENCH up", lan.ifconfig()[0])\n'
         )
+    # The trial policy is the app's job (run() never auto-confirms), so it's the knob the
+    # scenarios turn. "confirm": promote the trial once operational (the normal deploy).
+    # "no_confirm": a trial that never becomes healthy -- do NOT confirm, wait, then reset,
+    # so the next boot rejects the un-confirmed FRONT and falls back to golden (the anti-brick
+    # / rollback path). status().trial is only true on a freshly-installed trial boot, so the
+    # golden boot that DOES the install is unaffected either way.
+    if app == "no_confirm":
+        trial_policy = (
+            "    st = openmv_ota.status()\n"
+            "    if st.get('trial'):\n"
+            "        _blog.warning('app: trial NOT confirming (rollback scenario); reset in 15s')\n"
+            "        await asyncio.sleep(15)\n"
+            "        import machine\n"
+            "        machine.reset()\n"
+            "    while True:\n"
+            "        await asyncio.sleep(2)\n"
+        )
+    else:
+        trial_policy = (
+            "    confirmed = False\n"
+            "    while True:\n"
+            "        if not confirmed:\n"
+            "            confirmed = True\n"
+            "            openmv_ota.confirm()\n"
+            "        await asyncio.sleep(2)\n"
+        )
     # The app logs its OWN progress to the openmv_ota logger (-> the coverage UART at DEBUG),
     # and wraps the whole run so any crash is VISIBLE there. Without this a trial that boots
     # but faults in the app is invisible: an uncaught exception prints to the USB REPL, not
@@ -259,17 +332,12 @@ def bench_main_py(board, net):
         "import openmv_ota\n"
         "_blog = logging.getLogger('openmv_ota')\n\n\n"
         "async def main():\n"
-        "    confirmed = False\n"
         "    _blog.info('app: main() started')\n"
         "    " + bring_up +
         "    _blog.info('app: network up, starting run()')\n"
         "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
             CFG["server"], CFG["ca_board"]) +
-        "    while True:\n"
-        "        if not confirmed:\n"
-        "            confirmed = True\n"
-        "            openmv_ota.confirm()\n"
-        "        await asyncio.sleep(2)\n\n\n"
+        trial_policy + "\n\n"
         "try:\n"
         "    _blog.info('app: booting ' + str(openmv_ota.status().get('version')))\n"
         "    asyncio.run(main())\n"
@@ -291,7 +359,7 @@ def set_version(v):
     json.dump(d, open(p, "w"), indent=2)
 
 
-def prepare(board, checkout, network):
+def prepare(board, checkout, network, app="confirm"):
     log("prepare: install checkout + refresh vendored runtime + bench app")
     sh([ota("pip"), "install", "-q", "-e", checkout], timeout=300)
     dev = checkout + "/src/openmv_ota/build/device"
@@ -301,7 +369,7 @@ def prepare(board, checkout, network):
     sh("cp -rf %s/openmv_ota/. %s/app/lib/openmv_ota/" % (dev, CFG["project"]))
     sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
     sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
-    open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network))
+    open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
     # the bench server's CA must be on the board for run()'s TLS (survives the OTA, lives on
     # /flash not the romfs). Push it so the harness doesn't assume a hand-placed cert.
     if os.path.exists(CFG["ca_node"]):
@@ -489,19 +557,68 @@ def verify_golden():
     raise RuntimeError("golden did not mount a valid romfs:\n" + last)
 
 
-def publish_update(board, version):
-    log("publish: %s (delta + full, rollout 100%%)" % version)
+def publish_update(board, version, variant="delta"):
+    log("publish: %s (variant=%s, rollout 100%%)" % (version, variant))
     set_version(version)
     penv = dict(os.environ, PATH=CFG["sdk"] + "/make:" + os.environ["PATH"],
                 SSL_CERT_FILE=CFG["ca_node"])
     # --allow-republish: the bench server accumulates versions across runs, so this
     # target may not be strictly newer than a prior run's -- the device is what gates
     # (it re-flashes to golden 1.0.0 each run, and its rollback floor resets with it).
-    subprocess.run([ota("openmv-ota"), "build", "ota-romfs", CFG["project"], "-b", board,
-                    "--allow-dev-key", "--allow-republish"], env=penv, check=True, timeout=900)
+    build = [ota("openmv-ota"), "build", "ota-romfs", CFG["project"], "-b", board,
+             "--allow-dev-key", "--allow-republish"]
+    if variant == "full":
+        # Force a full (non-delta) release: point --delta-from at an empty dir so no golden
+        # resolves (build_ota_romfs -> "full image only"), and the device installs the full rep.
+        nodelta = tempfile.mkdtemp(prefix="hil-nodelta-")
+        build += ["--delta-from", nodelta]
+        # A full-only build does NOT produce a .delta.gz, but a prior delta build left one in
+        # the build dir -- and `client publish` uploads every artifact present, so the server
+        # rejects (delta uploaded, manifest declares none). Drop the stale delta first.
+        sh("rm -f %s/build/%s-ota.delta.gz" % (CFG["project"], board), check=False)
+    subprocess.run(build, env=penv, check=True, timeout=900)
     subprocess.run([ota("openmv-ota"), "client", "publish", CFG["project"], "-b", board,
                     "--server", CFG["server"], "--token", CFG["token"], "--allow-republish",
                     "--rollout", "__default__:100"], env=penv, check=True, timeout=180)
+    if variant == "corrupt":
+        _tamper(board, "image")        # post-erase integrity failure -> retry -> golden BACK
+    elif variant == "bad_sig":
+        _tamper(board, "manifest")     # pre-erase signature failure -> reject, stays golden
+
+
+def _tamper(board, which):
+    """Flip a byte in the JUST-published artifact in the LOCAL server store, to exercise a
+    device integrity path that a clean release can't:
+      which="image"    -> the offered .delta.gz/.img.gz: the download decompress/sha256 fails
+                          AFTER the FRONT erase commits -> retries exhaust -> reboot to golden.
+      which="manifest" -> the manifest.bin: its signature no longer covers the mutated bytes
+                          -> the device refuses it BEFORE erasing -> stays on golden.
+    Needs the harness to run ON the server node (the artifact store is local); raises loudly
+    otherwise so a tamper scenario can't silently degrade into a clean install."""
+    import glob
+    root = CFG["artifacts"]
+    imgs = sorted(glob.glob("%s/artifacts/rel_*/%s-ota.*.gz" % (root, board)),
+                  key=os.path.getmtime)
+    if not imgs:
+        raise RuntimeError("no published artifact for %s under %s -- tamper scenarios need the "
+                           "harness on the server node (co-located store)" % (board, root))
+    newest = imgs[-1]                                    # the release we just published
+    rel = os.path.basename(os.path.dirname(newest))      # rel_<id>, shared by image + manifest
+    if which == "manifest":
+        target = "%s/manifests/%s/manifest.bin" % (root, rel)
+    else:
+        # prefer the delta blob (the device picks it over full when the base matches)
+        deltas = [p for p in imgs if os.path.dirname(p).endswith(rel) and p.endswith(".delta.gz")]
+        target = deltas[-1] if deltas else newest
+    with open(target, "r+b") as f:
+        f.seek(0, 2)
+        n = f.tell()
+        mid = n // 2                                     # flip one byte mid-stream
+        f.seek(mid)
+        b = f.read(1)
+        f.seek(mid)
+        f.write(bytes([b[0] ^ 0xFF]))
+    log("  tampered %s byte@%d of %s" % (which, mid, os.path.basename(target)))
 
 
 def device_record():
@@ -531,15 +648,25 @@ def device_id():
     raise RuntimeError("could not read device_id:\n" + out)
 
 
-def run_cycle(devid, golden, target, cap, timeout_s):
-    log("cycle: hard reset -> autonomous install/trial/confirm; watching UART + server")
+def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
+    """Hard-reset the device and watch the server record + UART until the scenario's end
+    state is reached (early exit) or the timeout elapses. Returns the observed state; the
+    caller decides PASS/FAIL against the scenario's expect/forbid sets.
+
+    end="promoted": the device ends on the TARGET, confirmed on FRONT (the happy paths).
+    end="golden":   the device stays on / falls back to the GOLDEN (the negative paths -- an
+                    update refused pre-erase, or installed then rolled back / fell back). The
+                    device may loop (re-offer -> re-fail -> golden), so we exit once it has
+                    SETTLED back on golden with every expected marker seen."""
+    log("cycle: hard reset -> autonomous run; end=%s; watching UART + server" % end)
     try:                                     # machine.reset() drops the USB-CDC -> mpremote
         device_exec("import machine; machine.reset()", timeout=20, check=False)
     except Exception:
         pass                                 # ...an I/O error here just means the reset landed
     deadline = time.time() + timeout_s
     last = None
-    saw_golden = False
+    saw_golden = saw_target = False
+    v = slot = None
     while time.time() < deadline:
         time.sleep(15)
         try:
@@ -552,14 +679,23 @@ def run_cycle(devid, golden, target, cap, timeout_s):
         slot = me[0].get("slot") if me else None
         if v == golden:                      # the freshly re-flashed golden checked in
             saw_golden = True
-        cur = "%s/%s golden=%s markers=[%s]" % (v, slot, saw_golden, ",".join(cap.points()))
+        if v == target:
+            saw_target = True
+        marks = set(cap.points())
+        have = expect <= marks
+        cur = "%s/%s golden=%s markers=[%s]" % (v, slot, saw_golden, ",".join(sorted(marks)))
         if cur != last:
             log("  device " + devid[:12] + ": " + cur)
             last = cur
-        # PASS only after a real golden->target transition this run, ending confirmed on FRONT.
-        if saw_golden and v == target and slot == "FRONT":
-            return True
-    return False
+        if end == "promoted":
+            if saw_golden and v == target and slot == "FRONT" and have:
+                break                        # real golden->target transition, all paths hit
+        elif saw_golden and v == golden and have:
+            break                            # settled back on golden, all negative paths hit
+    reached = ((end == "promoted" and saw_golden and v == target and slot == "FRONT")
+               or (end == "golden" and saw_golden and v == golden))
+    return {"saw_golden": saw_golden, "saw_target": saw_target,
+            "version": v, "slot": slot, "reached_end": reached}
 
 
 def main():
@@ -571,6 +707,9 @@ def main():
     ap.add_argument("--trace", default=env("HIL_TRACE", "hil-trace.json"))
     ap.add_argument("--network", choices=["lan", "wifi"], default=None,
                     help="override the board's default network for the bench app (e.g. N6 wifi)")
+    ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="delta",
+                    help="which OTA path to exercise (see SCENARIOS): delta/full happy paths, "
+                         "corrupt/rollback/bad_sig/bad_version negative paths")
     ap.add_argument("--skip-provision", action="store_true",
                     help="reuse the already-flashed golden (skip build/flash/verify). Use WITH "
                          "--skip-publish: a fresh publish rebuilds the golden, and a delta's base "
@@ -580,9 +719,13 @@ def main():
     args = ap.parse_args()
 
     network = args.network or BOARDS[args.board]["network"]
+    spec = SCENARIOS[args.scenario]
+    expect, forbid = scenario_markers(args.board, args.scenario)
+    pub_version = spec.get("version", args.target)     # bad_version publishes below the floor
     t0 = time.time()
-    trace = {"board": args.board, "network": network, "target": args.target,
-             "passed": False, "markers": [], "phases": {}}
+    trace = {"board": args.board, "network": network, "scenario": args.scenario,
+             "target": args.target, "end": spec["end"], "passed": False,
+             "expect": sorted(expect), "forbid": sorted(forbid), "markers": [], "phases": {}}
     cap = None
 
     def phase(name, fn):
@@ -591,9 +734,10 @@ def main():
         trace["phases"][name] = round(time.time() - s, 1)
 
     try:
-        log("board %s, network %s, target %s" % (args.board, network, args.target))
+        log("board %s, network %s, scenario %s (%s)"
+            % (args.board, network, args.scenario, spec["desc"]))
         if not args.skip_provision:
-            phase("prepare", lambda: prepare(args.board, args.checkout, network))
+            phase("prepare", lambda: prepare(args.board, args.checkout, network, spec["app"]))
             phase("build_golden", lambda: build_golden(args.board))
             phase("flash_golden", lambda: flash_golden(args.board))
             phase("verify_golden", verify_golden)
@@ -601,22 +745,24 @@ def main():
         trace["device_id"] = devid
         log("device_id: " + devid)
         if not args.skip_publish:
-            phase("publish", lambda: publish_update(args.board, args.target))
+            phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
         cap = UartCapture(CFG["uart"])
         cap.start(time.time())
-        version_ok = run_cycle(devid, "1.0.0", args.target, cap, args.timeout)
+        result = run_cycle(devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout)
         time.sleep(2)                            # let the last UART lines land
-        expected = expected_coverage(args.board)
-        missing = sorted(expected - set(cap.points()))
-        trace["version_reached"] = version_ok
-        trace["expected"] = sorted(expected)
+        marks = set(cap.points())
+        missing = sorted(expect - marks)
+        forbidden = sorted(forbid & marks)
+        trace["result"] = result
         trace["missing_expected"] = missing
-        # PASS requires BOTH: the device promoted the update AND every expected path was
-        # logged (a dropped/renamed coverage line -> missing_expected -> FAIL, by design).
-        trace["passed"] = version_ok and not missing
-        if version_ok and missing:
-            log("FAIL: promoted %s but missing expected coverage: %s"
-                % (args.target, ", ".join(missing)))
+        trace["forbidden_hit"] = forbidden
+        # PASS = the scenario reached its declared end state, hit EVERY expected path, and hit
+        # NONE of the forbidden ones. So a dropped/renamed log line (missing), a safety path
+        # that stopped running (missing), or a wrong path firing (forbidden) all fail the run.
+        trace["passed"] = result["reached_end"] and not missing and not forbidden
+        if not trace["passed"]:
+            log("FAIL: end=%s reached=%s missing=%s forbidden=%s"
+                % (spec["end"], result["reached_end"], missing or "-", forbidden or "-"))
     except Exception as e:
         trace["error"] = str(e)
         log("ERROR: " + str(e))
@@ -631,10 +777,9 @@ def main():
         json.dump(trace, open(args.trace, "w"), indent=2)
 
     log("=" * 60)
-    log("RESULT: %s  (%.0fs)" % ("PASS" if trace["passed"] else "FAIL", trace["elapsed_s"]))
+    log("RESULT: %s  scenario=%s  (%.0fs)"
+        % ("PASS" if trace["passed"] else "FAIL", args.scenario, trace["elapsed_s"]))
     log("coverage %d/%d: %s" % (len(trace["markers"]), len(COVERAGE), ", ".join(trace["markers"])))
-    if trace.get("missed"):
-        log("not covered this run: " + ", ".join(trace["missed"]))
     log("trace -> " + args.trace)
     return 0 if trace["passed"] else 1
 

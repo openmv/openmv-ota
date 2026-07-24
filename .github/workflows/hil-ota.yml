@@ -1,12 +1,14 @@
 name: HIL OTA cycle
 
-# The live-hardware OTA gate: provision a golden board from this ref, publish an
-# update, and verify the device installs -> trials -> confirms -> promotes it fully
-# autonomously, capturing the HILCOV coverage markers off the board's P4/P5 UART.
+# The live-hardware OTA gate: provision a golden board from this ref, exercise an OTA
+# SCENARIO (happy install/trial/confirm/promote, or a negative path -- corrupt, rollback,
+# bad signature), and verify the device behaves, capturing the coverage markers off the
+# board's P4/P5 UART. A second job folds the traces into a device-path coverage report --
+# coverage on the lines the host suite structurally can't reach (they need real flash).
 #
-# Manual-trigger ONLY while the harness is in development -- it runs on the bench
-# and each board cycle is minutes (the AE3's OSPI flash alone is ~10). This will
-# become the required gate for OTA-touching PRs once the path matrix is built out.
+# Manual-trigger ONLY while the harness is in development -- it runs on the bench and each
+# board cycle is minutes (the AE3's OSPI flash alone is ~10). This will become the required
+# gate for OTA-touching PRs once the path matrix is built out.
 on:
   workflow_dispatch:
     inputs:
@@ -15,6 +17,13 @@ on:
         default: all
         type: choice
         options: [all, OPENMV_N6, OPENMV_AE3, OPENMV_RT1060]
+      scenario:
+        description: which OTA path to exercise
+        default: delta
+        type: choice
+        # NOTE: corrupt/bad_sig tamper the server's artifact store, so they only run where the
+        # harness is CO-LOCATED with the update server (the RT1060 bench node); pick that board.
+        options: [delta, full, corrupt, rollback, bad_sig, bad_version]
       target:
         description: update version to install over golden 1.0.0
         default: "1.1.0"
@@ -58,7 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: OTA cycle + coverage trace
+      - name: OTA ${{ github.event.inputs.scenario || 'delta' }} + coverage trace
         env:
           OTA_SERVER: ${{ vars.HIL_OTA_SERVER }}
           OTA_TOKEN: ${{ secrets.HIL_OTA_TOKEN }}
@@ -69,13 +78,41 @@ jobs:
           "$HOME/ota-venv/bin/python" ci/hil/ota_cycle.py \
             --board "${{ matrix.board }}" \
             --network "${{ matrix.network }}" \
+            --scenario "${{ github.event.inputs.scenario || 'delta' }}" \
             --target "${{ github.event.inputs.target || '1.1.0' }}" \
             --checkout "$GITHUB_WORKSPACE" \
-            --trace "hil-trace-${{ matrix.board }}-${{ matrix.network }}.json"
+            --trace "hil-trace-${{ matrix.board }}-${{ matrix.network }}-${{ github.event.inputs.scenario || 'delta' }}.json"
 
       - name: Upload trace
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hil-trace-${{ matrix.board }}-${{ matrix.network }}
-          path: hil-trace-${{ matrix.board }}-${{ matrix.network }}.json
+          name: hil-trace-${{ matrix.board }}-${{ matrix.network }}-${{ github.event.inputs.scenario || 'delta' }}
+          path: hil-trace-${{ matrix.board }}-${{ matrix.network }}-${{ github.event.inputs.scenario || 'delta' }}.json
+
+  # Fold every trace this run produced into a device-path coverage report + lcov. Runs on a
+  # hosted runner (pure JSON+source processing, no hardware) after the bench jobs finish.
+  coverage:
+    name: device-path coverage
+    needs: ota-cycle
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hil-trace-*
+          path: traces
+          merge-multiple: true
+      - name: Build HIL coverage report
+        run: |
+          python3 ci/hil/hil_coverage.py --traces traces \
+            --md hil-coverage.md --lcov hil-coverage.info
+          cat hil-coverage.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: hil-coverage
+          path: |
+            hil-coverage.md
+            hil-coverage.info
