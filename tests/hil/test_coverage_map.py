@@ -77,3 +77,27 @@ def test_scenario_expect_and_forbid_are_disjoint():
             expect, forbid = ota_cycle.scenario_markers(board, name)
             overlap = sorted(expect & forbid)
             assert not overlap, "%s/%s expect & forbid overlap: %r" % (name, board, overlap)
+
+
+def test_regression_scenarios_are_valid_and_board_gated():
+    for board in ota_cycle.BOARDS:
+        primary = ota_cycle.BOARDS[board]["network"]
+        for net in ("lan", "wifi"):
+            scs = ota_cycle.regression_scenarios(board, net)
+            assert scs, "%s/%s regression is empty" % (board, net)
+            assert all(s in ota_cycle.SCENARIOS for s in scs), \
+                "%s/%s has an unknown scenario: %r" % (board, net, scs)
+            # coproc is AE3-only, and only on its primary interface
+            assert any(s.startswith("coproc") for s in scs) == \
+                (board == "OPENMV_AE3" and net == primary)
+            # no_slot only on block-device boards (blhost slot-erase)
+            if "no_slot" in scs:
+                assert ota_cycle.BOARDS[board]["flash"] == "blhost_imx"
+            # a secondary interface just proves the network path
+            if net != primary:
+                assert scs == ["delta"]
+    # every board's PRIMARY-interface regression, unioned, covers the tamper + happy + rollback set
+    union = set()
+    for board in ota_cycle.BOARDS:
+        union |= set(ota_cycle.regression_scenarios(board, ota_cycle.BOARDS[board]["network"]))
+    assert union >= {"delta", "full", "rollback", "corrupt", "bad_sig", "bad_key", "bad_version"}
