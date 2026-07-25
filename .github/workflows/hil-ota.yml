@@ -83,13 +83,22 @@ jobs:
           # No OTA_SERVER / OTA_TOKEN: each run spins up its OWN update server (ci/hil/bench_server)
           # on the node's IP with a throwaway store + a self-generated token -- rigs are
           # self-contained, so no shared-server address or admin token is a repo secret anymore.
+          # The bench tooling (ota-venv, SDK, project) lives in a dedicated user's home; the
+          # self-hosted runner runs as `runner` (a member of that user's group, so it can read it)
+          # with a DIFFERENT $HOME -- so point every tool path at the tooling home (repo var
+          # HIL_HOME, default /home/hil) and leave $HOME under the runner so caches stay writable.
+          HIL_HOME: ${{ vars.HIL_HOME }}
           WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
           WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
         run: |
           # 'all' -> this board+network's regression list; else the single chosen scenario. Run
           # each in turn (one trace apiece); don't stop on a failure, so one bad scenario doesn't
           # hide the rest -- the coverage job folds every trace and the step still reports failure.
-          PY="$HOME/ota-venv/bin/python"
+          T="${HIL_HOME:-/home/hil}"
+          export OTA_VENV="$T/ota-venv" SDK_HOME="$T/openmv-sdk-1.6.0" PROJECT_DIR="$T/proj"
+          export JLINK="$T/jlink/JLinkExe" DFU_UTIL="$T/openmv-sdk-1.6.0/bin/dfu-util"
+          export BLHOST="$T/openmv-sdk-1.6.0/python/bin/blhost"
+          PY="$OTA_VENV/bin/python"
           SC="${{ github.event.inputs.scenario || 'all' }}"
           if [ "$SC" = "all" ]; then
             SCENARIOS=$("$PY" ci/hil/ota_cycle.py --board "${{ matrix.board }}" \
