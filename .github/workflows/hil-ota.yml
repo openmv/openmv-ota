@@ -99,6 +99,12 @@ jobs:
           export JLINK="$T/jlink/JLinkExe" DFU_UTIL="$T/openmv-sdk-1.6.0/bin/dfu-util"
           export BLHOST="$T/openmv-sdk-1.6.0/python/bin/blhost"
           PY="$OTA_VENV/bin/python"
+          # The firmware tree + project live under $T (owned by another user); the runner shares
+          # its group but git refuses cross-owner repos ("dubious ownership") -> trust the bench
+          # tooling dirs for this runner (safe: they're the bench's own trees, not user content).
+          git config --global --add safe.directory "$T/fw" || true
+          git config --global --add safe.directory "$PROJECT_DIR" || true
+          git config --global --add safe.directory '*' || true
           SC="${{ github.event.inputs.scenario || 'all' }}"
           if [ "$SC" = "all" ]; then
             SCENARIOS=$("$PY" ci/hil/ota_cycle.py --board "${{ matrix.board }}" \
