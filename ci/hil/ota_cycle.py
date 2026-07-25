@@ -80,6 +80,8 @@ BOARDS = {
         "network": "wifi",
         "flash": "dfu_alif",
         "romfs_alt": "6",                    # external OSPI romfs partition
+        "jlink_device": "AE302F80F55D5_HP",  # debug-only device name, used ONLY to SWD-reset
+                                             # the board out of a stuck DFU state (never to flash)
     },
     "OPENMV_RT1060": {
         "cov_uart": 1,                       # UART(1) on P4/P5
@@ -581,6 +583,31 @@ def _dfu_write(alt, path, timeout_s):
             alt, open(logf, errors="replace").read()[-1500:]))
 
 
+def _ensure_cdc(board):
+    """Boot a DFU-flashed board out of a stuck DFU state via a J-Link SWD reset. The AE3's
+    machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB re-enum
+    flakiness): when leave-DFU fails the board sits in DFU with no USB-CDC, and every later
+    scenario then fails to open the port. A SYSRESETREQ boots the golden firmware, which brings
+    the CDC back. No-op once the CDC is present, and for non-DFU boards (they don't get stuck)."""
+    if BOARDS[board]["flash"] != "dfu_alif":
+        return
+    for attempt in range(3):
+        if os.path.exists(CFG["acm"]):
+            return
+        log("recover: %s no CDC at %s -- SWD reset out of DFU (try %d)" % (
+            board, CFG["acm"], attempt + 1))
+        fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
+        os.write(fd, b"connect\nr\nh\ng\nqc\n")
+        os.close(fd)
+        try:
+            sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
+                "-speed", "4000", "-AutoConnect", "1", "-CommanderScript", sp],
+               timeout=60, check=False, quiet=True)
+        finally:
+            os.unlink(sp)
+        time.sleep(8)
+
+
 def _flash_dfu_alif(board, bad_romfs=False):
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
@@ -590,6 +617,7 @@ def _flash_dfu_alif(board, bad_romfs=False):
     img = "%s/%s-factory-romfs.img" % (build, board)      # boot.py + openmv_log)
     rimg = "%s/%s-romfs.img" % (build, board)
     sh("cp -f %s %s" % (img, rimg))
+    _ensure_cdc(board)                       # a prior scenario may have left it stuck in DFU
     # One DFU session: firmware (MRAM alt 1, fast) THEN romfs (OSPI, ~10 min), then leave.
     log("flash: reset to DFU")
     device_exec("import machine; machine.bootloader()", timeout=30, check=False)
@@ -600,6 +628,7 @@ def _flash_dfu_alif(board, bad_romfs=False):
     _dfu_write(b["romfs_alt"], rimg, 1200)
     sh([CFG["dfu"], "-d", ",37c5:96e3", "-a", b["romfs_alt"], "-e"], check=False, timeout=60)
     time.sleep(15)                           # the AE3 (Alif) takes longer to boot + re-enumerate
+    _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
 
 
 def _aligned(n, sector=0x1000):
