@@ -11,9 +11,8 @@ Runs ON the board's self-hosted runner (USB access to the board + its UART bridg
 Board-specific flash + network live in ``BOARDS`` below; bench-wide config comes from
 the environment so nothing secret is committed:
 
-    OTA_SERVER      update server base URL           (default https://192.168.0.100:8443)
-    OTA_TOKEN       admin token for publish + query  (default bench-admin-token-1)
-    OTA_CA_NODE     CA path ON THE NODE              (default ~/bench-ca.pem)
+    (the update server + its URL/token/store/CA are owned by ci/hil/bench_server -- each run
+     spins up its OWN ephemeral server on the node, so no OTA_SERVER/OTA_TOKEN knob exists)
     OTA_CA_BOARD    CA path ON THE BOARD             (default /flash/bench-ca.pem)
     WIFI_SSID/WIFI_PASSWORD   for WiFi boards
     PROJECT_DIR     the pegged project on the node   (default ~/proj)
@@ -33,6 +32,8 @@ import sys
 import tempfile
 import threading
 import time
+
+import bench_server                          # ephemeral per-run update server (sibling module)
 
 HOME = os.path.expanduser("~")
 
@@ -876,6 +877,7 @@ def main():
              "target": args.target, "end": spec["end"], "passed": False,
              "expect": sorted(expect), "forbid": sorted(forbid), "markers": [], "phases": {}}
     cap = None
+    srv = None
 
     def phase(name, fn):
         s = time.time()
@@ -885,6 +887,12 @@ def main():
     try:
         log("board %s, network %s, scenario %s (%s)"
             % (args.board, network, args.scenario, spec["desc"]))
+        # Each rig spins up its OWN update server for this run (self-contained; no shared bench
+        # server, tamper scenarios work on every board). Point CFG at it BEFORE prepare(), which
+        # bakes the URL into the bench app + copies this run's CA onto the board.
+        srv = bench_server.start(ota("python"), log=log)
+        CFG["server"], CFG["ca_node"], CFG["artifacts"], CFG["token"] = (
+            srv["url"], srv["ca"], srv["store"], srv["token"])
         if spec["end"] == "no_slot":
             # No OTA: brick BOTH romfs slots, then watch for boot.py's 'no bootable slot'. Start
             # capture BEFORE the brick flash so the reset it triggers (-> boot -> the log line)
@@ -932,6 +940,7 @@ def main():
             trace["missed"] = sorted(set(COVERAGE.values()) - set(cap.points()))
             trace["marker_trace"] = cap.markers
             trace["log"] = cap.raw                # the full device log for this run
+        bench_server.stop(srv)                    # tear the per-run server + store down
         trace["elapsed_s"] = round(time.time() - t0, 1)
         json.dump(trace, open(args.trace, "w"), indent=2)
 
