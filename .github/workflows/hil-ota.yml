@@ -135,7 +135,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: hil-trace-*
+          # Matches the per-leg upload artifacts named `hil-traces-<board>-<network>` above.
+          # (`hil-trace-*` silently matched none -- the artifact is `hil-traceS-`, no dash --
+          # so the fold saw 0 traces and the hil flag got an empty report.)
+          pattern: hil-traces-*
           path: traces
           merge-multiple: true
       - name: Build HIL coverage report
