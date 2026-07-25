@@ -182,6 +182,14 @@ COVERAGE = {
     "install: committed FRONT": "install.committed",          # commit point passed, arming next
     "verify: write block-device": "verify.write",             # confirm/rollback write+readback
     "verify: write XIP": "verify.write",
+    # Coprocessor resource sync() -- applies the embedded coproc romfs to the helper-core
+    # partition (AE3 index 1) on boot, idempotent. Only fires on a coprocessor board.
+    "partition: compare": "partition.compare",                # idempotence stream-compare ran
+    "partition: prepared": "partition.prepare",               # WRITE_PREPARE (NOR erase / MRAM no-op)
+    "partition: writing": "partition.write",                  # chunked program of the partition
+    "sync: applying": "sync.applying",                        # a resource differs -> applying it
+    "sync: applied resource(s)": "sync.applied",              # sync wrote >=1 resource
+    "sync: already applied": "sync.skip",                     # idempotent skip (partition matches)
     "boot: ready, running app": "boot.ready",                 # boot.py finished, handing off to app
     "boot: marked slot block-device": "boot.marked",          # trial slot marked TRIED (pre-run)
     "boot: marked slot XIP": "boot.marked",
@@ -289,6 +297,28 @@ SCENARIOS = {
         # Forbid the things that prove the device is genuinely bricked if ABSENT: it ran no app
         # (no check-in) and did no OTA.
         "forbid": ["run.checkin", "install.start", "confirm.promoted"],
+    },
+    "coproc": {
+        "desc": "apply the bundled coprocessor romfs to the helper-core partition on boot",
+        # AE3-only: it's the only board with a coprocessor partition (index 1, MRAM @0x8047E000).
+        # No OTA -- the device boots golden and the app's sync() applies data/coprocessor.romfs
+        # (embedded in the main image) to the partition when it differs from the bundle. The
+        # golden flash never writes partition 1, so a fresh board differs -> _partition_apply
+        # runs. Idempotent: a second boot would match (sync.skip) -- forbidden here so this run
+        # proves the WRITE path, not just the compare.
+        "publish": "none", "app": "confirm", "end": "golden",
+        "expect": ["boot.mount.front", "boot.ready", "run.checkin", "partition.compare",
+                   "sync.applying", "partition.prepare", "partition.write", "sync.applied"],
+        "forbid": ["install.start", "install.armed", "sync.skip"],
+    },
+    "coproc_skip": {
+        "desc": "coprocessor romfs already applied -> sync() is an idempotent no-op",
+        # RUN AFTER coproc (partition 1 now holds the coproc romfs). sync() stream-compares,
+        # finds it matches the bundle, and skips -- proving idempotence: no needless erase/write
+        # of the helper-core partition on every boot.
+        "publish": "none", "app": "confirm", "end": "golden",
+        "expect": ["boot.mount.front", "run.checkin", "partition.compare", "sync.skip"],
+        "forbid": ["sync.applying", "partition.prepare", "partition.write", "sync.applied"],
     },
 }
 
@@ -415,6 +445,7 @@ def bench_main_py(board, net, app="confirm"):
         "_blog = logging.getLogger('openmv_ota')\n\n\n"
         "async def main():\n"
         "    _blog.info('app: main() started')\n"
+        "    openmv_ota.sync()  # apply bundled coprocessor resources early (no-op if none)\n"
         "    " + bring_up +
         "    _blog.info('app: network up, starting run()')\n"
         "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
@@ -911,7 +942,7 @@ def main():
             devid = device_id()
             trace["device_id"] = devid
             log("device_id: " + devid)
-            if not args.skip_publish:
+            if spec["publish"] != "none" and not args.skip_publish:
                 phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
             cap = UartCapture(CFG["uart"])
             cap.start(time.time())

@@ -307,17 +307,6 @@ def _write_verified(part_index, off, data):  # pragma: no cover
         log.debug("verify: write XIP")                 # the confirm/rollback write path witness
 
 
-def _verify_erased(part_index, total):  # pragma: no cover
-    """Read back a just-erased region (streamed, a chunk at a time) and raise unless it
-    is all 0xFF."""
-    off = 0
-    while off < total:
-        n = _CHUNK if total - off >= _CHUNK else total - off
-        _check_readback(_read_at(part_index, off, n), b"\xff" * n)
-        off += n
-        _wdt_feed()
-
-
 def _boot_result():  # pragma: no cover
     """What boot.py recorded this boot (it mirrors its result onto _ota_config):
     ``(slot, payload_version, fallback_reason)``. Defaults if boot.py didn't run."""
@@ -602,8 +591,10 @@ def _partition_matches(entry, path):  # pragma: no cover
     import uctypes
     import vfs
     base = uctypes.addressof(vfs.rom_ioctl(2, entry["partition"]))
-    return _streams_equal(_file_chunks(path),
+    same = _streams_equal(_file_chunks(path),
                           lambda off, n: uctypes.bytearray_at(base + off, n), _wdt_feed)
+    log.debug("partition: compare")                   # idempotence check ran (every sync)
+    return same
 
 
 def _partition_apply(entry, path, progress=None):  # pragma: no cover
@@ -616,18 +607,29 @@ def _partition_apply(entry, path, progress=None):  # pragma: no cover
     part_index = entry["partition"]
     size = os.stat(path)[6]
     total = (size + _CHUNK - 1) // _CHUNK * _CHUNK
-    with _wdt_relax():                                 # the erase is the one op we can't
-        _rom_write(3, part_index, total)              # feed from a loop (WRITE_PREPARE)
-    _verify_erased(part_index, total)                 # read back -> confirm all 0xFF (feeds)
+    with _wdt_relax():                                 # WRITE_PREPARE: erases a NOR partition;
+        _rom_write(3, part_index, total)              # a NO-OP on byte-writable MRAM (the AE3
+                                                       # coprocessor partition), which never reads
+                                                       # back 0xFF -- so DON'T verify-erased here
+    log.debug("partition: prepared")                  # (the per-chunk write read-back below is the
+                                                       # real integrity check, as the installer does)
     off = 0
+    _first = True
     for chunk in _file_chunks(path):
         if len(chunk) < _CHUNK:
             chunk = chunk + b"\xff" * (_CHUNK - len(chunk))
         _write_verified(part_index, off, chunk)       # WRITE one block + verify
+        if _first:                                    # witness the write-loop body once (no spam)
+            log.debug("partition: writing")
+            _first = False
         off += _CHUNK
         _wdt_feed()                                   # per chunk, like the installer
         if progress is not None:
             progress(off if off < total else total, total)
+    _rom_write(5, part_index)                          # WRITE_COMPLETE: flush cached sub-page
+                                                       # writes so they survive reset (NOR/XIP
+                                                       # ports cache them; no-op on MRAM), exactly
+                                                       # as the installer's complete() does
 
 
 # resource kind -> (matches, apply); add new kinds here without touching sync().
@@ -663,6 +665,7 @@ def sync():  # pragma: no cover
         name = entry.get("name", entry["file"])
         matches, apply = _HANDLERS[entry["handler"]]
         if matches(entry, path):
+            log.debug("sync: already applied")        # idempotent skip (partition matches bundle)
             continue
         log.info("sync: applying " + name)
         apply(entry, path, _Progress("sync " + name))
