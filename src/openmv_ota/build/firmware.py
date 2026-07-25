@@ -61,6 +61,33 @@ _MBEDTLS_COMMON = Path("lib/micropython/extmod/mbedtls/mbedtls_config_common.h")
 _MBEDTLS_COMMON_INCLUDE = '#include "extmod/mbedtls/mbedtls_config_common.h"\n'
 _PEM_DEFINES = "#define MBEDTLS_BASE64_C\n#define MBEDTLS_PEM_PARSE_C\n"
 
+# --- micropython PR #19348 (ranged romfs erase), carried for v5.0 firmware --------------
+#
+# dpgeorge's micropython#19348 adds the ranged (4-arg) MP_VFS_ROM_IOCTL_WRITE_PREPARE and
+# MP_VFS_ROM_IOCTL_GET_MIN_PREPARE (rom_ioctl 6) on the alif/stm32/samd ports. The OTA
+# installer needs it on XIP ports: without it the whole FRONT slot is erased in ONE
+# rom_ioctl(3) call -- seconds of dead time in a single C call that stalls USB and faults
+# partway through on a large slot (the N6's 12 MiB XSPI) -- so the installer must fall back
+# to that legacy erase and the incremental path never runs. Not yet in openmv/micropython,
+# so a v5.0 OTA firmware build cherry-picks the PR commits into lib/micropython (a clean
+# 3-way merge onto the fork) when they're absent.
+#
+# TEMPORARY: the maintainer carries #19348 in openmv/micropython directly and will retire
+# this once it lands there -- the sentinel check then makes it a silent no-op. If the PR is
+# rebased upstream the SHAs change; update _PARTIAL_ERASE_COMMITS (and the PR number) then.
+_PARTIAL_ERASE_PR = "19348"
+_PARTIAL_ERASE_REMOTE = "https://github.com/micropython/micropython"
+_PARTIAL_ERASE_COMMITS = (
+    "6a4062f9974640ee60fbd0d52224b973712b6f80",  # extmod/vfs: GET_MIN_PREPARE constant
+    "61fadc0ec8cc9ff58ddab27ad62c59aa9344307b",  # alif: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+    "893850436a799cc0c31126614e704abc9eb2cae5",  # samd: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+    "9f9b28ecb3360851e50606db822523ccb28f0a56",  # stm32: flash_get_max_sector_size helper
+    "14074d10871cef76b14c5a3c8bf12d8afca9430e",  # stm32: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+    "720f797d08912d3f9c8994b31663cb16e47d5efd",  # mpremote: incremental romfs deploy
+)
+_PARTIAL_ERASE_SENTINEL = "MP_VFS_ROM_IOCTL_GET_MIN_PREPARE"  # present => already carried/merged
+_PARTIAL_ERASE_VFS_H = Path("lib/micropython/extmod/vfs.h")
+
 
 @dataclass
 class FirmwareResult:
@@ -95,12 +122,62 @@ def build_firmware(
         _reject_unsupported(name)
 
     repo = p.firmware_path
+    _ensure_partial_erase(repo)                      # v5.0: carry micropython #19348 if absent
     out_dir.mkdir(parents=True, exist_ok=True)
     return [
         _build_one(p, repo, name, out_dir, jobs=jobs, incremental=incremental,
                    keep_build_dir=keep_build_dir)
         for name in names
     ]
+
+
+def _ensure_partial_erase(repo: Path) -> None:
+    """Carry micropython #19348 (ranged romfs erase) into the firmware's micropython for a
+    v5.0 OTA build by cherry-picking its commits, when they're absent. See the note by
+    ``_PARTIAL_ERASE_COMMITS``. No-op for other firmware lines, or once the change is present
+    (carried here earlier this build, or merged into openmv/micropython)."""
+    from openmv_ota.project.resolve.firmware import resolve_firmware_version
+    try:
+        fw_ver = resolve_firmware_version(repo)
+    except ProjectError:
+        return                                       # no version header -> not a tree we manage
+    if (fw_ver.major, fw_ver.minor) != (5, 0):
+        return
+    try:
+        if _PARTIAL_ERASE_SENTINEL in (repo / _PARTIAL_ERASE_VFS_H).read_text(encoding="utf-8"):
+            return                                   # already carried or merged upstream
+    except OSError:
+        return                                       # not a micropython tree we recognise
+    mpy = repo / "lib" / "micropython"
+    print("note: cherry-picking micropython#%s into lib/micropython (ranged romfs erase; v5.0 "
+          "OTA firmware, until it lands in openmv/micropython)" % _PARTIAL_ERASE_PR)
+    # Fetch the PR objects only when they aren't already present (a prior build this checkout,
+    # or git not yet GC'd them after a submodule reset), then cherry-pick. A committer identity
+    # is passed inline so a fresh CI checkout with no git config doesn't abort the pick.
+    try:
+        present = subprocess.run(
+            ["git", "-C", str(mpy), "cat-file", "-e", _PARTIAL_ERASE_COMMITS[-1] + "^{commit}"],
+            capture_output=True).returncode == 0
+    except FileNotFoundError:
+        present = False                              # git missing -> _git below raises cleanly
+    if not present:
+        _git(mpy, "fetch", "--quiet", _PARTIAL_ERASE_REMOTE,
+             "pull/%s/head" % _PARTIAL_ERASE_PR)
+    _git(mpy, "-c", "user.name=openmv-ota", "-c", "user.email=build@openmv.io",
+         "cherry-pick", *_PARTIAL_ERASE_COMMITS)
+
+
+def _git(repo: Path, *args: str) -> None:
+    try:
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    except FileNotFoundError:
+        raise BuildError("git not found - required to carry micropython#%s"
+                         % _PARTIAL_ERASE_PR, exit_code=1) from None
+    except subprocess.CalledProcessError as e:
+        raise BuildError(
+            "could not carry micropython#%s into lib/micropython (git %s: exit %d). If the "
+            "PR was rebased, update _PARTIAL_ERASE_COMMITS in build/firmware.py."
+            % (_PARTIAL_ERASE_PR, args[0], e.returncode), exit_code=1) from None
 
 
 def _select_boards(targets, boards: list[str] | None) -> list[str]:
