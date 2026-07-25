@@ -498,8 +498,8 @@ def set_version(v):
 
 
 def prepare(board, checkout, network, app="confirm"):
-    log("prepare: install checkout + refresh vendored runtime + bench app")
-    sh([ota("pip"), "install", "-q", "-e", checkout], timeout=300)
+    log("prepare: refresh vendored runtime + bench app")
+    # The venv already has this checkout editable-installed (ci/hil/provision.sh); no pip here.
     dev = checkout + "/src/openmv_ota/build/device"
     # The project VENDORS its own copies -- the build reads those, not the package: the
     # romfs app lib (openmv_ota/openmv_cloud) AND the frozen survival modules in device/

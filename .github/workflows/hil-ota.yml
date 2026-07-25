@@ -33,6 +33,9 @@ concurrency:
   group: hil-ota-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  OPENMV_REF: master        # firmware ref the runner-owned provision builds (as ci.yml)
+
 jobs:
   # Resolve which board/network legs to run from the `board` input. A job-level `if` can't see
   # `matrix` (that context isn't available there -- it was an invalid-workflow error), and a
@@ -86,10 +89,14 @@ jobs:
           WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
           WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
         run: |
+          # Provision the RUNNER-OWNED OTA tooling (venv, firmware, project, SDK, J-Link), cached
+          # under $HOME. Disposable nodes carry no bench state -- they self-provision here; a
+          # reimage wipes the cache and the next run rebuilds it. Emits OTA_VENV/PROJECT_DIR/etc.
+          eval "$(bash ci/hil/provision.sh "${{ matrix.board }}" "$GITHUB_WORKSPACE")"
           # 'all' -> this board+network's regression list; else the single chosen scenario. Run
           # each in turn (one trace apiece); don't stop on a failure, so one bad scenario doesn't
           # hide the rest -- the coverage job folds every trace and the step still reports failure.
-          PY="$HOME/ota-venv/bin/python"
+          PY="$OTA_VENV/bin/python"
           SC="${{ github.event.inputs.scenario || 'all' }}"
           if [ "$SC" = "all" ]; then
             SCENARIOS=$("$PY" ci/hil/ota_cycle.py --board "${{ matrix.board }}" \
