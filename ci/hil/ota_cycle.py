@@ -509,6 +509,9 @@ def prepare(board, checkout, network, app="confirm"):
     sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
     sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
+    # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
+    # device op below, since these run ahead of flash_golden's own _ensure_cdc.
+    _ensure_cdc(board)
     # the bench server's CA must be on the board for run()'s TLS (survives the OTA, lives on
     # /flash not the romfs). Push it so the harness doesn't assume a hand-placed cert.
     if os.path.exists(CFG["ca_node"]):
