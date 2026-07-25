@@ -73,7 +73,6 @@ BOARDS = {
         "jlink_device": "STM32N657L0",
         "fw_addr": "0x70080000",
         "romfs_addr": "0x70800000",
-        "fw_bin": "fw/build/OPENMV_N6/bin/firmware.bin",
     },
     "OPENMV_AE3": {
         "cov_uart": 1,                       # UART(1) on P4/P5
@@ -541,7 +540,10 @@ def _flash_jlink_stm32(board, bad_romfs=False):
     img = "%s/%s-factory-romfs.img" % (build, board)
     binf = "%s/%s-factory-romfs.bin" % (build, board)   # J-Link loadbin needs a .bin extension
     sh("cp -f %s %s" % (img, binf))
-    fw = os.path.join(HOME, b["fw_bin"])                 # ~/fw/build/<board>/bin/firmware.bin
+    # The project-built firmware, from the SAME build as the romfs above (matches RT/AE3). Reading
+    # a separate ~/fw copy flashed a stale firmware against the fresh romfs -> golden wouldn't
+    # mount /rom on every scenario, once provisioning moved into the runner-owned project.
+    fw = "%s/%s-firmware.bin" % (build, board)
     for name, addr, f in (("firmware", b["fw_addr"], fw), ("romfs", b["romfs_addr"], binf)):
         log("flash %s -> %s (J-Link)" % (name, addr))
         script = "\n".join(["device " + b["jlink_device"], "si SWD", "speed 4000", "connect",
