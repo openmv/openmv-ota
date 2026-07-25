@@ -425,3 +425,13 @@ def test_run_hung_trial_rolls_back_on_next_boot():
     assert slot1 == "FRONT"
     slot2, _t2, reason = dev.boot(trusted)       # app hung (never confirmed) -> reboot
     assert slot2 == "BACK" and reason == "trial-failed"
+
+
+def test_log_is_a_null_logger_on_host():
+    # openmv_log is absent off-device, so boot.py's `log` is a null logger -- boot.py logs
+    # unconditionally (no is-not-None guard) and stays inert + importable on the host.
+    assert B.log.debug("d") is None
+    assert B.log.info("i") is None
+    assert B.log.warning("w") is None
+    assert B.log.error("e") is None
+    assert B.log.critical("c") is None

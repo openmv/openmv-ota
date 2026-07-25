@@ -33,9 +33,25 @@ import hashlib
 import struct
 
 try:                                   # the firmware freezes openmv_log beside boot.py
-    import openmv_log
-except ImportError:                    # host / tests / a build without logging
-    openmv_log = None
+    from openmv_log import log
+except ImportError:                    # host / tests / a build without logging -> a null logger,
+    class _NullLog:                    # so call sites never need an `is not None` guard
+        def debug(self, msg, *a):
+            pass
+
+        def info(self, msg, *a):
+            pass
+
+        def warning(self, msg, *a):
+            pass
+
+        def error(self, msg, *a):
+            pass
+
+        def critical(self, msg, *a):
+            pass
+
+    log = _NullLog()
 
 # --- Trailer format (mirror of openmv_ota.ota.trailer) ----------------------
 
@@ -327,17 +343,14 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         if bdev is not None:
             _bs = bdev.ioctl(5, 0)
             bdev.writeblocks(off // _bs, marker, off % _bs)
-            if openmv_log is not None:
-                openmv_log.log.debug("boot: marked slot block-device")
+            log.debug("boot: marked slot block-device")
         else:
             if vfs.rom_ioctl(4, 0, off, marker) < 0:
                 raise OSError("rom_ioctl write failed")
-            if openmv_log is not None:
-                openmv_log.log.debug("boot: marked slot XIP")
+            log.debug("boot: marked slot XIP")
         if read(off, len(marker)) != marker:
             raise OSError("marker write verify failed")
-        if openmv_log is not None:
-            openmv_log.log.debug("boot: slot marker verified")
+        log.debug("boot: slot marker verified")
 
     try:
         vfs.umount("/rom")           # drop mp_init's whole-partition auto-mount
@@ -349,15 +362,13 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
             cfg.OTA_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
     except OtaReject as e:
-        if openmv_log is not None:
-            openmv_log.log.error("boot: no bootable slot: %s" % e)
+        log.error("boot: no bootable slot: %s" % e)
         raise
-    if openmv_log is not None:
-        if front_reason is None:
-            openmv_log.log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
-        else:
-            openmv_log.log.warning("boot: FRONT rejected (%s) -> mounted %s (payload %d)"
-                                 % (front_reason, slot, trailer.payload_version))
+    if front_reason is None:
+        log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
+    else:
+        log.warning("boot: FRONT rejected (%s) -> mounted %s (payload %d)"
+                    % (front_reason, slot, trailer.payload_version))
 
     global last_slot, last_payload_version, last_failure_reason
     last_slot, last_payload_version, last_failure_reason = (
@@ -371,8 +382,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     os.chdir("/rom")
     sys.path.append("/rom")
     sys.path.append("/rom/lib")
-    if openmv_log is not None:
-        openmv_log.log.info("boot: ready, running app")
+    log.info("boot: ready, running app")
 
 
 try:                                   # the build generates _ota_config beside boot.py

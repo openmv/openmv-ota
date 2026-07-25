@@ -729,3 +729,14 @@ def test_install_stream_arm_verify_fails():
     with pytest.raises(OSError):
         inst("_install_stream")(_reader_of(b"\xff" * front), flash.write,
                                 flash.readback, front, block, _noop)
+
+
+def test_log_is_a_null_logger_on_host():
+    # openmv_log is absent off-device, so the installer's `log` is a null logger -- the
+    # device paths call log.debug/info/warning/error unconditionally (no is-not-None guard).
+    log = inst("log")
+    assert log.debug("d") is None
+    assert log.info("i") is None
+    assert log.warning("w") is None
+    assert log.error("e") is None
+    assert log.critical("c") is None
