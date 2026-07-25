@@ -546,9 +546,15 @@ def _flash_jlink_stm32(board, bad_romfs=False):
         log("flash %s -> %s (J-Link)" % (name, addr))
         script = "\n".join(["device " + b["jlink_device"], "si SWD", "speed 4000", "connect",
                             "r", "h", "loadbin %s %s" % (f, addr), "r", "g", "exit"]) + "\n"
-        sp = "/tmp/jl-%s.jlink" % name
-        open(sp, "w").write(script)
-        rc, out = sh([CFG["jlink"], "-nogui", "1", "-CommanderScript", sp], timeout=300, check=False)
+        # Unique per-user temp file -- a fixed /tmp name collides across the runner/other users
+        # (a stale hil-owned /tmp/jl-firmware.jlink blocked `runner` with EACCES on every flash).
+        fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="jl-%s-" % name)
+        os.write(fd, script.encode())
+        os.close(fd)
+        try:
+            rc, out = sh([CFG["jlink"], "-nogui", "1", "-CommanderScript", sp], timeout=300, check=False)
+        finally:
+            os.unlink(sp)
         if "O.K." not in out or "unsupported" in out.lower():
             raise RuntimeError("J-Link %s flash failed:\n%s" % (name, out[-1500:]))
 
@@ -557,7 +563,9 @@ def _dfu_write(alt, path, timeout_s):
     """One DFU download to an alt setting, WITHOUT --reset (that hangs the AE3 after the
     write completes). Poll the piped output for 'Done!', then return -- the caller leaves
     DFU once. Raises if the write didn't finish."""
-    logf = "/tmp/dfu_a%s.out" % alt
+    # Unique per-user temp file (a fixed /tmp name collides across users -- see _flash_jlink_stm32).
+    fd, logf = tempfile.mkstemp(suffix=".out", prefix="dfu_a%s-" % alt)
+    os.close(fd)
     proc = subprocess.Popen([CFG["dfu"], "-d", ",37c5:96e3", "-a", alt, "-D", path],
                             stdout=open(logf, "w"), stderr=subprocess.STDOUT)
     deadline = time.time() + timeout_s
