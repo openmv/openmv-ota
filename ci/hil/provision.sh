@@ -27,42 +27,6 @@ REF="${OPENMV_REF:-master}"
 log() { echo "provision: $*" >&2; }        # stdout is reserved for the `export` lines
 mkdir -p "$CACHE"
 
-# --- micropython PR #19348 (ranged romfs erase), carried for v5.0 firmware --------------
-#
-# dpgeorge's micropython#19348 adds the ranged (4-arg) WRITE_PREPARE + GET_MIN_PREPARE
-# (rom_ioctl 6). The OTA installer needs it on XIP ports (N6/AE3): without it the whole FRONT
-# slot is erased in ONE rom_ioctl(3) -- seconds of dead time in a single C call that stalls USB
-# and faults partway through on a large slot (the N6's 12 MiB XSPI) -- so the installer falls
-# back to that legacy erase and the incremental path is never exercised. It isn't in
-# openmv/micropython yet, so a v5.0 firmware checkout cherry-picks the PR commits here, BEFORE
-# `project new` locks the tree (the build's drift guard refuses a post-lock change) and commits
-# the submodule bump so the firmware tree stays clean (the guard also refuses a dirty checkout).
-#
-# TEMPORARY: the maintainer carries #19348 in openmv/micropython directly and will retire this;
-# a rebased PR changes the SHAs -- update _PARTIAL_ERASE_COMMITS then. Idempotent + v5.0-gated.
-_PARTIAL_ERASE_COMMITS=(
-  6a4062f9974640ee60fbd0d52224b973712b6f80   # extmod/vfs: GET_MIN_PREPARE constant
-  61fadc0ec8cc9ff58ddab27ad62c59aa9344307b   # alif: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-  893850436a799cc0c31126614e704abc9eb2cae5   # samd: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-  9f9b28ecb3360851e50606db822523ccb28f0a56   # stm32: flash_get_max_sector_size helper
-  14074d10871cef76b14c5a3c8bf12d8afca9430e   # stm32: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-  720f797d08912d3f9c8994b31663cb16e47d5efd   # mpremote: incremental romfs deploy
-)
-apply_partial_erase() {                     # $1 = firmware checkout
-  local fw="$1" mpy="$1/lib/micropython" h="$1/protocol/omv_protocol.h" id
-  grep -qE 'OMV_FIRMWARE_VERSION_MAJOR +\(5\)' "$h" 2>/dev/null || return 0   # v5 line only
-  grep -qE 'OMV_FIRMWARE_VERSION_MINOR +\(0\)' "$h" 2>/dev/null || return 0   # v5.0 only
-  grep -q 'MP_VFS_ROM_IOCTL_GET_MIN_PREPARE' "$mpy/extmod/vfs.h" 2>/dev/null && return 0  # done
-  log "cherry-pick micropython#19348 (ranged romfs erase) into lib/micropython"
-  id=(-c user.name=openmv-ota -c user.email=build@openmv.io)
-  git -C "$mpy" fetch -q https://github.com/micropython/micropython pull/19348/head
-  git -C "$mpy" "${id[@]}" cherry-pick "${_PARTIAL_ERASE_COMMITS[@]}" >&2
-  # Commit the submodule bump: `openmv-ota build` refuses a dirty/drifted checkout, so the lock
-  # (written by `project new` next) must capture a CLEAN tree at the cherry-picked micropython.
-  git -C "$fw" "${id[@]}" commit -q -m \
-    "carry micropython#19348 (ranged romfs erase, v5.0 OTA)" lib/micropython >&2
-}
-
 # 1) venv -- openmv-ota installed EDITABLE (so it always reflects the checkout under test) plus
 #    the server extra for the ephemeral update server; pyserial + mpremote come in as core deps.
 #    Rebuilt when the checkout's dependency set (pyproject) is newer than the last build.
@@ -91,7 +55,9 @@ if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
   git -C "$FW" checkout -q "$REF"
   git -C "$FW" submodule update -q --init --depth=1 --no-single-branch
   git -C "$FW/lib/micropython" submodule update -q --init --depth=1
-  apply_partial_erase "$FW"
+  # `project new` below carries micropython#19348 (ranged romfs erase) into lib/micropython for
+  # a v5.0 OTA firmware -- the tool guarantees it, so this script (and any real user) needs no
+  # custom step; the lock captures the patched, committed-clean tree.
   log "openmv-ota project new -b $BOARD --ota --dev --install-sdk"
   rm -rf "$PROJ"
   "$VENV/bin/openmv-ota" project new "$PROJ" -f "$FW" -b "$BOARD" --ota --dev --install-sdk >&2

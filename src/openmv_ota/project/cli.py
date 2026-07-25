@@ -46,6 +46,9 @@ def register(project_parser: argparse.ArgumentParser):
     p_new.add_argument("--allow-dirty", action="store_true", help="don't warn on a dirty checkout")
     p_new.add_argument("--ota", action="store_true",
                        help="over-the-air project: halve each partition for a regular + golden image")
+    p_new.add_argument("--no-firmware-patches", dest="firmware_patches", action="store_false",
+                       help="don't auto-apply the OTA-required firmware patches (ranged romfs erase); "
+                            "`project new` then fails if the firmware is missing them")
     p_new.add_argument("--sig-alg", choices=("ES256", "ES384", "ES512"), default="ES256",
                        help="OTA signature algorithm (default ES256 / P-256)")
     p_new.add_argument("--ota-keys", type=int, default=32, metavar="N",
@@ -350,6 +353,7 @@ def cmd_new(args: argparse.Namespace) -> int:
             key_passphrase=(_read_passphrase(args.key_passphrase_file)
                             if args.key_passphrase_file else None),
             dev=args.dev,
+            firmware_patches=args.firmware_patches,
         )
     except ProjectError as e:
         print("error: %s" % e, file=sys.stderr)
