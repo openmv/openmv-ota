@@ -79,8 +79,9 @@ jobs:
 
       - name: OTA ${{ github.event.inputs.scenario || 'delta' }} + coverage trace
         env:
-          OTA_SERVER: ${{ vars.HIL_OTA_SERVER }}
-          OTA_TOKEN: ${{ secrets.HIL_OTA_TOKEN }}
+          # No OTA_SERVER / OTA_TOKEN: each run spins up its OWN update server (ci/hil/bench_server)
+          # on the node's IP with a throwaway store + a self-generated token -- rigs are
+          # self-contained, so no shared-server address or admin token is a repo secret anymore.
           WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
           WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
         run: |

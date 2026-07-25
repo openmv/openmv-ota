@@ -1,0 +1,166 @@
+"""An EPHEMERAL, per-run OTA update server for a HIL rig.
+
+Each test rig spins up its OWN update server (plus the fake swd-ids registrar) for the
+duration of a run, on the node's own LAN/WiFi IP, backed by a throwaway artifact store +
+sqlite DB and a self-signed cert for that IP. Torn down when the run ends. So:
+
+  * rigs are SELF-CONTAINED -- no shared bench server, no rig knowing another exists;
+  * the tamper scenarios (corrupt/bad_sig/bad_key/bad_version), which need the harness
+    CO-LOCATED with the artifact store, now run on EVERY board (the store is always local);
+  * no OTA_SERVER / OTA_TOKEN needs to be a repo secret -- the harness owns both.
+
+The board reaches the server at ``https://<node-ip>:<port>``; ``<node-ip>`` is the node's
+address on the default route (the LAN the router also bridges the WiFi boards onto), so one
+IP serves both LAN and WiFi legs. The device trusts the run's self-signed cert (copied to
+/flash as the board CA by the harness prepare()).
+"""
+
+import os
+import shutil
+import socket
+import ssl
+import subprocess
+import tempfile
+import time
+import urllib.request
+
+REGISTRAR_PORT = 8901
+CERT_DIR = os.path.expanduser("~/.cache/hil-bench")   # cert is STABLE per node (see _ensure_cert)
+
+# The fake swd-ids registrar: every device is "registered" (the registration GATE is tested
+# by swd-ids' own suite; here we just need it to not block the OTA check-in).
+_FAKE_REGISTRAR = (
+    "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+    "import json\n"
+    "class H(BaseHTTPRequestHandler):\n"
+    "    def do_POST(self):\n"
+    "        self.rfile.read(int(self.headers.get('Content-Length', 0)))\n"
+    "        b = json.dumps({'registered': True, 'registrar_ref': 'bench'}).encode()\n"
+    "        self.send_response(200); self.send_header('Content-Type', 'application/json')\n"
+    "        self.send_header('Content-Length', str(len(b))); self.end_headers()\n"
+    "        self.wfile.write(b)\n"
+    "    def log_message(self, *a):\n"
+    "        pass\n"
+    "HTTPServer(('127.0.0.1', %d), H).serve_forever()\n" % REGISTRAR_PORT
+)
+
+# The ASGI launcher -- mirrors the bench's run_server.py, but every path/port/cert comes from
+# the environment the harness sets, so nothing is hard-coded to one node.
+_RUN_SERVER = (
+    "import os\n"
+    "from openmv_ota.server.cli import _settings, _store, _bootstrap, _seed_admin_token\n"
+    "from openmv_ota.server.app import create_app\n"
+    "import uvicorn\n"
+    # migrate + cohort_salt (_bootstrap) AND seed the ADMIN_BOOTSTRAP_TOKEN into the fresh DB
+    # (_seed_admin_token) -- exactly what `server init` does, so the harness's publish token works
+    "s = _settings(); st = _store(s); _bootstrap(st, s); _seed_admin_token(st, s)\n"
+    "app = create_app(s, metastore=st)\n"
+    "uvicorn.run(app, host='0.0.0.0', port=int(os.environ['PORT']),\n"
+    "            ssl_certfile=os.environ['SRV_CERT'], ssl_keyfile=os.environ['SRV_KEY'],\n"
+    "            log_level='warning')\n"
+)
+
+
+def node_ip():
+    """The node's IP on its default route -- the LAN address the router also bridges the WiFi
+    boards onto, so it's reachable from both LAN and WiFi legs. No packets are sent."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+def _ensure_cert(ip):
+    """A self-signed cert for the node's IP -- STABLE across runs (regenerated only if absent
+    or the node's IP changed) so a board provisioned once (--skip-provision) keeps trusting it,
+    and so the store, not the trust anchor, is what's fresh per run."""
+    os.makedirs(CERT_DIR, exist_ok=True)
+    cert, key, tag = (os.path.join(CERT_DIR, "srv.pem"), os.path.join(CERT_DIR, "srv.key"),
+                      os.path.join(CERT_DIR, "ip"))
+    have = (os.path.exists(cert) and os.path.exists(key) and os.path.exists(tag)
+            and open(tag).read().strip() == ip)
+    if not have:
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", key, "-out", cert, "-days", "3650",
+             "-subj", "/CN=%s" % ip, "-addext", "subjectAltName=IP:%s" % ip],
+            check=True, capture_output=True)
+        open(tag, "w").write(ip)
+    return cert, key
+
+
+def _wait_ready(url, ca, timeout):
+    ctx = ssl.create_default_context(cafile=ca)
+    ctx.check_hostname = False                       # readiness poll only -- the DEVICE verifies
+    ctx.verify_mode = ssl.CERT_NONE
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url + "/healthz", context=ctx, timeout=3) as r:
+                if r.status == 200:
+                    return
+        except Exception as e:                       # not up yet
+            last = e
+        time.sleep(1)
+    raise RuntimeError("ephemeral OTA server never became ready at %s (%s)" % (url, last))
+
+
+def start(python, port=8443, token="bench-admin-token-1", log=print):
+    """Bring up the per-run server + registrar. Returns a handle for ``stop()``; also carries
+    ``url`` / ``ca`` / ``store`` / ``token`` for the harness to point CFG at."""
+    # Free the port first: a lingering server (a prior crashed run, or the old shared one) would
+    # otherwise shadow this run's store -> tamper/publish would hit the wrong artifacts.
+    subprocess.run(["pkill", "-f", "run_server\\|_RUN_SERVER\\|uvicorn"], check=False,
+                   capture_output=True)
+    subprocess.run(["fuser", "-k", "%d/tcp" % port], check=False, capture_output=True)
+    time.sleep(1)
+    ip = node_ip()
+    cert, key = _ensure_cert(ip)                      # stable per node
+    d = tempfile.mkdtemp(prefix="hil-otasrv-")        # store + DB: FRESH per run
+    store = os.path.join(d, "artifacts")
+    os.makedirs(store, exist_ok=True)
+    url = "https://%s:%d" % (ip, port)
+    env = dict(
+        os.environ,
+        OPENMV_OTA_BASE_URL=url,
+        OPENMV_OTA_DATABASE_URL="sqlite:///%s/ota.db" % d,
+        OPENMV_OTA_STORAGE_BACKEND="local",
+        OPENMV_OTA_STORAGE_LOCATION=store,
+        OPENMV_OTA_SWD_IDS_VERIFY_URL="http://127.0.0.1:%d/verify" % REGISTRAR_PORT,
+        OPENMV_OTA_SWD_IDS_VERIFY_TOKEN="benchtoken",
+        OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN=token,
+        OPENMV_OTA_POLL_AFTER_S="5",
+        OPENMV_OTA_TEST_OFFER_DOWNGRADES="1",         # safe: relaxes only the server OFFER gate;
+        PORT=str(port), SRV_CERT=cert, SRV_KEY=key)   # the device anti-rollback still rejects
+    slog = open(os.path.join(d, "server.log"), "w")
+    reg = subprocess.Popen([python, "-c", _FAKE_REGISTRAR],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    srv = subprocess.Popen([python, "-c", _RUN_SERVER], env=env, stdout=slog, stderr=slog)
+    log("bench-server: %s  (store %s)" % (url, store))
+    try:
+        _wait_ready(url, cert, timeout=60)
+    except Exception:
+        stop({"procs": [srv, reg], "dir": d})
+        raise
+    return {"url": url, "ca": cert, "store": store, "token": token, "ip": ip,
+            "dir": d, "procs": [srv, reg]}
+
+
+def stop(handle):
+    if not handle:
+        return
+    for p in handle.get("procs", []):
+        try:
+            p.terminate()
+            p.wait(timeout=5)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+    d = handle.get("dir")
+    if d and os.path.isdir(d):
+        shutil.rmtree(d, ignore_errors=True)

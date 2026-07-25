@@ -70,10 +70,12 @@ Two scenarios need a bench-only assist:
 
 ## Bench topology note
 
-`corrupt` and `bad_sig` **tamper the update server's artifact store**, so they only run where
-the harness is **co-located with the server** (the RT1060 bench node). The others run on any
-board. The write model is asserted per run: **XIP/ioctl** (N6, AE3) logs `install.xip`;
-**block-device** (RT1062/mimxrt) logs `install.blockdev`.
+Each run spins up its **own** ephemeral update server (`ci/hil/bench_server`) on the node, so
+the harness is always **co-located with the artifact store** — the tamper scenarios
+(`corrupt` / `bad_sig` / `bad_key` / `bad_version`, which flip a byte in the just-published
+blob) run on **every** board, not just the server node. The write model is asserted per run:
+**XIP/ioctl** (N6, AE3) logs `install.xip`; **block-device** (RT1062/mimxrt) logs
+`install.blockdev`.
 
 ## Bench requirements (per node)
 
@@ -82,14 +84,17 @@ board. The write model is asserted per run: **XIP/ioctl** (N6, AE3) logs `instal
   (AE3), or `blhost` via `machine.bootloader()` → resident SBL (RT1062).
 - The board's USB-CDC at `/dev/ttyACM0` **and** its P4/P5 UART wired to a USB-serial bridge at
   `/dev/ttyUSB0`.
-- The shared OTA server reachable (default `https://192.168.0.100:8443`) with `~/bench-ca.pem`
-  on the node; the harness pushes it to `/flash/bench-ca.pem` on the board.
+- No shared server: each run starts an **ephemeral** OTA server (`ci/hil/bench_server`) on the
+  node's own IP with a throwaway store + fresh sqlite + a self-generated admin token, and a
+  self-signed cert (cached at `~/.cache/hil-bench`, one per node IP) which the harness pushes to
+  `/flash/bench-ca.pem` on the board. Needs `openssl` + the server extras in `~/ota-venv`.
 
 ## Config (env / CI secrets)
 
-`OTA_SERVER`, `OTA_TOKEN`, `OTA_CA_NODE`, `OTA_CA_BOARD`, `OTA_ARTIFACTS`, `WIFI_SSID`,
-`WIFI_PASSWORD`, `PROJECT_DIR`, `OTA_VENV`, `SDK_HOME`, `JLINK`, `DFU_UTIL`, `BLHOST`,
-`MPREMOTE`, `BOARD_ACM`, `BOARD_UART` — see the header of `ota_cycle.py` for defaults.
+No `OTA_SERVER` / `OTA_TOKEN` — the harness owns the per-run server (URL, token, store, CA). The
+knobs that remain: `OTA_CA_BOARD`, `WIFI_SSID`, `WIFI_PASSWORD`, `PROJECT_DIR`, `OTA_VENV`,
+`SDK_HOME`, `JLINK`, `DFU_UTIL`, `BLHOST`, `MPREMOTE`, `BOARD_ACM`, `BOARD_UART` — see the header
+of `ota_cycle.py` for defaults.
 
 ## Running
 
