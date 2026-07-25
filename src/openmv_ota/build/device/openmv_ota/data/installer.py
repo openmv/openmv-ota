@@ -34,9 +34,25 @@ import json
 import struct
 
 try:                                   # the firmware freezes openmv_log beside boot.py
-    import openmv_log
-except ImportError:                    # host / tests / a build without logging
-    openmv_log = None
+    from openmv_log import log
+except ImportError:                    # host / tests / a build without logging -> a null logger,
+    class _NullLog:                    # so call sites never need an `is not None` guard
+        def debug(self, msg, *a):
+            pass
+
+        def info(self, msg, *a):
+            pass
+
+        def warning(self, msg, *a):
+            pass
+
+        def error(self, msg, *a):
+            pass
+
+        def critical(self, msg, *a):
+            pass
+
+    log = _NullLog()
 
 try:                                   # ...and openmv_wdt (the watchdog helper)
     import openmv_wdt
@@ -622,8 +638,7 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
         ctx.verify_mode = ssl.CERT_REQUIRED
         ctx.load_verify_locations(cadata=ca_pem)
         tls = ctx.wrap_socket(sock, server_hostname=host)
-        if openmv_log is not None:                   # milestone + HIL path witness
-            openmv_log.log.debug("install: TLS up")
+        log.debug("install: TLS up")
         return tls
     except Exception:
         sock.close()
@@ -654,8 +669,7 @@ def _open(url, ca_pem, socket, ssl, max_redirects=5):  # pragma: no cover
         if not (200 <= code < 300):
             sock.close()
             raise OSError("HTTP %d" % code)
-        if openmv_log is not None:                   # milestone + HIL path witness
-            openmv_log.log.debug("install: fetched body")
+        log.debug("install: fetched body")
         return sock, _make_body(reader, headers)
     raise OSError("too many redirects")
 
@@ -677,12 +691,10 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     m = _manifest_parse(raw)                          # structure + crc (raises on bad)
     pubkey = cfg.TRUSTED_KEYS.get(m["key_id"])
     if pubkey is None:
-        if openmv_log is not None:                        # key not in the trusted allowlist: witness
-            openmv_log.log.warning("install: reject untrusted key")
+        log.warning("install: reject untrusted key")
         raise OSError("manifest signed by an untrusted key")
     if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
-        if openmv_log is not None:                        # the signature boundary rejected: witness
-            openmv_log.log.warning("install: reject bad signature")
+        log.warning("install: reject bad signature")
         raise OSError("manifest signature does not verify")
 
     body_dict = m["body"]
@@ -692,16 +704,14 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
                             getattr(cfg, "ACCOUNT_ID", ""))
     if reason is not None:
-        if openmv_log is not None:                        # anti-rollback / board / platform vetting
-            openmv_log.log.warning("install: reject vetting")   # rejected: witness the boundary
+        log.warning("install: reject vetting")   # rejected: witness the boundary
         raise OSError("manifest rejected (%s)" % reason)
     # The delta applier is pure Python (no ulab/C), so every board is delta-capable; the
     # delta is used only when its base matches this device's golden (BACK) version.
     rep = _select_rep(body_dict, True, floor)
     if rep is None:
         raise OSError("manifest has no usable representation")
-    if openmv_log is not None:                        # the security boundary passed: witness it
-        openmv_log.log.debug("install: manifest accepted")
+    log.debug("install: manifest accepted")
     return _resolve_url(manifest_url, rep["url"]), rep.get("format"), body_dict.get("sha256")
 
 
@@ -733,7 +743,6 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     import vfs
     from ecdsa_verify import verify                  # the frozen C module (as in boot.py)
 
-    log = openmv_log.log if openmv_log is not None else None
     # Watchdog (if the app enabled one): relax() feeds it from a timer ISR ONLY around the
     # single multi-second erase the main loop can't reach; feed() keeps it alive per chunk
     # through the loops -- so a hung loop (or a stalled recv) still trips it -> golden.
@@ -753,8 +762,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     front = vfs.rom_ioctl(2, 0)
     _seen = set()                                     # one-shot log guard: emit each per-chunk
     if hasattr(front, "ioctl"):                       # write marker once (bounded, RAM-safe)
-        if log:                                       # block-device romfs (e.g. mimxrt)
-            log.debug("install: write path block-device")
+        log.debug("install: write path block-device")
         _bs = front.ioctl(5, 0)                       # block size
         # A block-device port exposes ONE segment covering the WHOLE partition, and
         # rom_ioctl(2, <id>) ignores the id (mimxrt returns the same object for 0 and 1).
@@ -771,8 +779,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 if log and "e" not in _seen:          # witness the in-loop erase op once
                     _seen.add("e")
                     log.debug("install: erasing block block-device")
-            if log:
-                log.debug("install: erased FRONT block-device")
+            log.debug("install: erased FRONT block-device")
 
         def write(off, data):                         # extended writeblocks: byte-granular,
             front.writeblocks(off // _bs, data, off % _bs)   # so sub-block markers work too
@@ -808,14 +815,11 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             return out
 
         def complete():
-            if log:                                   # writeblocks persists; no flush ioctl
-                log.debug("install: complete block-device")
-        if log:
-            log.debug("install: write path ready block-device")
+            log.debug("install: complete block-device")
+        log.debug("install: write path ready block-device")
 
     else:                                             # XIP-mapped romfs (stm32/alif/samd)
-        if log:
-            log.debug("install: write path XIP")
+        log.debug("install: write path XIP")
         base = uctypes.addressof(front)               # FRONT partition XIP base
 
         def readback(off, n):
@@ -853,8 +857,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                     if log and "e" not in _seen:      # witness the in-loop erase op once
                         _seen.add("e")
                         log.debug("install: erasing block XIP")
-                if log:
-                    log.debug("install: erased FRONT XIP")
+                log.debug("install: erased FRONT XIP")
                 return
             with relax():                             # the one op we can't feed in a loop
                 rc = vfs.rom_ioctl(3, 0, total)
@@ -871,23 +874,19 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
 
         def complete():
             vfs.rom_ioctl(5, 0)                       # flush cached sub-page writes
-            if log:
-                log.debug("install: complete XIP")
-        if log:
-            log.debug("install: write path ready XIP")
+            log.debug("install: complete XIP")
+        log.debug("install: write path ready XIP")
 
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the
     # app (the FRONT slot is untouched). Log the reason first: run() swallows this exception
     # (transient failures retry next poll), so without a line here a REJECTED update -- bad
     # signature, untrusted key, failed board/version/platform vetting -- is invisible in the
     # field, exactly when an operator most needs to know why a release won't take.
-    if log:
-        log.info("install: fetching manifest %s" % manifest_url)
+    log.info("install: fetching manifest %s" % manifest_url)
     try:
         image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
     except Exception as e:
-        if log:
-            log.warning("install: rejected before erase (%s)" % e)   # /rom untouched
+        log.warning("install: rejected before erase (%s)" % e)   # /rom untouched
         raise
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
@@ -911,11 +910,9 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     sock = None
     for attempt in range(attempts):
         try:
-            if log:
-                log.info("install: erasing FRONT (%d bytes)" % front_size)
+            log.info("install: erasing FRONT (%d bytes)" % front_size)
             erase(front_size)
-            if log:
-                log.info("install: downloading %s (%s)" % (image_url, fmt))
+            log.info("install: downloading %s (%s)" % (image_url, fmt))
             sock, body = _open(image_url, ca_pem, socket, ssl)
             dio = deflate.DeflateIO(body, deflate.GZIP)
             if fmt == _DELTA_FORMAT:
@@ -924,15 +921,12 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 # are streamed into FRONT, neither is materialised.
                 source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK)).read
                 repr_marker = REPR_DELTA
-                if log:
-                    log.debug("install: representation delta")
+                log.debug("install: representation delta")
             else:
                 source = dio.read
                 repr_marker = REPR_FULL
-                if log:
-                    log.debug("install: representation full")
-            if log:
-                log.info("install: writing FRONT")
+                log.debug("install: representation full")
+            log.info("install: writing FRONT")
             _install_stream(source, write, readback, front_size, block, feed,
                             progress, expect_sha, repr_marker)
             # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
@@ -941,23 +935,19 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # lose them at reset without it. Block-device ports persist on writeblocks,
             # so complete() there is a no-op.
             complete()
-            if log:
-                log.debug("install: committed FRONT")
+            log.debug("install: committed FRONT")
             break                                    # success -> arm + reboot into the trial
         except Exception as e:
             if sock is not None:
                 sock.close()
                 sock = None
             if attempt + 1 >= attempts:
-                if log:
-                    log.error("install: FAILED after %d attempts (%s); rebooting to golden BACK"
-                              % (attempts, e))
+                log.error("install: FAILED after %d attempts (%s); rebooting to golden BACK"
+                          % (attempts, e))
                 _reset()
-            if log:
-                log.error("install: attempt %d/%d failed (%s); retrying"
-                          % (attempt + 1, attempts, e))
+            log.error("install: attempt %d/%d failed (%s); retrying"
+                      % (attempt + 1, attempts, e))
             if progress is not None:
                 progress.reset()                     # restart % for the fresh re-download
-    if log:
-        log.info("install: installed + armed; rebooting into the trial")
+    log.info("install: installed + armed; rebooting into the trial")
     _reset()
