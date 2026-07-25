@@ -751,6 +751,20 @@ def verify_golden():
     raise RuntimeError("golden did not mount a valid romfs:\n" + last)
 
 
+def dirty_coproc_partition():
+    """Overwrite the start of the coprocessor partition (index 1) so it DIFFERS from the bundled
+    coproc romfs, forcing the app's sync() to RE-APPLY it (the partition.prepare/write +
+    sync.applying/applied path) rather than skip. MRAM persists the partition across golden flashes
+    -- once applied it matches the bundle forever -- so the coproc scenario must actively dirty it to
+    stay deterministic (else it degrades to the coproc_skip path). Writes 0xFF over the first block
+    via the ranged rom_ioctl the OTA installer uses; sync() then rewrites the real romfs back."""
+    device_exec(
+        "import vfs\n"
+        "vfs.rom_ioctl(3, 1, 0, 4096)\n"            # ranged WRITE_PREPARE the first block (idx 1)
+        "vfs.rom_ioctl(4, 1, 0, b'\\xff' * 4096)",  # 0xFF -> no longer the coproc romfs magic
+        timeout=30)
+
+
 def publish_update(board, version, variant="delta"):
     log("publish: %s (variant=%s, rollout 100%%)" % (version, variant))
     set_version(version)
@@ -1007,6 +1021,8 @@ def main():
             devid = device_id()
             trace["device_id"] = devid
             log("device_id: " + devid)
+            if args.scenario == "coproc":        # dirty partition 1 so sync() APPLIES (not skips)
+                phase("dirty_coproc", dirty_coproc_partition)
             if spec["publish"] != "none" and not args.skip_publish:
                 phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
             cap = UartCapture(CFG["uart"])
