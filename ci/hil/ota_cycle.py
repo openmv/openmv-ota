@@ -331,6 +331,23 @@ def scenario_markers(board, key):
     return resolve(s["expect"]), resolve(s["forbid"])
 
 
+def regression_scenarios(board, network):
+    """The scenarios a board+network leg runs in the FULL regression (scenario=all). Now that each
+    run spins up its own co-located server, the tamper scenarios (corrupt/bad_sig/bad_key/
+    bad_version) run on EVERY board, not just the server node. no_slot is block-device-only (a
+    blhost slot-erase); coproc/coproc_skip are AE3-only (the sole coprocessor partition). A board's
+    SECONDARY interface runs just delta -- proving the network path; the rest is interface-agnostic
+    so there's no point re-running it on both legs."""
+    if network != BOARDS[board]["network"]:
+        return ["delta"]
+    scs = ["delta", "full", "rollback", "corrupt", "bad_sig", "bad_key", "bad_version"]
+    if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
+        scs.append("no_slot")
+    if board == "OPENMV_AE3":                           # the only board with a coprocessor partition
+        scs += ["coproc", "coproc_skip"]
+    return scs
+
+
 # ---------------------------------------------------------------------------
 # UART marker capture -- a background reader that records every HILCOV line for the
 # whole cycle, independent of the USB-CDC console and surviving every reboot.
@@ -897,9 +914,15 @@ def main():
                          "must match the flashed golden or the install fails the sha256 check.")
     ap.add_argument("--skip-publish", action="store_true",
                     help="reuse the already-published update")
+    ap.add_argument("--list-regression", action="store_true",
+                    help="print (space-separated) the scenarios this board+network runs in the "
+                         "full regression, then exit -- the hil-ota workflow loops over these")
     args = ap.parse_args()
 
     network = args.network or BOARDS[args.board]["network"]
+    if args.list_regression:
+        print(" ".join(regression_scenarios(args.board, network)))
+        return 0
     spec = SCENARIOS[args.scenario]
     expect, forbid = scenario_markers(args.board, args.scenario)
     pub_version = spec.get("version", args.target)     # bad_version publishes below the floor

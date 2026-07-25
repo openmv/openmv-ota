@@ -18,12 +18,13 @@ on:
         type: choice
         options: [all, OPENMV_N6, OPENMV_AE3, OPENMV_RT1060]
       scenario:
-        description: which OTA path to exercise
-        default: delta
+        description: which OTA path to exercise ('all' = each board's full regression)
+        default: all
         type: choice
-        # NOTE: corrupt/bad_sig tamper the server's artifact store, so they only run where the
-        # harness is CO-LOCATED with the update server (the RT1060 bench node); pick that board.
-        options: [delta, full, corrupt, rollback, bad_sig, bad_version, no_slot]
+        # Every run spins up its OWN co-located server (ci/hil/bench_server), so the tamper
+        # scenarios run on any board -- no board restriction. 'all' expands per board (the
+        # AE3 adds coproc/coproc_skip; block-device boards add no_slot; secondary nets = delta).
+        options: [all, delta, full, corrupt, rollback, bad_sig, bad_key, bad_version, no_slot, coproc, coproc_skip]
       target:
         description: update version to install over golden 1.0.0
         default: "1.1.0"
@@ -77,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: OTA ${{ github.event.inputs.scenario || 'delta' }} + coverage trace
+      - name: OTA scenario(s) + coverage traces
         env:
           # No OTA_SERVER / OTA_TOKEN: each run spins up its OWN update server (ci/hil/bench_server)
           # on the node's IP with a throwaway store + a self-generated token -- rigs are
@@ -85,21 +86,36 @@ jobs:
           WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
           WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
         run: |
-          # Run with the node's venv python (has pyserial + the openmv-ota tooling).
-          "$HOME/ota-venv/bin/python" ci/hil/ota_cycle.py \
-            --board "${{ matrix.board }}" \
-            --network "${{ matrix.network }}" \
-            --scenario "${{ github.event.inputs.scenario || 'delta' }}" \
-            --target "${{ github.event.inputs.target || '1.1.0' }}" \
-            --checkout "$GITHUB_WORKSPACE" \
-            --trace "hil-trace-${{ matrix.board }}-${{ matrix.network }}-${{ github.event.inputs.scenario || 'delta' }}.json"
+          # 'all' -> this board+network's regression list; else the single chosen scenario. Run
+          # each in turn (one trace apiece); don't stop on a failure, so one bad scenario doesn't
+          # hide the rest -- the coverage job folds every trace and the step still reports failure.
+          PY="$HOME/ota-venv/bin/python"
+          SC="${{ github.event.inputs.scenario || 'all' }}"
+          if [ "$SC" = "all" ]; then
+            SCENARIOS=$("$PY" ci/hil/ota_cycle.py --board "${{ matrix.board }}" \
+                        --network "${{ matrix.network }}" --list-regression)
+          else
+            SCENARIOS="$SC"
+          fi
+          echo "regression legs: $SCENARIOS"
+          rc=0
+          for sc in $SCENARIOS; do
+            echo "::group::$sc"
+            "$PY" ci/hil/ota_cycle.py \
+              --board "${{ matrix.board }}" --network "${{ matrix.network }}" \
+              --scenario "$sc" --target "${{ github.event.inputs.target || '1.1.0' }}" \
+              --checkout "$GITHUB_WORKSPACE" \
+              --trace "hil-trace-${{ matrix.board }}-${{ matrix.network }}-$sc.json" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
 
-      - name: Upload trace
+      - name: Upload traces
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hil-trace-${{ matrix.board }}-${{ matrix.network }}-${{ github.event.inputs.scenario || 'delta' }}
-          path: hil-trace-${{ matrix.board }}-${{ matrix.network }}-${{ github.event.inputs.scenario || 'delta' }}.json
+          name: hil-traces-${{ matrix.board }}-${{ matrix.network }}
+          path: hil-trace-*.json
 
   # Fold every trace this run produced into a device-path coverage report + lcov. Runs on a
   # hosted runner (pure JSON+source processing, no hardware) after the bench jobs finish.
