@@ -55,6 +55,13 @@ if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
   git -C "$FW" checkout -q "$REF"
   git -C "$FW" submodule update -q --init --depth=1 --no-single-branch
   git -C "$FW/lib/micropython" submodule update -q --init --depth=1
+  # TEST: carry the alif MRAM read-while-write fix (coprocessor-partition write). Applied to the
+  # BASE here -- before `project new` cherry-picks #19348 on top (a disjoint hunk) -- and committed
+  # so the lock captures a clean tree. Pending its home in openmv/micropython; HIL-only for now.
+  log "apply alif MRAM RWW fix (coproc write)"
+  git -C "$FW/lib/micropython" apply "$CHECKOUT/ci/hil/patches/alif-mram-coproc-write-rww.patch"
+  git -C "$FW/lib/micropython" -c user.name=openmv-ota -c user.email=build@openmv.io \
+      commit -q -am "alif: mask IRQ + inline MRAM write (coproc read-while-write fix)" >&2
   # `project new` below carries micropython#19348 (ranged romfs erase) into lib/micropython for
   # a v5.0 OTA firmware -- the tool guarantees it, so this script (and any real user) needs no
   # custom step; the lock captures the patched, committed-clean tree.
