@@ -6,9 +6,11 @@ name: HIL OTA cycle
 # board's P4/P5 UART. A second job folds the traces into a device-path coverage report --
 # coverage on the lines the host suite structurally can't reach (they need real flash).
 #
-# Manual-trigger ONLY while the harness is in development -- it runs on the bench and each
-# board cycle is minutes (the AE3's OSPI flash alone is ~10). This will become the required
-# gate for OTA-touching PRs once the path matrix is built out.
+# Runs NIGHTLY (07:00 UTC, reliable boards) so device-path coverage tracks main hands-free, plus
+# manual `workflow_dispatch` for a chosen board/scenario. Each board cycle is minutes (the AE3's
+# OSPI flash alone is ~10), so it's not a per-PR gate yet -- it will become the required gate for
+# OTA-touching PRs once the path matrix is built out. The coverage fold + Codecov upload run with
+# `if: always()`, so a flaky leg still publishes what the healthy boards proved.
 on:
   workflow_dispatch:
     inputs:
@@ -28,6 +30,13 @@ on:
       target:
         description: update version to install over golden 1.0.0
         default: "1.1.0"
+  # Nightly, so device-path coverage tracks main without anyone pushing a button (this activates
+  # once the workflow is on the default branch). The scheduled run does the reliable boards only
+  # (N6 + RT1062); the AE3's DFU/USB is being hardware-debugged, so it's left to manual dispatch
+  # until sorted -- a flaky AE3 leg shouldn't red every nightly. The coverage fold + Codecov
+  # upload run with `if: always()`, so partial results still publish.
+  schedule:
+    - cron: "0 7 * * *"        # 07:00 UTC daily
 
 concurrency:
   group: hil-ota-${{ github.ref }}
@@ -49,6 +58,7 @@ jobs:
       - id: f
         env:
           BOARD: ${{ github.event.inputs.board }}
+          EVENT: ${{ github.event_name }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
@@ -63,7 +73,13 @@ jobs:
               {"board": "OPENMV_RT1060", "network": "wifi", "label": "board-openmv-rt1062"},
           ]
           board = os.environ.get("BOARD") or "all"
-          sel = legs if board == "all" else [l for l in legs if l["board"] == board]
+          if os.environ.get("EVENT") == "schedule":
+              # Nightly = the reliable boards only; AE3 is HW-debugged, manual-dispatch until fixed.
+              sel = [l for l in legs if l["board"] != "OPENMV_AE3"]
+          elif board == "all":
+              sel = legs
+          else:
+              sel = [l for l in legs if l["board"] == board]
           print("matrix=" + json.dumps({"include": sel}))
           PY
 
