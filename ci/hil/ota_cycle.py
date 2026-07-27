@@ -195,6 +195,8 @@ COVERAGE = {
     "boot: marked slot block-device": "boot.marked",          # trial slot marked TRIED (pre-run)
     "boot: marked slot XIP": "boot.marked",
     "boot: slot marker verified": "boot.marked_verify",       # marker read back + verified
+    "boot: slot mounting": "boot.mount_call",                 # the mount closure ran (vfs.mount)
+    "boot: no prior mount": "boot.no_prior_mount",            # mp_init didn't auto-mount /rom (blank romfs)
     "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
     "checkin: body read": "run.body_read",               # response body read to EOF (capped)
     "checkin: parsed": "run.checkin_parsed",             # headers skipped + JSON parsed
@@ -234,7 +236,7 @@ SCENARIOS = {
                    "install.writing", "write.ready", "write.erased", "write.wrote",
                    "write.readback", "write.backread", "write.complete", "install.committed",
                    "install.armed", "boot.marked", "boot.marked_verify", "verify.write",
-                   "confirm.floor", "confirm.promoted"],
+                   "confirm.floor", "confirm.promoted", "boot.mount_call"],
         "forbid": ["install.full", "install.fallback", "install.reject", "boot.mount.back"],
     },
     "full": {
@@ -292,7 +294,9 @@ SCENARIOS = {
         # anything. RUN AFTER another scenario (the board must be bootable so it still has the
         # bench logger + the coverage-UART file). Flash-only; block-device (RT1062) for now.
         "publish": "none", "app": "confirm", "end": "no_slot",
-        "expect": ["boot.no_slot"],
+        # boot.no_prior_mount: the post-brick boot has both slots blank, so mp_init can't
+        # auto-mount /rom -> boot.py's umount("/rom") raises -> the no-prior-mount path runs.
+        "expect": ["boot.no_slot", "boot.no_prior_mount"],
         # NOT boot.mount.front: entering the SBL via machine.bootloader() boots the (still-valid)
         # golden ONCE before blhost erases it, so a FRONT mount precedes the brick -- expected.
         # Forbid the things that prove the device is genuinely bricked if ABSENT: it ran no app

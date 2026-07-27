@@ -330,10 +330,11 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     bdev = part if hasattr(part, "ioctl") else None
 
     def read(off, size):
-        return uctypes.bytearray_at(base + off, size)
+        return uctypes.bytearray_at(base + off, size)   # trailing-return residual (nothing can follow)
 
     def mount(body):
         vfs.mount(vfs.VfsRom(body), "/rom")
+        log.debug("boot: slot mounting")             # AFTER the mount, so it witnesses vfs.mount
 
     def write_marker(off, marker):
         # Write, then read back and verify. A rejected (negative rc) or silently failed
@@ -355,7 +356,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     try:
         vfs.umount("/rom")           # drop mp_init's whole-partition auto-mount
     except OSError:
-        pass
+        log.debug("boot: no prior mount")   # mp_init didn't auto-mount /rom (blank/invalid romfs)
 
     try:
         slot, trailer, front_reason = OtaBoot(
