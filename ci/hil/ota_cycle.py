@@ -195,6 +195,7 @@ COVERAGE = {
     "boot: marked slot block-device": "boot.marked",          # trial slot marked TRIED (pre-run)
     "boot: marked slot XIP": "boot.marked",
     "boot: slot marker verified": "boot.marked_verify",       # marker read back + verified
+    "boot: slot read": "boot.read",                           # the XIP slot-read closure ran
     "boot: slot mounting": "boot.mount_call",                 # the mount closure ran (vfs.mount)
     "boot: no prior mount": "boot.no_prior_mount",            # mp_init didn't auto-mount /rom (blank romfs)
     "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
@@ -236,7 +237,7 @@ SCENARIOS = {
                    "install.writing", "write.ready", "write.erased", "write.wrote",
                    "write.readback", "write.backread", "write.complete", "install.committed",
                    "install.armed", "boot.marked", "boot.marked_verify", "verify.write",
-                   "confirm.floor", "confirm.promoted", "boot.mount_call"],
+                   "confirm.floor", "confirm.promoted", "boot.mount_call", "boot.read"],
         "forbid": ["install.full", "install.fallback", "install.reject", "boot.mount.back"],
     },
     "full": {

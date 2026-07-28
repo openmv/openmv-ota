@@ -309,11 +309,11 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
 
     try:
         from ecdsa_verify import verify   # the C module dropped into openmv/modules/
-    except ImportError:
+    except ImportError:  # hil-residual: coprocessor core (AE3 M55_HE) has no mbedtls; not HIL-runnable
         # A core that doesn't build mbedtls can't verify signatures, so it never runs
         # OTA: e.g. the Alif AE3 M55_HE helper core, which is slaved to the main core
         # and has its romfs written by it. Leave mp_init's stock /rom mount in place.
-        return
+        return  # hil-residual: coprocessor-core-only path (slaved core, no HIL rig)
 
     # Read the XIP'd partition at each slot's *absolute* address via uctypes rather
     # than slicing one whole-partition memoryview: a memoryview's offset field is
@@ -329,8 +329,13 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     # WRITE must go through the block device. None on the XIP/ioctl ports (stm32/alif/samd).
     bdev = part if hasattr(part, "ioctl") else None
 
+    _read_seen = []
     def read(off, size):
-        return uctypes.bytearray_at(base + off, size)   # trailing-return residual (nothing can follow)
+        body = uctypes.bytearray_at(base + off, size)    # the XIP alias -- witnessed below
+        if not _read_seen:                               # witness the read once (no per-call spam)
+            _read_seen.append(1)
+            log.debug("boot: slot read")
+        return body                                      # hil-residual: bare return of the read var
 
     def mount(body):
         vfs.mount(vfs.VfsRom(body), "/rom")
@@ -347,10 +352,10 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
             log.debug("boot: marked slot block-device")
         else:
             if vfs.rom_ioctl(4, 0, off, marker) < 0:
-                raise OSError("rom_ioctl write failed")
+                raise OSError("rom_ioctl write failed")  # hil-residual: write-fault (inject-only); the OSError->golden fallback is proven by rollback/corrupt
             log.debug("boot: marked slot XIP")
         if read(off, len(marker)) != marker:
-            raise OSError("marker write verify failed")
+            raise OSError("marker write verify failed")  # hil-residual: verify-fault (inject-only); fallback proven by rollback/corrupt
         log.debug("boot: slot marker verified")
 
     try:
@@ -364,7 +369,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
             cfg.OTA_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
     except OtaReject as e:
         log.error("boot: no bootable slot: %s" % e)
-        raise
+        raise  # hil-residual: bare re-raise to halt boot; the boot.no_slot log above is witnessed
     if front_reason is None:
         log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
     else:
