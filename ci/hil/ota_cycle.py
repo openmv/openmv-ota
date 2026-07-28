@@ -683,16 +683,24 @@ def _ensure_cdc(board):
     doesn't fail every mpremote with "failed to access /dev/ttyACM0". Two ways a board loses its CDC:
     the AE3's machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB
     re-enum flakiness) and sits in DFU with no CDC; and a mimxrt/stm32 board can be left halted or
-    crashed by a scenario (its SWD is still alive but USB is dead). A SYSRESETREQ (reset -> run) boots
-    the golden firmware and brings the CDC back. No-op once the CDC is present, and for boards without
-    a J-Link reset device (see each board's jlink_device -- a debug-only name used ONLY to reset)."""
+    crashed by a scenario (SWD still alive, USB dead OR flapping/held -- the port can be enumerated
+    yet unusable, failing every mpremote "in use"). A SYSRESETREQ (reset -> run) boots the golden
+    firmware and brings a clean CDC back. Probes RESPONSIVENESS (not mere existence), no-ops once the
+    board answers, and only for boards with a J-Link reset device (a debug-only name used ONLY to
+    reset -- flashing stays each board's normal path)."""
     if "jlink_device" not in BOARDS[board]:
         return
     for attempt in range(3):
-        if os.path.exists(CFG["acm"]):
+        # A real liveness probe, not just os.path.exists(): the CDC can be enumerated yet held or
+        # flapping (fails every mpremote "in use"), which an existence check misses. (Opening the
+        # port DTR-resets the board, but prepare reflashes golden right after, so that reset is free.)
+        rc, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
+                   timeout=15, check=False, quiet=True)
+        if rc == 0:
             return
-        log("recover: %s no CDC at %s -- J-Link SWD reset (try %d)" % (
-            board, CFG["acm"], attempt + 1))
+        log("recover: %s CDC missing/unresponsive at %s -- free holders + J-Link SWD reset (try %d)"
+            % (board, CFG["acm"], attempt + 1))
+        sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
         fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
         os.write(fd, b"connect\nr\nh\ng\nqc\n")
         os.close(fd)
