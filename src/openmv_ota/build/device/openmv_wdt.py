@@ -4,24 +4,29 @@ Scaffolded into a project at ``device/openmv_wdt.py``; ``build firmware`` freeze
 ``openmv_wdt``) so the installer and your app share one watchdog. Like ``openmv_log``
 it's **yours to edit** and **off by default**.
 
-To use, edit the config below and rebuild firmware: set ``ENABLED`` and pick your board's
-``machine.WDT`` id + a timeout. Then feed it from your main loop::
+Use the DEEP-SLEEP-SAFE watchdog (``WDT_ID`` below): the one that STOPS in deep sleep, so it
+can't reset you while you sleep. On stm32 that's the WWDG, whose window is **short** -- 167 ms
+max on the N6 -- so this is a **tens-of-ms** discipline, not seconds. Edit the config below,
+rebuild firmware, and feed it on a TIGHT cadence from your main loop::
 
     import openmv_wdt
     while True:
-        openmv_wdt.feed()        # the board resets if your loop ever stops feeding it
-        ...
+        openmv_wdt.feed()        # feed every few ms while awake; deep sleep stops the WWDG, so no
+        ...                      # feed is needed asleep. A coarse `sleep(2)` loop will reset you.
 
-A long blocking op (a multi-second flash erase during an OTA install, a model load, ...)
-can't feed from the main loop, so wrap it::
+Feed by REAL PROGRESS -- feed as you do work, so a feed means work happened and a hung loop
+still trips the watchdog. Split long ops into short steps and feed per step; the OTA install and
+boot paths already service it that way (the ranged flash erase feeds per ~2 ms block, etc.).
+
+Only as a LAST RESORT, for a single op you truly can't subdivide, wrap it::
 
     with openmv_wdt.relax():
-        do_long_thing()
+        do_unsplittable_thing()
 
-``relax()`` runs a ``machine.Timer`` whose callback feeds the watchdog at interrupt time,
-so the board survives the op **as long as the CPU itself is healthy** (interrupts still
-firing) -- effectively suspending the watchdog without disabling it. Use it only around
-genuinely long ops; outside ``relax()`` the watchdog still catches a hung main loop.
+``relax()`` runs a ``machine.Timer`` whose ISR feeds the watchdog on a timer -- but that feeds
+**regardless of whether your code is making progress**, so for its duration the watchdog is
+effectively DISABLED (it can only catch a total CPU/interrupt death, not a stuck loop). Keep its
+use rare and its scope minimal; prefer subdividing + progress-based feeding instead.
 
 On every OpenMV port ``machine.Timer`` is the virtual/soft timer (id ``-1`` -- the only
 id it accepts), and ``hard=True`` runs its callback in the SysTick/PendSV interrupt
@@ -37,10 +42,20 @@ copied.
 """
 
 ENABLED = False        # master switch
-WDT_ID = 0             # machine.WDT id for your board
-TIMEOUT_MS = 5000      # reset if not fed within this long (board WDT max may be lower)
+# WDT_ID selects the watchdog. Pick the DEEP-SLEEP-SAFE one so it can't reset you WHILE asleep:
+#   stm32 (N6): "WWDG" -- the windowed watchdog; STOPS in deep sleep. Needs micropython#19350 (the OTA
+#               tool carries it). Its max is SHORT (167 ms on the N6), so TIMEOUT_MS must be <= that
+#               and you must feed on a tens-of-ms cadence. ("IWDG"/0 is the independent watchdog: it
+#               keeps counting THROUGH deep sleep and will reset a sleeping device -- only use it if
+#               your app never deep-sleeps.)
+#   alif (AE3): 0 -- machine.WDT (micropython#19399, carried by the tool); off in deep sleep.
+#   mimxrt (RT): 0 -- the default WDOG; off in deep sleep.
+WDT_ID = "WWDG"
+TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board WDT max (N6 WWDG max
+#                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often.
 TIMER_ID = -1          # machine.Timer id; on OpenMV ports only the soft timer (-1) exists
-FEED_HZ = 10           # relax() feed rate; keep well above 1000 / TIMEOUT_MS
+FEED_HZ = 50           # relax() ISR feed rate (Hz); keep WELL above 1000 / TIMEOUT_MS so it feeds
+#                        many times per window (10 Hz was IWDG-era; a ~100 ms window needs ~50+)
 
 _wdt = None
 _feed = None           # pre-bound _wdt.feed, so the hard-IRQ callback allocates nothing
