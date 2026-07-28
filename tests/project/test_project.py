@@ -674,9 +674,11 @@ def test_non_ota_project_scaffolds_the_bare_main(tmp_path, make_firmware, make_s
 
 # --- OTA-required firmware features: micropython #19348 (ranged romfs erase) -----------
 
-def _fw_repo(tmp_path, *, name="fw", version="5.0.0", vfs=None):
+def _fw_repo(tmp_path, *, name="fw", version="5.0.0", vfs=None, wdt=False):
     """A minimal firmware tree: a version header, and (when ``vfs`` is given)
-    lib/micropython/extmod/vfs.h with that content."""
+    lib/micropython/extmod/vfs.h with that content. ``wdt=True`` also lays down the watchdog
+    features' sentinels (the stm32 WWDG symbol + the new alif machine_wdt.c), so a tree can be
+    set up with ALL _FW_FEATURES already carried."""
     repo = tmp_path / name
     (repo / "protocol").mkdir(parents=True)
     maj, mi, pa = version.split(".")
@@ -688,6 +690,14 @@ def _fw_repo(tmp_path, *, name="fw", version="5.0.0", vfs=None):
         v = repo / "lib" / "micropython" / "extmod" / "vfs.h"
         v.parent.mkdir(parents=True)
         v.write_text(vfs)
+    if wdt:
+        mpy = repo / "lib" / "micropython"
+        stm = mpy / "ports" / "stm32" / "machine_wdt.c"     # #19350 sentinel: the WWDG symbol
+        stm.parent.mkdir(parents=True)
+        stm.write_text("static machine_wdt_obj_t machine_wwdt = {0};\n")
+        alif = mpy / "ports" / "alif" / "machine_wdt.c"     # #19399 sentinel: this file exists
+        alif.parent.mkdir(parents=True)
+        alif.write_text("// alif machine.WDT\n")
     return repo
 
 
@@ -738,8 +748,8 @@ def test_ota_fw_features_skips_when_sentinel_present(tmp_path, monkeypatch):
     run = _fake_run_git()
     monkeypatch.setattr(proj.gitrepo, "run_git", run)
     proj._ensure_ota_firmware_features(
-        _fw_repo(tmp_path, vfs="#define MP_VFS_ROM_IOCTL_GET_MIN_PREPARE (6)\n"), apply=True)
-    assert run.calls == []                            # already carried/merged
+        _fw_repo(tmp_path, vfs="#define MP_VFS_ROM_IOCTL_GET_MIN_PREPARE (6)\n", wdt=True), apply=True)
+    assert run.calls == []                            # every feature already carried/merged
 
 
 def test_ota_fw_features_skips_without_vfs(tmp_path, monkeypatch):
@@ -757,23 +767,42 @@ def test_ota_fw_features_refuses_when_apply_false(tmp_path, monkeypatch):
     assert run.calls == []                            # a capability check -- mutates nothing
 
 
+def test_ota_fw_features_skips_optin_when_apply_false(tmp_path, monkeypatch, capsys):
+    # Required #19348 present -> no raise; the opt-in watchdog features are absent + --no-firmware-
+    # patches -> skipped (not fatal), so opting out still builds, just without the optional capability.
+    run = _fake_run_git()
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    proj._ensure_ota_firmware_features(
+        _fw_repo(tmp_path, vfs="#define MP_VFS_ROM_IOCTL_GET_MIN_PREPARE (6)\n"), apply=False)
+    assert run.calls == []                            # nothing carried, nothing raised
+    out = capsys.readouterr().out
+    assert "skipping opt-in firmware feature micropython#19350" in out
+    assert "skipping opt-in firmware feature micropython#19399" in out
+
+
 def test_ota_fw_features_cherry_picks_when_absent(tmp_path, monkeypatch, capsys):
     run = _fake_run_git(present=False)
     monkeypatch.setattr(proj.gitrepo, "run_git", run)
     proj._ensure_ota_firmware_features(_fw_repo(tmp_path, vfs=_NO_SENTINEL), apply=True)
-    assert _subs(run.calls) == ["cat-file", "fetch", "cherry-pick", "commit"]
-    pick = next(c for c in run.calls if "cherry-pick" in c)
-    for sha in proj._RANGED_ERASE_COMMITS:
-        assert sha in pick
-    assert "user.email=build@openmv.io" in pick
-    assert "carrying micropython#19348" in capsys.readouterr().out
+    # every feature absent -> each: cat-file (miss) -> fetch -> cherry-pick -> commit, in order
+    n = len(proj._FW_FEATURES)
+    assert _subs(run.calls) == ["cat-file", "fetch", "cherry-pick", "commit"] * n
+    picks = [c for c in run.calls if "cherry-pick" in c]
+    assert len(picks) == n
+    for feat, pick in zip(proj._FW_FEATURES, picks):   # each pick carries exactly that feature's SHAs
+        for sha in feat["commits"]:
+            assert sha in pick
+    assert "user.email=build@openmv.io" in picks[0]
+    out = capsys.readouterr().out
+    for feat in proj._FW_FEATURES:
+        assert "carrying micropython#%s" % feat["pr"] in out
 
 
 def test_ota_fw_features_skips_fetch_when_objects_present(tmp_path, monkeypatch):
     run = _fake_run_git(present=True)
     monkeypatch.setattr(proj.gitrepo, "run_git", run)
     proj._ensure_ota_firmware_features(_fw_repo(tmp_path, vfs=_NO_SENTINEL), apply=True)
-    assert _subs(run.calls) == ["cat-file", "cherry-pick", "commit"]   # no fetch
+    assert _subs(run.calls) == ["cat-file", "cherry-pick", "commit"] * len(proj._FW_FEATURES)  # no fetch
 
 
 def test_ota_fw_features_raises_and_aborts_on_conflict(tmp_path, monkeypatch):

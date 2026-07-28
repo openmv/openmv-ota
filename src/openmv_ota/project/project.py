@@ -249,37 +249,108 @@ def _ensure_ota_mbedtls(lock: lock_mod.Lock) -> None:
         "image that fills the partition)." % ", ".join(bad), exit_code=1)
 
 
-# micropython PR #19348 (dpgeorge): ranged (4-arg) WRITE_PREPARE + GET_MIN_PREPARE (rom_ioctl 6).
-# The device OTA installer needs it on XIP-flash ports (stm32/alif): without it the FRONT slot is
-# erased in ONE rom_ioctl(3) call -- seconds of dead time in a single C call that stalls USB and
-# faults partway through on a large slot (the N6's 12 MiB XSPI) -- so the installer must fall back
-# to a legacy whole-slot erase and the incremental path can't run. Not yet in openmv/micropython,
-# so an OTA project on a v5.0 firmware carries it. TEMPORARY: pinned SHAs, retired once it merges
-# upstream (the sentinel check then no-ops this); a rebase changes them -> update _RANGED_ERASE_COMMITS.
-_RANGED_ERASE_REMOTE = "https://github.com/micropython/micropython"
-_RANGED_ERASE_PR = "19348"
-_RANGED_ERASE_COMMITS = (
-    "6a4062f9974640ee60fbd0d52224b973712b6f80",  # extmod/vfs: GET_MIN_PREPARE constant
-    "61fadc0ec8cc9ff58ddab27ad62c59aa9344307b",  # alif: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-    "893850436a799cc0c31126614e704abc9eb2cae5",  # samd: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-    "9f9b28ecb3360851e50606db822523ccb28f0a56",  # stm32: flash_get_max_sector_size helper
-    "14074d10871cef76b14c5a3c8bf12d8afca9430e",  # stm32: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-    "720f797d08912d3f9c8994b31663cb16e47d5efd",  # mpremote: incremental romfs deploy
+# Firmware features the OTA tooling carries into lib/micropython for a v5.0 firmware that predates
+# them upstream (not yet in openmv/micropython). Applied BEFORE the lock is snapshotted so the lock
+# captures the patched state (a post-lock change trips the drift guard). Each is TEMPORARY: pinned
+# SHAs, retired once it merges upstream (the sentinel then no-ops it); an upstream rebase changes the
+# SHAs, so update a feature's ``commits`` if its cherry-pick stops applying. ``required`` = the OTA
+# installer can't run without it (opting out raises); the rest are opt-in capabilities carried by
+# default so they're available to turn on, but skipped (not fatal) when opted out.
+_MP_REMOTE = "https://github.com/micropython/micropython"
+_FW_FEATURES = (
+    {
+        "pr": "19348",
+        "summary": "ranged romfs erase",
+        "why": ("the OTA installer's incremental FRONT erase -- without it a whole-slot erase stalls "
+                "USB and faults partway through on a large XIP slot (the N6's 12 MiB XSPI)"),
+        "commits": (
+            "6a4062f9974640ee60fbd0d52224b973712b6f80",  # extmod/vfs: GET_MIN_PREPARE constant
+            "61fadc0ec8cc9ff58ddab27ad62c59aa9344307b",  # alif: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+            "893850436a799cc0c31126614e704abc9eb2cae5",  # samd: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+            "9f9b28ecb3360851e50606db822523ccb28f0a56",  # stm32: flash_get_max_sector_size helper
+            "14074d10871cef76b14c5a3c8bf12d8afca9430e",  # stm32: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+            "720f797d08912d3f9c8994b31663cb16e47d5efd",  # mpremote: incremental romfs deploy
+        ),
+        "sentinel_path": "extmod/vfs.h",
+        "sentinel": "MP_VFS_ROM_IOCTL_GET_MIN_PREPARE",
+        "required": True,
+    },
+    {
+        "pr": "19350",
+        "summary": "STM32 WWDG watchdog",
+        "why": ("the deep-sleep-safe windowed watchdog (machine.WDT('WWDG')) the opt-in openmv_wdt "
+                "uses on stm32/N6 -- the default IWDG keeps counting through deep sleep"),
+        "commits": (
+            "b5c6ce36ad59d7709868988aa2e5bc101a572178",  # extmod/machine_wdt: any object as the WDT id
+            "ad64bb17f9f98507536605d61d9f5c5230ea7f9a",  # stm32/machine_wdt: string WDT ids
+            "cc0e275647afa57a7415150ac306810038e0ff89",  # stm32/machine_wdt: WWDG peripheral
+            "fa1ec09126ed75aa4ab2d19281a9036b0106e3eb",  # stm32/machine_wdt: up to 4 watchdogs on H7
+            "daf9858bb4e5458b2b0cadc9a97d36b4e81a141e",  # docs: stm32 WWDG
+        ),
+        "sentinel_path": "ports/stm32/machine_wdt.c",
+        "sentinel": "machine_wwdt",
+        "required": False,
+    },
+    {
+        "pr": "19399",
+        "summary": "ALIF watchdog",
+        "why": "machine.WDT on the alif port (the AE3) for the opt-in openmv_wdt",
+        "commits": (
+            "c2e3fe420e2e5bedfd73dd299ae0b8f9f694e469",  # alif/cgu_ext: cgu_get_rtss_hx_clk_khz helper
+            "152e422c120fce874120a36637d08a5585cbdb95",  # alif/machine_wdt: the WDT class (a new file)
+            "374a872f33b8513ed585935f8fbbfc7d3447690b",  # docs: alif WDT
+        ),
+        "sentinel_path": "ports/alif/machine_wdt.c",
+        "sentinel": None,       # a NEW file -> its existence is the sentinel
+        "required": False,
+    },
 )
-_RANGED_ERASE_SENTINEL = "MP_VFS_ROM_IOCTL_GET_MIN_PREPARE"
+
+
+def _feature_present(mpy: Path, feat: dict) -> bool:
+    """True if ``feat`` is already carried (or merged upstream). ``sentinel`` of ``None`` means the
+    feature adds a NEW file, so its existence is the check; otherwise look for the sentinel string in
+    ``sentinel_path`` (a file present before the feature too)."""
+    path = mpy / feat["sentinel_path"]
+    if feat["sentinel"] is None:
+        return path.exists()
+    try:
+        return feat["sentinel"] in path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+def _carry_feature(repo: Path, mpy: Path, feat: dict) -> None:
+    """Cherry-pick ``feat``'s pinned commits into lib/micropython and commit the submodule bump, so
+    the checkout stays clean (the lock/verify guard refuses a dirty tree). Raises on conflict."""
+    pr = feat["pr"]
+    print("note: carrying micropython#%s (%s) in lib/micropython -- %s; committing the bump so the "
+          "checkout stays clean." % (pr, feat["summary"], feat["why"]))
+    ident = ("-c", "user.name=openmv-ota", "-c", "user.email=build@openmv.io")
+    if gitrepo.run_git(mpy, "cat-file", "-e", feat["commits"][-1] + "^{commit}", check=False) is None:
+        gitrepo.run_git(mpy, "fetch", "--quiet", _MP_REMOTE, "pull/%s/head" % pr)
+    try:
+        gitrepo.run_git(mpy, *ident, "cherry-pick", *feat["commits"])
+    except ProjectError as e:
+        gitrepo.run_git(mpy, "cherry-pick", "--abort", check=False)   # leave the tree unwound
+        raise ProjectError(
+            "could not carry micropython#%s (%s). If the PR was rebased upstream, update its "
+            "`commits` in project.py._FW_FEATURES." % (pr, e), exit_code=1) from None
+    gitrepo.run_git(repo, *ident, "commit", "--quiet", "lib/micropython",
+                    "-m", "carry micropython#%s (%s, v5.0 OTA)" % (pr, feat["summary"]))
 
 
 def _ensure_ota_firmware_features(repo: Path, *, apply: bool) -> None:
-    """Ensure the firmware's micropython has the ranged romfs erase the OTA installer needs
-    (micropython#19348), for a v5.0 firmware that predates it. Called BEFORE the lock is
-    snapshotted, so the lock captures the patched state (a post-lock change trips the drift guard).
+    """Ensure the firmware's micropython carries the features the OTA tooling needs/offers on a v5.0
+    firmware that predates them upstream (see ``_FW_FEATURES``). Called BEFORE the lock is snapshotted,
+    so the lock captures the patched state (a post-lock change trips the drift guard).
 
-    With ``apply`` (the default -- ``project new`` without ``--no-firmware-patches``): cherry-pick
-    the PR commits into ``lib/micropython`` and commit the submodule bump, so the checkout stays
-    clean (the lock/verify guard refuses a dirty tree). Without ``apply``: raise instead, so a user
-    who opts out is told their firmware isn't OTA-ready rather than silently shipping the faulting
-    legacy erase. A no-op for non-5.0 firmware, and once the change is present (carried here earlier,
-    or merged into openmv/micropython) -- so it retires itself."""
+    With ``apply`` (the default -- ``project new`` without ``--no-firmware-patches``): cherry-pick each
+    missing feature and commit the submodule bump, so the checkout stays clean (the lock/verify guard
+    refuses a dirty tree). Without ``apply``: raise for a REQUIRED feature the OTA installer can't run
+    without (so a user who opts out is told, not silently shipping a faulting firmware), and skip an
+    opt-in one. A no-op for non-5.0 firmware, and per feature once it's present (carried here earlier
+    or merged upstream) -- so each retires itself."""
     try:
         ver = fw_res.resolve_firmware_version(repo)
     except ProjectError:
@@ -287,33 +358,21 @@ def _ensure_ota_firmware_features(repo: Path, *, apply: bool) -> None:
     if (ver.major, ver.minor) != (5, 0):
         return
     mpy = repo / mp_res.MICROPYTHON_SUBPATH
-    try:
-        if _RANGED_ERASE_SENTINEL in (mpy / "extmod" / "vfs.h").read_text(encoding="utf-8"):
-            return                                   # already carried or merged upstream
-    except OSError:
+    if not (mpy / "extmod" / "vfs.h").exists():
         return                                       # not a micropython tree we recognise
-    if not apply:
-        raise ProjectError(
-            "this firmware lacks the ranged romfs erase the OTA installer needs "
-            "(micropython#%s) -- its whole-slot erase stalls USB and faults on a large XIP slot. "
-            "Drop --no-firmware-patches to have `project new` carry it, or peg to a firmware that "
-            "already includes it." % _RANGED_ERASE_PR, exit_code=1)
-    print("note: carrying micropython#%s (ranged romfs erase) in lib/micropython -- the OTA "
-          "installer needs it; committing the bump so the checkout stays clean." % _RANGED_ERASE_PR)
-    ident = ("-c", "user.name=openmv-ota", "-c", "user.email=build@openmv.io")
-    if gitrepo.run_git(mpy, "cat-file", "-e", _RANGED_ERASE_COMMITS[-1] + "^{commit}",
-                       check=False) is None:
-        gitrepo.run_git(mpy, "fetch", "--quiet", _RANGED_ERASE_REMOTE,
-                        "pull/%s/head" % _RANGED_ERASE_PR)
-    try:
-        gitrepo.run_git(mpy, *ident, "cherry-pick", *_RANGED_ERASE_COMMITS)
-    except ProjectError as e:
-        gitrepo.run_git(mpy, "cherry-pick", "--abort", check=False)   # leave the tree unwound
-        raise ProjectError(
-            "could not carry micropython#%s (%s). If the PR was rebased, update "
-            "_RANGED_ERASE_COMMITS in project.py." % (_RANGED_ERASE_PR, e), exit_code=1) from None
-    gitrepo.run_git(repo, *ident, "commit", "--quiet", "lib/micropython",
-                    "-m", "carry micropython#%s (ranged romfs erase, v5.0 OTA)" % _RANGED_ERASE_PR)
+    for feat in _FW_FEATURES:
+        if _feature_present(mpy, feat):
+            continue                                 # already carried or merged upstream
+        if not apply:
+            if feat["required"]:
+                raise ProjectError(
+                    "this firmware lacks micropython#%s (%s) the OTA installer needs -- %s. Drop "
+                    "--no-firmware-patches to have `project new` carry it, or peg to a firmware that "
+                    "already includes it." % (feat["pr"], feat["summary"], feat["why"]), exit_code=1)
+            print("note: skipping opt-in firmware feature micropython#%s (%s) -- --no-firmware-patches; "
+                  "it stays unavailable until carried." % (feat["pr"], feat["summary"]))
+            continue
+        _carry_feature(repo, mpy, feat)
 
 
 def _digest(config: OtaConfig) -> str:
