@@ -176,18 +176,18 @@ it exceeds the window it's the strongest (and maybe only) candidate for a *narro
 fit a ~100 ms window; a distant/slow one won't. If we must `relax()` here, it wraps only the handshake
 (seconds, once), not the whole download, and is documented as a justified exception.
 
-### 4b. The erase, re-examined against the window
+### 4b. The erase, re-examined against the window — **MEASURED on N6: not a problem**
 
-`#19348`'s ranged erase feeds per **block** — but that only helps if a *single* block/sector erase
-finishes within the window. NOR **sector-erase times can be 50–400 ms**, which can *exceed* a ~100 ms
-WWDG window on its own. A single sector erase is one indivisible hardware op: you cannot loop-feed
-*inside* it. So if `sector-erase-time > window`, the erase is a genuine `relax()`-or-bust case — and
-even `relax()` only works if the flash driver keeps **interrupts live** during the sector erase (many
-don't). **This is the sharpest open risk (§6): measure a single sector-erase time and whether IRQs
-fire during it on each board.** Possible outcomes: (a) sector erase fits the window → per-block feed
-is enough, no relax(); (b) it doesn't but IRQs stay live → a tightly-scoped `relax()` per sector; (c)
-neither → a ~100 ms watchdog is not compatible with our in-place erase and we'd need a larger window
-or a different erase strategy. We won't know which until we measure.
+The fear was that a single NOR sector erase (indivisible, un-loop-feedable) could take 50–400 ms and
+exceed a ~100 ms window. **Measured on the N6 (2026-07-28, instrumented ranged-erase over a real 12 MB
+FRONT erase): granule = 4096 B; per-sector erase 64 µs – 1992 µs (worst ~2 ms) across all 3072
+sectors; the 1 kHz hard-timer tick fired during each erase (`irq≈1`), so interrupts stay LIVE.**
+Conclusion = the best case: a single sector erases in ~2 ms worst — ~50× inside a 100 ms window — so
+`#19348`'s **per-block `feed()` (every ≤2 ms) keeps the watchdog fed with huge margin, and NO `relax()`
+is needed for the erase.** (This is why #19348's ranged erase matters twice over: it fixes the N6
+XSPI fault *and* makes the erase watchdog-safe.) Still to confirm on RT1062 (block-device erase path),
+but the tightest board is clear. The erase is no longer the make-or-break; **the network path (§4) is
+now the remaining hard part.**
 
 ---
 
