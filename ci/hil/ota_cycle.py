@@ -119,11 +119,34 @@ def sh(cmd, timeout=180, check=True, quiet=False):
     return p.returncode, out
 
 
+def _mpremote(args, timeout=60, check=True):
+    """`mpremote connect <acm> <args...>`, retrying the transient port race: right after a
+    board reset/enumeration, ModemManager (or a lingering handle from the previous step) can
+    hold the freshly-appeared CDC for ~a second -> "failed to access /dev/ttyACM0 (it may be
+    in use by another program)". That is not a device failure -- a short backoff lets the
+    holder release. A non-transient error stops immediately."""
+    last = ""
+    for _ in range(5):
+        rc, out = sh([ota("mpremote"), "connect", CFG["acm"]] + list(args),
+                     timeout=timeout, quiet=True, check=False)
+        if rc == 0:
+            return rc, out
+        last = out
+        if ("in use" in out) or ("failed to access" in out) or ("could not enter" in out):
+            log("  (mpremote: port busy, retrying in 2s)")
+            time.sleep(2)
+            continue
+        break                                    # a real error (not the port race) -> stop
+    if check:
+        raise RuntimeError("mpremote failed after retries (%s):\n%s"
+                           % (" ".join(str(a) for a in args), last[-1500:]))
+    return 1, last
+
+
 def device_exec(code, timeout=60, check=True):
     """Run MicroPython on the board over the USB-CDC (mpremote). Opening the port
     DTR-resets the board, so this is only for setup/verify, never for observing a trial."""
-    return sh([ota("mpremote"), "connect", CFG["acm"], "exec", code], timeout=timeout,
-              quiet=True, check=check)
+    return _mpremote(["exec", code], timeout=timeout, check=check)
 
 
 def log(msg):
@@ -427,6 +450,8 @@ class UartCapture:
                 if not s:
                     continue
                 self.raw.append(s)
+                print("[dev] " + s, flush=True)   # forward the device UART live -> the CI log, so a
+                #                                   multi-minute erase/download shows progress, not silence
                 # Coverage = the device's own log lines (captured at DEBUG on the UART):
                 #   "[  12.345] INFO openmv_ota: install: representation delta"
                 # No break: the last line before a machine.reset() can be truncated and
@@ -562,8 +587,7 @@ def prepare(board, checkout, network, app="confirm"):
     # the bench server's CA must be on the board for run()'s TLS (survives the OTA, lives on
     # /flash not the romfs). Push it so the harness doesn't assume a hand-placed cert.
     if os.path.exists(CFG["ca_node"]):
-        sh([ota("mpremote"), "connect", CFG["acm"], "fs", "cp", CFG["ca_node"],
-            ":" + CFG["ca_board"]], timeout=30, check=False)
+        _mpremote(["fs", "cp", CFG["ca_node"], ":" + CFG["ca_board"]], timeout=30, check=False)
     # enable the coverage UART on the board (bench-only file; survives across the OTA)
     device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["ca_board"].rsplit("/", 1)[0] +
                 "/.hilcov_uart", BOARDS[board]["cov_uart"]))
@@ -968,6 +992,7 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
     last = None
     saw_golden = saw_target = False
     v = slot = None
+    hb = 0
     while time.time() < deadline:
         time.sleep(15)
         try:
@@ -988,6 +1013,12 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
         if cur != last:
             log("  device " + devid[:12] + ": " + cur)
             last = cur
+            hb = 0
+        else:
+            hb += 1
+            if hb % 4 == 0:                        # ~60s with no new state -> a heartbeat, so a long
+                log("  ... still watching (%ds elapsed, %d/%d markers, on %s/%s)"   # erase/download
+                    % (int(time.time() - (deadline - timeout_s)), len(marks), len(expect), v, slot))
         if end == "promoted":
             if saw_golden and v == target and slot == "FRONT" and have:
                 break                        # real golden->target transition, all paths hit
