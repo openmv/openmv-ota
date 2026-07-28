@@ -252,7 +252,7 @@ SCENARIOS = {
                    "run.checkin", "run.status", "run.boot_result", "run.identity",
                    "run.identity_uid", "run.offer", "run.asset_read", "run.asset_closed",
                    "run.ca_path", "run.ca_bytes", "run.read_at", "run.data_path",
-                   "run.wdt_feed", "run.poll_tail", "install.fetch_manifest",
+                   "install.fetch_manifest",
                    "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
                    "install.start", "{cov_write}", "install.download", "install.delta",
                    "install.writing", "write.ready", "write.erased", "write.wrote",
@@ -285,7 +285,11 @@ SCENARIOS = {
     "bad_sig": {
         "desc": "manifest signature does not verify -> refused pre-erase, stays golden",
         "publish": "bad_sig", "app": "confirm", "end": "golden",
-        "expect": ["run.offer", "install.reject", "install.reject_sig"],
+        # run.poll_tail + run.wdt_feed live AFTER run()'s install() call: a pre-erase REJECT raises
+        # out of install() (no reboot), so run() reaches the loop tail and feeds the watchdog -- the
+        # happy paths reboot at install() before the tail, so this is where those two are witnessed.
+        "expect": ["run.offer", "install.reject", "install.reject_sig",
+                   "run.poll_tail", "run.wdt_feed"],
         "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
     },
     "bad_key": {
