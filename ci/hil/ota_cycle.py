@@ -88,6 +88,11 @@ BOARDS = {
         "cov_write": "install.blockdev",     # mimxrt: the block-device write model, not XIP
         "network": "lan",
         "flash": "blhost_imx",
+        # A J-Link is wired to the RT's SWD (debug-only device name, used ONLY to SWD-reset the board
+        # back to life when it wedges off USB -- NOT for flashing; that's blhost). Recovers the case
+        # where a scenario leaves the core halted/wedged with no CDC, which otherwise fails every
+        # later mpremote with "failed to access /dev/ttyACM0" (the CDC flapping/gone).
+        "jlink_device": "MIMXRT1062xxx6A",
         # The FlexSPI NOR flash. We write ONLY the app regions; the ROM's flash-config
         # block (0x60000000) and the resident secure bootloader / flashloader (0x60001000)
         # are NEVER touched -- machine.bootloader() drops into that resident SBL to flash.
@@ -674,17 +679,19 @@ def _dfu_write(alt, path, timeout_s):
 
 
 def _ensure_cdc(board):
-    """Boot a DFU-flashed board out of a stuck DFU state via a J-Link SWD reset. The AE3's
-    machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB re-enum
-    flakiness): when leave-DFU fails the board sits in DFU with no USB-CDC, and every later
-    scenario then fails to open the port. A SYSRESETREQ boots the golden firmware, which brings
-    the CDC back. No-op once the CDC is present, and for non-DFU boards (they don't get stuck)."""
-    if BOARDS[board]["flash"] != "dfu_alif":
+    """Recover a board that has wedged off USB (no CDC) via a J-Link SWD reset, so a later scenario
+    doesn't fail every mpremote with "failed to access /dev/ttyACM0". Two ways a board loses its CDC:
+    the AE3's machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB
+    re-enum flakiness) and sits in DFU with no CDC; and a mimxrt/stm32 board can be left halted or
+    crashed by a scenario (its SWD is still alive but USB is dead). A SYSRESETREQ (reset -> run) boots
+    the golden firmware and brings the CDC back. No-op once the CDC is present, and for boards without
+    a J-Link reset device (see each board's jlink_device -- a debug-only name used ONLY to reset)."""
+    if "jlink_device" not in BOARDS[board]:
         return
     for attempt in range(3):
         if os.path.exists(CFG["acm"]):
             return
-        log("recover: %s no CDC at %s -- SWD reset out of DFU (try %d)" % (
+        log("recover: %s no CDC at %s -- J-Link SWD reset (try %d)" % (
             board, CFG["acm"], attempt + 1))
         fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
         os.write(fd, b"connect\nr\nh\ng\nqc\n")
