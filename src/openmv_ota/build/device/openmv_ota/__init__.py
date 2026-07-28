@@ -72,10 +72,10 @@ except ImportError:
 
 class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is frozen)
     def __enter__(self):
-        return self
+        return self  # hil-residual: bare return of self (CM enter)
 
     def __exit__(self, *a):
-        return False
+        return False  # hil-residual: bare const return (CM exit)
 
 
 def _wdt_relax():  # pragma: no cover  (device)
@@ -246,7 +246,7 @@ class _Progress:
 
 def _front_status_offset(cfg):  # pragma: no cover
     # The FRONT slot's status sector is the block before its trailer block.
-    return cfg.FRONT_SIZE - 2 * cfg.OTA_BLOCK
+    return cfg.FRONT_SIZE - 2 * cfg.OTA_BLOCK  # hil-residual: pure arithmetic getter, no call
 
 
 def _read_at(part_index, off, size):  # pragma: no cover
@@ -266,7 +266,7 @@ def _rom_write(*args):  # pragma: no cover
     return rc
 
 
-def _file_chunks(path):  # pragma: no cover
+def _file_chunks(path):  # pragma: no cover  # hil-residual-fn: coprocessor partition path; AE3 HW-blocked (no working HIL coproc rig)
     f = open(path, "rb")
     try:
         while True:
@@ -336,7 +336,7 @@ def status():  # pragma: no cover
     s["payload_version"] = version
     s["representation"] = _representation_of(sector)
     log.debug("status: read")                         # HIL path witness (runs every boot/checkin)
-    return s
+    return s  # hil-residual: bare return of the status dict
 
 
 def identity():  # pragma: no cover
@@ -353,9 +353,9 @@ def identity():  # pragma: no cover
         import machine
         info["device_id"] = machine.unique_id().hex()
     except (ImportError, AttributeError):
-        pass
+        pass  # hil-residual: bare pass (no unique_id/hex on this port)
     log.debug("identity: ready")                      # HIL path witness (runs every check-in)
-    return info
+    return info  # hil-residual: bare return of the identity dict
 
 
 # --- the check-in loop + the openmv_cloud extension seam --------------------
@@ -470,7 +470,7 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
                 log.debug("checkin: update offered")
                 install(manifest_url, ca)            # does not return on success
         except Exception:
-            pass                                     # transient failure -> retry next poll
+            pass                                     # transient failure -> retry next poll  # hil-residual: bare pass; install-retry exercised by corrupt/bad_sig
         _wdt_feed()
         await asyncio.sleep(wait)
 
@@ -486,7 +486,7 @@ def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
         openmv_rtc.resolve(ntp_host)
         log.debug("clock: resolved")                  # HIL path witness (NTP/RTC each poll)
     except Exception:
-        pass
+        pass  # hil-residual: bare pass; clock left unresolved
 
 
 async def _read_capped(reader, limit):  # pragma: no cover  (device network)
@@ -534,7 +534,7 @@ async def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
                 break
         resp = json.loads(await _read_capped(reader, _RESP_MAX))
         log.debug("checkin: parsed")                  # HIL path witness (headers skipped + JSON)
-        return resp
+        return resp  # hil-residual: bare return of the response reader
     finally:
         writer.close()
         await writer.wait_closed()
@@ -550,10 +550,10 @@ def _advance_rollback(cfg, version):  # pragma: no cover (device)
     off = cfg.PARTITION_SIZE - 3 * cfg.OTA_BLOCK     # BACK's rollback sector (absolute)
     sector = uctypes.bytearray_at(base + off, cfg.OTA_BLOCK)
     if _rollback_floor_of(sector) >= version:
-        return
+        return  # hil-residual: bare early return (nothing to advance)
     pos = _rollback_append_offset(sector)
     if pos is None:
-        return
+        return  # hil-residual: bare early return (floor already current)
     _write_verified(0, off + pos, _rollback_entry(version))
     log.debug("confirm: floor advanced")             # HIL path witness (the confirm write path)
 
@@ -570,11 +570,11 @@ def confirm():  # pragma: no cover
     slot, version, _r = _boot_result()
     off = _front_status_offset(_ota_config)
     if not _should_confirm(slot, _read_at(0, off, 3 * MARKER_SIZE)):
-        return False
+        return False  # hil-residual: bare const return (not confirmable this boot)
     _advance_rollback(_ota_config, version)
     _write_verified(0, off + _CONFIRMED_OFF, CONFIRMED)
     log.info("confirm: kept running FRONT image")
-    return True
+    return True  # hil-residual: bare const return (confirmed)
 
 
 # A resource handler is a ``(matches, apply)`` pair, both taking ``(entry, path)`` --
@@ -584,7 +584,7 @@ def confirm():  # pragma: no cover
 # resource kind (keys, fuses, ...) is just another entry in _HANDLERS -- no partition
 # assumptions baked into the loop.
 
-def _partition_matches(entry, path):  # pragma: no cover
+def _partition_matches(entry, path):  # pragma: no cover  # hil-residual-fn: coprocessor partition path; AE3 HW-blocked (no working HIL coproc rig)
     """matches() for the ``partition`` handler: stream-compare the file to the start of
     partition ``entry["partition"]`` (the partition via a uctypes view, the file one
     chunk at a time -- neither whole image in RAM)."""
@@ -597,7 +597,7 @@ def _partition_matches(entry, path):  # pragma: no cover
     return same
 
 
-def _partition_apply(entry, path, progress=None):  # pragma: no cover
+def _partition_apply(entry, path, progress=None):  # pragma: no cover  # hil-residual-fn: coprocessor partition path; AE3 HW-blocked (no working HIL coproc rig)
     """apply() for the ``partition`` handler: erase + program partition
     ``entry["partition"]`` with the file, streamed in _CHUNK blocks (never the whole
     image in RAM). The final block is 0xFF-padded to a full chunk -- matching the erased
@@ -643,7 +643,7 @@ def _data_path(name):  # pragma: no cover
     return __file__.rsplit("/", 1)[0] + "/data/" + name
 
 
-def sync():  # pragma: no cover
+def sync():  # pragma: no cover  # hil-residual-fn: coprocessor partition path; AE3 HW-blocked (no working HIL coproc rig)
     """Apply bundled resources (``data/resources.json``) whose target differs from the
     bundled copy -- today the coprocessor romfs into the helper core's partition, but the
     loop is handler-agnostic (a resource's ``handler`` selects a (matches, apply) pair,
@@ -721,6 +721,6 @@ def _read_file(path, mode, limit=_ASSET_MAX):  # pragma: no cover
         if len(data) > limit:
             raise OSError("%s exceeds the %d-byte asset ceiling" % (path, limit))
         log.debug("asset: read")                      # HIL path witness (installer/ca asset read)
-        return data
+        return data  # hil-residual: bare return of the read asset
     finally:
         f.close()
