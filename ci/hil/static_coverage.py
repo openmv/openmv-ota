@@ -40,6 +40,9 @@ DEFAULT_FILES = [
     os.path.join(DEVICE, "boot.py"),
     os.path.join(DEVICE, "openmv_ota/__init__.py"),
     os.path.join(DEVICE, "openmv_ota/data/installer.py"),
+    os.path.join(DEVICE, "openmv_rtc.py"),
+    os.path.join(DEVICE, "openmv_log.py"),
+    os.path.join(DEVICE, "openmv_wdt.py"),
 ]
 _LOGCALL = ("info(", "debug(", "warning(", "error(")
 
@@ -152,15 +155,18 @@ def analyze(filename):
     src = source.splitlines()
     owner = _func_owner(source)                            # line -> enclosing function name
 
-    def is_marker(lineno):
-        if lineno < 1 or lineno > len(src):
-            return False
-        line = src[lineno - 1]
-        if not any(c in line for c in _LOGCALL):
-            return False
-        return any(sub in line for sub in ota_cycle.COVERAGE)
-
-    markers = [n for n in stmts if is_marker(n)]
+    # Marker lines come from hil_coverage.find_source -- the SAME mapping the actual fold uses --
+    # so the static set agrees with it. find_source matches the longest literal PREFIX of a marker,
+    # so a format-string log ("boot: mounted %s") is recognized as its runtime marker
+    # ("boot: mounted FRONT"); a plain `substring in line` test would miss it and mis-report a gap.
+    import hil_coverage
+    rel = os.path.relpath(filename, _REPO)
+    marker_lines = set()
+    for sub in ota_cycle.COVERAGE:
+        loc_file, loc_ln = hil_coverage.find_source(sub)
+        if loc_file == rel and loc_ln:
+            marker_lines.add(loc_ln)
+    markers = [n for n in stmts if n in marker_lines]
     coverable = set()
     for m in markers:
         fn = owner.get(m)                                   # intraprocedural: a marker's real
@@ -174,13 +180,34 @@ def analyze(filename):
     unit_body = unit & body                               # covered by the host unit suite
     hil_body = hil_only & body                            # HIL-only runtime lines
     hil_covered = coverable & hil_body                    # ...a marker's dominators witness these
-    # TRUE gap: a HIL-only line that no marker can witness -> tested on NEITHER axis -> a UART
-    # print is the only way to cover it. (Unit-tested lines are already covered; excluded.)
-    gaps = sorted(hil_body - coverable)
+    # A HIL-only line no marker witnesses is either a TRUE gap (must get a print) or an accepted
+    # RESIDUAL a print inherently can't reach: a trailing return/raise (nothing runs after it), a
+    # terminal machine.reset(), a generator's yield/EOF mechanics, a hot per-call closure the
+    # milestone after it already proves, the logger proving itself, or an AE3-coproc / cloud path
+    # with no HIL rig yet. Mark those `# hil-residual: <reason>` on the line (or
+    # `# hil-residual-fn: <reason>` on the def, for a wholly-inherent function) -- exactly like the
+    # RAM budget's `# ram-ok`. Everything else MUST be witnessed; a bare gap fails the CI audit.
+    import re
+    fn_residual = {}                                       # function name -> reason (def-level)
+    for line in src:
+        m = re.search(r"#\s*hil-residual-fn:\s*(.+?)\s*$", line)
+        if m:
+            d = re.match(r"\s*(?:async\s+)?def\s+(\w+)", line)
+            if d:
+                fn_residual[d.group(1)] = m.group(1)
+
+    def _residual_reason(ln):
+        line = src[ln - 1] if 1 <= ln <= len(src) else ""
+        m = re.search(r"#\s*hil-residual:\s*(.+?)\s*$", line)
+        return m.group(1) if m else fn_residual.get(owner.get(ln))
+
+    raw_gaps = sorted(hil_body - coverable)
+    residuals = {ln: _residual_reason(ln) for ln in raw_gaps if _residual_reason(ln)}
+    gaps = [ln for ln in raw_gaps if ln not in residuals]  # unaccounted -> a print is required
     return {"file": os.path.relpath(filename, _REPO), "stmts": stmts, "body": body,
             "markers": sorted(markers), "coverable": coverable & body,
             "unit": unit_body, "hil_only": hil_body, "hil_covered": hil_covered,
-            "gaps": gaps, "owner": owner, "src": src}
+            "gaps": gaps, "residuals": residuals, "owner": owner, "src": src}
 
 
 def _func_owner(source):
@@ -210,20 +237,22 @@ def _fmt_ranges(nums):
 
 def main():
     files = sys.argv[1:] or DEFAULT_FILES
-    t_unit = t_hil = t_hilcov = t_gap = 0
+    t_unit = t_hil = t_hilcov = t_res = t_gap = 0
     for f in files:
         r = analyze(f)
         owner, src = r["owner"], r["src"]
-        nu, nh, nhc, ng = len(r["unit"]), len(r["hil_only"]), len(r["hil_covered"]), len(r["gaps"])
+        nu, nh, nhc = len(r["unit"]), len(r["hil_only"]), len(r["hil_covered"])
+        nres, ng = len(r["residuals"]), len(r["gaps"])
         t_unit += nu
         t_hil += nh
         t_hilcov += nhc
+        t_res += nres
         t_gap += ng
         print("\n=== %s ===" % r["file"])
         print("  unit-tested (host 100%% gate): %d | HIL-only (# pragma: no cover): %d "
-              "-> witnessed by a print: %d, GAP: %d" % (nu, nh, nhc, ng))
-        # The actionable list: HIL-only lines no print witnesses -> where a UART print is the
-        # ONLY way to cover them. Grouped by function so each is one place to look.
+              "-> witnessed: %d, residual: %d, GAP: %d" % (nu, nh, nhc, nres, ng))
+        # The actionable list: HIL-only lines that are NEITHER witnessed NOR a marked residual --
+        # every one must get a print (or a `# hil-residual: <reason>` if it inherently can't).
         by_func = {}
         for ln in r["gaps"]:
             by_func.setdefault(owner.get(ln), []).append(ln)
@@ -232,14 +261,15 @@ def main():
             print("    %s(): %d un-witnessed line(s) [%s]" % (fn, len(g), ", ".join(_fmt_ranges(g))))
             for ln in g[:3]:
                 print("        %4d | %s" % (ln, src[ln - 1].strip()[:80]))
-    denom = t_hil or 1
-    print("\n=== HIL coverage of the hardware-only paths: %d/%d (%.0f%%) witnessed; %d gap lines ==="
-          % (t_hilcov, t_hil, 100.0 * t_hilcov / denom, t_gap))
-    print("  (%d more lines are unit-tested -- covered on the host, additive with HIL. The gap is"
-          " HIL-only lines tested on NEITHER axis: a print is the only way to reach them.)" % t_unit)
-    print("  Sound + conservative: dominators only UNDER-count coverage -> this only OVER-reports"
-          " gaps, never the reverse.")
-    return 0
+    denom = (t_hilcov + t_gap) or 1                        # coverable = witnessed + true gaps
+    print("\n=== HIL coverage of coverable HW paths: %d/%d (%.0f%%) witnessed; %d residual; %d GAP ==="
+          % (t_hilcov, t_hilcov + t_gap, 100.0 * t_hilcov / denom, t_res, t_gap))
+    print("  (%d more lines are host-unit-tested, additive. %d lines are marked `# hil-residual` --"
+          " inherently unreachable by a print, each with a reason.)" % (t_unit, t_res))
+    if t_gap:
+        print("  %d line(s) are UNACCOUNTED: witness them with a print, or mark `# hil-residual`."
+              % t_gap)
+    return 1 if t_gap else 0                               # non-zero exit == an unaccounted line
 
 
 if __name__ == "__main__":

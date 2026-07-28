@@ -48,6 +48,12 @@ memory. It holds a few integers and allocates only during a sync.
 
 import time
 
+try:                                  # the firmware freezes openmv_log beside this module
+    from openmv_log import log        # the shared logger -> the coverage side-channel UART
+except ImportError:                   # host / a non-OTA firmware: a plain, unconfigured logger
+    import logging
+    log = logging.getLogger("openmv_ota")
+
 try:                                  # the build stamps this into _ota_config
     from _ota_config import BUILD_TIME
 except ImportError:                   # host, or a non-OTA firmware: no floor
@@ -147,15 +153,16 @@ def sync(host=None):  # pragma: no cover  (device: network + RTC)
     try:
         import ntptime
         if host:
-            ntptime.host = host
+            ntptime.host = host  # hil-residual: bare assign (NTP host override; bench uses the default pool)
         unix = ntptime.time() + _epoch_offset()
         if unix < BUILD_TIME:         # an NTP reply older than the build is bogus
-            return False
+            return False  # hil-residual: bare return (bogus pre-build NTP reply, inject-only)
         set_time(unix)
         _source = "ntp"
-        return True
-    except Exception:
-        return False
+        log.debug("clock: ntp synced")            # HIL path witness (NTP query set the RTC)
+        return True  # hil-residual: bare return (NTP sync ok)
+    except Exception:  # hil-residual: NTP-failure wrapper (no network / DNS / UDP blocked)
+        return False  # hil-residual: bare return (failed sync retries next poll)
 
 
 def resolve(host=None):  # pragma: no cover  (device: network + RTC)
@@ -167,6 +174,8 @@ def resolve(host=None):  # pragma: no cover  (device: network + RTC)
     global _source
     if trusted():
         if _source == "none":
-            _source = "rtc"
-        return True
-    return sync(host)
+            _source = "rtc"  # hil-residual: bare assign (RTC trusted at boot without NTP; bench NTP-syncs first)
+        log.debug("clock: rtc trusted")           # HIL path witness (fast path: clock already good)
+        return True  # hil-residual: bare return (clock trusted)
+    log.debug("clock: syncing")                   # HIL path witness (untrusted -> one NTP sync)
+    return sync(host)  # hil-residual: tail call to sync() (its NTP path is witnessed by clock: ntp synced)
