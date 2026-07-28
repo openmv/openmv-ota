@@ -63,22 +63,23 @@ def _format(stamp, levelname, name, msg):
 
 class _OtaFormatter(logging.Formatter):  # pragma: no cover  (device record API + clock)
     def format(self, record):
-        return _format(_stamp(time.localtime(), time.ticks_ms()),
+        return _format(_stamp(time.localtime(), time.ticks_ms()),  # hil-residual: the formatter itself -- every marker line on the coverage UART is its output, which is proof it ran; it cannot self-witness (it formats the markers). _stamp/_format are host-tested.
                        record.levelname, record.name, record.message)
 
 
 def _configure():  # pragma: no cover  (device: handler/UART; runs only when enabled)
     if UART is None:
-        import sys
-        stream = sys.stdout
+        import sys  # hil-residual: USB/REPL branch (no UART); the bench always names a UART via /flash/.hilcov_uart so the else branch runs
+        stream = sys.stdout  # hil-residual: bare assign (USB/REPL stream; not the bench path)
     else:
-        import machine
-        stream = machine.UART(UART, BAUD)   # created once, kept by the handler
+        import machine  # hil-residual: witnessed transitively -- "log: configured" reaches the harness's side-channel UART ONLY if the machine.UART stream below was created (the sys.stdout branch would go to USB, not this UART)
+        stream = machine.UART(UART, BAUD)   # hil-residual: the coverage UART stream; its existence is proven by every marker line the harness reads off it
     handler = logging.StreamHandler(stream)
     handler.terminator = "\r\n"
     handler.setFormatter(_OtaFormatter())
     log.addHandler(handler)
     log.setLevel(LEVEL)
+    log.debug("log: configured")             # first line once the handler is live -- witnesses _configure
 
 
 def _bench_uart(path="/flash/.hilcov_uart"):

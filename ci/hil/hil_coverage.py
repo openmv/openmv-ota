@@ -36,12 +36,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 DEVICE = os.path.join(REPO, "src/openmv_ota/build/device")
 
-# The device modules whose log lines are the markers. openmv_log.py is deliberately excluded:
-# it only holds DOCSTRING examples of the log format, not the emitting call sites.
+# The device modules whose log lines are the markers. openmv_rtc.py emits the clock-path
+# markers and openmv_log.py emits the one bootstrap marker ("log: configured", the first line
+# once its own handler is live -- so it can witness _configure()); both carry real emitting call
+# sites, not just docstring examples, so both are scanned.
 DEVICE_FILES = [
     os.path.join(DEVICE, "boot.py"),
     os.path.join(DEVICE, "openmv_ota/__init__.py"),
     os.path.join(DEVICE, "openmv_ota/data/installer.py"),
+    os.path.join(DEVICE, "openmv_rtc.py"),
+    os.path.join(DEVICE, "openmv_log.py"),
 ]
 _LOGCALL = re.compile(r"\.(?:info|debug|warning|error)\(")
 

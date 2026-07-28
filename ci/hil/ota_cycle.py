@@ -181,8 +181,11 @@ COVERAGE = {
     "install: complete block-device": "write.complete",       # write committed (flush / no-op)
     "install: complete XIP": "write.complete",
     "install: committed FRONT": "install.committed",          # commit point passed, arming next
+    "install: retry cleanup": "install.retry_cleanup",        # socket closed before a download retry
+    "install: rebooting": "install.reboot",                   # _reset() drained the log, about to reset
     "verify: write block-device": "verify.write",             # confirm/rollback write+readback
     "verify: write XIP": "verify.write",
+    "write: rom ioctl": "verify.write",                       # the XIP rom_ioctl write primitive ran (stm32/alif)
     # Coprocessor resource sync() -- applies the embedded coproc romfs to the helper-core
     # partition (AE3 index 1) on boot, idempotent. Only fires on a coprocessor board.
     "partition: compare": "partition.compare",                # idempotence stream-compare ran
@@ -200,11 +203,26 @@ COVERAGE = {
     "boot: no prior mount": "boot.no_prior_mount",            # mp_init didn't auto-mount /rom (blank romfs)
     "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
     "checkin: body read": "run.body_read",               # response body read to EOF (capped)
+    "checkin: body chunk": "run.body_chunk",             # a bounded body chunk accumulated (read loop body)
     "checkin: parsed": "run.checkin_parsed",             # headers skipped + JSON parsed
+    "checkin: closed": "run.checkin_closed",             # the check-in connection was closed (finally)
     "asset: read": "run.asset_read",                     # a shipped asset (installer.py/ca.pem) read
+    "asset: closed": "run.asset_closed",                 # the shipped-asset file was closed (finally)
+    "ca: from path": "run.ca_path",                      # TLS anchors resolved from a path (run())
+    "ca: bytes": "run.ca_bytes",                         # TLS anchors passed as bytes (run() -> install())
+    "read: slot alias": "run.read_at",                   # a slot region aliased for reading (XIP)
     "status: read": "run.status",                        # boot-result + trial markers read
+    "status: boot result": "run.boot_result",            # boot.py's mirrored result tuple built
     "identity: ready": "run.identity",                   # device_id + system.json read
+    "identity: device id": "run.identity_uid",           # machine.unique_id() read into identity
+    "data: path": "run.data_path",                       # sync() located a bundled data/ resource
+    "wdt: feed": "run.wdt_feed",                          # watchdog fed each poll (no-op when off)
+    "run: poll wait": "run.poll_tail",                   # run() loop tail reached (post-checkin)
     "clock: resolved": "run.clock",                      # NTP/RTC resolve each poll
+    "clock: syncing": "run.clock",                       # openmv_rtc: untrusted clock -> one NTP sync
+    "clock: ntp synced": "run.clock",                    # openmv_rtc: NTP query set the RTC
+    "clock: rtc trusted": "run.clock",                   # openmv_rtc: fast path, clock already good
+    "log: configured": "log.configured",                 # openmv_log: handler/UART attached (bootstrap witness)
     "confirm: floor advanced": "confirm.floor",          # anti-rollback floor raised on confirm
     "checkin: response received": "run.checkin",
     "checkin: update offered": "run.offer",
@@ -229,15 +247,19 @@ SCENARIOS = {
     "delta": {
         "desc": "happy path: delta install -> trial -> confirm -> promote",
         "publish": "delta", "app": "confirm", "end": "promoted",
-        "expect": ["boot.mount.front", "boot.ready", "run.clock", "run.checkin_http",
-                   "run.body_read", "run.checkin_parsed", "run.checkin", "run.status",
-                   "run.identity", "run.offer", "run.asset_read", "install.fetch_manifest",
+        "expect": ["boot.mount.front", "boot.ready", "log.configured", "run.clock", "run.checkin_http",
+                   "run.body_read", "run.body_chunk", "run.checkin_parsed", "run.checkin_closed",
+                   "run.checkin", "run.status", "run.boot_result", "run.identity",
+                   "run.identity_uid", "run.offer", "run.asset_read", "run.asset_closed",
+                   "run.ca_path", "run.ca_bytes", "run.read_at", "run.data_path",
+                   "run.wdt_feed", "run.poll_tail", "install.fetch_manifest",
                    "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
                    "install.start", "{cov_write}", "install.download", "install.delta",
                    "install.writing", "write.ready", "write.erased", "write.wrote",
                    "write.readback", "write.backread", "write.complete", "install.committed",
-                   "install.armed", "boot.marked", "boot.marked_verify", "verify.write",
-                   "confirm.floor", "confirm.promoted", "boot.mount_call", "boot.read"],
+                   "install.armed", "install.reboot", "boot.marked", "boot.marked_verify",
+                   "verify.write", "confirm.floor", "confirm.promoted", "boot.mount_call",
+                   "boot.read"],
         "forbid": ["install.full", "install.fallback", "install.reject", "boot.mount.back"],
     },
     "full": {
@@ -250,8 +272,8 @@ SCENARIOS = {
     "corrupt": {
         "desc": "tampered image fails integrity -> retries exhausted -> golden BACK",
         "publish": "corrupt", "app": "confirm", "end": "golden",
-        "expect": ["install.start", "install.retry", "install.fallback",
-                   "boot.front_reject", "boot.mount.back"],
+        "expect": ["install.start", "install.retry", "install.retry_cleanup", "install.fallback",
+                   "install.reboot", "boot.front_reject", "boot.mount.back"],
         "forbid": ["install.armed", "confirm.promoted"],
     },
     "rollback": {

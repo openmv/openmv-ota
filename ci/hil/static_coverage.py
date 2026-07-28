@@ -40,6 +40,9 @@ DEFAULT_FILES = [
     os.path.join(DEVICE, "boot.py"),
     os.path.join(DEVICE, "openmv_ota/__init__.py"),
     os.path.join(DEVICE, "openmv_ota/data/installer.py"),
+    os.path.join(DEVICE, "openmv_rtc.py"),
+    os.path.join(DEVICE, "openmv_log.py"),
+    os.path.join(DEVICE, "openmv_wdt.py"),
 ]
 _LOGCALL = ("info(", "debug(", "warning(", "error(")
 

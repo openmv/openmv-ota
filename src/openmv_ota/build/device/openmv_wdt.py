@@ -50,10 +50,10 @@ _timer = None
 def feed():
     """Feed the watchdog (call from your main loop). No-op when the watchdog is off."""
     if _wdt is not None:
-        _wdt.feed()  # pragma: no cover (device)
+        _wdt.feed()  # pragma: no cover (device)  # hil-residual: watchdog-enabled feed; the bench runs ENABLED=False (opt-in), so _wdt stays None and this is skipped -- covered by a future watchdog-enabled HIL scenario
 
 
-def _tick(t):  # pragma: no cover (device)
+def _tick(t):  # pragma: no cover (device)  # hil-residual-fn: watchdog-enabled ISR callback; only wired when a watchdog is started (ENABLED=True, opt-in) -- covered by a future watchdog-enabled HIL scenario
     _feed()    # pre-bound method -- no attribute lookup, safe in a hard-IRQ callback
 
 
@@ -64,17 +64,17 @@ class _Relax:
 
     def __enter__(self):
         global _timer
-        if _wdt is not None and _timer is None:  # pragma: no cover (device)
-            import machine
-            _timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_tick)
+        if _wdt is not None and _timer is None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (ENABLED=False on the bench -> body skipped)
+            import machine  # hil-residual: watchdog-enabled timer setup (opt-in; future watchdog HIL scenario)
+            _timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_tick)  # hil-residual: watchdog-enabled ISR-feed timer (opt-in)
         return self
 
     def __exit__(self, *args):
         global _timer
-        if _timer is not None:  # pragma: no cover (device)
-            _timer.deinit()
-            _timer = None
-            _wdt.feed()
+        if _timer is not None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (no timer started on the bench -> body skipped)
+            _timer.deinit()  # hil-residual: watchdog-enabled timer teardown (opt-in)
+            _timer = None  # hil-residual: watchdog-enabled timer clear (opt-in)
+            _wdt.feed()  # hil-residual: watchdog-enabled final feed (opt-in)
         return False
 
 
@@ -84,7 +84,7 @@ def relax():
     return _Relax()
 
 
-def _start():  # pragma: no cover (device)
+def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardware watchdog; runs only under ENABLED=True (opt-in manual edit + firmware rebuild) -- covered by a future watchdog-enabled HIL scenario
     global _wdt, _feed
     if _wdt is None:
         import machine

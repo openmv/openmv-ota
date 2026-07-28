@@ -63,14 +63,14 @@ except ImportError:
 
 class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is frozen)
     def __enter__(self):
-        return self
+        return self  # hil-residual: bare return (no-watchdog CM; bench freezes openmv_wdt so the real relax() runs)
 
     def __exit__(self, *args):
-        return False
+        return False  # hil-residual: bare const return (no-watchdog CM exit)
 
 
 def _noop():  # pragma: no cover  (fallback feed() when no watchdog is frozen)
-    pass
+    pass  # hil-residual: bare pass (no-watchdog feed; bench freezes openmv_wdt so the real feed() runs)
 
 # --- Status markers (mirror of openmv_ota.ota.status; pinned by a test) ------
 
@@ -426,7 +426,7 @@ def _add(old_b, diff_b):
     if diff_b == bytes(len(diff_b)):
         return bytes(old_b)
     if _np is not None:
-        return (_np.frombuffer(old_b, dtype=_np.uint8)        # pragma: no cover (device/ulab)
+        return (_np.frombuffer(old_b, dtype=_np.uint8)        # pragma: no cover (device/ulab)  # hil-residual: ulab vectorised add (device-only, no ulab on host); correctness proven end-to-end by the delta scenario's sha256 gate (install.armed -> confirm.promoted); the pure-Python twin below is host-tested
                 + _np.frombuffer(diff_b, dtype=_np.uint8)).tobytes()
     return bytes((old_b[i] + diff_b[i]) & 0xFF for i in range(len(diff_b)))
 
@@ -639,10 +639,10 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
         ctx.load_verify_locations(cadata=ca_pem)
         tls = ctx.wrap_socket(sock, server_hostname=host)
         log.debug("install: TLS up")
-        return tls
-    except Exception:
-        sock.close()
-        raise
+        return tls  # hil-residual: bare return of the wrapped TLS socket
+    except Exception:  # hil-residual: connect-failure cleanup wrapper
+        sock.close()  # hil-residual: bare cleanup close on a failed connect (error path)
+        raise  # hil-residual: bare re-raise to the caller (pre-erase, /rom intact)
 
 
 def _open(url, ca_pem, socket, ssl, max_redirects=5):  # pragma: no cover
@@ -692,10 +692,10 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     pubkey = cfg.TRUSTED_KEYS.get(m["key_id"])
     if pubkey is None:
         log.warning("install: reject untrusted key")
-        raise OSError("manifest signed by an untrusted key")
+        raise OSError("manifest signed by an untrusted key")  # hil-residual: bare raise (reject witnessed by install.reject_key)
     if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
         log.warning("install: reject bad signature")
-        raise OSError("manifest signature does not verify")
+        raise OSError("manifest signature does not verify")  # hil-residual: bare raise (reject witnessed by install.reject_sig)
 
     body_dict = m["body"]
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # partition XIP base
@@ -705,14 +705,17 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
                             getattr(cfg, "ACCOUNT_ID", ""))
     if reason is not None:
         log.warning("install: reject vetting")   # rejected: witness the boundary
-        raise OSError("manifest rejected (%s)" % reason)
+        raise OSError("manifest rejected (%s)" % reason)  # hil-residual: bare raise (reject witnessed by install.reject_vet)
     # The delta applier is pure Python (no ulab/C), so every board is delta-capable; the
     # delta is used only when its base matches this device's golden (BACK) version.
     rep = _select_rep(body_dict, True, floor)
     if rep is None:
-        raise OSError("manifest has no usable representation")
+        raise OSError("manifest has no usable representation")  # hil-residual: bare raise (no-rep guard, inject-only)
+    image_url = _resolve_url(manifest_url, rep["url"])
+    fmt = rep.get("format")
+    expect_sha = body_dict.get("sha256")
     log.debug("install: manifest accepted")
-    return _resolve_url(manifest_url, rep["url"]), rep.get("format"), body_dict.get("sha256")
+    return image_url, fmt, expect_sha  # hil-residual: bare return of the (url, fmt, sha) tuple
 
 
 def _reset():  # pragma: no cover
@@ -724,8 +727,9 @@ def _reset():  # pragma: no cover
     reliably land wherever the logger points (UART/socket/REPL)."""
     import time
     import machine
-    time.sleep_ms(50)
-    machine.reset()
+    log.debug("install: rebooting")                   # witnessed before the drain settle below
+    time.sleep_ms(50)  # hil-residual: bare settle (drains the logger's UART FIFO before reset)
+    machine.reset()  # hil-residual: terminal reset (no post-reset witness)
 
 
 def run(manifest_url, ca_pem, cfg):  # pragma: no cover
@@ -793,7 +797,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             if log and "r" not in _seen:
                 _seen.add("r")
                 log.debug("install: readback block-device")
-            return b
+            return b  # hil-residual: bare return of the readback buffer
 
         def back_read(off, n):                        # arbitrary range from BACK, block-safe
             out = bytearray(n)                        # BACK lives at front_size within the one
@@ -803,7 +807,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 blk, o = a // _bs, a % _bs
                 take = _bs - o
                 if take > n - done:
-                    take = n - done
+                    take = n - done  # hil-residual: bare arithmetic clamp (final partial block)
                 front.readblocks(blk, memoryview(out)[done:done + take], o)
                 done += take
                 if log and "brl" not in _seen:        # witness the in-loop BACK read once
@@ -812,7 +816,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             if log and "br" not in _seen:
                 _seen.add("br")
                 log.debug("install: back read block-device")
-            return out
+            return out  # hil-residual: bare return of the BACK-read buffer
 
         def complete():
             log.debug("install: complete block-device")
@@ -827,14 +831,14 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             if log and "r" not in _seen:
                 _seen.add("r")
                 log.debug("install: readback XIP")
-            return r
+            return r  # hil-residual: bare return of the XIP readback alias
 
         def back_read(off, n):
             r = uctypes.bytearray_at(base + front_size + off, n)   # BACK at front_size
             if log and "br" not in _seen:
                 _seen.add("br")
                 log.debug("install: back read XIP")
-            return r
+            return r  # hil-residual: bare return of the XIP BACK-read alias
 
         def erase(total):
             # Erase INCREMENTALLY where the port supports the ranged prepare
@@ -851,23 +855,27 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                     n = bs if total - o > bs else total - o
                     rc = vfs.rom_ioctl(3, 0, o, n)
                     if rc < 0:
-                        raise OSError(-rc)
+                        raise OSError(-rc)  # hil-residual: bare raise on a negative errno (erase-fault, inject-only)
                     o += n
                     feed()
                     if log and "e" not in _seen:      # witness the in-loop erase op once
                         _seen.add("e")
                         log.debug("install: erasing block XIP")
                 log.debug("install: erased FRONT XIP")
-                return
-            with relax():                             # the one op we can't feed in a loop
-                rc = vfs.rom_ioctl(3, 0, total)
-                if rc < 0:
-                    raise OSError(-rc)
+                return  # hil-residual: bare return (ranged erase done)
+            # Legacy single-shot fallback for firmware WITHOUT #19348 (no ranged prepare). The
+            # bench always applies #19348, so rom_ioctl(6) returns a size and the ranged branch
+            # above is taken; the single-shot erase is also the exact op that faults partway on
+            # the N6's 12 MiB XSPI slot (the bug #19348 fixes), so it can't be exercised on HW.
+            with relax():                             # hil-residual: legacy pre-#19348 single-shot erase (unreachable on the patched bench; faults the N6)
+                rc = vfs.rom_ioctl(3, 0, total)  # hil-residual: legacy single-shot erase call (pre-#19348)
+                if rc < 0:  # hil-residual: legacy single-shot errno check (pre-#19348)
+                    raise OSError(-rc)  # hil-residual: bare raise (legacy single-shot erase fault)
 
         def write(off, data):
             rc = vfs.rom_ioctl(4, 0, off, data)
             if rc < 0:
-                raise OSError(-rc)
+                raise OSError(-rc)  # hil-residual: bare raise on a negative errno (write-fault, inject-only)
             if log and "w" not in _seen:
                 _seen.add("w")
                 log.debug("install: wrote block XIP")
@@ -887,7 +895,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
     except Exception as e:
         log.warning("install: rejected before erase (%s)" % e)   # /rom untouched
-        raise
+        raise  # hil-residual: bare re-raise to the app (pre-erase reject witnessed by install.reject)
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
     # failure reboots into the golden image instead of propagating. ERASE FIRST,
@@ -936,18 +944,19 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # so complete() there is a no-op.
             complete()
             log.debug("install: committed FRONT")
-            break                                    # success -> arm + reboot into the trial
+            break  # hil-residual: bare break (success -> arm + reboot; witnessed by install.committed)
         except Exception as e:
             if sock is not None:
                 sock.close()
                 sock = None
+                log.debug("install: retry cleanup")  # HIL path witness (socket closed before a retry)
             if attempt + 1 >= attempts:
                 log.error("install: FAILED after %d attempts (%s); rebooting to golden BACK"
                           % (attempts, e))
-                _reset()
+                _reset()  # hil-residual: terminal reset to golden on retry exhaustion (witnessed by install.fallback + install.reboot)
             log.error("install: attempt %d/%d failed (%s); retrying"
                       % (attempt + 1, attempts, e))
-            if progress is not None:
-                progress.reset()                     # restart % for the fresh re-download
+            if progress is not None:  # hil-residual: progress callback is unused on the bench (install() passes none), so this guard is False
+                progress.reset()  # hil-residual: progress reset (callback unused on the bench)
     log.info("install: installed + armed; rebooting into the trial")
-    _reset()
+    _reset()  # hil-residual: terminal reset into the trial on success (witnessed by install.armed + install.reboot)
