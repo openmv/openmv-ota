@@ -178,6 +178,7 @@ COVERAGE = {
     "install: reject bad signature": "install.reject_sig",   # sig verify failed (the trust boundary)
     "install: reject untrusted key": "install.reject_key",   # key_id not in the trusted allowlist
     "install: reject vetting": "install.reject_vet",         # anti-rollback/board/platform rejected
+    "install: reject sha": "install.reject_sha",             # post-erase integrity gate: image sha256 mismatch
     "install: TLS up": "install.tls",                    # a verified TLS socket to the server
     "install: fetched body": "install.fetched",          # a 2xx download body (manifest/image)
     "install: manifest accepted": "install.manifest_ok",  # sig + board/version/platform vetting passed
@@ -299,6 +300,17 @@ SCENARIOS = {
                    "install.reboot", "boot.front_reject", "boot.mount.back"],
         "forbid": ["install.armed", "confirm.promoted"],
     },
+    "corrupt_sha": {
+        # Distinct from `corrupt`: `corrupt` flips a COMPRESSED byte so the download fails mid-
+        # decompress (a bare deflate error, before the integrity check). `corrupt_sha` flips a
+        # DECOMPRESSED byte + re-gzips, so the image decompresses cleanly and the failure is the
+        # sha256 gate itself (install.reject_sha) -- the actual integrity trust boundary, on HW.
+        "desc": "image decompresses but sha256 mismatches -> integrity gate rejects -> golden BACK",
+        "publish": "corrupt_sha", "app": "confirm", "end": "golden",
+        "expect": ["install.start", "install.reject_sha", "install.retry", "install.fallback",
+                   "boot.front_reject", "boot.mount.back"],
+        "forbid": ["install.armed", "install.committed", "confirm.promoted"],
+    },
     "rollback": {
         "desc": "trial never confirms -> next boot rejects FRONT -> golden BACK",
         "publish": "delta", "app": "no_confirm", "end": "golden",
@@ -411,7 +423,7 @@ def regression_scenarios(board, network):
     so there's no point re-running it on both legs."""
     if network != BOARDS[board]["network"]:
         return ["delta"]
-    scs = ["delta", "full", "rollback", "corrupt", "bad_sig", "bad_key", "bad_version"]
+    scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
     if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
         scs.append("no_slot")
     if board == "OPENMV_AE3":                           # the only board with a coprocessor partition
@@ -846,9 +858,11 @@ def publish_update(board, version, variant="delta"):
     # (it re-flashes to golden 1.0.0 each run, and its rollback floor resets with it).
     build = [ota("openmv-ota"), "build", "ota-romfs", CFG["project"], "-b", board,
              "--allow-dev-key", "--allow-republish"]
-    if variant == "full":
+    if variant in ("full", "corrupt_sha"):
         # Force a full (non-delta) release: point --delta-from at an empty dir so no golden
         # resolves (build_ota_romfs -> "full image only"), and the device installs the full rep.
+        # corrupt_sha needs a full image so the tamper can hit the sha256 gate cleanly (a delta's
+        # decompressed patch has structure a naive flip would break at the parser, not the sha).
         nodelta = tempfile.mkdtemp(prefix="hil-nodelta-")
         build += ["--delta-from", nodelta]
         # A full-only build does NOT produce a .delta.gz, but a prior delta build left one in
@@ -861,6 +875,8 @@ def publish_update(board, version, variant="delta"):
                     "--rollout", "__default__:100"], env=penv, check=True, timeout=180)
     if variant == "corrupt":
         _tamper(board, "image")        # post-erase integrity failure -> retry -> golden BACK
+    elif variant == "corrupt_sha":
+        _tamper(board, "image_body")   # decompresses fine, sha256 mismatches -> retry -> golden BACK
     elif variant == "bad_sig":
         _tamper(board, "manifest")     # pre-erase signature failure -> reject, stays golden
     elif variant == "bad_key":
@@ -908,6 +924,25 @@ def _tamper(board, which):
         with open(target, "r+b") as f:
             f.write(data)
         log("  tampered %s byte@%d of %s (crc re-sealed)" % (which, off, os.path.basename(target)))
+        return
+    if which == "image_body":
+        # Flip a byte in the DECOMPRESSED image, then re-gzip: it decompresses cleanly (unlike
+        # the mid-stream flip below), but its sha256 no longer matches the SIGNED (unchanged)
+        # manifest -> the device's integrity gate (the sha256 trust boundary, install.reject_sha)
+        # rejects it AFTER the FRONT erase -> retries exhaust -> golden BACK. Needs a full image
+        # (see publish_update): a delta's decompressed patch has structure a flip would break at
+        # the patch parser, not the sha. Size is unchanged (a 1-byte flip), so only the sha moves.
+        import gzip
+        fulls = [p for p in imgs if os.path.dirname(p).endswith(rel) and not p.endswith(".delta.gz")]
+        target = fulls[-1] if fulls else newest
+        with open(target, "rb") as f:
+            raw = bytearray(gzip.decompress(f.read()))
+        mid = len(raw) // 2
+        raw[mid] ^= 0xFF
+        with open(target, "wb") as f:
+            f.write(gzip.compress(bytes(raw)))
+        log("  tampered image_body byte@%d of %s (re-gzipped; sha256 now mismatches)"
+            % (mid, os.path.basename(target)))
         return
     # image: mid-stream flip -> the download decompress/sha256 fails AFTER the FRONT erase.
     deltas = [p for p in imgs if os.path.dirname(p).endswith(rel) and p.endswith(".delta.gz")]
