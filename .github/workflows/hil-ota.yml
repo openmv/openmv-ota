@@ -6,11 +6,28 @@ name: HIL OTA cycle
 # board's P4/P5 UART. A second job folds the traces into a device-path coverage report --
 # coverage on the lines the host suite structurally can't reach (they need real flash).
 #
-# Runs NIGHTLY (07:00 UTC, reliable boards) so device-path coverage tracks main hands-free, plus
-# manual `workflow_dispatch` for a chosen board/scenario. Each board cycle is minutes (the AE3's
-# OSPI flash alone is ~10), so it's not a per-PR gate yet -- it will become the required gate for
-# OTA-touching PRs once the path matrix is built out. The coverage fold + Codecov upload run with
-# `if: always()`, so a flaky leg still publishes what the healthy boards proved.
+# REQUIRED GATE for OTA-touching PRs, robust by construction:
+#   * The workflow triggers on EVERY pull request, but the bench jobs only run when the PR
+#     changes device behaviour -- the `changes` job detects that (device runtime + installer +
+#     boot.py, the firmware/romfs build, the project lock, or the HIL harness). A docs/server/
+#     host-test-only PR runs nothing on the bench, so the single physical boards aren't tied up.
+#   * `hil-gate` ALWAYS runs (a hosted-runner shim) and is THE check to mark "required" in branch
+#     protection. It passes a non-device PR instantly and blocks a device PR unless every bench
+#     leg succeeded. This is why the workflow can't just `paths`-filter its trigger: a required
+#     check that never runs (filtered out) leaves a PR stuck on a forever-pending check -- the
+#     classic trap. Running always + gating inside + a shim status is the robust shape.
+#   * Path detection SAFE-DEFAULTS TO RUN: if the diff can't be computed, the gate runs rather
+#     than skips, so a detection glitch can never wave a breaking change through.
+# `workflow_dispatch` is kept for running a chosen board/scenario by hand (debugging one leg, or
+# exercising the AE3, which PR runs leave out while its USB/DFU is hardware-debugged). No nightly:
+# PRs cover main before every merge, so a schedule would only re-prove merged code and needlessly
+# contend the boards. The coverage fold + Codecov upload run with `if: always()`, so a flaky leg
+# still publishes what the healthy boards proved.
+#
+# TO ARM THE GATE: in branch protection for the default branch, add the "HIL gate" status check to
+# "Require status checks to pass before merging". That one check is sufficient (and correct for
+# non-device PRs); do NOT mark the individual `ota-cycle ...` legs required -- they don't run on
+# every PR, so marking them required would re-introduce the forever-pending trap.
 on:
   workflow_dispatch:
     inputs:
@@ -30,13 +47,9 @@ on:
       target:
         description: update version to install over golden 1.0.0
         default: "1.1.0"
-  # Nightly, so device-path coverage tracks main without anyone pushing a button (this activates
-  # once the workflow is on the default branch). The scheduled run does the reliable boards only
-  # (N6 + RT1062); the AE3's DFU/USB is being hardware-debugged, so it's left to manual dispatch
-  # until sorted -- a flaky AE3 leg shouldn't red every nightly. The coverage fold + Codecov
-  # upload run with `if: always()`, so partial results still publish.
-  schedule:
-    - cron: "0 7 * * *"        # 07:00 UTC daily
+  # Every PR: the `changes` job below decides whether the bench work actually runs, so the
+  # required `hil-gate` check exists on every PR (never a forever-pending required check).
+  pull_request:
 
 concurrency:
   group: hil-ota-${{ github.ref }}
@@ -46,11 +59,48 @@ env:
   OPENMV_REF: master        # firmware ref the runner-owned provision builds (as ci.yml)
 
 jobs:
+  # Does this PR touch anything that can change device behaviour? Self-contained (a git diff, no
+  # third-party action) and auditable. SAFE DEFAULT: on any doubt (non-PR event, or a diff that
+  # can't be computed) -> device=true, so the gate RUNS rather than silently skips.
+  changes:
+    name: detect device-path changes
+    runs-on: ubuntu-latest
+    outputs:
+      device: ${{ steps.d.outputs.device }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # need the base commit reachable for the diff
+      - id: d
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -u
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "non-PR event ($EVENT) -> device=true (run)"; echo "device=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if ! changed=$(git diff --name-only "$BASE...$HEAD" 2>/dev/null); then
+            echo "diff ($BASE...$HEAD) failed -> device=true (safe default: run)"; echo "device=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          printf 'changed files:\n%s\n' "$changed"
+          # The paths that change what lands on the device or how the cycle is exercised: the
+          # device runtime + installer + boot.py, the firmware/romfs build, the project lock (the
+          # #19348 firmware features), and the HIL harness itself.
+          if printf '%s\n' "$changed" | grep -qE '^(src/openmv_ota/build/|src/openmv_ota/project/|ci/hil/|\.github/workflows/hil-ota\.yml$)'; then
+            echo "device paths changed -> device=true"; echo "device=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no device paths changed -> device=false (skip bench, gate passes)"; echo "device=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Resolve which board/network legs to run from the `board` input. A job-level `if` can't see
   # `matrix` (that context isn't available there -- it was an invalid-workflow error), and a
   # static matrix can't be filtered inline, so build the matrix here and feed it via fromJSON.
   plan:
     name: plan legs
+    needs: changes
+    if: needs.changes.outputs.device == 'true'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.f.outputs.matrix }}
@@ -73,8 +123,9 @@ jobs:
               {"board": "OPENMV_RT1060", "network": "wifi", "label": "board-openmv-rt1062"},
           ]
           board = os.environ.get("BOARD") or "all"
-          if os.environ.get("EVENT") == "schedule":
-              # Nightly = the reliable boards only; AE3 is HW-debugged, manual-dispatch until fixed.
+          if os.environ.get("EVENT") == "pull_request":
+              # PR gate = the reliable boards only (N6 + RT1062); the AE3 is HW-debugged, left to
+              # manual dispatch until sorted -- a flaky AE3 leg shouldn't red every device PR.
               sel = [l for l in legs if l["board"] != "OPENMV_AE3"]
           elif board == "all":
               sel = legs
@@ -85,7 +136,8 @@ jobs:
 
   ota-cycle:
     name: ota-cycle ${{ matrix.board }} ${{ matrix.network }}
-    needs: plan
+    needs: [changes, plan]
+    if: needs.changes.outputs.device == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -144,8 +196,8 @@ jobs:
   # hosted runner (pure JSON+source processing, no hardware) after the bench jobs finish.
   coverage:
     name: device-path coverage
-    needs: ota-cycle
-    if: always()
+    needs: [changes, ota-cycle]
+    if: always() && needs.changes.outputs.device == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -180,3 +232,30 @@ jobs:
           path: |
             hil-coverage.md
             hil-coverage.info
+
+  # THE REQUIRED CHECK. Always runs (hosted, seconds), so it's a status that exists on every PR --
+  # mark THIS one required in branch protection. It passes a non-device PR (nothing to test) and,
+  # for a device PR, passes only if every bench leg succeeded. A skipped/failed/cancelled ota-cycle
+  # on a device PR fails the gate, so a broken OTA change (or a leg that never ran) can't merge.
+  hil-gate:
+    name: HIL gate
+    needs: [changes, ota-cycle]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate the HIL result
+        env:
+          DEVICE: ${{ needs.changes.outputs.device }}
+          RESULT: ${{ needs.ota-cycle.result }}
+        run: |
+          if [ "$DEVICE" != "true" ]; then
+            echo "No OTA-touching changes in this PR -- HIL not required. PASS."
+            exit 0
+          fi
+          echo "OTA-touching PR; ota-cycle result = '$RESULT'."
+          if [ "$RESULT" = "success" ]; then
+            echo "All HIL bench legs passed. PASS."
+            exit 0
+          fi
+          echo "HIL did not pass (ota-cycle='$RESULT'). Blocking the merge."
+          exit 1
