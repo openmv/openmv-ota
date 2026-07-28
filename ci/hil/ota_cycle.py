@@ -356,9 +356,25 @@ SCENARIOS = {
 
 
 def scenario_markers(board, key):
-    """(expect, forbid) marker sets for a scenario, with {cov_write} resolved per board."""
+    """(expect, forbid) marker sets for a scenario, with {cov_write} resolved per board.
+
+    boot.read (the XIP-alias slot-read closure marker) is observed ONLY on XIP/ioctl ports
+    (stm32/alif): it fires reliably on OPENMV_N6 but never on the block-device OPENMV_RT1060
+    across repeated runs, so it's dropped from block-device expects. Keeping it there would leave
+    the promoted-early-exit's ``have`` gate permanently unsatisfied on a block-device board, so the
+    harness over-runs the device into a re-offer + bad re-install + fallback -- a false failure.
+    The read() lines boot.read witnesses are still covered on the XIP boards (the audit is a union)."""
+    xip = BOARDS[board]["cov_write"] == "install.xip"
     def resolve(names):
-        return {BOARDS[board]["cov_write"] if n == "{cov_write}" else n for n in names}
+        out = set()
+        for n in names:
+            if n == "{cov_write}":
+                out.add(BOARDS[board]["cov_write"])
+            elif n == "boot.read" and not xip:
+                continue
+            else:
+                out.add(n)
+        return out
     s = SCENARIOS[key]
     return resolve(s["expect"]), resolve(s["forbid"])
 
