@@ -249,6 +249,73 @@ def _ensure_ota_mbedtls(lock: lock_mod.Lock) -> None:
         "image that fills the partition)." % ", ".join(bad), exit_code=1)
 
 
+# micropython PR #19348 (dpgeorge): ranged (4-arg) WRITE_PREPARE + GET_MIN_PREPARE (rom_ioctl 6).
+# The device OTA installer needs it on XIP-flash ports (stm32/alif): without it the FRONT slot is
+# erased in ONE rom_ioctl(3) call -- seconds of dead time in a single C call that stalls USB and
+# faults partway through on a large slot (the N6's 12 MiB XSPI) -- so the installer must fall back
+# to a legacy whole-slot erase and the incremental path can't run. Not yet in openmv/micropython,
+# so an OTA project on a v5.0 firmware carries it. TEMPORARY: pinned SHAs, retired once it merges
+# upstream (the sentinel check then no-ops this); a rebase changes them -> update _RANGED_ERASE_COMMITS.
+_RANGED_ERASE_REMOTE = "https://github.com/micropython/micropython"
+_RANGED_ERASE_PR = "19348"
+_RANGED_ERASE_COMMITS = (
+    "6a4062f9974640ee60fbd0d52224b973712b6f80",  # extmod/vfs: GET_MIN_PREPARE constant
+    "61fadc0ec8cc9ff58ddab27ad62c59aa9344307b",  # alif: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+    "893850436a799cc0c31126614e704abc9eb2cae5",  # samd: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+    "9f9b28ecb3360851e50606db822523ccb28f0a56",  # stm32: flash_get_max_sector_size helper
+    "14074d10871cef76b14c5a3c8bf12d8afca9430e",  # stm32: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+    "720f797d08912d3f9c8994b31663cb16e47d5efd",  # mpremote: incremental romfs deploy
+)
+_RANGED_ERASE_SENTINEL = "MP_VFS_ROM_IOCTL_GET_MIN_PREPARE"
+
+
+def _ensure_ota_firmware_features(repo: Path, *, apply: bool) -> None:
+    """Ensure the firmware's micropython has the ranged romfs erase the OTA installer needs
+    (micropython#19348), for a v5.0 firmware that predates it. Called BEFORE the lock is
+    snapshotted, so the lock captures the patched state (a post-lock change trips the drift guard).
+
+    With ``apply`` (the default -- ``project new`` without ``--no-firmware-patches``): cherry-pick
+    the PR commits into ``lib/micropython`` and commit the submodule bump, so the checkout stays
+    clean (the lock/verify guard refuses a dirty tree). Without ``apply``: raise instead, so a user
+    who opts out is told their firmware isn't OTA-ready rather than silently shipping the faulting
+    legacy erase. A no-op for non-5.0 firmware, and once the change is present (carried here earlier,
+    or merged into openmv/micropython) -- so it retires itself."""
+    try:
+        ver = fw_res.resolve_firmware_version(repo)
+    except ProjectError:
+        return                                       # no version header -> not a tree we manage
+    if (ver.major, ver.minor) != (5, 0):
+        return
+    mpy = repo / mp_res.MICROPYTHON_SUBPATH
+    try:
+        if _RANGED_ERASE_SENTINEL in (mpy / "extmod" / "vfs.h").read_text(encoding="utf-8"):
+            return                                   # already carried or merged upstream
+    except OSError:
+        return                                       # not a micropython tree we recognise
+    if not apply:
+        raise ProjectError(
+            "this firmware lacks the ranged romfs erase the OTA installer needs "
+            "(micropython#%s) -- its whole-slot erase stalls USB and faults on a large XIP slot. "
+            "Drop --no-firmware-patches to have `project new` carry it, or peg to a firmware that "
+            "already includes it." % _RANGED_ERASE_PR, exit_code=1)
+    print("note: carrying micropython#%s (ranged romfs erase) in lib/micropython -- the OTA "
+          "installer needs it; committing the bump so the checkout stays clean." % _RANGED_ERASE_PR)
+    ident = ("-c", "user.name=openmv-ota", "-c", "user.email=build@openmv.io")
+    if gitrepo.run_git(mpy, "cat-file", "-e", _RANGED_ERASE_COMMITS[-1] + "^{commit}",
+                       check=False) is None:
+        gitrepo.run_git(mpy, "fetch", "--quiet", _RANGED_ERASE_REMOTE,
+                        "pull/%s/head" % _RANGED_ERASE_PR)
+    try:
+        gitrepo.run_git(mpy, *ident, "cherry-pick", *_RANGED_ERASE_COMMITS)
+    except ProjectError as e:
+        gitrepo.run_git(mpy, "cherry-pick", "--abort", check=False)   # leave the tree unwound
+        raise ProjectError(
+            "could not carry micropython#%s (%s). If the PR was rebased, update "
+            "_RANGED_ERASE_COMMITS in project.py." % (_RANGED_ERASE_PR, e), exit_code=1) from None
+    gitrepo.run_git(repo, *ident, "commit", "--quiet", "lib/micropython",
+                    "-m", "carry micropython#%s (ranged romfs erase, v5.0 OTA)" % _RANGED_ERASE_PR)
+
+
 def _digest(config: OtaConfig) -> str:
     """Digest the *firmware-relevant* config — the fields that, if changed, would
     invalidate the resolved lock. Excludes release/identity state (``version``,
@@ -285,6 +352,7 @@ def create_project(
     app_version: str = "1.0.0",
     key_passphrase: str | None = None,
     dev: bool = False,
+    firmware_patches: bool = True,
 ) -> tuple[lock_mod.Lock, list[str]]:
     repo = firmware.expanduser().resolve()
     if not gitrepo.is_git_repo(repo):
@@ -299,6 +367,12 @@ def create_project(
     name = product or root.resolve().name
 
     ensure_sdk(repo, sdk_home_override, install_sdk)
+
+    # An OTA project's firmware must carry the ranged romfs erase the installer needs. Do this
+    # BEFORE resolve_snapshot below so the lock captures the patched (and committed-clean) tree;
+    # --no-firmware-patches (firmware_patches=False) turns auto-apply into a hard capability check.
+    if ota:
+        _ensure_ota_firmware_features(repo, apply=firmware_patches)
 
     warnings: list[str] = []
     provisioned = None

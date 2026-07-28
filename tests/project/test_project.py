@@ -670,3 +670,124 @@ def test_non_ota_project_scaffolds_the_bare_main(tmp_path, make_firmware, make_s
     main = (proj.ProjectPaths(root).app_dir / "main.py").read_text()
     assert "openmv_ota" not in main               # no OTA lib in a non-OTA project
     assert "time.sleep_ms" in main
+
+
+# --- OTA-required firmware features: micropython #19348 (ranged romfs erase) -----------
+
+def _fw_repo(tmp_path, *, name="fw", version="5.0.0", vfs=None):
+    """A minimal firmware tree: a version header, and (when ``vfs`` is given)
+    lib/micropython/extmod/vfs.h with that content."""
+    repo = tmp_path / name
+    (repo / "protocol").mkdir(parents=True)
+    maj, mi, pa = version.split(".")
+    (repo / "protocol" / "omv_protocol.h").write_text(
+        "#define OMV_FIRMWARE_VERSION_MAJOR (%s)\n"
+        "#define OMV_FIRMWARE_VERSION_MINOR (%s)\n"
+        "#define OMV_FIRMWARE_VERSION_PATCH (%s)\n" % (maj, mi, pa))
+    if vfs is not None:
+        v = repo / "lib" / "micropython" / "extmod" / "vfs.h"
+        v.parent.mkdir(parents=True)
+        v.write_text(vfs)
+    return repo
+
+
+_NO_SENTINEL = "#define MP_VFS_ROM_IOCTL_WRITE_COMPLETE (5)\n"
+
+
+def _fake_run_git(*, present=True, fail=None):
+    """Stand in for gitrepo.run_git. ``present`` = cat-file result (objects local?);
+    ``fail`` names a subcommand that raises ProjectError when run with check=True."""
+    calls = []
+
+    def run(repo, *args, check=True):
+        calls.append(list(args))
+        sub = next((a for a in args if a in ("cat-file", "fetch", "cherry-pick", "commit")), None)
+        if sub == "cat-file":
+            return "" if present else None           # run_git returns None on non-zero + check=False
+        if fail == sub:
+            if check:
+                raise ProjectError("git %s failed: boom" % sub)
+            return None
+        return ""
+
+    run.calls = calls
+    return run
+
+
+def _subs(calls):
+    return [next((a for a in c if a in ("cat-file", "fetch", "cherry-pick", "commit")), None)
+            for c in calls]
+
+
+def test_ota_fw_features_skips_non_v50(tmp_path, monkeypatch):
+    run = _fake_run_git()
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    proj._ensure_ota_firmware_features(_fw_repo(tmp_path, version="6.0.0", vfs=""), apply=True)
+    assert run.calls == []                            # different firmware line -> untouched
+
+
+def test_ota_fw_features_skips_without_version_header(tmp_path, monkeypatch):
+    run = _fake_run_git()
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    (tmp_path / "fw").mkdir()
+    proj._ensure_ota_firmware_features(tmp_path / "fw", apply=True)   # ProjectError -> skip
+    assert run.calls == []
+
+
+def test_ota_fw_features_skips_when_sentinel_present(tmp_path, monkeypatch):
+    run = _fake_run_git()
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    proj._ensure_ota_firmware_features(
+        _fw_repo(tmp_path, vfs="#define MP_VFS_ROM_IOCTL_GET_MIN_PREPARE (6)\n"), apply=True)
+    assert run.calls == []                            # already carried/merged
+
+
+def test_ota_fw_features_skips_without_vfs(tmp_path, monkeypatch):
+    run = _fake_run_git()
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    proj._ensure_ota_firmware_features(_fw_repo(tmp_path), apply=True)   # OSError -> skip
+    assert run.calls == []
+
+
+def test_ota_fw_features_refuses_when_apply_false(tmp_path, monkeypatch):
+    run = _fake_run_git()
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    with pytest.raises(ProjectError, match="no-firmware-patches"):
+        proj._ensure_ota_firmware_features(_fw_repo(tmp_path, vfs=_NO_SENTINEL), apply=False)
+    assert run.calls == []                            # a capability check -- mutates nothing
+
+
+def test_ota_fw_features_cherry_picks_when_absent(tmp_path, monkeypatch, capsys):
+    run = _fake_run_git(present=False)
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    proj._ensure_ota_firmware_features(_fw_repo(tmp_path, vfs=_NO_SENTINEL), apply=True)
+    assert _subs(run.calls) == ["cat-file", "fetch", "cherry-pick", "commit"]
+    pick = next(c for c in run.calls if "cherry-pick" in c)
+    for sha in proj._RANGED_ERASE_COMMITS:
+        assert sha in pick
+    assert "user.email=build@openmv.io" in pick
+    assert "carrying micropython#19348" in capsys.readouterr().out
+
+
+def test_ota_fw_features_skips_fetch_when_objects_present(tmp_path, monkeypatch):
+    run = _fake_run_git(present=True)
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    proj._ensure_ota_firmware_features(_fw_repo(tmp_path, vfs=_NO_SENTINEL), apply=True)
+    assert _subs(run.calls) == ["cat-file", "cherry-pick", "commit"]   # no fetch
+
+
+def test_ota_fw_features_raises_and_aborts_on_conflict(tmp_path, monkeypatch):
+    run = _fake_run_git(present=True, fail="cherry-pick")
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    with pytest.raises(ProjectError, match="rebased"):
+        proj._ensure_ota_firmware_features(_fw_repo(tmp_path, vfs=_NO_SENTINEL), apply=True)
+    assert any("--abort" in c for c in run.calls)     # unwound the partial pick
+
+
+def test_create_ota_refuses_firmware_missing_ranged_erase(tmp_path, make_firmware, make_sdk):
+    # --no-firmware-patches (firmware_patches=False) turns the auto-apply into a hard check:
+    # an OTA project on a firmware lacking the ranged erase is refused, not silently built.
+    repo = make_firmware()
+    (repo / "lib" / "micropython" / "extmod" / "vfs.h").write_text(_NO_SENTINEL)
+    with pytest.raises(ProjectError, match="ranged romfs erase"):
+        _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True, firmware_patches=False)

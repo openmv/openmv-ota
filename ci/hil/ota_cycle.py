@@ -73,7 +73,6 @@ BOARDS = {
         "jlink_device": "STM32N657L0",
         "fw_addr": "0x70080000",
         "romfs_addr": "0x70800000",
-        "fw_bin": "fw/build/OPENMV_N6/bin/firmware.bin",
     },
     "OPENMV_AE3": {
         "cov_uart": 1,                       # UART(1) on P4/P5
@@ -81,6 +80,8 @@ BOARDS = {
         "network": "wifi",
         "flash": "dfu_alif",
         "romfs_alt": "6",                    # external OSPI romfs partition
+        "jlink_device": "AE302F80F55D5_HP",  # debug-only device name, used ONLY to SWD-reset
+                                             # the board out of a stuck DFU state (never to flash)
     },
     "OPENMV_RT1060": {
         "cov_uart": 1,                       # UART(1) on P4/P5
@@ -194,6 +195,8 @@ COVERAGE = {
     "boot: marked slot block-device": "boot.marked",          # trial slot marked TRIED (pre-run)
     "boot: marked slot XIP": "boot.marked",
     "boot: slot marker verified": "boot.marked_verify",       # marker read back + verified
+    "boot: slot mounting": "boot.mount_call",                 # the mount closure ran (vfs.mount)
+    "boot: no prior mount": "boot.no_prior_mount",            # mp_init didn't auto-mount /rom (blank romfs)
     "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
     "checkin: body read": "run.body_read",               # response body read to EOF (capped)
     "checkin: parsed": "run.checkin_parsed",             # headers skipped + JSON parsed
@@ -233,7 +236,7 @@ SCENARIOS = {
                    "install.writing", "write.ready", "write.erased", "write.wrote",
                    "write.readback", "write.backread", "write.complete", "install.committed",
                    "install.armed", "boot.marked", "boot.marked_verify", "verify.write",
-                   "confirm.floor", "confirm.promoted"],
+                   "confirm.floor", "confirm.promoted", "boot.mount_call"],
         "forbid": ["install.full", "install.fallback", "install.reject", "boot.mount.back"],
     },
     "full": {
@@ -291,7 +294,9 @@ SCENARIOS = {
         # anything. RUN AFTER another scenario (the board must be bootable so it still has the
         # bench logger + the coverage-UART file). Flash-only; block-device (RT1062) for now.
         "publish": "none", "app": "confirm", "end": "no_slot",
-        "expect": ["boot.no_slot"],
+        # boot.no_prior_mount: the post-brick boot has both slots blank, so mp_init can't
+        # auto-mount /rom -> boot.py's umount("/rom") raises -> the no-prior-mount path runs.
+        "expect": ["boot.no_slot", "boot.no_prior_mount"],
         # NOT boot.mount.front: entering the SBL via machine.bootloader() boots the (still-valid)
         # golden ONCE before blhost erases it, so a FRONT mount precedes the brick -- expected.
         # Forbid the things that prove the device is genuinely bricked if ABSENT: it ran no app
@@ -498,8 +503,8 @@ def set_version(v):
 
 
 def prepare(board, checkout, network, app="confirm"):
-    log("prepare: install checkout + refresh vendored runtime + bench app")
-    sh([ota("pip"), "install", "-q", "-e", checkout], timeout=300)
+    log("prepare: refresh vendored runtime + bench app")
+    # The venv already has this checkout editable-installed (ci/hil/provision.sh); no pip here.
     dev = checkout + "/src/openmv_ota/build/device"
     # The project VENDORS its own copies -- the build reads those, not the package: the
     # romfs app lib (openmv_ota/openmv_cloud) AND the frozen survival modules in device/
@@ -508,6 +513,9 @@ def prepare(board, checkout, network, app="confirm"):
     sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
     sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
+    # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
+    # device op below, since these run ahead of flash_golden's own _ensure_cdc.
+    _ensure_cdc(board)
     # the bench server's CA must be on the board for run()'s TLS (survives the OTA, lives on
     # /flash not the romfs). Push it so the harness doesn't assume a hand-placed cert.
     if os.path.exists(CFG["ca_node"]):
@@ -541,14 +549,23 @@ def _flash_jlink_stm32(board, bad_romfs=False):
     img = "%s/%s-factory-romfs.img" % (build, board)
     binf = "%s/%s-factory-romfs.bin" % (build, board)   # J-Link loadbin needs a .bin extension
     sh("cp -f %s %s" % (img, binf))
-    fw = os.path.join(HOME, b["fw_bin"])                 # ~/fw/build/<board>/bin/firmware.bin
+    # The project-built firmware, from the SAME build as the romfs above (matches RT/AE3). Reading
+    # a separate ~/fw copy flashed a stale firmware against the fresh romfs -> golden wouldn't
+    # mount /rom on every scenario, once provisioning moved into the runner-owned project.
+    fw = "%s/%s-firmware.bin" % (build, board)
     for name, addr, f in (("firmware", b["fw_addr"], fw), ("romfs", b["romfs_addr"], binf)):
         log("flash %s -> %s (J-Link)" % (name, addr))
         script = "\n".join(["device " + b["jlink_device"], "si SWD", "speed 4000", "connect",
                             "r", "h", "loadbin %s %s" % (f, addr), "r", "g", "exit"]) + "\n"
-        sp = "/tmp/jl-%s.jlink" % name
-        open(sp, "w").write(script)
-        rc, out = sh([CFG["jlink"], "-nogui", "1", "-CommanderScript", sp], timeout=300, check=False)
+        # Unique per-user temp file -- a fixed /tmp name collides across the runner/other users
+        # (a stale hil-owned /tmp/jl-firmware.jlink blocked `runner` with EACCES on every flash).
+        fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="jl-%s-" % name)
+        os.write(fd, script.encode())
+        os.close(fd)
+        try:
+            rc, out = sh([CFG["jlink"], "-nogui", "1", "-CommanderScript", sp], timeout=300, check=False)
+        finally:
+            os.unlink(sp)
         if "O.K." not in out or "unsupported" in out.lower():
             raise RuntimeError("J-Link %s flash failed:\n%s" % (name, out[-1500:]))
 
@@ -557,7 +574,9 @@ def _dfu_write(alt, path, timeout_s):
     """One DFU download to an alt setting, WITHOUT --reset (that hangs the AE3 after the
     write completes). Poll the piped output for 'Done!', then return -- the caller leaves
     DFU once. Raises if the write didn't finish."""
-    logf = "/tmp/dfu_a%s.out" % alt
+    # Unique per-user temp file (a fixed /tmp name collides across users -- see _flash_jlink_stm32).
+    fd, logf = tempfile.mkstemp(suffix=".out", prefix="dfu_a%s-" % alt)
+    os.close(fd)
     proc = subprocess.Popen([CFG["dfu"], "-d", ",37c5:96e3", "-a", alt, "-D", path],
                             stdout=open(logf, "w"), stderr=subprocess.STDOUT)
     deadline = time.time() + timeout_s
@@ -571,6 +590,31 @@ def _dfu_write(alt, path, timeout_s):
             alt, open(logf, errors="replace").read()[-1500:]))
 
 
+def _ensure_cdc(board):
+    """Boot a DFU-flashed board out of a stuck DFU state via a J-Link SWD reset. The AE3's
+    machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB re-enum
+    flakiness): when leave-DFU fails the board sits in DFU with no USB-CDC, and every later
+    scenario then fails to open the port. A SYSRESETREQ boots the golden firmware, which brings
+    the CDC back. No-op once the CDC is present, and for non-DFU boards (they don't get stuck)."""
+    if BOARDS[board]["flash"] != "dfu_alif":
+        return
+    for attempt in range(3):
+        if os.path.exists(CFG["acm"]):
+            return
+        log("recover: %s no CDC at %s -- SWD reset out of DFU (try %d)" % (
+            board, CFG["acm"], attempt + 1))
+        fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
+        os.write(fd, b"connect\nr\nh\ng\nqc\n")
+        os.close(fd)
+        try:
+            sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
+                "-speed", "4000", "-AutoConnect", "1", "-CommanderScript", sp],
+               timeout=60, check=False, quiet=True)
+        finally:
+            os.unlink(sp)
+        time.sleep(8)
+
+
 def _flash_dfu_alif(board, bad_romfs=False):
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
@@ -580,6 +624,7 @@ def _flash_dfu_alif(board, bad_romfs=False):
     img = "%s/%s-factory-romfs.img" % (build, board)      # boot.py + openmv_log)
     rimg = "%s/%s-romfs.img" % (build, board)
     sh("cp -f %s %s" % (img, rimg))
+    _ensure_cdc(board)                       # a prior scenario may have left it stuck in DFU
     # One DFU session: firmware (MRAM alt 1, fast) THEN romfs (OSPI, ~10 min), then leave.
     log("flash: reset to DFU")
     device_exec("import machine; machine.bootloader()", timeout=30, check=False)
@@ -590,6 +635,7 @@ def _flash_dfu_alif(board, bad_romfs=False):
     _dfu_write(b["romfs_alt"], rimg, 1200)
     sh([CFG["dfu"], "-d", ",37c5:96e3", "-a", b["romfs_alt"], "-e"], check=False, timeout=60)
     time.sleep(15)                           # the AE3 (Alif) takes longer to boot + re-enumerate
+    _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
 
 
 def _aligned(n, sector=0x1000):
@@ -707,6 +753,20 @@ def verify_golden():
         except Exception as e:
             last = str(e)
     raise RuntimeError("golden did not mount a valid romfs:\n" + last)
+
+
+def dirty_coproc_partition():
+    """Overwrite the start of the coprocessor partition (index 1) so it DIFFERS from the bundled
+    coproc romfs, forcing the app's sync() to RE-APPLY it (the partition.prepare/write +
+    sync.applying/applied path) rather than skip. MRAM persists the partition across golden flashes
+    -- once applied it matches the bundle forever -- so the coproc scenario must actively dirty it to
+    stay deterministic (else it degrades to the coproc_skip path). Writes 0xFF over the first block
+    via the ranged rom_ioctl the OTA installer uses; sync() then rewrites the real romfs back."""
+    device_exec(
+        "import vfs\n"
+        "vfs.rom_ioctl(3, 1, 0, 4096)\n"            # ranged WRITE_PREPARE the first block (idx 1)
+        "vfs.rom_ioctl(4, 1, 0, b'\\xff' * 4096)",  # 0xFF -> no longer the coproc romfs magic
+        timeout=30)
 
 
 def publish_update(board, version, variant="delta"):
@@ -965,6 +1025,8 @@ def main():
             devid = device_id()
             trace["device_id"] = devid
             log("device_id: " + devid)
+            if args.scenario == "coproc":        # dirty partition 1 so sync() APPLIES (not skips)
+                phase("dirty_coproc", dirty_coproc_partition)
             if spec["publish"] != "none" and not args.skip_publish:
                 phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
             cap = UartCapture(CFG["uart"])
