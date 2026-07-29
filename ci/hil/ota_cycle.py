@@ -113,11 +113,19 @@ def ota(name):
 
 
 def sh(cmd, timeout=180, check=True, quiet=False):
-    """Run a command, returning (rc, stdout+stderr). Never raises on non-zero unless check."""
+    """Run a command, returning (rc, stdout+stderr). Never raises on non-zero OR timeout unless
+    check -- a timeout degrades to (124, partial-output) so a check=False caller (e.g. a liveness
+    probe or a J-Link reset against a hung board) can handle it, not crash on TimeoutExpired."""
     if not quiet:
         log("$ " + (cmd if isinstance(cmd, str) else " ".join(cmd)))
-    p = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True, text=True,
-                       timeout=timeout)
+    try:
+        p = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        out = (e.stdout or "") + (e.stderr or "") if isinstance(e.stdout, str) else ""
+        if check:
+            raise RuntimeError("command timed out (%ds): %s" % (timeout, cmd))
+        return 124, out
     out = (p.stdout or "") + (p.stderr or "")
     if check and p.returncode != 0:
         raise RuntimeError("command failed (%d): %s\n%s" % (p.returncode, cmd, out[-2000:]))
