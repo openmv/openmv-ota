@@ -663,6 +663,13 @@ def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, mak
     assert "openmv_ota.confirm()" in main
     # the labelled sections tell the user what is scaffolding vs their own code
     assert "GENERATED" in main and "YOUR APP" in main
+    # the opt-in watchdog is wired in seamlessly: arm AFTER the slow camera setup (not at
+    # import) and feed once per loop iteration -- no-ops until the user turns openmv_wdt on.
+    assert "import openmv_wdt" in main
+    assert "openmv_wdt.start()" in main
+    assert "openmv_wdt.feed()" in main
+    # start() comes after cam setup and before the loop; feed() is inside the loop
+    assert main.index("openmv_wdt.start()") < main.index("while True:") < main.index("openmv_wdt.feed()")
 
 
 def test_non_ota_project_scaffolds_the_bare_main(tmp_path, make_firmware, make_sdk):

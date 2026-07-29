@@ -31,6 +31,13 @@ def test_feed_is_a_noop_when_disabled():
     assert _mod.feed() is None
 
 
+def test_start_is_a_noop_when_disabled():
+    # ENABLED is False -> start() must NOT arm the watchdog (nothing to reset an app that
+    # never turned it on); _wdt stays None so feed()/relax() stay no-ops too.
+    _mod.start()
+    assert _mod._wdt is None
+
+
 def test_relax_is_a_noop_context_when_disabled():
     # no watchdog -> relax() enters/exits without starting a timer
     with _mod.relax():
