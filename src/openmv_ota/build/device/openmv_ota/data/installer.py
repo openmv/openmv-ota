@@ -609,6 +609,7 @@ def _install_stream(read, write, readback, front_size, block, feed,
     # MicroPython's hashlib has no .hexdigest() (CPython-only) -- hexlify the raw
     # digest instead, so the check runs identically on-device and on the host.
     if digest is not None and binascii.hexlify(digest.digest()).decode() != expect_sha:
+        log.warning("install: reject sha")           # the integrity trust boundary rejected the image
         raise OSError("image sha256 does not match the manifest")
 
     pending_off = front_size - 2 * block             # the status sector
@@ -894,7 +895,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     try:
         image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
     except Exception as e:
-        log.warning("install: rejected before erase (%s)" % e)   # /rom untouched
+        log.warning("install: rejected before erase (%r)" % e)   # /rom untouched (%r shows the class)
         raise  # hil-residual: bare re-raise to the app (pre-erase reject witnessed by install.reject)
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
@@ -951,11 +952,11 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 sock = None
                 log.debug("install: retry cleanup")  # HIL path witness (socket closed before a retry)
             if attempt + 1 >= attempts:
-                log.error("install: FAILED after %d attempts (%s); rebooting to golden BACK"
-                          % (attempts, e))
+                log.error("install: FAILED after %d attempts (%r); rebooting to golden BACK"
+                          % (attempts, e))                # %r: show the exception CLASS even when
                 _reset()  # hil-residual: terminal reset to golden on retry exhaustion (witnessed by install.fallback + install.reboot)
-            log.error("install: attempt %d/%d failed (%s); retrying"
-                      % (attempt + 1, attempts, e))
+            log.error("install: attempt %d/%d failed (%r); retrying"   # its message is empty (a bare
+                      % (attempt + 1, attempts, e))                    # deflate OSError) -> legible in the field
             if progress is not None:  # hil-residual: progress callback is unused on the bench (install() passes none), so this guard is False
                 progress.reset()  # hil-residual: progress reset (callback unused on the bench)
     log.info("install: installed + armed; rebooting into the trial")

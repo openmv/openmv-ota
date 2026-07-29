@@ -88,6 +88,11 @@ BOARDS = {
         "cov_write": "install.blockdev",     # mimxrt: the block-device write model, not XIP
         "network": "lan",
         "flash": "blhost_imx",
+        # A J-Link is wired to the RT's SWD (debug-only device name, used ONLY to SWD-reset the board
+        # back to life when it wedges off USB -- NOT for flashing; that's blhost). Recovers the case
+        # where a scenario leaves the core halted/wedged with no CDC, which otherwise fails every
+        # later mpremote with "failed to access /dev/ttyACM0" (the CDC flapping/gone).
+        "jlink_device": "MIMXRT1062xxx6A",
         # The FlexSPI NOR flash. We write ONLY the app regions; the ROM's flash-config
         # block (0x60000000) and the resident secure bootloader / flashloader (0x60001000)
         # are NEVER touched -- machine.bootloader() drops into that resident SBL to flash.
@@ -108,11 +113,19 @@ def ota(name):
 
 
 def sh(cmd, timeout=180, check=True, quiet=False):
-    """Run a command, returning (rc, stdout+stderr). Never raises on non-zero unless check."""
+    """Run a command, returning (rc, stdout+stderr). Never raises on non-zero OR timeout unless
+    check -- a timeout degrades to (124, partial-output) so a check=False caller (e.g. a liveness
+    probe or a J-Link reset against a hung board) can handle it, not crash on TimeoutExpired."""
     if not quiet:
         log("$ " + (cmd if isinstance(cmd, str) else " ".join(cmd)))
-    p = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True, text=True,
-                       timeout=timeout)
+    try:
+        p = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        out = (e.stdout or "") + (e.stderr or "") if isinstance(e.stdout, str) else ""
+        if check:
+            raise RuntimeError("command timed out (%ds): %s" % (timeout, cmd))
+        return 124, out
     out = (p.stdout or "") + (p.stderr or "")
     if check and p.returncode != 0:
         raise RuntimeError("command failed (%d): %s\n%s" % (p.returncode, cmd, out[-2000:]))
@@ -178,6 +191,7 @@ COVERAGE = {
     "install: reject bad signature": "install.reject_sig",   # sig verify failed (the trust boundary)
     "install: reject untrusted key": "install.reject_key",   # key_id not in the trusted allowlist
     "install: reject vetting": "install.reject_vet",         # anti-rollback/board/platform rejected
+    "install: reject sha": "install.reject_sha",             # post-erase integrity gate: image sha256 mismatch
     "install: TLS up": "install.tls",                    # a verified TLS socket to the server
     "install: fetched body": "install.fetched",          # a 2xx download body (manifest/image)
     "install: manifest accepted": "install.manifest_ok",  # sig + board/version/platform vetting passed
@@ -299,6 +313,21 @@ SCENARIOS = {
                    "install.reboot", "boot.front_reject", "boot.mount.back"],
         "forbid": ["install.armed", "confirm.promoted"],
     },
+    "corrupt_sha": {
+        # Distinct from `corrupt`: `corrupt` flips a COMPRESSED byte so the download fails mid-
+        # decompress (a bare deflate error, before the integrity check). `corrupt_sha` flips a
+        # DECOMPRESSED byte + re-gzips, so the image decompresses cleanly and the failure is the
+        # sha256 gate itself (install.reject_sha) -- the actual integrity trust boundary, on HW.
+        # The sha256 GATE (install.reject_sha) is the point. The retry-exhaust -> golden fallback is
+        # `corrupt`'s job and is SLOW here: each attempt writes the FULL image before the sha check
+        # fails (~3x the N6's 12 MiB slot -> past the watch window). So assert the gate fired and the
+        # bad image was retried, never committed -- the device stays on the golden VERSION throughout
+        # (it never promotes 1.1.0), which satisfies end="golden".
+        "desc": "image decompresses but sha256 mismatches -> integrity gate rejects the update",
+        "publish": "corrupt_sha", "app": "confirm", "end": "golden",
+        "expect": ["install.start", "install.reject_sha", "install.retry"],
+        "forbid": ["install.armed", "install.committed", "confirm.promoted"],
+    },
     "rollback": {
         "desc": "trial never confirms -> next boot rejects FRONT -> golden BACK",
         "publish": "delta", "app": "no_confirm", "end": "golden",
@@ -411,7 +440,7 @@ def regression_scenarios(board, network):
     so there's no point re-running it on both legs."""
     if network != BOARDS[board]["network"]:
         return ["delta"]
-    scs = ["delta", "full", "rollback", "corrupt", "bad_sig", "bad_key", "bad_version"]
+    scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
     if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
         scs.append("no_slot")
     if board == "OPENMV_AE3":                           # the only board with a coprocessor partition
@@ -658,24 +687,43 @@ def _dfu_write(alt, path, timeout_s):
 
 
 def _ensure_cdc(board):
-    """Boot a DFU-flashed board out of a stuck DFU state via a J-Link SWD reset. The AE3's
-    machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB re-enum
-    flakiness): when leave-DFU fails the board sits in DFU with no USB-CDC, and every later
-    scenario then fails to open the port. A SYSRESETREQ boots the golden firmware, which brings
-    the CDC back. No-op once the CDC is present, and for non-DFU boards (they don't get stuck)."""
-    if BOARDS[board]["flash"] != "dfu_alif":
+    """Recover a board that has wedged off USB (no CDC) via a J-Link SWD reset, so a later scenario
+    doesn't fail every mpremote with "failed to access /dev/ttyACM0". Two ways a board loses its CDC:
+    the AE3's machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB
+    re-enum flakiness) and sits in DFU with no CDC; and a mimxrt/stm32 board can be left halted or
+    crashed by a scenario (SWD still alive, USB dead OR flapping/held -- the port can be enumerated
+    yet unusable, failing every mpremote "in use"). Recovery is a HARDWARE nRST pulse driven straight
+    on the physical reset line (SetRESET/ClrRESET toggle the J-Link's RESET pin) -- NOT a SYSRESETREQ
+    through the debug core, which needs a live core connect and so hangs on a deeply wedged board. The
+    pin pulse resets ALL processor state regardless of core state (validated on the bench: it recovered
+    an RT already dropped off USB, and an AE3 whose core would not even attach), boots the golden
+    firmware, and brings a clean CDC back -- so these boards never need a physical power cycle. Probes
+    RESPONSIVENESS (not mere existence), no-ops once the board answers, and only for boards with a
+    J-Link reset device (a debug-only name used ONLY to reset -- flashing stays each board's normal
+    path)."""
+    if "jlink_device" not in BOARDS[board]:
         return
     for attempt in range(3):
-        if os.path.exists(CFG["acm"]):
+        # A real liveness probe, not just os.path.exists(): the CDC can be enumerated yet held or
+        # flapping (fails every mpremote "in use"), which an existence check misses. (Opening the
+        # port DTR-resets the board, but prepare reflashes golden right after, so that reset is free.)
+        rc, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
+                   timeout=15, check=False, quiet=True)
+        if rc == 0:
             return
-        log("recover: %s no CDC at %s -- SWD reset out of DFU (try %d)" % (
-            board, CFG["acm"], attempt + 1))
+        log("recover: %s CDC missing/unresponsive at %s -- free holders + J-Link SWD reset (try %d)"
+            % (board, CFG["acm"], attempt + 1))
+        sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
         fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
-        os.write(fd, b"connect\nr\nh\ng\nqc\n")
+        # Pulse the physical nRST line (hold low, release) -- a pure pin toggle that needs no core
+        # connect, so it recovers a hung core that a debug-core reset (connect->r) cannot reach.
+        os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nqc\n")
         os.close(fd)
         try:
+            # -AutoConnect 0: do NOT try to attach the (possibly hung) core on launch -- the pin pulse
+            # is physical and must not be gated on a core connect that would hang on a wedged board.
             sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
-                "-speed", "4000", "-AutoConnect", "1", "-CommanderScript", sp],
+                "-speed", "4000", "-AutoConnect", "0", "-CommanderScript", sp],
                timeout=60, check=False, quiet=True)
         finally:
             os.unlink(sp)
@@ -846,9 +894,11 @@ def publish_update(board, version, variant="delta"):
     # (it re-flashes to golden 1.0.0 each run, and its rollback floor resets with it).
     build = [ota("openmv-ota"), "build", "ota-romfs", CFG["project"], "-b", board,
              "--allow-dev-key", "--allow-republish"]
-    if variant == "full":
+    if variant in ("full", "corrupt_sha"):
         # Force a full (non-delta) release: point --delta-from at an empty dir so no golden
         # resolves (build_ota_romfs -> "full image only"), and the device installs the full rep.
+        # corrupt_sha needs a full image so the tamper can hit the sha256 gate cleanly (a delta's
+        # decompressed patch has structure a naive flip would break at the parser, not the sha).
         nodelta = tempfile.mkdtemp(prefix="hil-nodelta-")
         build += ["--delta-from", nodelta]
         # A full-only build does NOT produce a .delta.gz, but a prior delta build left one in
@@ -861,6 +911,8 @@ def publish_update(board, version, variant="delta"):
                     "--rollout", "__default__:100"], env=penv, check=True, timeout=180)
     if variant == "corrupt":
         _tamper(board, "image")        # post-erase integrity failure -> retry -> golden BACK
+    elif variant == "corrupt_sha":
+        _tamper(board, "image_body")   # decompresses fine, sha256 mismatches -> retry -> golden BACK
     elif variant == "bad_sig":
         _tamper(board, "manifest")     # pre-erase signature failure -> reject, stays golden
     elif variant == "bad_key":
@@ -908,6 +960,25 @@ def _tamper(board, which):
         with open(target, "r+b") as f:
             f.write(data)
         log("  tampered %s byte@%d of %s (crc re-sealed)" % (which, off, os.path.basename(target)))
+        return
+    if which == "image_body":
+        # Flip a byte in the DECOMPRESSED image, then re-gzip: it decompresses cleanly (unlike
+        # the mid-stream flip below), but its sha256 no longer matches the SIGNED (unchanged)
+        # manifest -> the device's integrity gate (the sha256 trust boundary, install.reject_sha)
+        # rejects it AFTER the FRONT erase -> retries exhaust -> golden BACK. Needs a full image
+        # (see publish_update): a delta's decompressed patch has structure a flip would break at
+        # the patch parser, not the sha. Size is unchanged (a 1-byte flip), so only the sha moves.
+        import gzip
+        fulls = [p for p in imgs if os.path.dirname(p).endswith(rel) and not p.endswith(".delta.gz")]
+        target = fulls[-1] if fulls else newest
+        with open(target, "rb") as f:
+            raw = bytearray(gzip.decompress(f.read()))
+        mid = len(raw) // 2
+        raw[mid] ^= 0xFF
+        with open(target, "wb") as f:
+            f.write(gzip.compress(bytes(raw)))
+        log("  tampered image_body byte@%d of %s (re-gzipped; sha256 now mismatches)"
+            % (mid, os.path.basename(target)))
         return
     # image: mid-stream flip -> the download decompress/sha256 fails AFTER the FRONT erase.
     deltas = [p for p in imgs if os.path.dirname(p).endswith(rel) and p.endswith(".delta.gz")]
