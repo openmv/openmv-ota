@@ -47,14 +47,21 @@ fi
 #    also re-runs if a pre-#19348 cache is present (lock exists but the patch is missing).
 FW="$CACHE/openmv"
 PROJ="$CACHE/proj-$BOARD"
+# Re-provision when: no lock yet; the pre-#19348 cache is present (lock exists but the patch is
+# missing); OR the tool's firmware-feature code (project.py = _FW_FEATURES + the carry) is newer
+# than the cached lock -- otherwise a lock captured before a feature was added/changed would drift
+# against the firmware the current tool carries ("firmware.dirty: False -> True" at build time).
 if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
+   || [ "$CHECKOUT/src/openmv_ota/project/project.py" -nt "$PROJ/openmv-ota.lock.json" ] \
    || ! grep -q 'MP_VFS_ROM_IOCTL_GET_MIN_PREPARE' "$FW/lib/micropython/extmod/vfs.h" 2>/dev/null; then
   [ -d "$FW/.git" ] || { log "git clone openmv"; git clone -q https://github.com/openmv/openmv.git "$FW"; }
-  log "firmware <- $REF"
-  git -C "$FW" fetch -q origin
-  git -C "$FW" checkout -q "$REF"
-  git -C "$FW" submodule update -q --init --depth=1 --no-single-branch
-  git -C "$FW/lib/micropython" submodule update -q --init --depth=1
+  log "firmware <- $REF (pristine reset; project new re-carries the current features)"
+  # Reset HARD to the pinned ref so a prior run's feature-carry commits don't accumulate and the
+  # cherry-picks (incl. any fork-compat fixup) re-apply cleanly onto the original tree.
+  git -C "$FW" fetch -q origin "$REF"
+  git -C "$FW" reset -q --hard FETCH_HEAD
+  git -C "$FW" submodule update -q --init --force --depth=1 --no-single-branch
+  git -C "$FW/lib/micropython" submodule update -q --init --force --depth=1
   # `project new` below carries micropython#19348 (ranged romfs erase) into lib/micropython for
   # a v5.0 OTA firmware -- the tool guarantees it, so this script (and any real user) needs no
   # custom step; the lock captures the patched, committed-clean tree.
