@@ -775,9 +775,13 @@ def _ensure_cdc(board):
             % (board, CFG["acm"], attempt + 1))
         sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
         fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
-        # Pulse the physical nRST line (hold low, release) -- a pure pin toggle that needs no core
-        # connect, so it recovers a hung core that a debug-core reset (connect->r) cannot reach.
-        os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nqc\n")
+        # Two-stage recover: (1) pulse the physical nRST line (hold low, release) -- a pure pin toggle
+        # that needs no core connect, so it reaches a HUNG core a debug reset can't; THEN (2) connect +
+        # reset + GO. The pin pulse alone can leave the core halted/not-running (observed on the N6: it
+        # reset but never re-enumerated USB until an explicit `g`), so the debug-core `r; g` actually
+        # RUNS the firmware. If the core is truly hung the connect fails harmlessly -- the pulse already
+        # reset it. Belt (pin, for hung) + suspenders (connect+go, for halted-but-alive).
+        os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n")
         os.close(fd)
         try:
             # -AutoConnect 0: do NOT try to attach the (possibly hung) core on launch -- the pin pulse
