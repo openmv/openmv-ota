@@ -692,10 +692,15 @@ def _ensure_cdc(board):
     the AE3's machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB
     re-enum flakiness) and sits in DFU with no CDC; and a mimxrt/stm32 board can be left halted or
     crashed by a scenario (SWD still alive, USB dead OR flapping/held -- the port can be enumerated
-    yet unusable, failing every mpremote "in use"). A SYSRESETREQ (reset -> run) boots the golden
-    firmware and brings a clean CDC back. Probes RESPONSIVENESS (not mere existence), no-ops once the
-    board answers, and only for boards with a J-Link reset device (a debug-only name used ONLY to
-    reset -- flashing stays each board's normal path)."""
+    yet unusable, failing every mpremote "in use"). Recovery is a HARDWARE nRST pulse driven straight
+    on the physical reset line (SetRESET/ClrRESET toggle the J-Link's RESET pin) -- NOT a SYSRESETREQ
+    through the debug core, which needs a live core connect and so hangs on a deeply wedged board. The
+    pin pulse resets ALL processor state regardless of core state (validated on the bench: it recovered
+    an RT already dropped off USB, and an AE3 whose core would not even attach), boots the golden
+    firmware, and brings a clean CDC back -- so these boards never need a physical power cycle. Probes
+    RESPONSIVENESS (not mere existence), no-ops once the board answers, and only for boards with a
+    J-Link reset device (a debug-only name used ONLY to reset -- flashing stays each board's normal
+    path)."""
     if "jlink_device" not in BOARDS[board]:
         return
     for attempt in range(3):
@@ -710,11 +715,15 @@ def _ensure_cdc(board):
             % (board, CFG["acm"], attempt + 1))
         sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
         fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
-        os.write(fd, b"connect\nr\nh\ng\nqc\n")
+        # Pulse the physical nRST line (hold low, release) -- a pure pin toggle that needs no core
+        # connect, so it recovers a hung core that a debug-core reset (connect->r) cannot reach.
+        os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nqc\n")
         os.close(fd)
         try:
+            # -AutoConnect 0: do NOT try to attach the (possibly hung) core on launch -- the pin pulse
+            # is physical and must not be gated on a core connect that would hang on a wedged board.
             sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
-                "-speed", "4000", "-AutoConnect", "1", "-CommanderScript", sp],
+                "-speed", "4000", "-AutoConnect", "0", "-CommanderScript", sp],
                timeout=60, check=False, quiet=True)
         finally:
             os.unlink(sp)
