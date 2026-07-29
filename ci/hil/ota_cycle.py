@@ -254,6 +254,7 @@ COVERAGE = {
     "identity: device id": "run.identity_uid",           # machine.unique_id() read into identity
     "data: path": "run.data_path",                       # sync() located a bundled data/ resource
     "wdt: feed": "run.wdt_feed",                          # watchdog fed each poll (no-op when off)
+    "app: wdt armed=True": "wdt.armed",                   # ENABLED watchdog really armed (start()->_start())
     "run: poll wait": "run.poll_tail",                   # run() loop tail reached (post-checkin)
     "clock: resolved": "run.clock",                      # NTP/RTC resolve each poll
     "clock: syncing": "run.clock",                       # openmv_rtc: untrusted clock -> one NTP sync
@@ -406,6 +407,18 @@ SCENARIOS = {
     },
 }
 
+# The watchdog happy-path: the delta cycle with the WWDG turned ON (prepare() flips openmv_wdt
+# ENABLED; the 'wdt' app arms it past network bring-up + tight-feeds it). Same expect/forbid as
+# delta plus wdt.armed -- an armed watchdog that outran a window would reset mid-cycle and never
+# reach promoted, so reaching it (with the install's ranged erase feeding per block) IS the proof
+# that the device services the watchdog seamlessly through a real OTA cycle. N6-only (WWDG=stm32).
+SCENARIOS["watchdog"] = dict(
+    SCENARIOS["delta"],
+    desc="watchdog ENABLED: delta install survives a real OTA cycle with the WWDG armed",
+    app="wdt",
+    expect=SCENARIOS["delta"]["expect"] + ["wdt.armed"],
+)
+
 
 def scenario_markers(board, key):
     """(expect, forbid) marker sets for a scenario, with {cov_write} resolved per board.
@@ -542,6 +555,46 @@ def bench_main_py(board, net, app="confirm"):
             "    while True:\n"
             "        await asyncio.sleep(2)\n"
         )
+    elif app == "wdt":
+        # POSITIVE watchdog test: arm the WWDG once PAST the (slow) network bring-up, then feed on a
+        # tight cadence (~20 ms << the 100 ms window) while confirming the trial. Proves an ENABLED
+        # watchdog SURVIVES a real OTA cycle -- the install's ranged erase feeds per block, run() feeds
+        # per poll, and this loop feeds per iteration, so nothing outruns the window and it never
+        # spuriously resets. `armed=True` witnesses that ENABLED took effect (start() really armed it).
+        trial_policy = (
+            "    import openmv_wdt\n"
+            "    openmv_wdt.start()\n"
+            "    _blog.info('app: wdt armed=%r' % (openmv_wdt._wdt is not None))\n"
+            "    confirmed = False\n"
+            "    while True:\n"
+            "        openmv_wdt.feed()\n"
+            "        if not confirmed:\n"
+            "            confirmed = True\n"
+            "            openmv_ota.confirm()\n"
+            "        await asyncio.sleep_ms(20)\n"
+        )
+    elif app == "wdt_bite":
+        # NEGATIVE watchdog test: prove the WWDG actually BITES when feeding stops. Arm + feed ~1 s
+        # (steady feeding demonstrably works), then STOP -> the window expires and the board resets.
+        # On the next boot reset_cause()==3 (WDT) proves it bit; recover by feeding normally so it's a
+        # SINGLE bite, not a loop. (machine.reset() cleared the WWDG per §6.3, so boot ran unwatched.)
+        trial_policy = (
+            "    import machine, openmv_wdt, time\n"
+            "    openmv_wdt.start()\n"
+            "    if machine.reset_cause() == 3:\n"
+            "        _blog.warning('app: wdt BIT (reset_cause=WDT); recovered, feeding')\n"
+            "        while True:\n"
+            "            openmv_wdt.feed()\n"
+            "            await asyncio.sleep_ms(20)\n"
+            "    _blog.info('app: wdt armed=%r, feeding 1s then stopping' % (openmv_wdt._wdt is not None))\n"
+            "    t0 = time.ticks_ms()\n"
+            "    while time.ticks_diff(time.ticks_ms(), t0) < 1000:\n"
+            "        openmv_wdt.feed()\n"
+            "        await asyncio.sleep_ms(20)\n"
+            "    _blog.warning('app: wdt STOP feeding -- expect a WWDG bite')\n"
+            "    while True:\n"
+            "        await asyncio.sleep_ms(500)\n"
+        )
     else:
         trial_policy = (
             "    confirmed = False\n"
@@ -571,7 +624,8 @@ def bench_main_py(board, net, app="confirm"):
             CFG["server"], CFG["ca_board"]) +
         trial_policy + "\n\n"
         "try:\n"
-        "    _blog.info('app: booting ' + str(openmv_ota.status().get('version')))\n"
+        "    import machine as _m\n"
+        "    _blog.info('app: booting %s reset_cause=%d' % (openmv_ota.status().get('version'), _m.reset_cause()))\n"
         "    asyncio.run(main())\n"
         "except Exception as e:\n"
         "    _blog.error('app: CRASHED %r' % (e,))\n"
@@ -609,6 +663,12 @@ def prepare(board, checkout, network, app="confirm"):
     sh("cp -rf %s/openmv_ota/. %s/app/lib/openmv_ota/" % (dev, CFG["project"]))
     sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
     sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
+    if app in ("wdt", "wdt_bite"):
+        # Turn the opt-in watchdog ON for this run: flip ENABLED in the project's frozen copy so the
+        # built firmware arms the WWDG (WDT_ID='WWDG', 100 ms on the N6). Only stm32/N6 runs these
+        # scenarios (WWDG is the stm32 deep-sleep-safe watchdog); the app then start()s + feeds it.
+        sh("sed -i 's/^ENABLED = False/ENABLED = True/' %s/device/openmv_wdt.py" % CFG["project"])
+        log("prepare: openmv_wdt ENABLED=True (watchdog scenario)")
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
