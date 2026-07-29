@@ -57,9 +57,13 @@ if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
   [ -d "$FW/.git" ] || { log "git clone openmv"; git clone -q https://github.com/openmv/openmv.git "$FW"; }
   log "firmware <- $REF (pristine reset; project new re-carries the current features)"
   # Reset HARD to the pinned ref so a prior run's feature-carry commits don't accumulate and the
-  # cherry-picks (incl. any fork-compat fixup) re-apply cleanly onto the original tree.
+  # cherry-picks (incl. any fork-compat fixup) re-apply cleanly onto the original tree. `reset --hard`
+  # does NOT drop untracked files, so also `clean -fdx`: a build drops modules/ecdsa_verify.c and
+  # removes it in a finally, but a killed/leaked one leaves it untracked -> the firmware reads dirty
+  # forever and every `build firmware` then refuses. Clean guarantees a pristine tree to lock against.
   git -C "$FW" fetch -q origin "$REF"
   git -C "$FW" reset -q --hard FETCH_HEAD
+  git -C "$FW" clean -qfdx
   git -C "$FW" submodule update -q --init --force --depth=1 --no-single-branch
   git -C "$FW/lib/micropython" submodule update -q --init --force --depth=1
   # `project new` below carries micropython#19348 (ranged romfs erase) into lib/micropython for
