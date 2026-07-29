@@ -692,9 +692,9 @@ def _fw_repo(tmp_path, *, name="fw", version="5.0.0", vfs=None, wdt=False):
         v = mpy / "extmod" / "vfs.h"
         v.parent.mkdir(parents=True)
         v.write_text(vfs)
-        stm = mpy / "ports" / "stm32" / "machine_wdt.c"     # #19350's fixup target (H7 guard anchor)
+        stm = mpy / "ports" / "stm32" / "machine_wdt.c"     # #19350's fixup target (LL-bus include anchor)
         stm.parent.mkdir(parents=True)
-        body = "#if defined(STM32H7)\n#define WWDG (WWDG1)\n#endif\n"
+        body = '#include "py/mphal.h"\n#if defined(STM32H7)\n#define WWDG (WWDG1)\n#endif\n'
         if wdt:
             body += "static machine_wdt_obj_t machine_wwdt = {0};\n"   # sentinel: already carried
         stm.write_text(body)

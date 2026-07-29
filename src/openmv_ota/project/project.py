@@ -290,13 +290,37 @@ _FW_FEATURES = (
         "sentinel_path": "ports/stm32/machine_wdt.c",
         "sentinel": "machine_wwdt",
         "required": False,
-        # Fork-compat: upstream adds the H7 WWDG clock's LL header to stm32h7xx_hal_conf_base.h, but the
-        # openmv H7 boards don't inherit that base, so the H7 clock-enable (LL_APB3_GRP1_EnableClock)
-        # fails to compile ("implicit declaration"). Add the include to machine_wdt.c itself --
-        # self-contained, so it builds regardless of a board's hal_conf. The N6 (STM32N6, the real
-        # target) uses the non-H7 path and never touches this; the include just unbreaks H7 collateral.
+        # Fork-compat: upstream adds each family's LL-bus header (which declares LL_APBn_GRP1_EnableClock
+        # + LL_APBn_GRP1_PERIPH_WWDG) to <fam>_hal_conf_base.h, but the openmv boards don't inherit that
+        # base, so the WWDG clock-enable fails to compile ("implicit declaration") on EVERY stm32 family,
+        # not just H7. Add the include to machine_wdt.c itself -- self-contained, matching the exact set
+        # of families #19350 (cc0e275) touched. Only the built family's branch compiles; the N6 (STM32N6)
+        # isn't in this set and keeps getting its LL bus header from its own hal_conf (it already builds).
         "fixups": (
-            ("ports/stm32/machine_wdt.c", "#if defined(STM32H7)", '#include "stm32h7xx_ll_bus.h"'),
+            ("ports/stm32/machine_wdt.c", '#include "py/mphal.h"',
+             "// openmv fork-compat: pull in each family's LL-bus header for the WWDG clock enable;\n"
+             "// the openmv boards don't inherit <fam>_hal_conf_base.h where upstream #19350 added it.\n"
+             "#if defined(STM32F0)\n"
+             '#include "stm32f0xx_ll_bus.h"\n'
+             "#elif defined(STM32F4)\n"
+             '#include "stm32f4xx_ll_bus.h"\n'
+             "#elif defined(STM32F7)\n"
+             '#include "stm32f7xx_ll_bus.h"\n'
+             "#elif defined(STM32G0)\n"
+             '#include "stm32g0xx_ll_bus.h"\n'
+             "#elif defined(STM32G4)\n"
+             '#include "stm32g4xx_ll_bus.h"\n'
+             "#elif defined(STM32H5)\n"
+             '#include "stm32h5xx_ll_bus.h"\n'
+             "#elif defined(STM32H7)\n"
+             '#include "stm32h7xx_ll_bus.h"\n'
+             "#elif defined(STM32L0)\n"
+             '#include "stm32l0xx_ll_bus.h"\n'
+             "#elif defined(STM32L1)\n"
+             '#include "stm32l1xx_ll_bus.h"\n'
+             "#elif defined(STM32L4)\n"
+             '#include "stm32l4xx_ll_bus.h"\n'
+             "#endif"),
         ),
     },
     {
