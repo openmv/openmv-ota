@@ -925,21 +925,6 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # through the loops -- so a hung loop (or a stalled recv) still trips it -> golden.
     relax = openmv_wdt.relax if openmv_wdt is not None else _NoWdt
     feed = openmv_wdt.feed if openmv_wdt is not None else _noop
-    # DIAGNOSTIC (temporary): wrap feed to log any interval > 60 ms between feeds, so an op that
-    # starves the ~100 ms watchdog window is pinpointed by the marker it prints next to. Only when
-    # a watchdog is armed; a fatal (>100 ms) gap resets before it can log, but the sub-fatal creep
-    # up to it still shows which phase is marginal.
-    if openmv_wdt is not None and log is not None:
-        import time as _time  # hil-residual: temporary watchdog-gap diagnostic (device-only; removed once located)
-        _last_feed = [_time.ticks_ms()]  # hil-residual: temporary watchdog-gap diagnostic (device-only)
-        _raw_feed = feed  # hil-residual: temporary watchdog-gap diagnostic (device-only)
-
-        def feed():  # hil-residual: temporary watchdog-gap diagnostic (device-only; removed once located)
-            gap = _time.ticks_diff(_time.ticks_ms(), _last_feed[0])  # hil-residual: temp gap diagnostic
-            if gap > 60:  # hil-residual: temp gap diagnostic (device-only)
-                log.warning("install: wdt gap %dms" % gap)  # hil-residual: temp gap diagnostic (device-only)
-            _raw_feed()  # hil-residual: temp gap diagnostic (device-only)
-            _last_feed[0] = _time.ticks_ms()  # hil-residual: temp gap diagnostic (device-only)
     # Proactive GC hook (only when a watchdog is armed): the write loop calls this on a byte
     # cadence to collect BEFORE the heap fills, so automatic GC never fires mid-write. gc.collect()
     # is a single unsplittable pause, so it runs under relax() (ISR-fed). GC is never disabled.
