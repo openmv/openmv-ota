@@ -114,6 +114,10 @@ _SOCK_TIMEOUT = 30
 # feeding the watchdog each slice, so it must stay WELL under the watchdog window (~100 ms) -> a few
 # feeds per window. Only matters when a watchdog is armed; a fast recv returns the moment data arrives.
 _RECV_POLL_MS = 20
+# "Operation would block" errnos a non-blocking recv may raise (EAGAIN/EWOULDBLOCK) even right after
+# poll reports readable -- a TLS socket can be TCP-readable with no whole record decrypted yet. Both
+# the positive (11) and MicroPython's negated (-11) form; treated as "no data yet", keep polling.
+_EAGAIN = (11, -11)
 
 
 # --- pure: URL + HTTP (host-testable) ---------------------------------------
@@ -201,19 +205,38 @@ class _Reader:
         self._buf = buf
 
     def _fill(self):
-        # NON-BLOCKING, progress-fed recv (NOT relax): wait for the socket to be readable in short
-        # slices, feeding the watchdog each slice, so a slow/paced download keeps it fed by progress --
-        # a genuinely dead link stops producing data and trips it after _SOCK_TIMEOUT (-> golden). Feed
-        # is a no-op unless the app armed a watchdog; if poll is unavailable we fall back to a plain
-        # blocking recv (watchdog-off is unaffected). The recv itself won't block once poll says ready.
+        # NON-BLOCKING, progress-fed recv (NOT relax): with the socket in non-blocking mode (set by
+        # _open), wait for it to be readable in short poll slices -- feeding the watchdog each slice --
+        # then read WHATEVER IS AVAILABLE (returning < _CHUNK is fine; the caller re-fills). This is the
+        # crux: a *blocking* read(_CHUNK) would block until a whole _CHUNK accumulated, which mid-stream
+        # spans several TLS records on a paced Wi-Fi link and starves the watchdog between feeds (poll
+        # only proves the FIRST byte is ready, not a full chunk) -- that is what bit the WWDG on the N6
+        # image download but not the tiny, single-read manifest. A genuinely dead link produces nothing
+        # and trips the watchdog after _SOCK_TIMEOUT (-> clean install error -> golden). Feed is a no-op
+        # unless a watchdog is armed; with no poll available we fall back to a plain blocking recv (the
+        # watchdog-off path is byte-for-byte unaffected).
         if self._poll is not None:
             waited = 0
-            while not self._poll.poll(_RECV_POLL_MS):
+            while True:
                 self._feed()
+                if self._poll.poll(_RECV_POLL_MS):
+                    try:
+                        d = self._recv(_CHUNK)        # non-blocking: available bytes / None / b'' (EOF)
+                    except OSError as e:              # would-block despite POLLIN (partial TLS record)
+                        if e.args and e.args[0] in _EAGAIN:
+                            d = None
+                        else:
+                            raise
+                    if d:
+                        self._buf += d
+                        return True
+                    if d is not None:                # d == b'' -> EOF
+                        return False
+                    # d is None -> would-block after POLLIN; keep polling + feeding
                 waited += _RECV_POLL_MS
                 if waited >= _SOCK_TIMEOUT * 1000:
                     raise OSError("recv timed out")   # a dead link -> clean install error -> golden
-        d = self._recv(_CHUNK)
+        d = self._recv(_CHUNK)                        # blocking fallback (no select/poll on this port)
         if not d:
             return False
         self._buf += d
@@ -706,6 +729,8 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5):  # pragma: no 
             poll = None
         try:
             sock.write(_request_bytes(host, port, path))
+            if poll is not None:                      # body reads go non-blocking so a paced recv never
+                sock.setblocking(False)               # blocks past a watchdog window; poll+feed gates it
             reader = _Reader(sock.read, feed, poll)
             code, headers = _read_response(reader)
         except Exception:

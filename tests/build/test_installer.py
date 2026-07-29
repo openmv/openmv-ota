@@ -202,12 +202,53 @@ class _FakePoll:
         return [(None, 1)]                     # readable -> reader does the (non-blocking) recv
 
 
+_READY = type("Ready", (), {"poll": lambda self, _ms: [(None, 1)]})()   # always readable
+
+
 def test_reader_poll_feeds_while_waiting_then_reads():
-    # non-blocking, progress-fed recv: feed once per not-ready poll slice, then read when readable
+    # non-blocking, progress-fed recv: feed once per loop slice, then read when readable
     fed = []
     r = inst("_Reader")(_recv_of(b"payload"), feed=lambda: fed.append(1), poll=_FakePoll(3))
-    assert r.read_exact(7) == b"payload"       # drives _fill -> polls 3x (feeding) then recvs
-    assert len(fed) == 3                        # fed once per slice it waited, no relax/disable
+    assert r.read_exact(7) == b"payload"       # drives _fill -> 3 not-ready slices then the recv
+    assert len(fed) == 4                        # fed each slice incl. the readable one, no relax/disable
+
+
+def test_reader_poll_ready_but_would_block_then_data():
+    # poll can report readable while the non-blocking recv still returns None (partial TLS record):
+    # the reader must keep feeding + polling, not treat None as EOF
+    seq = iter([None, None, b"hi"])
+    fed = []
+    r = inst("_Reader")(lambda _n: next(seq), feed=lambda: fed.append(1), poll=_READY)
+    assert r.read_exact(2) == b"hi"
+    assert len(fed) == 3                        # fed on each would-block slice before data arrived
+
+
+def test_reader_poll_ready_eof_returns_false():
+    # a non-blocking recv of b'' after POLLIN is a real EOF -> _fill returns False
+    r = inst("_Reader")(_recv_of(), feed=lambda: None, poll=_READY)
+    assert r.read_some(5) == b""
+
+
+def test_reader_poll_recv_eagain_then_data():
+    # some ports RAISE OSError(EAGAIN) instead of returning None; treat as would-block, keep going
+    state = {"n": 0}
+
+    def recv(_n):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise OSError(11)                  # EAGAIN despite POLLIN
+        return b"ok"
+    r = inst("_Reader")(recv, feed=lambda: None, poll=_READY)
+    assert r.read_exact(2) == b"ok"
+
+
+def test_reader_poll_recv_oserror_propagates():
+    # a non-would-block OSError (e.g. ECONNRESET) is a real failure -> propagate (install -> golden)
+    def recv(_n):
+        raise OSError(104)                     # ECONNRESET
+    r = inst("_Reader")(recv, feed=lambda: None, poll=_READY)
+    with pytest.raises(OSError):
+        r.read_exact(1)
 
 
 def test_reader_poll_dead_link_trips_after_timeout():
