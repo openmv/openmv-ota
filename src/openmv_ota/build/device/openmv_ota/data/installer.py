@@ -633,18 +633,13 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
     ai = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0]
     sock = socket.socket(ai[0], ai[1], ai[2])
     try:
-        sock.settimeout(_SOCK_TIMEOUT)               # so a stalled handshake/recv can't block forever
-        # connect + TLS handshake are blocking, unsplittable mbedtls C ops that can exceed a short
-        # watchdog window; relax() ISR-feeds across them so a NORMAL (non-stalled) handshake doesn't
-        # trip the watchdog. A no-op unless the app armed one. A truly stalled connect still hits the
-        # socket timeout above -> clean install error -> golden fallback (not a watchdog reset).
-        with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
-            sock.connect(ai[-1])
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.verify_mode = ssl.CERT_REQUIRED
-            ctx.load_verify_locations(cadata=ca_pem)
-            tls = ctx.wrap_socket(sock, server_hostname=host)
-        log.debug("install: TLS up")
+        sock.settimeout(_SOCK_TIMEOUT)               # so a stalled handshake/recv can't
+        sock.connect(ai[-1])                         # block forever -> clean install error
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.load_verify_locations(cadata=ca_pem)
+        tls = ctx.wrap_socket(sock, server_hostname=host)  # blocking TLS handshake -- the caller
+        log.debug("install: TLS up")                 # relax()es the whole fetch (see run())
         return tls  # hil-residual: bare return of the wrapped TLS socket
     except Exception:  # hil-residual: connect-failure cleanup wrapper
         sock.close()  # hil-residual: bare cleanup close on a failed connect (error path)
@@ -898,7 +893,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # field, exactly when an operator most needs to know why a release won't take.
     log.info("install: fetching manifest %s" % manifest_url)
     try:
-        image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
+        # install() runs SYNCHRONOUSLY inside run()'s asyncio task, so the app's async feed loop
+        # cannot run during it -- every blocking op here must feed the watchdog itself. The manifest
+        # fetch is a blocking TLS handshake + recv (romfs CA read, connect, handshake, GET); relax()
+        # ISR-feeds across the whole fetch (no-op unless the app armed a watchdog). The erase/write
+        # below stay PROGRESS-fed per block, so a hung flash loop is still caught.
+        with relax():
+            image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
     except Exception as e:
         log.warning("install: rejected before erase (%r)" % e)   # /rom untouched (%r shows the class)
         raise  # hil-residual: bare re-raise to the app (pre-erase reject witnessed by install.reject)
@@ -927,7 +928,8 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             log.info("install: erasing FRONT (%d bytes)" % front_size)
             erase(front_size)
             log.info("install: downloading %s (%s)" % (image_url, fmt))
-            sock, body = _open(image_url, ca_pem, socket, ssl)
+            with relax():                            # image-download open = another blocking TLS
+                sock, body = _open(image_url, ca_pem, socket, ssl)  # handshake (post-erase, pre-stream)
             dio = deflate.DeflateIO(body, deflate.GZIP)
             if fmt == _DELTA_FORMAT:
                 # Delta: stream-decompress the patch and reconstruct the image against the
