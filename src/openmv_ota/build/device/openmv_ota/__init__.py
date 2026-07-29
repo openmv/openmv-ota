@@ -717,7 +717,11 @@ def install(url, ca=None):  # pragma: no cover
     here = __file__.rsplit("/", 1)[0]
     ca = _resolve_ca(ca, here)
     ns = {}
-    exec(_read_file(here + "/data/installer.py", "r"), ns)
+    # exec()'ing the ~1000-line installer source is one unsplittable compile+exec that can exceed a
+    # short watchdog window; relax() ISR-feeds across it (no-op unless the app armed a watchdog). This
+    # runs synchronously in run()'s task, so the app's async feed loop can't cover it.
+    with _wdt_relax():
+        exec(_read_file(here + "/data/installer.py", "r"), ns)
     log.debug("install: staged installer")           # milestone + HIL path witness
     ns["run"](url, ca, cfg)  # hil-residual: terminal call into the RAM installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
 
