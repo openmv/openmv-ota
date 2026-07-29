@@ -424,6 +424,23 @@ def test_install_stream_feeds_the_watchdog_per_chunk():
     assert len(calls) >= front // block
 
 
+def test_install_stream_gc_collect_runs_on_cadence():
+    # With a watchdog armed the caller passes a proactive-collect hook; _install_stream calls it
+    # on the _GC_EVERY byte cadence so automatic GC never fires mid-write. Never disables GC.
+    block = 4096
+    every = inst("_GC_EVERY")
+    front = 3 * every                                # a few cadence intervals
+    image = bytearray(b"\xff" * front)
+    for i in range(0, front, block):                 # non-blank every chunk so each is written
+        image[i:i + 4] = b"DATA"
+    calls = []
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    inst("_install_stream")(_SourceOf(bytes(image), step=block), flash.write, flash.readback,
+                            front, block, _noop, None, None, None, lambda: calls.append(1))
+    assert len(calls) >= 2                            # fired on the byte cadence, not just once
+
+
 def test_install_stream_reports_progress_per_chunk():
     block = 4096
     front = 3 * block

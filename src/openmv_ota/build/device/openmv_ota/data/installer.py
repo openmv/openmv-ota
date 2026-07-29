@@ -116,6 +116,15 @@ _ZERO_MV = memoryview(_ZERO_CHUNK)
 _FF_CHUNK = b"\xff" * _CHUNK
 _FF_MV = memoryview(_FF_CHUNK)
 
+# Bytes of image written between PROACTIVE, relax()-fed garbage collections during the write.
+# Preallocation removed the megabyte-scale delta churn, but small residual churn (memoryview
+# slices, the compressed-download reader) still trips an automatic GC every few MB -- and on the
+# N6's multi-MB heap ANY collection is ~65-100 ms (the pause is heap-size-bound, not garbage-bound),
+# which under a watchdog can outrun the window. So when a watchdog is armed we collect PROACTIVELY
+# on this cadence, keeping free heap high enough that automatic GC never fires mid-write; each
+# proactive collect runs under relax() (ISR-fed), so its pause can't bite. GC is never disabled.
+_GC_EVERY = 512 * _CHUNK      # ~2 MB: well under the ~5 MB automatic-GC interval measured on HW
+
 # Socket timeout (s) for the download: bounds the TLS handshake and every recv so a
 # stalled connection fails the install cleanly (-> reboot to golden) instead of hanging.
 _SOCK_TIMEOUT = 30
@@ -682,7 +691,7 @@ class _Progress:
 
 
 def _install_stream(source, write, readback, front_size, block, feed,
-                    progress=None, expect_sha=None, repr_marker=None):
+                    progress=None, expect_sha=None, repr_marker=None, gc_collect=None):
     """Stream the decompressed image into the ALREADY-ERASED FRONT slot 1:1
     (verifying every write by read-back, skipping already-erased 0xFF runs), then
     arm the trial.
@@ -717,6 +726,7 @@ def _install_stream(source, write, readback, front_size, block, feed,
     work = bytearray(_CHUNK)                          # the ONE reused write buffer -> zero-alloc loop
     mv = memoryview(work)
     off = 0
+    since_gc = 0
     while off < front_size:
         feed()                                       # before the (recv + delta reconstruct) fill
         want = _CHUNK if front_size - off >= _CHUNK else front_size - off
@@ -737,6 +747,10 @@ def _install_stream(source, write, readback, front_size, block, feed,
                 raise OSError("write verify failed at %d" % off)
         off += n
         feed()
+        since_gc += n
+        if gc_collect is not None and since_gc >= _GC_EVERY:
+            gc_collect()                             # proactive relax()-fed collect -> auto-GC never fires
+            since_gc = 0
         if progress is not None:
             progress(off, front_size)
     if off == front_size and source.readinto(mv[:1]):    # any bytes beyond the slot -> wrong image
@@ -926,6 +940,16 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 log.warning("install: wdt gap %dms" % gap)  # hil-residual: temp gap diagnostic (device-only)
             _raw_feed()  # hil-residual: temp gap diagnostic (device-only)
             _last_feed[0] = _time.ticks_ms()  # hil-residual: temp gap diagnostic (device-only)
+    # Proactive GC hook (only when a watchdog is armed): the write loop calls this on a byte
+    # cadence to collect BEFORE the heap fills, so automatic GC never fires mid-write. gc.collect()
+    # is a single unsplittable pause, so it runs under relax() (ISR-fed). GC is never disabled.
+    gc_collect = None
+    if openmv_wdt is not None:
+        import gc as _gc  # hil-residual: watchdog-armed proactive collect (opt-in; covered by the watchdog HIL scenario)
+
+        def gc_collect():  # hil-residual: watchdog-armed proactive collect (opt-in; covered by the watchdog HIL scenario)
+            with relax():  # hil-residual: relax() feeds the WWDG across the unsplittable gc.collect()
+                _gc.collect()  # hil-residual: proactive collection at a controlled point (device-only)
     # Log-only progress, built from RAM + the frozen logger so it survives the FRONT erase.
     progress = _Progress(log) if log is not None else None
     front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
@@ -1114,7 +1138,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 log.debug("install: representation full")
             log.info("install: writing FRONT")
             _install_stream(source, write, readback, front_size, block, feed,
-                            progress, expect_sha, repr_marker)
+                            progress, expect_sha, repr_marker, gc_collect)
             # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
             # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
             # ports cache the final sub-page writes -- the trailer + arm markers -- and
