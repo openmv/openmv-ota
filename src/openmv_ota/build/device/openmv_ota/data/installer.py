@@ -12,6 +12,23 @@ resets into the golden BACK image (boot.py rejects the half-written FRONT). Pre-
 failures (bad URL, DNS, TLS, a bad/forbidden manifest) raise normally -- ``/rom`` is
 still intact, so the app catches them and can retry without a reboot.
 
+WHY THIS IS SYNCHRONOUS (and must stay so), and how it feeds an enabled watchdog: an app may
+turn on ``openmv_wdt``, which this install has to keep fed the whole way through. It runs
+SYNCHRONOUSLY -- and MUST, from the erase onward -- because the app's own coroutines (its main
+loop, ``run()``, every task on the asyncio event loop) live in the FRONT slot being erased. So
+if any post-erase op ``await``\\ed and YIELDED to the event loop, the loop would resume that
+now-erased bytecode straight from flash and HardFault. Post-erase work therefore must not yield.
+That rules OUT async sockets for the download; instead the recv is **non-blocking + progress-
+fed without yielding**: the reader waits for data in short ``select.poll`` slices and ``feed``\\s
+the watchdog each slice, so a slow/paced link stays fed while a dead link (no data at all) stops
+producing and trips the watchdog after ``_SOCK_TIMEOUT`` -> golden. The erase/write loops feed
+per block/piece the same way. ``relax()`` (an ISR feed that also does not yield) is a LAST
+RESORT, used ONLY for the two genuinely unsplittable single C calls with no seam to feed
+through: the TLS handshake (``_connect``) and this file's own ``exec`` compile (in
+``openmv_ota.install``). All of it is a no-op unless the app armed a watchdog. (Pre-erase --
+check-in, manifest fetch -- could yield safely, and the check-in in ``run()`` does; but the
+installer is one synchronous unit for simplicity and the hard post-erase guarantee.)
+
 Like ``boot.py`` this is split into pure logic (URL/HTTP/chunked parsing, the
 flash write loop -- all I/O injected, host-tested) and a device entry (``run`` /
 ``_open`` / ``_connect``) that wires the real ``socket``/``ssl``/``deflate``/
@@ -93,6 +110,10 @@ _CHUNK = 4096
 # Socket timeout (s) for the download: bounds the TLS handshake and every recv so a
 # stalled connection fails the install cleanly (-> reboot to golden) instead of hanging.
 _SOCK_TIMEOUT = 30
+# Poll slice (ms) for the non-blocking download recv: the reader waits for data in slices this long,
+# feeding the watchdog each slice, so it must stay WELL under the watchdog window (~100 ms) -> a few
+# feeds per window. Only matters when a watchdog is armed; a fast recv returns the moment data arrives.
+_RECV_POLL_MS = 20
 
 
 # --- pure: URL + HTTP (host-testable) ---------------------------------------
@@ -173,11 +194,25 @@ class _Reader:
     line reads for the status/headers/chunk-sizes, plus bounded raw reads for the
     body. Holds any bytes read past the headers so the body stream sees them."""
 
-    def __init__(self, recv, buf=b""):
+    def __init__(self, recv, feed=_noop, poll=None, buf=b""):
         self._recv = recv
+        self._feed = feed          # progress-fed download: fed while WAITING for the next recv
+        self._poll = poll          # select.poll registered on the socket (None -> plain blocking recv)
         self._buf = buf
 
     def _fill(self):
+        # NON-BLOCKING, progress-fed recv (NOT relax): wait for the socket to be readable in short
+        # slices, feeding the watchdog each slice, so a slow/paced download keeps it fed by progress --
+        # a genuinely dead link stops producing data and trips it after _SOCK_TIMEOUT (-> golden). Feed
+        # is a no-op unless the app armed a watchdog; if poll is unavailable we fall back to a plain
+        # blocking recv (watchdog-off is unaffected). The recv itself won't block once poll says ready.
+        if self._poll is not None:
+            waited = 0
+            while not self._poll.poll(_RECV_POLL_MS):
+                self._feed()
+                waited += _RECV_POLL_MS
+                if waited >= _SOCK_TIMEOUT * 1000:
+                    raise OSError("recv timed out")   # a dead link -> clean install error -> golden
         d = self._recv(_CHUNK)
         if not d:
             return False
@@ -639,29 +674,39 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
     ai = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0]
     sock = socket.socket(ai[0], ai[1], ai[2])
     try:
-        sock.settimeout(_SOCK_TIMEOUT)               # so a stalled handshake/recv can't
-        sock.connect(ai[-1])                         # block forever -> clean install error
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.verify_mode = ssl.CERT_REQUIRED
-        ctx.load_verify_locations(cadata=ca_pem)
-        tls = ctx.wrap_socket(sock, server_hostname=host)  # blocking TLS handshake -- the caller
-        log.debug("install: TLS up")                 # relax()es the whole fetch (see run())
+        sock.settimeout(_SOCK_TIMEOUT)               # so a stalled handshake/recv can't block forever
+        # connect + TLS handshake are blocking, unsplittable mbedtls C ops that can exceed a short
+        # watchdog window; relax() ISR-feeds across them (no-op unless the app armed a watchdog).
+        with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
+            sock.connect(ai[-1])
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.load_verify_locations(cadata=ca_pem)
+            tls = ctx.wrap_socket(sock, server_hostname=host)
+        log.debug("install: TLS up")
         return tls  # hil-residual: bare return of the wrapped TLS socket
     except Exception:  # hil-residual: connect-failure cleanup wrapper
         sock.close()  # hil-residual: bare cleanup close on a failed connect (error path)
         raise  # hil-residual: bare re-raise to the caller (pre-erase, /rom intact)
 
 
-def _open(url, ca_pem, socket, ssl, max_redirects=5):  # pragma: no cover
+def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5):  # pragma: no cover
     """Connect, GET, follow redirects, and return ``(sock, body)`` on a 2xx -- all
     before the erase, so a bad URL / DNS / TLS / non-2xx status raises to the app
-    with /rom still intact."""
+    with /rom still intact. ``feed`` lets the body reader keep an armed watchdog fed
+    between recvs (progress-fed, non-blocking) without a relax()."""
     for _ in range(max_redirects + 1):
         host, port, path = _parse_url(url)
         sock = _connect(host, port, ca_pem, socket, ssl)
+        try:                                          # ssl sockets support poll (stream ioctl); this
+            import select                             # lets the reader wait for data in short slices,
+            poll = select.poll()                      # feeding between them -- a progress-fed recv, not
+            poll.register(sock, select.POLLIN)        # a relax() disable
+        except Exception:  # pragma: no cover  # hil-residual: select/poll is always present on our ports; fall back to a plain blocking recv so a normal install is never broken (only the on-watchdog per-recv feed relies on poll)
+            poll = None
         try:
             sock.write(_request_bytes(host, port, path))
-            reader = _Reader(sock.read)
+            reader = _Reader(sock.read, feed, poll)
             code, headers = _read_response(reader)
         except Exception:
             sock.close()
@@ -681,7 +726,7 @@ def _open(url, ca_pem, socket, ssl, max_redirects=5):  # pragma: no cover
     raise OSError("too many redirects")
 
 
-def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: no cover
+def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop):  # pragma: no cover
     """Pre-erase: fetch the signed manifest, verify its signature against the frozen
     trusted keys (exactly as boot.py verifies an image trailer), apply the device-relative
     checks (board / platform / anti-rollback), and pick a representation. Returns
@@ -690,7 +735,7 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     import uctypes
     import vfs
 
-    sock, body = _open(manifest_url, ca_pem, socket, ssl)
+    sock, body = _open(manifest_url, ca_pem, socket, ssl, feed)
     try:
         raw = _read_all(body, _MANIFEST_MAX)
     finally:
@@ -897,15 +942,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # (transient failures retry next poll), so without a line here a REJECTED update -- bad
     # signature, untrusted key, failed board/version/platform vetting -- is invisible in the
     # field, exactly when an operator most needs to know why a release won't take.
+    # install() runs SYNCHRONOUSLY inside run()'s asyncio task, so the app's async feed loop can't run
+    # during it -- every blocking op must feed the watchdog itself. The unsplittable network ops (TLS
+    # handshake in _connect, each recv in _Reader) relax() at their leaf; the erase/write loops stay
+    # PROGRESS-fed per block/piece, so a hung flash/reconstruct loop is still caught. All no-op off.
     log.info("install: fetching manifest %s" % manifest_url)
     try:
-        # install() runs SYNCHRONOUSLY inside run()'s asyncio task, so the app's async feed loop
-        # cannot run during it -- every blocking op here must feed the watchdog itself. The manifest
-        # fetch is a blocking TLS handshake + recv (romfs CA read, connect, handshake, GET); relax()
-        # ISR-feeds across the whole fetch (no-op unless the app armed a watchdog). The erase/write
-        # below stay PROGRESS-fed per block, so a hung flash loop is still caught.
-        with relax():
-            image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
+        image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed)
     except Exception as e:
         log.warning("install: rejected before erase (%r)" % e)   # /rom untouched (%r shows the class)
         raise  # hil-residual: bare re-raise to the app (pre-erase reject witnessed by install.reject)
@@ -934,8 +977,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             log.info("install: erasing FRONT (%d bytes)" % front_size)
             erase(front_size)
             log.info("install: downloading %s (%s)" % (image_url, fmt))
-            with relax():                            # image-download open = another blocking TLS
-                sock, body = _open(image_url, ca_pem, socket, ssl)  # handshake (post-erase, pre-stream)
+            sock, body = _open(image_url, ca_pem, socket, ssl, feed)
             dio = deflate.DeflateIO(body, deflate.GZIP)
             if fmt == _DELTA_FORMAT:
                 # Delta: stream-decompress the patch and reconstruct the image against the
