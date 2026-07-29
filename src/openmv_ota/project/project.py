@@ -290,8 +290,22 @@ _FW_FEATURES = (
         "sentinel_path": "ports/stm32/machine_wdt.c",
         "sentinel": "machine_wwdt",
         "required": False,
+        # Fork-compat: upstream adds the H7 WWDG clock's LL header to stm32h7xx_hal_conf_base.h, but the
+        # openmv H7 boards don't inherit that base, so the H7 clock-enable (LL_APB3_GRP1_EnableClock)
+        # fails to compile ("implicit declaration"). Add the include to machine_wdt.c itself --
+        # self-contained, so it builds regardless of a board's hal_conf. The N6 (STM32N6, the real
+        # target) uses the non-H7 path and never touches this; the include just unbreaks H7 collateral.
+        "fixups": (
+            ("ports/stm32/machine_wdt.c", "#if defined(STM32H7)", '#include "stm32h7xx_ll_bus.h"'),
+        ),
     },
     {
+        # NOTE: on a firmware whose micropython predates micropython#19084 (machine.mem_backup), this
+        # won't cherry-pick -- #19399's machine_wdt.c wiring sits right after the mem_backup config in
+        # alif/mpconfigport.h, so the diff context is absent and the pick conflicts. #19084 is a big
+        # cross-port PR we don't want to carry just for an opt-in AE3 watchdog, so (being opt-in) this
+        # simply SKIPS until the firmware's micropython advances far enough to include #19084 -- then
+        # both land together, cleanly. It's merged upstream, so that happens on the next fork bump.
         "pr": "19399",
         "summary": "ALIF watchdog",
         "why": "machine.WDT on the alif port (the AE3) for the opt-in openmv_wdt",
@@ -320,9 +334,29 @@ def _feature_present(mpy: Path, feat: dict) -> bool:
         return False
 
 
+def _apply_fork_fixup(mpy: Path, path: str, anchor: str, added: str) -> bool:
+    """Idempotently insert ``added`` on the line after the first one containing ``anchor`` in
+    ``mpy/path``; return True if the file changed. Reconciles a carried upstream commit with the
+    older openmv fork -- e.g. an include the fork's board hal_conf doesn't pull in. Raises if the
+    anchor is gone (the upstream file moved out from under the fixup -- fix it, don't ship a miss)."""
+    f = mpy / path
+    text = f.read_text(encoding="utf-8")
+    if added in text:
+        return False
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if anchor in line:
+            lines.insert(i + 1, added + "\n")
+            f.write_text("".join(lines), encoding="utf-8")
+            return True
+    raise ProjectError("fork-compat fixup anchor %r not found in %s" % (anchor, path), exit_code=1)
+
+
 def _carry_feature(repo: Path, mpy: Path, feat: dict) -> None:
-    """Cherry-pick ``feat``'s pinned commits into lib/micropython and commit the submodule bump, so
-    the checkout stays clean (the lock/verify guard refuses a dirty tree). Raises on conflict."""
+    """Cherry-pick ``feat``'s pinned commits into lib/micropython, apply any fork-compat fixups, and
+    commit the submodule bump so the checkout stays clean (the lock/verify guard refuses a dirty tree).
+    A REQUIRED feature that won't apply raises; an opt-in one is skipped -- it needs a prerequisite this
+    firmware's micropython predates, and carries itself once the base advances (it's merged upstream)."""
     pr = feat["pr"]
     print("note: carrying micropython#%s (%s) in lib/micropython -- %s; committing the bump so the "
           "checkout stays clean." % (pr, feat["summary"], feat["why"]))
@@ -333,9 +367,22 @@ def _carry_feature(repo: Path, mpy: Path, feat: dict) -> None:
         gitrepo.run_git(mpy, *ident, "cherry-pick", *feat["commits"])
     except ProjectError as e:
         gitrepo.run_git(mpy, "cherry-pick", "--abort", check=False)   # leave the tree unwound
+        if not feat["required"]:
+            print("note: skipping opt-in micropython#%s (%s) -- it does not apply to this firmware's "
+                  "micropython yet (it needs a prerequisite the firmware predates); it carries itself "
+                  "once the firmware's micropython advances (it's merged upstream)." % (pr, feat["summary"]))
+            return
         raise ProjectError(
             "could not carry micropython#%s (%s). If the PR was rebased upstream, update its "
             "`commits` in project.py._FW_FEATURES." % (pr, e), exit_code=1) from None
+    changed = False
+    for path, anchor, added in feat.get("fixups", ()):
+        if _apply_fork_fixup(mpy, path, anchor, added):
+            gitrepo.run_git(mpy, "add", path)
+            changed = True
+    if changed:
+        gitrepo.run_git(mpy, *ident, "commit", "--quiet", "-m",
+                        "openmv fork-compat: reconcile micropython#%s with the pinned base" % pr)
     gitrepo.run_git(repo, *ident, "commit", "--quiet", "lib/micropython",
                     "-m", "carry micropython#%s (%s, v5.0 OTA)" % (pr, feat["summary"]))
 
