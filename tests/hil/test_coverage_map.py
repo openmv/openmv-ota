@@ -48,6 +48,13 @@ def _device_log_lines():
             for line in f:
                 if _LOGCALL.search(line):
                     yield line
+    # A few markers are emitted by the BENCH APPS (built in ota_cycle.bench_main_py), not the
+    # shipped device code -- e.g. the watchdog-bite witnesses. Validate those substrings against
+    # their real emission site too: the app's own `_blog.<level>(...)` calls in ota_cycle.py.
+    with open(ota_cycle.__file__) as f:
+        for line in f:
+            if "_blog." in line and _LOGCALL.search(line):
+                yield line
 
 
 def test_every_coverage_substring_is_a_live_device_log_line():

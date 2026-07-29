@@ -254,6 +254,8 @@ COVERAGE = {
     "identity: device id": "run.identity_uid",           # machine.unique_id() read into identity
     "data: path": "run.data_path",                       # sync() located a bundled data/ resource
     "wdt: feed": "run.wdt_feed",                          # watchdog fed each poll (no-op when off)
+    "app: wdt STOP feeding": "wdt.stop",                  # bite test: the app deliberately stopped feeding
+    "app: wdt BIT": "wdt.bit",                            # bite test: WWDG reset (reset_cause==3), then recovered
     "run: poll wait": "run.poll_tail",                   # run() loop tail reached (post-checkin)
     "clock: resolved": "run.clock",                      # NTP/RTC resolve each poll
     "clock: syncing": "run.clock",                       # openmv_rtc: untrusted clock -> one NTP sync
@@ -415,6 +417,21 @@ SCENARIOS["watchdog"] = dict(
     SCENARIOS["delta"],
     desc="watchdog ENABLED: delta install survives a real OTA cycle with the WWDG armed",
     app="wdt",
+)
+
+# The watchdog NEGATIVE path: prove the WWDG actually BITES when feeding stops -- and recovers as a
+# SINGLE bite. The wdt_bite app arms + feeds ~1s (steady feeding demonstrably works), STOPS (->
+# wdt.stop); the window expires and the board resets; the next boot sees reset_cause()==3 and logs
+# wdt.bit as it recovers into a normal feed loop. No OTA (publish="none"), so the device stays on
+# golden the whole time -> end="golden". Settling ALIVE back on golden (checking in, not reset-
+# looping) is itself the proof the bite was single -- a stuck-feeding app would loop forever and
+# never satisfy end="golden". N6-only (WWDG=stm32); wdt.bit firing witnesses reset_cause==3 (the app
+# only logs it under that cause, per section 6.3: machine.reset() clears the WWDG so boot is unwatched).
+SCENARIOS["watchdog_bite"] = dict(
+    publish="none", app="wdt_bite", end="golden",
+    desc="watchdog ENABLED: the WWDG bites when feeding stops (reset_cause=WDT), then recovers (single bite)",
+    expect=["log.configured", "boot.ready", "run.checkin", "wdt.stop", "wdt.bit"],
+    forbid=["install.start", "install.armed", "confirm.promoted"],
 )
 
 
