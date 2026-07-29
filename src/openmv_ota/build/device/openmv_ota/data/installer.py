@@ -737,30 +737,38 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop):
 
     sock, body = _open(manifest_url, ca_pem, socket, ssl, feed)
     try:
-        raw = _read_all(body, _MANIFEST_MAX)
+        raw = _read_all(body, _MANIFEST_MAX)          # progress-fed reader (poll+feed)
     finally:
         sock.close()
-    m = _manifest_parse(raw)                          # structure + crc (raises on bad)
-    pubkey = cfg.TRUSTED_KEYS.get(m["key_id"])
-    if pubkey is None:
-        log.warning("install: reject untrusted key")
-        raise OSError("manifest signed by an untrusted key")  # hil-residual: bare raise (reject witnessed by install.reject_key)
-    if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
-        log.warning("install: reject bad signature")
-        raise OSError("manifest signature does not verify")  # hil-residual: bare raise (reject witnessed by install.reject_sig)
+    # The manifest is now in RAM; everything below -- CRC parse, the ECDSA signature verify,
+    # and the flash-vetting -- is pure CPU: single unsplittable C/Python calls with no seam to
+    # feed through, and the P-256 verify alone can outrun the ~100 ms watchdog window (this is
+    # the op that bit on the N6 watchdog HIL run). So if the app armed a watchdog, ONE relax()
+    # ISR-feeds across the whole bounded block (last resort, exactly like the TLS handshake and
+    # the exec compile). There is no network in here, so relax() cannot mask a stalled recv --
+    # only the leaf reads above are progress-fed. No-op unless a watchdog is armed.
+    with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
+        m = _manifest_parse(raw)                          # structure + crc (raises on bad)
+        pubkey = cfg.TRUSTED_KEYS.get(m["key_id"])
+        if pubkey is None:
+            log.warning("install: reject untrusted key")
+            raise OSError("manifest signed by an untrusted key")  # hil-residual: bare raise (reject witnessed by install.reject_key)
+        if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
+            log.warning("install: reject bad signature")
+            raise OSError("manifest signature does not verify")  # hil-residual: bare raise (reject witnessed by install.reject_sig)
 
-    body_dict = m["body"]
-    base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # partition XIP base
-    floor = _golden_floor(uctypes.bytearray_at(base + cfg.PARTITION_SIZE - cfg.OTA_BLOCK,
-                                              cfg.OTA_BLOCK))
-    reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
-                            getattr(cfg, "ACCOUNT_ID", ""))
-    if reason is not None:
-        log.warning("install: reject vetting")   # rejected: witness the boundary
-        raise OSError("manifest rejected (%s)" % reason)  # hil-residual: bare raise (reject witnessed by install.reject_vet)
-    # The delta applier is pure Python (no ulab/C), so every board is delta-capable; the
-    # delta is used only when its base matches this device's golden (BACK) version.
-    rep = _select_rep(body_dict, True, floor)
+        body_dict = m["body"]
+        base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # partition XIP base
+        floor = _golden_floor(uctypes.bytearray_at(base + cfg.PARTITION_SIZE - cfg.OTA_BLOCK,
+                                                  cfg.OTA_BLOCK))
+        reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
+                                getattr(cfg, "ACCOUNT_ID", ""))
+        if reason is not None:
+            log.warning("install: reject vetting")   # rejected: witness the boundary
+            raise OSError("manifest rejected (%s)" % reason)  # hil-residual: bare raise (reject witnessed by install.reject_vet)
+        # The delta applier is pure Python (no ulab/C), so every board is delta-capable; the
+        # delta is used only when its base matches this device's golden (BACK) version.
+        rep = _select_rep(body_dict, True, floor)
     if rep is None:
         raise OSError("manifest has no usable representation")  # hil-residual: bare raise (no-rep guard, inject-only)
     image_url = _resolve_url(manifest_url, rep["url"])
