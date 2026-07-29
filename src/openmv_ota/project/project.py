@@ -678,6 +678,7 @@ import asyncio
 import logging
 
 import openmv_ota
+import openmv_wdt
 from openmv_cloud import configure, csi, datalog, logs
 
 # ==== GENERATED: resource limits ===========================================
@@ -717,6 +718,14 @@ async def main():
     cam.framesize(csi.VGA)
     # ==== END YOUR APP =====================================================
 
+    # ==== GENERATED: arm the watchdog ======================================
+    # No-op unless you turn on device/openmv_wdt.py (ENABLED=True + rebuild). The
+    # slow camera setup above ran UNWATCHED on purpose; arm here, entering the steady
+    # loop -- arming any earlier could reset the board mid-setup (the window is ~100 ms).
+    # Once on, you MUST keep feeding it (below): a stalled loop then resets the board.
+    openmv_wdt.start()
+    # ==== END GENERATED ====================================================
+
     # ==== YOUR APP: main loop ==============================================
     # Your program goes here -- run your vision code on each `img`. As an
     # example, every 30th frame logs a line (live in the dashboard) and posts a
@@ -724,6 +733,13 @@ async def main():
     confirmed = False
     frames = 0
     while True:
+        # ==== GENERATED: feed the watchdog (no-op unless openmv_wdt is on) ==
+        # Once per iteration -- a captured frame means the loop is making real
+        # progress, so a hung loop stops feeding and the board resets. If YOUR
+        # per-frame work can exceed the window (~100 ms), feed inside it too, or
+        # wrap a truly unsplittable op in `with openmv_wdt.relax(): ...`.
+        openmv_wdt.feed()
+        # ==== END GENERATED ================================================
         img = await cam.snapshot()
         frames += 1
         # ==== GENERATED: confirm a healthy update ==========================

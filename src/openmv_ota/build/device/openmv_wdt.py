@@ -10,13 +10,16 @@ max on the N6 -- so this is a **tens-of-ms** discipline, not seconds. Edit the c
 rebuild firmware, and feed it on a TIGHT cadence from your main loop::
 
     import openmv_wdt
+    ...                          # your slow one-time setup (camera reset, network) runs UNWATCHED
+    openmv_wdt.start()           # arm now that setup is done -- NOT at import (see start())
     while True:
         openmv_wdt.feed()        # feed every few ms while awake; deep sleep stops the WWDG, so no
         ...                      # feed is needed asleep. A coarse `sleep(2)` loop will reset you.
 
 Feed by REAL PROGRESS -- feed as you do work, so a feed means work happened and a hung loop
-still trips the watchdog. Split long ops into short steps and feed per step; the OTA install and
-boot paths already service it that way (the ranged flash erase feeds per ~2 ms block, etc.).
+still trips the watchdog. Split long ops into short steps and feed per step; the OTA install path
+already services it that way (the ranged flash erase feeds per ~2 ms block, etc.). Boot needs no
+feeding: ``machine.reset()`` clears the WWDG, so every boot runs before your app re-arms it.
 
 Only as a LAST RESORT, for a single op you truly can't subdivide, wrap it::
 
@@ -107,5 +110,13 @@ def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardwa
         _feed = _wdt.feed
 
 
-if ENABLED:  # pragma: no cover (enabling is a manual edit + firmware rebuild)
-    _start()
+def start():
+    """Arm the watchdog NOW. Call this ONCE from your app, when it is PAST its slow one-time setup
+    (camera reset, network bring-up) and about to enter its steady main loop. Arming earlier -- e.g.
+    at import -- would let the short window (~100 ms) expire DURING that setup, before your first
+    ``feed()``, and reset the board. Idempotent and a no-op when the watchdog is off (ENABLED=False),
+    so it is safe to leave in your app unconditionally. Nothing else arms it: with ENABLED=True but no
+    ``start()`` call, the watchdog never runs. After an OTA trial reboot ``machine.reset()`` clears the
+    WWDG, so boot runs unwatched and your app re-arms here -- boot itself needs no feeding."""
+    if ENABLED:
+        _start()  # pragma: no cover (device)  # hil-residual: watchdog-enabled arm; ENABLED=False on the bench so start() no-ops -- the ENABLED=True arm is an opt-in manual edit + rebuild, covered by a future watchdog-enabled HIL scenario
