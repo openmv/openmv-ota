@@ -47,20 +47,26 @@ fi
 #    also re-runs if a pre-#19348 cache is present (lock exists but the patch is missing).
 FW="$CACHE/openmv"
 PROJ="$CACHE/proj-$BOARD"
+# Scrub leftover UNTRACKED files from the firmware EVERY run (cache-hit or miss): `build firmware`
+# drops modules/ecdsa_verify.c and removes it in a finally, but a build killed mid-flight (or one that
+# found it already present -> _install_verify_module returns None and never cleans it) leaves it
+# untracked. `reset --hard` doesn't drop untracked files either, so once leaked the firmware reads
+# dirty forever and every subsequent `build firmware` refuses the tree. Unconditional clean fixes it.
+[ -d "$FW/.git" ] && git -C "$FW" clean -qfd >/dev/null 2>&1 || true
 # Re-provision when: no lock yet; the pre-#19348 cache is present (lock exists but the patch is
-# missing); OR the tool's firmware-feature code (project.py = _FW_FEATURES + the carry) is newer
-# than the cached lock -- otherwise a lock captured before a feature was added/changed would drift
-# against the firmware the current tool carries ("firmware.dirty: False -> True" at build time).
+# missing); OR the tool's commit changed since the cached project was built (so a firmware-feature
+# add/change re-locks against what the current tool carries -- otherwise the cached lock drifts).
+# Keyed on the checkout's HEAD sha, NOT a file mtime: the runner reuses its workspace and only
+# rewrites CHANGED files, so an unchanged project.py keeps an old mtime and an mtime test misfires.
+SHA="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
 if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
-   || [ "$CHECKOUT/src/openmv_ota/project/project.py" -nt "$PROJ/openmv-ota.lock.json" ] \
+   || [ "$(cat "$PROJ/.provision-sha" 2>/dev/null)" != "$SHA" ] \
    || ! grep -q 'MP_VFS_ROM_IOCTL_GET_MIN_PREPARE' "$FW/lib/micropython/extmod/vfs.h" 2>/dev/null; then
   [ -d "$FW/.git" ] || { log "git clone openmv"; git clone -q https://github.com/openmv/openmv.git "$FW"; }
   log "firmware <- $REF (pristine reset; project new re-carries the current features)"
   # Reset HARD to the pinned ref so a prior run's feature-carry commits don't accumulate and the
-  # cherry-picks (incl. any fork-compat fixup) re-apply cleanly onto the original tree. `reset --hard`
-  # does NOT drop untracked files, so also `clean -fdx`: a build drops modules/ecdsa_verify.c and
-  # removes it in a finally, but a killed/leaked one leaves it untracked -> the firmware reads dirty
-  # forever and every `build firmware` then refuses. Clean guarantees a pristine tree to lock against.
+  # cherry-picks (incl. any fork-compat fixup) re-apply cleanly onto the original tree; `clean -fdx`
+  # then wipes build artifacts + any untracked cruft so the tree is pristine to lock against.
   git -C "$FW" fetch -q origin "$REF"
   git -C "$FW" reset -q --hard FETCH_HEAD
   git -C "$FW" clean -qfdx
@@ -72,6 +78,7 @@ if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
   log "openmv-ota project new -b $BOARD --ota --dev --install-sdk"
   rm -rf "$PROJ"
   "$VENV/bin/openmv-ota" project new "$PROJ" -f "$FW" -b "$BOARD" --ota --dev --install-sdk >&2
+  echo "$SHA" > "$PROJ/.provision-sha"      # stamp the commit this project+lock was built with
 fi
 SDK="$HOME/openmv-sdk-$(cat "$FW/SDK_VERSION")"
 
