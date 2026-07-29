@@ -633,12 +633,17 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
     ai = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0]
     sock = socket.socket(ai[0], ai[1], ai[2])
     try:
-        sock.settimeout(_SOCK_TIMEOUT)               # so a stalled handshake/recv can't
-        sock.connect(ai[-1])                         # block forever -> clean install error
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.verify_mode = ssl.CERT_REQUIRED
-        ctx.load_verify_locations(cadata=ca_pem)
-        tls = ctx.wrap_socket(sock, server_hostname=host)
+        sock.settimeout(_SOCK_TIMEOUT)               # so a stalled handshake/recv can't block forever
+        # connect + TLS handshake are blocking, unsplittable mbedtls C ops that can exceed a short
+        # watchdog window; relax() ISR-feeds across them so a NORMAL (non-stalled) handshake doesn't
+        # trip the watchdog. A no-op unless the app armed one. A truly stalled connect still hits the
+        # socket timeout above -> clean install error -> golden fallback (not a watchdog reset).
+        with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
+            sock.connect(ai[-1])
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.load_verify_locations(cadata=ca_pem)
+            tls = ctx.wrap_socket(sock, server_hostname=host)
         log.debug("install: TLS up")
         return tls  # hil-residual: bare return of the wrapped TLS socket
     except Exception:  # hil-residual: connect-failure cleanup wrapper

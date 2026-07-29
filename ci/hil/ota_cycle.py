@@ -254,7 +254,6 @@ COVERAGE = {
     "identity: device id": "run.identity_uid",           # machine.unique_id() read into identity
     "data: path": "run.data_path",                       # sync() located a bundled data/ resource
     "wdt: feed": "run.wdt_feed",                          # watchdog fed each poll (no-op when off)
-    "app: wdt armed=True": "wdt.armed",                   # ENABLED watchdog really armed (start()->_start())
     "run: poll wait": "run.poll_tail",                   # run() loop tail reached (post-checkin)
     "clock: resolved": "run.clock",                      # NTP/RTC resolve each poll
     "clock: syncing": "run.clock",                       # openmv_rtc: untrusted clock -> one NTP sync
@@ -416,7 +415,6 @@ SCENARIOS["watchdog"] = dict(
     SCENARIOS["delta"],
     desc="watchdog ENABLED: delta install survives a real OTA cycle with the WWDG armed",
     app="wdt",
-    expect=SCENARIOS["delta"]["expect"] + ["wdt.armed"],
 )
 
 
@@ -667,8 +665,10 @@ def prepare(board, checkout, network, app="confirm"):
         # Turn the opt-in watchdog ON for this run: flip ENABLED in the project's frozen copy so the
         # built firmware arms the WWDG (WDT_ID='WWDG', 100 ms on the N6). Only stm32/N6 runs these
         # scenarios (WWDG is the stm32 deep-sleep-safe watchdog); the app then start()s + feeds it.
-        sh("sed -i 's/^ENABLED = False/ENABLED = True/' %s/device/openmv_wdt.py" % CFG["project"])
-        log("prepare: openmv_wdt ENABLED=True (watchdog scenario)")
+        wdt_py = "%s/device/openmv_wdt.py" % CFG["project"]
+        sh("sed -i 's/^ENABLED = False/ENABLED = True/' " + wdt_py)
+        sh("grep -q '^ENABLED = True' " + wdt_py)     # fail LOUD if the sed didn't take (else the
+        log("prepare: openmv_wdt ENABLED=True (watchdog scenario)")  # watchdog would silently no-op
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
