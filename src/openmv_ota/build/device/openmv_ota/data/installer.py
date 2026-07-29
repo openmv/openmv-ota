@@ -584,9 +584,10 @@ def _install_stream(read, write, readback, front_size, block, feed,
     off = 0
     buf = b""
     while True:
-        data = read(_CHUNK)
-        if data:
-            buf += data
+        feed()                                       # EVERY iteration, before the (recv + delta
+        data = read(_CHUNK)                           # reconstruct) read -- the write-side feed below
+        if data:                                     # only fires once a full _CHUNK is buffered, so a
+            buf += data                              # run of small partial reads could otherwise starve it
         if len(buf) >= _CHUNK or (not data and buf):
             chunk, buf = buf[:_CHUNK], buf[_CHUNK:]
             if off + len(chunk) > front_size:
