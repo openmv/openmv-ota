@@ -106,6 +106,15 @@ REPR_DELTA = _marker(b"repr.ocdl")
 # Stream/flash unit. FRONT_SIZE is always a multiple of this (it is block-aligned
 # and the block is >= 4096), so every flash write is a full, aligned chunk.
 _CHUNK = 4096
+# Preallocated, immutable compare buffers (memoryview-sliced, never copied). The streamed delta
+# apply runs millions of "is this chunk all-zero / all-0xFF?" tests; comparing against a fresh
+# bytes(n) each time was a big slice of the delta's heap churn -> GC pressure -> (under a watchdog)
+# an unfeedable collection pause. The whole write path now reuses fixed buffers so no per-chunk
+# allocation happens and automatic GC never fires mid-install.
+_ZERO_CHUNK = bytes(_CHUNK)
+_ZERO_MV = memoryview(_ZERO_CHUNK)
+_FF_CHUNK = b"\xff" * _CHUNK
+_FF_MV = memoryview(_FF_CHUNK)
 
 # Socket timeout (s) for the download: bounds the TLS handshake and every recv so a
 # stalled connection fails the install cleanly (-> reboot to golden) instead of hanging.
@@ -481,7 +490,8 @@ except ImportError:                               # host / a board without ulab 
 def _add(old_b, diff_b):
     """``(old_b + diff_b) mod 256`` for the diff region. All-zero diff (the unchanged bulk)
     is a straight copy; otherwise ulab vectorises the add, with a pure-Python fallback."""
-    if diff_b == bytes(len(diff_b)):
+    n = len(diff_b)
+    if diff_b == (_ZERO_CHUNK if n == _CHUNK else bytes(n)):   # unchanged bulk -> straight copy
         return bytes(old_b)
     if _np is not None:
         return (_np.frombuffer(old_b, dtype=_np.uint8)        # pragma: no cover (device/ulab)  # hil-residual: ulab vectorised add (device-only, no ulab on host); correctness proven end-to-end by the delta scenario's sha256 gate (install.armed -> confirm.promoted); the pure-Python twin below is host-tested
@@ -490,35 +500,57 @@ def _add(old_b, diff_b):
 
 
 class _PatchReader:
-    """A buffered reader over a streamed patch source (``src.read(n)`` -- a DeflateIO),
-    giving exact reads + varints so the patch is consumed in one forward pass."""
+    """Zero-alloc buffered reader over a streamed patch source -- a ``DeflateIO`` (``readinto``,
+    preferred) or a plain ``read(n)`` stub. Fills ONE reused buffer and serves exact reads (into a
+    caller memoryview) + varints by index, so the image-sized decompressed diff stream is consumed
+    in a single forward pass with no per-read allocation (no GC churn to bite an armed watchdog)."""
 
     def __init__(self, src):
         self._src = src
-        self._buf = b""
+        self._readinto = getattr(src, "readinto", None)   # DeflateIO has it; the read()-only stub doesn't
+        self._buf = bytearray(_CHUNK)
+        self._mv = memoryview(self._buf)
+        self._len = 0                                     # valid bytes currently in _buf
+        self._off = 0                                     # consumed offset within _buf
 
-    def _fill(self, need):
-        while len(self._buf) < need:
-            d = self._src.read(_CHUNK)
-            if not d:
-                return
-            self._buf += d
+    def _more(self):
+        """Refill the (fully consumed) buffer from src; False at EOF."""
+        if self._readinto is not None:
+            self._len = self._readinto(self._buf)
+        else:
+            d = self._src.read(_CHUNK)                     # stub path: read() -> copy in
+            self._len = len(d)
+            self._buf[:self._len] = d
+        self._off = 0
+        return self._len > 0
+
+    def read_into(self, dst):
+        """Fill ``dst`` (a memoryview) with exactly ``len(dst)`` patch bytes; raise on a short patch."""
+        m = len(dst)
+        got = 0
+        while got < m:
+            if self._off >= self._len and not self._more():
+                raise OSError("delta truncated")
+            take = self._len - self._off
+            if take > m - got:
+                take = m - got
+            dst[got:got + take] = self._mv[self._off:self._off + take]
+            self._off += take
+            got += take
 
     def read_exact(self, k):
-        self._fill(k)
-        if len(self._buf) < k:
-            raise OSError("delta truncated")
-        out, self._buf = self._buf[:k], self._buf[k:]
-        return out
+        """``k`` bytes as ``bytes`` -- only the 4-byte magic + tests; the hot path uses read_into."""
+        out = bytearray(k)
+        self.read_into(memoryview(out))
+        return bytes(out)
 
     def read_uvarint(self):
         result = shift = 0
         while True:
-            self._fill(1)
-            if not self._buf:
+            if self._off >= self._len and not self._more():
                 raise OSError("delta truncated")
-            b = self._buf[0]
-            self._buf = self._buf[1:]
+            b = self._buf[self._off]
+            self._off += 1
             result |= (b & 0x7F) << shift
             if not (b & 0x80):
                 return result
@@ -530,29 +562,44 @@ class _PatchReader:
 
 
 def _delta_stream(reader, old_read, chunk):
-    """Yield the reconstructed image in pieces from a streamed OCDL patch (via ``reader``)
-    + the golden base (``old_read(off, n)`` over the XIP'd BACK slot). Mirror of
-    openmv_ota.ota.delta.apply_delta -- streamed both ways, so neither the patch nor the
-    target is held whole. Raises OSError on a bad/short patch (-> reboot to golden)."""
+    """Yield the reconstructed image in <=``chunk`` pieces from a streamed OCDL patch (``reader``)
+    + the golden base (``old_read(off, n)`` -> a view over the XIP'd BACK slot). Mirror of
+    openmv_ota.ota.delta.apply_delta, streamed both ways so neither is held whole. Each piece is a
+    memoryview into ONE reused buffer -- the consumer MUST copy it before pulling the next (that is
+    what ``_GenReader`` does). Zero per-piece allocation: the diff add is done in place (ulab on
+    device; a pure-Python twin off it). Raises OSError on a bad/short patch (-> reboot to golden)."""
     if reader.read_exact(4) != _DELTA_MAGIC:
         raise OSError("bad delta magic")
     target_size = reader.read_uvarint()
+    out = bytearray(chunk)                                # reused output buffer for every yielded piece
+    mv = memoryview(out)
+    acc = _np.frombuffer(out, dtype=_np.uint8) if _np is not None else None   # writable view over out
     old = produced = 0
     while produced < target_size:
         extra_len = reader.read_uvarint()
         diff_len = reader.read_uvarint()
         old += reader.read_svarint()
         left = extra_len
-        while left:                                  # chunked like the diff run
-            m = left if left < chunk else chunk      # never one huge read_exact:
-            yield reader.read_exact(m)               # extra_len is patch-declared
-            produced += m                            # and only hash-checked after
+        while left:                                      # literal run: patch bytes verbatim
+            m = left if left < chunk else chunk
+            reader.read_into(mv[:m])
+            yield mv[:m]
+            produced += m
             left -= m
         o = old
         left = diff_len
-        while left:
+        while left:                                      # diff run: (BACK + patch) mod 256
             m = left if left < chunk else chunk
-            yield _add(old_read(o, m), reader.read_exact(m))
+            reader.read_into(mv[:m])                      # out[:m] = the diff bytes
+            old_v = old_read(o, m)                        # BACK view (XIP alias, no copy)
+            if mv[:m] == _ZERO_MV[:m]:                    # unchanged bulk -> result is just BACK
+                mv[:m] = old_v
+            elif acc is not None:                         # ulab in-place: out += BACK (uint8 wraps)
+                acc[:m] += _np.frombuffer(old_v, dtype=_np.uint8)  # pragma: no cover (device/ulab)  # hil-residual: ulab in-place vectorised add (device-only, no ulab on host); the pure branch below is host-tested and the delta scenario's sha256 gate proves the ulab path end-to-end (install.armed -> confirm.promoted)
+            else:                                         # pure fallback (host + no-ulab boards)
+                for i in range(m):
+                    out[i] = (out[i] + old_v[i]) & 0xFF
+            yield mv[:m]
             o += m
             left -= m
         old += diff_len
@@ -560,33 +607,55 @@ def _delta_stream(reader, old_read, chunk):
 
 
 class _GenReader:
-    """Adapt a generator of byte pieces to the ``read(n)`` source ``_install_stream``
-    pulls from -- buffers just enough to serve each request. ``feed`` is called after each
-    generator piece: one ``read(_CHUNK)`` can pull MANY delta pieces (each a recv + BACK read +
-    ulab add), and the write loop only feeds the watchdog once per _CHUNK, so without this a run
-    of small delta ops would accumulate past a short window between feeds. No-op by default."""
+    """Adapt a generator of memoryview pieces to a ``readinto(dst)`` source for _install_stream:
+    copy each piece into the caller's buffer (overflow into one reused hold buffer) so the write
+    loop stays zero-alloc. ``feed`` fires per generator piece -- one _CHUNK fill can pull MANY delta
+    pieces (each a patch read + BACK read + add) while the write loop only feeds once per _CHUNK, so
+    feeding here keeps an armed watchdog alive between those coarser feeds. No-op feed by default."""
 
     def __init__(self, gen, feed=_noop):
         self._gen = gen
-        self._buf = b""
         self._feed = feed
+        self._hold = bytearray(_CHUNK)                    # a partial piece carried across readinto()s
+        self._hmv = memoryview(self._hold)
+        self._hlen = 0                                    # valid bytes in _hold
+        self._hoff = 0                                    # consumed offset in _hold
 
-    def read(self, n):
-        while len(self._buf) < n:
+    def readinto(self, dst):
+        """Fill ``dst`` (a memoryview) with up to ``len(dst)`` reconstructed bytes; 0 at EOF."""
+        need = len(dst)
+        filled = 0
+        while filled < need:
+            if self._hoff < self._hlen:                  # drain the carried-over remainder first
+                take = self._hlen - self._hoff
+                if take > need - filled:
+                    take = need - filled
+                dst[filled:filled + take] = self._hmv[self._hoff:self._hoff + take]
+                self._hoff += take
+                filled += take
+                continue
             try:
-                self._buf += bytes(next(self._gen))
-                self._feed()                          # per reconstructed piece, not per _CHUNK
+                piece = next(self._gen)                   # a memoryview into the delta's reused buffer
+                self._feed()
             except StopIteration:
                 break
-        out, self._buf = self._buf[:n], self._buf[n:]
-        return out
+            plen = len(piece)
+            take = plen if plen <= need - filled else need - filled
+            dst[filled:filled + take] = piece[:take]
+            filled += take
+            if take < plen:                               # stash the leftover before the buffer is reused
+                rem = plen - take
+                self._hmv[:rem] = piece[take:]
+                self._hlen = rem
+                self._hoff = 0
+        return filled
 
 
 # --- pure: the flash write (host-testable; all I/O injected) -----------------
 
 def _is_blank(chunk):
     """True if ``chunk`` is all 0xFF -- already-erased flash we needn't rewrite."""
-    return chunk == b"\xff" * len(chunk)
+    return chunk == _FF_MV[:len(chunk)]          # compare vs a hoisted view -> no per-call alloc
 
 
 class _Progress:
@@ -612,29 +681,30 @@ class _Progress:
             self._log.info("install: %d%% (%d/%d bytes)" % (pct, done, total))
 
 
-def _install_stream(read, write, readback, front_size, block, feed,
+def _install_stream(source, write, readback, front_size, block, feed,
                     progress=None, expect_sha=None, repr_marker=None):
     """Stream the decompressed image into the ALREADY-ERASED FRONT slot 1:1
     (verifying every write by read-back, skipping already-erased 0xFF runs), then
     arm the trial.
 
     The caller MUST erase the FRONT slot BEFORE calling this AND before opening the
-    download stream ``read`` draws from -- so the download socket is never left idle
+    download stream ``source`` draws from -- so the download socket is never left idle
     during the multi-second erase (a slow flash on a power-saving link drops an idle
     connection, and the write loop would then read a truncated body). This function
     starts by read-back verifying the slot is fully erased.
 
-    ``read(n)`` yields decompressed image bytes (``b''`` at end); ``write(off, data)``
-    programs flash; ``readback(off, n)`` returns the ``n`` bytes at ``off``; ``feed()``
-    is called once per chunk so the watchdog stays alive through the loops *without*
-    masking a hang (if the loop stops iterating, feeding stops); ``progress(done,
-    front_size)`` (if given) is called once per written chunk so the caller can
-    log/report how far the install has got; ``expect_sha`` (if given, the manifest's hex
-    sha256 of the reconstructed image) is checked over the streamed bytes and must match;
-    ``repr_marker`` (if given) records which representation was applied (REPR_FULL /
-    REPR_DELTA) for status() to report. Raises on any size/hash mismatch or read-back
-    miscompare; this runs after the erase, so the caller turns any exception into a
-    reboot into golden."""
+    ``source.readinto(mv)`` fills up to ``len(mv)`` decompressed image bytes into the caller's
+    buffer and returns the count (0 at EOF) -- a ``DeflateIO`` for a full image, or a ``_GenReader``
+    over the delta stream; either way the write loop reuses ONE ``_CHUNK`` buffer, so no per-chunk
+    allocation happens and automatic GC never fires to bite an armed watchdog. ``write(off, data)``
+    programs flash; ``readback(off, n)`` returns the ``n`` bytes at ``off``; ``feed()`` is called
+    once per chunk so the watchdog stays alive through the loops *without* masking a hang (if the
+    loop stops iterating, feeding stops); ``progress(done, front_size)`` (if given) is called once
+    per written chunk; ``expect_sha`` (if given, the manifest's hex sha256 of the reconstructed
+    image) is checked over the streamed bytes and must match; ``repr_marker`` (if given) records
+    which representation was applied (REPR_FULL / REPR_DELTA) for status() to report. Raises on any
+    size/hash mismatch or read-back miscompare; this runs after the erase, so the caller turns any
+    exception into a reboot into golden."""
     off = 0
     while off < front_size:                          # confirm the caller's erase took
         n = _CHUNK if front_size - off >= _CHUNK else front_size - off
@@ -642,33 +712,35 @@ def _install_stream(read, write, readback, front_size, block, feed,
             raise OSError("erase verify failed at %d" % off)
         off += n
         feed()
-    if log is not None:
-        log.debug("install: erase verified")          # DIAGNOSTIC boundary: blank-scan done -> write loop
 
     digest = hashlib.sha256() if expect_sha is not None else None
+    work = bytearray(_CHUNK)                          # the ONE reused write buffer -> zero-alloc loop
+    mv = memoryview(work)
     off = 0
-    buf = b""
-    while True:
-        feed()                                       # EVERY iteration, before the (recv + delta
-        data = read(_CHUNK)                           # reconstruct) read -- the write-side feed below
-        if data:                                     # only fires once a full _CHUNK is buffered, so a
-            buf += data                              # run of small partial reads could otherwise starve it
-        if len(buf) >= _CHUNK or (not data and buf):
-            chunk, buf = buf[:_CHUNK], buf[_CHUNK:]
-            if off + len(chunk) > front_size:
-                raise ValueError("image larger than the %d-byte slot" % front_size)
-            if digest is not None:
-                digest.update(chunk)
-            if not _is_blank(chunk):                 # erased regions are already 0xFF
-                write(off, chunk)
-                if readback(off, len(chunk)) != chunk:
-                    raise OSError("write verify failed at %d" % off)
-            off += len(chunk)
-            feed()
-            if progress is not None:
-                progress(off, front_size)
-        if not data:
-            break
+    while off < front_size:
+        feed()                                       # before the (recv + delta reconstruct) fill
+        want = _CHUNK if front_size - off >= _CHUNK else front_size - off
+        n = 0
+        while n < want:                              # fill a full aligned chunk: re-chunks the
+            k = source.readinto(mv[n:want])          # arbitrary delta/deflate pieces into one buffer
+            if k == 0:
+                break                                # EOF: a short tail is caught by the size check
+            n += k
+        if n == 0:
+            break                                    # source exhausted; the size check below rejects short
+        chunk = mv[:n]
+        if digest is not None:
+            digest.update(chunk)
+        if not _is_blank(chunk):                     # erased regions are already 0xFF
+            write(off, chunk)
+            if readback(off, n) != chunk:
+                raise OSError("write verify failed at %d" % off)
+        off += n
+        feed()
+        if progress is not None:
+            progress(off, front_size)
+    if off == front_size and source.readinto(mv[:1]):    # any bytes beyond the slot -> wrong image
+        raise ValueError("image larger than the %d-byte slot" % front_size)
     if off != front_size:
         raise ValueError("image is %d bytes, expected a full %d-byte slot"
                          % (off, front_size))
@@ -1033,11 +1105,11 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 # Delta: stream-decompress the patch and reconstruct the image against the
                 # golden BACK slot (copy-with-diff, ulab add) -- both the patch and the output
                 # are streamed into FRONT, neither is materialised.
-                source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK), feed).read
+                source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK), feed)
                 repr_marker = REPR_DELTA
                 log.debug("install: representation delta")
             else:
-                source = dio.read
+                source = dio                          # DeflateIO is itself a readinto source
                 repr_marker = REPR_FULL
                 log.debug("install: representation full")
             log.info("install: writing FRONT")
