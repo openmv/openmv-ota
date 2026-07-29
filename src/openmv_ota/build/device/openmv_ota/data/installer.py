@@ -503,16 +503,21 @@ def _delta_stream(reader, old_read, chunk):
 
 class _GenReader:
     """Adapt a generator of byte pieces to the ``read(n)`` source ``_install_stream``
-    pulls from -- buffers just enough to serve each request."""
+    pulls from -- buffers just enough to serve each request. ``feed`` is called after each
+    generator piece: one ``read(_CHUNK)`` can pull MANY delta pieces (each a recv + BACK read +
+    ulab add), and the write loop only feeds the watchdog once per _CHUNK, so without this a run
+    of small delta ops would accumulate past a short window between feeds. No-op by default."""
 
-    def __init__(self, gen):
+    def __init__(self, gen, feed=_noop):
         self._gen = gen
         self._buf = b""
+        self._feed = feed
 
     def read(self, n):
         while len(self._buf) < n:
             try:
                 self._buf += bytes(next(self._gen))
+                self._feed()                          # per reconstructed piece, not per _CHUNK
             except StopIteration:
                 break
         out, self._buf = self._buf[:n], self._buf[n:]
@@ -936,7 +941,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 # Delta: stream-decompress the patch and reconstruct the image against the
                 # golden BACK slot (copy-with-diff, ulab add) -- both the patch and the output
                 # are streamed into FRONT, neither is materialised.
-                source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK)).read
+                source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK), feed).read
                 repr_marker = REPR_DELTA
                 log.debug("install: representation delta")
             else:
