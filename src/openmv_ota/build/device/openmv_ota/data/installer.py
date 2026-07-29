@@ -968,6 +968,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                     log.debug("install: erasing block block-device")
             log.debug("install: erased FRONT block-device")
 
+        # Reused block-device scratch (n <= _CHUNK): a readback + a BACK-read buffer, so neither
+        # closure allocates per chunk -- the same zero-alloc discipline as the XIP path, needed so
+        # an armed watchdog isn't bitten by GC churn on this port. Each returned view is consumed
+        # (compared / added) before the next call reuses its buffer.
+        _rb = memoryview(bytearray(_CHUNK))
+        _br = memoryview(bytearray(_CHUNK))
+
         def write(off, data):                         # extended writeblocks: byte-granular,
             front.writeblocks(off // _bs, data, off % _bs)   # so sub-block markers work too
             if log and "w" not in _seen:
@@ -975,23 +982,21 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 log.debug("install: wrote block block-device")
 
         def readback(off, n):
-            b = bytearray(n)                          # n <= _CHUNK: a bounded readback buffer.
-            front.readblocks(off // _bs, b, off % _bs)  # FRONT at partition offset off
+            front.readblocks(off // _bs, _rb[:n], off % _bs)  # FRONT at partition offset off
             if log and "r" not in _seen:
                 _seen.add("r")
                 log.debug("install: readback block-device")
-            return b  # hil-residual: bare return of the readback buffer
+            return _rb[:n]  # hil-residual: bare return of the reused readback view
 
         def back_read(off, n):                        # arbitrary range from BACK, block-safe
-            out = bytearray(n)                        # BACK lives at front_size within the one
-            done = 0                                  # partition (NOT a separate rom_ioctl(2,1)
-            while done < n:                           # segment -- that returns FRONT on mimxrt)
-                a = front_size + off + done
+            done = 0                                  # BACK lives at front_size within the one
+            while done < n:                           # partition (NOT a separate rom_ioctl(2,1)
+                a = front_size + off + done           # segment -- that returns FRONT on mimxrt)
                 blk, o = a // _bs, a % _bs
                 take = _bs - o
                 if take > n - done:
                     take = n - done  # hil-residual: bare arithmetic clamp (final partial block)
-                front.readblocks(blk, memoryview(out)[done:done + take], o)
+                front.readblocks(blk, _br[done:done + take], o)
                 done += take
                 if log and "brl" not in _seen:        # witness the in-loop BACK read once
                     _seen.add("brl")
@@ -999,7 +1004,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             if log and "br" not in _seen:
                 _seen.add("br")
                 log.debug("install: back read block-device")
-            return out  # hil-residual: bare return of the BACK-read buffer
+            return _br[:n]  # hil-residual: bare return of the reused BACK-read view
 
         def complete():
             log.debug("install: complete block-device")

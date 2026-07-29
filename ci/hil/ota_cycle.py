@@ -408,11 +408,13 @@ SCENARIOS = {
     },
 }
 
-# The watchdog happy-path: the delta cycle with the WWDG turned ON (prepare() flips openmv_wdt
-# ENABLED; the 'wdt' app arms it past network bring-up + tight-feeds it). Same expect/forbid as
-# delta plus wdt.armed -- an armed watchdog that outran a window would reset mid-cycle and never
-# reach promoted, so reaching it (with the install's ranged erase feeding per block) IS the proof
-# that the device services the watchdog seamlessly through a real OTA cycle. N6-only (WWDG=stm32).
+# The watchdog happy-path: the delta cycle with the deep-sleep-safe watchdog turned ON (prepare()
+# flips openmv_wdt ENABLED; the 'wdt' app arms it past network bring-up + tight-feeds it). Same
+# expect/forbid as delta -- an armed watchdog that outran its window would reset mid-cycle and never
+# reach promoted, so reaching it IS the proof that the device services the watchdog seamlessly
+# through a real OTA cycle. Runs on the OTA boards with a deep-sleep-safe WDT: N6 (WWDG, 100 ms) and
+# RT1060 (WDOG) -- the RT leg additionally proves the BLOCK-DEVICE write path (readback/back_read) is
+# zero-alloc enough not to trip a GC pause past the window. openmv_wdt auto-selects the WDT per port.
 SCENARIOS["watchdog"] = dict(
     SCENARIOS["delta"],
     desc="watchdog ENABLED: delta install survives a real OTA cycle with the WWDG armed",
