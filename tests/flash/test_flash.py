@@ -419,12 +419,15 @@ def test_prepare_none_when_no_running_camera(monkeypatch):
                        dry_run=False) is None
 
 
-def test_flash_resets_then_pins_serial_end_to_end(project, monkeypatch):
-    # a running OPENMV4: mpremote reset runs, then dfu-util is pinned with -S <serial>
+def test_flash_resets_then_does_not_pin_dfu_serial(project, monkeypatch):
+    # a running OPENMV4: mpremote reset selects + enters the bootloader, then dfu-util flashes WITHOUT
+    # -S. An OpenMV board's DFU serial is byte-reversed from its runtime serial, so pinning -S with the
+    # runtime serial would match nothing (dfu-util -w would hang); the reset already put only this board
+    # into DFU, so the vid:pid filter targets it (matching the IDE).
     root, ran, _rec, artifact = project
     artifact("OPENMV4-firmware.bin")
     _running(monkeypatch, _Port(0x37C5, 0x1204, "/dev/ttyACM0", "SN9"))
     fl.flash_firmware(str(root), board="OPENMV4")
     assert ran[0] == [sys.executable, "-m", "mpremote", "connect", "/dev/ttyACM0",
                       "exec", "import machine; machine.bootloader()"]
-    assert ran[1][4:6] == ["-S", "SN9"]                 # the flash is pinned to that board
+    assert "-S" not in ran[1] and "SN9" not in ran[1]   # the dfu flash is NOT serial-pinned

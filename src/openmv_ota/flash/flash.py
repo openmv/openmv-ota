@@ -81,7 +81,12 @@ def _dfu_steps(cfg: FlashConfig, board: str, spec: list[tuple[str, str]], tool: 
     steps: list[FlashStep] = []
     last = len(resolved) - 1
     for i, (artifact, f, alt) in enumerate(resolved):
-        argv = dfu.download_argv(tool, cfg.usb, alt, f, reset=reset and i == last, serial=serial)
+        # Do NOT pin dfu-util with -S here: an OpenMV board advertises a DIFFERENT usb serial in DFU
+        # than at runtime (the UID is byte-reversed between the two), so -S <runtime-serial> matches
+        # nothing and dfu-util -w waits forever. device.reset already put ONLY the selected board into
+        # DFU, so the vid:pid filter alone targets it -- the same thing the IDE does. (--serial still
+        # picks WHICH board to reset, up in _prepare/device.select; it just can't pin the DFU device.)
+        argv = dfu.download_argv(tool, cfg.usb, alt, f, reset=reset and i == last)
         if not dry_run:
             runner.run(argv)
         steps.append(FlashStep(artifact, f, alt, argv))
