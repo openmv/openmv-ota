@@ -376,14 +376,17 @@ def readback(off, m):
     return bytes(mem[off:off + m])
 
 
-def reader_of(d):
-    box = [d]
+class _SourceOf:
+    """A readinto(mv)->int source over fixed bytes -- the _install_stream interface (dio/_GenReader)."""
+    def __init__(self, d):
+        self.d = d
+        self.pos = 0
 
-    def read(m):
-        r = box[0][:m]
-        box[0] = box[0][m:]
-        return r
-    return read
+    def readinto(self, mv):
+        n = min(len(mv), len(self.d) - self.pos)
+        mv[:n] = self.d[self.pos:self.pos + n]
+        self.pos += n
+        return n
 
 
 img = bytearray(b"\\xff" * FRONT)
@@ -399,7 +402,7 @@ class _RecLog:
 
 plog = _RecLog()
 erase(FRONT)                             # the caller erases before _install_stream now
-P["_install_stream"](reader_of(bytes(img)), write, readback, FRONT, BLOCK,
+P["_install_stream"](_SourceOf(bytes(img)), write, readback, FRONT, BLOCK,
                      lambda: fed.append(1), P["_Progress"](plog),   # the real RAM reporter
                      None, P["REPR_DELTA"])                         # record the representation
 so = FRONT - 2 * BLOCK
