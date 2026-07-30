@@ -451,13 +451,15 @@ _dbase = __DELTA_BASE__
 _dio = _deflate.DeflateIO(io.BytesIO(__DELTA_PATCH_GZ__), _deflate.GZIP)
 _rd = P["_GenReader"](P["_delta_stream"](P["_PatchReader"](_dio),
                                          lambda o, n: _dbase[o:o+n], 64))
-_recon = b""
+_recon = bytearray()
+_rbuf = bytearray(100)
+_rmv = memoryview(_rbuf)
 while True:
-    _c = _rd.read(100)
-    if not _c:
+    _k = _rd.readinto(_rmv)
+    if _k == 0:
         break
-    _recon += _c
-delta_ok = _recon == __DELTA_TARGET__ and P["_np"] is not None   # ulab really present
+    _recon += _rmv[:_k]
+delta_ok = bytes(_recon) == __DELTA_TARGET__ and P["_np"] is not None   # ulab really present
 
 ok = (url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok
       and fmt_ok and emit_ok and manifest_ok and delta_ok)
