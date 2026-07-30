@@ -167,9 +167,12 @@ def imx_project(tmp_path, monkeypatch):
 def test_imx_firmware_runs_the_sequence(imx_project):
     root, ran, recorded = imx_project
     steps = fl.flash_firmware(str(root), board="OPENMV_RT1060")
-    assert ran[0][0] == "SDPHOST" and ran[-1][-1] == "reset"
-    # the wait is a single SDK-python scan process (beside blhost), not a relaunched poll
-    assert ran[2][0] == "python3" and ran[2][1] == "-c" and ran[2][-2:] == ["0x15A2,0x0073", "30"]
+    # resident-SBL path: NO sdphost and NO FlexSPI config-register writes -- the first step is a
+    # single SDK-python scan-wait for the resident blhost, then erase+write firmware, then reset
+    assert not any(a[0] == "SDPHOST" for a in ran)
+    assert not any("fill-memory" in a or "configure-memory" in a for a in ran)
+    assert ran[0][1] == "-c" and ran[0][-2:] == ["0x15A2,0x0073", "30"]
+    assert ran[-1][-1] == "reset"
     assert any("write-memory" in a and "0x60040000" in a for a in ran)
     assert recorded[0]["action"] == "flash-firmware" and recorded[0]["steps"] == \
         [s.label for s in steps]
@@ -194,10 +197,15 @@ def test_imx_sdk_python_is_beside_blhost():
 
 
 def test_imx_uses_bundled_flashloader(imx_project):
-    # the flashloaders are an internal crutch shipped in the package -- never the user's
+    # the RAM flashloaders are an internal crutch shipped in the package -- never the user's -- and
+    # only the RECOVERY path (factory/bootloader, over SDP) loads one; the everyday firmware/romfs
+    # path drives the resident SBL and needs none.
     root, ran, _rec = imx_project
+    fl.flash_factory(str(root), board="OPENMV_RT1060")
+    assert any("data/flashloaders/OPENMV_RT1060/sdphost_flash_loader.bin" in a[-1] for a in ran)
+    n = len(ran)
     fl.flash_firmware(str(root), board="OPENMV_RT1060")
-    assert "data/flashloaders/OPENMV_RT1060/sdphost_flash_loader.bin" in ran[0][-1]
+    assert not any("flash_loader.bin" in a[-1] for a in ran[n:])   # firmware path loads no flashloader
 
 
 def test_imx_missing_build_artifact_errors(tmp_path, monkeypatch):

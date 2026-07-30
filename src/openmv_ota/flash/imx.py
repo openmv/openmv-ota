@@ -113,47 +113,65 @@ def _fcb(blhost: str, usb: str, bl: dict) -> list[ImxStep]:
 
 def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
          files: dict[str, Path]) -> list[ImxStep]:
-    """The ordered command list for an i.MX ``op`` (``firmware``/``romfs``/``factory``/
-    ``bootloader``). ``files`` holds the resolved paths the op needs: ``sdphost_loader`` always,
-    plus ``blhost_loader``/``firmware``/``romfs`` as the op requires."""
+    """The ordered command list for an i.MX ``op``.
+
+    Two entry paths:
+
+    * **Automatable** (``firmware`` / ``romfs`` / ``erase``) -- drive the board's *resident* secure
+      bootloader (the MCU-bootloader / blhost device), which ``machine.bootloader()`` enters with NO
+      jumper. Because it runs *after* the ROM has already applied the flash-config block (FCB), the
+      FlexSPI NOR is configured, so there is no ``sdphost`` flashloader load and no config-register
+      writes -- straight to the region op. This is the everyday update path (and what the HIL bench
+      uses).
+    * **Recovery** (``factory`` / ``bootloader``) -- these rewrite the SBL (and FCB) itself, so they
+      cannot rely on the resident SBL. They load a RAM flashloader over the ROM's serial-download
+      protocol (SDP); that fresh flashloader starts with FlexSPI *unconfigured*, so it must be
+      configured first. SDP requires the board manually in ROM-serial-download (the SBL jumper) --
+      inherently not automatable, mirroring the OpenMV IDE, which only writes the config registers on
+      a factory provision.
+
+    ``files`` holds the resolved paths the op needs (``sdphost_loader`` + ``blhost_loader`` only for
+    the recovery path; ``firmware`` / ``romfs`` as the op requires)."""
     sd, bl = raw["sdphost"], raw["blhost"]
     usb = bl["usb"]
+    steps: list[ImxStep] = []
 
-    steps = []
-    if op == "bootloader":             # manual SBL/recovery entry -> wait for the ROM device
+    if op in ("factory", "bootloader"):
         steps.append(ImxStep("wait for the ROM (SDP) device",
                              _wait_argv(python3, sd["usb"], sdp=True)))
-    steps += [
-        ImxStep("load flashloader -> %s" % sd["loader_addr"],
-                _sdphost(sdphost, sd["usb"], "write-file", sd["loader_addr"],
-                         str(files["sdphost_loader"]))),
-        ImxStep("jump to flashloader",
-                _sdphost(sdphost, sd["usb"], "jump-address", sd["loader_addr"])),
-        ImxStep("wait for the flashloader to enumerate",
-                _wait_argv(python3, usb)),
-        ImxStep("configure FlexSPI NOR",
-                _blhost(blhost, usb, "fill-memory", bl["cfg_addr"], "4", bl["cfg_spi"], "word")),
-        ImxStep("apply FlexSPI config",
-                _blhost(blhost, usb, "configure-memory", bl["cfg_type"], bl["cfg_addr"])),
-    ]
-
-    if op in ("factory", "bootloader"):                # the FCB + the secure bootloader (SBL)
-        steps += _fcb(blhost, usb, bl)
+        steps += [
+            ImxStep("load flashloader -> %s" % sd["loader_addr"],
+                    _sdphost(sdphost, sd["usb"], "write-file", sd["loader_addr"],
+                             str(files["sdphost_loader"]))),
+            ImxStep("jump to flashloader",
+                    _sdphost(sdphost, sd["usb"], "jump-address", sd["loader_addr"])),
+            ImxStep("wait for the flashloader to enumerate",
+                    _wait_argv(python3, usb)),
+            ImxStep("configure FlexSPI NOR",             # the SDP-loaded flashloader starts unconfigured
+                    _blhost(blhost, usb, "fill-memory", bl["cfg_addr"], "4", bl["cfg_spi"], "word")),
+            ImxStep("apply FlexSPI config",
+                    _blhost(blhost, usb, "configure-memory", bl["cfg_type"], bl["cfg_addr"])),
+        ]
+        steps += _fcb(blhost, usb, bl)                   # the FCB + the secure bootloader (SBL)
         steps += _write_region(blhost, usb, bl["sbl_addr"], files["blhost_loader"])
-    if op == "factory":                                # plus firmware, romfs, and the boot e-fuse
-        steps += _write_region(blhost, usb, bl["firmware_addr"], files["firmware"])
-        steps += _write_region(blhost, usb, bl["romfs_addr"], files["romfs"])
-        steps.append(ImxStep("burn boot e-fuse",
-                             _blhost(blhost, usb, "efuse-program-once",
-                                     bl["efuse_addr"], bl["efuse_data"])))
-    elif op == "firmware":
-        steps += _write_region(blhost, usb, bl["firmware_addr"], files["firmware"])
-    elif op == "romfs":
-        steps += _write_region(blhost, usb, bl["romfs_addr"], files["romfs"])
-    elif op == "erase":                                # wipe the user disk's first sector (its MBR)
-        steps.append(ImxStep("erase disk %s (%s)" % (bl["disk_addr"], bl["disk_size"]),
-                             _blhost(blhost, usb, "flash-erase-region", bl["disk_addr"],
-                                     bl["disk_size"], timeout=ERASE_TIMEOUT_MS)))
+        if op == "factory":                              # plus firmware, romfs, and the boot e-fuse
+            steps += _write_region(blhost, usb, bl["firmware_addr"], files["firmware"])
+            steps += _write_region(blhost, usb, bl["romfs_addr"], files["romfs"])
+            steps.append(ImxStep("burn boot e-fuse",
+                                 _blhost(blhost, usb, "efuse-program-once",
+                                         bl["efuse_addr"], bl["efuse_data"])))
+    else:
+        # Resident SBL (already up via machine.bootloader) + FlexSPI configured from the FCB:
+        # straight to the region op, no SDP load and no config-register writes.
+        steps.append(ImxStep("wait for the resident SBL (blhost)", _wait_argv(python3, usb)))
+        if op == "firmware":
+            steps += _write_region(blhost, usb, bl["firmware_addr"], files["firmware"])
+        elif op == "romfs":
+            steps += _write_region(blhost, usb, bl["romfs_addr"], files["romfs"])
+        elif op == "erase":                              # wipe the user disk's first sector (its MBR)
+            steps.append(ImxStep("erase disk %s (%s)" % (bl["disk_addr"], bl["disk_size"]),
+                                 _blhost(blhost, usb, "flash-erase-region", bl["disk_addr"],
+                                         bl["disk_size"], timeout=ERASE_TIMEOUT_MS)))
 
     steps.append(ImxStep("reset", _blhost(blhost, usb, "reset")))
     return steps

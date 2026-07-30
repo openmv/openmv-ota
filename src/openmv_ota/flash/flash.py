@@ -120,9 +120,10 @@ def _loader(name: str, board: str) -> Path:
 
 def _imx_files(board: str, op: str, raw: dict, out_dir: Path) -> dict[str, Path]:
     sd, bl = raw["sdphost"], raw["blhost"]
-    files = {"sdphost_loader": _loader(sd["loader"], board)}
-    if op in ("factory", "bootloader"):              # the secure bootloader (bundled SBL)
-        files["blhost_loader"] = _loader(bl["sbl_loader"], board)
+    files: dict[str, Path] = {}
+    if op in ("factory", "bootloader"):              # recovery over SDP: the RAM flashloader + the
+        files["sdphost_loader"] = _loader(sd["loader"], board)   # bundled secure bootloader (SBL).
+        files["blhost_loader"] = _loader(bl["sbl_loader"], board)   # firmware/romfs/erase need neither.
     if op in ("firmware", "factory"):
         files["firmware"] = out_dir / ("%s-firmware.bin" % board)
     if op == "factory":
