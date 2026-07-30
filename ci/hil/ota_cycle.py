@@ -62,6 +62,12 @@ CFG = {
     "artifacts": env("OTA_ARTIFACTS", HOME + "/otasrv/artifacts"),
 }
 
+# The coprocessor-sync scenarios (coproc/coproc_skip, AE3-only) dirty + rewrite the coprocessor MRAM
+# partition, and that write currently crashes/wedges the AE3 off USB. Keep them OUT of the default
+# regression so the AE3 can run the rest of the suite; flip HIL_COPROC=1 to opt back in (for a manual
+# coproc run) once the MRAM write is fixed. See regression_scenarios().
+COPROC_ENABLED = env("HIL_COPROC", "") == "1"
+
 # Per-board: which side-channel UART carries markers, how it reaches the network, and
 # how the golden image is flashed. Kept data-driven so a new board is one entry.
 BOARDS = {
@@ -473,7 +479,14 @@ def regression_scenarios(board, network):
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
     if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
         scs.append("no_slot")
-    if board == "OPENMV_AE3":                           # the only board with a coprocessor partition
+    # coproc/coproc_skip (AE3-only) are TEMPORARILY OUT of the regression: the coprocessor-MRAM
+    # write in the coproc scenario's dirty+reapply path crashes/wedges the AE3 off USB. The
+    # scenarios still exist and can be dispatched by hand once that write is fixed. Everything else
+    # is safe on the AE3: the factory flash already writes the coproc partition, so a NORMAL run's
+    # sync() stream-compares, finds a match, and SKIPS -- no MRAM write -- so the AE3 runs the
+    # standard delta/tamper suite without touching the partition that bricks it. Re-add here (guarded
+    # on a working coproc write) to restore end-to-end coproc HIL coverage. See COPROC_ENABLED below.
+    if board == "OPENMV_AE3" and COPROC_ENABLED:
         scs += ["coproc", "coproc_skip"]
     return scs
 

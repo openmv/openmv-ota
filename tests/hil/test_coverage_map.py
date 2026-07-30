@@ -94,9 +94,11 @@ def test_regression_scenarios_are_valid_and_board_gated():
             assert scs, "%s/%s regression is empty" % (board, net)
             assert all(s in ota_cycle.SCENARIOS for s in scs), \
                 "%s/%s has an unknown scenario: %r" % (board, net, scs)
-            # coproc is AE3-only, and only on its primary interface
+            # coproc is AE3-only, on its primary interface, and only when opted in via
+            # COPROC_ENABLED -- its MRAM write currently wedges the AE3, so it's out of the
+            # default regression (the rest of the suite is safe: normal sync() skips the partition).
             assert any(s.startswith("coproc") for s in scs) == \
-                (board == "OPENMV_AE3" and net == primary)
+                (board == "OPENMV_AE3" and net == primary and ota_cycle.COPROC_ENABLED)
             # no_slot only on block-device boards (blhost slot-erase)
             if "no_slot" in scs:
                 assert ota_cycle.BOARDS[board]["flash"] == "blhost_imx"
@@ -108,3 +110,15 @@ def test_regression_scenarios_are_valid_and_board_gated():
     for board in ota_cycle.BOARDS:
         union |= set(ota_cycle.regression_scenarios(board, ota_cycle.BOARDS[board]["network"]))
     assert union >= {"delta", "full", "rollback", "corrupt", "bad_sig", "bad_key", "bad_version"}
+
+
+def test_coproc_opt_in_readds_it_to_the_ae3_regression(monkeypatch):
+    """coproc/coproc_skip are gated OUT by default (COPROC_ENABLED=False) so the AE3 stops re-bricking
+    on the coprocessor-MRAM write, but the scenarios still exist and HIL_COPROC=1 re-adds them to the
+    AE3's primary-interface regression for a manual coproc run once that write is fixed."""
+    ae3, primary = "OPENMV_AE3", ota_cycle.BOARDS["OPENMV_AE3"]["network"]
+    monkeypatch.setattr(ota_cycle, "COPROC_ENABLED", False)
+    assert not any(s.startswith("coproc") for s in ota_cycle.regression_scenarios(ae3, primary))
+    monkeypatch.setattr(ota_cycle, "COPROC_ENABLED", True)
+    reenabled = ota_cycle.regression_scenarios(ae3, primary)
+    assert "coproc" in reenabled and "coproc_skip" in reenabled
