@@ -695,13 +695,36 @@ def prepare(board, checkout, network, app="confirm"):
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
     _ensure_cdc(board)
-    # the bench server's CA must be on the board for run()'s TLS (survives the OTA, lives on
-    # /flash not the romfs). Push it so the harness doesn't assume a hand-placed cert.
+    _flash_bench_files(board)
+
+
+def _flash_bench_files(board, _recovered=False):
+    """Push the bench CA + enable the coverage UART. Both live on /flash (survive the OTA): the CA
+    for run()'s TLS, and .hilcov_uart to switch logging onto the coverage UART.
+
+    A CANCELLED prior run can leave the mimxrt's /flash (FAT) corrupt or full, so these writes fail
+    -- the classic 'RESULT: FAIL at 3s' before golden is even reflashed. On an imx board, recover
+    ONCE via the CLI `flash erase`: it wipes just the user disk's MBR sector (blhost in the resident
+    SBL, config-register-free) and the firmware reformats a clean FAT on the next boot. A runtime
+    VfsFat.mkfs would crash the XIP-from-NOR mimxrt, so the SBL-side erase is the safe path. This
+    keeps bench contention (two runs colliding) from wedging the RT until a human power-cycles it."""
+    # the CA must be on the board for run()'s TLS. Push it so the harness doesn't assume a
+    # hand-placed cert (tolerant: a corrupt /flash surfaces on the .hilcov_uart write below).
     if os.path.exists(CFG["ca_node"]):
         _mpremote(["fs", "cp", CFG["ca_node"], ":" + CFG["ca_board"]], timeout=30, check=False)
-    # enable the coverage UART on the board (bench-only file; survives across the OTA)
-    device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["ca_board"].rsplit("/", 1)[0] +
-                "/.hilcov_uart", BOARDS[board]["cov_uart"]))
+    try:
+        # enable the coverage UART on the board (bench-only file; survives across the OTA)
+        device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["ca_board"].rsplit("/", 1)[0] +
+                    "/.hilcov_uart", BOARDS[board]["cov_uart"]))
+    except Exception as e:
+        if _recovered or BOARDS[board]["flash"] != "blhost_imx":
+            raise                            # non-imx, or already tried recovering -- give up loud
+        log("prepare: /flash write failed (%s) -> recover via `flash erase` (disk-MBR reformat)" % e)
+        sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=180)
+        time.sleep(8)                        # let the board boot + auto-reformat the blank FAT
+        _ensure_cdc(board)
+        _flash_bench_files(board, _recovered=True)   # retry on the freshly reformatted /flash
 
 
 def build_golden(board):
