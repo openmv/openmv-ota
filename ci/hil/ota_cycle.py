@@ -85,7 +85,6 @@ BOARDS = {
         "cov_write": "install.xip",
         "network": "wifi",
         "flash": "dfu_alif",
-        "romfs_alt": "6",                    # external OSPI romfs partition
         "jlink_device": "AE302F80F55D5_HP",  # debug-only device name, used ONLY to SWD-reset
                                              # the board out of a stuck DFU state (never to flash)
     },
@@ -784,26 +783,6 @@ def _flash_jlink_stm32(board, bad_romfs=False):
             raise RuntimeError("J-Link %s flash failed:\n%s" % (name, out[-1500:]))
 
 
-def _dfu_write(alt, path, timeout_s):
-    """One DFU download to an alt setting, WITHOUT --reset (that hangs the AE3 after the
-    write completes). Poll the piped output for 'Done!', then return -- the caller leaves
-    DFU once. Raises if the write didn't finish."""
-    # Unique per-user temp file (a fixed /tmp name collides across users -- see _flash_jlink_stm32).
-    fd, logf = tempfile.mkstemp(suffix=".out", prefix="dfu_a%s-" % alt)
-    os.close(fd)
-    proc = subprocess.Popen([CFG["dfu"], "-d", ",37c5:96e3", "-a", alt, "-D", path],
-                            stdout=open(logf, "w"), stderr=subprocess.STDOUT)
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        time.sleep(10)
-        if "Done!" in open(logf, errors="replace").read() or proc.poll() is not None:
-            break
-    proc.kill()
-    if "Done!" not in open(logf, errors="replace").read():
-        raise RuntimeError("DFU alt %s write did not complete:\n%s" % (
-            alt, open(logf, errors="replace").read()[-1500:]))
-
-
 def _ensure_cdc(board):
     """Recover a board that has wedged off USB (no CDC) via a J-Link SWD reset, so a later scenario
     doesn't fail every mpremote with "failed to access /dev/ttyACM0". Two ways a board loses its CDC:
@@ -853,24 +832,25 @@ def _ensure_cdc(board):
 
 
 def _flash_dfu_alif(board, bad_romfs=False):
+    """Provision golden on the AE3 (Alif) via the openmv-ota CLI's `flash factory` -- the SAME
+    tooling users ship with (and the same recipe the OpenMV IDE uses). It enters DFU with
+    machine.bootloader() and writes EVERY partition with `dfu-util -w`: HP-core firmware (alt 1),
+    HE-core firmware (alt 2), coprocessor romfs (alt 3), main romfs (alt 6, --reset to leave).
+
+    This replaces a hand-rolled dfu-util that (1) dropped the `-w` (wait-for-device) flag -- so it
+    raced the AE3's slow re-enumeration after machine.bootloader() and failed as 'No DFU capable USB
+    device available' or a write timing out at 0 bytes (the flakiness that read as a bricked board),
+    and (2) skipped alts 2 + 3. Flashing the coprocessor partition (alt 3) also makes the runtime
+    sync() find it matching the bundle and SKIP -- never the coprocessor-MRAM write that wedges the
+    AE3 (see COPROC_ENABLED). `factory` needs firmware-M55_H{P,E}.bin + coprocessor-romfs.img +
+    factory-romfs.img, all produced by build_golden's `build firmware` + `build factory-romfs`."""
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
-    b = BOARDS[board]
-    build = CFG["project"] + "/build"
-    fw = "%s/%s-firmware-M55_HP.bin" % (build, board)     # the main core (carries the frozen
-    img = "%s/%s-factory-romfs.img" % (build, board)      # boot.py + openmv_log)
-    rimg = "%s/%s-romfs.img" % (build, board)
-    sh("cp -f %s %s" % (img, rimg))
-    _ensure_cdc(board)                       # a prior scenario may have left it stuck in DFU
-    # One DFU session: firmware (MRAM alt 1, fast) THEN romfs (OSPI, ~10 min), then leave.
-    log("flash: reset to DFU")
-    device_exec("import machine; machine.bootloader()", timeout=30, check=False)
-    time.sleep(6)
-    log("flash firmware -> MRAM alt 1 (DFU)")
-    _dfu_write("1", fw, 300)
-    log("flash romfs -> OSPI alt %s (DFU, ~10 min)" % b["romfs_alt"])
-    _dfu_write(b["romfs_alt"], rimg, 1200)
-    sh([CFG["dfu"], "-d", ",37c5:96e3", "-a", b["romfs_alt"], "-e"], check=False, timeout=60)
+    _ensure_cdc(board)                       # recover a wedged board so the CLI can enter DFU cleanly
+    log("flash factory -> %s (openmv-ota, DFU -w: HP+HE firmware + coproc + main romfs, ~10 min)"
+        % board)
+    sh([ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board, "--sdk-home", CFG["sdk"],
+        "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")], timeout=1500)
     time.sleep(15)                           # the AE3 (Alif) takes longer to boot + re-enumerate
     _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
 
