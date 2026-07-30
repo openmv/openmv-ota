@@ -54,7 +54,6 @@ CFG = {
     "sdk": env("SDK_HOME", HOME + "/openmv-sdk-1.6.0"),
     "jlink": env("JLINK", HOME + "/jlink/JLinkExe"),
     "dfu": env("DFU_UTIL", HOME + "/openmv-sdk-1.6.0/bin/dfu-util"),
-    "blhost": env("BLHOST", HOME + "/openmv-sdk-1.6.0/python/bin/blhost"),
     "acm": env("BOARD_ACM", "/dev/ttyACM0"),
     "uart": env("BOARD_UART", "/dev/ttyUSB0"),
     # the update server's local artifact store, for tamper scenarios (corrupt/bad_sig) --
@@ -75,16 +74,14 @@ BOARDS = {
         "cov_uart": 3,                       # UART(3) on P4/P5
         "cov_write": "install.xip",          # this board's write path (block-dev boards differ)
         "network": "lan",
-        "flash": "jlink_stm32",
-        "jlink_device": "STM32N657L0",
-        "fw_addr": "0x70080000",
-        "romfs_addr": "0x70800000",
+        "flash": "dfu_cli",                  # golden flash via `openmv-ota flash factory` (dfu -w)
+        "jlink_device": "STM32N657L0",       # debug-only name, used ONLY by _ensure_cdc to SWD-reset
     },
     "OPENMV_AE3": {
         "cov_uart": 1,                       # UART(1) on P4/P5
         "cov_write": "install.xip",
         "network": "wifi",
-        "flash": "dfu_alif",
+        "flash": "dfu_cli",                  # golden flash via `openmv-ota flash factory` (dfu -w)
         "jlink_device": "AE302F80F55D5_HP",  # debug-only device name, used ONLY to SWD-reset
                                              # the board out of a stuck DFU state (never to flash)
     },
@@ -98,17 +95,9 @@ BOARDS = {
         # where a scenario leaves the core halted/wedged with no CDC, which otherwise fails every
         # later mpremote with "failed to access /dev/ttyACM0" (the CDC flapping/gone).
         "jlink_device": "MIMXRT1062xxx6A",
-        # The FlexSPI NOR flash. We write ONLY the app regions; the ROM's flash-config
-        # block (0x60000000) and the resident secure bootloader / flashloader (0x60001000)
-        # are NEVER touched -- machine.bootloader() drops into that resident SBL to flash.
-        "fw_addr": "0x60040000",
-        "romfs_addr": "0x60800000",
-        "romfs_size": "0x800000",            # the whole dual-slot romfs region (for no_slot brick)
-        "blhost_usb": "0x15A2,0x0073",       # the MCU-bootloader (blhost) device the SBL exposes
-        "blhost_lsusb": "15a2:0073",         # ...same, as lsusb prints it (for the enumerate poll)
-        "cfg_addr": "0x2000",                # FlexSPI config option word + apply target
-        "cfg_spi": "0xC0000008",
-        "cfg_type": "9",
+        # Flash addresses + blhost/DFU device ids all live in the CLI's boards.json now -- the
+        # golden flash, the /flash self-heal, and the no_slot brick all go through `openmv-ota
+        # flash ...`, so the harness no longer carries a parallel copy of the flash map.
     },
 }
 
@@ -754,33 +743,27 @@ def flash_golden(board, bad_romfs=False):
     fn(board, bad_romfs) if bad_romfs else fn(board)
 
 
-def _flash_jlink_stm32(board, bad_romfs=False):
+def _flash_dfu_cli(board, bad_romfs=False):
+    """Golden flash for the DFU boards (N6, AE3) via the openmv-ota CLI's `flash factory` -- the SAME
+    tooling users ship with (and the recipe the OpenMV IDE uses). It enters DFU with
+    machine.bootloader() and writes every partition with `dfu-util -w` (wait-for-device): the N6 is
+    firmware (alt 1) + main romfs (alt 3, --reset); the AE3 adds the HE-core firmware (alt 2) and the
+    coprocessor romfs (alt 3). `-w` is the bit a hand-rolled dfu-util kept dropping -- without it
+    dfu-util races the board's slow re-enumeration after machine.bootloader() and fails as 'No DFU
+    capable USB device available' or a write timing out at 0 bytes (which read as a bricked board).
+
+    Writing the AE3 coprocessor partition also makes the runtime sync() find it matching the bundle
+    and SKIP -- never the coprocessor-MRAM write that wedges the AE3 (see COPROC_ENABLED). J-Link
+    stays ONLY for _ensure_cdc recovery (an SWD nRST pulse revives a board wedged off USB, which the
+    CLI's DFU path -- needing a live CDC to enter the bootloader -- can't reach); it never flashes."""
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
-    b = BOARDS[board]
-    build = CFG["project"] + "/build"
-    img = "%s/%s-factory-romfs.img" % (build, board)
-    binf = "%s/%s-factory-romfs.bin" % (build, board)   # J-Link loadbin needs a .bin extension
-    sh("cp -f %s %s" % (img, binf))
-    # The project-built firmware, from the SAME build as the romfs above (matches RT/AE3). Reading
-    # a separate ~/fw copy flashed a stale firmware against the fresh romfs -> golden wouldn't
-    # mount /rom on every scenario, once provisioning moved into the runner-owned project.
-    fw = "%s/%s-firmware.bin" % (build, board)
-    for name, addr, f in (("firmware", b["fw_addr"], fw), ("romfs", b["romfs_addr"], binf)):
-        log("flash %s -> %s (J-Link)" % (name, addr))
-        script = "\n".join(["device " + b["jlink_device"], "si SWD", "speed 4000", "connect",
-                            "r", "h", "loadbin %s %s" % (f, addr), "r", "g", "exit"]) + "\n"
-        # Unique per-user temp file -- a fixed /tmp name collides across the runner/other users
-        # (a stale hil-owned /tmp/jl-firmware.jlink blocked `runner` with EACCES on every flash).
-        fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="jl-%s-" % name)
-        os.write(fd, script.encode())
-        os.close(fd)
-        try:
-            rc, out = sh([CFG["jlink"], "-nogui", "1", "-CommanderScript", sp], timeout=300, check=False)
-        finally:
-            os.unlink(sp)
-        if "O.K." not in out or "unsupported" in out.lower():
-            raise RuntimeError("J-Link %s flash failed:\n%s" % (name, out[-1500:]))
+    _ensure_cdc(board)                       # recover a wedged board so the CLI can enter DFU cleanly
+    log("flash factory -> %s (openmv-ota, DFU -w)" % board)
+    sh([ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board, "--sdk-home", CFG["sdk"],
+        "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")], timeout=1500)
+    time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
+    _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
 
 
 def _ensure_cdc(board):
@@ -831,92 +814,6 @@ def _ensure_cdc(board):
         time.sleep(8)
 
 
-def _flash_dfu_alif(board, bad_romfs=False):
-    """Provision golden on the AE3 (Alif) via the openmv-ota CLI's `flash factory` -- the SAME
-    tooling users ship with (and the same recipe the OpenMV IDE uses). It enters DFU with
-    machine.bootloader() and writes EVERY partition with `dfu-util -w`: HP-core firmware (alt 1),
-    HE-core firmware (alt 2), coprocessor romfs (alt 3), main romfs (alt 6, --reset to leave).
-
-    This replaces a hand-rolled dfu-util that (1) dropped the `-w` (wait-for-device) flag -- so it
-    raced the AE3's slow re-enumeration after machine.bootloader() and failed as 'No DFU capable USB
-    device available' or a write timing out at 0 bytes (the flakiness that read as a bricked board),
-    and (2) skipped alts 2 + 3. Flashing the coprocessor partition (alt 3) also makes the runtime
-    sync() find it matching the bundle and SKIP -- never the coprocessor-MRAM write that wedges the
-    AE3 (see COPROC_ENABLED). `factory` needs firmware-M55_H{P,E}.bin + coprocessor-romfs.img +
-    factory-romfs.img, all produced by build_golden's `build firmware` + `build factory-romfs`."""
-    if bad_romfs:
-        raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
-    _ensure_cdc(board)                       # recover a wedged board so the CLI can enter DFU cleanly
-    log("flash factory -> %s (openmv-ota, DFU -w: HP+HE firmware + coproc + main romfs, ~10 min)"
-        % board)
-    sh([ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board, "--sdk-home", CFG["sdk"],
-        "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")], timeout=1500)
-    time.sleep(15)                           # the AE3 (Alif) takes longer to boot + re-enumerate
-    _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
-
-
-
-def _wait_usb(lsusb_id, timeout_s):
-    """Poll ``lsusb`` until a device with this ``vid:pid`` enumerates. Returns on success,
-    raises on timeout. Used to catch the RT's resident SBL/blhost after machine.bootloader()."""
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        _rc, out = sh("lsusb", timeout=10, check=False, quiet=True)
-        if lsusb_id.lower() in out.lower():
-            return
-        time.sleep(0.1)
-    raise RuntimeError("USB device %s did not enumerate within %ss" % (lsusb_id, timeout_s))
-
-
-def _blhost(usb, *sub, timeout_ms=None):
-    argv = [CFG["blhost"], "-u", usb]
-    if timeout_ms is not None:
-        argv += ["-t", str(timeout_ms)]
-    return argv + ["--", *sub]
-
-
-def _blhost_run(label, usb, *sub, timeout_ms=None):
-    """Run one blhost sub-command and require it reported success (blhost exits 0 even when
-    the target NAKs, so we parse the response status, mirroring the JLink 'never trust the
-    exit code' lesson)."""
-    log("  blhost: " + label)
-    _rc, out = sh(_blhost(usb, *sub, timeout_ms=timeout_ms), timeout=180, check=False, quiet=True)
-    if "0 (0x0) Success" not in out:
-        raise RuntimeError("blhost %s failed:\n%s" % (label, out[-1200:]))
-
-
-def _enter_blhost(b):
-    """Drop into the resident SBL's serial-download (blhost) mode and wait until blhost can
-    actually talk to it, retrying the whole entry as needed. Two things fight us: the SBL
-    idle-times-out back to runtime if no command arrives, and the /dev/hidraw node's group
-    perms lag USB enumeration (so a too-eager open races udev). We settle briefly for udev,
-    probe with get-property, and re-enter on any miss. Once we return, the caller must keep
-    blhost busy (back-to-back commands) so the idle timeout never fires mid-provision."""
-    usb = b["blhost_usb"]
-    out = ""
-    for attempt in range(6):
-        # Fire the bootloader entry fire-and-forget: machine.bootloader() drops the USB-CDC,
-        # so a synchronous mpremote would block on the dead port's teardown -- and every idle
-        # second risks the SBL timing back out to runtime. Backgrounded, mpremote connects +
-        # sends the call (~1-2s) while we poll for the blhost device to appear.
-        subprocess.Popen([ota("mpremote"), "connect", CFG["acm"], "exec",
-                          "import machine; machine.bootloader()"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        try:
-            _wait_usb(b["blhost_lsusb"], timeout_s=15)
-        except RuntimeError:
-            continue                                     # never enumerated -> re-issue bootloader
-        # Fire blhost IMMEDIATELY -- no perm settle needed (the 0666 hidraw udev rule sets
-        # access at node creation), and the SBL idle-times-out fast, so don't dawdle.
-        _rc, out = sh(_blhost(usb, "get-property", "1"), timeout=30, check=False, quiet=True)
-        if "0 (0x0) Success" in out:
-            return
-        tail = (out.strip().splitlines() or ["?"])[-1][:90]
-        log("  (blhost entry retry %d/6: %s)" % (attempt + 1, tail))
-        time.sleep(1)
-    raise RuntimeError("could not reach the SBL/blhost after 6 tries:\n" + out[-800:])
-
-
 def _flash_blhost_imx(board, bad_romfs=False):
     """Provision golden on the mimxrt (RT1062) via the openmv-ota CLI's resident-SBL flash path
     (`flash firmware` + `flash romfs`): the CLI enters the resident SBL with machine.bootloader()
@@ -925,18 +822,13 @@ def _flash_blhost_imx(board, bad_romfs=False):
     the same tooling users ship with.
 
     bad_romfs=True is the no_slot brick: blank the whole OTA romfs region (both slots -> no valid
-    trailer -> boot.py finds nothing bootable), leaving firmware + /flash intact. FLAG: the CLI's
-    `flash erase` targets the onboard FATFS (user disk), NOT the OTA romfs region, so this one brick
-    still drives blhost directly. Removing it too needs a CLI romfs-region erase target (TODO)."""
+    trailer -> boot.py finds nothing bootable), leaving firmware + /flash intact -- via the CLI's
+    `flash erase --romfs` (which enters the resident SBL and flash-erase-regions the romfs)."""
     build = CFG["project"] + "/build"
     if bad_romfs:
-        b = BOARDS[board]
-        log("brick: erase romfs -> %s (%s), no write (both slots blank)"
-            % (b["romfs_addr"], b["romfs_size"]))
-        _enter_blhost(b)                                 # resident SBL (post-FCB; no config needed)
-        _blhost_run("erase romfs %s" % b["romfs_size"], b["blhost_usb"], "flash-erase-region",
-                    b["romfs_addr"], b["romfs_size"], timeout_ms=120000)
-        _blhost_run("reset", b["blhost_usb"], "reset")
+        log("brick: erase the OTA romfs region (both slots) -> openmv-ota flash erase --romfs")
+        sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--romfs",
+            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
         time.sleep(12)
         return
     # Golden: firmware + the factory (dual-slot) romfs. The CLI's `flash romfs` reads <board>-romfs.img,
