@@ -350,10 +350,15 @@ _FW_FEATURES = (
         "pr": "19399",
         "summary": "ALIF watchdog",
         "why": "machine.WDT on the alif port (the AE3) for the opt-in openmv_wdt",
+        # The upstream docs commit (374a872) is intentionally NOT carried: it rewrites the
+        # machine.WDT.rst "Availability:" line, which the older fork renders in a different format
+        # ("Availability of this class: ..."), so it conflicts and would abort the whole feature.
+        # Docs don't affect the build or the watchdog; skipping it lets the two code commits apply.
+        # (For the record, 374a872 documents the alif WDT as id=0, max 10737 ms, deep-sleep-safe --
+        # which is exactly what openmv_wdt's machine.WDT(0) fallback + the 100 ms window rely on.)
         "commits": (
             "c2e3fe420e2e5bedfd73dd299ae0b8f9f694e469",  # alif/cgu_ext: cgu_get_rtss_hx_clk_khz helper
             "152e422c120fce874120a36637d08a5585cbdb95",  # alif/machine_wdt: the WDT class (a new file)
-            "374a872f33b8513ed585935f8fbbfc7d3447690b",  # docs: alif WDT
         ),
         "sentinel_path": "ports/alif/machine_wdt.c",
         "sentinel": None,       # a NEW file -> its existence is the sentinel
