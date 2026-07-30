@@ -705,6 +705,9 @@ def _fw_repo(tmp_path, *, name="fw", version="5.0.0", vfs=None, wdt=False):
         if wdt:
             body += "static machine_wdt_obj_t machine_wwdt = {0};\n"   # sentinel: already carried
         stm.write_text(body)
+        mpc = mpy / "py" / "mpconfig.h"                     # #19084 sentinel path (machine.mem_backup)
+        mpc.parent.mkdir(parents=True)
+        mpc.write_text("#define MICROPY_PY_MACHINE_MEM_BACKUP (0)\n" if wdt else "// mpconfig\n")
     if wdt:
         alif = mpy / "ports" / "alif" / "machine_wdt.c"     # #19399 sentinel: this file exists
         alif.parent.mkdir(parents=True)
@@ -793,6 +796,7 @@ def test_ota_fw_features_skips_optin_when_apply_false(tmp_path, monkeypatch, cap
     assert run.calls == []                            # nothing carried, nothing raised
     out = capsys.readouterr().out
     assert "skipping opt-in firmware feature micropython#19350" in out
+    assert "skipping opt-in firmware feature micropython#19084" in out
     assert "skipping opt-in firmware feature micropython#19399" in out
 
 

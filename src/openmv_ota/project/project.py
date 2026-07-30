@@ -324,12 +324,29 @@ _FW_FEATURES = (
         ),
     },
     {
-        # NOTE: on a firmware whose micropython predates micropython#19084 (machine.mem_backup), this
-        # won't cherry-pick -- #19399's machine_wdt.c wiring sits right after the mem_backup config in
-        # alif/mpconfigport.h, so the diff context is absent and the pick conflicts. #19084 is a big
-        # cross-port PR we don't want to carry just for an opt-in AE3 watchdog, so (being opt-in) this
-        # simply SKIPS until the firmware's micropython advances far enough to include #19084 -- then
-        # both land together, cleanly. It's merged upstream, so that happens on the next fork bump.
+        # PREREQ for #19399 (below): the alif watchdog's machine_wdt wiring in alif/mpconfigport.h sits
+        # right after this PR's mem_backup config, so without it #19399's cherry-pick has no context and
+        # conflicts. Carry only the two commits the alif build needs -- the shared core + the alif
+        # enablement -- not #19084's other ports (rp2/esp32/samd/nrf), which the OTA boards don't build
+        # and which would only add conflict surface (any one commit conflicting SKIPS the whole feature).
+        "pr": "19084",
+        "summary": "machine.mem_backup (alif watchdog prereq)",
+        "why": ("carried so micropython#19399's alif watchdog cherry-picks cleanly (its machine_wdt "
+                "wiring follows the mem_backup config in alif/mpconfigport.h); also a useful API on its "
+                "own -- backup-SRAM-retained memory across reset"),
+        "commits": (
+            "003ba9b58fb5753cd382ab739b6c5f85467ef34a",  # extmod/machine: machine.mem_backup (the core)
+            "bbd0d481283e221c4ce4af277927e733d876ef4a",  # alif: enable mem_backup via backup SRAM
+        ),
+        "sentinel_path": "py/mpconfig.h",
+        "sentinel": "MICROPY_PY_MACHINE_MEM_BACKUP",
+        "required": False,
+    },
+    {
+        # #19084 (machine.mem_backup) is carried just above, so this PR's machine_wdt wiring -- which
+        # sits right after the mem_backup config in alif/mpconfigport.h -- now has its context and
+        # cherry-picks cleanly. Both are opt-in, carried by default so the AE3 watchdog is available to
+        # turn on (openmv_wdt falls back to machine.WDT(0), the alif WDT this adds).
         "pr": "19399",
         "summary": "ALIF watchdog",
         "why": "machine.WDT on the alif port (the AE3) for the opt-in openmv_wdt",
