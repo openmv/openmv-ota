@@ -932,17 +932,31 @@ def _flash_blhost_imx(board, bad_romfs=False):
 
 
 def verify_golden():
-    log("verify: golden boots + /rom mounts + main.py present (uncompiled)")
+    """Confirm golden booted + mounted a valid romfs, and read the device_id in the SAME early exec.
+    Returns the device_id.
+
+    Folding the id read in here (rather than a later, separate device_exec) is what makes the wdt
+    scenarios work on fast-boot boards. Golden's app arms a 100 ms watchdog once network bring-up
+    finishes; after that, any REPL drop stops the feed loop and the watchdog bites -> the port drops
+    and mpremote fails. This exec runs at BOOT -- /rom mounts seconds before the network is up -- so
+    it lands inside the pre-arm window (and self-heals: a bite just resets the board, and a retry
+    catches the next fresh boot). A separate device_id() call ran later, raced the arm, and lost on
+    the RT (fast WiFi) -- Errno 5 before the OTA cycle even started."""
+    log("verify: golden boots + /rom mounts + main.py present (uncompiled) + device_id")
     last = ""
     for _ in range(8):                       # the board may still be (re)booting after a flash
         time.sleep(5)
         try:
             _rc, last = device_exec(
-                'import os; r=os.listdir("/"); '
-                'print("ROMOK", ("rom" in r) and ("main.py" in os.listdir("/rom")))',
+                'import os, openmv_ota; r=os.listdir("/"); '
+                'print("ROMOK", ("rom" in r) and ("main.py" in os.listdir("/rom"))); '
+                'print("DEVID", openmv_ota.identity().get("device_id"))',
                 timeout=30, check=False)
             if "ROMOK True" in last:
-                return
+                for line in last.splitlines():
+                    if line.startswith("DEVID "):
+                        return line.split(" ", 1)[1].strip()
+                raise RuntimeError("golden mounted romfs but reported no device_id:\n" + last)
         except Exception as e:
             last = str(e)
     raise RuntimeError("golden did not mount a valid romfs:\n" + last)
@@ -1218,8 +1232,9 @@ def main():
 
     def phase(name, fn):
         s = time.time()
-        fn()
+        r = fn()
         trace["phases"][name] = round(time.time() - s, 1)
+        return r
 
     try:
         log("board %s, network %s, scenario %s (%s)"
@@ -1240,12 +1255,15 @@ def main():
             phase("flash_brick", lambda: flash_golden(args.board, bad_romfs=True))
             result = run_cycle_no_slot(cap, expect, args.timeout)
         else:
+            devid = None
             if not args.skip_provision:
                 phase("prepare", lambda: prepare(args.board, args.checkout, network, spec["app"]))
                 phase("build_golden", lambda: build_golden(args.board))
                 phase("flash_golden", lambda: flash_golden(args.board))
-                phase("verify_golden", verify_golden)
-            devid = device_id()
+                # verify_golden reads the device_id in the same early (pre-watchdog-arm) exec.
+                devid = phase("verify_golden", verify_golden)
+            if devid is None:                    # --skip-provision: board already up, read it directly
+                devid = device_id()
             trace["device_id"] = devid
             log("device_id: " + devid)
             if args.scenario == "coproc":        # dirty partition 1 so sync() APPLIES (not skips)
