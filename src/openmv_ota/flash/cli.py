@@ -62,6 +62,9 @@ def register(flash_parser: argparse.ArgumentParser):
 
     p_er = sub.add_parser("erase", help="erase the onboard filesystem (the user disk)")
     _add_common(p_er)
+    p_er.add_argument("--romfs", action="store_true",
+                      help="erase the whole OTA romfs region (both slots) instead of the user "
+                           "disk, so the device falls back to golden (imx boards only)")
     p_er.set_defaults(func=cmd_erase, _command="flash erase")
 
     p_ls = sub.add_parser("list", help="list connected boards and the state each is in")
@@ -148,7 +151,7 @@ def cmd_erase(args: argparse.Namespace) -> int:
         steps = flash_mod.flash_erase(
             args.project, board=args.board, dfu_util=args.dfu_util, sdk_home=_sdk_home(args),
             reset=args.reset, enter_bootloader=args.enter_bootloader, serial=args.serial,
-            mpremote=args.mpremote, dry_run=args.dry_run)
+            mpremote=args.mpremote, romfs=args.romfs, dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

@@ -18,7 +18,7 @@ def project(tmp_path, monkeypatch):
     (tmp_path / "build").mkdir()
     ran: list[list[str]] = []
     recorded: list[dict] = []
-    monkeypatch.setattr(fl.runner, "run", lambda argv: ran.append(argv))
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **kw: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
     monkeypatch.setattr(fl.history, "record",
                         lambda root, action, **f: recorded.append({"action": action, **f}))
@@ -153,7 +153,7 @@ def imx_project(tmp_path, monkeypatch):
     (tmp_path / "build").mkdir()
     ran: list[list[str]] = []
     recorded: list[dict] = []
-    monkeypatch.setattr(fl.runner, "run", lambda argv: ran.append(argv))
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **kw: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name.upper())
     # the resident-SBL catcher/reset is a hardware step (Popen spsdk + machine.bootloader); the
     # plan/step tests only care about the blhost argv sequence, so stub it out.
@@ -343,7 +343,7 @@ def arduino_project(tmp_path, monkeypatch):
     blobs sit in the output dir (build emits them there), with the firmware/romfs artifacts."""
     (tmp_path / "build").mkdir()
     ran: list[list[str]] = []
-    monkeypatch.setattr(fl.runner, "run", lambda argv: ran.append(argv))
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **kw: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
     for n in ("ARDUINO_PORTENTA_H7-firmware.bin", "ARDUINO_PORTENTA_H7-romfs.img",
@@ -419,11 +419,15 @@ def test_prepare_none_when_no_running_camera(monkeypatch):
                        dry_run=False) is None
 
 
-def test_flash_resets_then_pins_serial_end_to_end(project, monkeypatch):
-    # a running OPENMV4: mpremote reset runs, then dfu-util is pinned with -S <serial>
+def test_flash_resets_then_does_not_pin_dfu_serial(project, monkeypatch):
+    # a running OPENMV4: mpremote reset selects + enters the bootloader, then dfu-util flashes WITHOUT
+    # -S. An OpenMV board's DFU serial is byte-reversed from its runtime serial, so pinning -S with the
+    # runtime serial would match nothing (dfu-util -w would hang); the reset already put only this board
+    # into DFU, so the vid:pid filter targets it (matching the IDE).
     root, ran, _rec, artifact = project
     artifact("OPENMV4-firmware.bin")
     _running(monkeypatch, _Port(0x37C5, 0x1204, "/dev/ttyACM0", "SN9"))
     fl.flash_firmware(str(root), board="OPENMV4")
-    assert ran[0] == [sys.executable, "-m", "mpremote", "connect", "/dev/ttyACM0", "bootloader"]
-    assert ran[1][4:6] == ["-S", "SN9"]                 # the flash is pinned to that board
+    assert ran[0] == [sys.executable, "-m", "mpremote", "connect", "/dev/ttyACM0",
+                      "exec", "import machine; machine.bootloader()"]
+    assert "-S" not in ran[1] and "SN9" not in ran[1]   # the dfu flash is NOT serial-pinned

@@ -104,6 +104,15 @@ def test_imx_rt1060_reports_step_labels(proj, monkeypatch, capsys):
     assert "reset (OPENMV_RT1060)" in out and "write" in out and "0x60040000" in out
 
 
+def test_erase_romfs_dry_run(proj, monkeypatch, capsys):
+    root, ran, artifact = proj
+    monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
+    assert main(["flash", "erase", str(root), "-b", "OPENMV_RT1060", "--romfs", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60800000 0x800000" in out
+    assert "would run: blhost -u 0x15A2,0x0073 -- reset" in out
+
+
 def test_arduino_factory_dry_run(proj, capsys):
     root, ran, artifact = proj
     for n in ("firmware.bin", "romfs.img"):

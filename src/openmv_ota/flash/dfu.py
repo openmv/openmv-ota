@@ -17,13 +17,11 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def download_argv(dfu_util: str, usb: str, alt: int, file: Path, *, reset: bool = True,
-                  serial: str | None = None) -> list[str]:
-    """Argv to flash ``file`` to DFU alt ``alt`` on the ``vid:pid`` device ``usb``. ``serial``
-    pins it to one specific board (``-S``) when several are in DFU at once."""
+def download_argv(dfu_util: str, usb: str, alt: int, file: Path, *, reset: bool = True) -> list[str]:
+    """Argv to flash ``file`` to DFU alt ``alt`` on the ``vid:pid`` device ``usb``. No ``-S`` serial
+    pin: an OpenMV board's DFU serial is byte-reversed from its runtime serial, so pinning the
+    runtime serial matches nothing; the reset already left only this board in DFU (see _dfu_steps)."""
     argv = [dfu_util, "-w", "-d", ",%s" % usb]
-    if serial:
-        argv += ["-S", serial]
     argv += ["-a", str(alt)]
     if reset:
         argv.append("--reset")

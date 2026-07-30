@@ -228,6 +228,10 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
             steps.append(ImxStep("erase disk %s (%s)" % (bl["disk_addr"], bl["disk_size"]),
                                  _blhost(blhost, usb, "flash-erase-region", bl["disk_addr"],
                                          bl["disk_size"], timeout=ERASE_TIMEOUT_MS)))
+        elif op == "erase_romfs":                        # wipe the whole OTA romfs region (both slots)
+            steps.append(ImxStep("erase romfs %s (%s)" % (bl["romfs_addr"], bl["romfs_size"]),
+                                 _blhost(blhost, usb, "flash-erase-region", bl["romfs_addr"],
+                                         bl["romfs_size"], timeout=ERASE_TIMEOUT_MS)))
 
     steps.append(ImxStep("reset", _blhost(blhost, usb, "reset")))
     return steps

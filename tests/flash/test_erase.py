@@ -90,6 +90,25 @@ def test_erase_rt1060_blhost_erases_the_disk_mbr_sector(tmp_path, monkeypatch):
     assert any("erase disk 0x60400000" in s.label for s in steps)
 
 
+def test_erase_rt1060_romfs_erases_the_whole_ota_region(tmp_path, monkeypatch):
+    ran: list = []
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **k: ran.append(argv))
+    monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name.upper())
+    monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
+    monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: None)   # hardware step; stub
+    steps = fl.flash_erase(str(tmp_path), board="OPENMV_RT1060", romfs=True)
+    flat = " ".join(" ".join(a) for a in ran)
+    assert "flash-erase-region 0x60800000 0x800000" in flat     # the whole OTA romfs region (both slots)
+    assert "0x60400000" not in flat                             # NOT the disk MBR sector
+    assert ran[-1][-1] == "reset"
+    assert any("erase romfs 0x60800000" in s.label for s in steps)
+
+
+def test_erase_romfs_only_supported_on_imx(tmp_path):
+    with pytest.raises(FlashError, match="only supported on the imx backend"):
+        fl.flash_erase(str(tmp_path), board="OPENMV_N6", romfs=True, dry_run=True)
+
+
 def test_erase_refused_for_retired_nano():
     with pytest.raises(FlashError, match="no longer supported"):
         fl.flash_erase(board="ARDUINO_NANO_RP2040_CONNECT")

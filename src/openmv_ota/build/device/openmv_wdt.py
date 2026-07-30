@@ -70,10 +70,10 @@ _timer = None
 def feed():
     """Feed the watchdog (call from your main loop). No-op when the watchdog is off."""
     if _wdt is not None:
-        _wdt.feed()  # pragma: no cover (device)  # hil-residual: watchdog-enabled feed; the bench runs ENABLED=False (opt-in), so _wdt stays None and this is skipped -- covered by a future watchdog-enabled HIL scenario
+        _wdt.feed()  # pragma: no cover (device)  # hil-residual: watchdog-enabled feed; the bench runs ENABLED=False (opt-in), so _wdt stays None and this is skipped -- now exercised on HW by the watchdog HIL scenario (a passing run proves the armed path ran), but marker-less (no log line), so it stays a residual
 
 
-def _tick(t):  # pragma: no cover (device)  # hil-residual-fn: watchdog-enabled ISR callback; only wired when a watchdog is started (ENABLED=True, opt-in) -- covered by a future watchdog-enabled HIL scenario
+def _tick(t):  # pragma: no cover (device)  # hil-residual-fn: watchdog-enabled ISR callback; only wired when a watchdog is started (ENABLED=True, opt-in) -- now exercised on HW by the watchdog HIL scenario (a passing run proves the armed path ran), but marker-less (no log line), so it stays a residual
     _feed()    # pre-bound method -- no attribute lookup, safe in a hard-IRQ callback
 
 
@@ -85,7 +85,7 @@ class _Relax:
     def __enter__(self):
         global _timer
         if _wdt is not None and _timer is None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (ENABLED=False on the bench -> body skipped)
-            import machine  # hil-residual: watchdog-enabled timer setup (opt-in; future watchdog HIL scenario)
+            import machine  # hil-residual: watchdog-enabled timer setup (opt-in; exercised on HW by the watchdog HIL scenario)
             _timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_tick)  # hil-residual: watchdog-enabled ISR-feed timer (opt-in)
         return self
 
@@ -104,7 +104,7 @@ def relax():
     return _Relax()
 
 
-def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardware watchdog; runs only under ENABLED=True (opt-in manual edit + firmware rebuild) -- covered by a future watchdog-enabled HIL scenario
+def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardware watchdog; runs only under ENABLED=True (opt-in manual edit + firmware rebuild) -- now exercised on HW by the watchdog HIL scenario (a passing run proves the armed path ran), but marker-less (no log line), so it stays a residual
     global _wdt, _feed
     if _wdt is None:
         import machine
@@ -127,4 +127,4 @@ def start():
     ``start()`` call, the watchdog never runs. After an OTA trial reboot ``machine.reset()`` clears the
     WWDG, so boot runs unwatched and your app re-arms here -- boot itself needs no feeding."""
     if ENABLED:
-        _start()  # pragma: no cover (device)  # hil-residual: watchdog-enabled arm; ENABLED=False on the bench so start() no-ops -- the ENABLED=True arm is an opt-in manual edit + rebuild, covered by a future watchdog-enabled HIL scenario
+        _start()  # pragma: no cover (device)  # hil-residual: watchdog-enabled arm; ENABLED=False on the bench so start() no-ops -- the ENABLED=True arm is an opt-in edit + rebuild, now exercised on HW by the watchdog HIL scenario
