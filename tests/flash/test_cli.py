@@ -14,6 +14,7 @@ def proj(tmp_path, monkeypatch):
     ran: list[list[str]] = []
     monkeypatch.setattr(fl.runner, "run", lambda argv: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
+    monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: None)   # imx hardware step; stub
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
 
     def artifact(name):
@@ -100,7 +101,7 @@ def test_imx_rt1060_reports_step_labels(proj, monkeypatch, capsys):
     artifact("OPENMV_RT1060-firmware.bin")    # flashloaders are bundled in the package
     assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060"]) == 0
     out = capsys.readouterr().out
-    assert "reset (OPENMV_RT1060)" in out and "wait for the resident SBL" in out
+    assert "reset (OPENMV_RT1060)" in out and "write" in out and "0x60040000" in out
 
 
 def test_arduino_factory_dry_run(proj, capsys):
