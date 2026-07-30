@@ -682,8 +682,11 @@ def prepare(board, checkout, network, app="confirm"):
     sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
     if app in ("wdt", "wdt_bite"):
         # Turn the opt-in watchdog ON for this run: flip ENABLED in the project's frozen copy so the
-        # built firmware arms the WWDG (WDT_ID='WWDG', 100 ms on the N6). Only stm32/N6 runs these
-        # scenarios (WWDG is the stm32 deep-sleep-safe watchdog); the app then start()s + feeds it.
+        # built firmware arms its deep-sleep-safe WDT (openmv_wdt auto-selects: WWDG on stm32/N6,
+        # the mimxrt WDOG on the RT1060 -- both 100 ms); the app then start()s + feeds it. The
+        # positive `watchdog` scenario runs on both N6 and RT1060 (the RT leg additionally proves the
+        # block-device write path is zero-alloc enough not to trip a GC pause past the window);
+        # `watchdog_bite` is N6-only (it asserts reset_cause()==3 after a deliberate stop).
         wdt_py = "%s/device/openmv_wdt.py" % CFG["project"]
         sh("sed -i 's/^ENABLED = False/ENABLED = True/' " + wdt_py)
         sh("grep -q '^ENABLED = True' " + wdt_py)     # fail LOUD if the sed didn't take (else the
