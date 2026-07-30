@@ -836,10 +836,6 @@ def _flash_dfu_alif(board, bad_romfs=False):
     _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
 
 
-def _aligned(n, sector=0x1000):
-    """Round up to the FlexSPI NOR erase granularity (erase-region needs a sector multiple)."""
-    return (n + sector - 1) & ~(sector - 1)
-
 
 def _wait_usb(lsusb_id, timeout_s):
     """Poll ``lsusb`` until a device with this ``vid:pid`` enumerates. Returns on success,
@@ -903,36 +899,35 @@ def _enter_blhost(b):
 
 
 def _flash_blhost_imx(board, bad_romfs=False):
-    """Provision golden on the mimxrt (RT1062): drop into the resident SBL via
-    machine.bootloader() (no SBL jumper -- that's only for restoring a wiped bootloader),
-    then drive blhost to (re)write ONLY the firmware + romfs regions of the FlexSPI NOR.
-    The FCB (0x60000000) and the SBL/flashloader (0x60001000) are left untouched.
+    """Provision golden on the mimxrt (RT1062) via the openmv-ota CLI's resident-SBL flash path
+    (`flash firmware` + `flash romfs`): the CLI enters the resident SBL with machine.bootloader()
+    (no jumper) and, running post-FCB, needs no FlexSPI config -- see openmv_ota.flash.imx. This
+    replaces the harness's hand-rolled blhost sequence: the everyday golden flash now goes through
+    the same tooling users ship with.
 
-    bad_romfs=True is the no_slot brick: ERASE the whole romfs region (both slots -> blank ->
-    no valid trailer in either) and leave firmware + /flash untouched, so boot.py runs (bench
-    logger intact) and finds nothing bootable. No firmware/romfs write."""
-    b = BOARDS[board]
+    bad_romfs=True is the no_slot brick: blank the whole OTA romfs region (both slots -> no valid
+    trailer -> boot.py finds nothing bootable), leaving firmware + /flash intact. FLAG: the CLI's
+    `flash erase` targets the onboard FATFS (user disk), NOT the OTA romfs region, so this one brick
+    still drives blhost directly. Removing it too needs a CLI romfs-region erase target (TODO)."""
     build = CFG["project"] + "/build"
-    fw = "%s/%s-firmware.bin" % (build, board)          # self-contained (its own FCB+IVT+app)
-    romfs = "%s/%s-factory-romfs.img" % (build, board)
-    usb = b["blhost_usb"]
-    log("flash: reset into the resident SBL (blhost)%s" % (" [no_slot brick]" if bad_romfs else ""))
-    _enter_blhost(b)                                     # ...and keep it busy from here on
-    _blhost_run("configure FlexSPI NOR", usb, "fill-memory", b["cfg_addr"], "4", b["cfg_spi"], "word")
-    _blhost_run("apply FlexSPI config", usb, "configure-memory", b["cfg_type"], b["cfg_addr"])
     if bad_romfs:
-        length = b["romfs_size"]                             # the whole dual-slot region
-        log("brick: erase romfs -> %s (%s), no write (both slots blank)" % (b["romfs_addr"], length))
-        _blhost_run("erase romfs %s" % length, usb, "flash-erase-region", b["romfs_addr"], length,
-                    timeout_ms=120000)
-    else:
-        for name, addr, f in (("firmware", b["fw_addr"], fw), ("romfs", b["romfs_addr"], romfs)):
-            length = "0x%X" % _aligned(os.path.getsize(f))
-            log("flash %s -> %s (%s, blhost)" % (name, addr, length))
-            _blhost_run("erase %s %s" % (name, length), usb, "flash-erase-region", addr, length,
-                        timeout_ms=120000)
-            _blhost_run("write %s" % name, usb, "write-memory", addr, f)
-    _blhost_run("reset", usb, "reset")
+        b = BOARDS[board]
+        log("brick: erase romfs -> %s (%s), no write (both slots blank)"
+            % (b["romfs_addr"], b["romfs_size"]))
+        _enter_blhost(b)                                 # resident SBL (post-FCB; no config needed)
+        _blhost_run("erase romfs %s" % b["romfs_size"], b["blhost_usb"], "flash-erase-region",
+                    b["romfs_addr"], b["romfs_size"], timeout_ms=120000)
+        _blhost_run("reset", b["blhost_usb"], "reset")
+        time.sleep(12)
+        return
+    # Golden: firmware + the factory (dual-slot) romfs. The CLI's `flash romfs` reads <board>-romfs.img,
+    # so stage the factory image under that name (as the AE3 path already does), then flash both via
+    # the CLI's automatable resident-SBL path -- each call does its own machine.bootloader + reset.
+    sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
+    for op in ("firmware", "romfs"):
+        log("flash %s -> %s (openmv-ota, resident SBL)" % (op, board))
+        sh([ota("openmv-ota"), "flash", op, CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
 
 

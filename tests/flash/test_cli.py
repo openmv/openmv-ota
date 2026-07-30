@@ -14,6 +14,7 @@ def proj(tmp_path, monkeypatch):
     ran: list[list[str]] = []
     monkeypatch.setattr(fl.runner, "run", lambda argv: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
+    monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: None)   # imx hardware step; stub
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
 
     def artifact(name):
@@ -88,7 +89,9 @@ def test_imx_rt1060_dry_run(proj, monkeypatch, capsys):
     artifact("OPENMV_RT1060-firmware.bin")    # flashloaders are bundled in the package
     assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060", "--dry-run"]) == 0
     out = capsys.readouterr().out
-    assert "would run: sdphost -u 0x1FC9,0x0135 -- write-file" in out
+    # resident-SBL path: no sdphost, no FlexSPI config-register writes -- erase+write firmware, reset
+    assert "sdphost" not in out and "fill-memory" not in out
+    assert "would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60040000" in out
     assert "would run: blhost -u 0x15A2,0x0073 -- reset" in out
 
 
@@ -98,7 +101,7 @@ def test_imx_rt1060_reports_step_labels(proj, monkeypatch, capsys):
     artifact("OPENMV_RT1060-firmware.bin")    # flashloaders are bundled in the package
     assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060"]) == 0
     out = capsys.readouterr().out
-    assert "reset (OPENMV_RT1060)" in out and "load flashloader" in out
+    assert "reset (OPENMV_RT1060)" in out and "write" in out and "0x60040000" in out
 
 
 def test_arduino_factory_dry_run(proj, capsys):

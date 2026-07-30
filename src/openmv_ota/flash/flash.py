@@ -40,6 +40,8 @@ def _prepare(raw: dict, *, serial: str | None, enter_bootloader: bool, mpremote:
     cam = device.select(raw, serial)             # raises if several match without --serial
     if cam is None:
         return serial                            # already in the bootloader / not attached
+    if raw.get("backend") == "imx":              # imx: the resident-SBL catcher (flash.imx) must arm
+        return cam.serial                        # BEFORE the reset, so _imx_flash owns the reset
     device.reset(raw, cam, mpremote=_mpremote(mpremote))
     return cam.serial
 
@@ -120,9 +122,10 @@ def _loader(name: str, board: str) -> Path:
 
 def _imx_files(board: str, op: str, raw: dict, out_dir: Path) -> dict[str, Path]:
     sd, bl = raw["sdphost"], raw["blhost"]
-    files = {"sdphost_loader": _loader(sd["loader"], board)}
-    if op in ("factory", "bootloader"):              # the secure bootloader (bundled SBL)
-        files["blhost_loader"] = _loader(bl["sbl_loader"], board)
+    files: dict[str, Path] = {}
+    if op in ("factory", "bootloader"):              # recovery over SDP: the RAM flashloader + the
+        files["sdphost_loader"] = _loader(sd["loader"], board)   # bundled secure bootloader (SBL).
+        files["blhost_loader"] = _loader(bl["sbl_loader"], board)   # firmware/romfs/erase need neither.
     if op in ("firmware", "factory"):
         files["firmware"] = out_dir / ("%s-firmware.bin" % board)
     if op == "factory":
@@ -141,14 +144,67 @@ def _sdk_python(blhost: str) -> str:
     return str(Path(blhost).parent / "python3")
 
 
+def _await_line(proc, marker: str, timeout: float) -> bool:
+    """Read ``proc``'s stdout until a line contains ``marker`` (True), the process exits (True iff
+    it exited 0 -- the marker line is read before EOF), or ``timeout`` elapses (False). Uses select
+    so a silent-but-alive process can't block past the timeout (the catcher warms spsdk silently
+    before READY, then goes quiet between READY and CLAIMED)."""
+    import select
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r, _, _ = select.select([proc.stdout], [], [], 0.3)
+        if not r:                                # nothing yet (spsdk still importing / SBL not up)
+            continue
+        line = proc.stdout.readline()
+        if line == "":                           # a closed pipe -> the process has exited
+            return proc.wait() == 0
+        if marker in line:
+            return True
+    return False
+
+
+def _imx_catch_and_reset(raw: dict, python3: str, mpremote: str | None, serial: str | None) -> None:
+    """Enter + hold the resident SBL the IDE's imxArmCatcher way: ARM the catcher (wait for READY --
+    spsdk warmed + scanning), THEN reset the running camera into the SBL (machine.bootloader drops
+    the USB-CDC, so fire it and don't block), and let the armed catcher CLAIM the SBL the instant it
+    enumerates -- holding it against the ~1 s idle timeout so the region blhost ops that follow land.
+    A passive post-reset scan misses that window; this is why the automatable imx path resets HERE
+    rather than in _prepare. Raises FlashError on arm/claim timeout."""
+    import subprocess
+    catcher = subprocess.Popen(imx.catcher_argv(python3, raw["blhost"]["usb"], "claim"),
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        if not _await_line(catcher, "READY", 45):
+            raise FlashError("i.MX: the resident-SBL catcher never armed (spsdk import failed?)")
+        cam = device.select(raw, serial)         # the running camera to reset (None -> already in SBL)
+        if cam is not None:
+            subprocess.Popen([*_mpremote(mpremote), "connect", cam.port, "bootloader"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not _await_line(catcher, "CLAIMED", 45):
+            raise FlashError("i.MX: the resident SBL did not enumerate / could not be claimed")
+    finally:
+        if catcher.poll() is None:
+            catcher.terminate()
+            try:
+                catcher.wait(timeout=5)
+            except Exception:                    # pragma: no cover  (terminate() practically always reaps)
+                catcher.kill()
+
+
 def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str, *,
-               output: str | None, sdk_home: Path | None, dry_run: bool) -> list[imx.ImxStep]:
+               output: str | None, sdk_home: Path | None, dry_run: bool,
+               mpremote: str | None = None, serial: str | None = None) -> list[imx.ImxStep]:
     out_dir = _output_dir(project, output)
-    sdphost = _resolve_spsdk("sdphost", sdk_home, dry_run)
+    recovery = op in ("factory", "bootloader")
+    sdphost = _resolve_spsdk("sdphost", sdk_home, dry_run) if recovery else ""
     blhost = _resolve_spsdk("blhost", sdk_home, dry_run)
+    python3 = _sdk_python(blhost)
     files = _imx_files(board, op, cfg.raw, out_dir)
-    steps = imx.plan(op, cfg.raw, sdphost, blhost, _sdk_python(blhost), files)
+    steps = imx.plan(op, cfg.raw, sdphost, blhost, python3, files)
     if not dry_run:
+        if not recovery:                         # automatable: enter + CLAIM the resident SBL first
+            _imx_catch_and_reset(cfg.raw, python3, mpremote, serial)
         for s in steps:
             runner.run(s.argv)
         history.record(project, action, board=board, steps=[s.label for s in steps])
@@ -197,7 +253,7 @@ def flash_firmware(project: str = ".", *, board: str, output: str | None = None,
                       mpremote=mpremote, dry_run=dry_run)
     if cfg.backend == "imx":
         return _imx_flash(project, "firmware", board, cfg, "flash-firmware", output=output,
-                          sdk_home=sdk_home, dry_run=dry_run)
+                          sdk_home=sdk_home, dry_run=dry_run, mpremote=mpremote, serial=serial)
     if cfg.backend == "arduino":
         return _arduino_flash(project, "firmware", board, cfg, "flash-firmware", output=output,
                               dfu_util=dfu_util, sdk_home=sdk_home, serial=serial, dry_run=dry_run)
@@ -218,7 +274,7 @@ def flash_romfs(project: str = ".", *, board: str, output: str | None = None,
                       mpremote=mpremote, dry_run=dry_run)
     if cfg.backend == "imx":
         return _imx_flash(project, "romfs", board, cfg, "flash-romfs", output=output,
-                          sdk_home=sdk_home, dry_run=dry_run)
+                          sdk_home=sdk_home, dry_run=dry_run, mpremote=mpremote, serial=serial)
     if cfg.backend == "arduino":
         return _arduino_flash(project, "romfs", board, cfg, "flash-romfs", output=output,
                               dfu_util=dfu_util, sdk_home=sdk_home, serial=serial, dry_run=dry_run)
@@ -274,7 +330,7 @@ def flash_erase(project: str = ".", *, board: str, dfu_util: str | None = None,
                       mpremote=mpremote, dry_run=dry_run)
     if cfg.backend == "imx":                          # RT1060: erase the disk region via blhost
         return _imx_flash(project, "erase", board, cfg, "flash-erase", output=None,
-                          sdk_home=sdk_home, dry_run=dry_run)
+                          sdk_home=sdk_home, dry_run=dry_run, mpremote=mpremote, serial=serial)
     targets = cfg.raw.get("erase")
     if not targets:
         raise FlashError("board %r has no erase target configured" % board)
