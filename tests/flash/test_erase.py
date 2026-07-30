@@ -81,6 +81,7 @@ def test_erase_rt1060_blhost_erases_the_disk_mbr_sector(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.runner, "run", lambda argv, **k: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name.upper())
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
+    monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: None)   # hardware step; stub
     steps = fl.flash_erase(str(tmp_path), board="OPENMV_RT1060")
     flat = " ".join(" ".join(a) for a in ran)
     assert "flash-erase-region 0x60400000 0x1000" in flat      # the disk MBR sector, not romfs

@@ -44,6 +44,61 @@ _WAIT_SCRIPT = (
 _MBOOT_IF = ("spsdk.mboot.interfaces.usb", "MbootUSBInterface")   # the flashloader (post-jump)
 _SDP_IF = ("spsdk.sdp.interfaces.usb", "SdpUSBInterface")         # the ROM (serial download)
 
+# The resident SBL's CURRENT_VERSION property (K2.8.0 = 0x4B020800), the flashloader identity the
+# IDE's imxGetDevice() accepts. The catcher only reports CLAIMED when get-property returns this.
+SBL_EXPECTED_VERSION = 0x4B020800
+
+# The ACTIVE resident-SBL "catcher" -- the openmv-ota port of the OpenMV IDE's IMX_CATCHER_SCRIPT
+# (qt-creator .../openmv/tools/imx.cpp). Passive scanning ``after`` a reset misses the SBL: the
+# ~1 s idle window closes while spsdk is still importing, and MbootUSBInterface.scan() stalls up to
+# 10 s on the spsdk device-DB FileLock. Instead we ARM this BEFORE the reset -- it warms libusbsio,
+# prints READY (the slow import happens off the device's critical window), then hot-loops scanning
+# by VID:PID DIRECTLY (UsbDevice.scan, no DB, no lock) and, the instant the SBL enumerates, CLAIMS
+# it with a get-property so the idle timeout can't drop it back to runtime before we flash. Argv:
+# <python3> -c <this> <mode:wait|claim> <vid,pid> <timeout_s> <version>.
+_CATCHER_SCRIPT = (
+    "import sys, time, importlib\n"
+    "mode, dev, t, want = sys.argv[1], sys.argv[2], float(sys.argv[3]), int(sys.argv[4])\n"
+    "Mboot = importlib.import_module('spsdk.mboot.mcuboot').McuBoot\n"
+    "Iface = importlib.import_module('spsdk.mboot.interfaces.usb').MbootUSBInterface\n"
+    "UsbDevice = importlib.import_module('spsdk.utils.interfaces.device.usb_device').UsbDevice\n"
+    "def find():\n"
+    "    return [Iface(d) for d in UsbDevice.scan(device_id=dev)]\n"
+    "try:\n"
+    "    find()\n"                                        # warm libusbsio/HIDAPI before READY
+    "except Exception:\n"
+    "    pass\n"
+    "print('READY', flush=True)\n"
+    "deadline = (time.time() + t) if t > 0 else None\n"
+    "while deadline is None or time.time() < deadline:\n"
+    "    ifaces = find()\n"
+    "    if ifaces:\n"
+    "        if mode == 'wait':\n"
+    "            print('FOUND', flush=True); sys.exit(0)\n"
+    "        grace = time.time() + 1.0\n"
+    "        while time.time() < grace:\n"
+    "            try:\n"
+    "                with Mboot(ifaces[0]) as mb:\n"
+    "                    vals = mb.get_property(1)\n"
+    "                    if vals and vals[0] == want:\n"
+    "                        print('CLAIMED %d' % vals[0], flush=True); sys.exit(0)\n"
+    "            except Exception:\n"
+    "                pass\n"
+    "            ifaces = find() or ifaces\n"
+    "            time.sleep(0.02)\n"
+    "    time.sleep(0.05)\n"
+    "sys.stderr.write('imx catcher: %s did not enumerate within %ss\\n' % (dev, sys.argv[3]))\n"
+    "sys.exit(2)\n"
+)
+
+
+def catcher_argv(python3: str, pidvid: str, mode: str = "claim",
+                 timeout_s: float = 30, version: int = SBL_EXPECTED_VERSION) -> list[str]:
+    """Argv for the resident-SBL catcher (see ``_CATCHER_SCRIPT``). Arm it, wait for it to print
+    READY, THEN reset the board; it prints CLAIMED (mode 'claim', holds the SBL) or FOUND (mode
+    'wait') once the SBL enumerates. Run with the SDK python (where spsdk lives)."""
+    return [python3, "-c", _CATCHER_SCRIPT, mode, pidvid, "%g" % timeout_s, str(version)]
+
 # One process that scans (once) for each spsdk USB id and prints ``FOUND <id>`` for those
 # present -- the read-only counterpart of the wait script, for ``flash list``. Run with the
 # SDK's python; argv: <python3> -c <this> <mod>|<cls>|<id> ...
@@ -161,9 +216,10 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
                                  _blhost(blhost, usb, "efuse-program-once",
                                          bl["efuse_addr"], bl["efuse_data"])))
     else:
-        # Resident SBL (already up via machine.bootloader) + FlexSPI configured from the FCB:
-        # straight to the region op, no SDP load and no config-register writes.
-        steps.append(ImxStep("wait for the resident SBL (blhost)", _wait_argv(python3, usb)))
+        # Resident SBL: the caller has already ENTERED + CLAIMED it (the catcher, see flash.py --
+        # armed before the reset, holds it against the ~1 s idle timeout), and it's FlexSPI-configured
+        # from the FCB. So no SDP load, no wait step here, and no config-register writes -- straight
+        # to the region op (then reset). blhost runs back-to-back so the SBL never idles out.
         if op == "firmware":
             steps += _write_region(blhost, usb, bl["firmware_addr"], files["firmware"])
         elif op == "romfs":

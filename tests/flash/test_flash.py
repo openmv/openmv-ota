@@ -155,6 +155,9 @@ def imx_project(tmp_path, monkeypatch):
     recorded: list[dict] = []
     monkeypatch.setattr(fl.runner, "run", lambda argv: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name.upper())
+    # the resident-SBL catcher/reset is a hardware step (Popen spsdk + machine.bootloader); the
+    # plan/step tests only care about the blhost argv sequence, so stub it out.
+    monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: None)
     monkeypatch.setattr(fl.history, "record",
                         lambda root, action, **f: recorded.append({"action": action, **f}))
     # the flashloaders are bundled in the package; only the build artifacts go in build/
@@ -167,11 +170,11 @@ def imx_project(tmp_path, monkeypatch):
 def test_imx_firmware_runs_the_sequence(imx_project):
     root, ran, recorded = imx_project
     steps = fl.flash_firmware(str(root), board="OPENMV_RT1060")
-    # resident-SBL path: NO sdphost and NO FlexSPI config-register writes -- the first step is a
-    # single SDK-python scan-wait for the resident blhost, then erase+write firmware, then reset
+    # resident-SBL path (catcher entry is stubbed in the fixture): NO sdphost, NO FlexSPI config, and
+    # NO wait step in the plan -- just erase+write firmware, then reset.
     assert not any(a[0] == "SDPHOST" for a in ran)
     assert not any("fill-memory" in a or "configure-memory" in a for a in ran)
-    assert ran[0][1] == "-c" and ran[0][-2:] == ["0x15A2,0x0073", "30"]
+    assert "flash-erase-region" in ran[0] and "0x60040000" in ran[0]
     assert ran[-1][-1] == "reset"
     assert any("write-memory" in a and "0x60040000" in a for a in ran)
     assert recorded[0]["action"] == "flash-firmware" and recorded[0]["steps"] == \
@@ -214,6 +217,112 @@ def test_imx_missing_build_artifact_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
     with pytest.raises(FlashError, match="OPENMV_RT1060-firmware.bin"):
         fl.flash_firmware(str(tmp_path), board="OPENMV_RT1060")
+
+
+# --- resident-SBL catcher orchestration (the IDE's imxArmCatcher, ported) -------------------
+
+def _proc(code):
+    """A real short-lived process running `code` with a piped stdout (so _await_line's select +
+    readline hit the real code path, not a mock)."""
+    import subprocess
+    return subprocess.Popen([sys.executable, "-c", code],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+
+def test_await_line_finds_marker_then_next_marker():
+    p = _proc("import time,sys\nprint('READY',flush=True)\ntime.sleep(0.1)\n"
+              "print('CLAIMED 1',flush=True)\n")
+    try:
+        assert fl._await_line(p, "READY", 5) is True       # first marker
+        assert fl._await_line(p, "CLAIMED", 5) is True      # a later marker on the same stream
+    finally:
+        p.wait()
+
+
+def test_await_line_clean_exit_without_marker_is_true():
+    p = _proc("pass")                                       # exits 0, prints nothing
+    assert fl._await_line(p, "NOPE", 5) is True             # EOF/exit-0 path
+
+
+def test_await_line_times_out_on_a_silent_process():
+    p = _proc("import time; time.sleep(30)")                # alive, never prints
+    try:
+        assert fl._await_line(p, "X", 0.5) is False         # timeout path
+    finally:
+        p.terminate()
+        p.wait()
+
+
+class _FakeCatcher:
+    def __init__(self, *a, alive=False, **k):
+        self.stdout = None
+        self.terminated = False
+        self._alive = alive                                 # alive -> the finally must terminate it
+
+    def poll(self):
+        return None if self._alive else 0                   # a successful claim exits the catcher
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _patch_catcher(monkeypatch, popens, *, ready=True, claimed=True, alive=False):
+    import subprocess
+    made = []
+
+    def fake_popen(argv, **k):
+        popens.append(argv)
+        c = _FakeCatcher(alive=alive)
+        made.append(c)
+        return c
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    awaited = iter([ready, claimed])
+    monkeypatch.setattr(fl, "_await_line", lambda p, m, t: next(awaited))
+    monkeypatch.setattr(fl, "_mpremote", lambda o: ["mpremote"])
+    return made
+
+
+def test_imx_catch_and_reset_arms_resets_and_claims(monkeypatch):
+    popens = []
+    _patch_catcher(monkeypatch, popens)
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: fl.device.Camera("/dev/ttyACM0", "SN"))
+    fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None)
+    assert any("claim" in a for a in popens)                # armed the catcher (claim mode)
+    assert any("bootloader" in a for a in popens)           # reset the running camera into the SBL
+
+
+def test_imx_catch_and_reset_no_camera_skips_reset(monkeypatch):
+    popens = []
+    _patch_catcher(monkeypatch, popens)
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: None)   # already in the SBL
+    fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None)
+    assert any("claim" in a for a in popens)
+    assert not any("bootloader" in a for a in popens)       # nothing running to reset
+
+
+def test_imx_catch_and_reset_raises_when_never_armed(monkeypatch):
+    _patch_catcher(monkeypatch, [], ready=False)
+    with pytest.raises(FlashError, match="never armed"):
+        fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None)
+
+
+def test_imx_catch_and_reset_raises_when_sbl_not_claimed_and_terminates_catcher(monkeypatch):
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: None)
+    made = _patch_catcher(monkeypatch, [], claimed=False, alive=True)   # catcher still running on fail
+    with pytest.raises(FlashError, match="could not be claimed"):
+        fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None)
+    assert made[0].terminated                                           # finally cleaned it up
+
+
+def test_prepare_skips_reset_for_imx(monkeypatch):
+    # imx: _prepare must NOT reset (the catcher arms before the reset) -- it just resolves the serial
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: fl.device.Camera("/dev/ttyACM0", "SN9"))
+    monkeypatch.setattr(fl.device, "reset", lambda *a, **k: pytest.fail("imx must not reset in _prepare"))
+    raw = flash_config("OPENMV_RT1060").raw
+    assert fl._prepare(raw, serial=None, enter_bootloader=True, mpremote=None, dry_run=False) == "SN9"
 
 
 
