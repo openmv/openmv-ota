@@ -189,6 +189,76 @@ def test_reader_read_some_eof_returns_empty():
     assert r.read_some(10) == b""
 
 
+class _FakePoll:
+    """A select.poll stand-in: reports not-ready `not_ready` times, then ready."""
+
+    def __init__(self, not_ready):
+        self._left = not_ready
+
+    def poll(self, _ms):
+        if self._left > 0:
+            self._left -= 1
+            return []                          # nothing readable yet -> reader feeds + waits
+        return [(None, 1)]                     # readable -> reader does the (non-blocking) recv
+
+
+_READY = type("Ready", (), {"poll": lambda self, _ms: [(None, 1)]})()   # always readable
+
+
+def test_reader_poll_feeds_while_waiting_then_reads():
+    # non-blocking, progress-fed recv: feed once per loop slice, then read when readable
+    fed = []
+    r = inst("_Reader")(_recv_of(b"payload"), feed=lambda: fed.append(1), poll=_FakePoll(3))
+    assert r.read_exact(7) == b"payload"       # drives _fill -> 3 not-ready slices then the recv
+    assert len(fed) == 4                        # fed each slice incl. the readable one, no relax/disable
+
+
+def test_reader_poll_ready_but_would_block_then_data():
+    # poll can report readable while the non-blocking recv still returns None (partial TLS record):
+    # the reader must keep feeding + polling, not treat None as EOF
+    seq = iter([None, None, b"hi"])
+    fed = []
+    r = inst("_Reader")(lambda _n: next(seq), feed=lambda: fed.append(1), poll=_READY)
+    assert r.read_exact(2) == b"hi"
+    assert len(fed) == 3                        # fed on each would-block slice before data arrived
+
+
+def test_reader_poll_ready_eof_returns_false():
+    # a non-blocking recv of b'' after POLLIN is a real EOF -> _fill returns False
+    r = inst("_Reader")(_recv_of(), feed=lambda: None, poll=_READY)
+    assert r.read_some(5) == b""
+
+
+def test_reader_poll_recv_eagain_then_data():
+    # some ports RAISE OSError(EAGAIN) instead of returning None; treat as would-block, keep going
+    state = {"n": 0}
+
+    def recv(_n):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise OSError(11)                  # EAGAIN despite POLLIN
+        return b"ok"
+    r = inst("_Reader")(recv, feed=lambda: None, poll=_READY)
+    assert r.read_exact(2) == b"ok"
+
+
+def test_reader_poll_recv_oserror_propagates():
+    # a non-would-block OSError (e.g. ECONNRESET) is a real failure -> propagate (install -> golden)
+    def recv(_n):
+        raise OSError(104)                     # ECONNRESET
+    r = inst("_Reader")(recv, feed=lambda: None, poll=_READY)
+    with pytest.raises(OSError):
+        r.read_exact(1)
+
+
+def test_reader_poll_dead_link_trips_after_timeout():
+    # a link that never produces data must stop feeding and raise (the watchdog would then bite)
+    never = type("Never", (), {"poll": lambda self, _ms: []})()
+    r = inst("_Reader")(_recv_of(b"unreached"), feed=lambda: None, poll=never)
+    with pytest.raises(OSError, match="timed out"):
+        r.read_exact(1)
+
+
 # --- _read_response ---------------------------------------------------------
 
 def test_read_response():
@@ -296,14 +366,18 @@ class _FakeFlash:
         return bytes(self.mem[off:off + n])
 
 
-def _reader_of(data):
-    """A read(n) callable yielding ``data`` in <=n slices then b''."""
-    box = {"d": data}
+class _SourceOf:
+    """A readinto(mv)->int source over fixed bytes, dribbling <=step per call to exercise the
+    write loop's re-chunking fill. Stands in for dio / _GenReader in _install_stream tests."""
 
-    def read(n):
-        out, box["d"] = box["d"][:n], box["d"][n:]
-        return out
-    return read
+    def __init__(self, data, step=1500):
+        self.data, self.pos, self.step = data, 0, step
+
+    def readinto(self, mv):
+        n = min(len(mv), self.step, len(self.data) - self.pos)
+        mv[:n] = self.data[self.pos:self.pos + n]
+        self.pos += n
+        return n
 
 
 def _noop():
@@ -314,7 +388,7 @@ def _run_install(image, front_size, block, feed=_noop, progress=None, expect_sha
                  repr_marker=None):
     flash = _FakeFlash(front_size)
     flash.erase(front_size)                 # the caller erases before _install_stream now
-    inst("_install_stream")(_reader_of(image), flash.write,
+    inst("_install_stream")(_SourceOf(image), flash.write,
                             flash.readback, front_size, block, feed, progress, expect_sha,
                             repr_marker)
     return flash
@@ -348,6 +422,23 @@ def test_install_stream_feeds_the_watchdog_per_chunk():
     _run_install(bytes(image), front, block, lambda: calls.append(1))
     # fed once per chunk through the erase-verify + write loops (not masking a hang)
     assert len(calls) >= front // block
+
+
+def test_install_stream_gc_collect_runs_on_cadence():
+    # With a watchdog armed the caller passes a proactive-collect hook; _install_stream calls it
+    # on the _GC_EVERY byte cadence so automatic GC never fires mid-write. Never disables GC.
+    block = 4096
+    every = inst("_GC_EVERY")
+    front = 3 * every                                # a few cadence intervals
+    image = bytearray(b"\xff" * front)
+    for i in range(0, front, block):                 # non-blank every chunk so each is written
+        image[i:i + 4] = b"DATA"
+    calls = []
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    inst("_install_stream")(_SourceOf(bytes(image), step=block), flash.write, flash.readback,
+                            front, block, _noop, None, None, None, lambda: calls.append(1))
+    assert len(calls) >= 2                            # fired on the byte cadence, not just once
 
 
 def test_install_stream_reports_progress_per_chunk():
@@ -420,7 +511,7 @@ def test_install_stream_repr_marker_verify_fails():
     flash = DropRepr(front)
     flash.erase(front)
     with pytest.raises(OSError):
-        inst("_install_stream")(_reader_of(bytes(image)), flash.write,
+        inst("_install_stream")(_SourceOf(bytes(image)), flash.write,
                                 flash.readback, front, block, _noop, None, None,
                                 inst("REPR_FULL"))
 
@@ -608,20 +699,35 @@ def test_delta_stream_mirrors_host_apply(seed):
     assert b"".join(bytes(p) for p in gen) == apply_delta(base, patch) == target
 
 
-def test_gen_reader_serves_read_n():
+def test_delta_stream_via_readinto_source():
+    # drives _PatchReader's readinto() branch (the on-device DeflateIO path) rather than read()
+    from openmv_ota.ota.delta import apply_delta, make_delta
+    base = bytes((i * 17) & 0xFF for i in range(4000))
+    target = base[:1000] + b"NEW-BYTES" + base[1009:]
+    patch = make_delta(base, target)
+    gen = inst("_delta_stream")(inst("_PatchReader")(_SourceOf(patch, step=100)),
+                                _old_read_of(base), 256)
+    assert b"".join(bytes(p) for p in gen) == apply_delta(base, patch) == target
+
+
+def test_gen_reader_serves_readinto():
+    # _GenReader re-chunks arbitrary delta pieces into the caller's fixed buffer via readinto,
+    # carrying any partial piece across calls (buffer size 100 << the 512-byte delta chunk).
     from openmv_ota.ota.delta import make_delta
     base = bytes(range(256)) * 30
     target = base[:2000] + b"X" * 40 + base[2000:]
     patch = make_delta(base, target)
     gen = inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)), _old_read_of(base), 512)
     rd = inst("_GenReader")(gen)
-    out = b""
+    out = bytearray()
+    buf = bytearray(100)
+    mv = memoryview(buf)
     while True:
-        d = rd.read(100)
-        if not d:
+        n = rd.readinto(mv)
+        if n == 0:
             break
-        out += d
-    assert out == target
+        out += mv[:n]
+    assert bytes(out) == target
 
 
 def test_delta_stream_bad_magic():
@@ -693,7 +799,7 @@ def test_install_stream_erase_verify_fails():
     flash = BadErase(front)
     flash.erase(front)                      # the caller's erase silently did nothing
     with pytest.raises(OSError):            # _install_stream's read-back verify catches it
-        inst("_install_stream")(_reader_of(b"\xff" * front), flash.write,
+        inst("_install_stream")(_SourceOf(b"\xff" * front), flash.write,
                                 flash.readback, front, block, _noop)
 
 
@@ -710,7 +816,7 @@ def test_install_stream_write_verify_fails():
     flash = BadWrite(front)
     flash.erase(front)
     with pytest.raises(OSError):
-        inst("_install_stream")(_reader_of(bytes(image)), flash.write,
+        inst("_install_stream")(_SourceOf(bytes(image)), flash.write,
                                 flash.readback, front, block, _noop)
 
 
@@ -727,7 +833,7 @@ def test_install_stream_arm_verify_fails():
     flash = DropPending(front)
     flash.erase(front)
     with pytest.raises(OSError):
-        inst("_install_stream")(_reader_of(b"\xff" * front), flash.write,
+        inst("_install_stream")(_SourceOf(b"\xff" * front), flash.write,
                                 flash.readback, front, block, _noop)
 
 

@@ -12,6 +12,23 @@ resets into the golden BACK image (boot.py rejects the half-written FRONT). Pre-
 failures (bad URL, DNS, TLS, a bad/forbidden manifest) raise normally -- ``/rom`` is
 still intact, so the app catches them and can retry without a reboot.
 
+WHY THIS IS SYNCHRONOUS (and must stay so), and how it feeds an enabled watchdog: an app may
+turn on ``openmv_wdt``, which this install has to keep fed the whole way through. It runs
+SYNCHRONOUSLY -- and MUST, from the erase onward -- because the app's own coroutines (its main
+loop, ``run()``, every task on the asyncio event loop) live in the FRONT slot being erased. So
+if any post-erase op ``await``\\ed and YIELDED to the event loop, the loop would resume that
+now-erased bytecode straight from flash and HardFault. Post-erase work therefore must not yield.
+That rules OUT async sockets for the download; instead the recv is **non-blocking + progress-
+fed without yielding**: the reader waits for data in short ``select.poll`` slices and ``feed``\\s
+the watchdog each slice, so a slow/paced link stays fed while a dead link (no data at all) stops
+producing and trips the watchdog after ``_SOCK_TIMEOUT`` -> golden. The erase/write loops feed
+per block/piece the same way. ``relax()`` (an ISR feed that also does not yield) is a LAST
+RESORT, used ONLY for the two genuinely unsplittable single C calls with no seam to feed
+through: the TLS handshake (``_connect``) and this file's own ``exec`` compile (in
+``openmv_ota.install``). All of it is a no-op unless the app armed a watchdog. (Pre-erase --
+check-in, manifest fetch -- could yield safely, and the check-in in ``run()`` does; but the
+installer is one synchronous unit for simplicity and the hard post-erase guarantee.)
+
 Like ``boot.py`` this is split into pure logic (URL/HTTP/chunked parsing, the
 flash write loop -- all I/O injected, host-tested) and a device entry (``run`` /
 ``_open`` / ``_connect``) that wires the real ``socket``/``ssl``/``deflate``/
@@ -89,10 +106,36 @@ REPR_DELTA = _marker(b"repr.ocdl")
 # Stream/flash unit. FRONT_SIZE is always a multiple of this (it is block-aligned
 # and the block is >= 4096), so every flash write is a full, aligned chunk.
 _CHUNK = 4096
+# Preallocated, immutable compare buffers (memoryview-sliced, never copied). The streamed delta
+# apply runs millions of "is this chunk all-zero / all-0xFF?" tests; comparing against a fresh
+# bytes(n) each time was a big slice of the delta's heap churn -> GC pressure -> (under a watchdog)
+# an unfeedable collection pause. The whole write path now reuses fixed buffers so no per-chunk
+# allocation happens and automatic GC never fires mid-install.
+_ZERO_CHUNK = bytes(_CHUNK)
+_ZERO_MV = memoryview(_ZERO_CHUNK)
+_FF_CHUNK = b"\xff" * _CHUNK
+_FF_MV = memoryview(_FF_CHUNK)
+
+# Bytes of image written between PROACTIVE, relax()-fed garbage collections during the write.
+# Preallocation removed the megabyte-scale delta churn, but small residual churn (memoryview
+# slices, the compressed-download reader) still trips an automatic GC every few MB -- and on the
+# N6's multi-MB heap ANY collection is ~65-100 ms (the pause is heap-size-bound, not garbage-bound),
+# which under a watchdog can outrun the window. So when a watchdog is armed we collect PROACTIVELY
+# on this cadence, keeping free heap high enough that automatic GC never fires mid-write; each
+# proactive collect runs under relax() (ISR-fed), so its pause can't bite. GC is never disabled.
+_GC_EVERY = 512 * _CHUNK      # ~2 MB: well under the ~5 MB automatic-GC interval measured on HW
 
 # Socket timeout (s) for the download: bounds the TLS handshake and every recv so a
 # stalled connection fails the install cleanly (-> reboot to golden) instead of hanging.
 _SOCK_TIMEOUT = 30
+# Poll slice (ms) for the non-blocking download recv: the reader waits for data in slices this long,
+# feeding the watchdog each slice, so it must stay WELL under the watchdog window (~100 ms) -> a few
+# feeds per window. Only matters when a watchdog is armed; a fast recv returns the moment data arrives.
+_RECV_POLL_MS = 20
+# "Operation would block" errnos a non-blocking recv may raise (EAGAIN/EWOULDBLOCK) even right after
+# poll reports readable -- a TLS socket can be TCP-readable with no whole record decrypted yet. Both
+# the positive (11) and MicroPython's negated (-11) form; treated as "no data yet", keep polling.
+_EAGAIN = (11, -11)
 
 
 # --- pure: URL + HTTP (host-testable) ---------------------------------------
@@ -173,12 +216,45 @@ class _Reader:
     line reads for the status/headers/chunk-sizes, plus bounded raw reads for the
     body. Holds any bytes read past the headers so the body stream sees them."""
 
-    def __init__(self, recv, buf=b""):
+    def __init__(self, recv, feed=_noop, poll=None, buf=b""):
         self._recv = recv
+        self._feed = feed          # progress-fed download: fed while WAITING for the next recv
+        self._poll = poll          # select.poll registered on the socket (None -> plain blocking recv)
         self._buf = buf
 
     def _fill(self):
-        d = self._recv(_CHUNK)
+        # NON-BLOCKING, progress-fed recv (NOT relax): with the socket in non-blocking mode (set by
+        # _open), wait for it to be readable in short poll slices -- feeding the watchdog each slice --
+        # then read WHATEVER IS AVAILABLE (returning < _CHUNK is fine; the caller re-fills). This is the
+        # crux: a *blocking* read(_CHUNK) would block until a whole _CHUNK accumulated, which mid-stream
+        # spans several TLS records on a paced Wi-Fi link and starves the watchdog between feeds (poll
+        # only proves the FIRST byte is ready, not a full chunk) -- that is what bit the WWDG on the N6
+        # image download but not the tiny, single-read manifest. A genuinely dead link produces nothing
+        # and trips the watchdog after _SOCK_TIMEOUT (-> clean install error -> golden). Feed is a no-op
+        # unless a watchdog is armed; with no poll available we fall back to a plain blocking recv (the
+        # watchdog-off path is byte-for-byte unaffected).
+        if self._poll is not None:
+            waited = 0
+            while True:
+                self._feed()
+                if self._poll.poll(_RECV_POLL_MS):
+                    try:
+                        d = self._recv(_CHUNK)        # non-blocking: available bytes / None / b'' (EOF)
+                    except OSError as e:              # would-block despite POLLIN (partial TLS record)
+                        if e.args and e.args[0] in _EAGAIN:
+                            d = None
+                        else:
+                            raise
+                    if d:
+                        self._buf += d
+                        return True
+                    if d is not None:                # d == b'' -> EOF
+                        return False
+                    # d is None -> would-block after POLLIN; keep polling + feeding
+                waited += _RECV_POLL_MS
+                if waited >= _SOCK_TIMEOUT * 1000:
+                    raise OSError("recv timed out")   # a dead link -> clean install error -> golden
+        d = self._recv(_CHUNK)                        # blocking fallback (no select/poll on this port)
         if not d:
             return False
         self._buf += d
@@ -423,7 +499,8 @@ except ImportError:                               # host / a board without ulab 
 def _add(old_b, diff_b):
     """``(old_b + diff_b) mod 256`` for the diff region. All-zero diff (the unchanged bulk)
     is a straight copy; otherwise ulab vectorises the add, with a pure-Python fallback."""
-    if diff_b == bytes(len(diff_b)):
+    n = len(diff_b)
+    if diff_b == (_ZERO_CHUNK if n == _CHUNK else bytes(n)):   # unchanged bulk -> straight copy
         return bytes(old_b)
     if _np is not None:
         return (_np.frombuffer(old_b, dtype=_np.uint8)        # pragma: no cover (device/ulab)  # hil-residual: ulab vectorised add (device-only, no ulab on host); correctness proven end-to-end by the delta scenario's sha256 gate (install.armed -> confirm.promoted); the pure-Python twin below is host-tested
@@ -432,35 +509,57 @@ def _add(old_b, diff_b):
 
 
 class _PatchReader:
-    """A buffered reader over a streamed patch source (``src.read(n)`` -- a DeflateIO),
-    giving exact reads + varints so the patch is consumed in one forward pass."""
+    """Zero-alloc buffered reader over a streamed patch source -- a ``DeflateIO`` (``readinto``,
+    preferred) or a plain ``read(n)`` stub. Fills ONE reused buffer and serves exact reads (into a
+    caller memoryview) + varints by index, so the image-sized decompressed diff stream is consumed
+    in a single forward pass with no per-read allocation (no GC churn to bite an armed watchdog)."""
 
     def __init__(self, src):
         self._src = src
-        self._buf = b""
+        self._readinto = getattr(src, "readinto", None)   # DeflateIO has it; the read()-only stub doesn't
+        self._buf = bytearray(_CHUNK)
+        self._mv = memoryview(self._buf)
+        self._len = 0                                     # valid bytes currently in _buf
+        self._off = 0                                     # consumed offset within _buf
 
-    def _fill(self, need):
-        while len(self._buf) < need:
-            d = self._src.read(_CHUNK)
-            if not d:
-                return
-            self._buf += d
+    def _more(self):
+        """Refill the (fully consumed) buffer from src; False at EOF."""
+        if self._readinto is not None:
+            self._len = self._readinto(self._buf)
+        else:
+            d = self._src.read(_CHUNK)                     # stub path: read() -> copy in
+            self._len = len(d)
+            self._buf[:self._len] = d
+        self._off = 0
+        return self._len > 0
+
+    def read_into(self, dst):
+        """Fill ``dst`` (a memoryview) with exactly ``len(dst)`` patch bytes; raise on a short patch."""
+        m = len(dst)
+        got = 0
+        while got < m:
+            if self._off >= self._len and not self._more():
+                raise OSError("delta truncated")
+            take = self._len - self._off
+            if take > m - got:
+                take = m - got
+            dst[got:got + take] = self._mv[self._off:self._off + take]
+            self._off += take
+            got += take
 
     def read_exact(self, k):
-        self._fill(k)
-        if len(self._buf) < k:
-            raise OSError("delta truncated")
-        out, self._buf = self._buf[:k], self._buf[k:]
-        return out
+        """``k`` bytes as ``bytes`` -- only the 4-byte magic + tests; the hot path uses read_into."""
+        out = bytearray(k)
+        self.read_into(memoryview(out))
+        return bytes(out)
 
     def read_uvarint(self):
         result = shift = 0
         while True:
-            self._fill(1)
-            if not self._buf:
+            if self._off >= self._len and not self._more():
                 raise OSError("delta truncated")
-            b = self._buf[0]
-            self._buf = self._buf[1:]
+            b = self._buf[self._off]
+            self._off += 1
             result |= (b & 0x7F) << shift
             if not (b & 0x80):
                 return result
@@ -472,29 +571,44 @@ class _PatchReader:
 
 
 def _delta_stream(reader, old_read, chunk):
-    """Yield the reconstructed image in pieces from a streamed OCDL patch (via ``reader``)
-    + the golden base (``old_read(off, n)`` over the XIP'd BACK slot). Mirror of
-    openmv_ota.ota.delta.apply_delta -- streamed both ways, so neither the patch nor the
-    target is held whole. Raises OSError on a bad/short patch (-> reboot to golden)."""
+    """Yield the reconstructed image in <=``chunk`` pieces from a streamed OCDL patch (``reader``)
+    + the golden base (``old_read(off, n)`` -> a view over the XIP'd BACK slot). Mirror of
+    openmv_ota.ota.delta.apply_delta, streamed both ways so neither is held whole. Each piece is a
+    memoryview into ONE reused buffer -- the consumer MUST copy it before pulling the next (that is
+    what ``_GenReader`` does). Zero per-piece allocation: the diff add is done in place (ulab on
+    device; a pure-Python twin off it). Raises OSError on a bad/short patch (-> reboot to golden)."""
     if reader.read_exact(4) != _DELTA_MAGIC:
         raise OSError("bad delta magic")
     target_size = reader.read_uvarint()
+    out = bytearray(chunk)                                # reused output buffer for every yielded piece
+    mv = memoryview(out)
+    acc = _np.frombuffer(out, dtype=_np.uint8) if _np is not None else None   # writable view over out
     old = produced = 0
     while produced < target_size:
         extra_len = reader.read_uvarint()
         diff_len = reader.read_uvarint()
         old += reader.read_svarint()
         left = extra_len
-        while left:                                  # chunked like the diff run
-            m = left if left < chunk else chunk      # never one huge read_exact:
-            yield reader.read_exact(m)               # extra_len is patch-declared
-            produced += m                            # and only hash-checked after
+        while left:                                      # literal run: patch bytes verbatim
+            m = left if left < chunk else chunk
+            reader.read_into(mv[:m])
+            yield mv[:m]
+            produced += m
             left -= m
         o = old
         left = diff_len
-        while left:
+        while left:                                      # diff run: (BACK + patch) mod 256
             m = left if left < chunk else chunk
-            yield _add(old_read(o, m), reader.read_exact(m))
+            reader.read_into(mv[:m])                      # out[:m] = the diff bytes
+            old_v = old_read(o, m)                        # BACK view (XIP alias, no copy)
+            if mv[:m] == _ZERO_MV[:m]:                    # unchanged bulk -> result is just BACK
+                mv[:m] = old_v
+            elif acc is not None:                         # ulab in-place: out += BACK (uint8 wraps)
+                acc[:m] += _np.frombuffer(old_v, dtype=_np.uint8)  # pragma: no cover (device/ulab)  # hil-residual: ulab in-place vectorised add (device-only, no ulab on host); the pure branch below is host-tested and the delta scenario's sha256 gate proves the ulab path end-to-end (install.armed -> confirm.promoted)
+            else:                                         # pure fallback (host + no-ulab boards)
+                for i in range(m):
+                    out[i] = (out[i] + old_v[i]) & 0xFF
+            yield mv[:m]
             o += m
             left -= m
         old += diff_len
@@ -502,28 +616,55 @@ def _delta_stream(reader, old_read, chunk):
 
 
 class _GenReader:
-    """Adapt a generator of byte pieces to the ``read(n)`` source ``_install_stream``
-    pulls from -- buffers just enough to serve each request."""
+    """Adapt a generator of memoryview pieces to a ``readinto(dst)`` source for _install_stream:
+    copy each piece into the caller's buffer (overflow into one reused hold buffer) so the write
+    loop stays zero-alloc. ``feed`` fires per generator piece -- one _CHUNK fill can pull MANY delta
+    pieces (each a patch read + BACK read + add) while the write loop only feeds once per _CHUNK, so
+    feeding here keeps an armed watchdog alive between those coarser feeds. No-op feed by default."""
 
-    def __init__(self, gen):
+    def __init__(self, gen, feed=_noop):
         self._gen = gen
-        self._buf = b""
+        self._feed = feed
+        self._hold = bytearray(_CHUNK)                    # a partial piece carried across readinto()s
+        self._hmv = memoryview(self._hold)
+        self._hlen = 0                                    # valid bytes in _hold
+        self._hoff = 0                                    # consumed offset in _hold
 
-    def read(self, n):
-        while len(self._buf) < n:
+    def readinto(self, dst):
+        """Fill ``dst`` (a memoryview) with up to ``len(dst)`` reconstructed bytes; 0 at EOF."""
+        need = len(dst)
+        filled = 0
+        while filled < need:
+            if self._hoff < self._hlen:                  # drain the carried-over remainder first
+                take = self._hlen - self._hoff
+                if take > need - filled:
+                    take = need - filled
+                dst[filled:filled + take] = self._hmv[self._hoff:self._hoff + take]
+                self._hoff += take
+                filled += take
+                continue
             try:
-                self._buf += bytes(next(self._gen))
+                piece = next(self._gen)                   # a memoryview into the delta's reused buffer
+                self._feed()
             except StopIteration:
                 break
-        out, self._buf = self._buf[:n], self._buf[n:]
-        return out
+            plen = len(piece)
+            take = plen if plen <= need - filled else need - filled
+            dst[filled:filled + take] = piece[:take]
+            filled += take
+            if take < plen:                               # stash the leftover before the buffer is reused
+                rem = plen - take
+                self._hmv[:rem] = piece[take:]
+                self._hlen = rem
+                self._hoff = 0
+        return filled
 
 
 # --- pure: the flash write (host-testable; all I/O injected) -----------------
 
 def _is_blank(chunk):
     """True if ``chunk`` is all 0xFF -- already-erased flash we needn't rewrite."""
-    return chunk == b"\xff" * len(chunk)
+    return chunk == _FF_MV[:len(chunk)]          # compare vs a hoisted view -> no per-call alloc
 
 
 class _Progress:
@@ -549,29 +690,30 @@ class _Progress:
             self._log.info("install: %d%% (%d/%d bytes)" % (pct, done, total))
 
 
-def _install_stream(read, write, readback, front_size, block, feed,
-                    progress=None, expect_sha=None, repr_marker=None):
+def _install_stream(source, write, readback, front_size, block, feed,
+                    progress=None, expect_sha=None, repr_marker=None, gc_collect=None):
     """Stream the decompressed image into the ALREADY-ERASED FRONT slot 1:1
     (verifying every write by read-back, skipping already-erased 0xFF runs), then
     arm the trial.
 
     The caller MUST erase the FRONT slot BEFORE calling this AND before opening the
-    download stream ``read`` draws from -- so the download socket is never left idle
+    download stream ``source`` draws from -- so the download socket is never left idle
     during the multi-second erase (a slow flash on a power-saving link drops an idle
     connection, and the write loop would then read a truncated body). This function
     starts by read-back verifying the slot is fully erased.
 
-    ``read(n)`` yields decompressed image bytes (``b''`` at end); ``write(off, data)``
-    programs flash; ``readback(off, n)`` returns the ``n`` bytes at ``off``; ``feed()``
-    is called once per chunk so the watchdog stays alive through the loops *without*
-    masking a hang (if the loop stops iterating, feeding stops); ``progress(done,
-    front_size)`` (if given) is called once per written chunk so the caller can
-    log/report how far the install has got; ``expect_sha`` (if given, the manifest's hex
-    sha256 of the reconstructed image) is checked over the streamed bytes and must match;
-    ``repr_marker`` (if given) records which representation was applied (REPR_FULL /
-    REPR_DELTA) for status() to report. Raises on any size/hash mismatch or read-back
-    miscompare; this runs after the erase, so the caller turns any exception into a
-    reboot into golden."""
+    ``source.readinto(mv)`` fills up to ``len(mv)`` decompressed image bytes into the caller's
+    buffer and returns the count (0 at EOF) -- a ``DeflateIO`` for a full image, or a ``_GenReader``
+    over the delta stream; either way the write loop reuses ONE ``_CHUNK`` buffer, so no per-chunk
+    allocation happens and automatic GC never fires to bite an armed watchdog. ``write(off, data)``
+    programs flash; ``readback(off, n)`` returns the ``n`` bytes at ``off``; ``feed()`` is called
+    once per chunk so the watchdog stays alive through the loops *without* masking a hang (if the
+    loop stops iterating, feeding stops); ``progress(done, front_size)`` (if given) is called once
+    per written chunk; ``expect_sha`` (if given, the manifest's hex sha256 of the reconstructed
+    image) is checked over the streamed bytes and must match; ``repr_marker`` (if given) records
+    which representation was applied (REPR_FULL / REPR_DELTA) for status() to report. Raises on any
+    size/hash mismatch or read-back miscompare; this runs after the erase, so the caller turns any
+    exception into a reboot into golden."""
     off = 0
     while off < front_size:                          # confirm the caller's erase took
         n = _CHUNK if front_size - off >= _CHUNK else front_size - off
@@ -581,28 +723,38 @@ def _install_stream(read, write, readback, front_size, block, feed,
         feed()
 
     digest = hashlib.sha256() if expect_sha is not None else None
+    work = bytearray(_CHUNK)                          # the ONE reused write buffer -> zero-alloc loop
+    mv = memoryview(work)
     off = 0
-    buf = b""
-    while True:
-        data = read(_CHUNK)
-        if data:
-            buf += data
-        if len(buf) >= _CHUNK or (not data and buf):
-            chunk, buf = buf[:_CHUNK], buf[_CHUNK:]
-            if off + len(chunk) > front_size:
-                raise ValueError("image larger than the %d-byte slot" % front_size)
-            if digest is not None:
-                digest.update(chunk)
-            if not _is_blank(chunk):                 # erased regions are already 0xFF
-                write(off, chunk)
-                if readback(off, len(chunk)) != chunk:
-                    raise OSError("write verify failed at %d" % off)
-            off += len(chunk)
-            feed()
-            if progress is not None:
-                progress(off, front_size)
-        if not data:
-            break
+    since_gc = 0
+    while off < front_size:
+        feed()                                       # before the (recv + delta reconstruct) fill
+        want = _CHUNK if front_size - off >= _CHUNK else front_size - off
+        n = 0
+        while n < want:                              # fill a full aligned chunk: re-chunks the
+            k = source.readinto(mv[n:want])          # arbitrary delta/deflate pieces into one buffer
+            if k == 0:
+                break                                # EOF: a short tail is caught by the size check
+            n += k
+        if n == 0:
+            break                                    # source exhausted; the size check below rejects short
+        chunk = mv[:n]
+        if digest is not None:
+            digest.update(chunk)
+        if not _is_blank(chunk):                     # erased regions are already 0xFF
+            write(off, chunk)
+            if readback(off, n) != chunk:
+                raise OSError("write verify failed at %d" % off)
+        off += n
+        feed()
+        since_gc += n
+        if gc_collect is not None and since_gc >= _GC_EVERY:
+            gc_collect()                             # proactive relax()-fed collect -> auto-GC never fires
+            since_gc = 0
+        if progress is not None:
+            progress(off, front_size)
+    if off == front_size and source.readinto(mv[:1]):    # any bytes beyond the slot -> wrong image
+        raise ValueError("image larger than the %d-byte slot" % front_size)
     if off != front_size:
         raise ValueError("image is %d bytes, expected a full %d-byte slot"
                          % (off, front_size))
@@ -633,12 +785,15 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
     ai = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0]
     sock = socket.socket(ai[0], ai[1], ai[2])
     try:
-        sock.settimeout(_SOCK_TIMEOUT)               # so a stalled handshake/recv can't
-        sock.connect(ai[-1])                         # block forever -> clean install error
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.verify_mode = ssl.CERT_REQUIRED
-        ctx.load_verify_locations(cadata=ca_pem)
-        tls = ctx.wrap_socket(sock, server_hostname=host)
+        sock.settimeout(_SOCK_TIMEOUT)               # so a stalled handshake/recv can't block forever
+        # connect + TLS handshake are blocking, unsplittable mbedtls C ops that can exceed a short
+        # watchdog window; relax() ISR-feeds across them (no-op unless the app armed a watchdog).
+        with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
+            sock.connect(ai[-1])
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.load_verify_locations(cadata=ca_pem)
+            tls = ctx.wrap_socket(sock, server_hostname=host)
         log.debug("install: TLS up")
         return tls  # hil-residual: bare return of the wrapped TLS socket
     except Exception:  # hil-residual: connect-failure cleanup wrapper
@@ -646,16 +801,25 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
         raise  # hil-residual: bare re-raise to the caller (pre-erase, /rom intact)
 
 
-def _open(url, ca_pem, socket, ssl, max_redirects=5):  # pragma: no cover
+def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5):  # pragma: no cover
     """Connect, GET, follow redirects, and return ``(sock, body)`` on a 2xx -- all
     before the erase, so a bad URL / DNS / TLS / non-2xx status raises to the app
-    with /rom still intact."""
+    with /rom still intact. ``feed`` lets the body reader keep an armed watchdog fed
+    between recvs (progress-fed, non-blocking) without a relax()."""
     for _ in range(max_redirects + 1):
         host, port, path = _parse_url(url)
         sock = _connect(host, port, ca_pem, socket, ssl)
+        try:                                          # ssl sockets support poll (stream ioctl); this
+            import select                             # lets the reader wait for data in short slices,
+            poll = select.poll()                      # feeding between them -- a progress-fed recv, not
+            poll.register(sock, select.POLLIN)        # a relax() disable
+        except Exception:  # pragma: no cover  # hil-residual: select/poll is always present on our ports; fall back to a plain blocking recv so a normal install is never broken (only the on-watchdog per-recv feed relies on poll)
+            poll = None
         try:
             sock.write(_request_bytes(host, port, path))
-            reader = _Reader(sock.read)
+            if poll is not None:                      # body reads go non-blocking so a paced recv never
+                sock.setblocking(False)               # blocks past a watchdog window; poll+feed gates it
+            reader = _Reader(sock.read, feed, poll)
             code, headers = _read_response(reader)
         except Exception:
             sock.close()
@@ -675,7 +839,7 @@ def _open(url, ca_pem, socket, ssl, max_redirects=5):  # pragma: no cover
     raise OSError("too many redirects")
 
 
-def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: no cover
+def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop):  # pragma: no cover
     """Pre-erase: fetch the signed manifest, verify its signature against the frozen
     trusted keys (exactly as boot.py verifies an image trailer), apply the device-relative
     checks (board / platform / anti-rollback), and pick a representation. Returns
@@ -684,32 +848,40 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl):  # pragma: 
     import uctypes
     import vfs
 
-    sock, body = _open(manifest_url, ca_pem, socket, ssl)
+    sock, body = _open(manifest_url, ca_pem, socket, ssl, feed)
     try:
-        raw = _read_all(body, _MANIFEST_MAX)
+        raw = _read_all(body, _MANIFEST_MAX)          # progress-fed reader (poll+feed)
     finally:
         sock.close()
-    m = _manifest_parse(raw)                          # structure + crc (raises on bad)
-    pubkey = cfg.TRUSTED_KEYS.get(m["key_id"])
-    if pubkey is None:
-        log.warning("install: reject untrusted key")
-        raise OSError("manifest signed by an untrusted key")  # hil-residual: bare raise (reject witnessed by install.reject_key)
-    if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
-        log.warning("install: reject bad signature")
-        raise OSError("manifest signature does not verify")  # hil-residual: bare raise (reject witnessed by install.reject_sig)
+    # The manifest is now in RAM; everything below -- CRC parse, the ECDSA signature verify,
+    # and the flash-vetting -- is pure CPU: single unsplittable C/Python calls with no seam to
+    # feed through, and the P-256 verify alone can outrun the ~100 ms watchdog window (this is
+    # the op that bit on the N6 watchdog HIL run). So if the app armed a watchdog, ONE relax()
+    # ISR-feeds across the whole bounded block (last resort, exactly like the TLS handshake and
+    # the exec compile). There is no network in here, so relax() cannot mask a stalled recv --
+    # only the leaf reads above are progress-fed. No-op unless a watchdog is armed.
+    with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
+        m = _manifest_parse(raw)                          # structure + crc (raises on bad)
+        pubkey = cfg.TRUSTED_KEYS.get(m["key_id"])
+        if pubkey is None:
+            log.warning("install: reject untrusted key")
+            raise OSError("manifest signed by an untrusted key")  # hil-residual: bare raise (reject witnessed by install.reject_key)
+        if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
+            log.warning("install: reject bad signature")
+            raise OSError("manifest signature does not verify")  # hil-residual: bare raise (reject witnessed by install.reject_sig)
 
-    body_dict = m["body"]
-    base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # partition XIP base
-    floor = _golden_floor(uctypes.bytearray_at(base + cfg.PARTITION_SIZE - cfg.OTA_BLOCK,
-                                              cfg.OTA_BLOCK))
-    reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
-                            getattr(cfg, "ACCOUNT_ID", ""))
-    if reason is not None:
-        log.warning("install: reject vetting")   # rejected: witness the boundary
-        raise OSError("manifest rejected (%s)" % reason)  # hil-residual: bare raise (reject witnessed by install.reject_vet)
-    # The delta applier is pure Python (no ulab/C), so every board is delta-capable; the
-    # delta is used only when its base matches this device's golden (BACK) version.
-    rep = _select_rep(body_dict, True, floor)
+        body_dict = m["body"]
+        base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # partition XIP base
+        floor = _golden_floor(uctypes.bytearray_at(base + cfg.PARTITION_SIZE - cfg.OTA_BLOCK,
+                                                  cfg.OTA_BLOCK))
+        reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
+                                getattr(cfg, "ACCOUNT_ID", ""))
+        if reason is not None:
+            log.warning("install: reject vetting")   # rejected: witness the boundary
+            raise OSError("manifest rejected (%s)" % reason)  # hil-residual: bare raise (reject witnessed by install.reject_vet)
+        # The delta applier is pure Python (no ulab/C), so every board is delta-capable; the
+        # delta is used only when its base matches this device's golden (BACK) version.
+        rep = _select_rep(body_dict, True, floor)
     if rep is None:
         raise OSError("manifest has no usable representation")  # hil-residual: bare raise (no-rep guard, inject-only)
     image_url = _resolve_url(manifest_url, rep["url"])
@@ -753,6 +925,16 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # through the loops -- so a hung loop (or a stalled recv) still trips it -> golden.
     relax = openmv_wdt.relax if openmv_wdt is not None else _NoWdt
     feed = openmv_wdt.feed if openmv_wdt is not None else _noop
+    # Proactive GC hook (only when a watchdog is armed): the write loop calls this on a byte
+    # cadence to collect BEFORE the heap fills, so automatic GC never fires mid-write. gc.collect()
+    # is a single unsplittable pause, so it runs under relax() (ISR-fed). GC is never disabled.
+    gc_collect = None
+    if openmv_wdt is not None:
+        import gc as _gc  # hil-residual: watchdog-armed proactive collect (opt-in; covered by the watchdog HIL scenario)
+
+        def gc_collect():  # hil-residual: watchdog-armed proactive collect (opt-in; covered by the watchdog HIL scenario)
+            with relax():  # hil-residual: relax() feeds the WWDG across the unsplittable gc.collect()
+                _gc.collect()  # hil-residual: proactive collection at a controlled point (device-only)
     # Log-only progress, built from RAM + the frozen logger so it survives the FRONT erase.
     progress = _Progress(log) if log is not None else None
     front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
@@ -786,6 +968,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                     log.debug("install: erasing block block-device")
             log.debug("install: erased FRONT block-device")
 
+        # Reused block-device scratch (n <= _CHUNK): a readback + a BACK-read buffer, so neither
+        # closure allocates per chunk -- the same zero-alloc discipline as the XIP path, needed so
+        # an armed watchdog isn't bitten by GC churn on this port. Each returned view is consumed
+        # (compared / added) before the next call reuses its buffer.
+        _rb = memoryview(bytearray(_CHUNK))
+        _br = memoryview(bytearray(_CHUNK))
+
         def write(off, data):                         # extended writeblocks: byte-granular,
             front.writeblocks(off // _bs, data, off % _bs)   # so sub-block markers work too
             if log and "w" not in _seen:
@@ -793,23 +982,21 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 log.debug("install: wrote block block-device")
 
         def readback(off, n):
-            b = bytearray(n)                          # n <= _CHUNK: a bounded readback buffer.
-            front.readblocks(off // _bs, b, off % _bs)  # FRONT at partition offset off
+            front.readblocks(off // _bs, _rb[:n], off % _bs)  # FRONT at partition offset off
             if log and "r" not in _seen:
                 _seen.add("r")
                 log.debug("install: readback block-device")
-            return b  # hil-residual: bare return of the readback buffer
+            return _rb[:n]  # hil-residual: bare return of the reused readback view
 
         def back_read(off, n):                        # arbitrary range from BACK, block-safe
-            out = bytearray(n)                        # BACK lives at front_size within the one
-            done = 0                                  # partition (NOT a separate rom_ioctl(2,1)
-            while done < n:                           # segment -- that returns FRONT on mimxrt)
-                a = front_size + off + done
+            done = 0                                  # BACK lives at front_size within the one
+            while done < n:                           # partition (NOT a separate rom_ioctl(2,1)
+                a = front_size + off + done           # segment -- that returns FRONT on mimxrt)
                 blk, o = a // _bs, a % _bs
                 take = _bs - o
                 if take > n - done:
                     take = n - done  # hil-residual: bare arithmetic clamp (final partial block)
-                front.readblocks(blk, memoryview(out)[done:done + take], o)
+                front.readblocks(blk, _br[done:done + take], o)
                 done += take
                 if log and "brl" not in _seen:        # witness the in-loop BACK read once
                     _seen.add("brl")
@@ -817,7 +1004,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             if log and "br" not in _seen:
                 _seen.add("br")
                 log.debug("install: back read block-device")
-            return out  # hil-residual: bare return of the BACK-read buffer
+            return _br[:n]  # hil-residual: bare return of the reused BACK-read view
 
         def complete():
             log.debug("install: complete block-device")
@@ -891,9 +1078,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # (transient failures retry next poll), so without a line here a REJECTED update -- bad
     # signature, untrusted key, failed board/version/platform vetting -- is invisible in the
     # field, exactly when an operator most needs to know why a release won't take.
+    # install() runs SYNCHRONOUSLY inside run()'s asyncio task, so the app's async feed loop can't run
+    # during it -- every blocking op must feed the watchdog itself. The unsplittable network ops (TLS
+    # handshake in _connect, each recv in _Reader) relax() at their leaf; the erase/write loops stay
+    # PROGRESS-fed per block/piece, so a hung flash/reconstruct loop is still caught. All no-op off.
     log.info("install: fetching manifest %s" % manifest_url)
     try:
-        image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl)
+        image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed)
     except Exception as e:
         log.warning("install: rejected before erase (%r)" % e)   # /rom untouched (%r shows the class)
         raise  # hil-residual: bare re-raise to the app (pre-erase reject witnessed by install.reject)
@@ -922,22 +1113,22 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             log.info("install: erasing FRONT (%d bytes)" % front_size)
             erase(front_size)
             log.info("install: downloading %s (%s)" % (image_url, fmt))
-            sock, body = _open(image_url, ca_pem, socket, ssl)
+            sock, body = _open(image_url, ca_pem, socket, ssl, feed)
             dio = deflate.DeflateIO(body, deflate.GZIP)
             if fmt == _DELTA_FORMAT:
                 # Delta: stream-decompress the patch and reconstruct the image against the
                 # golden BACK slot (copy-with-diff, ulab add) -- both the patch and the output
                 # are streamed into FRONT, neither is materialised.
-                source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK)).read
+                source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK), feed)
                 repr_marker = REPR_DELTA
                 log.debug("install: representation delta")
             else:
-                source = dio.read
+                source = dio                          # DeflateIO is itself a readinto source
                 repr_marker = REPR_FULL
                 log.debug("install: representation full")
             log.info("install: writing FRONT")
             _install_stream(source, write, readback, front_size, block, feed,
-                            progress, expect_sha, repr_marker)
+                            progress, expect_sha, repr_marker, gc_collect)
             # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
             # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
             # ports cache the final sub-page writes -- the trailer + arm markers -- and

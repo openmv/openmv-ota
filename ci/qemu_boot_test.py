@@ -376,14 +376,17 @@ def readback(off, m):
     return bytes(mem[off:off + m])
 
 
-def reader_of(d):
-    box = [d]
+class _SourceOf:
+    """A readinto(mv)->int source over fixed bytes -- the _install_stream interface (dio/_GenReader)."""
+    def __init__(self, d):
+        self.d = d
+        self.pos = 0
 
-    def read(m):
-        r = box[0][:m]
-        box[0] = box[0][m:]
-        return r
-    return read
+    def readinto(self, mv):
+        n = min(len(mv), len(self.d) - self.pos)
+        mv[:n] = self.d[self.pos:self.pos + n]
+        self.pos += n
+        return n
 
 
 img = bytearray(b"\\xff" * FRONT)
@@ -399,7 +402,7 @@ class _RecLog:
 
 plog = _RecLog()
 erase(FRONT)                             # the caller erases before _install_stream now
-P["_install_stream"](reader_of(bytes(img)), write, readback, FRONT, BLOCK,
+P["_install_stream"](_SourceOf(bytes(img)), write, readback, FRONT, BLOCK,
                      lambda: fed.append(1), P["_Progress"](plog),   # the real RAM reporter
                      None, P["REPR_DELTA"])                         # record the representation
 so = FRONT - 2 * BLOCK
@@ -448,13 +451,15 @@ _dbase = __DELTA_BASE__
 _dio = _deflate.DeflateIO(io.BytesIO(__DELTA_PATCH_GZ__), _deflate.GZIP)
 _rd = P["_GenReader"](P["_delta_stream"](P["_PatchReader"](_dio),
                                          lambda o, n: _dbase[o:o+n], 64))
-_recon = b""
+_recon = bytearray()
+_rbuf = bytearray(100)
+_rmv = memoryview(_rbuf)
 while True:
-    _c = _rd.read(100)
-    if not _c:
+    _k = _rd.readinto(_rmv)
+    if _k == 0:
         break
-    _recon += _c
-delta_ok = _recon == __DELTA_TARGET__ and P["_np"] is not None   # ulab really present
+    _recon += _rmv[:_k]
+delta_ok = bytes(_recon) == __DELTA_TARGET__ and P["_np"] is not None   # ulab really present
 
 ok = (url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok
       and fmt_ok and emit_ok and manifest_ok and delta_ok)

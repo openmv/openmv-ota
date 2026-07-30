@@ -43,7 +43,7 @@ on:
         # Every run spins up its OWN co-located server (ci/hil/bench_server), so the tamper
         # scenarios run on any board -- no board restriction. 'all' expands per board (the
         # AE3 adds coproc/coproc_skip; block-device boards add no_slot; secondary nets = delta).
-        options: [all, delta, full, corrupt, rollback, bad_sig, bad_key, bad_version, no_slot, coproc, coproc_skip]
+        options: [all, delta, full, corrupt, rollback, bad_sig, bad_key, bad_version, no_slot, coproc, coproc_skip, watchdog, watchdog_bite]
       target:
         description: update version to install over golden 1.0.0
         default: "1.1.0"

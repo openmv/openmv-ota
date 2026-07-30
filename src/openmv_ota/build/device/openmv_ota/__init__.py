@@ -78,7 +78,7 @@ class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is
         return False  # hil-residual: bare const return (CM exit)
 
 
-def _wdt_relax():  # pragma: no cover  (device)  # hil-residual-fn: coprocessor path; the sole caller is _partition_apply (AE3 HW-blocked); a thin wrapper over openmv_wdt.relax
+def _wdt_relax():  # pragma: no cover  (device)  # hil-residual-fn: thin wrapper over openmv_wdt.relax; callers (run() check-in, _partition_apply) are device-network/coproc paths, exercised only under an ENABLED watchdog
     return _wdt.relax() if _wdt is not None else _NoWdt()
 
 
@@ -465,7 +465,11 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
         wait = poll_after_s
         _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
         try:
-            resp = await _checkin(server_url, _collect_body(identity(), status()), ca)
+            # The check-in's TLS handshake is a blocking mbedtls C call that does not yield to
+            # asyncio, so it freezes the event loop (and any app feed loop) longer than a short
+            # watchdog window -> relax() ISR-feeds across it. A no-op unless the app armed a watchdog.
+            with _wdt_relax():                        # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
+                resp = await _checkin(server_url, _collect_body(identity(), status()), ca)
             log.debug("checkin: response received")
             _notify(resp)
             wait = resp.get("poll_after_s", poll_after_s)
@@ -713,7 +717,11 @@ def install(url, ca=None):  # pragma: no cover
     here = __file__.rsplit("/", 1)[0]
     ca = _resolve_ca(ca, here)
     ns = {}
-    exec(_read_file(here + "/data/installer.py", "r"), ns)
+    # exec()'ing the ~1000-line installer source is one unsplittable compile+exec that can exceed a
+    # short watchdog window; relax() ISR-feeds across it (no-op unless the app armed a watchdog). This
+    # runs synchronously in run()'s task, so the app's async feed loop can't cover it.
+    with _wdt_relax():
+        exec(_read_file(here + "/data/installer.py", "r"), ns)
     log.debug("install: staged installer")           # milestone + HIL path witness
     ns["run"](url, ca, cfg)  # hil-residual: terminal call into the RAM installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
 

@@ -45,17 +45,19 @@ copied.
 """
 
 ENABLED = False        # master switch
-# WDT_ID selects the watchdog. Pick the DEEP-SLEEP-SAFE one so it can't reset you WHILE asleep:
+# WDT_ID selects the watchdog. Leave None to AUTO-SELECT the DEEP-SLEEP-SAFE one for this port (so it
+# can't reset you WHILE asleep) -- or set it explicitly to override. Auto-selection:
 #   stm32 (N6): "WWDG" -- the windowed watchdog; STOPS in deep sleep. Needs micropython#19350 (the OTA
 #               tool carries it). Its max is SHORT (167 ms on the N6), so TIMEOUT_MS must be <= that
 #               and you must feed on a tens-of-ms cadence. ("IWDG"/0 is the independent watchdog: it
 #               keeps counting THROUGH deep sleep and will reset a sleeping device -- only use it if
 #               your app never deep-sleeps.)
-#   alif (AE3): 0 -- machine.WDT (micropython#19399, carried by the tool); off in deep sleep.
-#   mimxrt (RT): 0 -- the default WDOG; off in deep sleep.
-WDT_ID = "WWDG"
+#   mimxrt (RT) / alif (AE3): 0 -- the default machine.WDT (WDOG / alif WDT), off in deep sleep. (auto-
+#               selection falls back to 0 whenever the port has no "WWDG" id.)
+WDT_ID = None
 TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board WDT max (N6 WWDG max
-#                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often.
+#                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often. If
+#                        a port rejects a value this small (a coarse WDOG), raise it to the board min.
 TIMER_ID = -1          # machine.Timer id; on OpenMV ports only the soft timer (-1) exists
 FEED_HZ = 50           # relax() ISR feed rate (Hz); keep WELL above 1000 / TIMEOUT_MS so it feeds
 #                        many times per window (10 Hz was IWDG-era; a ~100 ms window needs ~50+)
@@ -106,7 +108,13 @@ def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardwa
     global _wdt, _feed
     if _wdt is None:
         import machine
-        _wdt = machine.WDT(WDT_ID, TIMEOUT_MS)
+        if WDT_ID is not None:                        # explicit override
+            _wdt = machine.WDT(WDT_ID, TIMEOUT_MS)
+        else:
+            try:                                      # auto-select: stm32/N6 has the deep-sleep-safe
+                _wdt = machine.WDT("WWDG", TIMEOUT_MS)  # windowed WDT (micropython#19350)...
+            except (ValueError, TypeError):           # ...ports without a "WWDG" id (mimxrt/alif) ->
+                _wdt = machine.WDT(0, TIMEOUT_MS)       # the default deep-sleep-safe WDT
         _feed = _wdt.feed
 
 

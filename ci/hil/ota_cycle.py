@@ -254,6 +254,8 @@ COVERAGE = {
     "identity: device id": "run.identity_uid",           # machine.unique_id() read into identity
     "data: path": "run.data_path",                       # sync() located a bundled data/ resource
     "wdt: feed": "run.wdt_feed",                          # watchdog fed each poll (no-op when off)
+    "app: wdt STOP feeding": "wdt.stop",                  # bite test: the app deliberately stopped feeding
+    "app: wdt BIT": "wdt.bit",                            # bite test: WWDG reset (reset_cause==3), then recovered
     "run: poll wait": "run.poll_tail",                   # run() loop tail reached (post-checkin)
     "clock: resolved": "run.clock",                      # NTP/RTC resolve each poll
     "clock: syncing": "run.clock",                       # openmv_rtc: untrusted clock -> one NTP sync
@@ -406,6 +408,34 @@ SCENARIOS = {
     },
 }
 
+# The watchdog happy-path: the delta cycle with the deep-sleep-safe watchdog turned ON (prepare()
+# flips openmv_wdt ENABLED; the 'wdt' app arms it past network bring-up + tight-feeds it). Same
+# expect/forbid as delta -- an armed watchdog that outran its window would reset mid-cycle and never
+# reach promoted, so reaching it IS the proof that the device services the watchdog seamlessly
+# through a real OTA cycle. Runs on the OTA boards with a deep-sleep-safe WDT: N6 (WWDG, 100 ms) and
+# RT1060 (WDOG) -- the RT leg additionally proves the BLOCK-DEVICE write path (readback/back_read) is
+# zero-alloc enough not to trip a GC pause past the window. openmv_wdt auto-selects the WDT per port.
+SCENARIOS["watchdog"] = dict(
+    SCENARIOS["delta"],
+    desc="watchdog ENABLED: delta install survives a real OTA cycle with the WWDG armed",
+    app="wdt",
+)
+
+# The watchdog NEGATIVE path: prove the WWDG actually BITES when feeding stops -- and recovers as a
+# SINGLE bite. The wdt_bite app arms + feeds ~1s (steady feeding demonstrably works), STOPS (->
+# wdt.stop); the window expires and the board resets; the next boot sees reset_cause()==3 and logs
+# wdt.bit as it recovers into a normal feed loop. No OTA (publish="none"), so the device stays on
+# golden the whole time -> end="golden". Settling ALIVE back on golden (checking in, not reset-
+# looping) is itself the proof the bite was single -- a stuck-feeding app would loop forever and
+# never satisfy end="golden". N6-only (WWDG=stm32); wdt.bit firing witnesses reset_cause==3 (the app
+# only logs it under that cause, per section 6.3: machine.reset() clears the WWDG so boot is unwatched).
+SCENARIOS["watchdog_bite"] = dict(
+    publish="none", app="wdt_bite", end="golden",
+    desc="watchdog ENABLED: the WWDG bites when feeding stops (reset_cause=WDT), then recovers (single bite)",
+    expect=["log.configured", "boot.ready", "run.checkin", "wdt.stop", "wdt.bit"],
+    forbid=["install.start", "install.armed", "confirm.promoted"],
+)
+
 
 def scenario_markers(board, key):
     """(expect, forbid) marker sets for a scenario, with {cov_write} resolved per board.
@@ -542,6 +572,46 @@ def bench_main_py(board, net, app="confirm"):
             "    while True:\n"
             "        await asyncio.sleep(2)\n"
         )
+    elif app == "wdt":
+        # POSITIVE watchdog test: arm the WWDG once PAST the (slow) network bring-up, then feed on a
+        # tight cadence (~20 ms << the 100 ms window) while confirming the trial. Proves an ENABLED
+        # watchdog SURVIVES a real OTA cycle -- the install's ranged erase feeds per block, run() feeds
+        # per poll, and this loop feeds per iteration, so nothing outruns the window and it never
+        # spuriously resets. `armed=True` witnesses that ENABLED took effect (start() really armed it).
+        trial_policy = (
+            "    import openmv_wdt\n"
+            "    openmv_wdt.start()\n"
+            "    _blog.info('app: wdt armed=%r' % (openmv_wdt._wdt is not None))\n"
+            "    confirmed = False\n"
+            "    while True:\n"
+            "        openmv_wdt.feed()\n"
+            "        if not confirmed:\n"
+            "            confirmed = True\n"
+            "            openmv_ota.confirm()\n"
+            "        await asyncio.sleep_ms(20)\n"
+        )
+    elif app == "wdt_bite":
+        # NEGATIVE watchdog test: prove the WWDG actually BITES when feeding stops. Arm + feed ~1 s
+        # (steady feeding demonstrably works), then STOP -> the window expires and the board resets.
+        # On the next boot reset_cause()==3 (WDT) proves it bit; recover by feeding normally so it's a
+        # SINGLE bite, not a loop. (machine.reset() cleared the WWDG per §6.3, so boot ran unwatched.)
+        trial_policy = (
+            "    import machine, openmv_wdt, time\n"
+            "    openmv_wdt.start()\n"
+            "    if machine.reset_cause() == 3:\n"
+            "        _blog.warning('app: wdt BIT (reset_cause=WDT); recovered, feeding')\n"
+            "        while True:\n"
+            "            openmv_wdt.feed()\n"
+            "            await asyncio.sleep_ms(20)\n"
+            "    _blog.info('app: wdt armed=%r, feeding 1s then stopping' % (openmv_wdt._wdt is not None))\n"
+            "    t0 = time.ticks_ms()\n"
+            "    while time.ticks_diff(time.ticks_ms(), t0) < 1000:\n"
+            "        openmv_wdt.feed()\n"
+            "        await asyncio.sleep_ms(20)\n"
+            "    _blog.warning('app: wdt STOP feeding -- expect a WWDG bite')\n"
+            "    while True:\n"
+            "        await asyncio.sleep_ms(500)\n"
+        )
     else:
         trial_policy = (
             "    confirmed = False\n"
@@ -571,7 +641,8 @@ def bench_main_py(board, net, app="confirm"):
             CFG["server"], CFG["ca_board"]) +
         trial_policy + "\n\n"
         "try:\n"
-        "    _blog.info('app: booting ' + str(openmv_ota.status().get('version')))\n"
+        "    import machine as _m\n"
+        "    _blog.info('app: booting %s reset_cause=%d' % (openmv_ota.status().get('version'), _m.reset_cause()))\n"
         "    asyncio.run(main())\n"
         "except Exception as e:\n"
         "    _blog.error('app: CRASHED %r' % (e,))\n"
@@ -609,17 +680,51 @@ def prepare(board, checkout, network, app="confirm"):
     sh("cp -rf %s/openmv_ota/. %s/app/lib/openmv_ota/" % (dev, CFG["project"]))
     sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
     sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
+    if app in ("wdt", "wdt_bite"):
+        # Turn the opt-in watchdog ON for this run: flip ENABLED in the project's frozen copy so the
+        # built firmware arms its deep-sleep-safe WDT (openmv_wdt auto-selects: WWDG on stm32/N6,
+        # the mimxrt WDOG on the RT1060 -- both 100 ms); the app then start()s + feeds it. The
+        # positive `watchdog` scenario runs on both N6 and RT1060 (the RT leg additionally proves the
+        # block-device write path is zero-alloc enough not to trip a GC pause past the window);
+        # `watchdog_bite` is N6-only (it asserts reset_cause()==3 after a deliberate stop).
+        wdt_py = "%s/device/openmv_wdt.py" % CFG["project"]
+        sh("sed -i 's/^ENABLED = False/ENABLED = True/' " + wdt_py)
+        sh("grep -q '^ENABLED = True' " + wdt_py)     # fail LOUD if the sed didn't take (else the
+        log("prepare: openmv_wdt ENABLED=True (watchdog scenario)")  # watchdog would silently no-op
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
     _ensure_cdc(board)
-    # the bench server's CA must be on the board for run()'s TLS (survives the OTA, lives on
-    # /flash not the romfs). Push it so the harness doesn't assume a hand-placed cert.
+    _flash_bench_files(board)
+
+
+def _flash_bench_files(board, _recovered=False):
+    """Push the bench CA + enable the coverage UART. Both live on /flash (survive the OTA): the CA
+    for run()'s TLS, and .hilcov_uart to switch logging onto the coverage UART.
+
+    A CANCELLED prior run can leave the mimxrt's /flash (FAT) corrupt or full, so these writes fail
+    -- the classic 'RESULT: FAIL at 3s' before golden is even reflashed. On an imx board, recover
+    ONCE via the CLI `flash erase`: it wipes just the user disk's MBR sector (blhost in the resident
+    SBL, config-register-free) and the firmware reformats a clean FAT on the next boot. A runtime
+    VfsFat.mkfs would crash the XIP-from-NOR mimxrt, so the SBL-side erase is the safe path. This
+    keeps bench contention (two runs colliding) from wedging the RT until a human power-cycles it."""
+    # the CA must be on the board for run()'s TLS. Push it so the harness doesn't assume a
+    # hand-placed cert (tolerant: a corrupt /flash surfaces on the .hilcov_uart write below).
     if os.path.exists(CFG["ca_node"]):
         _mpremote(["fs", "cp", CFG["ca_node"], ":" + CFG["ca_board"]], timeout=30, check=False)
-    # enable the coverage UART on the board (bench-only file; survives across the OTA)
-    device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["ca_board"].rsplit("/", 1)[0] +
-                "/.hilcov_uart", BOARDS[board]["cov_uart"]))
+    try:
+        # enable the coverage UART on the board (bench-only file; survives across the OTA)
+        device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["ca_board"].rsplit("/", 1)[0] +
+                    "/.hilcov_uart", BOARDS[board]["cov_uart"]))
+    except Exception as e:
+        if _recovered or BOARDS[board]["flash"] != "blhost_imx":
+            raise                            # non-imx, or already tried recovering -- give up loud
+        log("prepare: /flash write failed (%s) -> recover via `flash erase` (disk-MBR reformat)" % e)
+        sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=180)
+        time.sleep(8)                        # let the board boot + auto-reformat the blank FAT
+        _ensure_cdc(board)
+        _flash_bench_files(board, _recovered=True)   # retry on the freshly reformatted /flash
 
 
 def build_golden(board):
@@ -715,9 +820,13 @@ def _ensure_cdc(board):
             % (board, CFG["acm"], attempt + 1))
         sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
         fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
-        # Pulse the physical nRST line (hold low, release) -- a pure pin toggle that needs no core
-        # connect, so it recovers a hung core that a debug-core reset (connect->r) cannot reach.
-        os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nqc\n")
+        # Two-stage recover: (1) pulse the physical nRST line (hold low, release) -- a pure pin toggle
+        # that needs no core connect, so it reaches a HUNG core a debug reset can't; THEN (2) connect +
+        # reset + GO. The pin pulse alone can leave the core halted/not-running (observed on the N6: it
+        # reset but never re-enumerated USB until an explicit `g`), so the debug-core `r; g` actually
+        # RUNS the firmware. If the core is truly hung the connect fails harmlessly -- the pulse already
+        # reset it. Belt (pin, for hung) + suspenders (connect+go, for halted-but-alive).
+        os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n")
         os.close(fd)
         try:
             # -AutoConnect 0: do NOT try to attach the (possibly hung) core on launch -- the pin pulse
@@ -849,17 +958,31 @@ def _flash_blhost_imx(board, bad_romfs=False):
 
 
 def verify_golden():
-    log("verify: golden boots + /rom mounts + main.py present (uncompiled)")
+    """Confirm golden booted + mounted a valid romfs, and read the device_id in the SAME early exec.
+    Returns the device_id.
+
+    Folding the id read in here (rather than a later, separate device_exec) is what makes the wdt
+    scenarios work on fast-boot boards. Golden's app arms a 100 ms watchdog once network bring-up
+    finishes; after that, any REPL drop stops the feed loop and the watchdog bites -> the port drops
+    and mpremote fails. This exec runs at BOOT -- /rom mounts seconds before the network is up -- so
+    it lands inside the pre-arm window (and self-heals: a bite just resets the board, and a retry
+    catches the next fresh boot). A separate device_id() call ran later, raced the arm, and lost on
+    the RT (fast WiFi) -- Errno 5 before the OTA cycle even started."""
+    log("verify: golden boots + /rom mounts + main.py present (uncompiled) + device_id")
     last = ""
     for _ in range(8):                       # the board may still be (re)booting after a flash
         time.sleep(5)
         try:
             _rc, last = device_exec(
-                'import os; r=os.listdir("/"); '
-                'print("ROMOK", ("rom" in r) and ("main.py" in os.listdir("/rom")))',
+                'import os, openmv_ota; r=os.listdir("/"); '
+                'print("ROMOK", ("rom" in r) and ("main.py" in os.listdir("/rom"))); '
+                'print("DEVID", openmv_ota.identity().get("device_id"))',
                 timeout=30, check=False)
             if "ROMOK True" in last:
-                return
+                for line in last.splitlines():
+                    if line.startswith("DEVID "):
+                        return line.split(" ", 1)[1].strip()
+                raise RuntimeError("golden mounted romfs but reported no device_id:\n" + last)
         except Exception as e:
             last = str(e)
     raise RuntimeError("golden did not mount a valid romfs:\n" + last)
@@ -1135,8 +1258,9 @@ def main():
 
     def phase(name, fn):
         s = time.time()
-        fn()
+        r = fn()
         trace["phases"][name] = round(time.time() - s, 1)
+        return r
 
     try:
         log("board %s, network %s, scenario %s (%s)"
@@ -1157,12 +1281,15 @@ def main():
             phase("flash_brick", lambda: flash_golden(args.board, bad_romfs=True))
             result = run_cycle_no_slot(cap, expect, args.timeout)
         else:
+            devid = None
             if not args.skip_provision:
                 phase("prepare", lambda: prepare(args.board, args.checkout, network, spec["app"]))
                 phase("build_golden", lambda: build_golden(args.board))
                 phase("flash_golden", lambda: flash_golden(args.board))
-                phase("verify_golden", verify_golden)
-            devid = device_id()
+                # verify_golden reads the device_id in the same early (pre-watchdog-arm) exec.
+                devid = phase("verify_golden", verify_golden)
+            if devid is None:                    # --skip-provision: board already up, read it directly
+                devid = device_id()
             trace["device_id"] = devid
             log("device_id: " + devid)
             if args.scenario == "coproc":        # dirty partition 1 so sync() APPLIES (not skips)
