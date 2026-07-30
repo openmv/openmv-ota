@@ -304,25 +304,45 @@ levels, filtering, and API are the standard `logging` ones.
 
 A real app should run a watchdog so a hang reboots the device instead of bricking it.
 Like the logger, there's an opt-in helper — `device/openmv_wdt.py`, frozen as
-**`openmv_wdt`**, off by default, yours to edit. Enable it and pick your board's
-`machine.WDT` id + timeout, then rebuild:
+**`openmv_wdt`**, **off by default**, yours to edit. Turn it on and rebuild firmware:
 
 ```python
-ENABLED    = True
-WDT_ID     = 0
-TIMEOUT_MS = 5000
-TIMER_ID   = -1    # the soft timer (only id machine.Timer accepts; see below)
-FEED_HZ    = 10
+ENABLED    = True   # master switch (off by default — every openmv_wdt call is then a no-op)
+WDT_ID     = None   # None = auto-select the DEEP-SLEEP-SAFE watchdog for this port
+TIMEOUT_MS = 100    # reset if not fed within this long — MUST be ≤ the board's WDT max
+TIMER_ID   = -1     # the soft timer (only id machine.Timer accepts; see relax() below)
+FEED_HZ    = 50     # relax() ISR feed rate; keep well above 1000 / TIMEOUT_MS
 ```
 
-Feed it from your main loop — if the loop ever stops, the board resets:
+Use the **deep-sleep-safe** watchdog — the one that *stops* while the device deep-sleeps, so it
+can't reset you mid-sleep. `WDT_ID = None` auto-selects it per port: the **WWDG** on stm32/N6, the
+default `machine.WDT` (WDOG / alif WDT) elsewhere. The catch is that the deep-sleep-safe watchdog is
+**short** — the N6 WWDG maxes at 167 ms — so this is a **tens-of-milliseconds discipline**, not
+seconds. (The always-counting IWDG can run for minutes but resets a *sleeping* device; pick it only
+if your app never deep-sleeps.)
 
-```python
-import openmv_wdt
-while True:
-    openmv_wdt.feed()
-    ...
-```
+### The feed contract
+
+Five rules. The **`main.py` that `openmv-ota project new --ota` scaffolds already follows all of
+them** (it arms after camera setup, feeds per captured frame, and health-gates `confirm()`), and the
+OTA install path is engineered to as well — that's what lets an update complete under an armed 100 ms
+watchdog, proven on N6 + RT1060 hardware:
+
+1. **Arm after setup, not at import.** Call `openmv_wdt.start()` once — when your slow one-time
+   setup (camera reset, network bring-up) is *done* and you're entering the steady loop. Arming at
+   import would let the ~100 ms window expire *during* that setup, before your first `feed()`, and
+   reset the board. `start()` is a no-op while the watchdog is off, so leave it in unconditionally.
+2. **Feed by real progress.** `openmv_wdt.feed()` once per loop of *actual work*, so a feed means
+   work happened and a stuck loop stops feeding → reset. Don't feed from a bare timer just to keep
+   it quiet — that masks the exact hang you wanted to catch.
+3. **Feed on a tight cadence.** Every ~10–20 ms while awake (`await asyncio.sleep_ms(20)`), well
+   under the window. A coarse `sleep(2)` loop *will* reset you.
+4. **Split long ops, or `relax()` them.** One loop iteration must fit the window. If a step can't
+   (a big model load), subdivide it and feed per step; only as a last resort wrap a truly
+   unsplittable op in `with openmv_wdt.relax():` (see below).
+5. **Boot needs no feeding.** `machine.reset()` — including the OTA trial reboot — clears the WWDG,
+   so every boot runs unwatched until your app calls `start()` again. You never thread a feed
+   through boot.py.
 
 **Long blocking ops vs. the watchdog.** A multi-second flash erase (an OTA install), a
 model load, etc. can't feed from the main loop and would trip the watchdog. Wrap them:
