@@ -74,7 +74,13 @@ def reset(raw: dict, cam: Camera, *, mpremote: list[str]) -> None:
     if raw.get("app"):                        # arduino: 1200-baud touch
         _open_1200(cam.port)
     else:                                     # openmv protocol: machine.bootloader()
-        runner.run([*mpremote, "connect", cam.port, "bootloader"])
+        # exec machine.bootloader() rather than mpremote's `bootloader` subcommand: the subcommand's
+        # entry method works on stm32 (N6) but silently no-ops on the alif (AE3), which drops into DFU
+        # only via a direct machine.bootloader() call. That call tears down the USB-CDC mid-exec, so
+        # mpremote exits non-zero (an I/O error on the now-gone port) even though the reset landed --
+        # tolerate it, exactly as the write step tolerates the ST ROM's missing final-status ACK.
+        runner.run([*mpremote, "connect", cam.port, "exec", "import machine; machine.bootloader()"],
+                   tolerate_fail=True)
     time.sleep(_SETTLE_S)
 
 

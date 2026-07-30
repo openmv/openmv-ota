@@ -70,9 +70,12 @@ def test_select_multiple_without_serial_errors(monkeypatch):
 def test_reset_openmv_runs_mpremote(monkeypatch):
     from openmv_ota.flash import runner
     ran = []
-    monkeypatch.setattr(runner, "run", lambda argv: ran.append(argv))
+    monkeypatch.setattr(runner, "run", lambda argv, **kw: ran.append((argv, kw)))
     device.reset(_dfu_raw(), device.Camera("/dev/ttyACM0", "SN1"), mpremote=["mpremote"])
-    assert ran == [["mpremote", "connect", "/dev/ttyACM0", "bootloader"]]
+    # exec machine.bootloader() (works on the alif; the `bootloader` subcommand no-ops there), and
+    # tolerate the non-zero exit from the USB-CDC dropping mid-call.
+    assert ran == [(["mpremote", "connect", "/dev/ttyACM0", "exec",
+                     "import machine; machine.bootloader()"], {"tolerate_fail": True})]
 
 
 def test_reset_arduino_touches_1200(monkeypatch):
