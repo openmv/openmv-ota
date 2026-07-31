@@ -725,13 +725,6 @@ def _install_stream(source, write, readback, front_size, block, feed,
     digest = hashlib.sha256() if expect_sha is not None else None
     work = bytearray(_CHUNK)                          # the ONE reused write buffer -> zero-alloc loop
     mv = memoryview(work)
-    if gc_collect is not None:
-        gc_collect()                                 # clear the SETUP's fragmented heap up front
-        # (relax()-fed). The write loop below is zero-alloc, so once the heap is clean it stays clean
-        # and automatic GC never fires -- but everything before this (exec, manifest fetch, download +
-        # delta-reconstruct setup) left garbage, and on a large/fragmented heap the first automatic GC
-        # is a single >100 ms pause that would bite an armed watchdog inside the first ~2 MB, before the
-        # periodic proactive collect first runs. Collecting once here closes that first-install window.
     off = 0
     since_gc = 0
     while off < front_size:
