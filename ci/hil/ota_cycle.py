@@ -106,6 +106,67 @@ def ota(name):
     return CFG["venv"] + "/bin/" + name
 
 
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def ota_cli(name="openmv-ota"):
+    """The openmv-ota CLI as an argv PREFIX (splat into a command list). When HIL host-tool coverage
+    is on -- the workflow sets HIL_HOST_COV=<dir> -- the CLI is wrapped in `coverage run` so the REAL
+    flash/build/publish commands that drive live hardware are MEASURED, not just the mocked host unit
+    tests, and folded into the `hil-host` Codecov flag (a host-tool path going dark then shows as a
+    coverage drop, not only a hard failure). Off (env unset), it's just the bare CLI path -- byte-for-
+    byte the old behaviour, so a local run is unaffected."""
+    exe = CFG["venv"] + "/bin/" + name
+    covdir = os.environ.get("HIL_HOST_COV")
+    if not covdir:
+        return [exe]
+    return [CFG["venv"] + "/bin/coverage", "run", "--parallel-mode",
+            "--rcfile", os.path.join(_REPO, ".coveragerc-hil"),
+            "--data-file", os.path.join(covdir, ".coverage"), exe]
+
+
+def hostcov_list(board):
+    """Run `flash list` (scan_devices) against the live board and assert it enumerates. `list` is the
+    one flash verb the OTA provision never exercises, so this is where its real USB-enumeration path
+    (serial_devices + dfu_devices + the inventory index) gets hardware coverage -- under ota_cli's
+    coverage wrap it lands in the hil-host flag. A scan/inventory regression then fails the leg AND
+    shows as a coverage drop, instead of slipping through mocked host tests."""
+    import json
+    _, out = sh([*ota_cli("openmv-ota"), "flash", "list", "--json",
+                 "--dfu-util", CFG["dfu"], "--sdk-home", CFG["sdk"]], check=False)
+    jline = next((ln for ln in out.splitlines() if ln.strip().startswith("[")), None)
+    boards = [d.get("board") for d in json.loads(jline)] if jline else []
+    if board not in boards:
+        raise RuntimeError("flash list did not enumerate %s (saw %r)" % (board, boards))
+    log("flash list: %s enumerated on real HW" % board)
+
+
+def _human(n):
+    if n is None:
+        return "-"
+    if n < 1024:
+        return "%d B" % n
+    if n < 1024 * 1024:
+        return "%.1f KiB" % (n / 1024)
+    return "%.2f MiB" % (n / (1024 * 1024))
+
+
+def artifact_sizes(board):
+    """Stat the just-published OTA artifacts -> the bytes ACTUALLY sent over the wire. Feeds the
+    per-run OTA-efficiency report: the delta-vs-full saving is the delta OTA's headline win, so
+    posting it on every real-hardware run makes bandwidth efficiency a TRACKED number, not a claim."""
+    b = CFG["project"] + "/build"
+    out = {}
+    for key, fn in (("manifest", "%s-manifest.bin" % board),      # signed metadata (per install)
+                    ("full_img_gz", "%s-ota.img.gz" % board),     # full-image download
+                    ("delta_gz", "%s-ota.delta.gz" % board),      # delta download (the efficient path)
+                    ("payload", "%s-ota.img" % board)):           # uncompressed image (-> flash)
+        p = os.path.join(b, fn)
+        if os.path.exists(p):
+            out[key] = os.path.getsize(p)
+    return out
+
+
 def sh(cmd, timeout=180, check=True, quiet=False):
     """Run a command, returning (rc, stdout+stderr). Never raises on non-zero OR timeout unless
     check -- a timeout degrades to (124, partial-output) so a check=False caller (e.g. a liveness
@@ -731,7 +792,7 @@ def _flash_bench_files(board, _recovered=False):
         if _recovered or BOARDS[board]["flash"] != "blhost_imx":
             raise                            # non-imx, or already tried recovering -- give up loud
         log("prepare: /flash write failed (%s) -> recover via `flash erase` (disk-MBR reformat)" % e)
-        sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board,
+        sh([*ota_cli("openmv-ota"), "flash", "erase", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=180)
         time.sleep(8)                        # let the board boot + auto-reformat the blank FAT
         _ensure_cdc(board)
@@ -744,7 +805,7 @@ def build_golden(board):
     penv = dict(os.environ, PATH=CFG["sdk"] + "/make:" + os.environ["PATH"])
     for step in ("firmware", "factory-romfs"):
         extra = ["--allow-dev-key", "--no-account"] if step == "factory-romfs" else []
-        subprocess.run([ota("openmv-ota"), "build", step, CFG["project"], "-b", board] + extra,
+        subprocess.run([*ota_cli("openmv-ota"), "build", step, CFG["project"], "-b", board] + extra,
                        env=penv, check=True, timeout=900)
 
 
@@ -770,7 +831,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
     _ensure_cdc(board)                       # recover a wedged board so the CLI can enter DFU cleanly
     log("flash factory -> %s (openmv-ota, DFU -w)" % board)
-    sh([ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board, "--sdk-home", CFG["sdk"],
+    sh([*ota_cli("openmv-ota"), "flash", "factory", CFG["project"], "-b", board, "--sdk-home", CFG["sdk"],
         "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")], timeout=1500)
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
     _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
@@ -837,7 +898,7 @@ def _flash_blhost_imx(board, bad_romfs=False):
     build = CFG["project"] + "/build"
     if bad_romfs:
         log("brick: erase the OTA romfs region (both slots) -> openmv-ota flash erase --romfs")
-        sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--romfs",
+        sh([*ota_cli("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--romfs",
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
         time.sleep(12)
         return
@@ -847,7 +908,7 @@ def _flash_blhost_imx(board, bad_romfs=False):
     sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
     for op in ("firmware", "romfs"):
         log("flash %s -> %s (openmv-ota, resident SBL)" % (op, board))
-        sh([ota("openmv-ota"), "flash", op, CFG["project"], "-b", board,
+        sh([*ota_cli("openmv-ota"), "flash", op, CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
 
@@ -905,7 +966,7 @@ def publish_update(board, version, variant="delta"):
     # --allow-republish: the bench server accumulates versions across runs, so this
     # target may not be strictly newer than a prior run's -- the device is what gates
     # (it re-flashes to golden 1.0.0 each run, and its rollback floor resets with it).
-    build = [ota("openmv-ota"), "build", "ota-romfs", CFG["project"], "-b", board,
+    build = [*ota_cli("openmv-ota"), "build", "ota-romfs", CFG["project"], "-b", board,
              "--allow-dev-key", "--allow-republish"]
     if variant in ("full", "corrupt_sha"):
         # Force a full (non-delta) release: point --delta-from at an empty dir so no golden
@@ -919,7 +980,12 @@ def publish_update(board, version, variant="delta"):
         # rejects (delta uploaded, manifest declares none). Drop the stale delta first.
         sh("rm -f %s/build/%s-ota.delta.gz" % (CFG["project"], board), check=False)
     subprocess.run(build, env=penv, check=True, timeout=900)
-    subprocess.run([ota("openmv-ota"), "client", "publish", CFG["project"], "-b", board,
+    _s = artifact_sizes(board)   # log the real download sizes -> ota_metrics.py folds them per run
+    log("OTA sizes: manifest=%s  full=%s  delta=%s%s"
+        % (_human(_s.get("manifest")), _human(_s.get("full_img_gz")), _human(_s.get("delta_gz")),
+           ("  (delta=%.1f%% of full)" % (100.0 * _s["delta_gz"] / _s["full_img_gz"])
+            if _s.get("delta_gz") and _s.get("full_img_gz") else "")))
+    subprocess.run([*ota_cli("openmv-ota"), "client", "publish", CFG["project"], "-b", board,
                     "--server", CFG["server"], "--token", CFG["token"], "--allow-republish",
                     "--rollout", "__default__:100"], env=penv, check=True, timeout=180)
     if variant == "corrupt":
@@ -1183,6 +1249,7 @@ def main():
                 phase("flash_golden", lambda: flash_golden(args.board))
                 # verify_golden reads the device_id in the same early (pre-watchdog-arm) exec.
                 devid = phase("verify_golden", verify_golden)
+                phase("host_list", lambda: hostcov_list(args.board))   # cover `flash list` on real HW
             if devid is None:                    # --skip-provision: board already up, read it directly
                 devid = device_id()
             trace["device_id"] = devid
@@ -1191,9 +1258,13 @@ def main():
                 phase("dirty_coproc", dirty_coproc_partition)
             if spec["publish"] != "none" and not args.skip_publish:
                 phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
+                trace["metrics"] = artifact_sizes(args.board)   # download sizes -> ota_metrics report
             cap = UartCapture(CFG["uart"])
             cap.start(time.time())
-            result = run_cycle(devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout)
+            # "install" phase = the whole autonomous OTA (check-in -> download -> write -> trial ->
+            # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.
+            result = phase("install", lambda: run_cycle(
+                devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout))
         time.sleep(2)                            # let the last UART lines land
         marks = set(cap.points())
         missing = sorted(expect - marks)

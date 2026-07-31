@@ -1,0 +1,17 @@
+# Coverage config for the HIL HOST-tool execution (flash dfu/blhost, scan/list, ...): the runner
+# wraps the real `openmv-ota` CLI in `coverage run --rcfile=.coveragerc-hil`, so the ACTUAL commands
+# that flash/enumerate real boards are measured -- not just the mocked host unit tests. Folded into
+# the `hil-host` Codecov flag so a host-tool path going dark shows as a coverage drop, not only a
+# hard failure. Parallel: many CLI invocations per leg each drop their own data file to combine.
+[run]
+parallel = true
+source = openmv_ota
+disable_warnings = no-data-collected
+
+[paths]
+# The runner provisions an editable checkout under its own $HOME; map it back to the repo tree so
+# Codecov attributes the lines to src/openmv_ota/... regardless of the runner's absolute path.
+source =
+    src/openmv_ota
+    */openmv-ota/src/openmv_ota
+    */site-packages/openmv_ota

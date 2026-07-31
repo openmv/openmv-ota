@@ -166,6 +166,12 @@ jobs:
           # each in turn (one trace apiece); don't stop on a failure, so one bad scenario doesn't
           # hide the rest -- the coverage job folds every trace and the step still reports failure.
           PY="$OTA_VENV/bin/python"
+          # Host-tool coverage: measure the REAL openmv-ota CLI execution (flash/build/publish driving
+          # live hardware) so a host-tool path going dark shows as a coverage DROP, not only a hard
+          # failure. ota_cli() wraps each CLI in `coverage run` when HIL_HOST_COV is set; the data files
+          # land here and the coverage job folds them into the `hil-host` flag.
+          "$OTA_VENV/bin/pip" install -q coverage
+          export HIL_HOST_COV="$GITHUB_WORKSPACE/hostcov"; mkdir -p "$HIL_HOST_COV"
           SC="${{ github.event.inputs.scenario || 'all' }}"
           if [ "$SC" = "all" ]; then
             SCENARIOS=$("$PY" ci/hil/ota_cycle.py --board "${{ matrix.board }}" \
@@ -193,6 +199,15 @@ jobs:
           name: hil-traces-${{ matrix.board }}-${{ matrix.network }}
           path: hil-trace-*.json
 
+      - name: Upload host-tool coverage data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hil-hostcov-${{ matrix.board }}-${{ matrix.network }}
+          path: hostcov/.coverage.*
+          include-hidden-files: true      # the parallel-mode data files are dot-files
+          if-no-files-found: ignore
+
   # Fold every trace this run produced into a device-path coverage report + lcov. Runs on a
   # hosted runner (pure JSON+source processing, no hardware) after the bench jobs finish.
   coverage:
@@ -219,12 +234,51 @@ jobs:
           python3 ci/hil/hil_coverage.py --traces traces \
             --md hil-coverage.md --lcov hil-coverage.info
           cat hil-coverage.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: OTA efficiency metrics -> run summary
+        run: |
+          # The REAL cost of an update, measured on hardware: download bytes (manifest/full/delta),
+          # the delta-vs-full saving (the headline), and install time. A tracked selling-point number.
+          python3 ci/hil/ota_metrics.py --traces traces --md ota-metrics.md --json ota-metrics.json
+          cat ota-metrics.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload HIL coverage to Codecov (flag=hil, informational + carryforward)
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: hil-coverage.info
           flags: hil
+          disable_search: true
+
+      # HOST-tool coverage: the REAL openmv-ota CLI execution measured during the bench legs (each leg
+      # wrapped its flash/build/publish CLI in `coverage run` -> hostcov/.coverage.*). Fold those into
+      # one lcov and upload under `flag=hil-host`. This is coverage on the actual dfu/blhost/list paths
+      # against hardware -- so a host-tool line going dark shows as a Codecov drop, complementing the
+      # hard pass/fail. Best-effort: absent data (host coverage off, or no CLI ran) is not an error.
+      - name: Download host-tool coverage data
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: hil-hostcov-*
+          path: hostcov
+          merge-multiple: true
+      - name: Fold host-tool coverage -> lcov
+        run: |
+          if ! ls hostcov/.coverage.* >/dev/null 2>&1; then
+            echo "no host-tool coverage data (host coverage off, or no CLI ran this run)"; exit 0
+          fi
+          # [paths] in .coveragerc-hil remaps the runner's editable-checkout path -> src/openmv_ota,
+          # so Codecov attributes the lines to the repo tree regardless of the runner's absolute path.
+          coverage combine --rcfile=.coveragerc-hil hostcov || true
+          coverage lcov --rcfile=.coveragerc-hil -o hil-host-coverage.info || true
+          { echo '### HIL host-tool coverage'; coverage report --rcfile=.coveragerc-hil \
+            | grep -E 'flash/|Name|TOTAL' || true; } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - name: Upload host-tool coverage to Codecov (flag=hil-host, informational + carryforward)
+        if: hashFiles('hil-host-coverage.info') != ''
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: hil-host-coverage.info
+          flags: hil-host
           disable_search: true
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
@@ -233,6 +287,9 @@ jobs:
           path: |
             hil-coverage.md
             hil-coverage.info
+            hil-host-coverage.info
+            ota-metrics.md
+            ota-metrics.json
 
   # THE REQUIRED CHECK. Always runs (hosted, seconds), so it's a status that exists on every PR --
   # mark THIS one required in branch protection. It passes a non-device PR (nothing to test) and,
