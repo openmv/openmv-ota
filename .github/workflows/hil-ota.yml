@@ -123,11 +123,12 @@ jobs:
               {"board": "OPENMV_RT1060", "network": "wifi", "label": "board-openmv-rt1062"},
           ]
           board = os.environ.get("BOARD") or "all"
-          if os.environ.get("EVENT") == "pull_request":
-              # PR gate = the reliable boards only (N6 + RT1062); the AE3 is HW-debugged, left to
-              # manual dispatch until sorted -- a flaky AE3 leg shouldn't red every device PR.
-              sel = [l for l in legs if l["board"] != "OPENMV_AE3"]
-          elif board == "all":
+          # PR gate runs EVERY board including the AE3 (wifi): its USB/DFU flashing and its watchdog are
+          # sorted (standard OTA + watchdog both pass on HW). To keep the AE3's flakier DFU off the
+          # critical path of every PR, its PR suite is REDUCED to its two board-specific paths (delta +
+          # watchdog) in regression_scenarios() -- so it adds ~2 DFU cycles, not the full tamper set.
+          # coproc stays out (AE3 MRAM-write crash). workflow_dispatch still honours an explicit board.
+          if os.environ.get("EVENT") == "pull_request" or board == "all":
               sel = legs
           else:
               sel = [l for l in legs if l["board"] == board]
