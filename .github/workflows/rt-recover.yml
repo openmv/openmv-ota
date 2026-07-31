@@ -7,16 +7,16 @@ name: RT recover (one-off)
 # SDP recovery directly: sdphost loads the RAM flashloader, blhost writes FCB + bootloader, then the
 # firmware + romfs. Defaults to DRY-RUN (prints the sdphost/blhost plan, writes nothing).
 on:
-  workflow_dispatch:
-    inputs:
-      write:
-        description: "actually WRITE (unchecked = dry-run: print the plan only)"
-        type: boolean
-        default: false
+  push:
+    branches: [kwabena/rt-recover]        # a new workflow can't be workflow_dispatch'd off a non-default
+                                          # branch, so drive it by pushing to this recovery branch
 
 concurrency:
   group: hil-ota-board-openmv-rt1062      # share the RT lane so it never races a bench run
   cancel-in-progress: false
+
+env:
+  WRITE: "false"                          # DRY-RUN by default; flip to "true" + push to actually recover
 
 jobs:
   recover:
@@ -30,7 +30,7 @@ jobs:
           eval "$(bash ci/hil/provision.sh OPENMV_RT1060 "$GITHUB_WORKSPACE")"
           O="$OTA_VENV/bin/openmv-ota"
           MP="$OTA_VENV/bin/mpremote"
-          DRY="--dry-run"; [ "${{ inputs.write }}" = "true" ] && DRY=""
+          DRY="--dry-run"; [ "$WRITE" = "true" ] && DRY=""
           echo "::group::USB before"; lsusb | grep -iE "1fc9|NXP|SEGGER|ttyACM" || true; ls -la /dev/ttyACM* 2>/dev/null || true; echo "::endgroup::"
           echo "=== 1) flash bootloader  (SDP: RAM flashloader -> FCB + secure bootloader) ${DRY:-WRITE} ==="
           "$O" flash bootloader --in-bootloader -b OPENMV_RT1060 "$PROJECT_DIR" --sdk-home "$SDK_HOME" $DRY
