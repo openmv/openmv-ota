@@ -166,19 +166,16 @@ jobs:
           # each in turn (one trace apiece); don't stop on a failure, so one bad scenario doesn't
           # hide the rest -- the coverage job folds every trace and the step still reports failure.
           PY="$OTA_VENV/bin/python"
-          # Host-tool coverage: measure the REAL openmv-ota CLI execution (flash/build/publish driving
-          # live hardware) so a host-tool path going dark shows as a coverage DROP, not only a hard
-          # failure. ota_cli() wraps each CLI in `coverage run` when HIL_HOST_COV is set; the data files
-          # land here and the coverage job folds them into the `hil-host` flag.
-          # EXCEPT the RT1060: its blhost / resident-SBL flash path wedges the board when the CLI runs
-          # under `coverage run` (the SBL fails to enumerate/claim on the NEXT op) -- the DFU boards
-          # (N6/AE3) are unaffected. So the RT stays on the bare CLI (byte-for-byte the old behaviour);
-          # N6/AE3 still cover the flash/build/publish/list paths, and list/scan is board-agnostic so
-          # no coverage is lost. (Covering imx/blhost for real is a separate, careful follow-up.)
-          if [ "${{ matrix.board }}" != "OPENMV_RT1060" ]; then
-            "$OTA_VENV/bin/pip" install -q coverage
-            export HIL_HOST_COV="$GITHUB_WORKSPACE/hostcov"; mkdir -p "$HIL_HOST_COV"
-          fi
+          # Host-tool coverage: measure the REAL openmv-ota CLI execution for the NON-destructive host
+          # tools -- `flash list` (a read-only USB scan), `build`, `client publish` -- under
+          # `coverage run` (ota_cli() wraps them when HIL_HOST_COV is set) -> the `hil-host` Codecov
+          # flag, so a host-tool path going dark shows as a coverage DROP, not only a hard failure.
+          # The destructive flash-WRITE verbs (factory/firmware/romfs/erase) are deliberately NOT
+          # wrapped on ANY board: `coverage run` around the RT's blhost/resident-SBL flash path wedges
+          # the board (it wiped an RT's boot flash once). They run bare -- byte-for-byte the old
+          # behaviour -- and stay functionally protected (a real failure still fails the leg).
+          "$OTA_VENV/bin/pip" install -q coverage
+          export HIL_HOST_COV="$GITHUB_WORKSPACE/hostcov"; mkdir -p "$HIL_HOST_COV"
           SC="${{ github.event.inputs.scenario || 'all' }}"
           if [ "$SC" = "all" ]; then
             SCENARIOS=$("$PY" ci/hil/ota_cycle.py --board "${{ matrix.board }}" \

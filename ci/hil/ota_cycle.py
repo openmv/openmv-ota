@@ -111,11 +111,13 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 
 def ota_cli(name="openmv-ota"):
     """The openmv-ota CLI as an argv PREFIX (splat into a command list). When HIL host-tool coverage
-    is on -- the workflow sets HIL_HOST_COV=<dir> -- the CLI is wrapped in `coverage run` so the REAL
-    flash/build/publish commands that drive live hardware are MEASURED, not just the mocked host unit
-    tests, and folded into the `hil-host` Codecov flag (a host-tool path going dark then shows as a
-    coverage drop, not only a hard failure). Off (env unset), it's just the bare CLI path -- byte-for-
-    byte the old behaviour, so a local run is unaffected."""
+    is on -- the workflow sets HIL_HOST_COV=<dir> -- the CLI is wrapped in `coverage run` so its REAL
+    execution is MEASURED (not just the mocked host unit tests) and folded into the `hil-host` Codecov
+    flag: a host-tool path going dark then shows as a coverage drop, not only a hard failure. Used ONLY
+    for the NON-destructive tools -- `flash list` (a read-only scan), `build`, `client publish`. The
+    destructive flash-WRITE verbs (factory/firmware/romfs/erase) use bare ota() instead: `coverage run`
+    around the RT's blhost/SBL flash path wedges the board. Off (env unset), it's the bare CLI path --
+    byte-for-byte the old behaviour, so a local run is unaffected."""
     exe = CFG["venv"] + "/bin/" + name
     covdir = os.environ.get("HIL_HOST_COV")
     if not covdir:
@@ -797,7 +799,7 @@ def _flash_bench_files(board, _recovered=False):
         if _recovered or BOARDS[board]["flash"] != "blhost_imx":
             raise                            # non-imx, or already tried recovering -- give up loud
         log("prepare: /flash write failed (%s) -> recover via `flash erase` (disk-MBR reformat)" % e)
-        sh([*ota_cli("openmv-ota"), "flash", "erase", CFG["project"], "-b", board,
+        sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=180)
         time.sleep(8)                        # let the board boot + auto-reformat the blank FAT
         _ensure_cdc(board)
@@ -836,7 +838,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
     _ensure_cdc(board)                       # recover a wedged board so the CLI can enter DFU cleanly
     log("flash factory -> %s (openmv-ota, DFU -w)" % board)
-    sh([*ota_cli("openmv-ota"), "flash", "factory", CFG["project"], "-b", board, "--sdk-home", CFG["sdk"],
+    sh([ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board, "--sdk-home", CFG["sdk"],
         "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")], timeout=1500)
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
     _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
@@ -903,7 +905,7 @@ def _flash_blhost_imx(board, bad_romfs=False):
     build = CFG["project"] + "/build"
     if bad_romfs:
         log("brick: erase the OTA romfs region (both slots) -> openmv-ota flash erase --romfs")
-        sh([*ota_cli("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--romfs",
+        sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--romfs",
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
         time.sleep(12)
         return
@@ -913,7 +915,7 @@ def _flash_blhost_imx(board, bad_romfs=False):
     sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
     for op in ("firmware", "romfs"):
         log("flash %s -> %s (openmv-ota, resident SBL)" % (op, board))
-        sh([*ota_cli("openmv-ota"), "flash", op, CFG["project"], "-b", board,
+        sh([ota("openmv-ota"), "flash", op, CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
 
