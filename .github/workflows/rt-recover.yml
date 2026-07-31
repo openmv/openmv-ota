@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  WRITE: "false"                          # DRY-RUN by default; flip to "true" + push to actually recover
+  WRITE: "true"                           # DRY-RUN by default; flip to "true" + push to actually recover
 
 jobs:
   recover:
@@ -32,6 +32,10 @@ jobs:
           MP="$OTA_VENV/bin/mpremote"
           DRY="--dry-run"; [ "$WRITE" = "true" ] && DRY=""
           echo "::group::USB before"; lsusb | grep -iE "1fc9|NXP|SEGGER|ttyACM" || true; ls -la /dev/ttyACM* 2>/dev/null || true; echo "::endgroup::"
+          echo "=== 0) build the golden (firmware + factory-romfs) so flash firmware/romfs have inputs ==="
+          export PATH="$SDK_HOME/make:$PATH"
+          "$O" build firmware "$PROJECT_DIR" -b OPENMV_RT1060
+          "$O" build factory-romfs "$PROJECT_DIR" -b OPENMV_RT1060 --allow-dev-key --no-account
           echo "=== 1) flash bootloader  (SDP: RAM flashloader -> FCB + secure bootloader) ${DRY:-WRITE} ==="
           "$O" flash bootloader --in-bootloader -b OPENMV_RT1060 "$PROJECT_DIR" --sdk-home "$SDK_HOME" $DRY
           echo "=== 2) flash firmware  (--in-bootloader: blhost writes the app firmware) ${DRY:-WRITE} ==="
