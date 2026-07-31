@@ -817,20 +817,22 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5):  # pragma: no 
             poll = None
         try:
             sock.write(_request_bytes(host, port, path))
-            if poll is not None:                      # body reads go non-blocking so a paced recv never
-                sock.setblocking(False)               # blocks past a watchdog window; poll+feed gates it
-            reader = _Reader(sock.read, feed, poll)
-            # The server can take SECONDS to produce the FIRST byte of a computed response -- a delta is
-            # generated on demand, so the cold (uncached) request waits on the server before any data.
-            # Until that first byte there is NO progress to feed on: the poll seam is the only feed, and
-            # it does not time-slice on every port (the AE3's SSL socket blocks through poll() instead of
-            # honouring its slice), so an armed watchdog bites the wait. This starved ONLY the first
-            # install (the second serves the now-cached delta immediately) and ONLY the AE3 (the N6/RT
-            # poll time-slices). relax() ISR-feeds across the request + response-header read; it is
-            # bounded by _SOCK_TIMEOUT (settimeout in _connect), so a dead server still fails cleanly into
-            # golden. Once the body streams, the write loop is progress-fed per chunk as before.
+            # Response headers: read on a BLOCKING socket under relax(). The server can be SECONDS slow to
+            # send the first byte (the delta is a stored file whose first fetch misses the OS page cache),
+            # and until then there is NO progress to feed on. poll() is the only other feed seam, but it
+            # does not time-slice on every port -- the AE3's SSL-socket poll() blocks THROUGH its timeout
+            # instead of returning each slice -- so on the AE3 nothing fed the armed watchdog during the
+            # wait and the FIRST install bit here (the second serves the now page-cached delta at once; the
+            # N6/RT poll time-slices, so they never bit). A blocking mbedtls recv, by contrast, is a C call
+            # the relax() timer ISR feeds THROUGH -- exactly as it feeds the multi-second flash erase and
+            # the TLS handshake (_connect) that already run under relax(). Bounded by _SOCK_TIMEOUT
+            # (settimeout in _connect), so a dead server still fails cleanly into golden.
+            reader = _Reader(sock.read, feed, None)   # poll=None -> blocking recv; relax() feeds the wait
             with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
                 code, headers = _read_response(reader)
+            if poll is not None:                      # body: non-blocking + poll so a paced mid-stream
+                sock.setblocking(False)               # recv never blocks past a watchdog window (the body
+                reader._poll = poll                   # is also progress-fed per chunk by the write loop)
         except Exception:
             sock.close()
             raise
