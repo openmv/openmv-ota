@@ -170,8 +170,15 @@ jobs:
           # live hardware) so a host-tool path going dark shows as a coverage DROP, not only a hard
           # failure. ota_cli() wraps each CLI in `coverage run` when HIL_HOST_COV is set; the data files
           # land here and the coverage job folds them into the `hil-host` flag.
-          "$OTA_VENV/bin/pip" install -q coverage
-          export HIL_HOST_COV="$GITHUB_WORKSPACE/hostcov"; mkdir -p "$HIL_HOST_COV"
+          # EXCEPT the RT1060: its blhost / resident-SBL flash path wedges the board when the CLI runs
+          # under `coverage run` (the SBL fails to enumerate/claim on the NEXT op) -- the DFU boards
+          # (N6/AE3) are unaffected. So the RT stays on the bare CLI (byte-for-byte the old behaviour);
+          # N6/AE3 still cover the flash/build/publish/list paths, and list/scan is board-agnostic so
+          # no coverage is lost. (Covering imx/blhost for real is a separate, careful follow-up.)
+          if [ "${{ matrix.board }}" != "OPENMV_RT1060" ]; then
+            "$OTA_VENV/bin/pip" install -q coverage
+            export HIL_HOST_COV="$GITHUB_WORKSPACE/hostcov"; mkdir -p "$HIL_HOST_COV"
+          fi
           SC="${{ github.event.inputs.scenario || 'all' }}"
           if [ "$SC" = "all" ]; then
             SCENARIOS=$("$PY" ci/hil/ota_cycle.py --board "${{ matrix.board }}" \
