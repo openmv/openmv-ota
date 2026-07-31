@@ -47,6 +47,13 @@ fi
 #    also re-runs if a pre-#19348 cache is present (lock exists but the patch is missing).
 FW="$CACHE/openmv"
 PROJ="$CACHE/proj-$BOARD"
+# Drop a stale git index.lock EVERY run (cache-hit or miss): a provision KILLED mid-git -- a cancelled
+# run, or two runs contending the same runner cache (a manual dispatch racing the PR gate) -- leaves
+# `.git/index.lock` behind, and every subsequent fetch/reset then dies with "Unable to create
+# index.lock: File exists". The runner-owned cache can't be hand-cleaned off-box, so the node would
+# stay wedged forever. No git process survives a finished job, so any lock here is stale -> remove it
+# (main repo + every submodule under .git/modules). Idempotent and safe.
+[ -d "$FW/.git" ] && find "$FW/.git" -name index.lock -delete 2>/dev/null || true
 # Scrub leftover UNTRACKED files from the firmware EVERY run (cache-hit or miss): `build firmware`
 # drops modules/ecdsa_verify.c and removes it in a finally, but a build killed mid-flight (or one that
 # found it already present -> _install_verify_module returns None and never cleans it) leaves it
