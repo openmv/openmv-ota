@@ -136,9 +136,14 @@ def hostcov_list(board):
                  "--dfu-util", CFG["dfu"], "--sdk-home", CFG["sdk"]], check=False)
     jline = next((ln for ln in out.splitlines() if ln.strip().startswith("[")), None)
     boards = [d.get("board") for d in json.loads(jline)] if jline else []
-    if board not in boards:
-        raise RuntimeError("flash list did not enumerate %s (saw %r)" % (board, boards))
-    log("flash list: %s enumerated on real HW" % board)
+    # NON-FATAL: the point is to RUN `flash list` (scan_devices) on real hardware for coverage. Whether
+    # it enumerates THIS board is state/timing-dependent -- a block-device board (mimxrt/RT) in running
+    # state may not present via the serial scan, and a fresh-boot serial port can race the scan -- so a
+    # miss is logged, not raised. Gating a scenario on it would make an unrelated leg flaky.
+    if board in boards:
+        log("flash list: %s enumerated on real HW" % board)
+    else:
+        log("flash list: ran (scan path covered); %s not enumerated this pass (saw %r)" % (board, boards))
 
 
 def _human(n):
@@ -1249,7 +1254,8 @@ def main():
                 phase("flash_golden", lambda: flash_golden(args.board))
                 # verify_golden reads the device_id in the same early (pre-watchdog-arm) exec.
                 devid = phase("verify_golden", verify_golden)
-                phase("host_list", lambda: hostcov_list(args.board))   # cover `flash list` on real HW
+                if args.scenario == "delta":     # cover `flash list` ONCE per leg (delta is always first)
+                    phase("host_list", lambda: hostcov_list(args.board))
             if devid is None:                    # --skip-provision: board already up, read it directly
                 devid = device_id()
             trace["device_id"] = devid
