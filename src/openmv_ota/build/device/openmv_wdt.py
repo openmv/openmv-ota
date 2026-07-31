@@ -58,6 +58,10 @@ WDT_ID = None
 TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board WDT max (N6 WWDG max
 #                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often. If
 #                        a port rejects a value this small (a coarse WDOG), raise it to the board min.
+TIMEOUT_MS_ALIF = 200  # the alif (AE3) OSPI flash is ~10x slower than the N6/RT: a single 4 KB install
+#                        step (or the one unsplittable deflate-decompress C call) can approach 100 ms, so
+#                        the AE3 gets a wider window. Still deep-sleep-safe and still tight (alif WDT max
+#                        is ~10.7 s). Kept as small as the hardware allows.
 TIMER_ID = -1          # machine.Timer id; on OpenMV ports only the soft timer (-1) exists
 FEED_HZ = 50           # relax() ISR feed rate (Hz); keep WELL above 1000 / TIMEOUT_MS so it feeds
 #                        many times per window (10 Hz was IWDG-era; a ~100 ms window needs ~50+)
@@ -108,13 +112,15 @@ def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardwa
     global _wdt, _feed
     if _wdt is None:
         import machine
+        import sys
+        timeout = TIMEOUT_MS_ALIF if sys.platform == "alif" else TIMEOUT_MS  # AE3's slow flash -> wider
         if WDT_ID is not None:                        # explicit override
-            _wdt = machine.WDT(WDT_ID, TIMEOUT_MS)
+            _wdt = machine.WDT(WDT_ID, timeout)
         else:
             try:                                      # auto-select: stm32/N6 has the deep-sleep-safe
-                _wdt = machine.WDT("WWDG", TIMEOUT_MS)  # windowed WDT (micropython#19350)...
+                _wdt = machine.WDT("WWDG", timeout)   # windowed WDT (micropython#19350)...
             except (ValueError, TypeError):           # ...ports without a "WWDG" id (mimxrt/alif) ->
-                _wdt = machine.WDT(0, TIMEOUT_MS)       # the default deep-sleep-safe WDT
+                _wdt = machine.WDT(0, timeout)        # the default deep-sleep-safe WDT
         _feed = _wdt.feed
 
 
