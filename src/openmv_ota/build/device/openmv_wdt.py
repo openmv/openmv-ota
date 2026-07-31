@@ -58,6 +58,10 @@ WDT_ID = None
 TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board WDT max (N6 WWDG max
 #                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often. If
 #                        a port rejects a value this small (a coarse WDOG), raise it to the board min.
+#                        One window for every port: HIL-validated at 100 ms on the N6 (WWDG), RT1060
+#                        (WDOG) and AE3 (alif WDT) -- the AE3's slow OSPI needs no wider window because
+#                        the install feeds it per step (the multi-second first-byte download wait, which
+#                        once bit the AE3, is handled in the installer's main-thread-fed reader, not here).
 TIMER_ID = -1          # machine.Timer id; on OpenMV ports only the soft timer (-1) exists
 FEED_HZ = 50           # relax() ISR feed rate (Hz); keep WELL above 1000 / TIMEOUT_MS so it feeds
 #                        many times per window (10 Hz was IWDG-era; a ~100 ms window needs ~50+)
