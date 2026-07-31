@@ -820,7 +820,17 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5):  # pragma: no 
             if poll is not None:                      # body reads go non-blocking so a paced recv never
                 sock.setblocking(False)               # blocks past a watchdog window; poll+feed gates it
             reader = _Reader(sock.read, feed, poll)
-            code, headers = _read_response(reader)
+            # The server can take SECONDS to produce the FIRST byte of a computed response -- a delta is
+            # generated on demand, so the cold (uncached) request waits on the server before any data.
+            # Until that first byte there is NO progress to feed on: the poll seam is the only feed, and
+            # it does not time-slice on every port (the AE3's SSL socket blocks through poll() instead of
+            # honouring its slice), so an armed watchdog bites the wait. This starved ONLY the first
+            # install (the second serves the now-cached delta immediately) and ONLY the AE3 (the N6/RT
+            # poll time-slices). relax() ISR-feeds across the request + response-header read; it is
+            # bounded by _SOCK_TIMEOUT (settimeout in _connect), so a dead server still fails cleanly into
+            # golden. Once the body streams, the write loop is progress-fed per chunk as before.
+            with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
+                code, headers = _read_response(reader)
         except Exception:
             sock.close()
             raise
