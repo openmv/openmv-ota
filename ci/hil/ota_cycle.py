@@ -464,18 +464,28 @@ def regression_scenarios(board, network):
     so there's no point re-running it on both legs."""
     if network != BOARDS[board]["network"]:
         return ["delta"]
+    # The AE3 runs a REDUCED PR suite: only its two board-SPECIFIC paths -- the happy-path delta
+    # install and the armed-watchdog install (both HIL-validated). The tamper/rollback/negative paths
+    # are board-agnostic device logic, fully covered on the stable N6+RT, so re-running them on the
+    # AE3 adds DFU cycles (its USB/DFU is the flakier of the fleet, with a history of wedging off USB
+    # on an unattended long leg) without new coverage. This keeps the AE3 off the critical path of
+    # every PR while still proving its flash + watchdog on each one. coproc/coproc_skip (AE3-only) stay
+    # OUT: the coprocessor-MRAM write in that path crashes/wedges the AE3 -- re-add under COPROC_ENABLED
+    # once that write is fixed (they still run by hand). A normal run never touches that partition
+    # (factory flash already wrote it; sync() stream-compares, matches, and skips -- no MRAM write).
+    if board == "OPENMV_AE3":
+        return ["delta", "watchdog"] + (["coproc", "coproc_skip"] if COPROC_ENABLED else [])
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
+    # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
+    # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
+    # path. The negative path (the WDT actually BITES when feeding stops, then recovers as a single
+    # bite) is WWDG-specific (reset_cause==3), so watchdog_bite stays N6-only -- like no_slot is
+    # block-device-only.
+    scs.append("watchdog")
+    if board == "OPENMV_N6":
+        scs.append("watchdog_bite")
     if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
         scs.append("no_slot")
-    # coproc/coproc_skip (AE3-only) are TEMPORARILY OUT of the regression: the coprocessor-MRAM
-    # write in the coproc scenario's dirty+reapply path crashes/wedges the AE3 off USB. The
-    # scenarios still exist and can be dispatched by hand once that write is fixed. Everything else
-    # is safe on the AE3: the factory flash already writes the coproc partition, so a NORMAL run's
-    # sync() stream-compares, finds a match, and SKIPS -- no MRAM write -- so the AE3 runs the
-    # standard delta/tamper suite without touching the partition that bricks it. Re-add here (guarded
-    # on a working coproc write) to restore end-to-end coproc HIL coverage. See COPROC_ENABLED below.
-    if board == "OPENMV_AE3" and COPROC_ENABLED:
-        scs += ["coproc", "coproc_skip"]
     return scs
 
 
