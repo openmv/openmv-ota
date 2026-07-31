@@ -58,7 +58,7 @@ WDT_ID = None
 TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board WDT max (N6 WWDG max
 #                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often. If
 #                        a port rejects a value this small (a coarse WDOG), raise it to the board min.
-TIMEOUT_MS_ALIF = 200  # the alif (AE3) OSPI flash is ~10x slower than the N6/RT: a single 4 KB install
+TIMEOUT_MS_ALIF = 300  # the alif (AE3) OSPI flash is ~10x slower than the N6/RT: a single 4 KB install
 #                        step (or the one unsplittable deflate-decompress C call) can approach 100 ms, so
 #                        the AE3 gets a wider window. Still deep-sleep-safe and still tight (alif WDT max
 #                        is ~10.7 s). Kept as small as the hardware allows.
