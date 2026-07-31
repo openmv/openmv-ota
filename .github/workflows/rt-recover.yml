@@ -1,0 +1,47 @@
+name: RT recover (one-off)
+
+# One-off recovery for an RT1060 whose boot flash got wiped (enumerates as i.MX ROM SDP
+# "SE Blank RT Family", no CDC). The normal provision can't reach it -- it enters the SBL via
+# machine.bootloader(), which needs a running firmware that no longer exists. This runs AS THE
+# RUNNER (which has the provisioned project + built firmware/bootloader/flashloader) and drives the
+# SDP recovery directly: sdphost loads the RAM flashloader, blhost writes FCB + bootloader, then the
+# firmware + romfs. Defaults to DRY-RUN (prints the sdphost/blhost plan, writes nothing).
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "actually WRITE (unchecked = dry-run: print the plan only)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: hil-ota-board-openmv-rt1062      # share the RT lane so it never races a bench run
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: recover RT1060 boot flash
+    runs-on: [self-hosted, hil, board-openmv-rt1062]
+    steps:
+      - uses: actions/checkout@v4
+      - name: SDP recovery (dry-run unless write=true)
+        run: |
+          set -eu
+          eval "$(bash ci/hil/provision.sh OPENMV_RT1060 "$GITHUB_WORKSPACE")"
+          O="$OTA_VENV/bin/openmv-ota"
+          MP="$OTA_VENV/bin/mpremote"
+          DRY="--dry-run"; [ "${{ inputs.write }}" = "true" ] && DRY=""
+          echo "::group::USB before"; lsusb | grep -iE "1fc9|NXP|SEGGER|ttyACM" || true; ls -la /dev/ttyACM* 2>/dev/null || true; echo "::endgroup::"
+          echo "=== 1) flash bootloader  (SDP: RAM flashloader -> FCB + secure bootloader) ${DRY:-WRITE} ==="
+          "$O" flash bootloader --in-bootloader -b OPENMV_RT1060 "$PROJECT_DIR" --sdk-home "$SDK_HOME" $DRY
+          echo "=== 2) flash firmware  (--in-bootloader: blhost writes the app firmware) ${DRY:-WRITE} ==="
+          "$O" flash firmware --in-bootloader -b OPENMV_RT1060 "$PROJECT_DIR" --sdk-home "$SDK_HOME" --mpremote "$MP" $DRY
+          echo "=== 3) flash romfs  (via the now-resident SBL) ${DRY:-WRITE} ==="
+          "$O" flash romfs -b OPENMV_RT1060 "$PROJECT_DIR" --sdk-home "$SDK_HOME" --mpremote "$MP" $DRY
+          if [ -n "$DRY" ]; then
+            echo ">>> DRY-RUN ONLY. Re-dispatch with write=true to actually recover."
+            exit 0
+          fi
+          echo "=== 4) verify the RT is back (CDC + running) ==="
+          sleep 8
+          "$O" flash list --sdk-home "$SDK_HOME"
