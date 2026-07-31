@@ -58,10 +58,10 @@ WDT_ID = None
 TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board WDT max (N6 WWDG max
 #                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often. If
 #                        a port rejects a value this small (a coarse WDOG), raise it to the board min.
-TIMEOUT_MS_ALIF = 200  # the alif (AE3) OSPI flash is ~10x slower than the N6/RT, so a single 4 KB write/
-#                        read/erase-verify step gets more margin here. (The multi-second server-wait that
-#                        bit the AE3's first install is fixed properly in the installer -- relax()-fed --
-#                        not by this window.) Still deep-sleep-safe and tight (alif WDT max is ~10.7 s).
+#                        One window for every port: HIL-validated at 100 ms on the N6 (WWDG), RT1060
+#                        (WDOG) and AE3 (alif WDT) -- the AE3's slow OSPI needs no wider window because
+#                        the install feeds it per step (the multi-second first-byte download wait, which
+#                        once bit the AE3, is handled in the installer's main-thread-fed reader, not here).
 TIMER_ID = -1          # machine.Timer id; on OpenMV ports only the soft timer (-1) exists
 FEED_HZ = 50           # relax() ISR feed rate (Hz); keep WELL above 1000 / TIMEOUT_MS so it feeds
 #                        many times per window (10 Hz was IWDG-era; a ~100 ms window needs ~50+)
@@ -112,15 +112,13 @@ def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardwa
     global _wdt, _feed
     if _wdt is None:
         import machine
-        import sys
-        timeout = TIMEOUT_MS_ALIF if sys.platform == "alif" else TIMEOUT_MS  # AE3's slow flash -> wider
         if WDT_ID is not None:                        # explicit override
-            _wdt = machine.WDT(WDT_ID, timeout)
+            _wdt = machine.WDT(WDT_ID, TIMEOUT_MS)
         else:
             try:                                      # auto-select: stm32/N6 has the deep-sleep-safe
-                _wdt = machine.WDT("WWDG", timeout)   # windowed WDT (micropython#19350)...
+                _wdt = machine.WDT("WWDG", TIMEOUT_MS)  # windowed WDT (micropython#19350)...
             except (ValueError, TypeError):           # ...ports without a "WWDG" id (mimxrt/alif) ->
-                _wdt = machine.WDT(0, timeout)        # the default deep-sleep-safe WDT
+                _wdt = machine.WDT(0, TIMEOUT_MS)       # the default deep-sleep-safe WDT
         _feed = _wdt.feed
 
 
