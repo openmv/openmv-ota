@@ -19,10 +19,13 @@ loop, ``run()``, every task on the asyncio event loop) live in the FRONT slot be
 if any post-erase op ``await``\\ed and YIELDED to the event loop, the loop would resume that
 now-erased bytecode straight from flash and HardFault. Post-erase work therefore must not yield.
 That rules OUT async sockets for the download; instead the recv is **non-blocking + progress-
-fed without yielding**: the reader waits for data in short ``select.poll`` slices and ``feed``\\s
-the watchdog each slice, so a slow/paced link stays fed while a dead link (no data at all) stops
-producing and trips the watchdog after ``_SOCK_TIMEOUT`` -> golden. The erase/write loops feed
-per block/piece the same way. ``relax()`` (an ISR feed that also does not yield) is a LAST
+fed without yielding**: the reader loops a non-blocking ``recv`` and, whenever no data has yet
+arrived, ``feed``\\s the watchdog and ``sleep_ms``\\s one short slice before retrying -- a fixed
+feed cadence driven from the main thread, with no reliance on ``select.poll`` or a timer (the
+AE3's SSL poll() blocks through its own timeout, and relax()'s ISR is not serviced inside an
+mbedtls read, so only a main-thread feed is reliable there). A slow/paced link stays fed while a
+dead link (no data at all) stops producing and trips the watchdog after ``_SOCK_TIMEOUT`` ->
+golden. The erase/write loops feed per block/piece the same way. ``relax()`` (an ISR feed that also does not yield) is a LAST
 RESORT, used ONLY for the two genuinely unsplittable single C calls with no seam to feed
 through: the TLS handshake (``_connect``) and this file's own ``exec`` compile (in
 ``openmv_ota.install``). All of it is a no-op unless the app armed a watchdog. (Pre-erase --
@@ -75,6 +78,12 @@ try:                                   # ...and openmv_wdt (the watchdog helper)
     import openmv_wdt
 except ImportError:
     openmv_wdt = None
+
+try:                                   # device: a real millisecond sleep to yield between recv polls;
+    from time import sleep_ms          # host (CPython time has no sleep_ms): a no-op -- the download
+except ImportError:                    # reader's wait loop just spins its bounded counter under test.
+    def sleep_ms(_ms):
+        pass
 
 
 
@@ -216,49 +225,41 @@ class _Reader:
     line reads for the status/headers/chunk-sizes, plus bounded raw reads for the
     body. Holds any bytes read past the headers so the body stream sees them."""
 
-    def __init__(self, recv, feed=_noop, poll=None, buf=b""):
+    def __init__(self, recv, feed=_noop, buf=b""):
         self._recv = recv
         self._feed = feed          # progress-fed download: fed while WAITING for the next recv
-        self._poll = poll          # select.poll registered on the socket (None -> plain blocking recv)
         self._buf = buf
 
     def _fill(self):
-        # NON-BLOCKING, progress-fed recv (NOT relax): with the socket in non-blocking mode (set by
-        # _open), wait for it to be readable in short poll slices -- feeding the watchdog each slice --
-        # then read WHATEVER IS AVAILABLE (returning < _CHUNK is fine; the caller re-fills). This is the
-        # crux: a *blocking* read(_CHUNK) would block until a whole _CHUNK accumulated, which mid-stream
-        # spans several TLS records on a paced Wi-Fi link and starves the watchdog between feeds (poll
-        # only proves the FIRST byte is ready, not a full chunk) -- that is what bit the WWDG on the N6
-        # image download but not the tiny, single-read manifest. A genuinely dead link produces nothing
-        # and trips the watchdog after _SOCK_TIMEOUT (-> clean install error -> golden). Feed is a no-op
-        # unless a watchdog is armed; with no poll available we fall back to a plain blocking recv (the
-        # watchdog-off path is byte-for-byte unaffected).
-        if self._poll is not None:
-            waited = 0
-            while True:
-                self._feed()
-                if self._poll.poll(_RECV_POLL_MS):
-                    try:
-                        d = self._recv(_CHUNK)        # non-blocking: available bytes / None / b'' (EOF)
-                    except OSError as e:              # would-block despite POLLIN (partial TLS record)
-                        if e.args and e.args[0] in _EAGAIN:
-                            d = None
-                        else:
-                            raise
-                    if d:
-                        self._buf += d
-                        return True
-                    if d is not None:                # d == b'' -> EOF
-                        return False
-                    # d is None -> would-block after POLLIN; keep polling + feeding
-                waited += _RECV_POLL_MS
-                if waited >= _SOCK_TIMEOUT * 1000:
-                    raise OSError("recv timed out")   # a dead link -> clean install error -> golden
-        d = self._recv(_CHUNK)                        # blocking fallback (no select/poll on this port)
-        if not d:
-            return False
-        self._buf += d
-        return True
+        # MAIN-THREAD progress-fed recv. The socket is NON-BLOCKING (set by _open), so recv returns at
+        # once: data, or None/EAGAIN when nothing has arrived yet -- on which we feed() and sleep one
+        # short slice before retrying. This keeps a fixed feed cadence with NO reliance on select.poll()
+        # or a timer ISR, which is the crux for the AE3: its SSL-socket poll() blocks THROUGH its own
+        # timeout (starving a poll-gated feed), and relax()'s timer ISR is not serviced inside an mbedtls
+        # read -- only a feed driven from the main thread between recvs is reliable there. Reading
+        # WHATEVER IS AVAILABLE (< _CHUNK is fine; the caller re-fills) also avoids a *blocking* read that
+        # waits for a whole chunk -- which mid-stream spans several TLS records on a paced Wi-Fi link and
+        # starves the watchdog between reads (that bit the WWDG on the N6 image download). A dead link
+        # produces nothing until _SOCK_TIMEOUT -> clean install error -> golden. Feed is a no-op unless a
+        # watchdog is armed; the watchdog-off path is unaffected (recv still returns data the same way).
+        waited = 0
+        while True:
+            self._feed()
+            try:
+                d = self._recv(_CHUNK)               # non-blocking: available bytes / None / b'' (EOF)
+            except OSError as e:                      # would-block -> treat as "no data yet"
+                if not (e.args and e.args[0] in _EAGAIN):
+                    raise                             # a real error (ECONNRESET, ...) -> install -> golden
+                d = None
+            if d:
+                self._buf += d
+                return True
+            if d is not None:                        # d == b'' -> EOF
+                return False
+            sleep_ms(_RECV_POLL_MS)                  # d is None -> no data yet; feed + wait a slice
+            waited += _RECV_POLL_MS
+            if waited >= _SOCK_TIMEOUT * 1000:
+                raise OSError("recv timed out")       # a dead link -> clean install error -> golden
 
     def readline(self, limit=8192):
         while b"\n" not in self._buf:
@@ -809,30 +810,18 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5):  # pragma: no 
     for _ in range(max_redirects + 1):
         host, port, path = _parse_url(url)
         sock = _connect(host, port, ca_pem, socket, ssl)
-        try:                                          # ssl sockets support poll (stream ioctl); this
-            import select                             # lets the reader wait for data in short slices,
-            poll = select.poll()                      # feeding between them -- a progress-fed recv, not
-            poll.register(sock, select.POLLIN)        # a relax() disable
-        except Exception:  # pragma: no cover  # hil-residual: select/poll is always present on our ports; fall back to a plain blocking recv so a normal install is never broken (only the on-watchdog per-recv feed relies on poll)
-            poll = None
         try:
-            sock.write(_request_bytes(host, port, path))
-            # Response headers: read on a BLOCKING socket under relax(). The server can be SECONDS slow to
-            # send the first byte (the delta is a stored file whose first fetch misses the OS page cache),
-            # and until then there is NO progress to feed on. poll() is the only other feed seam, but it
-            # does not time-slice on every port -- the AE3's SSL-socket poll() blocks THROUGH its timeout
-            # instead of returning each slice -- so on the AE3 nothing fed the armed watchdog during the
-            # wait and the FIRST install bit here (the second serves the now page-cached delta at once; the
-            # N6/RT poll time-slices, so they never bit). A blocking mbedtls recv, by contrast, is a C call
-            # the relax() timer ISR feeds THROUGH -- exactly as it feeds the multi-second flash erase and
-            # the TLS handshake (_connect) that already run under relax(). Bounded by _SOCK_TIMEOUT
-            # (settimeout in _connect), so a dead server still fails cleanly into golden.
-            reader = _Reader(sock.read, feed, None)   # poll=None -> blocking recv; relax() feeds the wait
-            with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
-                code, headers = _read_response(reader)
-            if poll is not None:                      # body: non-blocking + poll so a paced mid-stream
-                sock.setblocking(False)               # recv never blocks past a watchdog window (the body
-                reader._poll = poll                   # is also progress-fed per chunk by the write loop)
+            sock.write(_request_bytes(host, port, path))  # blocking send of the small GET
+            # Go NON-BLOCKING for every read from here (headers AND body): the reader then feeds the
+            # watchdog from the main thread between recvs (see _Reader._fill). This is what a slow FIRST
+            # byte needs -- the server can be seconds slow to answer (a stored delta whose first fetch
+            # misses the OS page cache), and on the AE3 neither poll() nor relax() feeds that wait
+            # (its SSL poll() blocks through its timeout; relax()'s ISR isn't serviced inside an mbedtls
+            # read). A main-thread non-blocking recv + sleep loop feeds it regardless. Bounded by
+            # _SOCK_TIMEOUT (the reader's wait counter), so a dead server still falls cleanly to golden.
+            sock.setblocking(False)
+            reader = _Reader(sock.read, feed)
+            code, headers = _read_response(reader)
         except Exception:
             sock.close()
             raise

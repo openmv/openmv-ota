@@ -189,72 +189,56 @@ def test_reader_read_some_eof_returns_empty():
     assert r.read_some(10) == b""
 
 
-class _FakePoll:
-    """A select.poll stand-in: reports not-ready `not_ready` times, then ready."""
-
-    def __init__(self, not_ready):
-        self._left = not_ready
-
-    def poll(self, _ms):
-        if self._left > 0:
-            self._left -= 1
-            return []                          # nothing readable yet -> reader feeds + waits
-        return [(None, 1)]                     # readable -> reader does the (non-blocking) recv
-
-
-_READY = type("Ready", (), {"poll": lambda self, _ms: [(None, 1)]})()   # always readable
-
-
-def test_reader_poll_feeds_while_waiting_then_reads():
-    # non-blocking, progress-fed recv: feed once per loop slice, then read when readable
+def test_reader_feeds_while_waiting_then_reads():
+    # main-thread progress-fed recv: a non-blocking recv returns None until data arrives, feeding each
+    # slice -- no select.poll(), no relax(); the feed cadence is driven from the loop itself
     fed = []
-    r = inst("_Reader")(_recv_of(b"payload"), feed=lambda: fed.append(1), poll=_FakePoll(3))
-    assert r.read_exact(7) == b"payload"       # drives _fill -> 3 not-ready slices then the recv
-    assert len(fed) == 4                        # fed each slice incl. the readable one, no relax/disable
+    seq = iter([None, None, None, b"payload"])
+    r = inst("_Reader")(lambda _n: next(seq), feed=lambda: fed.append(1))
+    assert r.read_exact(7) == b"payload"       # 3 no-data slices then the recv that returns data
+    assert len(fed) == 4                        # fed each slice incl. the one that read data
 
 
-def test_reader_poll_ready_but_would_block_then_data():
-    # poll can report readable while the non-blocking recv still returns None (partial TLS record):
-    # the reader must keep feeding + polling, not treat None as EOF
+def test_reader_would_block_none_then_data():
+    # a non-blocking recv returns None while no data has arrived; the reader must keep feeding, not EOF
     seq = iter([None, None, b"hi"])
     fed = []
-    r = inst("_Reader")(lambda _n: next(seq), feed=lambda: fed.append(1), poll=_READY)
+    r = inst("_Reader")(lambda _n: next(seq), feed=lambda: fed.append(1))
     assert r.read_exact(2) == b"hi"
-    assert len(fed) == 3                        # fed on each would-block slice before data arrived
+    assert len(fed) == 3                        # fed on each no-data slice before data arrived
 
 
-def test_reader_poll_ready_eof_returns_false():
-    # a non-blocking recv of b'' after POLLIN is a real EOF -> _fill returns False
-    r = inst("_Reader")(_recv_of(), feed=lambda: None, poll=_READY)
+def test_reader_eof_returns_false():
+    # a non-blocking recv of b'' is a real EOF -> _fill returns False
+    r = inst("_Reader")(_recv_of(), feed=lambda: None)
     assert r.read_some(5) == b""
 
 
-def test_reader_poll_recv_eagain_then_data():
+def test_reader_recv_eagain_then_data():
     # some ports RAISE OSError(EAGAIN) instead of returning None; treat as would-block, keep going
     state = {"n": 0}
 
     def recv(_n):
         state["n"] += 1
         if state["n"] == 1:
-            raise OSError(11)                  # EAGAIN despite POLLIN
+            raise OSError(11)                  # EAGAIN
         return b"ok"
-    r = inst("_Reader")(recv, feed=lambda: None, poll=_READY)
+    r = inst("_Reader")(recv, feed=lambda: None)
     assert r.read_exact(2) == b"ok"
 
 
-def test_reader_poll_recv_oserror_propagates():
+def test_reader_recv_oserror_propagates():
     # a non-would-block OSError (e.g. ECONNRESET) is a real failure -> propagate (install -> golden)
     def recv(_n):
         raise OSError(104)                     # ECONNRESET
-    r = inst("_Reader")(recv, feed=lambda: None, poll=_READY)
+    r = inst("_Reader")(recv, feed=lambda: None)
     with pytest.raises(OSError):
         r.read_exact(1)
 
 
-def test_reader_poll_dead_link_trips_after_timeout():
-    # a link that never produces data must stop feeding and raise (the watchdog would then bite)
-    never = type("Never", (), {"poll": lambda self, _ms: []})()
-    r = inst("_Reader")(_recv_of(b"unreached"), feed=lambda: None, poll=never)
+def test_reader_dead_link_trips_after_timeout():
+    # a link that never produces data feeds until _SOCK_TIMEOUT, then raises (-> clean install -> golden)
+    r = inst("_Reader")(lambda _n: None, feed=lambda: None)
     with pytest.raises(OSError, match="timed out"):
         r.read_exact(1)
 
