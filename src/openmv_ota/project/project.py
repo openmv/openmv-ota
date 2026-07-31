@@ -263,13 +263,19 @@ _FW_FEATURES = (
         "summary": "ranged romfs erase",
         "why": ("the OTA installer's incremental FRONT erase -- without it a whole-slot erase stalls "
                 "USB and faults partway through on a large XIP slot (the N6's 12 MiB XSPI)"),
+        # #19348 MERGED upstream 2026-07-31 and its PR branch was DELETED, so the pre-merge SHAs the
+        # carry used to pin are GC'd -- `project new` died with "fatal: bad object 6a4062f9...". These
+        # are the SAME six commits now on micropython master: rebased onto master so the SHAs changed,
+        # but the commit subjects (and diffs) are identical, so they were re-matched by message. Order
+        # preserved (constant -> ports -> mpremote). Re-pinning to the merged SHAs keeps the carry
+        # reproducible; a moving ref (e.g. master) would not be.
         "commits": (
-            "6a4062f9974640ee60fbd0d52224b973712b6f80",  # extmod/vfs: GET_MIN_PREPARE constant
-            "61fadc0ec8cc9ff58ddab27ad62c59aa9344307b",  # alif: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-            "893850436a799cc0c31126614e704abc9eb2cae5",  # samd: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-            "9f9b28ecb3360851e50606db822523ccb28f0a56",  # stm32: flash_get_max_sector_size helper
-            "14074d10871cef76b14c5a3c8bf12d8afca9430e",  # stm32: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-            "720f797d08912d3f9c8994b31663cb16e47d5efd",  # mpremote: incremental romfs deploy
+            "2af2defbe9305a2fd4cc9d18d2e3957fe2cfa98d",  # extmod/vfs: GET_MIN_PREPARE constant
+            "6ab72487a68a441da2d99b41d70b055fb4cfe800",  # alif: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+            "61d11a4470200564294d7eb092b7b96e1fbca1a8",  # samd: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+            "768bc8fe0a5fe843f22bd726e1a7b5518cb24bc0",  # stm32: flash_get_max_sector_size helper
+            "aef040348e58eb346a51d23d9f98b2d232810594",  # stm32: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
+            "f777bc7e7b14d2d2c9ea6785f1d041006a406c8d",  # mpremote: incremental romfs deploy
         ),
         "sentinel_path": "extmod/vfs.h",
         "sentinel": "MP_VFS_ROM_IOCTL_GET_MIN_PREPARE",
