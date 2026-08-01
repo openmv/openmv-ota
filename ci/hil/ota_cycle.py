@@ -106,48 +106,6 @@ def ota(name):
     return CFG["venv"] + "/bin/" + name
 
 
-_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-def ota_cli(name="openmv-ota"):
-    """The openmv-ota CLI as an argv PREFIX (splat into a command list). When HIL host-tool coverage
-    is on -- the workflow sets HIL_HOST_COV=<dir> -- the CLI is wrapped in `coverage run` so its REAL
-    execution is MEASURED (not just the mocked host unit tests) and folded into the `hil-host` Codecov
-    flag: a host-tool path going dark then shows as a coverage drop, not only a hard failure. Used ONLY
-    for the NON-destructive tools -- `flash list` (a read-only scan), `build`, `client publish`. The
-    destructive flash-WRITE verbs (factory/firmware/romfs/erase) use bare ota() instead: `coverage run`
-    around the RT's blhost/SBL flash path wedges the board. Off (env unset), it's the bare CLI path --
-    byte-for-byte the old behaviour, so a local run is unaffected."""
-    exe = CFG["venv"] + "/bin/" + name
-    covdir = os.environ.get("HIL_HOST_COV")
-    if not covdir:
-        return [exe]
-    return [CFG["venv"] + "/bin/coverage", "run", "--parallel-mode",
-            "--rcfile", os.path.join(_REPO, ".coveragerc-hil"),
-            "--data-file", os.path.join(covdir, ".coverage"), exe]
-
-
-def hostcov_list(board):
-    """Run `flash list` (scan_devices) against the live board and assert it enumerates. `list` is the
-    one flash verb the OTA provision never exercises, so this is where its real USB-enumeration path
-    (serial_devices + dfu_devices + the inventory index) gets hardware coverage -- under ota_cli's
-    coverage wrap it lands in the hil-host flag. A scan/inventory regression then fails the leg AND
-    shows as a coverage drop, instead of slipping through mocked host tests."""
-    import json
-    _, out = sh([*ota_cli("openmv-ota"), "flash", "list", "--json",
-                 "--dfu-util", CFG["dfu"], "--sdk-home", CFG["sdk"]], check=False)
-    jline = next((ln for ln in out.splitlines() if ln.strip().startswith("[")), None)
-    boards = [d.get("board") for d in json.loads(jline)] if jline else []
-    # NON-FATAL: the point is to RUN `flash list` (scan_devices) on real hardware for coverage. Whether
-    # it enumerates THIS board is state/timing-dependent -- a block-device board (mimxrt/RT) in running
-    # state may not present via the serial scan, and a fresh-boot serial port can race the scan -- so a
-    # miss is logged, not raised. Gating a scenario on it would make an unrelated leg flaky.
-    if board in boards:
-        log("flash list: %s enumerated on real HW" % board)
-    else:
-        log("flash list: ran (scan path covered); %s not enumerated this pass (saw %r)" % (board, boards))
-
-
 def _human(n):
     if n is None:
         return "-"
@@ -812,7 +770,7 @@ def build_golden(board):
     penv = dict(os.environ, PATH=CFG["sdk"] + "/make:" + os.environ["PATH"])
     for step in ("firmware", "factory-romfs"):
         extra = ["--allow-dev-key", "--no-account"] if step == "factory-romfs" else []
-        subprocess.run([*ota_cli("openmv-ota"), "build", step, CFG["project"], "-b", board] + extra,
+        subprocess.run([ota("openmv-ota"), "build", step, CFG["project"], "-b", board] + extra,
                        env=penv, check=True, timeout=900)
 
 
@@ -973,7 +931,7 @@ def publish_update(board, version, variant="delta"):
     # --allow-republish: the bench server accumulates versions across runs, so this
     # target may not be strictly newer than a prior run's -- the device is what gates
     # (it re-flashes to golden 1.0.0 each run, and its rollback floor resets with it).
-    build = [*ota_cli("openmv-ota"), "build", "ota-romfs", CFG["project"], "-b", board,
+    build = [ota("openmv-ota"), "build", "ota-romfs", CFG["project"], "-b", board,
              "--allow-dev-key", "--allow-republish"]
     if variant in ("full", "corrupt_sha"):
         # Force a full (non-delta) release: point --delta-from at an empty dir so no golden
@@ -992,7 +950,7 @@ def publish_update(board, version, variant="delta"):
         % (_human(_s.get("manifest")), _human(_s.get("full_img_gz")), _human(_s.get("delta_gz")),
            ("  (delta=%.1f%% of full)" % (100.0 * _s["delta_gz"] / _s["full_img_gz"])
             if _s.get("delta_gz") and _s.get("full_img_gz") else "")))
-    subprocess.run([*ota_cli("openmv-ota"), "client", "publish", CFG["project"], "-b", board,
+    subprocess.run([ota("openmv-ota"), "client", "publish", CFG["project"], "-b", board,
                     "--server", CFG["server"], "--token", CFG["token"], "--allow-republish",
                     "--rollout", "__default__:100"], env=penv, check=True, timeout=180)
     if variant == "corrupt":
@@ -1256,8 +1214,6 @@ def main():
                 phase("flash_golden", lambda: flash_golden(args.board))
                 # verify_golden reads the device_id in the same early (pre-watchdog-arm) exec.
                 devid = phase("verify_golden", verify_golden)
-                if args.scenario == "delta":     # cover `flash list` ONCE per leg (delta is always first)
-                    phase("host_list", lambda: hostcov_list(args.board))
             if devid is None:                    # --skip-provision: board already up, read it directly
                 devid = device_id()
             trace["device_id"] = devid
