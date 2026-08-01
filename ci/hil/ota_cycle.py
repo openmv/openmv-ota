@@ -832,8 +832,25 @@ def _flash_arduino_cli(board, bad_romfs=False):
     _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
 
 
+def _dfu_leave(board):
+    """Boot a board sitting in its DFU/MCUboot bootloader back into firmware WITHOUT the J-Link -- a
+    dfu-util DFU-detach, the same "leave" the OpenMV IDE issues (settings.json -s :leave). Recovers a
+    board stuck in DFU (an interrupted flash, or a manual/board-default bootloader entry) when its SWD
+    is unavailable -- the Nicla's SWD pads are tiny and easy to lose contact on. Returns True iff a DFU
+    device was present and detached; a no-op (False) otherwise, so the caller falls through to J-Link.
+    Only reached when the CDC is already missing, so it never disturbs a running board."""
+    rc, out = sh([CFG["dfu"], "-l"], check=False, timeout=20, quiet=True)
+    if "Found DFU" not in (out or ""):
+        return False                             # not in DFU -> nothing to leave; try the J-Link
+    log("recover: %s is in DFU -- dfu-util detach/leave (boots firmware, no J-Link)" % board)
+    sh([CFG["dfu"], "-e"], check=False, timeout=30, quiet=True)   # DFU_DETACH -> leave DFU, boot app
+    time.sleep(6)                                # let it leave DFU + re-enumerate its CDC
+    return True
+
+
 def _ensure_cdc(board):
-    """Recover a board that has wedged off USB (no CDC) via a J-Link SWD reset, so a later scenario
+    """Recover a board that has wedged off USB (no CDC) via a DFU leave (if it's in its bootloader)
+    then a J-Link SWD reset, so a later scenario
     doesn't fail every mpremote with "failed to access /dev/ttyACM0". Two ways a board loses its CDC:
     the AE3's machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB
     re-enum flakiness) and sits in DFU with no CDC; and a mimxrt/stm32 board can be left halted or
@@ -857,9 +874,18 @@ def _ensure_cdc(board):
                    timeout=15, check=False, quiet=True)
         if rc == 0:
             return
-        log("recover: %s CDC missing/unresponsive at %s -- free holders + J-Link SWD reset (try %d)"
+        log("recover: %s CDC missing/unresponsive at %s -- free holders, DFU-leave, J-Link SWD reset (try %d)"
             % (board, CFG["acm"], attempt + 1))
         sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
+        # A board sitting in its DFU bootloader has no CDC; leave DFU first -- it boots firmware and
+        # brings the CDC back with NO J-Link, which the Nicla's flaky SWD pads need. Only if that
+        # doesn't restore a responsive CDC do we fall through to the SWD nRST pulse below.
+        if _dfu_leave(board):
+            rc2, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
+                        timeout=15, check=False, quiet=True)
+            if rc2 == 0:
+                log("recover: %s CDC back after DFU leave (no J-Link)" % board)
+                return
         fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
         # Two-stage recover: (1) pulse the physical nRST line (hold low, release) -- a pure pin toggle
         # that needs no core connect, so it reaches a HUNG core a debug reset can't; THEN (2) connect +
