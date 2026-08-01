@@ -99,6 +99,16 @@ BOARDS = {
         # golden flash, the /flash self-heal, and the no_slot brick all go through `openmv-ota
         # flash ...`, so the harness no longer carries a parallel copy of the flash map.
     },
+    "OPENMV4P": {                            # OpenMV H7 Plus (STM32H743, QSPI ROMFS dual-slot)
+        "cov_uart": 3,                       # USART3 on P4/P5 (P4=PB10 TX, P5=PB11 RX)
+        "cov_write": "install.xip",          # stm32 XIP write path (the OTA dual-slot lives in QSPI ROMFS)
+        "network": "wifi",                   # reaches wifi via the ATWINC1500 shield -- see bench_main_py
+        "wifi_driver": "winc",               # network.WINC() + key=/security= connect (not WLAN); pins
+                                             # P0-P3/P6-P8, so the P4/P5 marker UART is conflict-free
+        "flash": "dfu_cli",                  # OpenMV DFU (machine.bootloader() -> 37c5:924a) + `dfu-util -w`,
+                                             # via the SAME `openmv-ota flash factory` CLI as the N6
+        "jlink_device": "STM32H743VI",       # debug-only name, used ONLY by _ensure_cdc to SWD-reset
+    },
 }
 
 
@@ -574,7 +584,19 @@ class UartCapture:
 # bench server, and confirm the trial once operational. LAN or WiFi per board.
 # ---------------------------------------------------------------------------
 def bench_main_py(board, net, app="confirm"):
-    if net == "wifi":
+    if net == "wifi" and BOARDS[board].get("wifi_driver") == "winc":
+        # The H7 Plus (and classic H7) reach wifi through the ATWINC1500 shield: network.WINC()
+        # instead of WLAN, no active() call, and connect() takes key=/security= keywords. The socket
+        # layer is identical, so run() and the whole OTA path are unchanged -- only the bring-up differs.
+        bring_up = (
+            'wl = network.WINC()\n'
+            '    if not wl.isconnected():\n'
+            '        wl.connect(%r, key=%r, security=wl.WPA_PSK)\n'
+            '        while not wl.isconnected():\n'
+            '            await asyncio.sleep_ms(200)\n'
+            '    print("BENCH up", wl.ifconfig()[0])\n' % (CFG["wifi_ssid"], CFG["wifi_pass"])
+        )
+    elif net == "wifi":
         bring_up = (
             'wl = network.WLAN(network.STA_IF)\n'
             '    wl.active(True)\n'
