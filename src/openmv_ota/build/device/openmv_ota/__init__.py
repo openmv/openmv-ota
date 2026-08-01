@@ -504,23 +504,27 @@ def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
         pass  # hil-residual: bare pass; clock left unresolved
 
 
-def _read_capped(sock, limit):  # pragma: no cover  (device network)
-    """Read a response body to EOF, capped at ``limit``. Never ``read(-1)``: a
-    captive portal or broken proxy must not get to size our allocation. Bounded
-    chunks joined once (no quadratic ``+=``). Blocking read (settimeout-bounded),
-    so it needs no poll -- see _checkin (WINC1500 has no select/poll)."""
+def _read_capped(sock, limit, clen=None):  # pragma: no cover  (device network)
+    """Read a response body, capped at ``limit``. When the Content-Length ``clen`` is known, read
+    EXACTLY that many bytes and stop -- never wait for EOF: the WINC1500 reports a peer close only
+    after the socket timeout elapses, so an EOF-terminated read stalls a whole _CHECKIN_TIMEOUT every
+    poll. Without a length (chunked / connection-close), fall back to read-to-EOF. Never ``read(-1)``:
+    a captive portal or broken proxy must not size our allocation. Bounded chunks joined once."""
+    if clen is not None and clen > limit:
+        raise OSError("check-in response over %d bytes" % limit)  # hil-residual: bare raise (declared over cap)
     chunks, total = [], 0
-    while True:
-        d = sock.read(_CHUNK)
-        if not d:
-            body = b"".join(chunks)                    # bounded: sum of capped chunks <= limit
-            log.debug("checkin: body read")           # HIL path witness (response body to EOF)
-            return body  # hil-residual: bare return of the joined body
+    while clen is None or total < clen:
+        d = sock.read(_CHUNK if clen is None else min(_CHUNK, clen - total))
+        if not d:                                     # EOF (peer closed) -- a short body, or the no-length case
+            break
         total += len(d)
         if total > limit:
             raise OSError("check-in response over %d bytes" % limit)  # hil-residual: bare raise (over-cap guard, inject-only)
         chunks.append(d)
         log.debug("checkin: body chunk")              # HIL path witness (a body chunk accumulated)
+    body = b"".join(chunks)                            # bounded: sum of capped chunks <= limit
+    log.debug("checkin: body read")                   # HIL path witness (response body complete)
+    return body  # hil-residual: bare return of the joined body
 
 
 def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
@@ -559,11 +563,17 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         if b" 200 " not in status_line and not status_line.rstrip().endswith(b" 200"):
             raise OSError("check-in HTTP %s" % status_line)  # hil-residual: bare raise (non-200; happy path is 200)
         log.debug("checkin: server ok")              # milestone + HIL path witness
-        while True:                                  # skip headers
+        clen = None
+        while True:                                  # skip headers, noting Content-Length
             line = ss.readline()
             if line in (b"\r\n", b"\n", b""):
                 break
-        resp = json.loads(_read_capped(ss, _RESP_MAX))
+            if line[:15].lower() == b"content-length:":   # read exactly this -> no EOF-wait on the WINC
+                try:
+                    clen = int(line.split(b":", 1)[1].strip())
+                except Exception:  # hil-residual: malformed length -> fall back to read-to-EOF
+                    clen = None  # hil-residual: bare assign
+        resp = json.loads(_read_capped(ss, _RESP_MAX, clen))
         log.debug("checkin: parsed")                  # HIL path witness (headers skipped + JSON)
         return resp  # hil-residual: bare return of the parsed response
     finally:
