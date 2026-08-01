@@ -169,12 +169,17 @@ def sync(host=None):  # pragma: no cover  (device: network + RTC)
     q[0] = 0x1b                                        # LI=0, VN=3, Mode=3 (client)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        s.bind(("0.0.0.0", 0))                        # bind a local port BEFORE sendto so the reply
+        #                                               routes back to this socket. lwIP binds implicitly
+        #                                               on sendto, but the WINC1500 doesn't -- without it
+        #                                               its recvfrom never sees the reply. A portable
+        #                                               UDP-client pattern, correct on every stack.
         s.settimeout(5)
         s.sendto(q, addr)
         log.debug("clock: ntp sent")                  # HIL diagnostic: UDP send returned
-        msg = s.recvfrom(48)[0]                       # recvfrom, NOT recv: the WINC1500's UDP socket
-        #                                               faults on a bare recv() (see OpenMV's own
-        #                                               09-WiFi/ntp.py); bounded 48-byte NTP packet
+        msg = s.recvfrom(48)[0]                       # recvfrom, NOT recv: recv needs a connected peer
+        #                                               (connect() is TCP-only on the WINC); recvfrom
+        #                                               fills the sender addr. Bounded 48-byte NTP reply
     except Exception as e:  # hil-residual: send/recv-failure wrapper (WINC UDP)
         log.debug("clock: ntp udp FAIL %r" % (e,))    # HIL diagnostic: send or recv is what failed
         return False  # hil-residual: bare return (UDP blocked -> retry)

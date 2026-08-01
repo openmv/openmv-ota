@@ -117,8 +117,17 @@ def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardwa
         else:
             try:                                      # auto-select: stm32/N6 has the deep-sleep-safe
                 _wdt = machine.WDT("WWDG", TIMEOUT_MS)  # windowed WDT (micropython#19350)...
-            except (ValueError, TypeError):           # ...ports without a "WWDG" id (mimxrt/alif) ->
-                _wdt = machine.WDT(0, TIMEOUT_MS)       # the default deep-sleep-safe WDT
+            except (ValueError, TypeError):           # ...ports without a "WWDG" id fall back to WDT(0).
+                import os
+                # On mimxrt/alif WDT(0) IS the deep-sleep-safe WDOG / alif WDT -- a fine fallback. But on
+                # stm32 WDT(0) is the IWDG, which keeps counting through resets AND deep sleep and can be
+                # cleared ONLY by a power cycle. Arming it silently (because a build lacked WWDG) reset-
+                # loops the board with no recovery short of unplugging it -- it survives romfs erase AND a
+                # firmware reflash. So on stm32 REFUSE the fallback and fail loudly, never the IWDG.
+                if "STM32" in os.uname().machine:
+                    raise ValueError("openmv_wdt: WWDG unavailable on stm32; refusing the IWDG fallback "
+                                     "(IWDG is persistent -> reset-loop). Fix the WWDG build/config.")
+                _wdt = machine.WDT(0, TIMEOUT_MS)       # mimxrt/alif: the default deep-sleep-safe WDT
         _feed = _wdt.feed
 
 
