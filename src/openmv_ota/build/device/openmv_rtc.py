@@ -172,7 +172,9 @@ def sync(host=None):  # pragma: no cover  (device: network + RTC)
         s.settimeout(5)
         s.sendto(q, addr)
         log.debug("clock: ntp sent")                  # HIL diagnostic: UDP send returned
-        msg = s.recv(48)                              # bounded: exactly one 48-byte NTP packet
+        msg = s.recvfrom(48)[0]                       # recvfrom, NOT recv: the WINC1500's UDP socket
+        #                                               faults on a bare recv() (see OpenMV's own
+        #                                               09-WiFi/ntp.py); bounded 48-byte NTP packet
     except Exception as e:  # hil-residual: send/recv-failure wrapper (WINC UDP)
         log.debug("clock: ntp udp FAIL %r" % (e,))    # HIL diagnostic: send or recv is what failed
         return False  # hil-residual: bare return (UDP blocked -> retry)
