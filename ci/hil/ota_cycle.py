@@ -842,8 +842,11 @@ def _dfu_leave(board):
     rc, out = sh([CFG["dfu"], "-l"], check=False, timeout=20, quiet=True)
     if "Found DFU" not in (out or ""):
         return False                             # not in DFU -> nothing to leave; try the J-Link
-    log("recover: %s is in DFU -- dfu-util detach/leave (boots firmware, no J-Link)" % board)
-    sh([CFG["dfu"], "-e"], check=False, timeout=30, quiet=True)   # DFU_DETACH -> leave DFU, boot app
+    log("recover: %s is in DFU -- dfu-util leave + reset (boots firmware, no J-Link)" % board)
+    # dfu-util -e (bare DFU detach) is a NO-OP on the Nicla's Arduino MCUboot bootloader. What boots
+    # it back to firmware is the leave the OpenMV IDE uses -- a manifest-leave (-s :leave) plus a USB
+    # reset (-R). Best-effort: check=False so a dfu-util that dislikes the combo still falls through.
+    sh([CFG["dfu"], "-a", "0", "-s", ":leave", "-R"], check=False, timeout=30, quiet=True)
     time.sleep(6)                                # let it leave DFU + re-enumerate its CDC
     return True
 
