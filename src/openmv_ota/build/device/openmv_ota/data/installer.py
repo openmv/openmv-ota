@@ -150,15 +150,22 @@ _ETIMEDOUT = 110       # errno for a dead-link recv timeout. A NUMERIC errno is 
 #                        a descriptive string) -- see _is_transport_error + the run() manifest-fetch except.
 
 
+class _TransportError(OSError):
+    """A failure while ESTABLISHING or READING the connection -- as opposed to a verdict on the
+    update itself. Raised (wrapping the cause) around the pre-erase manifest fetch, so run() can
+    tell the two apart WITHOUT type/errno sniffing: WHERE it failed is the honest discriminator,
+    not what the failing layer happened to raise. Both a socket error and a TLS error surface as
+    ``OSError`` with a numeric code, and both a corrupt manifest and a cert-validity failure
+    surface as ``ValueError`` -- so no amount of inspecting the exception can separate them."""
+
+
 def _is_transport_error(e):
-    """True if ``e`` is a TRANSPORT failure -- the link dropped/reset/timed out -- rather than a
-    REJECTED update. Transport errors come off the socket layer (or the dead-link timeout in _Reader)
-    as an ``OSError`` carrying a NUMERIC errno (ECONNABORTED/ECONNRESET/ETIMEDOUT: ``e.args[0]`` is an
-    int). A rejection -- bad signature/key, failed vetting, a corrupt/unparseable manifest -- is raised
-    with a DESCRIPTIVE string (``OSError("...")``) or as a ``ValueError``. run() uses this to retry a
-    transient fetch (deferred) instead of logging it as install.reject, so a flaky link never reads as
-    "this release was refused". Errno-based, so it needs no per-stack special-casing -- portable."""
-    return isinstance(e, OSError) and bool(e.args) and isinstance(e.args[0], int)
+    """True if ``e`` came from the connection phase (DNS, TCP, the TLS handshake including cert
+    validation, or reading the body) rather than from vetting the fetched manifest. run() uses this
+    to DEFER+retry instead of logging install.reject, so neither a flaky link nor a not-yet-synced
+    clock reads as "this release was refused" -- while a bad signature/key, failed anti-rollback
+    vetting, or a corrupt manifest still does."""
+    return isinstance(e, _TransportError)
 
 
 # --- pure: URL + HTTP (host-testable) ---------------------------------------
@@ -863,11 +870,20 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop):
     import uctypes
     import vfs
 
-    sock, body = _open(manifest_url, ca_pem, socket, ssl, feed)
+    # CONNECTION PHASE -- open + read. Everything here (DNS, TCP, the TLS handshake and its cert
+    # validation, each body read) is TRANSPORT: it says nothing about the release, so run() defers
+    # and retries rather than reporting a rejection. Cert failures belong here too, and that matters:
+    # a cold-booted board whose clock has not yet NTP-synced fails the handshake with "certificate
+    # validity starts in the future" -- a state it RECOVERS from a poll later, never a bad update.
+    # Wrapping by PHASE (not by exception type) is what makes that distinction reliable.
     try:
-        raw = _read_all(body, _MANIFEST_MAX)          # progress-fed reader (poll+feed)
-    finally:
-        sock.close()
+        sock, body = _open(manifest_url, ca_pem, socket, ssl, feed)
+        try:
+            raw = _read_all(body, _MANIFEST_MAX)      # progress-fed reader (poll+feed)
+        finally:
+            sock.close()
+    except Exception as e:  # hil-residual: connection-phase failure wrapper (needs a dropped link / bad cert to reach; the happy path fetches cleanly)
+        raise _TransportError("manifest fetch failed: %r" % (e,))  # hil-residual: bare raise (cause kept in the message; run() logs it as deferred + retries)
     # The manifest is now in RAM; everything below -- CRC parse, the ECDSA signature verify,
     # and the flash-vetting -- is pure CPU: single unsplittable C/Python calls with no seam to
     # feed through, and the P-256 verify alone can outrun the ~100 ms watchdog window (this is

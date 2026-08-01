@@ -243,21 +243,26 @@ def test_reader_dead_link_trips_after_timeout():
         r.read_exact(1)
 
 
-def test_is_transport_error_splits_transport_from_rejection():
-    # run()'s pre-erase manifest-fetch except uses this to tell a TRANSIENT transport failure (retry,
-    # marker-less) from a REJECTED update (install.reject). Transport = OSError with a NUMERIC errno
-    # off the socket layer / the dead-link timeout; rejection = OSError raised with a descriptive
-    # STRING, or a ValueError. Getting this wrong would either mask a real reject as a retry or trip
-    # the happy-path reject gate on a flaky link, so pin both sides.
-    ite = inst("_is_transport_error")
-    assert ite(OSError(103))                        # ECONNABORTED -- the WINC's flaky first post-checkin TLS
-    assert ite(OSError(104, "reset"))               # ECONNRESET (errno + message)
-    assert ite(OSError(inst("_ETIMEDOUT"), "recv timed out"))  # the dead-link recv timeout above
-    assert not ite(OSError("manifest signature does not verify"))   # bad sig -> reject
-    assert not ite(OSError("manifest signed by an untrusted key"))  # untrusted key -> reject
-    assert not ite(OSError("manifest rejected (rollback)"))         # vetting -> reject
-    assert not ite(ValueError("bad manifest magic"))                # corrupt manifest -> reject
-    assert not ite(OSError())                       # no args -> not a transport errno -> reject side
+def test_is_transport_error_keys_on_phase_not_exception_type():
+    # run()'s pre-erase except uses this to tell a CONNECTION failure (defer + retry, marker-less)
+    # from a REJECTED update (install.reject). The classifier keys on the PHASE -- _fetch_manifest
+    # wraps its open+read in _TransportError -- because the exception type cannot separate them:
+    # a socket drop and a TLS/cert failure are both OSError-with-a-number, and a corrupt manifest
+    # and a clock-skew cert failure are both ValueError. Pin that so nobody "simplifies" it back
+    # into type/errno sniffing.
+    ite, terr = inst("_is_transport_error"), inst("_TransportError")
+    assert ite(terr("manifest fetch failed: %r" % OSError(103)))     # ECONNABORTED (the WINC's flaky TLS)
+    assert ite(terr("manifest fetch failed: %r" % OSError(-15202, "MBEDTLS_ERR_PK_INVALID_PUBKEY")))
+    assert ite(terr("manifest fetch failed: %r"                      # cold clock, pre-NTP: recovers
+                    % ValueError("certificate validity starts in the future")))  # a poll later
+    # rejections -- raised AFTER the fetch, so never wrapped -- must stay on the reject side even
+    # though two of them are OSError, exactly like the transport cases above
+    assert not ite(OSError("manifest signature does not verify"))    # bad sig
+    assert not ite(OSError("manifest signed by an untrusted key"))   # untrusted key
+    assert not ite(OSError("manifest rejected (rollback)"))          # anti-rollback vetting
+    assert not ite(ValueError("bad manifest magic"))                 # corrupt manifest
+    assert not ite(OSError(103))                    # a RAW socket errno is not itself the wrapper
+    assert issubclass(terr, OSError)                # so an app catching OSError still catches it
 
 
 # --- _read_response ---------------------------------------------------------
