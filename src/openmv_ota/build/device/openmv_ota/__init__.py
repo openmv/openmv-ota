@@ -516,7 +516,7 @@ def _read_capped(sock, limit, clen=None):  # pragma: no cover  (device network)
     while clen is None or total < clen:
         d = sock.read(_CHUNK if clen is None else min(_CHUNK, clen - total))
         if not d:                                     # EOF (peer closed) -- a short body, or the no-length case
-            break
+            break  # hil-residual: EOF before the declared length -- a TRUNCATED body. Every server we talk to sends Content-Length (witnessed by run.checkin_clen), so the loop normally exits on total==clen and this fires only when the peer closes early; reaching it needs a fault-injected short response
         total += len(d)
         if total > limit:
             raise OSError("check-in response over %d bytes" % limit)  # hil-residual: bare raise (over-cap guard, inject-only)
@@ -571,6 +571,8 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
             if line[:15].lower() == b"content-length:":   # read exactly this -> no EOF-wait on the WINC
                 try:
                     clen = int(line.split(b":", 1)[1].strip())
+                    log.debug("checkin: content length")  # HIL path witness (the server declared a length,
+                    #                                       so the body read is exact -- every board, every poll)
                 except Exception:  # hil-residual: malformed length -> fall back to read-to-EOF
                     clen = None  # hil-residual: bare assign
         resp = json.loads(_read_capped(ss, _RESP_MAX, clen))

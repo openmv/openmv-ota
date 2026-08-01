@@ -145,6 +145,20 @@ _RECV_POLL_MS = 20
 # poll reports readable -- a TLS socket can be TCP-readable with no whole record decrypted yet. Both
 # the positive (11) and MicroPython's negated (-11) form; treated as "no data yet", keep polling.
 _EAGAIN = (11, -11)
+_ETIMEDOUT = 110       # errno for a dead-link recv timeout. A NUMERIC errno is what marks a pre-erase
+#                        failure as TRANSPORT (transient -> retry) vs an update REJECTION (raised with
+#                        a descriptive string) -- see _is_transport_error + the run() manifest-fetch except.
+
+
+def _is_transport_error(e):
+    """True if ``e`` is a TRANSPORT failure -- the link dropped/reset/timed out -- rather than a
+    REJECTED update. Transport errors come off the socket layer (or the dead-link timeout in _Reader)
+    as an ``OSError`` carrying a NUMERIC errno (ECONNABORTED/ECONNRESET/ETIMEDOUT: ``e.args[0]`` is an
+    int). A rejection -- bad signature/key, failed vetting, a corrupt/unparseable manifest -- is raised
+    with a DESCRIPTIVE string (``OSError("...")``) or as a ``ValueError``. run() uses this to retry a
+    transient fetch (deferred) instead of logging it as install.reject, so a flaky link never reads as
+    "this release was refused". Errno-based, so it needs no per-stack special-casing -- portable."""
+    return isinstance(e, OSError) and bool(e.args) and isinstance(e.args[0], int)
 
 
 # --- pure: URL + HTTP (host-testable) ---------------------------------------
@@ -259,7 +273,7 @@ class _Reader:
             sleep_ms(_RECV_POLL_MS)                  # d is None -> no data yet; feed + wait a slice
             waited += _RECV_POLL_MS
             if waited >= _SOCK_TIMEOUT * 1000:
-                raise OSError("recv timed out")       # a dead link -> clean install error -> golden
+                raise OSError(_ETIMEDOUT, "recv timed out")  # dead link: NUMERIC errno -> transport (retry)
 
     def readline(self, limit=8192):
         while b"\n" not in self._buf:
@@ -1087,8 +1101,17 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     try:
         image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed)
     except Exception as e:
-        log.warning("install: rejected before erase (%r)" % e)   # /rom untouched (%r shows the class)
-        raise  # hil-residual: bare re-raise to the app (pre-erase reject witnessed by install.reject)
+        # Two very different failures land here and only ONE is a rejected update. A REJECTION -- bad
+        # signature/key, failed vetting, or a corrupt/unparseable manifest -- must read as install.reject
+        # (the tamper scenarios witness it). A TRANSPORT failure -- the link dropped/reset/timed out mid-
+        # fetch -- is transient: it retries next poll and must NOT trip the reject gate after a clean
+        # retry succeeds (a flaky link: WiFi power-save, the WINC's first post-checkin TLS, cellular).
+        # _is_transport_error splits them on the errno (unit-tested); /rom is untouched either way.
+        if _is_transport_error(e):
+            log.warning("install: deferred, transport error (%r)" % e)  # hil-residual: transient transport defer -- a flaky link is NON-DETERMINISTIC (no marker can witness it); the classifier is unit-tested and the reject branch below IS witnessed (install.reject). Retries next poll
+        else:
+            log.warning("install: rejected before erase (%r)" % e)       # /rom untouched (%r shows the class)
+        raise  # hil-residual: bare re-raise to the app (reject -> install.reject; transport -> retry next poll, marker-less)
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
     # failure reboots into the golden image instead of propagating. ERASE FIRST,

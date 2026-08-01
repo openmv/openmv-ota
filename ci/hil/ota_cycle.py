@@ -218,6 +218,10 @@ COVERAGE = {
     "install: installed + armed": "install.armed",
     "install: FAILED after": "install.fallback",
     "install: rejected before erase": "install.reject",
+    # NB: a TRANSIENT pre-erase transport failure logs "install: deferred, transport error" instead of
+    # the line above, so it does NOT emit install.reject (the happy-path scenarios forbid that). It is
+    # deliberately NOT a coverage marker: it fires only when a link flakes (non-deterministic), so it
+    # can't be a scenario's expected path -- it's a field diagnostic, not a witnessed path.
     "install: reject bad signature": "install.reject_sig",   # sig verify failed (the trust boundary)
     "install: reject untrusted key": "install.reject_key",   # key_id not in the trusted allowlist
     "install: reject vetting": "install.reject_vet",         # anti-rollback/board/platform rejected
@@ -271,6 +275,8 @@ COVERAGE = {
     "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
     "checkin: body read": "run.body_read",               # response body read to EOF (capped)
     "checkin: body chunk": "run.body_chunk",             # a bounded body chunk accumulated (read loop body)
+    "checkin: content length": "run.checkin_clen",       # the server declared Content-Length -> the body
+    #                                                      read is EXACT (no slow-EOF stall on the WINC)
     "checkin: parsed": "run.checkin_parsed",             # headers skipped + JSON parsed
     "checkin: closed": "run.checkin_closed",             # the check-in connection was closed (finally)
     "asset: read": "run.asset_read",                     # a shipped asset (installer.py/ca.pem) read
@@ -317,7 +323,8 @@ SCENARIOS = {
         "desc": "happy path: delta install -> trial -> confirm -> promote",
         "publish": "delta", "app": "confirm", "end": "promoted",
         "expect": ["boot.mount.front", "boot.ready", "log.configured", "run.clock", "run.checkin_http",
-                   "run.body_read", "run.body_chunk", "run.checkin_parsed", "run.checkin_closed",
+                   "run.body_read", "run.body_chunk", "run.checkin_clen", "run.checkin_parsed",
+                   "run.checkin_closed",
                    "run.checkin", "run.status", "run.boot_result", "run.identity",
                    "run.identity_uid", "run.offer", "run.asset_read", "run.asset_closed",
                    "run.ca_path", "run.ca_bytes", "run.read_at", "run.data_path",

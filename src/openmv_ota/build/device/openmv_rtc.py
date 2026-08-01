@@ -161,7 +161,7 @@ _NTP_FALLBACK = (
 )
 
 
-def _ntp_query(addr, socket, struct):  # pragma: no cover  (device: network)
+def _ntp_query(addr, socket, struct):  # pragma: no cover  (device: network)  # hil-residual-fn: device SNTP round-trip (UDP sendto/recvfrom); run on HW by every sync(), but marker-less -- a per-target leaf in the fallback loop, witnessed only via the caller's "clock: ntp synced"
     """One SNTP round-trip to ``addr`` -- returns a Unix (1970) timestamp, or raises on
     timeout/error. Mirrors the ntptime lib's query (48-byte client packet, transmit timestamp at
     bytes 40:44 as seconds-since-1900, Y2036 wrap fix) with ONE change: ``recvfrom`` instead of
@@ -194,13 +194,11 @@ def sync(host=None):  # pragma: no cover  (device: network + RTC)
     global _source
     import socket
     import struct
-    targets = []
+    targets = [(ip, 123) for ip in _NTP_FALLBACK]   # well-known fallback servers, by IP (no DNS needed)
     try:
-        targets.append(socket.getaddrinfo(host or _NTP_HOST, 123)[0][-1])   # configured host (via DNS)
-    except Exception:  # hil-residual: DNS down (name resolution failed) -> use the fixed IP fallbacks
-        pass  # hil-residual: bare pass; the IP fallbacks below need no DNS
-    for ip in _NTP_FALLBACK:
-        targets.append((ip, 123))
+        targets.insert(0, socket.getaddrinfo(host or _NTP_HOST, 123)[0][-1])   # configured host FIRST (DNS)
+    except Exception:  # hil-residual: DNS down (name resolution failed) -> just use the IP fallbacks
+        pass  # hil-residual: bare pass; the IP fallbacks need no DNS
     for addr in targets:
         try:
             unix = _ntp_query(addr, socket, struct)

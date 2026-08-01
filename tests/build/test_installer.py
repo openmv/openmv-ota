@@ -243,6 +243,23 @@ def test_reader_dead_link_trips_after_timeout():
         r.read_exact(1)
 
 
+def test_is_transport_error_splits_transport_from_rejection():
+    # run()'s pre-erase manifest-fetch except uses this to tell a TRANSIENT transport failure (retry,
+    # marker-less) from a REJECTED update (install.reject). Transport = OSError with a NUMERIC errno
+    # off the socket layer / the dead-link timeout; rejection = OSError raised with a descriptive
+    # STRING, or a ValueError. Getting this wrong would either mask a real reject as a retry or trip
+    # the happy-path reject gate on a flaky link, so pin both sides.
+    ite = inst("_is_transport_error")
+    assert ite(OSError(103))                        # ECONNABORTED -- the WINC's flaky first post-checkin TLS
+    assert ite(OSError(104, "reset"))               # ECONNRESET (errno + message)
+    assert ite(OSError(inst("_ETIMEDOUT"), "recv timed out"))  # the dead-link recv timeout above
+    assert not ite(OSError("manifest signature does not verify"))   # bad sig -> reject
+    assert not ite(OSError("manifest signed by an untrusted key"))  # untrusted key -> reject
+    assert not ite(OSError("manifest rejected (rollback)"))         # vetting -> reject
+    assert not ite(ValueError("bad manifest magic"))                # corrupt manifest -> reject
+    assert not ite(OSError())                       # no args -> not a transport errno -> reject side
+
+
 # --- _read_response ---------------------------------------------------------
 
 def test_read_response():
