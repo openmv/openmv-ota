@@ -141,28 +141,54 @@ def set_time(unix_s):
     _bad = False
 
 
+_NTP_HOST = "pool.ntp.org"
+_NTP_DELTA_1900_1970 = 2208988800     # seconds between the NTP (1900) and Unix (1970) epochs
+
+
 def sync(host=None):  # pragma: no cover  (device: network + RTC)
     """Set the clock from NTP. Returns True on success, False if the query failed
     (no network yet, DNS down, UDP blocked) -- a failed sync is a normal state to
     retry, never an exception for the caller to handle.
 
-    ``ntptime`` is frozen into every OpenMV board and already handles the epoch
-    difference and the 2036 NTP wrap, so it does the query; this module only
-    decides whether the result is worth keeping."""
+    HAND-ROLLED SNTP (48-byte client query), NOT the ntptime lib: the WINC1500's socket stack
+    behaves differently from lwIP, and ntptime.time() raises over the shield with no way to see
+    WHERE. Doing it inline logs each step -- DNS, send, recv -- so a failure names its cause, and a
+    generous 5 s recv timeout (vs ntptime's 1 s default) tolerates the WINC's slower round-trip.
+    Computes a Unix timestamp directly (transmit ts at bytes 40:44, seconds since 1900)."""
     global _source
+    import socket
+    import struct
+    h = host or _NTP_HOST
     try:
-        import ntptime
-        if host:
-            ntptime.host = host  # hil-residual: bare assign (NTP host override; bench uses the default pool)
-        unix = ntptime.time() + _epoch_offset()
-        if unix < BUILD_TIME:         # an NTP reply older than the build is bogus
-            return False  # hil-residual: bare return (bogus pre-build NTP reply, inject-only)
-        set_time(unix)
-        _source = "ntp"
-        log.debug("clock: ntp synced")            # HIL path witness (NTP query set the RTC)
-        return True  # hil-residual: bare return (NTP sync ok)
-    except Exception:  # hil-residual: NTP-failure wrapper (no network / DNS / UDP blocked)
-        return False  # hil-residual: bare return (failed sync retries next poll)
+        addr = socket.getaddrinfo(h, 123)[0][-1]      # DNS (the WINC resolves via its own stack)
+    except Exception as e:  # hil-residual: DNS-failure wrapper (WINC name resolution)
+        log.debug("clock: ntp dns FAIL %r" % (e,))    # HIL diagnostic: DNS is what failed
+        return False  # hil-residual: bare return (DNS down -> retry next poll)
+    log.debug("clock: ntp dns ok")                    # HIL diagnostic: DNS resolved
+    q = bytearray(48)
+    q[0] = 0x1b                                        # LI=0, VN=3, Mode=3 (client)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.settimeout(5)
+        s.sendto(q, addr)
+        log.debug("clock: ntp sent")                  # HIL diagnostic: UDP send returned
+        msg = s.recv(48)                              # bounded: exactly one 48-byte NTP packet
+    except Exception as e:  # hil-residual: send/recv-failure wrapper (WINC UDP)
+        log.debug("clock: ntp udp FAIL %r" % (e,))    # HIL diagnostic: send or recv is what failed
+        return False  # hil-residual: bare return (UDP blocked -> retry)
+    finally:
+        s.close()
+    if len(msg) < 44:                                 # a runt reply -> can't read the timestamp
+        log.debug("clock: ntp short %d" % len(msg))   # hil-residual: diagnostic for a truncated reply
+        return False  # hil-residual: bare return (short packet -> retry)
+    unix = struct.unpack("!I", msg[40:44])[0] - _NTP_DELTA_1900_1970
+    if unix < BUILD_TIME:                             # a reply older than the build is bogus
+        log.debug("clock: ntp pre-build %d" % unix)   # hil-residual: diagnostic (unset/bogus server clock)
+        return False  # hil-residual: bare return (bogus pre-build NTP reply, inject-only)
+    set_time(unix)
+    _source = "ntp"
+    log.debug("clock: ntp synced")                    # HIL path witness (NTP query set the RTC)
+    return True  # hil-residual: bare return (NTP sync ok)
 
 
 def resolve(host=None):  # pragma: no cover  (device: network + RTC)

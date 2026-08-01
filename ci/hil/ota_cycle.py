@@ -1110,19 +1110,6 @@ def run_cycle_no_slot(cap, expect, timeout_s):
             "reached_end": expect <= set(cap.points())}
 
 
-def _rtc_datetime():
-    """The runner's current UTC as a machine.RTC().datetime() tuple: (year, month, day,
-    weekday[1-7], hour, minute, second, subseconds). Set on the device right before the autonomous
-    boot so the update server's TLS cert (which the installer checks CERT_REQUIRED) validates without
-    depending on on-device NTP. The H7 Plus reaches wifi via the ATWINC1500 shield, which has no
-    working ntptime path, so its RTC stays at the epoch and every freshly-signed manifest reads
-    'certificate validity starts in the future'. A real WINC deployment would battery-back the RTC or
-    sync time out-of-band; the bench hands the device a known-good clock, as provisioning would.
-    Survives machine.reset() (the RTC is in the backup domain, not cleared by a warm reset)."""
-    t = time.gmtime()                            # runner UTC (the harness host clock)
-    return (t[0], t[1], t[2], t[6] + 1, t[3], t[4], t[5], 0)
-
-
 def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
     """Hard-reset the device and watch the server record + UART until the scenario's end
     state is reached (early exit) or the timeout elapses. Returns the observed state; the
@@ -1135,11 +1122,7 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
                     SETTLED back on golden with every expected marker seen."""
     log("cycle: hard reset -> autonomous run; end=%s; watching UART + server" % end)
     try:                                     # machine.reset() drops the USB-CDC -> mpremote
-        # Set the RTC from the runner's UTC in the SAME exec, right before the reset, so the device
-        # boots with a trustworthy clock and validates the server's TLS cert. On-device NTP can't be
-        # relied on (the H7 Plus's WINC shield has no ntptime path); the RTC survives the warm reset.
-        device_exec("import machine; machine.RTC().datetime(%r); machine.reset()" % (_rtc_datetime(),),
-                    timeout=20, check=False)
+        device_exec("import machine; machine.reset()", timeout=20, check=False)
     except Exception:
         pass                                 # ...an I/O error here just means the reset landed
     deadline = time.time() + timeout_s
