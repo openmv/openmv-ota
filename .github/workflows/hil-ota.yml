@@ -35,7 +35,7 @@ on:
         description: which board to run (or all)
         default: all
         type: choice
-        options: [all, OPENMV_N6, OPENMV_AE3, OPENMV_RT1060]
+        options: [all, OPENMV_N6, OPENMV_AE3, OPENMV_RT1060, ARDUINO_NICLA_VISION]
       scenario:
         description: which OTA path to exercise ('all' = each board's full regression)
         default: all
@@ -121,6 +121,9 @@ jobs:
               {"board": "OPENMV_AE3", "network": "wifi", "label": "board-openmv-ae3"},
               {"board": "OPENMV_RT1060", "network": "lan", "label": "board-openmv-rt1062"},
               {"board": "OPENMV_RT1060", "network": "wifi", "label": "board-openmv-rt1062"},
+              # Nicla Vision: wifi-only (onboard CYW4343); golden flash via the CLI arduino/MCUboot
+              # DFU path (1200-baud touch), no new HIL flash helper needed.
+              {"board": "ARDUINO_NICLA_VISION", "network": "wifi", "label": "board-arduino-nicla"},
           ]
           board = os.environ.get("BOARD") or "all"
           # PR gate runs EVERY board including the AE3 (wifi): its USB/DFU flashing and its watchdog are

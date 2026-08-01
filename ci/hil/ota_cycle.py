@@ -99,6 +99,16 @@ BOARDS = {
         # golden flash, the /flash self-heal, and the no_slot brick all go through `openmv-ota
         # flash ...`, so the harness no longer carries a parallel copy of the flash map.
     },
+    "ARDUINO_NICLA_VISION": {                # Arduino Nicla Vision (STM32H747, QSPI ROMFS dual-slot)
+        "cov_uart": 4,                       # UART4 on the SDA/SCL header (J2-1=PB9 TX, J2-2=PB8 RX),
+                                             # NOT the P4/P5 pads (those are SWCLK/NRST on the Nicla)
+        "cov_write": "install.xip",          # stm32 XIP write path (the OTA dual-slot lives in QSPI ROMFS)
+        "network": "wifi",                   # onboard CYW4343 -- standard network.WLAN (no shield)
+        "flash": "arduino_cli",              # CLI's arduino backend: an automatic 1200-baud touch enters
+                                             # MCUboot DFU, then address-based `dfu-util -w`; stages the
+                                             # factory image as <board>-romfs.img (see _flash_arduino_cli)
+        "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 core runs the firmware), _ensure_cdc only
+    },
 }
 
 
@@ -799,6 +809,26 @@ def _flash_dfu_cli(board, bad_romfs=False):
     sh([ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board, "--sdk-home", CFG["sdk"],
         "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")], timeout=1500)
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
+    _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
+
+
+def _flash_arduino_cli(board, bad_romfs=False):
+    """Golden flash for the Arduino boards (Nicla Vision, Portenta, Giga) via the openmv-ota CLI's
+    `flash factory`. The arduino backend enters MCUboot DFU with an automatic 1200-baud touch, then
+    writes firmware + romfs (+ the CYW4343 wifi blobs) with address-based `dfu-util -w`. Unlike the
+    DFU boards, the CLI's arduino factory resolves the romfs partition as <board>-romfs.img, so stage
+    the dual-slot factory image under that name first (build_golden's `build factory-romfs` emits
+    <board>-factory-romfs.img; the wifi blobs are already dropped into build/ by `build firmware`).
+    Same rename the mimxrt path does; J-Link stays ONLY for _ensure_cdc recovery, never flashing."""
+    if bad_romfs:
+        raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
+    build = CFG["project"] + "/build"
+    sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
+    _ensure_cdc(board)                       # recover a wedged board so the CLI can enter DFU cleanly
+    log("flash factory -> %s (openmv-ota, arduino MCUboot DFU -w)" % board)
+    sh([ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board, "--sdk-home", CFG["sdk"],
+        "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")], timeout=1500)
+    time.sleep(15)                           # let it boot + re-enumerate after leave-DFU
     _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
 
 
