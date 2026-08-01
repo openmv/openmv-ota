@@ -219,6 +219,13 @@ jobs:
           python3 ci/hil/hil_coverage.py --traces traces \
             --md hil-coverage.md --lcov hil-coverage.info
           cat hil-coverage.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: OTA efficiency metrics -> run summary
+        run: |
+          # The REAL cost of an update, measured on hardware: download bytes (manifest/full/delta),
+          # the delta-vs-full saving (the headline), and install time. A tracked selling-point number.
+          python3 ci/hil/ota_metrics.py --traces traces --md ota-metrics.md --json ota-metrics.json
+          cat ota-metrics.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload HIL coverage to Codecov (flag=hil, informational + carryforward)
         uses: codecov/codecov-action@v5
         with:
@@ -226,6 +233,7 @@ jobs:
           files: hil-coverage.info
           flags: hil
           disable_search: true
+
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -233,6 +241,8 @@ jobs:
           path: |
             hil-coverage.md
             hil-coverage.info
+            ota-metrics.md
+            ota-metrics.json
 
   # THE REQUIRED CHECK. Always runs (hosted, seconds), so it's a status that exists on every PR --
   # mark THIS one required in branch protection. It passes a non-device PR (nothing to test) and,

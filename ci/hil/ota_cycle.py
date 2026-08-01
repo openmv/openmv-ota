@@ -106,6 +106,32 @@ def ota(name):
     return CFG["venv"] + "/bin/" + name
 
 
+def _human(n):
+    if n is None:
+        return "-"
+    if n < 1024:
+        return "%d B" % n
+    if n < 1024 * 1024:
+        return "%.1f KiB" % (n / 1024)
+    return "%.2f MiB" % (n / (1024 * 1024))
+
+
+def artifact_sizes(board):
+    """Stat the just-published OTA artifacts -> the bytes ACTUALLY sent over the wire. Feeds the
+    per-run OTA-efficiency report: the delta-vs-full saving is the delta OTA's headline win, so
+    posting it on every real-hardware run makes bandwidth efficiency a TRACKED number, not a claim."""
+    b = CFG["project"] + "/build"
+    out = {}
+    for key, fn in (("manifest", "%s-manifest.bin" % board),      # signed metadata (per install)
+                    ("full_img_gz", "%s-ota.img.gz" % board),     # full-image download
+                    ("delta_gz", "%s-ota.delta.gz" % board),      # delta download (the efficient path)
+                    ("payload", "%s-ota.img" % board)):           # uncompressed image (-> flash)
+        p = os.path.join(b, fn)
+        if os.path.exists(p):
+            out[key] = os.path.getsize(p)
+    return out
+
+
 def sh(cmd, timeout=180, check=True, quiet=False):
     """Run a command, returning (rc, stdout+stderr). Never raises on non-zero OR timeout unless
     check -- a timeout degrades to (124, partial-output) so a check=False caller (e.g. a liveness
@@ -919,6 +945,11 @@ def publish_update(board, version, variant="delta"):
         # rejects (delta uploaded, manifest declares none). Drop the stale delta first.
         sh("rm -f %s/build/%s-ota.delta.gz" % (CFG["project"], board), check=False)
     subprocess.run(build, env=penv, check=True, timeout=900)
+    _s = artifact_sizes(board)   # log the real download sizes -> ota_metrics.py folds them per run
+    log("OTA sizes: manifest=%s  full=%s  delta=%s%s"
+        % (_human(_s.get("manifest")), _human(_s.get("full_img_gz")), _human(_s.get("delta_gz")),
+           ("  (delta=%.1f%% of full)" % (100.0 * _s["delta_gz"] / _s["full_img_gz"])
+            if _s.get("delta_gz") and _s.get("full_img_gz") else "")))
     subprocess.run([ota("openmv-ota"), "client", "publish", CFG["project"], "-b", board,
                     "--server", CFG["server"], "--token", CFG["token"], "--allow-republish",
                     "--rollout", "__default__:100"], env=penv, check=True, timeout=180)
@@ -1191,9 +1222,13 @@ def main():
                 phase("dirty_coproc", dirty_coproc_partition)
             if spec["publish"] != "none" and not args.skip_publish:
                 phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
+                trace["metrics"] = artifact_sizes(args.board)   # download sizes -> ota_metrics report
             cap = UartCapture(CFG["uart"])
             cap.start(time.time())
-            result = run_cycle(devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout)
+            # "install" phase = the whole autonomous OTA (check-in -> download -> write -> trial ->
+            # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.
+            result = phase("install", lambda: run_cycle(
+                devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout))
         time.sleep(2)                            # let the last UART lines land
         marks = set(cap.points())
         missing = sorted(expect - marks)
