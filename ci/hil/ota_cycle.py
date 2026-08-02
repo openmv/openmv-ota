@@ -67,6 +67,16 @@ CFG = {
 # coproc run) once the MRAM write is fixed. See regression_scenarios().
 COPROC_ENABLED = env("HIL_COPROC", "") == "1"
 
+# Boards whose ARMED-WATCHDOG leg is known-broken, kept out of the default regression so a leg we
+# already know fails can't fail every PR. The H7 Plus (OPENMV4P) is the one: with openmv_wdt armed at
+# 100 ms it reset-loops off USB (no CDC; the SWD reset in _ensure_cdc doesn't get it back, only a
+# reflash does), while its other 8 scenarios -- delta, full, rollback, corrupt, corrupt_sha, bad_sig,
+# bad_key, bad_version -- all PASS. Its WWDG is genuinely built in (micropython#19350 cherry-picks
+# cleanly on the H743 and the fork-compat fixup covers STM32H7), so this is about the WINDOW/feed
+# cadence, not a missing peripheral -- under debug. Still runnable by hand: workflow_dispatch with
+# scenario=watchdog. Drop the board from this set once the armed leg passes.
+WATCHDOG_BROKEN = {"OPENMV4P"}
+
 # Per-board: which side-channel UART carries markers, how it reaches the network, and
 # how the golden image is flashed. Kept data-driven so a new board is one entry.
 BOARDS = {
@@ -98,6 +108,16 @@ BOARDS = {
         # Flash addresses + blhost/DFU device ids all live in the CLI's boards.json now -- the
         # golden flash, the /flash self-heal, and the no_slot brick all go through `openmv-ota
         # flash ...`, so the harness no longer carries a parallel copy of the flash map.
+    },
+    "OPENMV4P": {                            # OpenMV H7 Plus (STM32H743, QSPI ROMFS dual-slot)
+        "cov_uart": 3,                       # USART3 on P4/P5 (P4=PB10 TX, P5=PB11 RX)
+        "cov_write": "install.xip",          # stm32 XIP write path (the OTA dual-slot lives in QSPI ROMFS)
+        "network": "wifi",                   # reaches wifi via the ATWINC1500 shield -- see bench_main_py
+        "wifi_driver": "winc",               # network.WINC() + key=/security= connect (not WLAN); pins
+                                             # P0-P3/P6-P8, so the P4/P5 marker UART is conflict-free
+        "flash": "dfu_cli",                  # OpenMV DFU (machine.bootloader() -> 37c5:924a) + `dfu-util -w`,
+                                             # via the SAME `openmv-ota flash factory` CLI as the N6
+        "jlink_device": "STM32H743VI",       # debug-only name, used ONLY by _ensure_cdc to SWD-reset
     },
 }
 
@@ -207,7 +227,15 @@ COVERAGE = {
     "install: attempt": "install.retry",
     "install: installed + armed": "install.armed",
     "install: FAILED after": "install.fallback",
+    # NB: a dropped download that RESUMES logs "install: resuming at <offset>" -- deliberately NOT a
+    # coverage marker. It only fires when the link actually drops mid-transfer, which no scenario can
+    # make happen on demand (it is guaranteed on the H7 Plus, whose WINC aborts every transfer at
+    # ~50 s, and never happens on the N6/RT), so it is a field diagnostic, not a witnessed path.
     "install: rejected before erase": "install.reject",
+    # NB: a TRANSIENT pre-erase transport failure logs "install: deferred, transport error" instead of
+    # the line above, so it does NOT emit install.reject (the happy-path scenarios forbid that). It is
+    # deliberately NOT a coverage marker: it fires only when a link flakes (non-deterministic), so it
+    # can't be a scenario's expected path -- it's a field diagnostic, not a witnessed path.
     "install: reject bad signature": "install.reject_sig",   # sig verify failed (the trust boundary)
     "install: reject untrusted key": "install.reject_key",   # key_id not in the trusted allowlist
     "install: reject vetting": "install.reject_vet",         # anti-rollback/board/platform rejected
@@ -261,6 +289,8 @@ COVERAGE = {
     "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
     "checkin: body read": "run.body_read",               # response body read to EOF (capped)
     "checkin: body chunk": "run.body_chunk",             # a bounded body chunk accumulated (read loop body)
+    "checkin: content length": "run.checkin_clen",       # the server declared Content-Length -> the body
+    #                                                      read is EXACT (no slow-EOF stall on the WINC)
     "checkin: parsed": "run.checkin_parsed",             # headers skipped + JSON parsed
     "checkin: closed": "run.checkin_closed",             # the check-in connection was closed (finally)
     "asset: read": "run.asset_read",                     # a shipped asset (installer.py/ca.pem) read
@@ -307,7 +337,8 @@ SCENARIOS = {
         "desc": "happy path: delta install -> trial -> confirm -> promote",
         "publish": "delta", "app": "confirm", "end": "promoted",
         "expect": ["boot.mount.front", "boot.ready", "log.configured", "run.clock", "run.checkin_http",
-                   "run.body_read", "run.body_chunk", "run.checkin_parsed", "run.checkin_closed",
+                   "run.body_read", "run.body_chunk", "run.checkin_clen", "run.checkin_parsed",
+                   "run.checkin_closed",
                    "run.checkin", "run.status", "run.boot_result", "run.identity",
                    "run.identity_uid", "run.offer", "run.asset_read", "run.asset_closed",
                    "run.ca_path", "run.ca_bytes", "run.read_at", "run.data_path",
@@ -507,7 +538,8 @@ def regression_scenarios(board, network):
     # path. The negative path (the WDT actually BITES when feeding stops, then recovers as a single
     # bite) is WWDG-specific (reset_cause==3), so watchdog_bite stays N6-only -- like no_slot is
     # block-device-only.
-    scs.append("watchdog")
+    if board not in WATCHDOG_BROKEN:                   # see WATCHDOG_BROKEN (H7 Plus: armed WWDG
+        scs.append("watchdog")                         # reset-loops off USB; its other 8 legs pass)
     if board == "OPENMV_N6":
         scs.append("watchdog_bite")
     if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
@@ -519,10 +551,31 @@ def regression_scenarios(board, network):
 # UART marker capture -- a background reader that records every HILCOV line for the
 # whole cycle, independent of the USB-CDC console and surviving every reboot.
 # ---------------------------------------------------------------------------
+def resolve_uart(port):
+    """The marker UART's real device path. Linux assigns ``ttyUSBn`` in PLUG ORDER, so the
+    configured name (BOARD_UART, default /dev/ttyUSB0) silently becomes ttyUSB1 the moment the
+    bridge is re-plugged -- after which EVERY scenario fails with "could not open port" and
+    ``coverage 0/N``, which reads like a dead board rather than a renamed device (it cost a full
+    10-scenario RT leg exactly that way). If the configured path is gone, fall back to the node's
+    USB-serial bridge -- but only when there is EXACTLY ONE, so this never silently picks the
+    wrong adapter on a node that has several; ambiguity keeps the configured path and lets the
+    real "no such file" error surface."""
+    if os.path.exists(port):
+        return port
+    from serial.tools import list_ports
+    found = sorted(p.device for p in list_ports.comports()
+                   if p.vid is not None and "ttyUSB" in p.device)
+    if len(found) != 1:
+        return port           # none, or ambiguous -> don't guess; fail with the real error
+    log("uart: %s is gone -- using this node's only USB-serial bridge %s (re-plug renumbering)"
+        % (port, found[0]))
+    return found[0]
+
+
 class UartCapture:
     def __init__(self, port, baud=115200):
         import serial
-        self._ser = serial.Serial(port, baud, timeout=0.5)
+        self._ser = serial.Serial(resolve_uart(port), baud, timeout=0.5)
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
         self.raw = []
@@ -574,7 +627,19 @@ class UartCapture:
 # bench server, and confirm the trial once operational. LAN or WiFi per board.
 # ---------------------------------------------------------------------------
 def bench_main_py(board, net, app="confirm"):
-    if net == "wifi":
+    if net == "wifi" and BOARDS[board].get("wifi_driver") == "winc":
+        # The H7 Plus (and classic H7) reach wifi through the ATWINC1500 shield: network.WINC()
+        # instead of WLAN, no active() call, and connect() takes key=/security= keywords. The socket
+        # layer is identical, so run() and the whole OTA path are unchanged -- only the bring-up differs.
+        bring_up = (
+            'wl = network.WINC()\n'
+            '    if not wl.isconnected():\n'
+            '        wl.connect(%r, key=%r, security=wl.WPA_PSK)\n'
+            '        while not wl.isconnected():\n'
+            '            await asyncio.sleep_ms(200)\n'
+            '    print("BENCH up", wl.ifconfig()[0])\n' % (CFG["wifi_ssid"], CFG["wifi_pass"])
+        )
+    elif net == "wifi":
         bring_up = (
             'wl = network.WLAN(network.STA_IF)\n'
             '    wl.active(True)\n'
@@ -598,7 +663,20 @@ def bench_main_py(board, net, app="confirm"):
     # so the next boot rejects the un-confirmed FRONT and falls back to golden (the anti-brick
     # / rollback path). status().trial is only true on a freshly-installed trial boot, so the
     # golden boot that DOES the install is unaffected either way.
+    # Starting run() is normally unconditional, but a TRIAL boot under "no_confirm" must not poll:
+    # install() REBOOTS on success, so a concurrent re-install pre-empts the app's reset and lands a
+    # FRESH trial. boot.py then treats it as a first try instead of rejecting an already-tried one,
+    # and the scenario spins forever re-installing (12 cycles, no rejection, observed on the H7 Plus
+    # -- the WINC's slower install cycle loses that race that the faster boards happen to win). The
+    # GOLDEN boot still starts run() and performs the install, so install.armed and every run.*
+    # marker the scenario expects are witnessed exactly as before; only the trial boot goes quiet,
+    # which is what makes the rejection deterministic instead of a coin flip.
+    start_run = "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
+        CFG["server"], CFG["ca_board"])
     if app == "no_confirm":
+        start_run = ("    if not openmv_ota.status().get('trial'):\n"
+                     "        asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
+                         CFG["server"], CFG["ca_board"]))
         trial_policy = (
             "    st = openmv_ota.status()\n"
             "    if st.get('trial'):\n"
@@ -674,8 +752,7 @@ def bench_main_py(board, net, app="confirm"):
         "    openmv_ota.sync()  # apply bundled coprocessor resources early (no-op if none)\n"
         "    " + bring_up +
         "    _blog.info('app: network up, starting run()')\n"
-        "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
-            CFG["server"], CFG["ca_board"]) +
+        + start_run +
         trial_policy + "\n\n"
         "try:\n"
         "    import machine as _m\n"

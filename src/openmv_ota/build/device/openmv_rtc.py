@@ -141,28 +141,76 @@ def set_time(unix_s):
     _bad = False
 
 
-def sync(host=None):  # pragma: no cover  (device: network + RTC)
-    """Set the clock from NTP. Returns True on success, False if the query failed
-    (no network yet, DNS down, UDP blocked) -- a failed sync is a normal state to
-    retry, never an exception for the caller to handle.
+_NTP_HOST = "pool.ntp.org"
+_NTP_DELTA_1900_1970 = 2208988800     # seconds between the NTP (1900) and Unix (1970) epochs
+_NTP_WRAP_FLOOR = 3913056000          # 2024-01-01 as an NTP (1900-epoch) count; a transmit timestamp
+#                                       below it means the 32-bit counter wrapped (the 2036 rollover),
+#                                       so add 2**32 -- the same Y2036 fix the ntptime lib applies.
+# Well-known public NTP servers to fall back to by IP when the configured host is unreachable -- a
+# router or captive portal that BLOCKS or HIJACKS NTP DNS (e.g. redirecting *.ntp.org to a host that
+# isn't an NTP server) makes pool.ntp.org resolve but never answer, and ntptime.time() just hangs. A
+# real deployment resolves the host normally and never reaches these; they only harden the clock.
+# Stable anycast (Google, Cloudflare) + fixed NIST addresses, so no DNS is needed to use them.
+_NTP_FALLBACK = (
+    "216.239.35.0",     # time1.google.com   (anycast)
+    "216.239.35.4",     # time2.google.com   (anycast)
+    "162.159.200.1",    # time.cloudflare.com (anycast)
+    "162.159.200.123",  # time.cloudflare.com (anycast, alt)
+    "129.6.15.28",      # time-a-g.nist.gov
+    "129.6.15.30",      # time-d-g.nist.gov
+)
 
-    ``ntptime`` is frozen into every OpenMV board and already handles the epoch
-    difference and the 2036 NTP wrap, so it does the query; this module only
-    decides whether the result is worth keeping."""
-    global _source
+
+def _ntp_query(addr, socket, struct):  # pragma: no cover  (device: network)  # hil-residual-fn: device SNTP round-trip (UDP sendto/recvfrom); run on HW by every sync(), but marker-less -- a per-target leaf in the fallback loop, witnessed only via the caller's "clock: ntp synced"
+    """One SNTP round-trip to ``addr`` -- returns a Unix (1970) timestamp, or raises on
+    timeout/error. Mirrors the ntptime lib's query (48-byte client packet, transmit timestamp at
+    bytes 40:44 as seconds-since-1900, Y2036 wrap fix) with ONE change: ``recvfrom`` instead of
+    ``recv``. A bare ``recv`` on an unconnected UDP socket faults on the WINC1500 (and ``connect``
+    is TCP-only there); ``recvfrom`` is the portable UDP-client read and works on every stack."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        import ntptime
-        if host:
-            ntptime.host = host  # hil-residual: bare assign (NTP host override; bench uses the default pool)
-        unix = ntptime.time() + _epoch_offset()
-        if unix < BUILD_TIME:         # an NTP reply older than the build is bogus
-            return False  # hil-residual: bare return (bogus pre-build NTP reply, inject-only)
+        s.settimeout(4)                               # a bit above ntptime's 1 s -> tolerate the WINC
+        q = bytearray(48)
+        q[0] = 0x1b                                    # LI=0, VN=3, Mode=3 (client)
+        s.sendto(q, addr)
+        msg = s.recvfrom(48)[0]                        # recvfrom, NOT recv (WINC); bounded 48-byte reply
+    finally:
+        s.close()
+    val = struct.unpack("!I", msg[40:44])[0]          # transmit timestamp, seconds since 1900
+    if val < _NTP_WRAP_FLOOR:                          # below 2024 -> the 2036 32-bit counter wrapped
+        val += 0x100000000                             # (ntptime's Y2036 fix)
+    return val - _NTP_DELTA_1900_1970                  # NTP (1900) -> Unix (1970)
+
+
+def sync(host=None):  # pragma: no cover  (device: network + RTC)
+    """Set the clock from NTP. Returns True on success, False if every server was unreachable -- a
+    failed sync is a normal state to retry, never an exception for the caller to handle.
+
+    Follows the ntptime lib's query (see ``_ntp_query``) with two robustness changes: ``recvfrom``
+    instead of ``recv`` (a bare recv faults on the WINC1500's UDP socket), and a FALLBACK LIST. The
+    configured host is tried first (a real deployment resolves ``pool.ntp.org`` and stops there),
+    then a set of well-known anycast NTP servers by IP -- so the clock still syncs on a network that
+    blocks or hijacks NTP DNS, where ntptime.time() would simply hang."""
+    global _source
+    import socket
+    import struct
+    targets = [(ip, 123) for ip in _NTP_FALLBACK]   # well-known fallback servers, by IP (no DNS needed)
+    try:
+        targets.insert(0, socket.getaddrinfo(host or _NTP_HOST, 123)[0][-1])   # configured host FIRST (DNS)
+    except Exception:  # hil-residual: DNS down (name resolution failed) -> just use the IP fallbacks
+        pass  # hil-residual: bare pass; the IP fallbacks need no DNS
+    for addr in targets:
+        try:
+            unix = _ntp_query(addr, socket, struct)
+        except Exception:  # hil-residual: this server timed out / was blocked -> try the next one
+            continue  # hil-residual: bare continue
+        if unix < BUILD_TIME:                          # a reply older than the build is bogus (an unset
+            continue  # hil-residual: bare continue    # server clock, or a non-NTP host answering) -> next
         set_time(unix)
         _source = "ntp"
-        log.debug("clock: ntp synced")            # HIL path witness (NTP query set the RTC)
+        log.debug("clock: ntp synced")                 # HIL path witness (NTP query set the RTC)
         return True  # hil-residual: bare return (NTP sync ok)
-    except Exception:  # hil-residual: NTP-failure wrapper (no network / DNS / UDP blocked)
-        return False  # hil-residual: bare return (failed sync retries next poll)
+    return False  # hil-residual: bare return (all servers failed -> retry next poll)
 
 
 def resolve(host=None):  # pragma: no cover  (device: network + RTC)

@@ -35,7 +35,7 @@ on:
         description: which board to run (or all)
         default: all
         type: choice
-        options: [all, OPENMV_N6, OPENMV_AE3, OPENMV_RT1060]
+        options: [all, OPENMV_N6, OPENMV_AE3, OPENMV_RT1060, OPENMV4P]
       scenario:
         description: which OTA path to exercise ('all' = each board's full regression)
         default: all
@@ -121,6 +121,8 @@ jobs:
               {"board": "OPENMV_AE3", "network": "wifi", "label": "board-openmv-ae3"},
               {"board": "OPENMV_RT1060", "network": "lan", "label": "board-openmv-rt1062"},
               {"board": "OPENMV_RT1060", "network": "wifi", "label": "board-openmv-rt1062"},
+              # H7 Plus: wifi-only (ATWINC1500 shield); golden flash via OpenMV DFU (same CLI as N6).
+              {"board": "OPENMV4P", "network": "wifi", "label": "board-openmv-h7-plus"},
           ]
           board = os.environ.get("BOARD") or "all"
           # PR gate runs EVERY board including the AE3 (wifi): its USB/DFU flashing and its watchdog are

@@ -145,6 +145,27 @@ _RECV_POLL_MS = 20
 # poll reports readable -- a TLS socket can be TCP-readable with no whole record decrypted yet. Both
 # the positive (11) and MicroPython's negated (-11) form; treated as "no data yet", keep polling.
 _EAGAIN = (11, -11)
+_ETIMEDOUT = 110       # errno for a dead-link recv timeout. A NUMERIC errno is what marks a pre-erase
+#                        failure as TRANSPORT (transient -> retry) vs an update REJECTION (raised with
+#                        a descriptive string) -- see _is_transport_error + the run() manifest-fetch except.
+
+
+class _TransportError(OSError):
+    """A failure while ESTABLISHING or READING the connection -- as opposed to a verdict on the
+    update itself. Raised (wrapping the cause) around the pre-erase manifest fetch, so run() can
+    tell the two apart WITHOUT type/errno sniffing: WHERE it failed is the honest discriminator,
+    not what the failing layer happened to raise. Both a socket error and a TLS error surface as
+    ``OSError`` with a numeric code, and both a corrupt manifest and a cert-validity failure
+    surface as ``ValueError`` -- so no amount of inspecting the exception can separate them."""
+
+
+def _is_transport_error(e):
+    """True if ``e`` came from the connection phase (DNS, TCP, the TLS handshake including cert
+    validation, or reading the body) rather than from vetting the fetched manifest. run() uses this
+    to DEFER+retry instead of logging install.reject, so neither a flaky link nor a not-yet-synced
+    clock reads as "this release was refused" -- while a bad signature/key, failed anti-rollback
+    vetting, or a corrupt manifest still does."""
+    return isinstance(e, _TransportError)
 
 
 # --- pure: URL + HTTP (host-testable) ---------------------------------------
@@ -185,13 +206,17 @@ def _parse_url(url):
     return host, port, path
 
 
-def _request_bytes(host, port, path):
+def _request_bytes(host, port, path, start=0):
     """The HTTP/1.1 GET request line + headers. ``Connection: close`` so the server
-    ends the body by closing -- and the gzip stream is self-terminating regardless."""
+    ends the body by closing -- and the gzip stream is self-terminating regardless.
+
+    ``start`` > 0 adds ``Range: bytes=START-`` to RESUME an interrupted download at the
+    compressed byte offset already consumed (see _ResumingBody)."""
     hosthdr = host if port == 443 else "%s:%d" % (host, port)
+    rng = "Range: bytes=%d-\r\n" % start if start else ""
     return ("GET %s HTTP/1.1\r\nHost: %s\r\n"
-            "User-Agent: openmv-ota\r\nAccept: */*\r\nConnection: close\r\n\r\n"
-            % (path, hosthdr)).encode()
+            "User-Agent: openmv-ota\r\nAccept: */*\r\n%sConnection: close\r\n\r\n"
+            % (path, hosthdr, rng)).encode()
 
 
 def _parse_status(line):
@@ -259,7 +284,7 @@ class _Reader:
             sleep_ms(_RECV_POLL_MS)                  # d is None -> no data yet; feed + wait a slice
             waited += _RECV_POLL_MS
             if waited >= _SOCK_TIMEOUT * 1000:
-                raise OSError("recv timed out")       # a dead link -> clean install error -> golden
+                raise OSError(_ETIMEDOUT, "recv timed out")  # dead link: NUMERIC errno -> transport (retry)
 
     def readline(self, limit=8192):
         while b"\n" not in self._buf:
@@ -802,7 +827,7 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
         raise  # hil-residual: bare re-raise to the caller (pre-erase, /rom intact)
 
 
-def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5):  # pragma: no cover
+def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pragma: no cover
     """Connect, GET, follow redirects, and return ``(sock, body)`` on a 2xx -- all
     before the erase, so a bad URL / DNS / TLS / non-2xx status raises to the app
     with /rom still intact. ``feed`` lets the body reader keep an armed watchdog fed
@@ -811,7 +836,7 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5):  # pragma: no 
         host, port, path = _parse_url(url)
         sock = _connect(host, port, ca_pem, socket, ssl)
         try:
-            sock.write(_request_bytes(host, port, path))  # blocking send of the small GET
+            sock.write(_request_bytes(host, port, path, start))  # blocking send of the small GET
             # Go NON-BLOCKING for every read from here (headers AND body): the reader then feeds the
             # watchdog from the main thread between recvs (see _Reader._fill). This is what a slow FIRST
             # byte needs -- the server can be seconds slow to answer (a stored delta whose first fetch
@@ -835,9 +860,87 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5):  # pragma: no 
         if not (200 <= code < 300):
             sock.close()
             raise OSError("HTTP %d" % code)
+        if start and code != 206:
+            # We asked to RESUME but the server sent the whole entity from byte 0 (no Range
+            # support, or a proxy that stripped it). We cannot use it: the decompressor is
+            # mid-stream and its state cannot be rewound, so replaying from 0 would corrupt the
+            # image. Fail cleanly -- the caller falls to golden and the next poll starts over.
+            sock.close()
+            raise OSError("resume unsupported: HTTP %d for a Range request" % code)
         log.debug("install: fetched body")
         return sock, _make_body(reader, headers)
     raise OSError("too many redirects")
+
+
+_RESUME_MAX_STALLS = 10   # consecutive re-opens that deliver ZERO new bytes -> genuinely stuck
+
+
+class _ResumingBody(io.IOBase):
+    """A download body that survives the connection being dropped mid-transfer.
+
+    Subclasses ``io.IOBase`` for the same reason ``_Body`` does: on MicroPython that is what makes
+    a Python object usable as a C-LEVEL STREAM, which is what ``deflate.DeflateIO`` requires of its
+    source. A plain class with a ``readinto`` method is NOT enough -- DeflateIO rejects it at the
+    first read with ``OSError('stream operation not supported')``, which on the bench looked like a
+    mid-install failure that fell back to golden. Host tests cannot catch this (CPython happily
+    reads any object with the right methods), so it is pinned by an explicit subclass assertion.
+
+    A poor link cannot always finish a long download in one connection: the WINC1500 aborts
+    EVERY transfer at ~50 s regardless of how many bytes have moved, so a 4 MiB image never
+    completed and the installer burned its 3 attempts re-erasing and restarting from zero.
+
+    Restarting is the wrong response, because nothing is actually lost: the gzip/delta decoder
+    lives in RAM and keeps its state across a dead socket. Only the PIPE needs replacing. So we
+    count the COMPRESSED bytes handed to the decoder and, on a drop, re-open the same URL with
+    ``Range: bytes=<consumed>-`` and keep feeding the SAME decoder. The byte stream stays
+    continuous; only the transport underneath is segmented. That needs no format change and costs
+    O(1) RAM -- a counter -- so it stays inside the module's RAM budget.
+
+    Re-opens are UNBOUNDED WHILE MAKING PROGRESS: a slow-but-working link should finish, and an
+    attempt cap would abandon it for being slow rather than for being broken. "Stuck" is the
+    honest failure, so only ``_RESUME_MAX_STALLS`` consecutive re-opens that deliver ZERO new
+    bytes give up. This cannot run forever: the server's capability token expires (ttl 3600 s),
+    after which a resume gets a 404 and falls cleanly to golden.
+    """
+
+    def __init__(self, url, ca_pem, socket, ssl, feed, sock, body):
+        self._url, self._ca = url, ca_pem
+        self._socket, self._ssl, self._feed = socket, ssl, feed
+        self._sock, self._body = sock, body
+        self._pos = 0            # compressed bytes already delivered to the decoder
+        self._stalls = 0
+
+    def readinto(self, buf):
+        while True:
+            try:
+                n = self._body.readinto(buf)
+            except Exception as e:                    # socket drop, or a short/truncated body
+                self._reopen(e)                       # raises once genuinely stuck
+                continue
+            self._pos += n
+            if n:
+                self._stalls = 0                      # forward progress -> the budget resets
+            return n
+
+    def _reopen(self, err):
+        """Replace the dead connection with a Range request at the current offset."""
+        self._stalls += 1
+        if self._stalls > _RESUME_MAX_STALLS:         # no new bytes across N re-opens -> stuck
+            raise err
+        try:
+            self._sock.close()
+        except Exception:
+            pass                                      # already dead; nothing else holds the fd
+        self._feed()                                  # a re-connect is unsplittable -> feed across it
+        log.info("install: resuming at %d (%r)" % (self._pos, err))   # HIL witness + field diagnostic
+        self._sock, self._body = _open(self._url, self._ca, self._socket, self._ssl,
+                                       self._feed, start=self._pos)
+
+    def close(self):
+        try:
+            self._sock.close()
+        except Exception:
+            pass
 
 
 def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop):  # pragma: no cover
@@ -849,11 +952,20 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop):
     import uctypes
     import vfs
 
-    sock, body = _open(manifest_url, ca_pem, socket, ssl, feed)
+    # CONNECTION PHASE -- open + read. Everything here (DNS, TCP, the TLS handshake and its cert
+    # validation, each body read) is TRANSPORT: it says nothing about the release, so run() defers
+    # and retries rather than reporting a rejection. Cert failures belong here too, and that matters:
+    # a cold-booted board whose clock has not yet NTP-synced fails the handshake with "certificate
+    # validity starts in the future" -- a state it RECOVERS from a poll later, never a bad update.
+    # Wrapping by PHASE (not by exception type) is what makes that distinction reliable.
     try:
-        raw = _read_all(body, _MANIFEST_MAX)          # progress-fed reader (poll+feed)
-    finally:
-        sock.close()
+        sock, body = _open(manifest_url, ca_pem, socket, ssl, feed)
+        try:
+            raw = _read_all(body, _MANIFEST_MAX)      # progress-fed reader (poll+feed)
+        finally:
+            sock.close()
+    except Exception as e:  # hil-residual: connection-phase failure wrapper (needs a dropped link / bad cert to reach; the happy path fetches cleanly)
+        raise _TransportError("manifest fetch failed: %r" % (e,))  # hil-residual: bare raise (cause kept in the message; run() logs it as deferred + retries)
     # The manifest is now in RAM; everything below -- CRC parse, the ECDSA signature verify,
     # and the flash-vetting -- is pure CPU: single unsplittable C/Python calls with no seam to
     # feed through, and the P-256 verify alone can outrun the ~100 ms watchdog window (this is
@@ -1087,8 +1199,17 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     try:
         image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed)
     except Exception as e:
-        log.warning("install: rejected before erase (%r)" % e)   # /rom untouched (%r shows the class)
-        raise  # hil-residual: bare re-raise to the app (pre-erase reject witnessed by install.reject)
+        # Two very different failures land here and only ONE is a rejected update. A REJECTION -- bad
+        # signature/key, failed vetting, or a corrupt/unparseable manifest -- must read as install.reject
+        # (the tamper scenarios witness it). A TRANSPORT failure -- the link dropped/reset/timed out mid-
+        # fetch -- is transient: it retries next poll and must NOT trip the reject gate after a clean
+        # retry succeeds (a flaky link: WiFi power-save, the WINC's first post-checkin TLS, cellular).
+        # _is_transport_error splits them on the errno (unit-tested); /rom is untouched either way.
+        if _is_transport_error(e):
+            log.warning("install: deferred, transport error (%r)" % e)  # hil-residual: transient transport defer -- a flaky link is NON-DETERMINISTIC (no marker can witness it); the classifier is unit-tested and the reject branch below IS witnessed (install.reject). Retries next poll
+        else:
+            log.warning("install: rejected before erase (%r)" % e)       # /rom untouched (%r shows the class)
+        raise  # hil-residual: bare re-raise to the app (reject -> install.reject; transport -> retry next poll, marker-less)
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
     # failure reboots into the golden image instead of propagating. ERASE FIRST,
@@ -1108,13 +1229,19 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # cycle. Anything raised here (short body, TLS/ECONNRESET/ECONNABORTED/timeout,
     # verify miscompare) is treated the same: retry, then fall back.
     attempts = getattr(cfg, "INSTALL_RETRIES", 3)
-    sock = None
+    body = None
     for attempt in range(attempts):
         try:
             log.info("install: erasing FRONT (%d bytes)" % front_size)
             erase(front_size)
             log.info("install: downloading %s (%s)" % (image_url, fmt))
-            sock, body = _open(image_url, ca_pem, socket, ssl, feed)
+            sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)
+            # Wrap the body so a dropped connection RESUMES at the compressed offset already
+            # consumed instead of restarting the whole install (see _ResumingBody). The decoder
+            # below keeps its state across the reconnect, so the stream it sees is continuous.
+            # Cleanup below closes the BODY, not `sock`: after a resume the body owns a NEWER
+            # socket and the original is already closed, so closing `sock` would leak the live one.
+            body = _ResumingBody(image_url, ca_pem, socket, ssl, feed, sock, raw_body)
             dio = deflate.DeflateIO(body, deflate.GZIP)
             if fmt == _DELTA_FORMAT:
                 # Delta: stream-decompress the patch and reconstruct the image against the
@@ -1139,9 +1266,9 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             log.debug("install: committed FRONT")
             break  # hil-residual: bare break (success -> arm + reboot; witnessed by install.committed)
         except Exception as e:
-            if sock is not None:
-                sock.close()
-                sock = None
+            if body is not None:
+                body.close()                          # closes whichever socket the body now owns
+                body = None
                 log.debug("install: retry cleanup")  # HIL path witness (socket closed before a retry)
             if attempt + 1 >= attempts:
                 log.error("install: FAILED after %d attempts (%r); rebooting to golden BACK"

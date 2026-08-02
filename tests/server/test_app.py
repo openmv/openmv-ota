@@ -347,6 +347,40 @@ def test_gateway_streams_local_artifacts(tmp_path):
     assert i.headers["content-type"] == "application/gzip"
 
 
+def test_gateway_serves_byte_ranges(tmp_path):
+    # A device on a poor link cannot finish a long download in one connection (the WINC1500 aborts
+    # every transfer at ~50 s), so the installer RESUMES at the compressed offset it reached rather
+    # than restarting. That needs ranges. Prod already has them -- it 302s to object storage -- so
+    # this is the self-hosted path, which is also what the HIL bench runs: without it, resume could
+    # not be tested on the one rig that reproduces the failure.
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, storage=storage, manifest=b"MANIFEST", image=b"0123456789")
+    c = TestClient(app)
+    url = "/d/%s/OPENMV_N6-ota.img.gz" % capability.mint(SECRET, "rel1")
+
+    full = c.get(url)
+    assert full.status_code == 200 and full.content == b"0123456789"
+    assert full.headers["accept-ranges"] == "bytes"      # advertised even without a Range
+
+    r = c.get(url, headers={"Range": "bytes=4-"})        # the resume case: an open-ended suffix
+    assert r.status_code == 206 and r.content == b"456789"
+    assert r.headers["content-range"] == "bytes 4-9/10"
+
+    r = c.get(url, headers={"Range": "bytes=2-5"})       # a closed range
+    assert r.status_code == 206 and r.content == b"2345"
+    assert r.headers["content-range"] == "bytes 2-5/10"
+
+    # Past the end -> 416 with the true length, so a device that over-resumes learns the real size
+    # instead of silently receiving nothing and writing a truncated image.
+    r = c.get(url, headers={"Range": "bytes=99-"})
+    assert r.status_code == 416 and r.headers["content-range"] == "bytes */10"
+
+    # A range we do not implement (multi-range) must fall back to the WHOLE body, never a partial
+    # one: answering a multi-range request with one arbitrary slice would corrupt the download.
+    r = c.get(url, headers={"Range": "bytes=0-1,5-6"})
+    assert r.status_code == 200 and r.content == b"0123456789"
+
+
 def test_gateway_bad_token_404(tmp_path):
     app, *_ = _app(tmp_path)
     assert TestClient(app).get("/d/not-a-token/manifest.bin").status_code == 404

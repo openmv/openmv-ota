@@ -195,6 +195,10 @@ _RESP_MAX = 8 * 1024         # a check-in reply is grants + version info;
                              # kept roomy on purpose -- rejecting a real
                              # reply breaks OTA, the costlier failure
 _ASSET_MAX = 256 * 1024      # our own shipped installer.py / ca.pem
+_CHECKIN_TIMEOUT = 15        # socket timeout (s) for the check-in: bounds the TLS handshake and each
+                             # recv so a stalled server can't hang the poll loop forever. settimeout
+                             # (not poll) is also what makes the check-in work over the WINC1500 (the
+                             # H7 wifi shield), which implements no select/poll -- see _checkin.
 
 
 def _streams_equal(file_chunks, read_target, feed=None):
@@ -465,11 +469,13 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
         wait = poll_after_s
         _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
         try:
-            # The check-in's TLS handshake is a blocking mbedtls C call that does not yield to
-            # asyncio, so it freezes the event loop (and any app feed loop) longer than a short
-            # watchdog window -> relax() ISR-feeds across it. A no-op unless the app armed a watchdog.
+            # The check-in is a BLOCKING socket op (handshake + tiny response) -- a blocking mbedtls C
+            # call that does not yield to asyncio, so it freezes the event loop (and any app feed loop)
+            # longer than a short watchdog window -> relax() ISR-feeds across it. A no-op unless the app
+            # armed a watchdog. Blocking (settimeout, no poll) is also required for the WINC1500 (see
+            # _checkin): asyncio's poller raises EIO on WINC sockets.
             with _wdt_relax():                        # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
-                resp = await _checkin(server_url, _collect_body(identity(), status()), ca)
+                resp = _checkin(server_url, _collect_body(identity(), status()), ca)
             log.debug("checkin: response received")
             _notify(resp)
             wait = resp.get("poll_after_s", poll_after_s)
@@ -498,57 +504,85 @@ def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
         pass  # hil-residual: bare pass; clock left unresolved
 
 
-async def _read_capped(reader, limit):  # pragma: no cover  (device network)
-    """Read a response body to EOF, capped at ``limit``. Never ``read(-1)``: a
-    captive portal or broken proxy must not get to size our allocation. Bounded
-    chunks joined once (no quadratic ``+=``)."""
+def _read_capped(sock, limit, clen=None):  # pragma: no cover  (device network)
+    """Read a response body, capped at ``limit``. When the Content-Length ``clen`` is known, read
+    EXACTLY that many bytes and stop -- never wait for EOF: the WINC1500 reports a peer close only
+    after the socket timeout elapses, so an EOF-terminated read stalls a whole _CHECKIN_TIMEOUT every
+    poll. Without a length (chunked / connection-close), fall back to read-to-EOF. Never ``read(-1)``:
+    a captive portal or broken proxy must not size our allocation. Bounded chunks joined once."""
+    if clen is not None and clen > limit:
+        raise OSError("check-in response over %d bytes" % limit)  # hil-residual: bare raise (declared over cap)
     chunks, total = [], 0
-    while True:
-        d = await reader.read(_CHUNK)
-        if not d:
-            body = b"".join(chunks)                    # bounded: sum of capped chunks <= limit
-            log.debug("checkin: body read")           # HIL path witness (response body to EOF)
-            return body  # hil-residual: bare return of the joined body
+    while clen is None or total < clen:
+        d = sock.read(_CHUNK if clen is None else min(_CHUNK, clen - total))
+        if not d:                                     # EOF (peer closed) -- a short body, or the no-length case
+            break  # hil-residual: EOF before the declared length -- a TRUNCATED body. Every server we talk to sends Content-Length (witnessed by run.checkin_clen), so the loop normally exits on total==clen and this fires only when the peer closes early; reaching it needs a fault-injected short response
         total += len(d)
         if total > limit:
             raise OSError("check-in response over %d bytes" % limit)  # hil-residual: bare raise (over-cap guard, inject-only)
         chunks.append(d)
         log.debug("checkin: body chunk")              # HIL path witness (a body chunk accumulated)
+    body = b"".join(chunks)                            # bounded: sum of capped chunks <= limit
+    log.debug("checkin: body read")                   # HIL path witness (response body complete)
+    return body  # hil-residual: bare return of the joined body
 
 
-async def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
-    """POST the check-in body to ``/api/v1/check`` and return the parsed JSON."""
-    import asyncio
+def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
+    """POST the check-in body to ``/api/v1/check`` and return the parsed JSON.
+
+    Transport is a BLOCKING, ``settimeout()``'d socket + ``ssl.wrap_socket`` -- NOT asyncio streams.
+    The WINC1500 (the H7's wifi shield) implements no ``poll``/``select``, so asyncio's poller raises
+    ``OSError(EIO)`` on its sockets; a settimeout socket needs no poll and is the transport OpenMV
+    recommends for the WINC. It behaves identically over WLAN/LAN, so the N6/RT/AE3 are unaffected.
+    The connect + handshake + small response run under the caller's ``_wdt_relax()`` (ISR feed) --
+    unchanged, since the handshake was always a blocking mbedtls call that never yielded to asyncio
+    anyway; only the tiny response read is newly blocking, and it is bounded by ``_CHECKIN_TIMEOUT``.
+    Mirrors the installer's ``_connect`` (getaddrinfo -> settimeout -> connect -> wrap_socket)."""
     import json
+    import socket
     import ssl
     scheme, _, rest = server_url.rstrip("/").partition("://")
     hostport, _, _ = rest.partition("/")
     host, _, port = hostport.partition(":")
     port = int(port) if port else (443 if scheme == "https" else 80)
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.load_verify_locations(cadata=ca.decode() if isinstance(ca, bytes) else ca)
-    reader, writer = await asyncio.open_connection(host, port, ssl=ctx)
+    ai = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0]
+    sock = socket.socket(ai[0], ai[1], ai[2])
+    ss = None
     try:
+        sock.settimeout(_CHECKIN_TIMEOUT)            # bounds handshake + each recv; WINC-safe (no poll)
+        sock.connect(ai[-1])
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.load_verify_locations(cadata=ca.decode() if isinstance(ca, bytes) else ca)
+        ss = ctx.wrap_socket(sock, server_hostname=host)   # blocking TLS handshake (ISR-fed by caller)
         payload = json.dumps(body).encode()
-        writer.write((
+        ss.write((
             "POST /api/v1/check HTTP/1.1\r\nHost: %s\r\nUser-Agent: openmv-cam/1.0\r\n"
             "Content-Type: application/json\r\nContent-Length: %d\r\n"
             "Connection: close\r\n\r\n" % (host, len(payload))).encode() + payload)
-        await writer.drain()
-        status_line = await reader.readline()
+        status_line = ss.readline()
         if b" 200 " not in status_line and not status_line.rstrip().endswith(b" 200"):
             raise OSError("check-in HTTP %s" % status_line)  # hil-residual: bare raise (non-200; happy path is 200)
         log.debug("checkin: server ok")              # milestone + HIL path witness
-        while True:                                  # skip headers
-            line = await reader.readline()
+        clen = None
+        while True:                                  # skip headers, noting Content-Length
+            line = ss.readline()
             if line in (b"\r\n", b"\n", b""):
                 break
-        resp = json.loads(await _read_capped(reader, _RESP_MAX))
+            if line[:15].lower() == b"content-length:":   # read exactly this -> no EOF-wait on the WINC
+                try:
+                    clen = int(line.split(b":", 1)[1].strip())
+                    log.debug("checkin: content length")  # HIL path witness (the server declared a length,
+                    #                                       so the body read is exact -- every board, every poll)
+                except Exception:  # hil-residual: malformed length -> fall back to read-to-EOF
+                    clen = None  # hil-residual: bare assign
+        resp = json.loads(_read_capped(ss, _RESP_MAX, clen))
         log.debug("checkin: parsed")                  # HIL path witness (headers skipped + JSON)
-        return resp  # hil-residual: bare return of the response reader
+        return resp  # hil-residual: bare return of the parsed response
     finally:
-        writer.close()
-        await writer.wait_closed()
+        try:
+            (ss or sock).close()                      # closing the TLS wrapper closes the raw socket
+        except Exception:  # hil-residual: best-effort close of the check-in socket
+            pass  # hil-residual: bare pass; nothing else holds the fd
         log.debug("checkin: closed")                  # HIL path witness (connection closed)
 
 

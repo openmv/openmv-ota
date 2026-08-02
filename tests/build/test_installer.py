@@ -243,6 +243,177 @@ def test_reader_dead_link_trips_after_timeout():
         r.read_exact(1)
 
 
+# --- _ResumingBody: surviving a link that drops mid-download -------------------------------
+# A poor link cannot finish a long download in one connection (the WINC1500 aborts EVERY transfer
+# at ~50 s regardless of progress). Restarting is wrong -- the decoder's state lives in RAM and
+# survives the dead socket -- so only the transport is replaced, via Range at the consumed offset.
+# These pin that the byte stream handed to the decoder stays CONTINUOUS across a reconnect, which
+# is the property that makes it safe: a duplicated or dropped byte would corrupt the image.
+
+class _DropSock:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _DropBody:
+    """Serves ``data`` from ``start``, raising OSError after ``fail_after`` bytes (None = never)."""
+
+    def __init__(self, data, start=0, fail_after=None):
+        self._data, self._pos = data, start
+        self._left = fail_after
+
+    def readinto(self, buf):
+        if self._left is not None and self._left <= 0:
+            raise OSError(103)                       # ECONNABORTED, mid-stream
+        n = min(len(buf), len(self._data) - self._pos)
+        if self._left is not None:
+            n = min(n, self._left)
+            self._left -= n
+        buf[:n] = self._data[self._pos:self._pos + n]
+        self._pos += n
+        return n
+
+
+def _drain(body, chunk=7):
+    out, buf = bytearray(), bytearray(chunk)
+    while True:
+        n = body.readinto(buf)
+        if not n:
+            return bytes(out)
+        out += buf[:n]
+
+
+def _resuming(monkeypatch, data, drops):
+    """A _ResumingBody over ``data`` whose connections fail after each of ``drops`` bytes.
+    Records the Range offsets requested so the test can assert continuity."""
+    calls = []
+    seq = list(drops)
+
+    def fake_open(url, ca, socket, ssl, feed=None, max_redirects=5, start=0):
+        calls.append(start)
+        fail = seq.pop(0) if seq else None
+        return _DropSock(), _DropBody(data, start, fail)
+
+    monkeypatch.setattr(_mod, "_open", fake_open)
+    sock, body = fake_open("u", None, None, None)
+    return inst("_ResumingBody")("u", None, None, None, lambda: None, sock, body), calls
+
+
+def test_resuming_body_is_a_micropython_stream():
+    # REGRESSION GUARD. deflate.DeflateIO reads its source through MicroPython's C-level stream
+    # protocol, and a Python object only participates in that by subclassing io.IOBase -- having a
+    # readinto() method is NOT enough. Shipping this as a plain class made every install die at the
+    # first read with OSError('stream operation not supported'), which on hardware looked like a
+    # mid-install failure falling back to golden. CPython reads any object with the right methods,
+    # so no behavioural host test can reproduce it; asserting the base class is the only host-side
+    # guard, and _Body (the stream this replaces) has always subclassed it for exactly this reason.
+    import io
+    assert issubclass(inst("_ResumingBody"), io.IOBase)
+    assert issubclass(inst("_Body"), io.IOBase)
+
+
+def test_resuming_body_passes_through_when_nothing_drops(monkeypatch):
+    data = bytes(range(256)) * 4
+    body, calls = _resuming(monkeypatch, data, [None])
+    assert _drain(body) == data
+    assert calls == [0]                              # never reconnected
+
+
+def test_resuming_body_reconnects_at_the_consumed_offset(monkeypatch):
+    # the whole point: the decoder must see EXACTLY the original bytes, once each, in order
+    data = bytes(range(256)) * 8                     # 2048 bytes
+    body, calls = _resuming(monkeypatch, data, [500, 700, None])
+    assert _drain(body) == data                      # byte-identical -> no gap, no duplication
+    assert calls == [0, 500, 1200]                   # resumed exactly where it left off
+
+
+def test_resuming_body_is_unbounded_while_progressing(monkeypatch):
+    # many drops, but each delivers bytes -> must keep going, NOT hit a retry cap. An attempt cap
+    # would abandon a slow-but-working link for being slow rather than for being broken.
+    data = bytes(range(256)) * 8
+    drops = [64] * 40                                # 40 reconnects, far above _RESUME_MAX_STALLS
+    body, _ = _resuming(monkeypatch, data, drops + [None])
+    assert _drain(body) == data
+
+
+def test_resuming_body_gives_up_when_truly_stuck(monkeypatch):
+    # zero-byte reconnects are the honest "stuck" signal -> bounded, so it falls to golden
+    data = bytes(range(256))
+    body, calls = _resuming(monkeypatch, data, [0] * 50)
+    with pytest.raises(OSError):
+        _drain(body)
+    assert len(calls) == inst("_RESUME_MAX_STALLS") + 1   # the initial open + the budgeted re-opens
+
+
+def test_resuming_body_progress_resets_the_stall_budget(monkeypatch):
+    # near-stuck then progress must NOT accumulate toward the cap, or a link that stutters and
+    # then recovers would be abandoned partway through a perfectly good download
+    data = bytes(range(256)) * 4
+    drops = ([0] * 9 + [200]) * 3                    # 9 stalls, progress, repeat -- never 10 in a row
+    body, _ = _resuming(monkeypatch, data, drops + [None])
+    assert _drain(body) == data
+
+
+def test_resuming_body_tolerates_a_socket_that_cannot_be_closed(monkeypatch):
+    # The socket we are replacing is usually ALREADY dead -- that is why we are reconnecting -- so
+    # close() can itself raise (EBADF / a torn-down TLS wrapper). That must not abort an otherwise
+    # healthy resume, nor close(): there is nothing left to release either way. Without the guards
+    # a poor link would turn every reconnect into a failed install.
+    data = bytes(range(256)) * 4
+    calls = []
+    seq = [200, None]
+
+    class _UncloseableSock:
+        def close(self):
+            raise OSError(9)                         # EBADF -- the peer is already gone
+
+    def fake_open(url, ca, socket, ssl, feed=None, max_redirects=5, start=0):
+        calls.append(start)
+        return _UncloseableSock(), _DropBody(data, start, seq.pop(0) if seq else None)
+
+    monkeypatch.setattr(_mod, "_open", fake_open)
+    sock, body = fake_open("u", None, None, None)
+    rb = inst("_ResumingBody")("u", None, None, None, lambda: None, sock, body)
+    assert _drain(rb) == data                        # resumed despite close() raising
+    assert calls == [0, 200]
+    rb.close()                                       # and close() swallows it too
+
+
+def test_resuming_body_close_closes_the_current_socket(monkeypatch):
+    # after a resume the body owns a NEWER socket; closing the original would leak the live one
+    data = bytes(range(256)) * 4
+    body, _ = _resuming(monkeypatch, data, [100, None])
+    body.readinto(bytearray(300))                    # forces one reconnect
+    body.readinto(bytearray(300))
+    body.close()
+    assert body._sock.closed
+
+
+def test_is_transport_error_keys_on_phase_not_exception_type():
+    # run()'s pre-erase except uses this to tell a CONNECTION failure (defer + retry, marker-less)
+    # from a REJECTED update (install.reject). The classifier keys on the PHASE -- _fetch_manifest
+    # wraps its open+read in _TransportError -- because the exception type cannot separate them:
+    # a socket drop and a TLS/cert failure are both OSError-with-a-number, and a corrupt manifest
+    # and a clock-skew cert failure are both ValueError. Pin that so nobody "simplifies" it back
+    # into type/errno sniffing.
+    ite, terr = inst("_is_transport_error"), inst("_TransportError")
+    assert ite(terr("manifest fetch failed: %r" % OSError(103)))     # ECONNABORTED (the WINC's flaky TLS)
+    assert ite(terr("manifest fetch failed: %r" % OSError(-15202, "MBEDTLS_ERR_PK_INVALID_PUBKEY")))
+    assert ite(terr("manifest fetch failed: %r"                      # cold clock, pre-NTP: recovers
+                    % ValueError("certificate validity starts in the future")))  # a poll later
+    # rejections -- raised AFTER the fetch, so never wrapped -- must stay on the reject side even
+    # though two of them are OSError, exactly like the transport cases above
+    assert not ite(OSError("manifest signature does not verify"))    # bad sig
+    assert not ite(OSError("manifest signed by an untrusted key"))   # untrusted key
+    assert not ite(OSError("manifest rejected (rollback)"))          # anti-rollback vetting
+    assert not ite(ValueError("bad manifest magic"))                 # corrupt manifest
+    assert not ite(OSError(103))                    # a RAW socket errno is not itself the wrapper
+    assert issubclass(terr, OSError)                # so an app catching OSError still catches it
+
+
 # --- _read_response ---------------------------------------------------------
 
 def test_read_response():
