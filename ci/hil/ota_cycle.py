@@ -710,7 +710,7 @@ def bench_main_py(board, net, app="confirm"):
             "    import openmv_wdt\n" +
             ("    _p(b'imported; arming')\n" if dbg else "") +
             "    openmv_wdt.start()\n" +
-            ("    _p(b'ARMED')\n" if dbg else "") +
+            ("    _p(b'start() returned; _wdt is not None = ' + str(openmv_wdt._wdt is not None).encode())\n" if dbg else "") +
             "    _blog.info('app: wdt armed=%r' % (openmv_wdt._wdt is not None))\n" +
             ("    _p(b'after blog.info')\n" if dbg else "") +
             "    confirmed = False\n"
