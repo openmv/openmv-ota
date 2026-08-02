@@ -27,12 +27,22 @@ class ArduinoStep:
 def program_argv(dfu_util: str, usb: str, alt: int, addr: str, file: Path, *,
                  leave: bool = False, serial: str | None = None) -> list[str]:
     """Argv to write ``file`` to ``addr`` on alt ``alt``; ``leave`` exits DFU after the write.
-    ``serial`` pins it to one specific board (``-S``) when several are in DFU at once."""
+
+    NO ``-S`` SERIAL PIN -- ``serial`` is accepted and deliberately ignored. A board's DFU-mode
+    serial is NOT its runtime serial, so pinning the runtime one matches nothing and ``-w`` then
+    waits forever: the flash appears to hang rather than fail. Measured on a Portenta H7 --
+    runtime ``346534563033`` (usb 2341:045b) vs DFU ``0033001F3033510634323437`` (usb 2341:035b),
+    entirely different values. That hang cost a 1500 s timeout on the Nicla before it was
+    understood. ``flash/dfu.py::download_argv`` dropped the pin for the same reason on the OpenMV
+    boards; this is the Arduino path catching up.
+
+    Nothing is lost: the 1200-baud touch puts only THIS board into DFU, and ``-d ,<vid:pid>``
+    already selects the bootloader's USB id. The parameter stays so callers (``plan``) need no
+    change and a future re-introduction has to think about the mismatch first.
+    """
+    del serial                       # see above: the DFU serial never matches the runtime one
     target = (addr + ":leave") if leave else addr
-    argv = [dfu_util, "-w", "-d", ",%s" % usb]
-    if serial:
-        argv += ["-S", serial]
-    return argv + ["-a", str(alt), "-s", target, "-D", str(file)]
+    return [dfu_util, "-w", "-d", ",%s" % usb, "-a", str(alt), "-s", target, "-D", str(file)]
 
 
 def plan(op: str, raw: dict, dfu_util: str, files: dict, serial: str | None = None
