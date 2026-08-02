@@ -55,6 +55,15 @@ ENABLED = False        # master switch
 #   mimxrt (RT) / alif (AE3): 0 -- the default machine.WDT (WDOG / alif WDT), off in deep sleep. (auto-
 #               selection falls back to 0 whenever the port has no "WWDG" id.)
 WDT_ID = None
+# The stm32 IWDG is a ONE-WAY DOOR: once armed it cannot be stopped by software, and it survives
+# machine.reset(), a romfs erase, AND a firmware reflash -- ONLY A POWER CYCLE clears it. So a device
+# that starves it in the field reset-loops forever and no OTA update can rescue it: someone has to
+# physically unplug it. (That is not hypothetical -- it cost this project a bench board and a manual
+# power cycle to diagnose.) It is therefore refused on stm32 by DEFAULT, whether it would come from
+# WDT_ID or from auto-selection. Set this True ONLY if you accept that risk: your app must never deep-
+# sleep (the IWDG keeps counting through it) AND must feed reliably enough that a starve is impossible.
+# Non-stm32 ports are unaffected -- their WDT(0) is the deep-sleep-safe WDOG / alif WDT, not an IWDG.
+ALLOW_STM32_IWDG = False
 TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board WDT max (N6 WWDG max
 #                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often. If
 #                        a port rejects a value this small (a coarse WDOG), raise it to the board min.
@@ -108,25 +117,33 @@ def relax():
     return _Relax()
 
 
+def _reject_stm32_iwdg(wdt_id, why):  # pragma: no cover (device)  # hil-residual-fn: the IWDG guard; reaching it needs an stm32 board with WDT_ID=IWDG or a WWDG-less build, neither of which the bench runs (the boards auto-select a working WWDG)
+    """Raise rather than arm the stm32 IWDG -- the one watchdog no software can undo (see
+    ALLOW_STM32_IWDG). A no-op on every non-stm32 port, where WDT(0) is the deep-sleep-safe WDOG."""
+    import os
+    if ALLOW_STM32_IWDG or "STM32" not in os.uname().machine:
+        return  # hil-residual: bare return (opted in, or not stm32 -> nothing to guard)
+    raise ValueError("openmv_wdt: refusing to arm the stm32 IWDG (%s). It cannot be stopped by "
+                     "software and survives reset, romfs erase and reflash -- only a POWER CYCLE "
+                     "clears it, so a starve bricks the board in the field. Fix the WWDG build/"
+                     "config, or set ALLOW_STM32_IWDG=True if you accept that." % why)
+
+
 def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardware watchdog; runs only under ENABLED=True (opt-in manual edit + firmware rebuild) -- now exercised on HW by the watchdog HIL scenario (a passing run proves the armed path ran), but marker-less (no log line), so it stays a residual
     global _wdt, _feed
     if _wdt is None:
         import machine
         if WDT_ID is not None:                        # explicit override
+            if WDT_ID in (0, "IWDG"):                 # ...which must not smuggle in the IWDG on stm32
+                _reject_stm32_iwdg(WDT_ID, "WDT_ID=%r" % (WDT_ID,))
             _wdt = machine.WDT(WDT_ID, TIMEOUT_MS)
         else:
             try:                                      # auto-select: stm32/N6 has the deep-sleep-safe
                 _wdt = machine.WDT("WWDG", TIMEOUT_MS)  # windowed WDT (micropython#19350)...
             except (ValueError, TypeError):           # ...ports without a "WWDG" id fall back to WDT(0).
-                import os
-                # On mimxrt/alif WDT(0) IS the deep-sleep-safe WDOG / alif WDT -- a fine fallback. But on
-                # stm32 WDT(0) is the IWDG, which keeps counting through resets AND deep sleep and can be
-                # cleared ONLY by a power cycle. Arming it silently (because a build lacked WWDG) reset-
-                # loops the board with no recovery short of unplugging it -- it survives romfs erase AND a
-                # firmware reflash. So on stm32 REFUSE the fallback and fail loudly, never the IWDG.
-                if "STM32" in os.uname().machine:
-                    raise ValueError("openmv_wdt: WWDG unavailable on stm32; refusing the IWDG fallback "
-                                     "(IWDG is persistent -> reset-loop). Fix the WWDG build/config.")
+                # On mimxrt/alif WDT(0) IS the deep-sleep-safe WDOG / alif WDT -- a fine fallback. On
+                # stm32 it is the IWDG, so refuse there instead of silently arming it.
+                _reject_stm32_iwdg(0, "WWDG unavailable on stm32")
                 _wdt = machine.WDT(0, TIMEOUT_MS)       # mimxrt/alif: the default deep-sleep-safe WDT
         _feed = _wdt.feed
 
