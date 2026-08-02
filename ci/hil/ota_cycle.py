@@ -808,7 +808,7 @@ def prepare(board, checkout, network, app="confirm"):
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
-    _ensure_cdc(board)
+    _ensure_cdc(board, allow_erase=True)   # pre-flash: erasing the romfs is safe, golden follows
     # The bench files go over the CDC, so they cannot be written when recovery had to erase the
     # romfs (that frees DFU but leaves no usable port -- see _ensure_cdc). Defer them: flash_golden
     # reprovisions over DFU and brings the port back, and it writes them itself afterwards. Trying
@@ -884,7 +884,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
     CLI's DFU path -- needing a live CDC to enter the bootloader -- can't reach); it never flashes."""
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
-    _ensure_cdc(board)                       # recover a wedged board so the CLI can enter DFU cleanly
+    _ensure_cdc(board, allow_erase=True)   # pre-flash: safe to erase; the flash below reprovisions
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
     if _cdc_responsive():
@@ -902,7 +902,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
         if rc != 0:
             raise RuntimeError("flash factory (no-CDC path) failed rc=%d: %s" % (rc, out[-400:]))
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
-    _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
+    _ensure_cdc(board)                       # POST-flash: allow_erase stays False -- never wipe the golden just written
 
 
 def _cdc_responsive(timeout=15):
@@ -978,7 +978,7 @@ def recover_erase_romfs(board):
     return rc == 0
 
 
-def _ensure_cdc(board):
+def _ensure_cdc(board, allow_erase=False):
     """Recover a board that has wedged off USB (no CDC) via a J-Link SWD reset, so a later scenario
     doesn't fail every mpremote with "failed to access /dev/ttyACM0". Two ways a board loses its CDC:
     the AE3's machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB
@@ -1013,9 +1013,15 @@ def _ensure_cdc(board):
     # need the CDC we don't have. It is DELIBERATELY a one-way step: measured on the H7 Plus, a board
     # with no bootable slot does NOT come back on USB (boot.py has nothing to mount, and the port
     # never becomes usable), so do NOT probe for the CDC afterwards and do NOT treat its absence as
-    # failure. What makes this safe is that _flash_dfu_cli detects the missing CDC and reflashes
-    # through the bootloader's DFU window -- erase frees DFU, the flash uses it, and golden brings
-    # the port back. Erasing without that follow-up would strand the board.
+    # failure -- the follow-up golden flash over DFU is what restores the port.
+    #
+    # allow_erase GATES THIS BECAUSE IT IS DESTRUCTIVE. It is only ever right BEFORE a flash. The
+    # post-flash call must never erase: it would wipe the golden that was just written, and did --
+    # a run flashed golden through the DFU window, found the CDC not yet back, and erased it again.
+    if not allow_erase:
+        log("recover: %s CDC still gone; not erasing (a post-flash erase would destroy the image "
+            "just written) -- caller must handle it" % board)
+        return
     recover_erase_romfs(board)
     log("recover: %s romfs erased -- the golden flash will reprovision it over DFU "
         "(no CDC expected until then)" % board)
