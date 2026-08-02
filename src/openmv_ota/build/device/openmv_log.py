@@ -82,16 +82,32 @@ def _configure():  # pragma: no cover  (device: handler/UART; runs only when ena
     log.debug("log: configured")             # first line once the handler is live -- witnesses _configure
 
 
-def _bench_uart(path="/flash/.hilcov_uart"):
+_BENCH_VOLUMES = ("/sdcard", "/flash")   # SD first: when a card is present it is what USB-MSC shows
+
+
+def _bench_uart(paths=None):
     """A HIL bench opt-in: this file (bench-written) names a UART to stream the log to --
     the P4/P5 side-channel -- so the harness can watch boot/install/confirm (and the
     HILCOV coverage markers) across every reboot, without the USB REPL (opening which
-    DTR-resets the board). Absent on a production board -> None. Host-testable."""
-    try:
-        with open(path) as f:
-            return int(f.read(8).strip())   # bounded: the file is a single UART bus number
-    except Exception:
-        return None
+    DTR-resets the board). Absent on a production board -> None. Host-testable.
+
+    Looked up on EVERY writable volume, not just /flash, because the harness may drop it in over
+    USB-MSC and **what MSC exposes varies by board**: with an SD card inserted it is the card
+    (mounted /sdcard), without one it is internal flash (/flash). A single hardcoded path would
+    silently find nothing on an SD-equipped board -- no coverage UART, so every marker vanishes and
+    the run looks like a dead board rather than a misplaced file."""
+    if paths is None:
+        paths = [v + "/.hilcov_uart" for v in _BENCH_VOLUMES]
+    elif isinstance(paths, str):
+        paths = [paths]                     # a single path stays valid; iterating a str would
+        #                                     walk it CHARACTER by character and open("/") instead
+    for path in paths:
+        try:
+            with open(path) as f:
+                return int(f.read(8).strip())   # bounded: the file is a single UART bus number
+        except Exception:
+            continue
+    return None
 
 
 _bench = _bench_uart()                 # a bench board opts into UART logging via the file

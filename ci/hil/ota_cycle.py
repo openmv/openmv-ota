@@ -25,6 +25,7 @@ This is a live-hardware gate, not a host unit test -- it is invoked by the
 """
 
 import argparse
+import glob
 import json
 import os
 import subprocess
@@ -612,6 +613,7 @@ def resolve_uart(port):
 
 
 _CAP = None                                  # the live UartCapture (set by start()); see _await_boot
+_BOARD = None                                # the board under test (set in main); see run_cycle
 
 
 class UartCapture:
@@ -818,6 +820,10 @@ def bench_main_py(board, net, app="confirm"):
         "_blog = logging.getLogger('openmv_ota')\n\n\n"
         "async def main():\n"
         "    _blog.info('app: main() started')\n"
+        # Print the device_id on the UART so the harness never has to take the REPL to learn it.
+        # Reading it over mpremote meant a Ctrl-C, and a Ctrl-C kills this app (KeyboardInterrupt is
+        # a BaseException) -- the board can simply say who it is instead.
+        "    _blog.info('app: device_id %s' % openmv_ota.identity().get('device_id'))\n"
         "    openmv_ota.sync()  # apply bundled coprocessor resources early (no-op if none)\n"
         "    " + bring_up +
         "    _blog.info('app: network up, starting run()')\n"
@@ -904,6 +910,18 @@ def _flash_bench_files(board, _recovered=False):
     SBL, config-register-free) and the firmware reformats a clean FAT on the next boot. A runtime
     VfsFat.mkfs would crash the XIP-from-NOR mimxrt, so the SBL-side erase is the safe path. This
     keeps bench contention (two runs colliding) from wedging the RT until a human power-cycles it."""
+    # PREFER USB-MSC on the boards that have been proven on it: /flash is exposed as a plain FAT
+    # disk, so the same two files can be dropped in as files -- no mpremote, no Ctrl-C, nothing that
+    # can kill a running app. Idempotent, so a normal run writes nothing and needs no reset; when it
+    # DOES write, the golden flash that follows is the re-mount that makes the board see them (the
+    # firmware cannot see a host-side write until it re-mounts).
+    if BOARDS[board].get("flash") == "arduino_cli":
+        want = {".hilcov_uart": str(BOARDS[board]["cov_uart"]).encode()}
+        if os.path.exists(CFG["ca_node"]):
+            want[CFG["ca_board"].rsplit("/", 1)[1]] = open(CFG["ca_node"], "rb").read()
+        if _msc_put(want) is not None:
+            return                           # written (or already correct) without touching the REPL
+        log("prepare: no USB-MSC disk found -- falling back to the REPL for the bench files")
     # the CA must be on the board for run()'s TLS. Push it so the harness doesn't assume a
     # hand-placed cert (tolerant: a corrupt /flash surfaces on the .hilcov_uart write below).
     if os.path.exists(CFG["ca_node"]):
@@ -1031,6 +1049,59 @@ def jlink_reset_pulse(board, timeout=60):
            timeout=timeout, check=False, quiet=True)
     finally:
         os.unlink(sp)
+    return True
+
+
+def _msc_disk():
+    """The camera's USB mass-storage FAT partition (/flash exposed as a disk), or None.
+
+    A camera presents /flash over USB-MSC as well as the REPL, so bench files can be dropped in as
+    plain files -- no mpremote, no Ctrl-C, nothing that can kill a running app. Resolved through
+    /dev/disk/by-id so it is the BOARD's disk and not whatever sdX enumerated first; refuses to guess
+    when more than one camera is attached, exactly as resolve_uart does for the UART."""
+    disks = sorted(glob.glob("/dev/disk/by-id/usb-MicroPy_pyboard_Flash_*-part1"))
+    if len(disks) != 1:
+        return None                          # none attached, or ambiguous -> caller falls back
+    return disks[0]
+
+
+def _msc_put(files, mnt="/tmp/hil-cam-msc"):
+    """Write ``{name: bytes}`` into the camera's FAT over USB-MSC. Returns True iff anything CHANGED.
+
+    IDEMPOTENT ON PURPOSE. A host-side write is not visible to the running firmware until it
+    re-mounts the filesystem, so writing on every run would mean needing a reset on every run. Compare
+    first and write only on a difference: the normal run touches nothing, and the caller only has to
+    force a reset in the rare case something actually changed. (Never write while the board is also
+    writing /flash -- concurrent FAT access is what corrupted the RT's disk.)
+    """
+    disk = _msc_disk()
+    if disk is None:
+        return None                          # no MSC -> caller uses the REPL path
+    sh("mkdir -p %s" % mnt, check=False, quiet=True)
+    rc, _ = sh("sudo mount -t vfat -o ro %s %s" % (disk, mnt), check=False, quiet=True)
+    if rc != 0:
+        return None
+    try:
+        stale = [n for n, want in files.items()
+                 if not os.path.exists(os.path.join(mnt, n))
+                 or open(os.path.join(mnt, n), "rb").read() != want]
+    finally:
+        sh("sudo umount %s" % mnt, check=False, quiet=True)
+    if not stale:
+        log("bench files: already present and identical -- nothing written (no reset needed)")
+        return False
+    rc, out = sh("sudo mount -t vfat -o rw,flush %s %s" % (disk, mnt), check=False, quiet=True)
+    if rc != 0:
+        return None
+    try:
+        for name in stale:
+            with open(os.path.join(mnt, name), "wb") as fh:
+                fh.write(files[name])
+        sh("sync", check=False, quiet=True)
+    finally:
+        sh("sudo umount %s" % mnt, check=False, quiet=True)
+    log("bench files: wrote %s over USB-MSC (board sees them after the next reset)"
+        % ", ".join(sorted(stale)))
     return True
 
 
@@ -1216,14 +1287,20 @@ def _ensure_cdc(board, allow_erase=False):
         if BOARDS[board].get("flash") == "arduino_cli":
             if _dfu_leave(board):
                 continue                               # left DFU -> re-probe rather than reset it
-            # NOT in DFU and not answering: WAIT for the board's own boot marker. No reset of any
-            # kind. The nRST pin leaves the core halted with no USB at all; and a CORE reset here is
-            # just as wrong, because it restarts a 33 s boot on a ~47 s retry cadence, so the port is
-            # absent for much of the window the NEXT step (verify) needs it -- three minutes of
-            # "mpremote: port busy" ending in "golden did not mount a valid romfs", against golden
-            # that was fine. If the board is booting, waiting is what it needs; if it is not, a reset
-            # will not conjure a working one.
-            _await_boot(board, budget=45)
+            # NOT in DFU and not answering. Order matters here, and getting it wrong fails both ways:
+            #   * reset FIRST and you restart a 33 s boot every retry, so the board never finishes
+            #     one and the port is absent for the window verify needs it;
+            #   * never reset at all and a board that is genuinely wedged off USB stays wedged --
+            #     the whole run then fails before it flashes, with "neither a DFU device nor a port".
+            # So be patient once (it may simply still be booting), then assertive. A CORE reset
+            # revives this board reliably -- measured repeatedly, /dev/ttyACM0 back ~33 s later, from
+            # a state with no USB device of any kind. Never the nRST PIN: that leaves the core halted
+            # with no USB at all.
+            if attempt == 0:
+                _await_boot(board, budget=45)
+            else:
+                jlink_core_reset(board)
+                _await_boot(board, budget=60)
             continue
         jlink_reset_pulse(board)                       # see jlink_reset_pulse for why pin THEN core
         time.sleep(8)
@@ -1285,20 +1362,14 @@ def _flash_arduino_cli(board, bad_romfs=False):
     rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
     if rc != 0:
         raise RuntimeError("arduino flash factory failed rc=%d: %s" % (rc, out[-400:]))
-    # TWO separate failures live here, and fixing either alone still fails the run.
-    #
-    # 1. After `dfu-util :leave` this board does not come up on its own: measured across two runs,
-    #    the UART goes COMPLETELY silent once the flash completes -- no boot markers, no USB. A
-    #    reset through the debug core boots it every time (markers ~32 s later). So reset.
-    # 2. Then WATCH the boot on the UART instead of probing for it. An mpremote probe Ctrl-C's the
-    #    app dead (KeyboardInterrupt is a BaseException the app does not catch), which is what froze
-    #    every boot at `data: path` in the run that DID reset correctly.
-    #
-    # Reset, then watch: the reset is what makes it boot, and watching is what lets it finish.
-    jlink_core_reset(board)
+    # Just WATCH it come back. Measured by hand, running this exact command and touching nothing:
+    # USB drops at :leave and the board re-enumerates 31 s later on its own, with the app checking
+    # in -- so `:leave` needs no help. (An earlier claim here that it did was an artifact of the
+    # probing that used to follow: an mpremote probe Ctrl-C's the app dead, because KeyboardInterrupt
+    # is a BaseException the app does not catch, and the retries then reset the board out from under
+    # its own 33 s boot.) No probe, no reset: neither is needed, and both did damage.
     if not _await_boot(board):
         _dfu_leave(board)                    # stuck in DFU? leave it without needing the J-Link
-    _ensure_cdc(board)                       # POST-flash: allow_erase stays False (never wipe golden)
 
 
 def _flash_blhost_imx(board, bad_romfs=False):
@@ -1327,6 +1398,40 @@ def _flash_blhost_imx(board, bad_romfs=False):
         sh([ota("openmv-ota"), "flash", op, CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
+
+
+def verify_golden_uart(board, budget=180):
+    """verify_golden() without taking the REPL: read the board's own account off the UART.
+
+    Same two claims as the mpremote version -- golden booted and mounted a valid romfs, and here is
+    its device_id -- from `boot: mounted ...` and the bench app's `app: device_id ...` line. The
+    mount claim must come from a boot AFTER this call (a stale marker would "verify" the image the
+    flash replaced); the id may come from anywhere in the log, since a board's device_id does not
+    change between boots.
+
+    Why not just exec it: mpremote grabs the REPL with a Ctrl-C, which kills the running app
+    (KeyboardInterrupt is a BaseException the app does not catch). On a board that takes ~33 s to
+    enumerate, the retry loop around that probe reset the board out from under its own boot and
+    reported "golden did not mount a valid romfs" against golden that was fine. Watching cannot do
+    that -- it is the same UART the coverage markers already come from.
+    """
+    log("verify: golden boots + /rom mounts + device_id -- from the UART, REPL untouched")
+    if _CAP is None:
+        return verify_golden()               # no capture on this node: fall back to the REPL
+    seen = len(_CAP.raw)
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        fresh = _CAP.raw[seen:]
+        if any("boot: mounted" in ln for ln in fresh):
+            ids = [ln.split("app: device_id ", 1)[1].strip()
+                   for ln in _CAP.raw if "app: device_id " in ln]
+            if ids:
+                log("verify: golden mounted; device_id %s" % ids[-1])
+                return ids[-1]
+        time.sleep(2)
+    raise RuntimeError(
+        "golden did not report a mount + device_id on the UART within %ds; last lines:\n%s"
+        % (budget, "\n".join(_CAP.raw[-20:])))
 
 
 def verify_golden():
@@ -1550,10 +1655,18 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
                     device may loop (re-offer -> re-fail -> golden), so we exit once it has
                     SETTLED back on golden with every expected marker seen."""
     log("cycle: hard reset -> autonomous run; end=%s; watching UART + server" % end)
-    try:                                     # machine.reset() drops the USB-CDC -> mpremote
-        device_exec("import machine; machine.reset()", timeout=20, check=False)
-    except Exception:
-        pass                                 # ...an I/O error here just means the reset landed
+    # On a board driven entirely off the UART, reset through the DEBUG CORE: it needs no CDC (so it
+    # works when the port has not come back yet) and it cannot Ctrl-C anything. The mpremote route
+    # has to take the REPL to ask for the reset -- harmless in itself, since a reset is what we
+    # wanted, but it fails outright when the port is absent, which is precisely when the scored
+    # window would otherwise never start.
+    if _BOARD and BOARDS[_BOARD].get("flash") == "arduino_cli" and jlink_core_reset(_BOARD):
+        pass                                 # reset landed over SWD; no REPL involved
+    else:
+        try:                                 # machine.reset() drops the USB-CDC -> mpremote
+            device_exec("import machine; machine.reset()", timeout=20, check=False)
+        except Exception:
+            pass                             # ...an I/O error here just means the reset landed
     deadline = time.time() + timeout_s
     last = None
     saw_golden = saw_target = False
@@ -1627,6 +1740,8 @@ def main():
     expect, forbid = scenario_markers(args.board, args.scenario)
     pub_version = spec.get("version", args.target)     # bad_version publishes below the floor
     t0 = time.time()
+    global _BOARD
+    _BOARD = args.board
     trace = {"board": args.board, "network": network, "scenario": args.scenario,
              "target": args.target, "end": spec["end"], "passed": False,
              "expect": sorted(expect), "forbid": sorted(forbid), "markers": [], "phases": {}}
@@ -1673,7 +1788,10 @@ def main():
                 phase("build_golden", lambda: build_golden(args.board))
                 phase("flash_golden", lambda: flash_golden(args.board))
                 # verify_golden reads the device_id in the same early (pre-watchdog-arm) exec.
-                devid = phase("verify_golden", verify_golden)
+                devid = phase("verify_golden",
+                              (lambda: verify_golden_uart(args.board))
+                              if BOARDS[args.board].get("flash") == "arduino_cli"
+                              else verify_golden)
             if devid is None:                    # --skip-provision: board already up, read it directly
                 devid = device_id()
             trace["device_id"] = devid

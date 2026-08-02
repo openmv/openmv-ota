@@ -142,18 +142,34 @@ def test_arduino_flash_never_sleeps_a_flat_guess():
 
 
 @pytest.mark.parametrize("board", _ARDUINO)
-def test_ensure_cdc_waits_and_never_resets_an_arduino(board, monkeypatch):
-    """Neither reset belongs here. The nRST PIN leaves the core halted with no USB at all; a CORE
-    reset restarts a 33 s boot on a ~47 s retry cadence, so the port is absent for much of the
-    window verify needs it -- three minutes of "mpremote: port busy" ending in "golden did not mount
-    a valid romfs", against a golden that was fine. Waiting is the recovery."""
+def test_ensure_cdc_waits_before_it_resets(board, monkeypatch):
+    """Patient first, assertive after. Resetting on the FIRST attempt restarts a 33 s boot on every
+    retry so none ever finishes; never resetting at all leaves a genuinely wedged board wedged, and
+    the run dies before it flashes with "neither a DFU device nor a port". A core reset revives this
+    board from no-USB-at-all in ~33 s, so it belongs on the later attempts."""
+    monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: False)
+    monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: False)
+    monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (1, ""))
+    order = []
+    monkeypatch.setattr(ota_cycle, "_await_boot", lambda b, **k: order.append("wait") or False)
+    monkeypatch.setattr(ota_cycle, "jlink_core_reset", lambda b, **k: order.append("reset"))
+    monkeypatch.setattr(ota_cycle, "jlink_reset_pulse",
+                        lambda *a, **k: pytest.fail("never the nRST pin on an Arduino"))
+    ota_cycle._ensure_cdc(board)
+    assert order[0] == "wait", "the first attempt must not reset a board that may just be booting"
+    assert "reset" in order, "a wedged board must eventually get the reset that revives it"
+
+
+@pytest.mark.parametrize("board", _ARDUINO)
+def test_ensure_cdc_never_pulses_the_pin(board, monkeypatch):
+    """The nRST PIN specifically: it leaves the core halted with no USB at all. (The debug-CORE
+    reset is fine and necessary -- see test_ensure_cdc_waits_before_it_resets.)"""
     monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: False)
     monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: False)   # not in DFU -> the wait path
     monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (1, ""))
     waits = []
     monkeypatch.setattr(ota_cycle, "_await_boot", lambda b, **k: waits.append(b) or False)
-    monkeypatch.setattr(ota_cycle, "jlink_core_reset",
-                        lambda *a, **k: pytest.fail("must not reset the core mid-boot"))
+    monkeypatch.setattr(ota_cycle, "jlink_core_reset", lambda *a, **k: None)
     monkeypatch.setattr(ota_cycle, "jlink_reset_pulse",
                         lambda *a, **k: pytest.fail("must not pulse the nRST pin on an Arduino"))
     ota_cycle._ensure_cdc(board)          # allow_erase defaults False -> returns after the retries
@@ -176,13 +192,16 @@ def test_arduino_flash_watches_the_uart_and_does_not_probe():
     assert "_await_cdc" not in body, "the passive wait must replace the probe, not sit beside it"
 
 
-def test_arduino_flash_resets_then_watches():
-    """Both halves, in order. After `:leave` the board's UART goes silent and it never boots on its
-    own (measured twice), so a debug-core reset is what starts it; and the wait that follows must be
-    passive, because a probe Ctrl-C's the app dead. Fixing either alone still fails the run."""
+def test_arduino_flash_only_watches_after_leave():
+    """`:leave` needs NO help. Measured by running the harness's own flash command by hand and
+    touching nothing: USB drops at :leave and the board re-enumerates 31 s later on its own, app
+    checking in. An earlier version of this test asserted the opposite -- that belief came from runs
+    where the probing that followed the flash was killing the app, and it cost a wasted cycle."""
     body = _body("_flash_arduino_cli")
-    assert "jlink_core_reset" in body, "after :leave the board does not boot by itself"
-    assert body.index("jlink_core_reset") < body.index("_await_boot"), "reset, THEN watch"
+    assert "_await_boot" in body
+    assert "jlink_core_reset" not in body, ":leave self-recovers; a reset here is unnecessary churn"
+    assert "_ensure_cdc(board)" not in body.split("_await_boot")[-1], (
+        "nothing may probe the CDC after the flash -- that is what killed the app")
 
 
 def test_await_boot_is_passive(monkeypatch):
@@ -219,3 +238,63 @@ def test_bench_app_reports_a_keyboardinterrupt_death():
     src = ota_cycle.bench_main_py("ARDUINO_PORTENTA_H7", "wifi")
     assert "except BaseException" in src
     assert "app: CRASHED" in src
+
+
+# ---------------------------------------------------------------------------
+# Driving the board without the REPL: DFU to flash, UART to observe, J-Link to reset, USB-MSC for
+# the bench files. The CDC probe is what killed the app, so the goal is to need the CDC nowhere.
+
+
+def test_msc_write_is_idempotent(monkeypatch, tmp_path):
+    """A host-side FAT write is invisible to the firmware until it re-mounts, so writing every run
+    would mean a reset every run. Identical content must write NOTHING."""
+    (tmp_path / ".hilcov_uart").write_bytes(b"1")
+    monkeypatch.setattr(ota_cycle, "_msc_disk", lambda: "/dev/fake1")
+    monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (0, ""))
+    assert ota_cycle._msc_put({".hilcov_uart": b"1"}, mnt=str(tmp_path)) is False
+
+
+def test_msc_write_happens_when_content_differs(monkeypatch, tmp_path):
+    (tmp_path / ".hilcov_uart").write_bytes(b"3")            # stale: a different UART
+    monkeypatch.setattr(ota_cycle, "_msc_disk", lambda: "/dev/fake1")
+    monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (0, ""))
+    assert ota_cycle._msc_put({".hilcov_uart": b"1"}, mnt=str(tmp_path)) is True
+    assert (tmp_path / ".hilcov_uart").read_bytes() == b"1"
+
+
+def test_msc_disk_refuses_to_guess_between_cameras(monkeypatch):
+    """Two cameras on one node -> picking either is a coin flip that writes to the wrong board."""
+    monkeypatch.setattr(ota_cycle.glob, "glob", lambda p: ["/dev/a-part1", "/dev/b-part1"])
+    assert ota_cycle._msc_disk() is None
+
+
+def test_bench_app_prints_its_device_id():
+    """So the harness never takes the REPL to learn it."""
+    assert "app: device_id" in ota_cycle.bench_main_py("ARDUINO_PORTENTA_H7", "wifi")
+
+
+def test_verify_from_uart_requires_a_FRESH_mount(monkeypatch):
+    """A `boot: mounted` from before the flash would verify the image the flash just replaced."""
+    class Cap:
+        raw = ["INFO openmv_ota: boot: mounted FRONT (payload 16777216)",
+               "INFO openmv_ota: app: device_id ABC123"]      # both STALE, pre-flash
+    monkeypatch.setattr(ota_cycle, "_CAP", Cap())
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="device_id"):
+        ota_cycle.verify_golden_uart("ARDUINO_PORTENTA_H7", budget=0)
+
+
+def test_verify_from_uart_returns_the_id(monkeypatch):
+    cap = type("C", (), {"raw": []})()
+    monkeypatch.setattr(ota_cycle, "_CAP", cap)
+
+    def boot(_s):
+        cap.raw.append("INFO openmv_ota: boot: mounted FRONT (payload 16777216)")
+        cap.raw.append("INFO openmv_ota: app: device_id DEADBEEF")
+    monkeypatch.setattr(ota_cycle.time, "sleep", boot)
+    assert ota_cycle.verify_golden_uart("ARDUINO_PORTENTA_H7", budget=30) == "DEADBEEF"
+
+
+def test_verify_from_uart_never_execs():
+    body = _body("verify_golden_uart")
+    assert "device_exec" not in body, "the whole point is not to take the REPL"
