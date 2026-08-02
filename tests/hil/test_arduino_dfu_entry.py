@@ -93,3 +93,51 @@ def test_arduino_flash_does_not_use_the_reset_window():
     body = _SRC.split("def _flash_arduino_cli(")[1].split("\ndef ")[0]
     assert "dfu_reset_catch" not in body, "MCUboot has no reset DFU window to catch"
     assert "_arduino_dfu_run" in body
+
+
+# ---------------------------------------------------------------------------
+# Boot-time budget. Measured on the bench (J-Link reset -> /dev/ttyACM0):
+_PORTENTA_BOOT_S = 31.7
+# The old code slept a flat 15 s after a factory flash and then retried every ~11 s WITH A RESET in
+# the loop, so a healthy board never finished booting once. The run failed with "golden did not
+# mount a valid romfs" against a board that was running that exact golden minutes later.
+
+
+def test_await_cdc_budget_clears_the_measured_boot():
+    """The budget must exceed the measured boot with real margin, not sit near it."""
+    budget = inspect.signature(ota_cycle._await_cdc).parameters["budget"].default
+    assert budget > 3 * _PORTENTA_BOOT_S, (
+        "budget %ss leaves no margin over a %ss boot" % (budget, _PORTENTA_BOOT_S))
+
+
+def test_await_cdc_returns_as_soon_as_the_board_answers(monkeypatch):
+    """Costs nothing on a healthy board: no waiting once it responds."""
+    monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: True)
+    monkeypatch.setattr(ota_cycle.time, "sleep",
+                        lambda s: pytest.fail("must not sleep once the board answers"))
+    assert ota_cycle._await_cdc("ARDUINO_PORTENTA_H7") is True
+
+
+def test_await_cdc_gives_up_and_reports(monkeypatch):
+    monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: False)
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    assert ota_cycle._await_cdc("ARDUINO_PORTENTA_H7", budget=0) is False
+
+
+def test_arduino_flash_waits_for_the_boot_instead_of_sleeping():
+    body = _SRC.split("def _flash_arduino_cli(")[1].split("\ndef ")[0]
+    assert "_await_cdc" in body
+    assert "time.sleep(15)" not in body, "a flat sleep cannot cover a 32s boot"
+
+
+@pytest.mark.parametrize("board", _ARDUINO)
+def test_ensure_cdc_never_pulses_reset_on_arduino(board, monkeypatch):
+    """A reset restarts the ~32s boot, and a pulse whose `connect` fails leaves the core halted with
+    no USB at all. Waiting is the only safe recovery on these boards."""
+    monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: False)
+    monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: False)   # not in DFU -> the old pulse path
+    monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (1, ""))
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ota_cycle, "jlink_reset_pulse",
+                        lambda *a, **k: pytest.fail("must not pulse nRST on an Arduino board"))
+    ota_cycle._ensure_cdc(board)          # allow_erase defaults False -> returns after the retries

@@ -971,6 +971,29 @@ def _cdc_responsive(timeout=15):
     return rc == 0
 
 
+def _await_cdc(board, budget=150):
+    """Poll for a usable CDC for up to ``budget`` seconds; True as soon as the board answers.
+
+    A FLAT SLEEP IS THE WRONG SHAPE HERE. Measured on the Portenta: 31.7 s from a reset to
+    /dev/ttyACM0 even existing (`JLinkExe r,g` -> device node), and longer to answer mpremote. The
+    old flat sleep(15) after a factory flash therefore guaranteed the probe that followed would fail
+    on a perfectly HEALTHY board -- and what followed the failure was a reset, which restarted the
+    32 s clock. Three retries ~11 s apart never let a single boot finish: a livelock that reads as a
+    dead board. (It reads that way to the harness too -- the run failed with "golden did not mount a
+    valid romfs" on a board whose golden was fine and running minutes later.)
+
+    Waiting costs nothing when the board is healthy (it returns on the first answer) and costs only
+    the budget when it isn't, so the budget is set well above the measured boot rather than near it.
+    """
+    deadline = time.time() + budget
+    while True:
+        if _cdc_responsive():
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(3)
+
+
 def jlink_reset_pulse(board, timeout=60):
     """Pulse the board's PHYSICAL nRST line via the J-Link, then connect + reset + GO.
 
@@ -1122,8 +1145,17 @@ def _ensure_cdc(board, allow_erase=False):
         # recovering it. Measured on the Portenta: after a flash the app had booted (markers on the
         # UART), then three reset pulses took the CDC away for good. Leave DFU properly instead;
         # only fall back to the pin pulse if it is not in DFU at all.
-        if BOARDS[board].get("flash") == "arduino_cli" and _dfu_leave(board):
-            continue                                   # left DFU -> re-probe rather than reset it
+        if BOARDS[board].get("flash") == "arduino_cli":
+            if _dfu_leave(board):
+                continue                               # left DFU -> re-probe rather than reset it
+            # NOT in DFU and not answering: WAIT, never pulse. Two measurements say so. (1) These
+            # boards take ~32 s from reset to a device node, so an ~11 s retry cadence with a reset
+            # in it restarts the boot every time and no attempt ever finishes. (2) A pulse whose
+            # follow-up `connect` fails leaves the core halted with NO usb at all -- the Portenta
+            # went dark for minutes and only came back on a J-Link connect+r+g. There is nothing an
+            # nRST can fix here that waiting cannot, and plenty it breaks.
+            time.sleep(20)
+            continue
         jlink_reset_pulse(board)                       # see jlink_reset_pulse for why pin THEN core
         time.sleep(8)
     # A reset alone cannot fix a board whose APP is what breaks the CDC -- it just reboots straight
@@ -1184,8 +1216,9 @@ def _flash_arduino_cli(board, bad_romfs=False):
     rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
     if rc != 0:
         raise RuntimeError("arduino flash factory failed rc=%d: %s" % (rc, out[-400:]))
-    time.sleep(15)                           # let it boot + re-enumerate after leave-DFU
-    if not _cdc_responsive():
+    # Wait for the boot rather than guessing at it: 31.7 s measured from reset to a device node on
+    # the Portenta, so the flat sleep(15) this replaces could only ever be followed by a failed probe.
+    if not _await_cdc(board):
         _dfu_leave(board)                    # stuck in DFU? leave it without needing the J-Link
     _ensure_cdc(board)                       # POST-flash: allow_erase stays False (never wipe golden)
 
