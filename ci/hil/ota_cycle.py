@@ -227,6 +227,10 @@ COVERAGE = {
     "install: attempt": "install.retry",
     "install: installed + armed": "install.armed",
     "install: FAILED after": "install.fallback",
+    # NB: a dropped download that RESUMES logs "install: resuming at <offset>" -- deliberately NOT a
+    # coverage marker. It only fires when the link actually drops mid-transfer, which no scenario can
+    # make happen on demand (it is guaranteed on the H7 Plus, whose WINC aborts every transfer at
+    # ~50 s, and never happens on the N6/RT), so it is a field diagnostic, not a witnessed path.
     "install: rejected before erase": "install.reject",
     # NB: a TRANSIENT pre-erase transport failure logs "install: deferred, transport error" instead of
     # the line above, so it does NOT emit install.reject (the happy-path scenarios forbid that). It is

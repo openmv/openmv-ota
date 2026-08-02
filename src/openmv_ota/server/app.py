@@ -17,6 +17,7 @@ hints under ``from __future__ import annotations``; per-request collaborators co
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -565,7 +566,38 @@ def artifact(token: str, filename: str, request: Request):
         data = st.storage.get(key)
     except ServerError:
         raise HTTPException(status_code=404) from None
-    return Response(content=data, media_type=_media_type(filename))
+    return _ranged(data, _media_type(filename), request.headers.get("range"))
+
+
+# A single open byte range ("bytes=START-" / "bytes=START-END"); a device resuming an interrupted
+# download only ever asks for an open-ended suffix. Multi-range (comma-separated) is deliberately
+# unsupported -- nothing we serve needs it, and a partial implementation would be worse than none.
+_RANGE_RE = re.compile(r"^bytes=(\d+)-(\d*)$")
+
+
+def _ranged(data: bytes, media_type: str, header: str | None) -> Response:
+    """Serve ``data``, honouring a single ``Range`` request with a 206.
+
+    A device on a poor link cannot finish a long download in one connection (the WINC1500 aborts
+    at ~50 s regardless of progress), so the installer resumes from the compressed byte offset it
+    reached rather than restarting from zero. That only works if the artifact endpoint speaks
+    ranges. The prod path already does -- it 302s to object storage (R2/S3), which serves ranges
+    natively -- so this is the SELF-HOSTED path catching up. Without it the bench, which is the
+    local path, could not exercise resume at all.
+    """
+    headers = {"Accept-Ranges": "bytes"}          # advertise it even on a full response
+    m = _RANGE_RE.match((header or "").strip()) if header else None
+    if m is None:
+        return Response(content=data, media_type=media_type, headers=headers)
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else len(data) - 1
+    if start >= len(data) or end < start:         # unsatisfiable -> 416 with the true length
+        return Response(status_code=416, headers={**headers,
+                                                  "Content-Range": "bytes */%d" % len(data)})
+    end = min(end, len(data) - 1)
+    return Response(content=data[start:end + 1], status_code=206, media_type=media_type,
+                    headers={**headers,
+                             "Content-Range": "bytes %d-%d/%d" % (start, end, len(data))})
 
 
 def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_auth=None):
