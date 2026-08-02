@@ -547,10 +547,31 @@ def regression_scenarios(board, network):
 # UART marker capture -- a background reader that records every HILCOV line for the
 # whole cycle, independent of the USB-CDC console and surviving every reboot.
 # ---------------------------------------------------------------------------
+def resolve_uart(port):
+    """The marker UART's real device path. Linux assigns ``ttyUSBn`` in PLUG ORDER, so the
+    configured name (BOARD_UART, default /dev/ttyUSB0) silently becomes ttyUSB1 the moment the
+    bridge is re-plugged -- after which EVERY scenario fails with "could not open port" and
+    ``coverage 0/N``, which reads like a dead board rather than a renamed device (it cost a full
+    10-scenario RT leg exactly that way). If the configured path is gone, fall back to the node's
+    USB-serial bridge -- but only when there is EXACTLY ONE, so this never silently picks the
+    wrong adapter on a node that has several; ambiguity keeps the configured path and lets the
+    real "no such file" error surface."""
+    if os.path.exists(port):
+        return port
+    from serial.tools import list_ports
+    found = sorted(p.device for p in list_ports.comports()
+                   if p.vid is not None and "ttyUSB" in p.device)
+    if len(found) != 1:
+        return port           # none, or ambiguous -> don't guess; fail with the real error
+    log("uart: %s is gone -- using this node's only USB-serial bridge %s (re-plug renumbering)"
+        % (port, found[0]))
+    return found[0]
+
+
 class UartCapture:
     def __init__(self, port, baud=115200):
         import serial
-        self._ser = serial.Serial(port, baud, timeout=0.5)
+        self._ser = serial.Serial(resolve_uart(port), baud, timeout=0.5)
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
         self.raw = []
