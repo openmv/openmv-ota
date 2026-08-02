@@ -176,6 +176,15 @@ def test_arduino_flash_watches_the_uart_and_does_not_probe():
     assert "_await_cdc" not in body, "the passive wait must replace the probe, not sit beside it"
 
 
+def test_arduino_flash_resets_then_watches():
+    """Both halves, in order. After `:leave` the board's UART goes silent and it never boots on its
+    own (measured twice), so a debug-core reset is what starts it; and the wait that follows must be
+    passive, because a probe Ctrl-C's the app dead. Fixing either alone still fails the run."""
+    body = _body("_flash_arduino_cli")
+    assert "jlink_core_reset" in body, "after :leave the board does not boot by itself"
+    assert body.index("jlink_core_reset") < body.index("_await_boot"), "reset, THEN watch"
+
+
 def test_await_boot_is_passive(monkeypatch):
     """It must never open the CDC: that is the whole point."""
     body = _body("_await_boot")

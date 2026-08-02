@@ -1285,10 +1285,17 @@ def _flash_arduino_cli(board, bad_romfs=False):
     rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
     if rc != 0:
         raise RuntimeError("arduino flash factory failed rc=%d: %s" % (rc, out[-400:]))
-    # WATCH the boot on the UART; do not poke the CDC for it. `:leave` boots the app fine (its
-    # markers land on the UART seconds later) -- what used to break here was the waiting itself:
-    # every mpremote probe Ctrl-C'd the app dead, and the reset that followed restarted a 33 s boot
-    # that then never finished. Watching is free and cannot perturb what it measures.
+    # TWO separate failures live here, and fixing either alone still fails the run.
+    #
+    # 1. After `dfu-util :leave` this board does not come up on its own: measured across two runs,
+    #    the UART goes COMPLETELY silent once the flash completes -- no boot markers, no USB. A
+    #    reset through the debug core boots it every time (markers ~32 s later). So reset.
+    # 2. Then WATCH the boot on the UART instead of probing for it. An mpremote probe Ctrl-C's the
+    #    app dead (KeyboardInterrupt is a BaseException the app does not catch), which is what froze
+    #    every boot at `data: path` in the run that DID reset correctly.
+    #
+    # Reset, then watch: the reset is what makes it boot, and watching is what lets it finish.
+    jlink_core_reset(board)
     if not _await_boot(board):
         _dfu_leave(board)                    # stuck in DFU? leave it without needing the J-Link
     _ensure_cdc(board)                       # POST-flash: allow_erase stays False (never wipe golden)
