@@ -131,13 +131,33 @@ def test_arduino_flash_waits_for_the_boot_instead_of_sleeping():
 
 
 @pytest.mark.parametrize("board", _ARDUINO)
-def test_ensure_cdc_never_pulses_reset_on_arduino(board, monkeypatch):
-    """A reset restarts the ~32s boot, and a pulse whose `connect` fails leaves the core halted with
-    no USB at all. Waiting is the only safe recovery on these boards."""
+def test_ensure_cdc_uses_a_core_reset_not_the_nrst_pin(board, monkeypatch):
+    """The nRST PIN is the hazard: a pulse whose follow-up `connect` fails leaves the core halted
+    with no USB at all (the Portenta went dark for minutes). A reset through the debug core brought
+    it back every time, so that -- plus a wait clearing the 32s boot -- is the recovery."""
     monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: False)
-    monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: False)   # not in DFU -> the old pulse path
+    monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: False)   # not in DFU -> the reset path
     monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (1, ""))
-    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    slept, cores = [], []
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(ota_cycle, "jlink_core_reset", lambda b, **k: cores.append(b))
     monkeypatch.setattr(ota_cycle, "jlink_reset_pulse",
-                        lambda *a, **k: pytest.fail("must not pulse nRST on an Arduino board"))
+                        lambda *a, **k: pytest.fail("must not pulse the nRST pin on an Arduino"))
     ota_cycle._ensure_cdc(board)          # allow_erase defaults False -> returns after the retries
+    assert cores, "expected a debug-core reset"
+    assert max(slept) > _PORTENTA_BOOT_S, "the wait must clear the measured 32s boot"
+
+
+def test_core_reset_never_touches_the_reset_pin():
+    """SetRESET/ClrRESET is precisely what must NOT appear here."""
+    body = _SRC.split("def jlink_core_reset(")[1].split("\ndef ")[0]
+    assert "SetRESET" not in body and "ClrRESET" not in body
+    assert "connect" in body
+
+
+def test_arduino_flash_core_resets_after_leave():
+    """`dfu-util :leave` boots the app without a full system reset and the CYW4343 does not survive
+    it -- the board stalls in wifi bring-up with no USB. Reset the core after every factory flash."""
+    body = _SRC.split("def _flash_arduino_cli(")[1].split("\ndef ")[0]
+    assert "jlink_core_reset" in body
+    assert body.index("jlink_core_reset") < body.index("_await_cdc"), "reset, THEN wait"

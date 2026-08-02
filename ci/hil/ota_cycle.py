@@ -1018,6 +1018,29 @@ def jlink_reset_pulse(board, timeout=60):
     return True
 
 
+def jlink_core_reset(board, timeout=60):
+    """Reset a board through the DEBUG CORE (``connect; r; g``) -- no nRST pin, no DFU-window games.
+
+    This is the SAFE half of jlink_reset_pulse. The pin pulse in that function is what leaves an
+    Arduino board halted with no USB at all when its follow-up ``connect`` fails; a core reset has
+    brought the Portenta back every single time it was tried (full boot, CDC at ~32 s, app checking
+    in). Use this for the MCUboot boards; keep the pin pulse for the ones that need it to reach a
+    genuinely hung core. No-op for a board with no J-Link.
+    """
+    if "jlink_device" not in BOARDS[board]:
+        return False
+    fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="corereset-")
+    os.write(fd, b"si SWD\nspeed 4000\nconnect\nr\ng\nqc\n")
+    os.close(fd)
+    try:
+        sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
+            "-speed", "4000", "-AutoConnect", "0", "-CommanderScript", sp],
+           timeout=timeout, check=False, quiet=True)
+    finally:
+        os.unlink(sp)
+    return True
+
+
 def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
     """Run a dfu-util-backed command that WAITS for a DFU device (``-w``), pulsing the board's reset
     line while it waits so the bootloader's BRIEF DFU window gets caught.
@@ -1136,8 +1159,13 @@ def _ensure_cdc(board, allow_erase=False):
                    timeout=15, check=False, quiet=True)
         if rc == 0:
             return
-        log("recover: %s CDC missing/unresponsive at %s -- free holders + J-Link SWD reset (try %d)"
-            % (board, CFG["acm"], attempt + 1))
+        # Say which lever is actually about to be pulled: the Arduino branch below WAITS rather than
+        # resetting, and a log line claiming a reset that never happened is exactly the kind of
+        # misdirection that cost hours today.
+        how = ("wait for the boot" if BOARDS[board].get("flash") == "arduino_cli"
+               else "J-Link SWD reset")
+        log("recover: %s CDC missing/unresponsive at %s -- free holders + %s (try %d)"
+            % (board, CFG["acm"], how, attempt + 1))
         sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
         # On the Arduino MCUboot boards an nRST is the WRONG tool and actively makes things worse:
         # the 1200-baud touch that entered DFU sets a "stay in bootloader" flag in RAM, and RAM
@@ -1148,13 +1176,13 @@ def _ensure_cdc(board, allow_erase=False):
         if BOARDS[board].get("flash") == "arduino_cli":
             if _dfu_leave(board):
                 continue                               # left DFU -> re-probe rather than reset it
-            # NOT in DFU and not answering: WAIT, never pulse. Two measurements say so. (1) These
-            # boards take ~32 s from reset to a device node, so an ~11 s retry cadence with a reset
-            # in it restarts the boot every time and no attempt ever finishes. (2) A pulse whose
-            # follow-up `connect` fails leaves the core halted with NO usb at all -- the Portenta
-            # went dark for minutes and only came back on a J-Link connect+r+g. There is nothing an
-            # nRST can fix here that waiting cannot, and plenty it breaks.
-            time.sleep(20)
+            # NOT in DFU and not answering: CORE reset, then wait long enough for the boot to
+            # finish. Never the nRST pin -- a pulse whose follow-up `connect` fails leaves the core
+            # halted with NO usb at all (the Portenta went dark for minutes that way, and only a
+            # J-Link connect+r+g brought it back). The wait must clear the MEASURED 31.7 s
+            # reset-to-device-node, or the next probe just fails on a board that is booting fine.
+            jlink_core_reset(board)
+            time.sleep(35)
             continue
         jlink_reset_pulse(board)                       # see jlink_reset_pulse for why pin THEN core
         time.sleep(8)
@@ -1216,8 +1244,16 @@ def _flash_arduino_cli(board, bad_romfs=False):
     rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
     if rc != 0:
         raise RuntimeError("arduino flash factory failed rc=%d: %s" % (rc, out[-400:]))
-    # Wait for the boot rather than guessing at it: 31.7 s measured from reset to a device node on
-    # the Portenta, so the flat sleep(15) this replaces could only ever be followed by a failed probe.
+    # `dfu-util :leave` boots the app WITHOUT a full system reset, and the CYW4343 does not survive
+    # that. Measured twice on the Portenta: after :leave the board reaches `app: main() started` ->
+    # `data: path` and then stalls in wifi bring-up forever, USB never enumerating -- which the
+    # harness can only report as "golden did not mount a valid romfs" against a perfectly good image.
+    # A reset through the debug core clears it every time (full boot, CDC at ~32 s, app checking in),
+    # so do it unconditionally rather than waiting out a stall we know :leave causes. CORE reset, not
+    # jlink_reset_pulse -- the nRST pin is what leaves this board dark.
+    jlink_core_reset(board)
+    # Then wait for the boot rather than guessing at it: 31.7 s measured from reset to a device node,
+    # so the flat sleep(15) this replaces could only ever be followed by a failed probe.
     if not _await_cdc(board):
         _dfu_leave(board)                    # stuck in DFU? leave it without needing the J-Link
     _ensure_cdc(board)                       # POST-flash: allow_erase stays False (never wipe golden)
