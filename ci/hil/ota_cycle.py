@@ -134,6 +134,30 @@ BOARDS = {
                                              # via the SAME `openmv-ota flash factory` CLI as the N6
         "jlink_device": "STM32H743VI",       # debug-only name, used ONLY by _ensure_cdc to SWD-reset
     },
+    # --- Arduino MCUboot boards ------------------------------------------------------------------
+    # Both are STM32H7 like the H7 Plus, but with ONBOARD CYW4343 wifi instead of a WINC1500 shield.
+    # That makes them the control for the H7 Plus's armed-watchdog reset loop (see WATCHDOG_BROKEN):
+    # same family, same WWDG, different network driver. A passing watchdog leg here isolates the
+    # failure to the WINC; a failing one makes it H7-wide.
+    "ARDUINO_NICLA_VISION": {                # Arduino Nicla Vision (STM32H747, QSPI ROMFS dual-slot)
+        "cov_uart": 4,                       # UART4 on the SDA/SCL header (J2-1=PB9 TX, J2-2=PB8 RX),
+                                             # NOT the P4/P5 pads (those are SWCLK/NRST on the Nicla)
+        "cov_write": "install.xip",          # stm32 XIP write path (dual-slot lives in the QSPI ROMFS)
+        "network": "wifi",                   # onboard CYW4343 -- standard network.WLAN (no shield)
+        "flash": "arduino_cli",              # 1200-baud touch -> MCUboot DFU, address-based dfu-util -w
+        "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
+    },
+    "ARDUINO_PORTENTA_H7": {                 # Arduino Portenta H7 (STM32H747, QSPI ROMFS dual-slot)
+        "cov_uart": 1,                       # UART1 (TX=pin_A9 / RX=pin_A10) -- VERIFIED end-to-end on
+                                             # the bench: board writes land byte-perfect on the node's
+                                             # CP2102. NB UART1 is also MICROPY_HW_UART_REPL, which is
+                                             # fine while the REPL is on USB, but watch for contention.
+        "cov_write": "install.xip",          # stm32 XIP write path (dual-slot lives in the QSPI ROMFS)
+        "network": "wifi",                   # onboard CYW4343 (network.LAN() also exists -- a lan leg
+                                             # can be added once the wifi leg is green)
+        "flash": "arduino_cli",              # same MCUboot DFU path as the Nicla
+        "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
+    },
 }
 
 
@@ -1055,6 +1079,56 @@ def _ensure_cdc(board, allow_erase=False):
     recover_erase_romfs(board)
     log("recover: %s romfs erased -- the golden flash will reprovision it over DFU "
         "(no CDC expected until then)" % board)
+
+
+def _dfu_leave(board):
+    """Boot a board out of its MCUboot DFU bootloader WITHOUT the J-Link -- the same "leave" the
+    OpenMV IDE issues. Recovers a board stuck in DFU (an interrupted flash, or a manual bootloader
+    entry) when its SWD is unavailable, which the Nicla's tiny SWD pads often are. Returns True iff
+    a DFU device was present and detached. ``dfu-util -e`` (a bare detach) is a NO-OP on the Arduino
+    MCUboot bootloader -- what actually boots it is a manifest-leave (``-s :leave``) plus a USB
+    reset (``-R``). Only reached when the CDC is already missing, so it never disturbs a live board."""
+    rc, out = sh([CFG["dfu"], "-l"], check=False, timeout=20, quiet=True)
+    if "Found DFU" not in (out or ""):
+        return False                             # not in DFU -> nothing to leave; fall through
+    log("recover: %s is in DFU -- dfu-util leave + reset (boots firmware, no J-Link)" % board)
+    sh([CFG["dfu"], "-a", "0", "-s", ":leave", "-R"], check=False, timeout=30, quiet=True)
+    time.sleep(6)                                # let it leave DFU + re-enumerate its CDC
+    return True
+
+
+def _flash_arduino_cli(board, bad_romfs=False):
+    """Golden flash for the Arduino MCUboot boards (Nicla Vision, Portenta H7) via the openmv-ota
+    CLI's `flash factory`. The arduino backend enters DFU with an automatic 1200-baud touch, then
+    writes firmware + romfs (+ the CYW4343 wifi blobs) with address-based `dfu-util -w`.
+
+    Unlike the DFU boards, the CLI's arduino factory resolves the romfs partition as
+    ``<board>-romfs.img``, so stage the dual-slot factory image under that name first
+    (``build factory-romfs`` emits ``<board>-factory-romfs.img``; the wifi blobs are already dropped
+    into build/ by ``build firmware``). Same rename the mimxrt path does.
+
+    A board with no CDC cannot be 1200-baud touched, so fall back to the bootloader's DFU window +
+    an nRST pulse, exactly as the OpenMV DFU path does -- see dfu_reset_catch."""
+    if bad_romfs:
+        raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
+    build = CFG["project"] + "/build"
+    sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
+    _ensure_cdc(board, allow_erase=True)     # pre-flash: safe to erase; this flash reprovisions
+    argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+    if _cdc_responsive():
+        log("flash factory -> %s (openmv-ota, arduino MCUboot DFU -w)" % board)
+        sh(argv, timeout=1500)
+    else:
+        log("flash factory -> %s (no CDC -- via bootloader DFU window)" % board)
+        rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
+        if rc != 0:
+            raise RuntimeError("arduino flash factory (no-CDC path) failed rc=%d: %s"
+                               % (rc, out[-400:]))
+    time.sleep(15)                           # let it boot + re-enumerate after leave-DFU
+    if not _cdc_responsive():
+        _dfu_leave(board)                    # stuck in DFU? leave it without needing the J-Link
+    _ensure_cdc(board)                       # POST-flash: allow_erase stays False (never wipe golden)
 
 
 def _flash_blhost_imx(board, bad_romfs=False):
