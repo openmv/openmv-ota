@@ -659,7 +659,20 @@ def bench_main_py(board, net, app="confirm"):
     # so the next boot rejects the un-confirmed FRONT and falls back to golden (the anti-brick
     # / rollback path). status().trial is only true on a freshly-installed trial boot, so the
     # golden boot that DOES the install is unaffected either way.
+    # Starting run() is normally unconditional, but a TRIAL boot under "no_confirm" must not poll:
+    # install() REBOOTS on success, so a concurrent re-install pre-empts the app's reset and lands a
+    # FRESH trial. boot.py then treats it as a first try instead of rejecting an already-tried one,
+    # and the scenario spins forever re-installing (12 cycles, no rejection, observed on the H7 Plus
+    # -- the WINC's slower install cycle loses that race that the faster boards happen to win). The
+    # GOLDEN boot still starts run() and performs the install, so install.armed and every run.*
+    # marker the scenario expects are witnessed exactly as before; only the trial boot goes quiet,
+    # which is what makes the rejection deterministic instead of a coin flip.
+    start_run = "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
+        CFG["server"], CFG["ca_board"])
     if app == "no_confirm":
+        start_run = ("    if not openmv_ota.status().get('trial'):\n"
+                     "        asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
+                         CFG["server"], CFG["ca_board"]))
         trial_policy = (
             "    st = openmv_ota.status()\n"
             "    if st.get('trial'):\n"
@@ -735,8 +748,7 @@ def bench_main_py(board, net, app="confirm"):
         "    openmv_ota.sync()  # apply bundled coprocessor resources early (no-op if none)\n"
         "    " + bring_up +
         "    _blog.info('app: network up, starting run()')\n"
-        "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
-            CFG["server"], CFG["ca_board"]) +
+        + start_run +
         trial_policy + "\n\n"
         "try:\n"
         "    import machine as _m\n"
