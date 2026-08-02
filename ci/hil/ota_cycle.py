@@ -613,6 +613,21 @@ class UartCapture:
     def points(self):
         return sorted({p for _, p in self.markers})
 
+    def reset(self, t0):
+        """Drop everything captured so far and restart the clock, WITHOUT closing the port.
+
+        Lets the capture start early (so a board that dies before the CDC is usable still gets its
+        boot output recorded) while the SCORED window stays exactly what it was: provisioning-phase
+        markers must not count toward a scenario's expect/forbid sets."""
+        self._t0 = t0
+        self.markers = []
+        self.raw = []
+
+    def tail(self, n=40):
+        """The last ``n`` raw lines -- what to print when a run fails, since the marker UART is the
+        only channel that still works once the CDC is gone."""
+        return "".join(self.raw)[-4000:].split("\n")[-n:]
+
     def stop(self):
         self._stop.set()
         self._t.join(timeout=2)
@@ -1407,6 +1422,15 @@ def main():
             result = run_cycle_no_slot(cap, expect, args.timeout)
         else:
             devid = None
+            # Start listening BEFORE provisioning. Everything up to here talks to the board over the
+            # USB-CDC, so when the CDC is what breaks, the harness gives up before it ever opens the
+            # one channel that still works -- and the board's own account of why it died is lost.
+            # (Debugging the H7 Plus watchdog leg cost several runs to exactly this: "golden did not
+            # mount a valid romfs" with coverage 0/N, while the board was on the UART the whole time
+            # saying something else entirely.) The scored window is unchanged: cap.reset() below
+            # drops these provisioning-phase markers before the scenario is judged.
+            cap = UartCapture(CFG["uart"])
+            cap.start(time.time())
             if not args.skip_provision:
                 phase("prepare", lambda: prepare(args.board, args.checkout, network, spec["app"]))
                 phase("build_golden", lambda: build_golden(args.board))
@@ -1422,8 +1446,7 @@ def main():
             if spec["publish"] != "none" and not args.skip_publish:
                 phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
                 trace["metrics"] = artifact_sizes(args.board)   # download sizes -> ota_metrics report
-            cap = UartCapture(CFG["uart"])
-            cap.start(time.time())
+            cap.reset(time.time())               # scored window starts HERE (see the early start above)
             # "install" phase = the whole autonomous OTA (check-in -> download -> write -> trial ->
             # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.
             result = phase("install", lambda: run_cycle(
@@ -1445,6 +1468,18 @@ def main():
     except Exception as e:
         trace["error"] = str(e)
         log("ERROR: " + str(e))
+        # PRINT WHAT THE BOARD SAID. Every phase above drives the board over the USB-CDC, so a
+        # failure there tells you only that the harness could not talk to it -- never why. The
+        # marker UART is a separate wire and keeps working when the CDC does not, so its tail is
+        # usually the actual explanation ("golden did not mount a valid romfs" while the board was
+        # cheerfully logging a healthy boot is a real example this would have caught immediately).
+        if cap is not None:
+            tail = [ln for ln in cap.tail(40) if ln.strip()]
+            log("---- device UART tail (%d lines) -- the board's own account ----" % len(tail))
+            for ln in tail:
+                log("  [uart] " + ln.rstrip())
+            if not tail:
+                log("  [uart] (nothing captured -- board silent, or the marker UART is misconfigured)")
     finally:
         if cap is not None:
             cap.stop()
