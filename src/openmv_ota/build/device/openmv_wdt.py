@@ -72,10 +72,6 @@ TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board
 #                        the install feeds it per step (the multi-second first-byte download wait, which
 #                        once bit the AE3, is handled in the installer's main-thread-fed reader, not here).
 TIMER_ID = -1          # machine.Timer id; on OpenMV ports only the soft timer (-1) exists
-_HARD_IRQ = True       # DIAGNOSTIC KNOB: relax() feeds from a HARD (interrupt-time) callback so it
-#                        fires while the CPU is blocked. Suspected of starving USB-CDC servicing on
-#                        the H7 Plus -- set False to test that (a soft callback cannot feed through a
-#                        blocking op, so it is a DIAGNOSTIC, not a fix).
 FEED_HZ = 50           # relax() ISR feed rate (Hz); keep WELL above 1000 / TIMEOUT_MS so it feeds
 #                        many times per window (10 Hz was IWDG-era; a ~100 ms window needs ~50+)
 
@@ -103,7 +99,7 @@ class _Relax:
         global _timer
         if _wdt is not None and _timer is None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (ENABLED=False on the bench -> body skipped)
             import machine  # hil-residual: watchdog-enabled timer setup (opt-in; exercised on HW by the watchdog HIL scenario)
-            _timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=_HARD_IRQ, callback=_tick)  # hil-residual: watchdog-enabled ISR-feed timer (opt-in)
+            _timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_tick)  # hil-residual: watchdog-enabled ISR-feed timer (opt-in)
         return self
 
     def __exit__(self, *args):

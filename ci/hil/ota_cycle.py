@@ -68,13 +68,28 @@ CFG = {
 COPROC_ENABLED = env("HIL_COPROC", "") == "1"
 
 # Boards whose ARMED-WATCHDOG leg is known-broken, kept out of the default regression so a leg we
-# already know fails can't fail every PR. The H7 Plus (OPENMV4P) is the one: with openmv_wdt armed at
-# 100 ms it reset-loops off USB (no CDC; the SWD reset in _ensure_cdc doesn't get it back, only a
-# reflash does), while its other 8 scenarios -- delta, full, rollback, corrupt, corrupt_sha, bad_sig,
-# bad_key, bad_version -- all PASS. Its WWDG is genuinely built in (micropython#19350 cherry-picks
-# cleanly on the H743 and the fork-compat fixup covers STM32H7), so this is about the WINDOW/feed
-# cadence, not a missing peripheral -- under debug. Still runnable by hand: workflow_dispatch with
-# scenario=watchdog. Drop the board from this set once the armed leg passes.
+# already know fails can't fail every PR. The H7 Plus (OPENMV4P) is the one; its other 8 scenarios
+# (delta, full, rollback, corrupt, corrupt_sha, bad_sig, bad_key, bad_version) all PASS.
+#
+# WHAT IS ACTUALLY MEASURED (several earlier explanations here were wrong; these are the numbers):
+#   * The WWDG is real and armable. `machine.WDT("WWDG", 100)` succeeds on the H743, and on the REAL
+#     path (frozen module, rebuilt factory image, armed at boot by the app) the device reports
+#     `_wdt is not None = True`. It is not a missing peripheral and not the 0x7f window.
+#   * With it armed the board RESET-LOOPS. Counting arms per run (each reboot re-arms):
+#         relax() hard=True  -> 43 reboots / 1654 feed-loop iterations  (~0.8 s per boot)
+#         relax() hard=False -> 20 reboots / 5870 feed-loop iterations  (~5.9 s per boot)
+#     So the hard-IRQ feed makes survival ~8x WORSE, and removing it does not fix the loop. ~5.9 s
+#     is about one 5 s poll interval, which points at the check-in as the op that outruns the window.
+#   * The harness reports this as "CDC missing" / "golden did not mount a valid romfs" because the
+#     reset loop keeps the port from settling -- misleading, and NOT a flash failure.
+#
+# WORKING THEORY: the WINC1500 driver interacts badly with the feed timer / blocking socket calls.
+# The H7 Plus is the only WINC board, so the next step is the Portenta and Nicla -- same STM32H7
+# family and the same WWDG, but cyw4343 wifi instead. If the watchdog passes there, the WINC is
+# confirmed as the differentiator; if it fails there too, the problem is H7-wide.
+#
+# Still runnable by hand: workflow_dispatch with scenario=watchdog. Drop the board from this set
+# once the armed leg passes.
 WATCHDOG_BROKEN = {"OPENMV4P"}
 
 # Per-board: which side-channel UART carries markers, how it reaches the network, and
@@ -708,39 +723,17 @@ def bench_main_py(board, net, app="confirm"):
         # watchdog SURVIVES a real OTA cycle -- the install's ranged erase feeds per block, run() feeds
         # per poll, and this loop feeds per iteration, so nothing outruns the window and it never
         # spuriously resets. `armed=True` witnesses that ENABLED took effect (start() really armed it).
-        # HIL_WDT_DEBUG=1 sprinkles RAW UART traces through the arm..first-feed..first-poll window,
-        # written STRAIGHT to the coverage UART rather than through openmv_log. When the watchdog
-        # bites, the CDC is unusable and (as seen on the bench) the log may not be configured at all,
-        # so the normal markers vanish -- the last RAW line printed is then the only evidence of how
-        # far it got. Off by default: it opens a second UART object on the same peripheral, which is
-        # fine for a debug run but not something to ship in every scenario.
-        dbg = env("HIL_WDT_DEBUG", "") == "1"
-        pre = ("    import machine as _dm\n"
-               "    _du = _dm.UART(%d, 115200)\n"
-               "    def _p(m):\n"
-               "        _du.write(b'WDTDBG ' + m + b'\\r\\n')\n"
-               "    _p(b'pre-import')\n" % BOARDS[board]["cov_uart"]) if dbg else ""
         trial_policy = (
-            pre +
-            "    import openmv_wdt\n" +
-            ("    _p(b'imported; arming')\n" if dbg else "") +
-            "    openmv_wdt.start()\n" +
-            ("    _p(b'start() returned; _wdt is not None = ' + str(openmv_wdt._wdt is not None).encode())\n" if dbg else "") +
-            "    _blog.info('app: wdt armed=%r' % (openmv_wdt._wdt is not None))\n" +
-            ("    _p(b'after blog.info')\n" if dbg else "") +
+            "    import openmv_wdt\n"
+            "    openmv_wdt.start()\n"
+            "    _blog.info('app: wdt armed=%r' % (openmv_wdt._wdt is not None))\n"
             "    confirmed = False\n"
-            "    while True:\n" +
-            ("        _p(b'loop top -> feed')\n" if dbg else "") +
-            "        openmv_wdt.feed()\n" +
-            ("        _p(b'fed')\n" if dbg else "") +
+            "    while True:\n"
+            "        openmv_wdt.feed()\n"
             "        if not confirmed:\n"
-            "            confirmed = True\n" +
-            ("            _p(b'confirm() enter')\n" if dbg else "") +
-            "            openmv_ota.confirm()\n" +
-            ("            _p(b'confirm() done')\n" if dbg else "") +
-            ("        _p(b'-> await sleep20 (run() gets the CPU here)')\n" if dbg else "") +
-            "        await asyncio.sleep_ms(20)\n" +
-            ("        _p(b'<- back from sleep20')\n" if dbg else "")
+            "            confirmed = True\n"
+            "            openmv_ota.confirm()\n"
+            "        await asyncio.sleep_ms(20)\n"
         )
     elif app == "wdt_bite":
         # NEGATIVE watchdog test: prove the WWDG actually BITES when feeding stops. Arm + feed ~1 s
@@ -842,15 +835,6 @@ def prepare(board, checkout, network, app="confirm"):
         sh("sed -i 's/^ENABLED = False/ENABLED = True/' " + wdt_py)
         sh("grep -q '^ENABLED = True' " + wdt_py)     # fail LOUD if the sed didn't take (else the
         log("prepare: openmv_wdt ENABLED=True (watchdog scenario)")  # watchdog would silently no-op
-        if env("HIL_WDT_SOFT_IRQ", "") == "1":
-            # DIAGNOSTIC (temporary): relax() normally feeds from a HARD (interrupt-time) callback.
-            # That ISR is the ONLY behavioural difference between the ENABLED=True and False
-            # firmwares, and is the prime suspect for the H7 Plus's dead USB-CDC. Flipping it to a
-            # soft callback isolates it -- if the CDC survives, the hard IRQ is the cause. NOT a fix:
-            # a soft callback cannot feed through a blocking op, which is relax()'s whole purpose.
-            sh("sed -i 's/^_HARD_IRQ = True/_HARD_IRQ = False/' " + wdt_py)
-            sh("grep -q '^_HARD_IRQ = False' " + wdt_py)
-            log("prepare: DIAGNOSTIC _HARD_IRQ=False (isolating the relax() ISR)")
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.

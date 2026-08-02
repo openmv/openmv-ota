@@ -57,9 +57,6 @@ concurrency:
 
 env:
   OPENMV_REF: master        # firmware ref the runner-owned provision builds (as ci.yml)
-  HIL_WDT_SOFT_IRQ: "1"     # TEMPORARY (diagnostic): relax() soft callback -- isolates the hard IRQ
-  HIL_WDT_DEBUG: "1"        # TEMPORARY (debug branch only): raw UART traces through the watchdog
-  #                           arm..first-feed..first-poll window. REMOVE before this branch merges.
 
 jobs:
   # Does this PR touch anything that can change device behaviour? Self-contained (a git diff, no
