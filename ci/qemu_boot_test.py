@@ -337,6 +337,14 @@ def recv_of(*pieces):
     return recv
 
 
+class _NullSock:
+    """Stands in for the socket _ResumingBody owns; nothing here reconnects, so it only
+    needs to be closeable."""
+
+    def close(self):
+        pass
+
+
 host, port, path = P["_parse_url"]("https://h.io:8443/o.img.gz?x=1")
 url_ok = host == "h.io" and port == 8443 and path == "/o.img.gz?x=1"
 blank_ok = P["_is_blank"](b"\\xff\\xff") and not P["_is_blank"](b"\\xff\\x00")
@@ -358,6 +366,22 @@ while True:
         break
     out += c
 deflate_ok = out == __PAYLOAD__
+
+# The SAME chain through _ResumingBody, the wrapper that resumes an interrupted download. It
+# must satisfy MicroPython's C-level stream protocol for DeflateIO to read it at all -- a plain
+# class with readinto() is refused with OSError('stream operation not supported'), which shipped
+# once and broke every install on hardware (it fell back to golden and looked like a mid-install
+# fault). CPython reads any object with the right methods, so ONLY real MicroPython catches it.
+b3 = P["_make_body"](P["_Reader"](recv_of(GZ)), {b"content-length": str(len(GZ)).encode()})
+rb = P["_ResumingBody"]("https://h.io/x.gz", None, None, None, lambda: None, _NullSock(), b3)
+dio3 = deflate.DeflateIO(rb, deflate.GZIP)
+out3 = b""
+while True:
+    c = dio3.read(64)
+    if not c:
+        break
+    out3 += c
+resume_stream_ok = out3 == __PAYLOAD__
 
 BLOCK = 4096
 FRONT = 3 * BLOCK
@@ -462,10 +486,11 @@ while True:
 delta_ok = bytes(_recon) == __DELTA_TARGET__ and P["_np"] is not None   # ulab really present
 
 ok = (url_ok and blank_ok and chunk_ok and body_ok and deflate_ok and install_ok
-      and fmt_ok and emit_ok and manifest_ok and delta_ok)
+      and fmt_ok and emit_ok and manifest_ok and delta_ok and resume_stream_ok)
 print("INST", "url=" + str(url_ok), "deflate=" + str(deflate_ok),
       "install=" + str(install_ok), "manifest=" + str(manifest_ok),
-      "delta=" + str(delta_ok), "log=" + str(fmt_ok), "emit=" + str(emit_ok))
+      "delta=" + str(delta_ok), "log=" + str(fmt_ok), "emit=" + str(emit_ok),
+      "resume_stream=" + str(resume_stream_ok))
 print("INSTRESULT", "PASS" if ok else "FAIL")
 '''
 
