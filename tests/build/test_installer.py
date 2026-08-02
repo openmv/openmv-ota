@@ -302,6 +302,19 @@ def _resuming(monkeypatch, data, drops):
     return inst("_ResumingBody")("u", None, None, None, lambda: None, sock, body), calls
 
 
+def test_resuming_body_is_a_micropython_stream():
+    # REGRESSION GUARD. deflate.DeflateIO reads its source through MicroPython's C-level stream
+    # protocol, and a Python object only participates in that by subclassing io.IOBase -- having a
+    # readinto() method is NOT enough. Shipping this as a plain class made every install die at the
+    # first read with OSError('stream operation not supported'), which on hardware looked like a
+    # mid-install failure falling back to golden. CPython reads any object with the right methods,
+    # so no behavioural host test can reproduce it; asserting the base class is the only host-side
+    # guard, and _Body (the stream this replaces) has always subclassed it for exactly this reason.
+    import io
+    assert issubclass(inst("_ResumingBody"), io.IOBase)
+    assert issubclass(inst("_Body"), io.IOBase)
+
+
 def test_resuming_body_passes_through_when_nothing_drops(monkeypatch):
     data = bytes(range(256)) * 4
     body, calls = _resuming(monkeypatch, data, [None])

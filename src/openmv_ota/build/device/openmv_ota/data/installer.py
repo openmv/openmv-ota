@@ -875,8 +875,15 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
 _RESUME_MAX_STALLS = 10   # consecutive re-opens that deliver ZERO new bytes -> genuinely stuck
 
 
-class _ResumingBody:
+class _ResumingBody(io.IOBase):
     """A download body that survives the connection being dropped mid-transfer.
+
+    Subclasses ``io.IOBase`` for the same reason ``_Body`` does: on MicroPython that is what makes
+    a Python object usable as a C-LEVEL STREAM, which is what ``deflate.DeflateIO`` requires of its
+    source. A plain class with a ``readinto`` method is NOT enough -- DeflateIO rejects it at the
+    first read with ``OSError('stream operation not supported')``, which on the bench looked like a
+    mid-install failure that fell back to golden. Host tests cannot catch this (CPython happily
+    reads any object with the right methods), so it is pinned by an explicit subclass assertion.
 
     A poor link cannot always finish a long download in one connection: the WINC1500 aborts
     EVERY transfer at ~50 s regardless of how many bytes have moved, so a 4 MiB image never
