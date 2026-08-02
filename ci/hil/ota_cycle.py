@@ -1007,7 +1007,16 @@ def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
 
     Pass the CLI's ``--in-bootloader`` in ``argv`` so it does NOT try the CDC route first.
     Returns (rc, output).
+
+    OPENMV BOOTLOADER ONLY. The Arduino MCUboot boards have no reset-triggered DFU window, so the
+    pulse just reboots the app while ``-w`` waits for a bootloader that never appears -- a silent
+    hang for the whole timeout. Refused outright below rather than left as a foot-gun; those boards
+    go through ``_arduino_dfu_run``.
     """
+    if BOARDS[board].get("flash") == "arduino_cli":
+        raise RuntimeError(
+            "dfu_reset_catch is the wrong primitive for %s: Arduino MCUboot presents no DFU window "
+            "on reset, so the -w wait can only hang. Use _arduino_dfu_run." % board)
     log("recover: %s -- dfu(-w) + nRST pulse to catch the bootloader's DFU window" % board)
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     time.sleep(settle)                       # let dfu-util reach its wait loop before we reset
@@ -1020,18 +1029,61 @@ def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
     return proc.returncode, out or ""
 
 
+def _dfu_present():
+    """True iff an MCUboot DFU device is enumerated RIGHT NOW. A point-in-time check, never a wait:
+    the whole class of bug this guards against is ``dfu-util -w`` blocking on a device that is not
+    coming."""
+    rc, out = sh([CFG["dfu"], "-l"], check=False, timeout=20, quiet=True)
+    return "Found DFU" in (out or "")
+
+
+def _arduino_dfu_run(board, argv, what, *, timeout):
+    """Run a dfu-util-backed CLI command on an Arduino MCUboot board, entering DFU the only way
+    these boards actually support. Returns (rc, output).
+
+    MCUboot has NO reset-triggered DFU window (the OpenMV bootloader's trick -- see
+    dfu_reset_catch -- has no counterpart here). Entry is exclusively the 1200-baud touch, and that
+    touch is answered by the firmware's USB stack, NOT by the running app: it still works while the
+    app owns the REPL and every mpremote times out. So an unresponsive CDC is NOT a reason to reach
+    for nRST -- an enumerated port is all the touch needs.
+
+      * already in DFU     -> run with --in-bootloader; the device is there NOW, so -w returns at once
+      * a runtime port     -> plain run; the CLI does its own touch
+      * neither            -> fail FAST (rc 125); the board needs a power cycle, and no amount of
+                              waiting will conjure a bootloader
+
+    Measured cost of getting this wrong: a `flash erase --in-bootloader` was launched behind an nRST
+    pulse against a Portenta running its app, and `dfu-util -w -d ,2341:035b` sat waiting for a
+    bootloader id while the board sat enumerated as 2341:045b (its runtime CDC). Eleven minutes of
+    silent hang, and the job never reached the publish step -- the device just kept checking in
+    against a server that had no release, which reads like an OTA bug and is not one.
+    """
+    if _dfu_present():
+        log("%s -> %s (already in DFU -- no wait)" % (what, board))
+        return sh(argv + ["--in-bootloader"], timeout=timeout, check=False)
+    if os.path.exists(CFG["acm"]):
+        log("%s -> %s (CLI 1200-baud touch via %s)" % (what, board, CFG["acm"]))
+        return sh(argv, timeout=timeout, check=False)
+    return 125, ("%s: %s has neither a DFU device nor a port at %s -- it cannot be reached without "
+                 "a power cycle" % (what, board, CFG["acm"]))
+
+
 def recover_erase_romfs(board):
-    """LAST-RESORT recovery: erase the romfs over DFU so the board boots with NO app.
+    """LAST-RESORT recovery: erase the board over DFU so it boots with NO app.
 
     An app that wedges or owns the CDC (e.g. one polling an unreachable server) makes every
     mpremote fail, which blocks the harness's own reflash -- a deadlock, since flashing needs the
-    CDC to enter the bootloader. Erasing the romfs breaks it: with no bootable slot the app never
-    runs, the CDC comes back, and the normal `flash factory` can reprovision. Needs no built
-    artifacts, so it works even before a build.
+    CDC to enter the bootloader. Erasing breaks it: with no bootable slot the app never runs, the
+    CDC comes back, and the normal `flash factory` can reprovision. Needs no built artifacts, so it
+    works even before a build. (On the Arduino boards the configured erase covers firmware AND the
+    romfs partition, not the romfs alone -- the follow-up factory flash restores both.)
     """
-    argv = [ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--in-bootloader",
+    argv = [ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
-    rc, out = dfu_reset_catch(board, argv)
+    if BOARDS[board].get("flash") == "arduino_cli":
+        rc, out = _arduino_dfu_run(board, argv, "recover: erase", timeout=300)
+    else:
+        rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"])
     log("recover: romfs erase rc=%d%s" % (rc, "" if rc == 0 else " -- %s" % out[-300:]))
     return rc == 0
 
@@ -1100,8 +1152,7 @@ def _dfu_leave(board):
     a DFU device was present and detached. ``dfu-util -e`` (a bare detach) is a NO-OP on the Arduino
     MCUboot bootloader -- what actually boots it is a manifest-leave (``-s :leave``) plus a USB
     reset (``-R``). Only reached when the CDC is already missing, so it never disturbs a live board."""
-    rc, out = sh([CFG["dfu"], "-l"], check=False, timeout=20, quiet=True)
-    if "Found DFU" not in (out or ""):
+    if not _dfu_present():
         return False                             # not in DFU -> nothing to leave; fall through
     log("recover: %s is in DFU -- dfu-util leave + reset (boots firmware, no J-Link)" % board)
     sh([CFG["dfu"], "-a", "0", "-s", ":leave", "-R"], check=False, timeout=30, quiet=True)
@@ -1119,8 +1170,10 @@ def _flash_arduino_cli(board, bad_romfs=False):
     (``build factory-romfs`` emits ``<board>-factory-romfs.img``; the wifi blobs are already dropped
     into build/ by ``build firmware``). Same rename the mimxrt path does.
 
-    A board with no CDC cannot be 1200-baud touched, so fall back to the bootloader's DFU window +
-    an nRST pulse, exactly as the OpenMV DFU path does -- see dfu_reset_catch."""
+    DFU entry is `_arduino_dfu_run`'s business: the 1200-baud touch, or a direct write if the board
+    is already in DFU. Note what does NOT work here -- the OpenMV path's "wait on -w and pulse nRST
+    to catch the bootloader's window" -- because MCUboot has no such window; that fallback used to
+    live here and only ever hung."""
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
     build = CFG["project"] + "/build"
@@ -1128,15 +1181,9 @@ def _flash_arduino_cli(board, bad_romfs=False):
     _ensure_cdc(board, allow_erase=True)     # pre-flash: safe to erase; this flash reprovisions
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
-    if _cdc_responsive():
-        log("flash factory -> %s (openmv-ota, arduino MCUboot DFU -w)" % board)
-        sh(argv, timeout=1500)
-    else:
-        log("flash factory -> %s (no CDC -- via bootloader DFU window)" % board)
-        rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
-        if rc != 0:
-            raise RuntimeError("arduino flash factory (no-CDC path) failed rc=%d: %s"
-                               % (rc, out[-400:]))
+    rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
+    if rc != 0:
+        raise RuntimeError("arduino flash factory failed rc=%d: %s" % (rc, out[-400:]))
     time.sleep(15)                           # let it boot + re-enumerate after leave-DFU
     if not _cdc_responsive():
         _dfu_leave(board)                    # stuck in DFU? leave it without needing the J-Link
