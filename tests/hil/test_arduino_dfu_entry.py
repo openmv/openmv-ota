@@ -199,8 +199,12 @@ def test_arduino_flash_only_watches_after_leave():
     where the probing that followed the flash was killing the app, and it cost a wasted cycle."""
     body = _body("_flash_arduino_cli")
     assert "_await_boot" in body
-    assert "jlink_core_reset" not in body, ":leave self-recovers; a reset here is unnecessary churn"
-    assert "_ensure_cdc(board)" not in body.split("_await_boot")[-1], (
+    # A pre-flash reset is fine (it is how a wedged board is reached at all). What must NOT happen
+    # is resetting AFTER the write: :leave self-recovers, so a reset there is churn that restarts a
+    # 33 s boot. Split on the flash call itself and check only what follows it.
+    after_flash = body.split("_arduino_dfu_run")[-1]
+    assert "jlink_core_reset" not in after_flash, ":leave self-recovers; no reset after the write"
+    assert "_ensure_cdc" not in after_flash, (
         "nothing may probe the CDC after the flash -- that is what killed the app")
 
 
@@ -332,3 +336,21 @@ def test_msc_disk_gives_up_eventually(monkeypatch):
     monkeypatch.setattr(ota_cycle.glob, "glob", lambda p: [])
     monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
     assert ota_cycle._msc_disk(budget=0) is None
+
+
+def test_bench_app_stalls_after_a_crash():
+    """A KeyboardInterrupt re-fires on restart, so die -> restart -> die spins as fast as the board
+    boots: ~30 copies of the crash line inside ONE uart line, drowning the marker stream every
+    scenario reads. The stall bounds it to one line every few seconds."""
+    src = ota_cycle.bench_main_py("ARDUINO_PORTENTA_H7", "wifi")
+    tail = src.split("app: CRASHED")[1]
+    assert "sleep(5)" in tail, "the crash path must stall before letting the app restart"
+
+
+@pytest.mark.parametrize("board", _ARDUINO)
+def test_arduino_flash_takes_no_repl_to_reach_the_board(board, monkeypatch):
+    """The flash needs a DFU device or an enumerated port -- never the REPL. Probing with mpremote
+    Ctrl-C's the app dead, and that is what starts the crash spin."""
+    body = _body("_flash_arduino_cli")
+    assert "_ensure_cdc" not in body, "an mpremote probe here kills the app it is checking on"
+    assert "_dfu_present" in body and "CFG[\"acm\"]" in body

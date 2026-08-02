@@ -846,6 +846,13 @@ def bench_main_py(board, net, app="confirm"):
         "except BaseException as e:\n"
         "    _blog.error('app: CRASHED %r' % (e,))\n"
         "    sys.print_exception(e)\n"
+        # THEN STALL. A KeyboardInterrupt tends to re-fire the moment the app restarts, so the app
+        # dies -> restarts -> dies again as fast as the board can boot. Measured: ~30 copies of the
+        # crash line inside a SINGLE uart line, drowning the marker stream every scenario depends on
+        # and turning one stray Ctrl-C into a board that looks permanently broken. The sleep bounds
+        # that to one line every few seconds, so the log stays readable and the markers survive.
+        "    import time as _t\n"
+        "    _t.sleep(5)\n"
     )
 
 
@@ -1385,7 +1392,15 @@ def _flash_arduino_cli(board, bad_romfs=False):
     # image about to be written, so verify can tell a fresh mount from the one it replaced.
     global _FLASH_MARK
     _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
-    _ensure_cdc(board, allow_erase=True)     # pre-flash: safe to erase; this flash reprovisions
+    # Reach the board WITHOUT taking its REPL. _ensure_cdc probes with mpremote, and that Ctrl-C
+    # kills the running app -- which then restarts, gets interrupted again, and spins (see the
+    # bench app's crash handler). The flash needs no REPL at all: only a DFU device to write to, or
+    # an enumerated port to 1200-baud touch. Check for those directly, and reset only if the board
+    # offers neither -- that is the genuinely wedged case a core reset revives in ~33 s.
+    if not _dfu_present() and not os.path.exists(CFG["acm"]):
+        log("flash: %s offers neither DFU nor a port -- core reset, then wait for it" % board)
+        jlink_core_reset(board)
+        _await_boot(board, budget=90)
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
     rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
