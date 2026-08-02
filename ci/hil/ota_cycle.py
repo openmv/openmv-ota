@@ -611,6 +611,9 @@ def resolve_uart(port):
     return found[0]
 
 
+_CAP = None                                  # the live UartCapture (set by start()); see _await_boot
+
+
 class UartCapture:
     def __init__(self, port, baud=115200):
         import serial
@@ -623,6 +626,14 @@ class UartCapture:
 
     def start(self, t0):
         self._t0 = t0
+        # Register as THE capture so the recovery helpers can watch the board's own account of
+        # itself instead of poking its USB-CDC. Probing the CDC is not free: mpremote takes the
+        # REPL with a Ctrl-C, and KeyboardInterrupt is a BaseException the bench app's
+        # `except Exception` never catches -- so a probe SILENTLY KILLS the running app. Measured
+        # on the Portenta: probing every 3 s during boot froze it at `data: path` every time, while
+        # the same board left alone reached `network up` 5.2 s later and ran the OTA loop.
+        global _CAP
+        _CAP = self
         self._t.start()
 
     def _run(self):
@@ -816,7 +827,12 @@ def bench_main_py(board, net, app="confirm"):
         "    import machine as _m\n"
         "    _blog.info('app: booting %s reset_cause=%d' % (openmv_ota.status().get('version'), _m.reset_cause()))\n"
         "    asyncio.run(main())\n"
-        "except Exception as e:\n"
+        # BaseException, not Exception: a KeyboardInterrupt is NOT an Exception, and every mpremote
+        # the harness runs delivers one (Ctrl-C is how it takes the REPL). Caught only as Exception,
+        # that killed the app SILENTLY -- the UART simply stopped mid-boot with no reboot and no
+        # traceback, which reads like a hung board or a bad image and cost hours to tell apart from
+        # one. Logging it makes the harness's own footprint visible in the board's account.
+        "except BaseException as e:\n"
         "    _blog.error('app: CRASHED %r' % (e,))\n"
         "    sys.print_exception(e)\n"
     )
@@ -1018,6 +1034,30 @@ def jlink_reset_pulse(board, timeout=60):
     return True
 
 
+def _await_boot(board, marker="boot: ready", budget=150):
+    """Wait for the board to boot by WATCHING ITS UART, touching nothing. True once seen.
+
+    Prefer this to _await_cdc wherever the app is supposed to keep running. An mpremote probe is not
+    a passive question: it takes the REPL with a Ctrl-C, and KeyboardInterrupt is a BaseException
+    that the bench app's `except Exception` does not catch, so the probe silently kills the app it
+    was checking on. Measured on the Portenta -- probing every 3 s through the boot froze it at
+    `data: path` every single time, no reboot and no further output, which reads exactly like a hung
+    board or a bad image; left alone, the same board reached `app: network up` 5.2 s later and ran
+    the OTA loop indefinitely.
+
+    Falls back to the CDC probe only when there is no capture to watch (a board with no cov_uart).
+    """
+    if _CAP is None:
+        return _await_cdc(board, budget=budget)
+    seen = len(_CAP.raw)                     # only lines from HERE count, not a previous boot's
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        if any(marker in ln for ln in _CAP.raw[seen:]):
+            return True
+        time.sleep(2)
+    return False
+
+
 def jlink_core_reset(board, timeout=60):
     """Reset a board through the DEBUG CORE (``connect; r; g``) -- no nRST pin, no DFU-window games.
 
@@ -1176,13 +1216,14 @@ def _ensure_cdc(board, allow_erase=False):
         if BOARDS[board].get("flash") == "arduino_cli":
             if _dfu_leave(board):
                 continue                               # left DFU -> re-probe rather than reset it
-            # NOT in DFU and not answering: CORE reset, then wait long enough for the boot to
-            # finish. Never the nRST pin -- a pulse whose follow-up `connect` fails leaves the core
-            # halted with NO usb at all (the Portenta went dark for minutes that way, and only a
-            # J-Link connect+r+g brought it back). The wait must clear the MEASURED 31.7 s
-            # reset-to-device-node, or the next probe just fails on a board that is booting fine.
-            jlink_core_reset(board)
-            time.sleep(35)
+            # NOT in DFU and not answering: WAIT for the board's own boot marker. No reset of any
+            # kind. The nRST pin leaves the core halted with no USB at all; and a CORE reset here is
+            # just as wrong, because it restarts a 33 s boot on a ~47 s retry cadence, so the port is
+            # absent for much of the window the NEXT step (verify) needs it -- three minutes of
+            # "mpremote: port busy" ending in "golden did not mount a valid romfs", against golden
+            # that was fine. If the board is booting, waiting is what it needs; if it is not, a reset
+            # will not conjure a working one.
+            _await_boot(board, budget=45)
             continue
         jlink_reset_pulse(board)                       # see jlink_reset_pulse for why pin THEN core
         time.sleep(8)
@@ -1244,17 +1285,11 @@ def _flash_arduino_cli(board, bad_romfs=False):
     rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
     if rc != 0:
         raise RuntimeError("arduino flash factory failed rc=%d: %s" % (rc, out[-400:]))
-    # `dfu-util :leave` boots the app WITHOUT a full system reset, and the CYW4343 does not survive
-    # that. Measured twice on the Portenta: after :leave the board reaches `app: main() started` ->
-    # `data: path` and then stalls in wifi bring-up forever, USB never enumerating -- which the
-    # harness can only report as "golden did not mount a valid romfs" against a perfectly good image.
-    # A reset through the debug core clears it every time (full boot, CDC at ~32 s, app checking in),
-    # so do it unconditionally rather than waiting out a stall we know :leave causes. CORE reset, not
-    # jlink_reset_pulse -- the nRST pin is what leaves this board dark.
-    jlink_core_reset(board)
-    # Then wait for the boot rather than guessing at it: 31.7 s measured from reset to a device node,
-    # so the flat sleep(15) this replaces could only ever be followed by a failed probe.
-    if not _await_cdc(board):
+    # WATCH the boot on the UART; do not poke the CDC for it. `:leave` boots the app fine (its
+    # markers land on the UART seconds later) -- what used to break here was the waiting itself:
+    # every mpremote probe Ctrl-C'd the app dead, and the reset that followed restarted a 33 s boot
+    # that then never finished. Watching is free and cannot perturb what it measures.
+    if not _await_boot(board):
         _dfu_leave(board)                    # stuck in DFU? leave it without needing the J-Link
     _ensure_cdc(board)                       # POST-flash: allow_erase stays False (never wipe golden)
 

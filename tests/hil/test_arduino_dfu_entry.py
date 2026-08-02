@@ -31,6 +31,18 @@ _SRC = open(os.path.join(_CIHIL, "ota_cycle.py")).read()
 _ARDUINO = [b for b, c in ota_cycle.BOARDS.items() if c.get("flash") == "arduino_cli"]
 
 
+def _body(name):
+    """A function's source, docstring stripped -- these helpers document the very hazards they
+    avoid ("an mpremote probe kills the app"), so scanning the raw text matches the prose and not
+    the behaviour. Assert against what the function DOES."""
+    src = _SRC.split("def %s(" % name)[1].split("\ndef ")[0]
+    while '"""' in src:                      # drop each docstring//comment block in turn
+        head, _, rest = src.partition('"""')
+        _, _, tail = rest.partition('"""')
+        src = head + tail
+    return "\n".join(ln.split("#", 1)[0] for ln in src.splitlines())
+
+
 def test_there_are_arduino_boards_to_protect():
     assert _ARDUINO, "expected at least one arduino_cli board (Nicla/Portenta)"
 
@@ -85,12 +97,12 @@ def test_no_dfu_and_no_port_fails_fast(board, monkeypatch):
 
 def test_dfu_present_never_waits():
     """`-l` lists what is enumerated now; a `-w` here would reintroduce the unbounded wait."""
-    body = _SRC.split("def _dfu_present(")[1].split("\ndef ")[0]
+    body = _body("_dfu_present")
     assert '"-l"' in body and '"-w"' not in body
 
 
 def test_arduino_flash_does_not_use_the_reset_window():
-    body = _SRC.split("def _flash_arduino_cli(")[1].split("\ndef ")[0]
+    body = _body("_flash_arduino_cli")
     assert "dfu_reset_catch" not in body, "MCUboot has no reset DFU window to catch"
     assert "_arduino_dfu_run" in body
 
@@ -124,40 +136,77 @@ def test_await_cdc_gives_up_and_reports(monkeypatch):
     assert ota_cycle._await_cdc("ARDUINO_PORTENTA_H7", budget=0) is False
 
 
-def test_arduino_flash_waits_for_the_boot_instead_of_sleeping():
-    body = _SRC.split("def _flash_arduino_cli(")[1].split("\ndef ")[0]
-    assert "_await_cdc" in body
-    assert "time.sleep(15)" not in body, "a flat sleep cannot cover a 32s boot"
+def test_arduino_flash_never_sleeps_a_flat_guess():
+    """A fixed sleep cannot cover a 33s boot; the wait must be driven by the board's own output."""
+    assert "time.sleep(15)" not in _body("_flash_arduino_cli")
 
 
 @pytest.mark.parametrize("board", _ARDUINO)
-def test_ensure_cdc_uses_a_core_reset_not_the_nrst_pin(board, monkeypatch):
-    """The nRST PIN is the hazard: a pulse whose follow-up `connect` fails leaves the core halted
-    with no USB at all (the Portenta went dark for minutes). A reset through the debug core brought
-    it back every time, so that -- plus a wait clearing the 32s boot -- is the recovery."""
+def test_ensure_cdc_waits_and_never_resets_an_arduino(board, monkeypatch):
+    """Neither reset belongs here. The nRST PIN leaves the core halted with no USB at all; a CORE
+    reset restarts a 33 s boot on a ~47 s retry cadence, so the port is absent for much of the
+    window verify needs it -- three minutes of "mpremote: port busy" ending in "golden did not mount
+    a valid romfs", against a golden that was fine. Waiting is the recovery."""
     monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: False)
-    monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: False)   # not in DFU -> the reset path
+    monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: False)   # not in DFU -> the wait path
     monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (1, ""))
-    slept, cores = [], []
-    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: slept.append(s))
-    monkeypatch.setattr(ota_cycle, "jlink_core_reset", lambda b, **k: cores.append(b))
+    waits = []
+    monkeypatch.setattr(ota_cycle, "_await_boot", lambda b, **k: waits.append(b) or False)
+    monkeypatch.setattr(ota_cycle, "jlink_core_reset",
+                        lambda *a, **k: pytest.fail("must not reset the core mid-boot"))
     monkeypatch.setattr(ota_cycle, "jlink_reset_pulse",
                         lambda *a, **k: pytest.fail("must not pulse the nRST pin on an Arduino"))
     ota_cycle._ensure_cdc(board)          # allow_erase defaults False -> returns after the retries
-    assert cores, "expected a debug-core reset"
-    assert max(slept) > _PORTENTA_BOOT_S, "the wait must clear the measured 32s boot"
+    assert waits, "expected the board to be given time to boot"
 
 
 def test_core_reset_never_touches_the_reset_pin():
-    """SetRESET/ClrRESET is precisely what must NOT appear here."""
-    body = _SRC.split("def jlink_core_reset(")[1].split("\ndef ")[0]
+    """Kept as a manual-recovery primitive; if it is ever used again it must not touch the pin."""
+    body = _body("jlink_core_reset")
     assert "SetRESET" not in body and "ClrRESET" not in body
     assert "connect" in body
 
 
-def test_arduino_flash_core_resets_after_leave():
-    """`dfu-util :leave` boots the app without a full system reset and the CYW4343 does not survive
-    it -- the board stalls in wifi bring-up with no USB. Reset the core after every factory flash."""
-    body = _SRC.split("def _flash_arduino_cli(")[1].split("\ndef ")[0]
-    assert "jlink_core_reset" in body
-    assert body.index("jlink_core_reset") < body.index("_await_cdc"), "reset, THEN wait"
+def test_arduino_flash_watches_the_uart_and_does_not_probe():
+    """The post-flash wait must be passive. An mpremote probe Ctrl-C's the app dead (KeyboardInterrupt
+    is a BaseException the app's `except Exception` misses), which is what froze every boot at
+    `data: path`."""
+    body = _body("_flash_arduino_cli")
+    assert "_await_boot" in body
+    assert "_await_cdc" not in body, "the passive wait must replace the probe, not sit beside it"
+
+
+def test_await_boot_is_passive(monkeypatch):
+    """It must never open the CDC: that is the whole point."""
+    body = _body("_await_boot")
+    assert "_cdc_responsive" not in body, "_await_boot must never probe the CDC itself"
+    # only the no-capture fallback may delegate to the probing waiter, and it must be guarded
+    assert body.index("_CAP is None") < body.index("_await_cdc")
+
+
+def test_await_boot_ignores_a_previous_boots_lines(monkeypatch):
+    """A marker already in the buffer is a STALE boot -- counting it would return instantly and skip
+    the wait entirely."""
+    class Cap:
+        raw = ["boot: ready, running app"]        # left over from before the flash
+    monkeypatch.setattr(ota_cycle, "_CAP", Cap())
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    assert ota_cycle._await_boot("ARDUINO_PORTENTA_H7", budget=0) is False
+
+
+def test_await_boot_sees_a_fresh_marker(monkeypatch):
+    class Cap:
+        raw = []
+    cap = Cap()
+    monkeypatch.setattr(ota_cycle, "_CAP", cap)
+    monkeypatch.setattr(ota_cycle.time, "sleep",
+                        lambda s: cap.raw.append("INFO openmv_ota: boot: ready, running app"))
+    assert ota_cycle._await_boot("ARDUINO_PORTENTA_H7", budget=30) is True
+
+
+def test_bench_app_reports_a_keyboardinterrupt_death():
+    """The app must not die silently when the harness Ctrl-C's it -- that silence is what made a
+    perfectly healthy board look hung."""
+    src = ota_cycle.bench_main_py("ARDUINO_PORTENTA_H7", "wifi")
+    assert "except BaseException" in src
+    assert "app: CRASHED" in src
