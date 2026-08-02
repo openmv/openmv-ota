@@ -298,3 +298,23 @@ def test_verify_from_uart_returns_the_id(monkeypatch):
 def test_verify_from_uart_never_execs():
     body = _body("verify_golden_uart")
     assert "device_exec" not in body, "the whole point is not to take the REPL"
+
+
+def test_msc_disk_waits_for_the_board_to_enumerate(monkeypatch):
+    """The disk only exists once the firmware is up (~33 s). Checking once and giving up falls back
+    to the REPL -- and the REPL kills the app, which resets the board, which unenumerates the disk.
+    Observed as a board rebooting once a second with app: CRASHED KeyboardInterrupt() every time."""
+    calls = []
+
+    def later(pattern):
+        calls.append(pattern)
+        return ["/dev/disk/by-id/usb-MicroPy_pyboard_Flash_X-part1"] if len(calls) > 3 else []
+    monkeypatch.setattr(ota_cycle.glob, "glob", later)
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    assert ota_cycle._msc_disk(budget=60).endswith("-part1")
+
+
+def test_msc_disk_gives_up_eventually(monkeypatch):
+    monkeypatch.setattr(ota_cycle.glob, "glob", lambda p: [])
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    assert ota_cycle._msc_disk(budget=0) is None

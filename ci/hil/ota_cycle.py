@@ -1052,17 +1052,37 @@ def jlink_reset_pulse(board, timeout=60):
     return True
 
 
-def _msc_disk():
-    """The camera's USB mass-storage FAT partition (/flash exposed as a disk), or None.
+_MSC_GLOBS = ("/dev/disk/by-id/usb-MicroPy_pyboard_Flash_*-part1",
+              "/dev/disk/by-id/usb-*_Flash_*-part1",   # other vendor strings for the same volume
+              "/dev/disk/by-id/usb-*OpenMV*-part1")
 
-    A camera presents /flash over USB-MSC as well as the REPL, so bench files can be dropped in as
-    plain files -- no mpremote, no Ctrl-C, nothing that can kill a running app. Resolved through
-    /dev/disk/by-id so it is the BOARD's disk and not whatever sdX enumerated first; refuses to guess
-    when more than one camera is attached, exactly as resolve_uart does for the UART."""
-    disks = sorted(glob.glob("/dev/disk/by-id/usb-MicroPy_pyboard_Flash_*-part1"))
-    if len(disks) != 1:
-        return None                          # none attached, or ambiguous -> caller falls back
-    return disks[0]
+
+def _msc_disk(budget=75):
+    """The camera's USB mass-storage volume, or None. WAITS for it, up to ``budget`` seconds.
+
+    A camera presents its filesystem over USB-MSC as well as the REPL, so bench files can be dropped
+    in as plain files -- no mpremote, no Ctrl-C, nothing that can kill a running app. Resolved
+    through /dev/disk/by-id so it is the BOARD's disk and not whatever sdX enumerated first, and it
+    refuses to guess when more than one camera is attached (as resolve_uart does for the UART).
+
+    THE WAIT IS THE POINT. This disk only exists once the firmware is up, and these boards take
+    ~33 s to enumerate. A single check right after a reset finds nothing, falls back to the REPL --
+    and the REPL is what kills the app, which resets the board, which unenumerates the disk. That
+    loop was observed: a board rebooting once a second with `app: CRASHED KeyboardInterrupt()` on
+    every boot, because the one check happened while it was down.
+    """
+    deadline = time.time() + budget
+    while True:
+        for pattern in _MSC_GLOBS:
+            disks = sorted(glob.glob(pattern))
+            if len(disks) > 1:
+                log("bench files: %d camera disks attached -- refusing to guess" % len(disks))
+                return None                  # ambiguous: writing to the wrong board is worse
+            if disks:
+                return disks[0]
+        if time.time() >= deadline:
+            return None
+        time.sleep(3)
 
 
 def _msc_put(files, mnt="/tmp/hil-cam-msc"):
