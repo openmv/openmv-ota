@@ -842,6 +842,15 @@ def prepare(board, checkout, network, app="confirm"):
         sh("sed -i 's/^ENABLED = False/ENABLED = True/' " + wdt_py)
         sh("grep -q '^ENABLED = True' " + wdt_py)     # fail LOUD if the sed didn't take (else the
         log("prepare: openmv_wdt ENABLED=True (watchdog scenario)")  # watchdog would silently no-op
+        if env("HIL_WDT_SOFT_IRQ", "") == "1":
+            # DIAGNOSTIC (temporary): relax() normally feeds from a HARD (interrupt-time) callback.
+            # That ISR is the ONLY behavioural difference between the ENABLED=True and False
+            # firmwares, and is the prime suspect for the H7 Plus's dead USB-CDC. Flipping it to a
+            # soft callback isolates it -- if the CDC survives, the hard IRQ is the cause. NOT a fix:
+            # a soft callback cannot feed through a blocking op, which is relax()'s whole purpose.
+            sh("sed -i 's/^_HARD_IRQ = True/_HARD_IRQ = False/' " + wdt_py)
+            sh("grep -q '^_HARD_IRQ = False' " + wdt_py)
+            log("prepare: DIAGNOSTIC _HARD_IRQ=False (isolating the relax() ISR)")
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
