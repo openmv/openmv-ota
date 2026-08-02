@@ -614,6 +614,11 @@ def resolve_uart(port):
 
 _CAP = None                                  # the live UartCapture (set by start()); see _await_boot
 _BOARD = None                                # the board under test (set in main); see run_cycle
+_FLASH_MARK = 0                              # index into _CAP.raw at the moment golden was flashed:
+#                                              everything after it is THIS golden's account of itself
+#                                              (see verify_golden_uart -- "fresh" must mean "since the
+#                                              flash", not "since the verify call", because the boot
+#                                              being verified happens in between)
 
 
 class UartCapture:
@@ -1376,6 +1381,10 @@ def _flash_arduino_cli(board, bad_romfs=False):
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
     build = CFG["project"] + "/build"
     sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
+    # Mark where THIS golden's account of itself begins: every UART line from here on belongs to the
+    # image about to be written, so verify can tell a fresh mount from the one it replaced.
+    global _FLASH_MARK
+    _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
     _ensure_cdc(board, allow_erase=True)     # pre-flash: safe to erase; this flash reprovisions
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
@@ -1438,7 +1447,11 @@ def verify_golden_uart(board, budget=180):
     log("verify: golden boots + /rom mounts + device_id -- from the UART, REPL untouched")
     if _CAP is None:
         return verify_golden()               # no capture on this node: fall back to the REPL
-    seen = len(_CAP.raw)
+    # "Fresh" means SINCE THE FLASH, not since this call: the boot being verified happens in
+    # between (the flash's own :leave boots it, and _flash_arduino_cli waits for that). Keying off
+    # this call instead would demand a SECOND boot that nothing ever triggers -- verify would sit
+    # out its whole budget and fail a board whose golden had already come up perfectly.
+    seen = _FLASH_MARK
     deadline = time.time() + budget
     while time.time() < deadline:
         fresh = _CAP.raw[seen:]

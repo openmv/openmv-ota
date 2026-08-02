@@ -273,20 +273,34 @@ def test_bench_app_prints_its_device_id():
     assert "app: device_id" in ota_cycle.bench_main_py("ARDUINO_PORTENTA_H7", "wifi")
 
 
-def test_verify_from_uart_requires_a_FRESH_mount(monkeypatch):
-    """A `boot: mounted` from before the flash would verify the image the flash just replaced."""
+def test_verify_from_uart_rejects_a_pre_flash_mount(monkeypatch):
+    """A `boot: mounted` from BEFORE the flash would verify the image the flash just replaced."""
     class Cap:
         raw = ["INFO openmv_ota: boot: mounted FRONT (payload 16777216)",
                "INFO openmv_ota: app: device_id ABC123"]      # both STALE, pre-flash
     monkeypatch.setattr(ota_cycle, "_CAP", Cap())
+    monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 2)          # the flash came AFTER those lines
     monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError, match="device_id"):
         ota_cycle.verify_golden_uart("ARDUINO_PORTENTA_H7", budget=0)
 
 
+def test_verify_from_uart_accepts_the_boot_the_flash_caused(monkeypatch):
+    """The boot being verified happens between the flash and this call -- keying "fresh" off the
+    CALL would demand a second boot nothing triggers, failing a board whose golden came up fine."""
+    class Cap:
+        raw = ["INFO openmv_ota: boot: mounted FRONT (payload 16777216)",
+               "INFO openmv_ota: app: device_id ABC123"]
+    monkeypatch.setattr(ota_cycle, "_CAP", Cap())
+    monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 0)          # flash preceded both lines
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    assert ota_cycle.verify_golden_uart("ARDUINO_PORTENTA_H7", budget=30) == "ABC123"
+
+
 def test_verify_from_uart_returns_the_id(monkeypatch):
     cap = type("C", (), {"raw": []})()
     monkeypatch.setattr(ota_cycle, "_CAP", cap)
+    monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 0)
 
     def boot(_s):
         cap.raw.append("INFO openmv_ota: boot: mounted FRONT (payload 16777216)")
