@@ -159,6 +159,7 @@ _NTP_FALLBACK = (
     "129.6.15.28",      # time-a-g.nist.gov
     "129.6.15.30",      # time-d-g.nist.gov
 )
+_fallback_next = 0      # rotates through _NTP_FALLBACK, one per sync() -- see sync()
 
 
 def _ntp_query(addr, socket, struct):  # pragma: no cover  (device: network)  # hil-residual-fn: device SNTP round-trip (UDP sendto/recvfrom); run on HW by every sync(), but marker-less -- a per-target leaf in the fallback loop, witnessed only via the caller's "clock: ntp synced"
@@ -194,11 +195,20 @@ def sync(host=None):  # pragma: no cover  (device: network + RTC)
     global _source
     import socket
     import struct
-    targets = [(ip, 123) for ip in _NTP_FALLBACK]   # well-known fallback servers, by IP (no DNS needed)
+    # ONE fallback per call, rotating -- not the whole list. Every unreachable server burns its full
+    # socket timeout, so walking all of them made a single sync tens of seconds long. The caller has
+    # to relax() the watchdog across this (it is a blocking network op), and on a network that
+    # BLACKHOLES NTP the clock never becomes trusted, so that would relax the watchdog on EVERY poll
+    # -- leaving it permanently disabled, which protects nothing. Rotating keeps each attempt bounded
+    # (host + one fallback) while still reaching every server across successive polls.
+    global _fallback_next
+    targets = [_NTP_FALLBACK[_fallback_next % len(_NTP_FALLBACK)]]
+    _fallback_next = (_fallback_next + 1) % len(_NTP_FALLBACK)
+    targets = [(ip, 123) for ip in targets]
     try:
         targets.insert(0, socket.getaddrinfo(host or _NTP_HOST, 123)[0][-1])   # configured host FIRST (DNS)
-    except Exception:  # hil-residual: DNS down (name resolution failed) -> just use the IP fallbacks
-        pass  # hil-residual: bare pass; the IP fallbacks need no DNS
+    except Exception:  # hil-residual: DNS down (name resolution failed) -> just use the IP fallback
+        pass  # hil-residual: bare pass; the IP fallback needs no DNS
     for addr in targets:
         try:
             unix = _ntp_query(addr, socket, struct)

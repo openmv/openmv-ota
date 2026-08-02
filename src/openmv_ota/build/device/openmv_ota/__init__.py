@@ -498,7 +498,15 @@ def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
     timestamps absent -- ``seq`` still orders every record."""
     try:
         import openmv_rtc
-        openmv_rtc.resolve(ntp_host)
+        # An NTP sync is a BLOCKING network op the main loop cannot feed through, so it must relax()
+        # the watchdog exactly like the check-in does. Without this it was the ONLY unfed blocking
+        # call left in the poll loop, and it reset-looped the board: with the watchdog armed at
+        # 100 ms, `clock: syncing` was the last line before every reboot, with reset_cause=3 (WDT).
+        # It is worst on a network that BLACKHOLES NTP -- each unreachable server burns its full
+        # socket timeout, and sync() walks a fallback list -- which is precisely when a device most
+        # needs to stay alive. A no-op once the clock is trusted (the common case: no relax at all).
+        with _wdt_relax():
+            openmv_rtc.resolve(ntp_host)
         log.debug("clock: resolved")                  # HIL path witness (NTP/RTC each poll)
     except Exception:  # hil-residual: clock-unresolved wrapper (missing module / failed NTP)
         pass  # hil-residual: bare pass; clock left unresolved
