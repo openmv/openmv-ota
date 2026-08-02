@@ -693,17 +693,39 @@ def bench_main_py(board, net, app="confirm"):
         # watchdog SURVIVES a real OTA cycle -- the install's ranged erase feeds per block, run() feeds
         # per poll, and this loop feeds per iteration, so nothing outruns the window and it never
         # spuriously resets. `armed=True` witnesses that ENABLED took effect (start() really armed it).
+        # HIL_WDT_DEBUG=1 sprinkles RAW UART traces through the arm..first-feed..first-poll window,
+        # written STRAIGHT to the coverage UART rather than through openmv_log. When the watchdog
+        # bites, the CDC is unusable and (as seen on the bench) the log may not be configured at all,
+        # so the normal markers vanish -- the last RAW line printed is then the only evidence of how
+        # far it got. Off by default: it opens a second UART object on the same peripheral, which is
+        # fine for a debug run but not something to ship in every scenario.
+        dbg = env("HIL_WDT_DEBUG", "") == "1"
+        pre = ("    import machine as _dm\n"
+               "    _du = _dm.UART(%d, 115200)\n"
+               "    def _p(m):\n"
+               "        _du.write(b'WDTDBG ' + m + b'\\r\\n')\n"
+               "    _p(b'pre-import')\n" % BOARDS[board]["cov_uart"]) if dbg else ""
         trial_policy = (
-            "    import openmv_wdt\n"
-            "    openmv_wdt.start()\n"
-            "    _blog.info('app: wdt armed=%r' % (openmv_wdt._wdt is not None))\n"
+            pre +
+            "    import openmv_wdt\n" +
+            ("    _p(b'imported; arming')\n" if dbg else "") +
+            "    openmv_wdt.start()\n" +
+            ("    _p(b'ARMED')\n" if dbg else "") +
+            "    _blog.info('app: wdt armed=%r' % (openmv_wdt._wdt is not None))\n" +
+            ("    _p(b'after blog.info')\n" if dbg else "") +
             "    confirmed = False\n"
-            "    while True:\n"
-            "        openmv_wdt.feed()\n"
+            "    while True:\n" +
+            ("        _p(b'loop top -> feed')\n" if dbg else "") +
+            "        openmv_wdt.feed()\n" +
+            ("        _p(b'fed')\n" if dbg else "") +
             "        if not confirmed:\n"
-            "            confirmed = True\n"
-            "            openmv_ota.confirm()\n"
-            "        await asyncio.sleep_ms(20)\n"
+            "            confirmed = True\n" +
+            ("            _p(b'confirm() enter')\n" if dbg else "") +
+            "            openmv_ota.confirm()\n" +
+            ("            _p(b'confirm() done')\n" if dbg else "") +
+            ("        _p(b'-> await sleep20 (run() gets the CPU here)')\n" if dbg else "") +
+            "        await asyncio.sleep_ms(20)\n" +
+            ("        _p(b'<- back from sleep20')\n" if dbg else "")
         )
     elif app == "wdt_bite":
         # NEGATIVE watchdog test: prove the WWDG actually BITES when feeding stops. Arm + feed ~1 s
