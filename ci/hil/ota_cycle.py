@@ -663,9 +663,13 @@ class UartCapture:
         self.raw = []
 
     def tail(self, n=40):
-        """The last ``n`` raw lines -- what to print when a run fails, since the marker UART is the
-        only channel that still works once the CDC is gone."""
-        return "".join(self.raw)[-4000:].split("\n")[-n:]
+        """The last ``n`` captured lines -- what to print when a run fails, since the marker UART is
+        the only channel that still works once the CDC is gone.
+
+        ``raw`` holds lines ALREADY stripped of their newline (see _run), so join with "\\n": an
+        empty join runs the whole capture together into one unreadable line, which is how the first
+        version of this shipped and made the dump useless exactly when it was needed."""
+        return self.raw[-n:]
 
     def stop(self):
         self._stop.set()
@@ -1060,6 +1064,14 @@ def _ensure_cdc(board, allow_erase=False):
         log("recover: %s CDC missing/unresponsive at %s -- free holders + J-Link SWD reset (try %d)"
             % (board, CFG["acm"], attempt + 1))
         sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
+        # On the Arduino MCUboot boards an nRST is the WRONG tool and actively makes things worse:
+        # the 1200-baud touch that entered DFU sets a "stay in bootloader" flag in RAM, and RAM
+        # SURVIVES the reset pin -- so pulsing nRST lands the board back in DFU (no CDC) instead of
+        # recovering it. Measured on the Portenta: after a flash the app had booted (markers on the
+        # UART), then three reset pulses took the CDC away for good. Leave DFU properly instead;
+        # only fall back to the pin pulse if it is not in DFU at all.
+        if BOARDS[board].get("flash") == "arduino_cli" and _dfu_leave(board):
+            continue                                   # left DFU -> re-probe rather than reset it
         jlink_reset_pulse(board)                       # see jlink_reset_pulse for why pin THEN core
         time.sleep(8)
     # A reset alone cannot fix a board whose APP is what breaks the CDC -- it just reboots straight
