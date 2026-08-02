@@ -344,6 +344,31 @@ def test_resuming_body_progress_resets_the_stall_budget(monkeypatch):
     assert _drain(body) == data
 
 
+def test_resuming_body_tolerates_a_socket_that_cannot_be_closed(monkeypatch):
+    # The socket we are replacing is usually ALREADY dead -- that is why we are reconnecting -- so
+    # close() can itself raise (EBADF / a torn-down TLS wrapper). That must not abort an otherwise
+    # healthy resume, nor close(): there is nothing left to release either way. Without the guards
+    # a poor link would turn every reconnect into a failed install.
+    data = bytes(range(256)) * 4
+    calls = []
+    seq = [200, None]
+
+    class _UncloseableSock:
+        def close(self):
+            raise OSError(9)                         # EBADF -- the peer is already gone
+
+    def fake_open(url, ca, socket, ssl, feed=None, max_redirects=5, start=0):
+        calls.append(start)
+        return _UncloseableSock(), _DropBody(data, start, seq.pop(0) if seq else None)
+
+    monkeypatch.setattr(_mod, "_open", fake_open)
+    sock, body = fake_open("u", None, None, None)
+    rb = inst("_ResumingBody")("u", None, None, None, lambda: None, sock, body)
+    assert _drain(rb) == data                        # resumed despite close() raising
+    assert calls == [0, 200]
+    rb.close()                                       # and close() swallows it too
+
+
 def test_resuming_body_close_closes_the_current_socket(monkeypatch):
     # after a resume the body owns a NEWER socket; closing the original would leak the live one
     data = bytes(range(256)) * 4
