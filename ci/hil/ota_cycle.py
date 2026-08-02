@@ -879,6 +879,71 @@ def _flash_dfu_cli(board, bad_romfs=False):
     _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
 
 
+def jlink_reset_pulse(board, timeout=60):
+    """Pulse the board's PHYSICAL nRST line via the J-Link, then connect + reset + GO.
+
+    The pin pulse (SetRESET/ClrRESET) needs no core connect, so it reaches a HUNG core that a
+    SYSRESETREQ cannot; the follow-up `connect; r; g` actually RUNS the firmware, because the pulse
+    alone can leave the core halted and never re-enumerating USB (observed on the N6). Belt (pin,
+    for hung) and suspenders (connect+go, for halted-but-alive). No-op for a board with no J-Link.
+    """
+    if "jlink_device" not in BOARDS[board]:
+        return False
+    fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
+    os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n")
+    os.close(fd)
+    try:
+        # -AutoConnect 0: do NOT attach the (possibly hung) core on launch -- the pin pulse is
+        # physical and must not be gated on a core connect that would hang on a wedged board.
+        sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
+            "-speed", "4000", "-AutoConnect", "0", "-CommanderScript", sp],
+           timeout=timeout, check=False, quiet=True)
+    finally:
+        os.unlink(sp)
+    return True
+
+
+def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
+    """Run a dfu-util-backed command that WAITS for a DFU device (``-w``), pulsing the board's reset
+    line while it waits so the bootloader's BRIEF DFU window gets caught.
+
+    THIS IS THE RECOVERY PRIMITIVE FOR A BOARD WHOSE CDC IS GONE. Normally the CLI enters DFU with
+    ``machine.bootloader()`` over the USB-CDC -- useless when the CDC is exactly what's broken. But
+    the OpenMV bootloader presents DFU for a short window on EVERY reset, so: start the command (it
+    blocks on ``-w``), pulse nRST a moment later, and dfu-util catches the window. Verified on the
+    H7 Plus, and it is how a board whose app owns/kills the CDC gets recovered without touching it.
+
+    Pass the CLI's ``--in-bootloader`` in ``argv`` so it does NOT try the CDC route first.
+    Returns (rc, output).
+    """
+    log("recover: %s -- dfu(-w) + nRST pulse to catch the bootloader's DFU window" % board)
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(settle)                       # let dfu-util reach its wait loop before we reset
+    jlink_reset_pulse(board)
+    try:
+        out = proc.communicate(timeout=timeout)[0]
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return 124, "dfu_reset_catch timed out"
+    return proc.returncode, out or ""
+
+
+def recover_erase_romfs(board):
+    """LAST-RESORT recovery: erase the romfs over DFU so the board boots with NO app.
+
+    An app that wedges or owns the CDC (e.g. one polling an unreachable server) makes every
+    mpremote fail, which blocks the harness's own reflash -- a deadlock, since flashing needs the
+    CDC to enter the bootloader. Erasing the romfs breaks it: with no bootable slot the app never
+    runs, the CDC comes back, and the normal `flash factory` can reprovision. Needs no built
+    artifacts, so it works even before a build.
+    """
+    argv = [ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--in-bootloader",
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+    rc, out = dfu_reset_catch(board, argv)
+    log("recover: romfs erase rc=%d%s" % (rc, "" if rc == 0 else " -- %s" % out[-300:]))
+    return rc == 0
+
+
 def _ensure_cdc(board):
     """Recover a board that has wedged off USB (no CDC) via a J-Link SWD reset, so a later scenario
     doesn't fail every mpremote with "failed to access /dev/ttyACM0". Two ways a board loses its CDC:
@@ -907,24 +972,18 @@ def _ensure_cdc(board):
         log("recover: %s CDC missing/unresponsive at %s -- free holders + J-Link SWD reset (try %d)"
             % (board, CFG["acm"], attempt + 1))
         sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
-        fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
-        # Two-stage recover: (1) pulse the physical nRST line (hold low, release) -- a pure pin toggle
-        # that needs no core connect, so it reaches a HUNG core a debug reset can't; THEN (2) connect +
-        # reset + GO. The pin pulse alone can leave the core halted/not-running (observed on the N6: it
-        # reset but never re-enumerated USB until an explicit `g`), so the debug-core `r; g` actually
-        # RUNS the firmware. If the core is truly hung the connect fails harmlessly -- the pulse already
-        # reset it. Belt (pin, for hung) + suspenders (connect+go, for halted-but-alive).
-        os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n")
-        os.close(fd)
-        try:
-            # -AutoConnect 0: do NOT try to attach the (possibly hung) core on launch -- the pin pulse
-            # is physical and must not be gated on a core connect that would hang on a wedged board.
-            sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
-                "-speed", "4000", "-AutoConnect", "0", "-CommanderScript", sp],
-               timeout=60, check=False, quiet=True)
-        finally:
-            os.unlink(sp)
+        jlink_reset_pulse(board)                       # see jlink_reset_pulse for why pin THEN core
         time.sleep(8)
+    # A reset alone cannot fix a board whose APP is what breaks the CDC -- it just reboots straight
+    # back into it (an app polling an unreachable server destabilised the H7 Plus exactly this way,
+    # cycling USB and failing every mpremote). Erasing the romfs over DFU removes the app, which is
+    # the only way out that doesn't need the CDC we don't have. Then re-probe: prepare reflashes
+    # golden right after, so a board left with no romfs is a fine intermediate state.
+    if recover_erase_romfs(board):
+        time.sleep(8)
+        rc, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
+                   timeout=15, check=False, quiet=True)
+        log("recover: %s CDC after romfs erase: %s" % (board, "BACK" if rc == 0 else "still gone"))
 
 
 def _flash_blhost_imx(board, bad_romfs=False):

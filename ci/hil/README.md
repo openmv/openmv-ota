@@ -112,3 +112,34 @@ python3 ci/hil/hil_coverage.py --traces ~/hil-traces --md cov.md --lcov cov.info
 Validated on real hardware across all three OTA boards (N6/XIP, AE3/alif-XIP, RT1062/
 block-device): the happy delta/full paths and the corrupt/rollback/bad_sig/bad_version/no_slot
 safety paths — **all 16** device markers (the full matrix).
+
+## Recovering a board whose USB-CDC is gone
+
+Every normal flash path enters the bootloader with `machine.bootloader()` **over the USB-CDC** —
+useless in the one case you most need it, when the CDC itself is broken. A board gets there by
+running an app that wedges or owns the port (on the H7 Plus, an app polling an unreachable OTA
+server destabilised USB entirely). A reset alone does not help: it reboots straight back into the
+same app.
+
+The way out is that **the OpenMV bootloader presents a DFU window on every reset**:
+
+1. start a `dfu-util`-backed command with `-w` (it blocks, waiting for a DFU device);
+2. a moment later, pulse the board's **physical nRST line** via the J-Link;
+3. `dfu-util` catches the window and does its work.
+
+Erasing the romfs is the useful payload — with no bootable slot the app never runs, the CDC comes
+back, and a normal `flash factory` can reprovision. It needs no built artifacts, so it works even
+on a fresh node. `--in-bootloader` stops the CLI trying the (broken) CDC route first.
+
+The harness does this automatically as its last-resort recovery (`_ensure_cdc` →
+`recover_erase_romfs`). By hand:
+
+```sh
+python3 ci/hil/recover.py --board OPENMV4P            # erase romfs -> frees the CDC
+python3 ci/hil/recover.py --board OPENMV4P --probe    # just report whether the CDC answers
+python3 ci/hil/recover.py --board OPENMV4P --reset    # only pulse nRST (no DFU)
+```
+
+Primitives live in `ota_cycle.py`: `jlink_reset_pulse()` (pin pulse **then** connect+go — the pulse
+alone can leave the core halted and never re-enumerating), `dfu_reset_catch()` (run a `-w` command
+while pulsing reset), `recover_erase_romfs()`.
