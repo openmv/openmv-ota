@@ -354,3 +354,31 @@ def test_arduino_flash_takes_no_repl_to_reach_the_board(board, monkeypatch):
     body = _body("_flash_arduino_cli")
     assert "_ensure_cdc" not in body, "an mpremote probe here kills the app it is checking on"
     assert "_dfu_present" in body and "CFG[\"acm\"]" in body
+
+
+# ---------------------------------------------------------------------------
+# Completion for boards the update server never records.
+
+
+@pytest.mark.parametrize("board", _ARDUINO)
+def test_arduino_boards_are_marked_unrecorded(board):
+    """The server's `unverified_boards` set skips the device-registry write for these, so a run that
+    waits on device_record() can never conclude -- it watches until timeout while the device, still
+    running, re-installs over and over (observed: repeated `image sha256 does not match the
+    manifest` -> fallback -> re-offer, which looked like an OTA bug and was a harness deadlock)."""
+    assert ota_cycle.BOARDS[board].get("server_record") is False
+
+
+def test_recorded_boards_keep_the_server_check():
+    """The four green boards ARE recorded; they must not be moved onto marker-only scoring."""
+    for board, cfg in ota_cycle.BOARDS.items():
+        if cfg.get("flash") != "arduino_cli":
+            assert cfg.get("server_record", True) is True, board
+
+
+def test_marker_scoring_requires_the_full_expect_set():
+    """Marker scoring must not be a weaker gate -- `have` is `expect <= marks`, so a scenario still
+    has to hit every path it declares."""
+    body = _body("run_cycle")
+    assert "by_marker" in body
+    assert "reached = (have if by_marker else" in body

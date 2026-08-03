@@ -140,7 +140,13 @@ BOARDS = {
     # That makes them the control for the H7 Plus's armed-watchdog reset loop (see WATCHDOG_BROKEN):
     # same family, same WWDG, different network driver. A passing watchdog leg here isolates the
     # failure to the WINC; a failing one makes it H7-wide.
-    "ARDUINO_NICLA_VISION": {                # Arduino Nicla Vision (STM32H747, QSPI ROMFS dual-slot)
+    "ARDUINO_NICLA_VISION": {
+        # The update server NEVER writes a device record for these: they sit in its
+        # `unverified_boards` set (swd-ids does not register Arduino boards), so
+        # registration is bypassed and OTA is served read-only -- zero-footprint by
+        # design. run_cycle therefore cannot use the server record to decide when the
+        # scenario is done, and scores the UART markers instead.
+        "server_record": False,                # Arduino Nicla Vision (STM32H747, QSPI ROMFS dual-slot)
         "cov_uart": 4,                       # UART4 on the SDA/SCL header (J2-1=PB9 TX, J2-2=PB8 RX),
                                              # NOT the P4/P5 pads (those are SWCLK/NRST on the Nicla)
         "cov_write": "install.xip",          # stm32 XIP write path (dual-slot lives in the QSPI ROMFS)
@@ -148,7 +154,13 @@ BOARDS = {
         "flash": "arduino_cli",              # 1200-baud touch -> MCUboot DFU, address-based dfu-util -w
         "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
     },
-    "ARDUINO_PORTENTA_H7": {                 # Arduino Portenta H7 (STM32H747, QSPI ROMFS dual-slot)
+    "ARDUINO_PORTENTA_H7": {
+        # The update server NEVER writes a device record for these: they sit in its
+        # `unverified_boards` set (swd-ids does not register Arduino boards), so
+        # registration is bypassed and OTA is served read-only -- zero-footprint by
+        # design. run_cycle therefore cannot use the server record to decide when the
+        # scenario is done, and scores the UART markers instead.
+        "server_record": False,                 # Arduino Portenta H7 (STM32H747, QSPI ROMFS dual-slot)
         "cov_uart": 1,                       # UART1 (TX=pin_A9 / RX=pin_A10) -- VERIFIED end-to-end on
                                              # the bench: board writes land byte-perfect on the node's
                                              # CP2102. NB UART1 is also MICROPY_HW_UART_REPL, which is
@@ -1715,6 +1727,14 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
             device_exec("import machine; machine.reset()", timeout=20, check=False)
         except Exception:
             pass                             # ...an I/O error here just means the reset landed
+    # Some boards are served OTA but never RECORDED: the server's `unverified_boards` set skips the
+    # device-registry write entirely, so device_record() returns nothing for them no matter how well
+    # the install goes. Waiting on that record means never concluding -- the run watches until its
+    # timeout while the device, left running, re-installs over and over. Score their UART markers
+    # instead; they are the same evidence the scenario's expect/forbid sets are written against.
+    by_marker = bool(_BOARD) and not BOARDS[_BOARD].get("server_record", True)
+    if by_marker:
+        log("cycle: %s is not recorded server-side -- scoring the UART markers" % _BOARD)
     deadline = time.time() + timeout_s
     last = None
     saw_golden = saw_target = False
@@ -1746,13 +1766,18 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
             if hb % 4 == 0:                        # ~60s with no new state -> a heartbeat, so a long
                 log("  ... still watching (%ds elapsed, %d/%d markers, on %s/%s)"   # erase/download
                     % (int(time.time() - (deadline - timeout_s)), len(marks), len(expect), v, slot))
-        if end == "promoted":
+        if by_marker:
+            if have:
+                break                        # no server record to corroborate: the device's own
+                #                              markers ARE the evidence, and they are complete
+        elif end == "promoted":
             if saw_golden and v == target and slot == "FRONT" and have:
                 break                        # real golden->target transition, all paths hit
         elif saw_golden and v == golden and have:
             break                            # settled back on golden, all negative paths hit
-    reached = ((end == "promoted" and saw_golden and v == target and slot == "FRONT")
-               or (end == "golden" and saw_golden and v == golden))
+    reached = (have if by_marker else
+               ((end == "promoted" and saw_golden and v == target and slot == "FRONT")
+                or (end == "golden" and saw_golden and v == golden)))
     return {"saw_golden": saw_golden, "saw_target": saw_target,
             "version": v, "slot": slot, "reached_end": reached}
 
