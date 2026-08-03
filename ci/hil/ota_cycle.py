@@ -1040,8 +1040,31 @@ def flash_golden(board, bad_romfs=False):
     # Golden is on and the CDC is back, so (re)write the bench files here. prepare() skips them when
     # recovery had to erase the romfs -- this is where a deferred write lands. Idempotent, so the
     # normal path just rewrites the same two files rather than needing a "was it deferred?" flag.
-    if not bad_romfs and _cdc_responsive():
-        _flash_bench_files(board)
+    if not bad_romfs:
+        # WAIT for the board, then FAIL LOUDLY -- do not silently skip. This write is what puts
+        # /flash/.hilcov_uart on the board, and that file is the only thing telling the firmware to
+        # log to the marker UART. Gating it on an instantaneous _cdc_responsive() made it a RACE:
+        # the board needs ~30 s to enumerate after a flash, so when the port was up in time the
+        # write landed and the leg passed, and when it was not the write was skipped in silence, the
+        # board logged to USB instead, and the leg failed 25 minutes later with every marker
+        # missing. That is the whole of the N6 watchdog_bite flakiness -- pass, fail, pass, fail.
+        if not _cdc_responsive():
+            _await_boot(board, budget=120)   # it is probably still coming up after the flash
+        if _cdc_responsive():
+            _flash_bench_files(board)
+        elif _CAP is not None and _CAP.raw:
+            # Could not write them -- but the board is ALREADY logging to the marker UART, which is
+            # the only thing these files buy us. They survive across runs (they live on /flash, which
+            # a golden flash does not erase), so this is the normal steady state, not a fault. Do not
+            # fail a board that is demonstrably working: the point of the check is the OUTCOME
+            # (markers arriving), never the mechanism.
+            log("bench files: not rewritten (no CDC), but the marker UART is live -- they are "
+                "already on the board")
+        else:
+            raise RuntimeError(
+                "%s: golden is flashed, the board never came back to receive the bench files, AND "
+                "nothing is arriving on the marker UART. Without /flash/.hilcov_uart it logs to USB "
+                "and every scenario fails on missing markers." % board)
 
 
 def _partial_download(out):
@@ -1066,6 +1089,10 @@ def _flash_dfu_cli(board, bad_romfs=False):
     and SKIP -- never the coprocessor-MRAM write that wedges the AE3 (see COPROC_ENABLED). J-Link
     stays ONLY for _ensure_cdc recovery (an SWD nRST pulse revives a board wedged off USB, which the
     CLI's DFU path -- needing a live CDC to enter the bootloader -- can't reach); it never flashes."""
+    # Mark where THIS golden's account of itself begins, so verify can tell a fresh mount
+    # from the one it replaced (see verify_golden_uart).
+    global _FLASH_MARK
+    _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
     _ensure_cdc(board, allow_erase=True)   # pre-flash: safe to erase; the flash below reprovisions
@@ -1142,6 +1169,7 @@ def jlink_reset_pulse(board, timeout=60):
     """
     if "jlink_device" not in BOARDS[board]:
         return False
+    _free_jlink()                         # a stale JLinkExe blocks the probe, silently
     fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
     os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n")
     os.close(fd)
@@ -1258,6 +1286,19 @@ def _await_boot(board, marker="boot: ready", budget=150):
     return False
 
 
+def _free_jlink():
+    """Reap a stale JLinkExe before driving the probe. A J-Link is a SINGLE-CLIENT device: one
+    leftover process (a previous invocation that hung and outlived its timeout) makes every later
+    connect fail, and those failures are silent -- `sh(..., check=False)` returns, the helper reports
+    success, and the board is simply never reset.
+
+    That is why the N6's SWD reset works when watchdog_bite runs ALONE and fails after nine prior
+    scenarios: the leftovers accumulate. Only one J-Link operation is ever in flight per node, so
+    anything still running here is by definition stale."""
+    rc, out = sh("pkill -f JLinkExe 2>/dev/null; true", check=False, quiet=True)
+    del rc, out
+
+
 def jlink_core_reset(board, timeout=60):
     """Reset a board through the DEBUG CORE (``connect; r; g``) -- no nRST pin, no DFU-window games.
 
@@ -1269,6 +1310,7 @@ def jlink_core_reset(board, timeout=60):
     """
     if "jlink_device" not in BOARDS[board]:
         return False
+    _free_jlink()                         # a stale JLinkExe blocks the probe, silently
     fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="corereset-")
     if BOARDS[board].get("jlink_swd", True):
         os.write(fd, b"si SWD\nspeed 4000\nconnect\nr\ng\nqc\n")
@@ -1614,6 +1656,10 @@ def _flash_blhost_imx(board, bad_romfs=False):
     bad_romfs=True is the no_slot brick: blank the whole OTA romfs region (both slots -> no valid
     trailer -> boot.py finds nothing bootable), leaving firmware + /flash intact -- via the CLI's
     `flash erase --romfs` (which enters the resident SBL and flash-erase-regions the romfs)."""
+    # Mark where THIS golden's account of itself begins, so verify can tell a fresh mount
+    # from the one it replaced (see verify_golden_uart).
+    global _FLASH_MARK
+    _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
     build = CFG["project"] + "/build"
     if bad_romfs:
         log("brick: erase the OTA romfs region (both slots) -> openmv-ota flash erase --romfs")
@@ -1909,14 +1955,43 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
                     device may loop (re-offer -> re-fail -> golden), so we exit once it has
                     SETTLED back on golden with every expected marker seen."""
     log("cycle: hard reset -> autonomous run; end=%s; watching UART + server" % end)
-    # On a board driven entirely off the UART, reset through the DEBUG CORE: it needs no CDC (so it
-    # works when the port has not come back yet) and it cannot Ctrl-C anything. The mpremote route
-    # has to take the REPL to ask for the reset -- harmless in itself, since a reset is what we
-    # wanted, but it fails outright when the port is absent, which is precisely when the scored
-    # window would otherwise never start.
-    if _BOARD and BOARDS[_BOARD].get("flash") == "arduino_cli" and jlink_core_reset(_BOARD):
-        pass                                 # reset landed over SWD; no REPL involved
+    # RESET THROUGH THE DEBUG CORE wherever there is a J-Link. Two reasons, and the second is the
+    # one that bites:
+    #
+    #  1. it needs no CDC, so it still works when the port has not come back yet -- precisely when
+    #     the scored window would otherwise never start;
+    #  2. asking for the reset over mpremote means taking the REPL with a Ctrl-C FIRST, and on a
+    #     board whose app has ARMED THE WATCHDOG that stops the feed. The watchdog then bites before
+    #     machine.reset() ever runs, so the board boots with reset_cause == 3 (watchdog) instead of
+    #     a software reset. wdt_bite's app reads that as "I have already bitten, recover and feed",
+    #     skips the bite sequence entirely, and the scenario fails with wdt.bit and wdt.stop
+    #     missing -- exactly the observed failure. The harness was choosing the reset cause it was
+    #     about to measure.
+    #
+    # A core reset asks the processor directly and never touches the app, so the cause the scenario
+    # sees is the one the scenario arranged.
+    # CONFIRM the reset, do not trust it. jlink_core_reset returns True whenever the board merely
+    # HAS a J-Link -- it runs JLinkExe with check=False, so a connect that fails looks identical to
+    # a reset that landed. Measured: it resets the Portenta reliably and does NOT reset the N6, and
+    # trusting it there opened a scored window on a board that never rebooted -- 0/5 markers for the
+    # full timeout, with the server record still showing the pre-reset state. Watch for the board's
+    # own boot marker; if it does not come, fall back to the REPL reset, which is worse for an armed
+    # watchdog but is at least a reset.
+    if (_BOARD and BOARDS[_BOARD].get("jlink_device") and jlink_core_reset(_BOARD)
+            and _await_boot(_BOARD, budget=60)):
+        pass                                 # CONFIRMED: it actually rebooted; no REPL was taken
+    elif (_BOARD and BOARDS[_BOARD].get("jlink_device")
+          and BOARDS[_BOARD].get("flash") != "arduino_cli"
+          and jlink_reset_pulse(_BOARD) and _await_boot(_BOARD, budget=60)):
+        # The core reset did not take. Try the RESET PIN, which is the lever that has always worked
+        # on these boards (it is what _ensure_cdc uses to revive a wedged N6/AE3). NOT for the
+        # Arduino boards: there the pin can land the board back in its DFU bootloader, because the
+        # 1200-baud touch's stay-in-bootloader flag lives in RAM and survives it.
+        log("cycle: %s reset via the nRST pin (the core reset did not take)" % _BOARD)
     else:
+        if _BOARD and BOARDS[_BOARD].get("jlink_device"):
+            log("cycle: no SWD reset produced a boot on %s -- falling back to the REPL reset, which "
+                "Ctrl-Cs the app and so bites an armed watchdog" % _BOARD)
         try:                                 # machine.reset() drops the USB-CDC -> mpremote
             device_exec("import machine; machine.reset()", timeout=20, check=False)
         except Exception:
@@ -2056,11 +2131,17 @@ def main():
                 phase("prepare", lambda: prepare(args.board, args.checkout, network, spec["app"]))
                 phase("build_golden", lambda: build_golden(args.board))
                 phase("flash_golden", lambda: flash_golden(args.board))
-                # verify_golden reads the device_id in the same early (pre-watchdog-arm) exec.
-                devid = phase("verify_golden",
-                              (lambda: verify_golden_uart(args.board))
-                              if BOARDS[args.board].get("flash") == "arduino_cli"
-                              else verify_golden)
+                # VERIFY OFF THE UART ON EVERY BOARD. The mpremote route takes the REPL with a
+                # Ctrl-C, and on a board whose app has ARMED THE WATCHDOG that is fatal: the feed
+                # stops, the watchdog bites, the board reboots, the app re-arms, the next probe
+                # kills it again. Captured on the RT:
+                #     wdt armed=True / wdt: feed / app: CRASHED KeyboardInterrupt()
+                #     app: booting ... reset_cause=3      <- 3 = watchdog reset
+                #     wdt armed=True / wdt: feed / app: CRASHED KeyboardInterrupt()
+                # The harness was fighting the very watchdog the scenario exists to test. Watching
+                # cannot do that. Falls back to the REPL verify by itself when there is no capture
+                # or the markers do not arrive, so a board without a marker UART is unaffected.
+                devid = phase("verify_golden", lambda: verify_golden_uart(args.board))
             if devid is None:                    # --skip-provision: board already up, read it directly
                 devid = device_id()
             trace["device_id"] = devid
@@ -2070,6 +2151,19 @@ def main():
             if spec["publish"] != "none" and not args.skip_publish:
                 phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
                 trace["metrics"] = artifact_sizes(args.board)   # download sizes -> ota_metrics report
+            # THE MARKER UART MUST BE ALIVE BEFORE THE SCORED WINDOW OPENS. Every scenario is scored
+            # on lines from this stream; if it is dead, the run takes its full timeout and then
+            # reports a pile of missing markers -- which reads as a broken device and is not.
+            # Observed: a leg whose `.hilcov_uart` never landed (prepare deferred the bench files
+            # after a recovery erase, and the deferred write did not happen) produced ZERO device
+            # lines for 25 minutes, then failed with boot.ready/log.configured missing. The board was
+            # fine; it was logging to USB because nothing told it which UART to use.
+            if not cap.raw:
+                raise RuntimeError(
+                    "no device output on the marker UART (%s) during provisioning -- the board is "
+                    "logging somewhere else. Check that /flash/.hilcov_uart exists and names UART %s "
+                    "(prepare writes it; a recovery erase DEFERS that write), and that nothing else "
+                    "holds the port." % (CFG["uart"], BOARDS[args.board]["cov_uart"]))
             cap.reset(time.time())               # scored window starts HERE (see the early start above)
             # "install" phase = the whole autonomous OTA (check-in -> download -> write -> trial ->
             # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.
