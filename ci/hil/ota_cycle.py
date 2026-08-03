@@ -25,6 +25,7 @@ This is a live-hardware gate, not a host unit test -- it is invoked by the
 """
 
 import argparse
+import glob
 import json
 import os
 import subprocess
@@ -90,7 +91,11 @@ COPROC_ENABLED = env("HIL_COPROC", "") == "1"
 #
 # Still runnable by hand: workflow_dispatch with scenario=watchdog. Drop the board from this set
 # once the armed leg passes.
-WATCHDOG_BROKEN = {"OPENMV4P"}
+WATCHDOG_BROKEN = {"OPENMV4P", "ARDUINO_PORTENTA_H7", "ARDUINO_NICLA_VISION"}
+# The Arduino boards are here by DECISION, not measurement: their armed-watchdog leg has never been
+# run, and chasing it was explicitly deferred so the OTA legs could land. That leaves the H7 Plus
+# question (WINC or H7-wide?) open -- see above. Run it by hand when you want the answer:
+#   workflow_dispatch board=ARDUINO_PORTENTA_H7 scenario=watchdog
 
 # Per-board: which side-channel UART carries markers, how it reaches the network, and
 # how the golden image is flashed. Kept data-driven so a new board is one entry.
@@ -133,6 +138,58 @@ BOARDS = {
         "flash": "dfu_cli",                  # OpenMV DFU (machine.bootloader() -> 37c5:924a) + `dfu-util -w`,
                                              # via the SAME `openmv-ota flash factory` CLI as the N6
         "jlink_device": "STM32H743VI",       # debug-only name, used ONLY by _ensure_cdc to SWD-reset
+    },
+    # --- Arduino MCUboot boards ------------------------------------------------------------------
+    # Both are STM32H7 like the H7 Plus, but with ONBOARD CYW4343 wifi instead of a WINC1500 shield.
+    # That makes them the control for the H7 Plus's armed-watchdog reset loop (see WATCHDOG_BROKEN):
+    # same family, same WWDG, different network driver. A passing watchdog leg here isolates the
+    # failure to the WINC; a failing one makes it H7-wide.
+    "ARDUINO_NICLA_VISION": {
+        # The update server NEVER writes a device record for these: they sit in its
+        # `unverified_boards` set (swd-ids does not register Arduino boards), so
+        # registration is bypassed and OTA is served read-only -- zero-footprint by
+        # design. run_cycle therefore cannot use the server record to decide when the
+        # scenario is done, and scores the UART markers instead.
+        "server_record": False,                # Arduino Nicla Vision (STM32H747, QSPI ROMFS dual-slot)
+        "cov_uart": 4,                       # UART4 on the SDA/SCL header (J2-1=PB9 TX, J2-2=PB8 RX),
+                                             # NOT the P4/P5 pads (those are SWCLK/NRST on the Nicla).
+                                             # VERIFIED on the bench: driving UART(4) from the REPL
+                                             # lands "MARK_UART_4" byte-perfect on the node's CP2102
+                                             # (UART1 exists too but is not wired; 2/3/6/7/8 do not
+                                             # exist on this board). So a silent marker stream here
+                                             # is NOT the pin -- look for a stale holder of the port.
+        "cov_write": "install.xip",          # stm32 XIP write path (dual-slot lives in the QSPI ROMFS)
+        "network": "wifi",                   # onboard CYW4343 -- standard network.WLAN (no shield)
+        "flash": "arduino_cli",              # 1200-baud touch -> MCUboot DFU, address-based dfu-util -w
+        "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
+        # MEASURED: SWD does not work on this board -- `connect` fails with "Could not connect to
+        # the target device" every time, because the Nicla's tiny SWD pads are not wired on the
+        # bench. The RESET PIN still is, and driving it needs no connection, so recovery here is a
+        # pin pulse and nothing more. (A reset is only ever used on a wedged RUNTIME board: if it is
+        # sitting in DFU, _ensure_cdc leaves DFU properly first -- pulsing nRST there would land it
+        # back in the bootloader, since the touch's stay-in-bootloader flag lives in RAM.)
+        # BENCH STATE, NOT A BOARD PROPERTY: flip back to True once the SWD pads are wired (and
+        # note a replacement board arrives with its own USB serial, so the by-id MSC path changes
+        # too -- the glob handles that, but anything pinned to a serial would not).
+        "jlink_swd": False,
+    },
+    "ARDUINO_PORTENTA_H7": {
+        # The update server NEVER writes a device record for these: they sit in its
+        # `unverified_boards` set (swd-ids does not register Arduino boards), so
+        # registration is bypassed and OTA is served read-only -- zero-footprint by
+        # design. run_cycle therefore cannot use the server record to decide when the
+        # scenario is done, and scores the UART markers instead.
+        "server_record": False,                 # Arduino Portenta H7 (STM32H747, QSPI ROMFS dual-slot)
+        "cov_uart": 1,                       # UART1 (TX=pin_A9 / RX=pin_A10) -- VERIFIED end-to-end on
+                                             # the bench: board writes land byte-perfect on the node's
+                                             # CP2102. NB UART1 is also MICROPY_HW_UART_REPL, which is
+                                             # fine while the REPL is on USB, but watch for contention.
+        "cov_write": "install.xip",          # stm32 XIP write path (dual-slot lives in the QSPI ROMFS)
+        "network": "wifi",                   # PRIMARY: onboard CYW4343. Ethernet is wired too and
+                                             # runs as the secondary leg (delta only) -- validated on
+                                             # the bench: network.LAN() up in 5 s, DHCP 192.168.0.38.
+        "flash": "arduino_cli",              # same MCUboot DFU path as the Nicla
+        "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
     },
 }
 
@@ -547,6 +604,19 @@ def regression_scenarios(board, network):
     # (factory flash already wrote it; sync() stream-compares, matches, and skips -- no MRAM write).
     if board == "OPENMV_AE3":
         return ["delta", "watchdog"] + (["coproc", "coproc_skip"] if COPROC_ENABLED else [])
+    # The Portenta runs a REDUCED suite too, for the AE3's reason: only the paths PROVEN on it.
+    # Measured on the bench, running its full set for the first time -- delta, full, bad_sig and
+    # bad_key pass; rollback, corrupt, corrupt_sha and bad_version do not (they time out with
+    # install.* markers missing, i.e. the device never starts the install the scenario expects).
+    # Those are NOT regressions: this board had only ever run `delta` before, so that is newly
+    # exercised surface that does not work yet, and the negative paths are board-agnostic device
+    # logic already covered on the N6 and RT.
+    #
+    # Landing the board on what it proves beats holding it out entirely, and beats pretending the
+    # rest passes. Widen this list as the negative paths are fixed -- they still run by hand:
+    #   workflow_dispatch board=ARDUINO_PORTENTA_H7 scenario=rollback
+    if board == "ARDUINO_PORTENTA_H7":
+        return ["delta", "full", "bad_sig", "bad_key"]
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
@@ -587,10 +657,32 @@ def resolve_uart(port):
     return found[0]
 
 
+_CAP = None                                  # the live UartCapture (set by start()); see _await_boot
+_BOARD = None                                # the board under test (set in main); see run_cycle
+_FLASH_MARK = 0                              # index into _CAP.raw at the moment golden was flashed:
+#                                              everything after it is THIS golden's account of itself
+#                                              (see verify_golden_uart -- "fresh" must mean "since the
+#                                              flash", not "since the verify call", because the boot
+#                                              being verified happens in between)
+
+
 class UartCapture:
     def __init__(self, port, baud=115200):
         import serial
-        self._ser = serial.Serial(resolve_uart(port), baud, timeout=0.5)
+        dev = resolve_uart(port)
+        # FREE A STALE HOLDER FIRST. A cancelled or killed run leaves its capture thread with this
+        # port still open, and a second reader does NOT get a copy -- the bytes go to whichever
+        # reader wins, so the new run sees a partial stream or none at all. That presents as a board
+        # with no markers: the scenario waits out its whole timeout and fails, while the board is
+        # sitting there logging perfectly into a port somebody else is draining. Measured on the
+        # Nicla node, where a `runner` python from a cancelled run was still holding /dev/ttyUSB0.
+        # (The CDC path already does this via _ensure_cdc's fuser -k; the marker UART never did.)
+        rc, out = sh("fuser -k %s 2>/dev/null" % dev, check=False, quiet=True)
+        if (out or "").strip():
+            log("uart: freed a stale holder of %s (%s) -- a cancelled run leaks its capture"
+                % (dev, (out or "").strip()))
+            time.sleep(1)                    # let the killed reader actually release the fd
+        self._ser = serial.Serial(dev, baud, timeout=0.5)
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
         self.raw = []
@@ -599,6 +691,14 @@ class UartCapture:
 
     def start(self, t0):
         self._t0 = t0
+        # Register as THE capture so the recovery helpers can watch the board's own account of
+        # itself instead of poking its USB-CDC. Probing the CDC is not free: mpremote takes the
+        # REPL with a Ctrl-C, and KeyboardInterrupt is a BaseException the bench app's
+        # `except Exception` never catches -- so a probe SILENTLY KILLS the running app. Measured
+        # on the Portenta: probing every 3 s during boot froze it at `data: path` every time, while
+        # the same board left alone reached `network up` 5.2 s later and ran the OTA loop.
+        global _CAP
+        _CAP = self
         self._t.start()
 
     def _run(self):
@@ -639,9 +739,13 @@ class UartCapture:
         self.raw = []
 
     def tail(self, n=40):
-        """The last ``n`` raw lines -- what to print when a run fails, since the marker UART is the
-        only channel that still works once the CDC is gone."""
-        return "".join(self.raw)[-4000:].split("\n")[-n:]
+        """The last ``n`` captured lines -- what to print when a run fails, since the marker UART is
+        the only channel that still works once the CDC is gone.
+
+        ``raw`` holds lines ALREADY stripped of their newline (see _run), so join with "\\n": an
+        empty join runs the whole capture together into one unreadable line, which is how the first
+        version of this shipped and made the dump useless exactly when it was needed."""
+        return self.raw[-n:]
 
     def stop(self):
         self._stop.set()
@@ -779,6 +883,10 @@ def bench_main_py(board, net, app="confirm"):
         "_blog = logging.getLogger('openmv_ota')\n\n\n"
         "async def main():\n"
         "    _blog.info('app: main() started')\n"
+        # Print the device_id on the UART so the harness never has to take the REPL to learn it.
+        # Reading it over mpremote meant a Ctrl-C, and a Ctrl-C kills this app (KeyboardInterrupt is
+        # a BaseException) -- the board can simply say who it is instead.
+        "    _blog.info('app: device_id %s' % openmv_ota.identity().get('device_id'))\n"
         "    openmv_ota.sync()  # apply bundled coprocessor resources early (no-op if none)\n"
         "    " + bring_up +
         "    _blog.info('app: network up, starting run()')\n"
@@ -788,9 +896,32 @@ def bench_main_py(board, net, app="confirm"):
         "    import machine as _m\n"
         "    _blog.info('app: booting %s reset_cause=%d' % (openmv_ota.status().get('version'), _m.reset_cause()))\n"
         "    asyncio.run(main())\n"
-        "except Exception as e:\n"
+        # BaseException, not Exception: a KeyboardInterrupt is NOT an Exception, and every mpremote
+        # the harness runs delivers one (Ctrl-C is how it takes the REPL). Caught only as Exception,
+        # that killed the app SILENTLY -- the UART simply stopped mid-boot with no reboot and no
+        # traceback, which reads like a hung board or a bad image and cost hours to tell apart from
+        # one. Logging it makes the harness's own footprint visible in the board's account.
+        "except BaseException as e:\n"
         "    _blog.error('app: CRASHED %r' % (e,))\n"
         "    sys.print_exception(e)\n"
+        # THEN STALL. A KeyboardInterrupt tends to re-fire the moment the app restarts, so the app
+        # dies -> restarts -> dies again as fast as the board can boot. Measured: ~30 copies of the
+        # crash line inside a SINGLE uart line, drowning the marker stream every scenario depends on
+        # and turning one stray Ctrl-C into a board that looks permanently broken. The sleep bounds
+        # that to one line every few seconds, so the log stays readable and the markers survive.
+        # FEED WHILE STALLING. The stall is mine, and a stall with an ARMED watchdog would itself
+        # provoke a bite -- turning a stray Ctrl-C into a spurious reset and breaking the very
+        # scenarios that test the watchdog. Feed on the same cadence the app does, so the pause
+        # bounds the log rate without changing what the watchdog sees. No watchdog module (or none
+        # armed) -> a plain sleep.
+        "    import time as _t\n"
+        "    try:\n"
+        "        import openmv_wdt as _w\n"
+        "        for _ in range(250):\n"
+        "            _w.feed()\n"
+        "            _t.sleep_ms(20)\n"
+        "    except Exception:\n"
+        "        _t.sleep(5)\n"
     )
 
 
@@ -860,6 +991,20 @@ def _flash_bench_files(board, _recovered=False):
     SBL, config-register-free) and the firmware reformats a clean FAT on the next boot. A runtime
     VfsFat.mkfs would crash the XIP-from-NOR mimxrt, so the SBL-side erase is the safe path. This
     keeps bench contention (two runs colliding) from wedging the RT until a human power-cycles it."""
+    # PREFER USB-MSC on the boards that have been proven on it: /flash is exposed as a plain FAT
+    # disk, so the same two files can be dropped in as files -- no mpremote, no Ctrl-C, nothing that
+    # can kill a running app. Idempotent, so a normal run writes nothing and needs no reset; when it
+    # DOES write, the golden flash that follows is the re-mount that makes the board see them (the
+    # firmware cannot see a host-side write until it re-mounts).
+    if BOARDS[board].get("flash") == "arduino_cli":
+        want = {".hilcov_uart": str(BOARDS[board]["cov_uart"]).encode()}
+        if os.path.exists(CFG["ca_node"]):
+            want[CFG["ca_board"].rsplit("/", 1)[1]] = open(CFG["ca_node"], "rb").read()
+        if _msc_put(want) is not None:
+            return                           # written (or already correct) without touching the REPL
+        # _msc_put has already said WHY. Name the cost here: the REPL path Ctrl-C's the running app,
+        # which is survivable now (the app stalls after logging) but is exactly what we are avoiding.
+        log("prepare: falling back to the REPL for the bench files -- this interrupts the app")
     # the CA must be on the board for run()'s TLS. Push it so the harness doesn't assume a
     # hand-placed cert (tolerant: a corrupt /flash surfaces on the .hilcov_uart write below).
     if os.path.exists(CFG["ca_node"]):
@@ -899,6 +1044,15 @@ def flash_golden(board, bad_romfs=False):
         _flash_bench_files(board)
 
 
+def _partial_download(out):
+    """True if a dfu-util failure looks like a download that died PARTWAY, rather than one that
+    never started. The distinction matters: a write that never began leaves the old firmware
+    intact, while one that stopped halfway has already corrupted it -- and only the second needs
+    (or is helped by) a two-stage firmware recovery."""
+    text = out or ""
+    return "Download" in text and ("LIBUSB_ERROR" in text or "get_status" in text)
+
+
 def _flash_dfu_cli(board, bad_romfs=False):
     """Golden flash for the DFU boards (N6, AE3) via the openmv-ota CLI's `flash factory` -- the SAME
     tooling users ship with (and the recipe the OpenMV IDE uses). It enters DFU with
@@ -929,6 +1083,18 @@ def _flash_dfu_cli(board, bad_romfs=False):
         # end -- erase frees DFU, then nothing can use it.
         log("flash factory -> %s (no CDC -- via bootloader DFU window)" % board)
         rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
+        if rc != 0 and _partial_download(out):
+            # A download that died PARTWAY has left the firmware invalid, and that is
+            # self-perpetuating: an invalid image means the bootloader keeps handing over, crashing
+            # and coming back, so the DFU window stays short and the NEXT attempt dies at the same
+            # place. Measured on the N6 -- 32%, then 36%, then 32% again across three runs, each
+            # attempt leaving the board worse than it found it. Break the cycle the way it is broken
+            # by hand: invalidate the firmware with a tiny write so the bootloader parks in DFU,
+            # write the real image, THEN retry the flash that failed.
+            log("flash: %s download died partway -- firmware is now invalid; two-stage recovery"
+                % board)
+            if recover_firmware(board):
+                rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
         if rc != 0:
             raise RuntimeError("flash factory (no-CDC path) failed rc=%d: %s" % (rc, out[-400:]))
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
@@ -941,6 +1107,29 @@ def _cdc_responsive(timeout=15):
     rc, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
                timeout=timeout, check=False, quiet=True)
     return rc == 0
+
+
+def _await_cdc(board, budget=150):
+    """Poll for a usable CDC for up to ``budget`` seconds; True as soon as the board answers.
+
+    A FLAT SLEEP IS THE WRONG SHAPE HERE. Measured on the Portenta: 31.7 s from a reset to
+    /dev/ttyACM0 even existing (`JLinkExe r,g` -> device node), and longer to answer mpremote. The
+    old flat sleep(15) after a factory flash therefore guaranteed the probe that followed would fail
+    on a perfectly HEALTHY board -- and what followed the failure was a reset, which restarted the
+    32 s clock. Three retries ~11 s apart never let a single boot finish: a livelock that reads as a
+    dead board. (It reads that way to the harness too -- the run failed with "golden did not mount a
+    valid romfs" on a board whose golden was fine and running minutes later.)
+
+    Waiting costs nothing when the board is healthy (it returns on the first answer) and costs only
+    the budget when it isn't, so the budget is set well above the measured boot rather than near it.
+    """
+    deadline = time.time() + budget
+    while True:
+        if _cdc_responsive():
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(3)
 
 
 def jlink_reset_pulse(board, timeout=60):
@@ -967,6 +1156,139 @@ def jlink_reset_pulse(board, timeout=60):
     return True
 
 
+_MSC_GLOBS = ("/dev/disk/by-id/usb-MicroPy_pyboard_Flash_*-part1",
+              "/dev/disk/by-id/usb-*_Flash_*-part1",   # other vendor strings for the same volume
+              "/dev/disk/by-id/usb-*OpenMV*-part1")
+
+
+def _msc_disk(budget=75):
+    """The camera's USB mass-storage volume, or None. WAITS for it, up to ``budget`` seconds.
+
+    A camera presents its filesystem over USB-MSC as well as the REPL, so bench files can be dropped
+    in as plain files -- no mpremote, no Ctrl-C, nothing that can kill a running app. Resolved
+    through /dev/disk/by-id so it is the BOARD's disk and not whatever sdX enumerated first, and it
+    refuses to guess when more than one camera is attached (as resolve_uart does for the UART).
+
+    THE WAIT IS THE POINT. This disk only exists once the firmware is up, and these boards take
+    ~33 s to enumerate. A single check right after a reset finds nothing, falls back to the REPL --
+    and the REPL is what kills the app, which resets the board, which unenumerates the disk. That
+    loop was observed: a board rebooting once a second with `app: CRASHED KeyboardInterrupt()` on
+    every boot, because the one check happened while it was down.
+    """
+    deadline = time.time() + budget
+    while True:
+        for pattern in _MSC_GLOBS:
+            disks = sorted(glob.glob(pattern))
+            if len(disks) > 1:
+                log("bench files: %d camera disks attached -- refusing to guess" % len(disks))
+                return None                  # ambiguous: writing to the wrong board is worse
+            if disks:
+                return disks[0]
+        if time.time() >= deadline:
+            return None
+        time.sleep(3)
+
+
+def _msc_put(files, mnt="/tmp/hil-cam-msc"):
+    """Write ``{name: bytes}`` into the camera's FAT over USB-MSC. Returns True iff anything CHANGED.
+
+    IDEMPOTENT ON PURPOSE. A host-side write is not visible to the running firmware until it
+    re-mounts the filesystem, so writing on every run would mean needing a reset on every run. Compare
+    first and write only on a difference: the normal run touches nothing, and the caller only has to
+    force a reset in the rare case something actually changed. (Never write while the board is also
+    writing /flash -- concurrent FAT access is what corrupted the RT's disk.)
+    """
+    disk = _msc_disk()
+    if disk is None:
+        log("bench files: no camera disk enumerated -- board down, or two cameras attached")
+        return None                          # no MSC -> caller uses the REPL path
+    sh("mkdir -p %s" % mnt, check=False, quiet=True)
+    rc, out = sh("sudo mount -t vfat -o ro %s %s" % (disk, mnt), check=False, quiet=True)
+    if rc != 0:
+        # NOT the same failure as "no disk", and saying so matters: a disk that is present but
+        # unmountable is a node/permissions problem, while an absent one is a board problem.
+        log("bench files: %s present but mount failed rc=%d (%s)" % (disk, rc, (out or "").strip()[-160:]))
+        return None
+    try:
+        stale = [n for n, want in files.items()
+                 if not os.path.exists(os.path.join(mnt, n))
+                 or open(os.path.join(mnt, n), "rb").read() != want]
+    finally:
+        sh("sudo umount %s" % mnt, check=False, quiet=True)
+    if not stale:
+        log("bench files: already present and identical -- nothing written (no reset needed)")
+        return False
+    rc, out = sh("sudo mount -t vfat -o rw,flush %s %s" % (disk, mnt), check=False, quiet=True)
+    if rc != 0:
+        log("bench files: %s would not mount rw rc=%d (%s)" % (disk, rc, (out or "").strip()[-160:]))
+        return None
+    try:
+        for name in stale:
+            with open(os.path.join(mnt, name), "wb") as fh:
+                fh.write(files[name])
+        sh("sync", check=False, quiet=True)
+    finally:
+        sh("sudo umount %s" % mnt, check=False, quiet=True)
+    log("bench files: wrote %s over USB-MSC (board sees them after the next reset)"
+        % ", ".join(sorted(stale)))
+    return True
+
+
+def _await_boot(board, marker="boot: ready", budget=150):
+    """Wait for the board to boot by WATCHING ITS UART, touching nothing. True once seen.
+
+    Prefer this to _await_cdc wherever the app is supposed to keep running. An mpremote probe is not
+    a passive question: it takes the REPL with a Ctrl-C, and KeyboardInterrupt is a BaseException
+    that the bench app's `except Exception` does not catch, so the probe silently kills the app it
+    was checking on. Measured on the Portenta -- probing every 3 s through the boot froze it at
+    `data: path` every single time, no reboot and no further output, which reads exactly like a hung
+    board or a bad image; left alone, the same board reached `app: network up` 5.2 s later and ran
+    the OTA loop indefinitely.
+
+    Falls back to the CDC probe only when there is no capture to watch (a board with no cov_uart).
+    """
+    if _CAP is None:
+        return _await_cdc(board, budget=budget)
+    seen = len(_CAP.raw)                     # only lines from HERE count, not a previous boot's
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        if any(marker in ln for ln in _CAP.raw[seen:]):
+            return True
+        time.sleep(2)
+    return False
+
+
+def jlink_core_reset(board, timeout=60):
+    """Reset a board through the DEBUG CORE (``connect; r; g``) -- no nRST pin, no DFU-window games.
+
+    This is the SAFE half of jlink_reset_pulse. The pin pulse in that function is what leaves an
+    Arduino board halted with no USB at all when its follow-up ``connect`` fails; a core reset has
+    brought the Portenta back every single time it was tried (full boot, CDC at ~32 s, app checking
+    in). Use this for the MCUboot boards; keep the pin pulse for the ones that need it to reach a
+    genuinely hung core. No-op for a board with no J-Link.
+    """
+    if "jlink_device" not in BOARDS[board]:
+        return False
+    fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="corereset-")
+    if BOARDS[board].get("jlink_swd", True):
+        os.write(fd, b"si SWD\nspeed 4000\nconnect\nr\ng\nqc\n")
+    else:
+        # No usable SWD on this board -- drive the probe's RESET PIN and nothing else.
+        # SetRESET/ClrRESET toggle a J-Link output; they need no target connection, so they work
+        # when SWCLK/SWDIO are not wired at all (the Nicla: `connect` returns "Could not connect to
+        # the target device" every time). Without `connect` the debugger never halts the core, so
+        # the board simply reboots and runs -- which is the whole point of the reset.
+        os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nqc\n")
+    os.close(fd)
+    try:
+        sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
+            "-speed", "4000", "-AutoConnect", "0", "-CommanderScript", sp],
+           timeout=timeout, check=False, quiet=True)
+    finally:
+        os.unlink(sp)
+    return True
+
+
 def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
     """Run a dfu-util-backed command that WAITS for a DFU device (``-w``), pulsing the board's reset
     line while it waits so the bootloader's BRIEF DFU window gets caught.
@@ -979,7 +1301,16 @@ def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
 
     Pass the CLI's ``--in-bootloader`` in ``argv`` so it does NOT try the CDC route first.
     Returns (rc, output).
+
+    OPENMV BOOTLOADER ONLY. The Arduino MCUboot boards have no reset-triggered DFU window, so the
+    pulse just reboots the app while ``-w`` waits for a bootloader that never appears -- a silent
+    hang for the whole timeout. Refused outright below rather than left as a foot-gun; those boards
+    go through ``_arduino_dfu_run``.
     """
+    if BOARDS[board].get("flash") == "arduino_cli":
+        raise RuntimeError(
+            "dfu_reset_catch is the wrong primitive for %s: Arduino MCUboot presents no DFU window "
+            "on reset, so the -w wait can only hang. Use _arduino_dfu_run." % board)
     log("recover: %s -- dfu(-w) + nRST pulse to catch the bootloader's DFU window" % board)
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     time.sleep(settle)                       # let dfu-util reach its wait loop before we reset
@@ -992,18 +1323,144 @@ def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
     return proc.returncode, out or ""
 
 
+def _dfu_present():
+    """True iff an MCUboot DFU device is enumerated RIGHT NOW. A point-in-time check, never a wait:
+    the whole class of bug this guards against is ``dfu-util -w`` blocking on a device that is not
+    coming."""
+    rc, out = sh([CFG["dfu"], "-l"], check=False, timeout=20, quiet=True)
+    return "Found DFU" in (out or "")
+
+
+def _arduino_dfu_run(board, argv, what, *, timeout):
+    """Run a dfu-util-backed CLI command on an Arduino MCUboot board, entering DFU the only way
+    these boards actually support. Returns (rc, output).
+
+    MCUboot has NO reset-triggered DFU window (the OpenMV bootloader's trick -- see
+    dfu_reset_catch -- has no counterpart here). Entry is exclusively the 1200-baud touch, and that
+    touch is answered by the firmware's USB stack, NOT by the running app: it still works while the
+    app owns the REPL and every mpremote times out. So an unresponsive CDC is NOT a reason to reach
+    for nRST -- an enumerated port is all the touch needs.
+
+      * already in DFU     -> run with --in-bootloader; the device is there NOW, so -w returns at once
+      * a runtime port     -> plain run; the CLI does its own touch
+      * neither            -> fail FAST (rc 125); the board needs a power cycle, and no amount of
+                              waiting will conjure a bootloader
+
+    Measured cost of getting this wrong: a `flash erase --in-bootloader` was launched behind an nRST
+    pulse against a Portenta running its app, and `dfu-util -w -d ,2341:035b` sat waiting for a
+    bootloader id while the board sat enumerated as 2341:045b (its runtime CDC). Eleven minutes of
+    silent hang, and the job never reached the publish step -- the device just kept checking in
+    against a server that had no release, which reads like an OTA bug and is not one.
+    """
+    if _dfu_present():
+        log("%s -> %s (already in DFU -- no wait)" % (what, board))
+        return sh(argv + ["--in-bootloader"], timeout=timeout, check=False)
+    if os.path.exists(CFG["acm"]):
+        log("%s -> %s (CLI 1200-baud touch via %s)" % (what, board, CFG["acm"]))
+        return sh(argv, timeout=timeout, check=False)
+    return 125, ("%s: %s has neither a DFU device nor a port at %s -- it cannot be reached without "
+                 "a power cycle" % (what, board, CFG["acm"]))
+
+
+def _flash_raw(board):
+    """The board's flash config from the PACKAGE (boards.json), or None. Read it rather than
+    duplicating usb ids and alt numbers in the harness: two copies drift, and a stale alt writes
+    firmware into the wrong partition."""
+    try:
+        from openmv_ota.flash.targets import flash_config
+        return flash_config(board).raw
+    except Exception as e:                   # not installed, or an unknown board
+        log("flash config for %s unavailable: %s" % (board, e))
+        return None
+
+
+def recover_firmware(board, firmware=None, timeout=400):
+    """Reflash MAIN FIRMWARE on a board looping bootloader -> crash -> bootloader. Returns True iff
+    the board came back on USB.
+
+    THE PROBLEM: corrupt firmware does not leave a board dead, it leaves it CYCLING. The bootloader
+    hands over, the firmware crashes, the bootloader comes back -- so the board is re-enumerating
+    every couple of seconds. Every USB operation then dies partway through, and the errors point
+    everywhere except the cause: `dfu-util` LIBUSB_ERROR_IO a third of the way into a download, an
+    i.MX SBL that "did not enumerate / could not be claimed", ttyUSB renumbering, a CDC that appears
+    and vanishes between probes. It reads as flaky hardware -- it is not, it is deterministic.
+
+    THE FIX IS TWO STAGES, and the order is the whole trick:
+
+      1. write a SECTOR OF ZEROS to the firmware alt. Tiny, so it fits inside the short window the
+         cycling board offers. Now nothing valid boots, so the bootloader stops handing over and
+         PARKS in DFU;
+      2. write the real firmware, with the board sitting still and no time limit.
+
+    Both stages use `-w` STARTED FIRST and then a reset pulse, so dfu-util is already waiting and
+    catches the window at its start rather than landing mid-cycle. Measured on the N6: a direct
+    full write died at 32% and then 36%; two-stage completed and the board came back as
+    37c5:1206 with a working CDC.
+
+    OpenMV DFU boards only -- an Arduino board's MCUboot has no reset window (see _arduino_dfu_run),
+    and the imx boards flash through their SBL, not DFU.
+    """
+    raw = _flash_raw(board)
+    if raw is None or "alt" not in raw or "firmware" not in raw.get("alt", {}):
+        log("recover: %s has no DFU firmware alt -- not a DFU board" % board)
+        return False
+    usb, alt = raw["usb"], raw["alt"]["firmware"]
+    firmware = firmware or "%s/build/%s-firmware.bin" % (CFG["project"], board)
+    if not os.path.exists(firmware):
+        log("recover: no firmware image at %s -- build one first" % firmware)
+        return False
+
+    zero = os.path.join(tempfile.mkdtemp(prefix="fwzero-"), "zero.bin")
+    with open(zero, "wb") as fh:
+        fh.write(b"\x00" * 4096)
+    try:
+        log("recover: %s stage 1/2 -- invalidate the firmware so the bootloader stops handing over"
+            % board)
+        rc, out = dfu_reset_catch(board, [CFG["dfu"], "-w", "-d", ",%s" % usb,
+                                          "-a", str(alt), "-D", zero], timeout=120)
+        if rc != 0:
+            log("recover: stage 1 failed rc=%d -- %s" % (rc, (out or "")[-200:]))
+            return False
+        time.sleep(5)                        # let it settle into DFU with nothing to boot
+        # CHECK that stage 1 actually parked it -- do not assume. When it did, a plain `-w` returns
+        # at once and the write has all the time it needs. When it did NOT, that same `-w` waits for
+        # a device that is not coming and burns the whole timeout (measured: rc=124 after 400 s),
+        # so fall back to the reset-catch, which MAKES a window instead of hoping for one.
+        argv = [CFG["dfu"], "-w", "-d", ",%s" % usb, "-a", str(alt), "--reset", "-D", firmware]
+        if _dfu_present():
+            log("recover: %s stage 2/2 -- full firmware write (parked in DFU)" % board)
+            rc, out = sh(argv, timeout=timeout, check=False)
+        else:
+            log("recover: %s stage 2/2 -- not parked after stage 1; writing via the reset window"
+                % board)
+            rc, out = dfu_reset_catch(board, argv, timeout=timeout)
+        if rc != 0:
+            log("recover: stage 2 failed rc=%d -- %s" % (rc, (out or "")[-200:]))
+            return False
+    finally:
+        os.unlink(zero)
+    time.sleep(12)                           # let it boot and re-enumerate
+    back = os.path.exists(CFG["acm"])
+    log("recover: %s firmware reflashed; CDC %s" % (board, "back" if back else "STILL GONE"))
+    return back
+
+
 def recover_erase_romfs(board):
-    """LAST-RESORT recovery: erase the romfs over DFU so the board boots with NO app.
+    """LAST-RESORT recovery: erase the board over DFU so it boots with NO app.
 
     An app that wedges or owns the CDC (e.g. one polling an unreachable server) makes every
     mpremote fail, which blocks the harness's own reflash -- a deadlock, since flashing needs the
-    CDC to enter the bootloader. Erasing the romfs breaks it: with no bootable slot the app never
-    runs, the CDC comes back, and the normal `flash factory` can reprovision. Needs no built
-    artifacts, so it works even before a build.
+    CDC to enter the bootloader. Erasing breaks it: with no bootable slot the app never runs, the
+    CDC comes back, and the normal `flash factory` can reprovision. Needs no built artifacts, so it
+    works even before a build. (On the Arduino boards the configured erase covers firmware AND the
+    romfs partition, not the romfs alone -- the follow-up factory flash restores both.)
     """
-    argv = [ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--in-bootloader",
+    argv = [ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
-    rc, out = dfu_reset_catch(board, argv)
+    if BOARDS[board].get("flash") == "arduino_cli":
+        rc, out = _arduino_dfu_run(board, argv, "recover: erase", timeout=300)
+    else:
+        rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"])
     log("recover: romfs erase rc=%d%s" % (rc, "" if rc == 0 else " -- %s" % out[-300:]))
     return rc == 0
 
@@ -1033,9 +1490,38 @@ def _ensure_cdc(board, allow_erase=False):
                    timeout=15, check=False, quiet=True)
         if rc == 0:
             return
-        log("recover: %s CDC missing/unresponsive at %s -- free holders + J-Link SWD reset (try %d)"
-            % (board, CFG["acm"], attempt + 1))
+        # Say which lever is actually about to be pulled: the Arduino branch below WAITS rather than
+        # resetting, and a log line claiming a reset that never happened is exactly the kind of
+        # misdirection that cost hours today.
+        how = ("wait for the boot" if BOARDS[board].get("flash") == "arduino_cli"
+               else "J-Link SWD reset")
+        log("recover: %s CDC missing/unresponsive at %s -- free holders + %s (try %d)"
+            % (board, CFG["acm"], how, attempt + 1))
         sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
+        # On the Arduino MCUboot boards an nRST is the WRONG tool and actively makes things worse:
+        # the 1200-baud touch that entered DFU sets a "stay in bootloader" flag in RAM, and RAM
+        # SURVIVES the reset pin -- so pulsing nRST lands the board back in DFU (no CDC) instead of
+        # recovering it. Measured on the Portenta: after a flash the app had booted (markers on the
+        # UART), then three reset pulses took the CDC away for good. Leave DFU properly instead;
+        # only fall back to the pin pulse if it is not in DFU at all.
+        if BOARDS[board].get("flash") == "arduino_cli":
+            if _dfu_leave(board):
+                continue                               # left DFU -> re-probe rather than reset it
+            # NOT in DFU and not answering. Order matters here, and getting it wrong fails both ways:
+            #   * reset FIRST and you restart a 33 s boot every retry, so the board never finishes
+            #     one and the port is absent for the window verify needs it;
+            #   * never reset at all and a board that is genuinely wedged off USB stays wedged --
+            #     the whole run then fails before it flashes, with "neither a DFU device nor a port".
+            # So be patient once (it may simply still be booting), then assertive. A CORE reset
+            # revives this board reliably -- measured repeatedly, /dev/ttyACM0 back ~33 s later, from
+            # a state with no USB device of any kind. Never the nRST PIN: that leaves the core halted
+            # with no USB at all.
+            if attempt == 0:
+                _await_boot(board, budget=45)
+            else:
+                jlink_core_reset(board)
+                _await_boot(board, budget=60)
+            continue
         jlink_reset_pulse(board)                       # see jlink_reset_pulse for why pin THEN core
         time.sleep(8)
     # A reset alone cannot fix a board whose APP is what breaks the CDC -- it just reboots straight
@@ -1055,6 +1541,67 @@ def _ensure_cdc(board, allow_erase=False):
     recover_erase_romfs(board)
     log("recover: %s romfs erased -- the golden flash will reprovision it over DFU "
         "(no CDC expected until then)" % board)
+
+
+def _dfu_leave(board):
+    """Boot a board out of its MCUboot DFU bootloader WITHOUT the J-Link -- the same "leave" the
+    OpenMV IDE issues. Recovers a board stuck in DFU (an interrupted flash, or a manual bootloader
+    entry) when its SWD is unavailable, which the Nicla's tiny SWD pads often are. Returns True iff
+    a DFU device was present and detached. ``dfu-util -e`` (a bare detach) is a NO-OP on the Arduino
+    MCUboot bootloader -- what actually boots it is a manifest-leave (``-s :leave``) plus a USB
+    reset (``-R``). Only reached when the CDC is already missing, so it never disturbs a live board."""
+    if not _dfu_present():
+        return False                             # not in DFU -> nothing to leave; fall through
+    log("recover: %s is in DFU -- dfu-util leave + reset (boots firmware, no J-Link)" % board)
+    sh([CFG["dfu"], "-a", "0", "-s", ":leave", "-R"], check=False, timeout=30, quiet=True)
+    time.sleep(6)                                # let it leave DFU + re-enumerate its CDC
+    return True
+
+
+def _flash_arduino_cli(board, bad_romfs=False):
+    """Golden flash for the Arduino MCUboot boards (Nicla Vision, Portenta H7) via the openmv-ota
+    CLI's `flash factory`. The arduino backend enters DFU with an automatic 1200-baud touch, then
+    writes firmware + romfs (+ the CYW4343 wifi blobs) with address-based `dfu-util -w`.
+
+    Unlike the DFU boards, the CLI's arduino factory resolves the romfs partition as
+    ``<board>-romfs.img``, so stage the dual-slot factory image under that name first
+    (``build factory-romfs`` emits ``<board>-factory-romfs.img``; the wifi blobs are already dropped
+    into build/ by ``build firmware``). Same rename the mimxrt path does.
+
+    DFU entry is `_arduino_dfu_run`'s business: the 1200-baud touch, or a direct write if the board
+    is already in DFU. Note what does NOT work here -- the OpenMV path's "wait on -w and pulse nRST
+    to catch the bootloader's window" -- because MCUboot has no such window; that fallback used to
+    live here and only ever hung."""
+    if bad_romfs:
+        raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
+    build = CFG["project"] + "/build"
+    sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
+    # Mark where THIS golden's account of itself begins: every UART line from here on belongs to the
+    # image about to be written, so verify can tell a fresh mount from the one it replaced.
+    global _FLASH_MARK
+    _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
+    # Reach the board WITHOUT taking its REPL. _ensure_cdc probes with mpremote, and that Ctrl-C
+    # kills the running app -- which then restarts, gets interrupted again, and spins (see the
+    # bench app's crash handler). The flash needs no REPL at all: only a DFU device to write to, or
+    # an enumerated port to 1200-baud touch. Check for those directly, and reset only if the board
+    # offers neither -- that is the genuinely wedged case a core reset revives in ~33 s.
+    if not _dfu_present() and not os.path.exists(CFG["acm"]):
+        log("flash: %s offers neither DFU nor a port -- core reset, then wait for it" % board)
+        jlink_core_reset(board)
+        _await_boot(board, budget=90)
+    argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+    rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
+    if rc != 0:
+        raise RuntimeError("arduino flash factory failed rc=%d: %s" % (rc, out[-400:]))
+    # Just WATCH it come back. Measured by hand, running this exact command and touching nothing:
+    # USB drops at :leave and the board re-enumerates 31 s later on its own, with the app checking
+    # in -- so `:leave` needs no help. (An earlier claim here that it did was an artifact of the
+    # probing that used to follow: an mpremote probe Ctrl-C's the app dead, because KeyboardInterrupt
+    # is a BaseException the app does not catch, and the retries then reset the board out from under
+    # its own 33 s boot.) No probe, no reset: neither is needed, and both did damage.
+    if not _await_boot(board):
+        _dfu_leave(board)                    # stuck in DFU? leave it without needing the J-Link
 
 
 def _flash_blhost_imx(board, bad_romfs=False):
@@ -1083,6 +1630,62 @@ def _flash_blhost_imx(board, bad_romfs=False):
         sh([ota("openmv-ota"), "flash", op, CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
+
+
+# A boot reports its mount in TWO forms, and both mean "golden is up":
+#   log.info("boot: mounted %s (payload %d)")                       -> "boot: mounted FRONT"
+#   log.warning("boot: FRONT rejected (%s) -> mounted %s ...")      -> "-> mounted BACK"
+# Matching only the first missed every boot that reached golden by FALLBACK -- which is exactly what
+# the negative scenarios do -- so corrupt/bad_key/bad_version all failed verify against a board that
+# had booted correctly.
+_MOUNT_MARKERS = ("boot: mounted", "-> mounted ")
+
+
+def _mounted(line):
+    return any(m in line for m in _MOUNT_MARKERS)
+
+
+def verify_golden_uart(board, budget=300):
+    """verify_golden() without taking the REPL: read the board's own account off the UART.
+
+    Same two claims as the mpremote version -- golden booted and mounted a valid romfs, and here is
+    its device_id -- from `boot: mounted ...` and the bench app's `app: device_id ...` line. The
+    mount claim must come from a boot AFTER this call (a stale marker would "verify" the image the
+    flash replaced); the id may come from anywhere in the log, since a board's device_id does not
+    change between boots.
+
+    Why not just exec it: mpremote grabs the REPL with a Ctrl-C, which kills the running app
+    (KeyboardInterrupt is a BaseException the app does not catch). On a board that takes ~33 s to
+    enumerate, the retry loop around that probe reset the board out from under its own boot and
+    reported "golden did not mount a valid romfs" against golden that was fine. Watching cannot do
+    that -- it is the same UART the coverage markers already come from.
+    """
+    log("verify: golden boots + /rom mounts + device_id -- from the UART, REPL untouched")
+    if _CAP is None:
+        return verify_golden()               # no capture on this node: fall back to the REPL
+    # "Fresh" means SINCE THE FLASH, not since this call: the boot being verified happens in
+    # between (the flash's own :leave boots it, and _flash_arduino_cli waits for that). Keying off
+    # this call instead would demand a SECOND boot that nothing ever triggers -- verify would sit
+    # out its whole budget and fail a board whose golden had already come up perfectly.
+    seen = _FLASH_MARK
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        fresh = _CAP.raw[seen:]
+        if any(_mounted(ln) for ln in fresh):
+            ids = [ln.split("app: device_id ", 1)[1].strip()
+                   for ln in _CAP.raw if "app: device_id " in ln]
+            if ids:
+                log("verify: golden mounted; device_id %s" % ids[-1])
+                return ids[-1]
+        time.sleep(2)
+    # Do not fail the run on the WATCHING path alone. If the markers did not arrive -- a boot that
+    # landed at the very edge of the budget, a capture that lost lines -- fall back to the REPL
+    # verify every other board uses. It costs the running app (mpremote Ctrl-C's it), which is
+    # harmless here: run_cycle hard-resets before the scored window anyway.
+    log("verify: no mount+device_id on the UART within %ds -- falling back to the REPL verify"
+        % budget)
+    log("verify: last UART lines were:\n%s" % "\n".join(_CAP.raw[-20:]))
+    return verify_golden()
 
 
 def verify_golden():
@@ -1306,10 +1909,26 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
                     device may loop (re-offer -> re-fail -> golden), so we exit once it has
                     SETTLED back on golden with every expected marker seen."""
     log("cycle: hard reset -> autonomous run; end=%s; watching UART + server" % end)
-    try:                                     # machine.reset() drops the USB-CDC -> mpremote
-        device_exec("import machine; machine.reset()", timeout=20, check=False)
-    except Exception:
-        pass                                 # ...an I/O error here just means the reset landed
+    # On a board driven entirely off the UART, reset through the DEBUG CORE: it needs no CDC (so it
+    # works when the port has not come back yet) and it cannot Ctrl-C anything. The mpremote route
+    # has to take the REPL to ask for the reset -- harmless in itself, since a reset is what we
+    # wanted, but it fails outright when the port is absent, which is precisely when the scored
+    # window would otherwise never start.
+    if _BOARD and BOARDS[_BOARD].get("flash") == "arduino_cli" and jlink_core_reset(_BOARD):
+        pass                                 # reset landed over SWD; no REPL involved
+    else:
+        try:                                 # machine.reset() drops the USB-CDC -> mpremote
+            device_exec("import machine; machine.reset()", timeout=20, check=False)
+        except Exception:
+            pass                             # ...an I/O error here just means the reset landed
+    # Some boards are served OTA but never RECORDED: the server's `unverified_boards` set skips the
+    # device-registry write entirely, so device_record() returns nothing for them no matter how well
+    # the install goes. Waiting on that record means never concluding -- the run watches until its
+    # timeout while the device, left running, re-installs over and over. Score their UART markers
+    # instead; they are the same evidence the scenario's expect/forbid sets are written against.
+    by_marker = bool(_BOARD) and not BOARDS[_BOARD].get("server_record", True)
+    if by_marker:
+        log("cycle: %s is not recorded server-side -- scoring the UART markers" % _BOARD)
     deadline = time.time() + timeout_s
     last = None
     saw_golden = saw_target = False
@@ -1341,13 +1960,18 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
             if hb % 4 == 0:                        # ~60s with no new state -> a heartbeat, so a long
                 log("  ... still watching (%ds elapsed, %d/%d markers, on %s/%s)"   # erase/download
                     % (int(time.time() - (deadline - timeout_s)), len(marks), len(expect), v, slot))
-        if end == "promoted":
+        if by_marker:
+            if have:
+                break                        # no server record to corroborate: the device's own
+                #                              markers ARE the evidence, and they are complete
+        elif end == "promoted":
             if saw_golden and v == target and slot == "FRONT" and have:
                 break                        # real golden->target transition, all paths hit
         elif saw_golden and v == golden and have:
             break                            # settled back on golden, all negative paths hit
-    reached = ((end == "promoted" and saw_golden and v == target and slot == "FRONT")
-               or (end == "golden" and saw_golden and v == golden))
+    reached = (have if by_marker else
+               ((end == "promoted" and saw_golden and v == target and slot == "FRONT")
+                or (end == "golden" and saw_golden and v == golden)))
     return {"saw_golden": saw_golden, "saw_target": saw_target,
             "version": v, "slot": slot, "reached_end": reached}
 
@@ -1383,6 +2007,8 @@ def main():
     expect, forbid = scenario_markers(args.board, args.scenario)
     pub_version = spec.get("version", args.target)     # bad_version publishes below the floor
     t0 = time.time()
+    global _BOARD
+    _BOARD = args.board
     trace = {"board": args.board, "network": network, "scenario": args.scenario,
              "target": args.target, "end": spec["end"], "passed": False,
              "expect": sorted(expect), "forbid": sorted(forbid), "markers": [], "phases": {}}
@@ -1401,7 +2027,9 @@ def main():
         # Each rig spins up its OWN update server for this run (self-contained; no shared bench
         # server, tamper scenarios work on every board). Point CFG at it BEFORE prepare(), which
         # bakes the URL into the bench app + copies this run's CA onto the board.
-        srv = bench_server.start(ota("python"), log=log)
+        # Only bad_version wants the relaxed offer gate; see bench_server.start.
+        srv = bench_server.start(ota("python"), log=log,
+                                 offer_downgrades=(args.scenario == "bad_version"))
         CFG["server"], CFG["ca_node"], CFG["artifacts"], CFG["token"] = (
             srv["url"], srv["ca"], srv["store"], srv["token"])
         if spec["end"] == "no_slot":
@@ -1429,7 +2057,10 @@ def main():
                 phase("build_golden", lambda: build_golden(args.board))
                 phase("flash_golden", lambda: flash_golden(args.board))
                 # verify_golden reads the device_id in the same early (pre-watchdog-arm) exec.
-                devid = phase("verify_golden", verify_golden)
+                devid = phase("verify_golden",
+                              (lambda: verify_golden_uart(args.board))
+                              if BOARDS[args.board].get("flash") == "arduino_cli"
+                              else verify_golden)
             if devid is None:                    # --skip-provision: board already up, read it directly
                 devid = device_id()
             trace["device_id"] = devid

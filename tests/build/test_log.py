@@ -48,3 +48,29 @@ def test_bench_uart_reads_the_bus(tmp_path):
     f = tmp_path / ".hilcov_uart"
     f.write_text("3\n")
     assert _mod._bench_uart(str(f)) == 3
+
+
+def test_bench_uart_searches_every_volume(tmp_path, monkeypatch):
+    """What USB-MSC exposes VARIES BY BOARD: with an SD card inserted it is the card (/sdcard),
+    without one it is internal flash (/flash). The harness drops .hilcov_uart onto whatever MSC
+    shows, so a single hardcoded path would silently find nothing on an SD-equipped board -- no
+    coverage UART, every marker gone, and a run that looks like a dead board instead of a misplaced
+    file."""
+    sd = tmp_path / "sdcard"
+    sd.mkdir()
+    (sd / ".hilcov_uart").write_text("4")
+    assert _mod._bench_uart([str(tmp_path / "flash" / ".hilcov_uart"),
+                             str(sd / ".hilcov_uart")]) == 4
+
+
+def test_bench_uart_default_prefers_the_sd_volume():
+    """SD first: when a card is present it is what MSC shows, so it is where the file will be."""
+    assert _mod._BENCH_VOLUMES[0] == "/sdcard"
+    assert "/flash" in _mod._BENCH_VOLUMES
+
+
+def test_bench_uart_still_accepts_a_single_path(tmp_path):
+    """A str must not be iterated character by character (that would open("/") and friends)."""
+    f = tmp_path / ".hilcov_uart"
+    f.write_text("2")
+    assert _mod._bench_uart(str(f)) == 2
