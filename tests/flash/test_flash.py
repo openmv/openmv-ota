@@ -291,7 +291,13 @@ def test_imx_catch_and_reset_arms_resets_and_claims(monkeypatch):
     monkeypatch.setattr(fl.device, "select", lambda raw, serial: fl.device.Camera("/dev/ttyACM0", "SN"))
     fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None)
     assert any("claim" in a for a in popens)                # armed the catcher (claim mode)
-    assert any("bootloader" in a for a in popens)           # reset the running camera into the SBL
+    # Reset the running camera into the SBL with `exec machine.bootloader()`, NOT mpremote's
+    # `bootloader` subcommand -- the distinction device.reset() documents for the DFU boards. This
+    # test previously asserted the subcommand and so pinned it in place.
+    reset = [a for a in popens if "connect" in a]
+    assert reset, "expected the running camera to be reset into the SBL"
+    assert "exec" in reset[0] and "machine.bootloader()" in " ".join(reset[0])
+    assert "bootloader" not in reset[0], "the bare subcommand must not be used"
 
 
 def test_imx_catch_and_reset_no_camera_skips_reset(monkeypatch):
@@ -431,3 +437,34 @@ def test_flash_resets_then_does_not_pin_dfu_serial(project, monkeypatch):
     assert ran[0] == [sys.executable, "-m", "mpremote", "connect", "/dev/ttyACM0",
                       "exec", "import machine; machine.bootloader()"]
     assert "-S" not in ran[1] and "SN9" not in ran[1]   # the dfu flash is NOT serial-pinned
+
+
+def test_imx_sbl_entry_execs_machine_bootloader(monkeypatch):
+    """The imx catcher must reset the camera with `exec machine.bootloader()`, not mpremote's
+    `bootloader` subcommand -- the same distinction device.reset() documents for the DFU boards
+    (the subcommand silently no-ops on some ports). It matters most here: this call is made to
+    REPAIR a corrupt /flash, right after a write to that filesystem failed, so the entry method
+    that does the least REPL work is the one to use."""
+    import subprocess as sp
+
+    from openmv_ota.flash import flash as fl
+    launched = []
+
+    class FakeProc:
+        stdout = None
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(fl, "_await_line", lambda *a, **k: True)
+    monkeypatch.setattr(fl.device, "select",
+                        lambda raw, serial: fl.device.Camera("/dev/ttyACM0", "SN"))
+    monkeypatch.setattr(sp, "Popen", lambda argv, **kw: launched.append(argv) or FakeProc())
+    fl._imx_catch_and_reset({"blhost": {"usb": "1fc9,0135"}}, "python3", "mpremote", None)
+
+    reset_cmd = [a for a in launched if "connect" in a][0]
+    assert "exec" in reset_cmd and "machine.bootloader()" in " ".join(reset_cmd)
+    assert reset_cmd[-2:] != ["bootloader"], "must not use the bootloader subcommand"

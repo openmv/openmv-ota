@@ -184,7 +184,16 @@ def _imx_catch_and_reset(raw: dict, python3: str, mpremote: str | None, serial: 
             raise FlashError("i.MX: the resident-SBL catcher never armed (spsdk import failed?)")
         cam = device.select(raw, serial)         # the running camera to reset (None -> already in SBL)
         if cam is not None:
-            subprocess.Popen([*_mpremote(mpremote), "connect", cam.port, "bootloader"],
+            # `exec machine.bootloader()`, NOT mpremote's `bootloader` subcommand -- the same
+            # distinction device.reset() documents for the DFU boards. The subcommand does more
+            # REPL work to get there, and this call is made in exactly the state where that extra
+            # work is least likely to succeed: the harness reaches for the SBL to REPAIR a corrupt
+            # /flash, having just failed to write it (OSError 5). A direct exec asks the firmware
+            # for the one thing needed. Fire and forget either way -- the call tears down the
+            # USB-CDC mid-exec, so there is no exit status worth waiting for; the CATCHER decides
+            # whether it worked.
+            subprocess.Popen([*_mpremote(mpremote), "connect", cam.port,
+                              "exec", "import machine; machine.bootloader()"],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if not _await_line(catcher, "CLAIMED", 45):
             raise FlashError("i.MX: the resident SBL did not enumerate / could not be claimed")
