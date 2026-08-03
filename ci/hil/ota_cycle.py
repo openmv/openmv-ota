@@ -91,7 +91,11 @@ COPROC_ENABLED = env("HIL_COPROC", "") == "1"
 #
 # Still runnable by hand: workflow_dispatch with scenario=watchdog. Drop the board from this set
 # once the armed leg passes.
-WATCHDOG_BROKEN = {"OPENMV4P"}
+WATCHDOG_BROKEN = {"OPENMV4P", "ARDUINO_PORTENTA_H7", "ARDUINO_NICLA_VISION"}
+# The Arduino boards are here by DECISION, not measurement: their armed-watchdog leg has never been
+# run, and chasing it was explicitly deferred so the OTA legs could land. That leaves the H7 Plus
+# question (WINC or H7-wide?) open -- see above. Run it by hand when you want the answer:
+#   workflow_dispatch board=ARDUINO_PORTENTA_H7 scenario=watchdog
 
 # Per-board: which side-channel UART carries markers, how it reaches the network, and
 # how the golden image is flashed. Kept data-driven so a new board is one entry.
