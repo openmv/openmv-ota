@@ -113,3 +113,18 @@ def test_scored_window_resets_over_swd_when_a_jlink_exists():
     code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
     assert 'BOARDS[_BOARD].get("jlink_device")' in code, "every J-Link board must reset over SWD"
     assert code.index("jlink_core_reset") < code.index("machine.reset()"), "SWD first, REPL fallback"
+    # and it must CONFIRM the reset: jlink_core_reset returns True for any board that HAS a J-Link,
+    # so an ineffective reset is indistinguishable from a working one without watching for the boot
+    assert "_await_boot(_BOARD" in code, "the SWD reset must be confirmed by the board's own boot"
+
+
+def test_scored_window_reset_cascades_and_spares_the_arduino_pin():
+    """Core reset -> (confirm) -> nRST pin -> (confirm) -> REPL. Each step is confirmed by the
+    board's own boot marker, because a reset helper returning True proves only that the board HAS a
+    J-Link. The pin step must skip the Arduino boards: there it can land the board back in its DFU
+    bootloader (the touch's stay-in-bootloader flag lives in RAM and survives the pin)."""
+    body = _SRC.split("def run_cycle(")[1].split("\ndef ")[0]
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    assert code.index("jlink_core_reset") < code.index("jlink_reset_pulse") < code.index("machine.reset()")
+    pin = code[code.index("jlink_reset_pulse") - 400:code.index("jlink_reset_pulse")]
+    assert 'flash") != "arduino_cli"' in pin, "the pin step must exclude the Arduino boards"

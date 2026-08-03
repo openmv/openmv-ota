@@ -1932,9 +1932,28 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
     #
     # A core reset asks the processor directly and never touches the app, so the cause the scenario
     # sees is the one the scenario arranged.
-    if _BOARD and BOARDS[_BOARD].get("jlink_device") and jlink_core_reset(_BOARD):
-        pass                                 # reset landed over SWD; no REPL, no missed feed
+    # CONFIRM the reset, do not trust it. jlink_core_reset returns True whenever the board merely
+    # HAS a J-Link -- it runs JLinkExe with check=False, so a connect that fails looks identical to
+    # a reset that landed. Measured: it resets the Portenta reliably and does NOT reset the N6, and
+    # trusting it there opened a scored window on a board that never rebooted -- 0/5 markers for the
+    # full timeout, with the server record still showing the pre-reset state. Watch for the board's
+    # own boot marker; if it does not come, fall back to the REPL reset, which is worse for an armed
+    # watchdog but is at least a reset.
+    if (_BOARD and BOARDS[_BOARD].get("jlink_device") and jlink_core_reset(_BOARD)
+            and _await_boot(_BOARD, budget=60)):
+        pass                                 # CONFIRMED: it actually rebooted; no REPL was taken
+    elif (_BOARD and BOARDS[_BOARD].get("jlink_device")
+          and BOARDS[_BOARD].get("flash") != "arduino_cli"
+          and jlink_reset_pulse(_BOARD) and _await_boot(_BOARD, budget=60)):
+        # The core reset did not take. Try the RESET PIN, which is the lever that has always worked
+        # on these boards (it is what _ensure_cdc uses to revive a wedged N6/AE3). NOT for the
+        # Arduino boards: there the pin can land the board back in its DFU bootloader, because the
+        # 1200-baud touch's stay-in-bootloader flag lives in RAM and survives it.
+        log("cycle: %s reset via the nRST pin (the core reset did not take)" % _BOARD)
     else:
+        if _BOARD and BOARDS[_BOARD].get("jlink_device"):
+            log("cycle: no SWD reset produced a boot on %s -- falling back to the REPL reset, which "
+                "Ctrl-Cs the app and so bites an armed watchdog" % _BOARD)
         try:                                 # machine.reset() drops the USB-CDC -> mpremote
             device_exec("import machine; machine.reset()", timeout=20, check=False)
         except Exception:
