@@ -68,13 +68,28 @@ CFG = {
 COPROC_ENABLED = env("HIL_COPROC", "") == "1"
 
 # Boards whose ARMED-WATCHDOG leg is known-broken, kept out of the default regression so a leg we
-# already know fails can't fail every PR. The H7 Plus (OPENMV4P) is the one: with openmv_wdt armed at
-# 100 ms it reset-loops off USB (no CDC; the SWD reset in _ensure_cdc doesn't get it back, only a
-# reflash does), while its other 8 scenarios -- delta, full, rollback, corrupt, corrupt_sha, bad_sig,
-# bad_key, bad_version -- all PASS. Its WWDG is genuinely built in (micropython#19350 cherry-picks
-# cleanly on the H743 and the fork-compat fixup covers STM32H7), so this is about the WINDOW/feed
-# cadence, not a missing peripheral -- under debug. Still runnable by hand: workflow_dispatch with
-# scenario=watchdog. Drop the board from this set once the armed leg passes.
+# already know fails can't fail every PR. The H7 Plus (OPENMV4P) is the one; its other 8 scenarios
+# (delta, full, rollback, corrupt, corrupt_sha, bad_sig, bad_key, bad_version) all PASS.
+#
+# WHAT IS ACTUALLY MEASURED (several earlier explanations here were wrong; these are the numbers):
+#   * The WWDG is real and armable. `machine.WDT("WWDG", 100)` succeeds on the H743, and on the REAL
+#     path (frozen module, rebuilt factory image, armed at boot by the app) the device reports
+#     `_wdt is not None = True`. It is not a missing peripheral and not the 0x7f window.
+#   * With it armed the board RESET-LOOPS. Counting arms per run (each reboot re-arms):
+#         relax() hard=True  -> 43 reboots / 1654 feed-loop iterations  (~0.8 s per boot)
+#         relax() hard=False -> 20 reboots / 5870 feed-loop iterations  (~5.9 s per boot)
+#     So the hard-IRQ feed makes survival ~8x WORSE, and removing it does not fix the loop. ~5.9 s
+#     is about one 5 s poll interval, which points at the check-in as the op that outruns the window.
+#   * The harness reports this as "CDC missing" / "golden did not mount a valid romfs" because the
+#     reset loop keeps the port from settling -- misleading, and NOT a flash failure.
+#
+# WORKING THEORY: the WINC1500 driver interacts badly with the feed timer / blocking socket calls.
+# The H7 Plus is the only WINC board, so the next step is the Portenta and Nicla -- same STM32H7
+# family and the same WWDG, but cyw4343 wifi instead. If the watchdog passes there, the WINC is
+# confirmed as the differentiator; if it fails there too, the problem is H7-wide.
+#
+# Still runnable by hand: workflow_dispatch with scenario=watchdog. Drop the board from this set
+# once the armed leg passes.
 WATCHDOG_BROKEN = {"OPENMV4P"}
 
 # Per-board: which side-channel UART carries markers, how it reaches the network, and
@@ -613,6 +628,21 @@ class UartCapture:
     def points(self):
         return sorted({p for _, p in self.markers})
 
+    def reset(self, t0):
+        """Drop everything captured so far and restart the clock, WITHOUT closing the port.
+
+        Lets the capture start early (so a board that dies before the CDC is usable still gets its
+        boot output recorded) while the SCORED window stays exactly what it was: provisioning-phase
+        markers must not count toward a scenario's expect/forbid sets."""
+        self._t0 = t0
+        self.markers = []
+        self.raw = []
+
+    def tail(self, n=40):
+        """The last ``n`` raw lines -- what to print when a run fails, since the marker UART is the
+        only channel that still works once the CDC is gone."""
+        return "".join(self.raw)[-4000:].split("\n")[-n:]
+
     def stop(self):
         self._stop.set()
         self._t.join(timeout=2)
@@ -808,8 +838,16 @@ def prepare(board, checkout, network, app="confirm"):
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
-    _ensure_cdc(board)
-    _flash_bench_files(board)
+    _ensure_cdc(board, allow_erase=True)   # pre-flash: erasing the romfs is safe, golden follows
+    # The bench files go over the CDC, so they cannot be written when recovery had to erase the
+    # romfs (that frees DFU but leaves no usable port -- see _ensure_cdc). Defer them: flash_golden
+    # reprovisions over DFU and brings the port back, and it writes them itself afterwards. Trying
+    # here regardless is what turned a recoverable board into a failed run.
+    if _cdc_responsive():
+        _flash_bench_files(board)
+    else:
+        log("prepare: no CDC (recovery erased the romfs) -- bench files deferred to after the "
+            "golden flash")
 
 
 def _flash_bench_files(board, _recovered=False):
@@ -854,6 +892,11 @@ def build_golden(board):
 def flash_golden(board, bad_romfs=False):
     fn = globals()["_flash_" + BOARDS[board]["flash"]]
     fn(board, bad_romfs) if bad_romfs else fn(board)
+    # Golden is on and the CDC is back, so (re)write the bench files here. prepare() skips them when
+    # recovery had to erase the romfs -- this is where a deferred write lands. Idempotent, so the
+    # normal path just rewrites the same two files rather than needing a "was it deferred?" flag.
+    if not bad_romfs and _cdc_responsive():
+        _flash_bench_files(board)
 
 
 def _flash_dfu_cli(board, bad_romfs=False):
@@ -871,15 +914,101 @@ def _flash_dfu_cli(board, bad_romfs=False):
     CLI's DFU path -- needing a live CDC to enter the bootloader -- can't reach); it never flashes."""
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
-    _ensure_cdc(board)                       # recover a wedged board so the CLI can enter DFU cleanly
-    log("flash factory -> %s (openmv-ota, DFU -w)" % board)
-    sh([ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board, "--sdk-home", CFG["sdk"],
-        "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")], timeout=1500)
+    _ensure_cdc(board, allow_erase=True)   # pre-flash: safe to erase; the flash below reprovisions
+    argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+    if _cdc_responsive():
+        log("flash factory -> %s (openmv-ota, DFU -w)" % board)
+        sh(argv, timeout=1500)
+    else:
+        # No CDC, so machine.bootloader() cannot be used to enter DFU -- and this is exactly the
+        # state _ensure_cdc leaves behind when it has to erase the romfs (a board with no bootable
+        # slot never presents a usable CDC, so the erase FREES DFU but cannot restore the port).
+        # Flash through the reset-catch instead: the bootloader's DFU window on every reset is the
+        # one door that does not need the port we don't have. Without this the recovery is a dead
+        # end -- erase frees DFU, then nothing can use it.
+        log("flash factory -> %s (no CDC -- via bootloader DFU window)" % board)
+        rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
+        if rc != 0:
+            raise RuntimeError("flash factory (no-CDC path) failed rc=%d: %s" % (rc, out[-400:]))
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
-    _ensure_cdc(board)                       # if leave-DFU didn't re-enumerate, SWD-reset it back
+    _ensure_cdc(board)                       # POST-flash: allow_erase stays False -- never wipe the golden just written
 
 
-def _ensure_cdc(board):
+def _cdc_responsive(timeout=15):
+    """True if the board ANSWERS on its USB-CDC. A real liveness probe, not os.path.exists(): the
+    port can exist yet be unusable (EIO / 'in use'), and it can be absent entirely."""
+    rc, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
+               timeout=timeout, check=False, quiet=True)
+    return rc == 0
+
+
+def jlink_reset_pulse(board, timeout=60):
+    """Pulse the board's PHYSICAL nRST line via the J-Link, then connect + reset + GO.
+
+    The pin pulse (SetRESET/ClrRESET) needs no core connect, so it reaches a HUNG core that a
+    SYSRESETREQ cannot; the follow-up `connect; r; g` actually RUNS the firmware, because the pulse
+    alone can leave the core halted and never re-enumerating USB (observed on the N6). Belt (pin,
+    for hung) and suspenders (connect+go, for halted-but-alive). No-op for a board with no J-Link.
+    """
+    if "jlink_device" not in BOARDS[board]:
+        return False
+    fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
+    os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n")
+    os.close(fd)
+    try:
+        # -AutoConnect 0: do NOT attach the (possibly hung) core on launch -- the pin pulse is
+        # physical and must not be gated on a core connect that would hang on a wedged board.
+        sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
+            "-speed", "4000", "-AutoConnect", "0", "-CommanderScript", sp],
+           timeout=timeout, check=False, quiet=True)
+    finally:
+        os.unlink(sp)
+    return True
+
+
+def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
+    """Run a dfu-util-backed command that WAITS for a DFU device (``-w``), pulsing the board's reset
+    line while it waits so the bootloader's BRIEF DFU window gets caught.
+
+    THIS IS THE RECOVERY PRIMITIVE FOR A BOARD WHOSE CDC IS GONE. Normally the CLI enters DFU with
+    ``machine.bootloader()`` over the USB-CDC -- useless when the CDC is exactly what's broken. But
+    the OpenMV bootloader presents DFU for a short window on EVERY reset, so: start the command (it
+    blocks on ``-w``), pulse nRST a moment later, and dfu-util catches the window. Verified on the
+    H7 Plus, and it is how a board whose app owns/kills the CDC gets recovered without touching it.
+
+    Pass the CLI's ``--in-bootloader`` in ``argv`` so it does NOT try the CDC route first.
+    Returns (rc, output).
+    """
+    log("recover: %s -- dfu(-w) + nRST pulse to catch the bootloader's DFU window" % board)
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(settle)                       # let dfu-util reach its wait loop before we reset
+    jlink_reset_pulse(board)
+    try:
+        out = proc.communicate(timeout=timeout)[0]
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return 124, "dfu_reset_catch timed out"
+    return proc.returncode, out or ""
+
+
+def recover_erase_romfs(board):
+    """LAST-RESORT recovery: erase the romfs over DFU so the board boots with NO app.
+
+    An app that wedges or owns the CDC (e.g. one polling an unreachable server) makes every
+    mpremote fail, which blocks the harness's own reflash -- a deadlock, since flashing needs the
+    CDC to enter the bootloader. Erasing the romfs breaks it: with no bootable slot the app never
+    runs, the CDC comes back, and the normal `flash factory` can reprovision. Needs no built
+    artifacts, so it works even before a build.
+    """
+    argv = [ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--in-bootloader",
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+    rc, out = dfu_reset_catch(board, argv)
+    log("recover: romfs erase rc=%d%s" % (rc, "" if rc == 0 else " -- %s" % out[-300:]))
+    return rc == 0
+
+
+def _ensure_cdc(board, allow_erase=False):
     """Recover a board that has wedged off USB (no CDC) via a J-Link SWD reset, so a later scenario
     doesn't fail every mpremote with "failed to access /dev/ttyACM0". Two ways a board loses its CDC:
     the AE3's machine.bootloader() flash path is unreliable at LEAVING DFU (documented Alif USB
@@ -907,24 +1036,25 @@ def _ensure_cdc(board):
         log("recover: %s CDC missing/unresponsive at %s -- free holders + J-Link SWD reset (try %d)"
             % (board, CFG["acm"], attempt + 1))
         sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
-        fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
-        # Two-stage recover: (1) pulse the physical nRST line (hold low, release) -- a pure pin toggle
-        # that needs no core connect, so it reaches a HUNG core a debug reset can't; THEN (2) connect +
-        # reset + GO. The pin pulse alone can leave the core halted/not-running (observed on the N6: it
-        # reset but never re-enumerated USB until an explicit `g`), so the debug-core `r; g` actually
-        # RUNS the firmware. If the core is truly hung the connect fails harmlessly -- the pulse already
-        # reset it. Belt (pin, for hung) + suspenders (connect+go, for halted-but-alive).
-        os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n")
-        os.close(fd)
-        try:
-            # -AutoConnect 0: do NOT try to attach the (possibly hung) core on launch -- the pin pulse
-            # is physical and must not be gated on a core connect that would hang on a wedged board.
-            sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
-                "-speed", "4000", "-AutoConnect", "0", "-CommanderScript", sp],
-               timeout=60, check=False, quiet=True)
-        finally:
-            os.unlink(sp)
+        jlink_reset_pulse(board)                       # see jlink_reset_pulse for why pin THEN core
         time.sleep(8)
+    # A reset alone cannot fix a board whose APP is what breaks the CDC -- it just reboots straight
+    # back into it. Erasing the romfs over DFU removes the app, and is the only lever that does not
+    # need the CDC we don't have. It is DELIBERATELY a one-way step: measured on the H7 Plus, a board
+    # with no bootable slot does NOT come back on USB (boot.py has nothing to mount, and the port
+    # never becomes usable), so do NOT probe for the CDC afterwards and do NOT treat its absence as
+    # failure -- the follow-up golden flash over DFU is what restores the port.
+    #
+    # allow_erase GATES THIS BECAUSE IT IS DESTRUCTIVE. It is only ever right BEFORE a flash. The
+    # post-flash call must never erase: it would wipe the golden that was just written, and did --
+    # a run flashed golden through the DFU window, found the CDC not yet back, and erased it again.
+    if not allow_erase:
+        log("recover: %s CDC still gone; not erasing (a post-flash erase would destroy the image "
+            "just written) -- caller must handle it" % board)
+        return
+    recover_erase_romfs(board)
+    log("recover: %s romfs erased -- the golden flash will reprovision it over DFU "
+        "(no CDC expected until then)" % board)
 
 
 def _flash_blhost_imx(board, bad_romfs=False):
@@ -1285,6 +1415,15 @@ def main():
             result = run_cycle_no_slot(cap, expect, args.timeout)
         else:
             devid = None
+            # Start listening BEFORE provisioning. Everything up to here talks to the board over the
+            # USB-CDC, so when the CDC is what breaks, the harness gives up before it ever opens the
+            # one channel that still works -- and the board's own account of why it died is lost.
+            # (Debugging the H7 Plus watchdog leg cost several runs to exactly this: "golden did not
+            # mount a valid romfs" with coverage 0/N, while the board was on the UART the whole time
+            # saying something else entirely.) The scored window is unchanged: cap.reset() below
+            # drops these provisioning-phase markers before the scenario is judged.
+            cap = UartCapture(CFG["uart"])
+            cap.start(time.time())
             if not args.skip_provision:
                 phase("prepare", lambda: prepare(args.board, args.checkout, network, spec["app"]))
                 phase("build_golden", lambda: build_golden(args.board))
@@ -1300,8 +1439,7 @@ def main():
             if spec["publish"] != "none" and not args.skip_publish:
                 phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
                 trace["metrics"] = artifact_sizes(args.board)   # download sizes -> ota_metrics report
-            cap = UartCapture(CFG["uart"])
-            cap.start(time.time())
+            cap.reset(time.time())               # scored window starts HERE (see the early start above)
             # "install" phase = the whole autonomous OTA (check-in -> download -> write -> trial ->
             # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.
             result = phase("install", lambda: run_cycle(
@@ -1323,6 +1461,18 @@ def main():
     except Exception as e:
         trace["error"] = str(e)
         log("ERROR: " + str(e))
+        # PRINT WHAT THE BOARD SAID. Every phase above drives the board over the USB-CDC, so a
+        # failure there tells you only that the harness could not talk to it -- never why. The
+        # marker UART is a separate wire and keeps working when the CDC does not, so its tail is
+        # usually the actual explanation ("golden did not mount a valid romfs" while the board was
+        # cheerfully logging a healthy boot is a real example this would have caught immediately).
+        if cap is not None:
+            tail = [ln for ln in cap.tail(40) if ln.strip()]
+            log("---- device UART tail (%d lines) -- the board's own account ----" % len(tail))
+            for ln in tail:
+                log("  [uart] " + ln.rstrip())
+            if not tail:
+                log("  [uart] (nothing captured -- board silent, or the marker UART is misconfigured)")
     finally:
         if cap is not None:
             cap.stop()
