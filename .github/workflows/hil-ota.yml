@@ -125,7 +125,12 @@ jobs:
               {"board": "OPENMV4P", "network": "wifi", "label": "board-openmv-h7-plus"},
               # Arduino MCUboot boards: STM32H7 like the H7 Plus but with ONBOARD cyw4343 wifi
               # instead of a WINC1500 shield -- the control for the H7 Plus watchdog reset loop.
-              {"board": "ARDUINO_NICLA_VISION", "network": "wifi", "label": "board-arduino-nicla"},
+              # ADVISORY until it earns its place: its OTA cycle has never completed on the bench,
+              # and the board itself is being replaced/re-wired (its SWD pads are not connected, so
+              # recovery there is a reset-pin pulse only). It still runs, so we get the data --
+              # it just cannot block someone else's merge while it is unproven.
+              {"board": "ARDUINO_NICLA_VISION", "network": "wifi", "label": "board-arduino-nicla",
+               "advisory": true},
               {"board": "ARDUINO_PORTENTA_H7", "network": "wifi", "label": "board-arduino-portenta"},
               # Portenta also has Ethernet on the breakout -- validated on the bench: link up in 5s,
               # DHCP 192.168.0.38. A SECONDARY interface runs delta only (see regression_scenarios):
@@ -153,6 +158,12 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: [self-hosted, hil, "${{ matrix.label }}"]
+    # An ADVISORY leg runs and reports, but cannot block a merge. The gate keys on the AGGREGATE
+    # matrix result, so without this a single unproven board would fail every OTA-touching PR --
+    # and a gate that is red for reasons unrelated to the change is a gate people learn to ignore.
+    # Use it ONLY for a board that has not yet earned its place (newly wired, hardware in flux);
+    # a board that has passed should block, because that is the entire point of the fleet.
+    continue-on-error: ${{ matrix.advisory == true }}
     # One board at a time; never cancel a running flash/cycle.
     concurrency:
       group: hil-ota-${{ matrix.label }}

@@ -164,6 +164,9 @@ BOARDS = {
         # pin pulse and nothing more. (A reset is only ever used on a wedged RUNTIME board: if it is
         # sitting in DFU, _ensure_cdc leaves DFU properly first -- pulsing nRST there would land it
         # back in the bootloader, since the touch's stay-in-bootloader flag lives in RAM.)
+        # BENCH STATE, NOT A BOARD PROPERTY: flip back to True once the SWD pads are wired (and
+        # note a replacement board arrives with its own USB serial, so the by-id MSC path changes
+        # too -- the glob handles that, but anything pinned to a serial would not).
         "jlink_swd": False,
     },
     "ARDUINO_PORTENTA_H7": {
