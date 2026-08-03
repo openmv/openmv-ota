@@ -68,3 +68,24 @@ def test_firmware_recovery_refuses_a_non_dfu_board():
     """The imx boards flash through their SBL, not DFU -- there is no firmware alt to write."""
     import ota_cycle as oc
     assert oc.recover_firmware("OPENMV_RT1060") is False
+
+
+def test_partial_download_is_distinguished_from_never_started():
+    """Only a download that died PARTWAY has corrupted the firmware. One that never began left the
+    old image intact, and running a two-stage recovery there would destroy a working board."""
+    import ota_cycle as oc
+    partial = ("Download\t[========    ]  32%  647168 bytes"
+               "dfu-util: Error during download get_status (LIBUSB_ERROR_IO)")
+    assert oc._partial_download(partial) is True
+    assert oc._partial_download("dfu-util: No DFU capable USB device available") is False
+    assert oc._partial_download("") is False
+    assert oc._partial_download(None) is False
+
+
+def test_failed_dfu_flash_recovers_then_retries():
+    """A partial write leaves firmware that guarantees the NEXT attempt fails the same way (32%,
+    36%, 32% across three runs on the N6). The flash path must break that cycle, not repeat it."""
+    body = _SRC.split("def _flash_dfu_cli(")[1].split("\ndef ")[0]
+    assert "_partial_download(out)" in body
+    assert "recover_firmware(board)" in body
+    assert body.index("_partial_download(out)") < body.index("recover_firmware(board)")

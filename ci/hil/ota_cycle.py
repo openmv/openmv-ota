@@ -1016,6 +1016,15 @@ def flash_golden(board, bad_romfs=False):
         _flash_bench_files(board)
 
 
+def _partial_download(out):
+    """True if a dfu-util failure looks like a download that died PARTWAY, rather than one that
+    never started. The distinction matters: a write that never began leaves the old firmware
+    intact, while one that stopped halfway has already corrupted it -- and only the second needs
+    (or is helped by) a two-stage firmware recovery."""
+    text = out or ""
+    return "Download" in text and ("LIBUSB_ERROR" in text or "get_status" in text)
+
+
 def _flash_dfu_cli(board, bad_romfs=False):
     """Golden flash for the DFU boards (N6, AE3) via the openmv-ota CLI's `flash factory` -- the SAME
     tooling users ship with (and the recipe the OpenMV IDE uses). It enters DFU with
@@ -1046,6 +1055,18 @@ def _flash_dfu_cli(board, bad_romfs=False):
         # end -- erase frees DFU, then nothing can use it.
         log("flash factory -> %s (no CDC -- via bootloader DFU window)" % board)
         rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
+        if rc != 0 and _partial_download(out):
+            # A download that died PARTWAY has left the firmware invalid, and that is
+            # self-perpetuating: an invalid image means the bootloader keeps handing over, crashing
+            # and coming back, so the DFU window stays short and the NEXT attempt dies at the same
+            # place. Measured on the N6 -- 32%, then 36%, then 32% again across three runs, each
+            # attempt leaving the board worse than it found it. Break the cycle the way it is broken
+            # by hand: invalidate the firmware with a tiny write so the bootloader parks in DFU,
+            # write the real image, THEN retry the flash that failed.
+            log("flash: %s download died partway -- firmware is now invalid; two-stage recovery"
+                % board)
+            if recover_firmware(board):
+                rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
         if rc != 0:
             raise RuntimeError("flash factory (no-CDC path) failed rc=%d: %s" % (rc, out[-400:]))
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
