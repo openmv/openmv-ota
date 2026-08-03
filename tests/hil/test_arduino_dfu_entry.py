@@ -288,8 +288,8 @@ def test_verify_from_uart_rejects_a_pre_flash_mount(monkeypatch):
     monkeypatch.setattr(ota_cycle, "_CAP", Cap())
     monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 2)          # the flash came AFTER those lines
     monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
-    with pytest.raises(RuntimeError, match="device_id"):
-        ota_cycle.verify_golden_uart("ARDUINO_PORTENTA_H7", budget=0)
+    monkeypatch.setattr(ota_cycle, "verify_golden", lambda: "FELL-BACK")
+    assert ota_cycle.verify_golden_uart("ARDUINO_PORTENTA_H7", budget=0) == "FELL-BACK"
 
 
 def test_verify_from_uart_accepts_the_boot_the_flash_caused(monkeypatch):
@@ -447,3 +447,32 @@ def test_reset_script_matches_the_board(monkeypatch, tmp_path):
     written.clear()
     ota_cycle.jlink_core_reset("ARDUINO_PORTENTA_H7")
     assert "connect" in written["script"] and "SetRESET" not in written["script"]
+
+
+def test_verify_accepts_a_FALLBACK_mount(monkeypatch):
+    """Golden reached by fallback logs a DIFFERENT line:
+
+        boot: FRONT rejected (trial-failed) -> mounted BACK (payload ...)
+
+    Matching only "boot: mounted" missed every one of those -- which is precisely what the negative
+    scenarios produce -- and failed corrupt/bad_key/bad_version against boards that had booted fine."""
+    class Cap:
+        raw = ["WARNING openmv_ota: boot: FRONT rejected (trial-failed) -> mounted BACK (payload 16777216)",
+               "INFO openmv_ota: app: device_id CAFE"]
+    monkeypatch.setattr(ota_cycle, "_CAP", Cap())
+    monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 0)
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    assert ota_cycle.verify_golden_uart("ARDUINO_PORTENTA_H7", budget=30) == "CAFE"
+
+
+def test_mount_matcher_does_not_match_the_mounting_step():
+    """`boot: slot mounting` is the step BEFORE the mount lands -- treating it as a mount would
+    verify a board that has not finished booting."""
+    assert ota_cycle._mounted("DEBUG openmv_ota: boot: slot mounting") is False
+
+
+def test_verify_budget_clears_a_slow_boot():
+    """bad_key's mount arrived at the very edge of a 180s budget, leaving no room for the device_id
+    line that follows it. The budget must have headroom over a slow boot, not sit on top of it."""
+    import inspect
+    assert inspect.signature(ota_cycle.verify_golden_uart).parameters["budget"].default >= 300

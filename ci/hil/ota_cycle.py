@@ -1599,7 +1599,20 @@ def _flash_blhost_imx(board, bad_romfs=False):
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
 
 
-def verify_golden_uart(board, budget=180):
+# A boot reports its mount in TWO forms, and both mean "golden is up":
+#   log.info("boot: mounted %s (payload %d)")                       -> "boot: mounted FRONT"
+#   log.warning("boot: FRONT rejected (%s) -> mounted %s ...")      -> "-> mounted BACK"
+# Matching only the first missed every boot that reached golden by FALLBACK -- which is exactly what
+# the negative scenarios do -- so corrupt/bad_key/bad_version all failed verify against a board that
+# had booted correctly.
+_MOUNT_MARKERS = ("boot: mounted", "-> mounted ")
+
+
+def _mounted(line):
+    return any(m in line for m in _MOUNT_MARKERS)
+
+
+def verify_golden_uart(board, budget=300):
     """verify_golden() without taking the REPL: read the board's own account off the UART.
 
     Same two claims as the mpremote version -- golden booted and mounted a valid romfs, and here is
@@ -1625,16 +1638,21 @@ def verify_golden_uart(board, budget=180):
     deadline = time.time() + budget
     while time.time() < deadline:
         fresh = _CAP.raw[seen:]
-        if any("boot: mounted" in ln for ln in fresh):
+        if any(_mounted(ln) for ln in fresh):
             ids = [ln.split("app: device_id ", 1)[1].strip()
                    for ln in _CAP.raw if "app: device_id " in ln]
             if ids:
                 log("verify: golden mounted; device_id %s" % ids[-1])
                 return ids[-1]
         time.sleep(2)
-    raise RuntimeError(
-        "golden did not report a mount + device_id on the UART within %ds; last lines:\n%s"
-        % (budget, "\n".join(_CAP.raw[-20:])))
+    # Do not fail the run on the WATCHING path alone. If the markers did not arrive -- a boot that
+    # landed at the very edge of the budget, a capture that lost lines -- fall back to the REPL
+    # verify every other board uses. It costs the running app (mpremote Ctrl-C's it), which is
+    # harmless here: run_cycle hard-resets before the scored window anyway.
+    log("verify: no mount+device_id on the UART within %ds -- falling back to the REPL verify"
+        % budget)
+    log("verify: last UART lines were:\n%s" % "\n".join(_CAP.raw[-20:]))
+    return verify_golden()
 
 
 def verify_golden():
