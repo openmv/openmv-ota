@@ -166,8 +166,9 @@ BOARDS = {
                                              # CP2102. NB UART1 is also MICROPY_HW_UART_REPL, which is
                                              # fine while the REPL is on USB, but watch for contention.
         "cov_write": "install.xip",          # stm32 XIP write path (dual-slot lives in the QSPI ROMFS)
-        "network": "wifi",                   # onboard CYW4343 (network.LAN() also exists -- a lan leg
-                                             # can be added once the wifi leg is green)
+        "network": "wifi",                   # PRIMARY: onboard CYW4343. Ethernet is wired too and
+                                             # runs as the secondary leg (delta only) -- validated on
+                                             # the bench: network.LAN() up in 5 s, DHCP 192.168.0.38.
         "flash": "arduino_cli",              # same MCUboot DFU path as the Nicla
         "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
     },

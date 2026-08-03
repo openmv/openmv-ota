@@ -127,6 +127,10 @@ jobs:
               # instead of a WINC1500 shield -- the control for the H7 Plus watchdog reset loop.
               {"board": "ARDUINO_NICLA_VISION", "network": "wifi", "label": "board-arduino-nicla"},
               {"board": "ARDUINO_PORTENTA_H7", "network": "wifi", "label": "board-arduino-portenta"},
+              # Portenta also has Ethernet on the breakout -- validated on the bench: link up in 5s,
+              # DHCP 192.168.0.38. A SECONDARY interface runs delta only (see regression_scenarios):
+              # it proves the network path, and the rest of the OTA logic is interface-agnostic.
+              {"board": "ARDUINO_PORTENTA_H7", "network": "lan", "label": "board-arduino-portenta"},
           ]
           board = os.environ.get("BOARD") or "all"
           # PR gate runs EVERY board including the AE3 (wifi): its USB/DFU flashing and its watchdog are
