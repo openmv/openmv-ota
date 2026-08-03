@@ -70,3 +70,20 @@ def test_capture_frees_a_stale_holder_before_opening(monkeypatch):
     body = src.split("class UartCapture:")[1].split("    def start(")[0]
     assert "fuser -k" in body, "the capture must free a stale holder before it opens the port"
     assert body.index("fuser -k") < body.index("serial.Serial("), "free it BEFORE opening"
+
+
+def test_run_refuses_to_score_a_dead_marker_uart():
+    """Every scenario is scored on the marker UART. If it is dead the run burns its whole timeout
+    and then reports missing markers -- which reads as a broken device and is not. Observed: a leg
+    whose .hilcov_uart never landed produced ZERO device lines for 25 minutes, then failed with
+    boot.ready/log.configured missing, on a board that was fine and logging to USB.
+
+    Fail before the scored window opens, and say what to check."""
+    src = open(os.path.join(_HERE, "..", "..", "ci", "hil", "ota_cycle.py")).read()
+    # anchor to the TOP-LEVEL def: the generated bench app contains "async def main():" too, and
+    # splitting on the bare name grabs that instead
+    body = src.split("\ndef main(")[1]
+    guard = body.index("if not cap.raw:")
+    reset = body.index("cap.reset(time.time())")
+    assert guard < reset, "the check must run BEFORE the scored window starts"
+    assert ".hilcov_uart" in body[guard:reset], "the error must name the file to check"

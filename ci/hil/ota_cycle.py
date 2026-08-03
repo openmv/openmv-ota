@@ -2094,6 +2094,19 @@ def main():
             if spec["publish"] != "none" and not args.skip_publish:
                 phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
                 trace["metrics"] = artifact_sizes(args.board)   # download sizes -> ota_metrics report
+            # THE MARKER UART MUST BE ALIVE BEFORE THE SCORED WINDOW OPENS. Every scenario is scored
+            # on lines from this stream; if it is dead, the run takes its full timeout and then
+            # reports a pile of missing markers -- which reads as a broken device and is not.
+            # Observed: a leg whose `.hilcov_uart` never landed (prepare deferred the bench files
+            # after a recovery erase, and the deferred write did not happen) produced ZERO device
+            # lines for 25 minutes, then failed with boot.ready/log.configured missing. The board was
+            # fine; it was logging to USB because nothing told it which UART to use.
+            if not cap.raw:
+                raise RuntimeError(
+                    "no device output on the marker UART (%s) during provisioning -- the board is "
+                    "logging somewhere else. Check that /flash/.hilcov_uart exists and names UART %s "
+                    "(prepare writes it; a recovery erase DEFERS that write), and that nothing else "
+                    "holds the port." % (CFG["uart"], BOARDS[args.board]["cov_uart"]))
             cap.reset(time.time())               # scored window starts HERE (see the early start above)
             # "install" phase = the whole autonomous OTA (check-in -> download -> write -> trial ->
             # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.
