@@ -49,3 +49,22 @@ def test_erase_path_is_reached_only_with_the_flag():
     guard = body.index("if not allow_erase:")
     erase = body.index("recover_erase_romfs(")
     assert guard < erase, "recover_erase_romfs must be gated by `if not allow_erase: return`"
+
+
+def test_firmware_recovery_is_two_stage_and_zero_first():
+    """A cycling board offers a window too short for a full image (measured: a direct write died at
+    32%, then 36% of 2 MB). Writing a sector of zeros first invalidates the firmware, so the
+    bootloader stops handing over and parks in DFU -- then the real write has all the time it needs.
+    Order is the whole trick; a single-stage write here is the bug this replaced."""
+    body = _SRC.split("def recover_firmware(")[1].split("\ndef ")[0]
+    assert "stage 1/2" in body and "stage 2/2" in body
+    assert body.index("stage 1/2") < body.index("stage 2/2")
+    assert 'b"\\x00" * 4096' in body, "stage 1 must write a small sector of zeros"
+    # stage 1 must go through the reset-catch (dfu-util -w started BEFORE the pulse)
+    assert body.index("dfu_reset_catch") < body.index("stage 2/2")
+
+
+def test_firmware_recovery_refuses_a_non_dfu_board():
+    """The imx boards flash through their SBL, not DFU -- there is no firmware alt to write."""
+    import ota_cycle as oc
+    assert oc.recover_firmware("OPENMV_RT1060") is False

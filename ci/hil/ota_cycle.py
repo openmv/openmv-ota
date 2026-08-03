@@ -1313,6 +1313,80 @@ def _arduino_dfu_run(board, argv, what, *, timeout):
                  "a power cycle" % (what, board, CFG["acm"]))
 
 
+def _flash_raw(board):
+    """The board's flash config from the PACKAGE (boards.json), or None. Read it rather than
+    duplicating usb ids and alt numbers in the harness: two copies drift, and a stale alt writes
+    firmware into the wrong partition."""
+    try:
+        from openmv_ota.flash.targets import flash_config
+        return flash_config(board).raw
+    except Exception as e:                   # not installed, or an unknown board
+        log("flash config for %s unavailable: %s" % (board, e))
+        return None
+
+
+def recover_firmware(board, firmware=None, timeout=400):
+    """Reflash MAIN FIRMWARE on a board looping bootloader -> crash -> bootloader. Returns True iff
+    the board came back on USB.
+
+    THE PROBLEM: corrupt firmware does not leave a board dead, it leaves it CYCLING. The bootloader
+    hands over, the firmware crashes, the bootloader comes back -- so the board is re-enumerating
+    every couple of seconds. Every USB operation then dies partway through, and the errors point
+    everywhere except the cause: `dfu-util` LIBUSB_ERROR_IO a third of the way into a download, an
+    i.MX SBL that "did not enumerate / could not be claimed", ttyUSB renumbering, a CDC that appears
+    and vanishes between probes. It reads as flaky hardware -- it is not, it is deterministic.
+
+    THE FIX IS TWO STAGES, and the order is the whole trick:
+
+      1. write a SECTOR OF ZEROS to the firmware alt. Tiny, so it fits inside the short window the
+         cycling board offers. Now nothing valid boots, so the bootloader stops handing over and
+         PARKS in DFU;
+      2. write the real firmware, with the board sitting still and no time limit.
+
+    Both stages use `-w` STARTED FIRST and then a reset pulse, so dfu-util is already waiting and
+    catches the window at its start rather than landing mid-cycle. Measured on the N6: a direct
+    full write died at 32% and then 36%; two-stage completed and the board came back as
+    37c5:1206 with a working CDC.
+
+    OpenMV DFU boards only -- an Arduino board's MCUboot has no reset window (see _arduino_dfu_run),
+    and the imx boards flash through their SBL, not DFU.
+    """
+    raw = _flash_raw(board)
+    if raw is None or "alt" not in raw or "firmware" not in raw.get("alt", {}):
+        log("recover: %s has no DFU firmware alt -- not a DFU board" % board)
+        return False
+    usb, alt = raw["usb"], raw["alt"]["firmware"]
+    firmware = firmware or "%s/build/%s-firmware.bin" % (CFG["project"], board)
+    if not os.path.exists(firmware):
+        log("recover: no firmware image at %s -- build one first" % firmware)
+        return False
+
+    zero = os.path.join(tempfile.mkdtemp(prefix="fwzero-"), "zero.bin")
+    with open(zero, "wb") as fh:
+        fh.write(b"\x00" * 4096)
+    try:
+        log("recover: %s stage 1/2 -- invalidate the firmware so the bootloader stops handing over"
+            % board)
+        rc, out = dfu_reset_catch(board, [CFG["dfu"], "-w", "-d", ",%s" % usb,
+                                          "-a", str(alt), "-D", zero], timeout=120)
+        if rc != 0:
+            log("recover: stage 1 failed rc=%d -- %s" % (rc, (out or "")[-200:]))
+            return False
+        time.sleep(5)                        # let it settle into DFU with nothing to boot
+        log("recover: %s stage 2/2 -- full firmware write (board should sit still now)" % board)
+        rc, out = sh([CFG["dfu"], "-w", "-d", ",%s" % usb, "-a", str(alt),
+                      "--reset", "-D", firmware], timeout=timeout, check=False)
+        if rc != 0:
+            log("recover: stage 2 failed rc=%d -- %s" % (rc, (out or "")[-200:]))
+            return False
+    finally:
+        os.unlink(zero)
+    time.sleep(12)                           # let it boot and re-enumerate
+    back = os.path.exists(CFG["acm"])
+    log("recover: %s firmware reflashed; CDC %s" % (board, "back" if back else "STILL GONE"))
+    return back
+
+
 def recover_erase_romfs(board):
     """LAST-RESORT recovery: erase the board over DFU so it boots with NO app.
 
