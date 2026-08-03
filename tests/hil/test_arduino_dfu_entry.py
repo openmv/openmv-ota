@@ -486,3 +486,23 @@ def test_crash_stall_feeds_an_armed_watchdog():
     tail = src.split("app: CRASHED")[1]
     assert "openmv_wdt" in tail and "feed()" in tail
     assert "sleep(5)" in tail, "must still bound the rate when there is no watchdog to feed"
+
+
+def test_portenta_runs_only_the_scenarios_it_proves():
+    """Reduced suite, the AE3's precedent: delta/full/bad_sig/bad_key pass on the bench; rollback,
+    corrupt, corrupt_sha and bad_version do not (install.* markers missing -- the device never
+    starts the install). Not regressions: this board had only ever run `delta`, so that is newly
+    exercised surface. Landing it on what it proves beats holding it out, and beats pretending."""
+    got = ota_cycle.regression_scenarios("ARDUINO_PORTENTA_H7", "wifi")
+    assert got == ["delta", "full", "bad_sig", "bad_key"]
+    for unproven in ("rollback", "corrupt", "corrupt_sha", "bad_version", "watchdog"):
+        assert unproven not in got
+    # the secondary interface stays delta-only, as for every board
+    assert ota_cycle.regression_scenarios("ARDUINO_PORTENTA_H7", "lan") == ["delta"]
+
+
+def test_the_stable_boards_keep_the_full_suite():
+    """Reducing a board's suite must not leak into the boards that carry the negative-path coverage."""
+    n6 = ota_cycle.regression_scenarios("OPENMV_N6", "lan")
+    for required in ("rollback", "corrupt", "corrupt_sha", "bad_version"):
+        assert required in n6

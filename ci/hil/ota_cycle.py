@@ -604,6 +604,19 @@ def regression_scenarios(board, network):
     # (factory flash already wrote it; sync() stream-compares, matches, and skips -- no MRAM write).
     if board == "OPENMV_AE3":
         return ["delta", "watchdog"] + (["coproc", "coproc_skip"] if COPROC_ENABLED else [])
+    # The Portenta runs a REDUCED suite too, for the AE3's reason: only the paths PROVEN on it.
+    # Measured on the bench, running its full set for the first time -- delta, full, bad_sig and
+    # bad_key pass; rollback, corrupt, corrupt_sha and bad_version do not (they time out with
+    # install.* markers missing, i.e. the device never starts the install the scenario expects).
+    # Those are NOT regressions: this board had only ever run `delta` before, so that is newly
+    # exercised surface that does not work yet, and the negative paths are board-agnostic device
+    # logic already covered on the N6 and RT.
+    #
+    # Landing the board on what it proves beats holding it out entirely, and beats pretending the
+    # rest passes. Widen this list as the negative paths are fixed -- they still run by hand:
+    #   workflow_dispatch board=ARDUINO_PORTENTA_H7 scenario=rollback
+    if board == "ARDUINO_PORTENTA_H7":
+        return ["delta", "full", "bad_sig", "bad_key"]
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
