@@ -382,3 +382,32 @@ def test_marker_scoring_requires_the_full_expect_set():
     body = _body("run_cycle")
     assert "by_marker" in body
     assert "reached = (have if by_marker else" in body
+
+
+# ---------------------------------------------------------------------------
+# The bench server's anti-rollback OFFER gate.
+
+
+def test_offer_downgrades_is_off_by_default():
+    """Relaxing the offer gate makes the server re-offer a release the device already installed.
+    A device left running past its promotion is then told to install the same version forever:
+    install -> confirm -> re-offer -> re-install -> `image sha256 does not match the manifest` ->
+    fall back to golden -> re-offer. That looks like an OTA fault and is a bench misconfiguration."""
+    import inspect
+
+    import bench_server
+    assert inspect.signature(bench_server.start).parameters["offer_downgrades"].default is False
+
+
+def test_only_bad_version_relaxes_the_offer_gate():
+    """bad_version exists to feed the device an offer a correct server would never make, so it is
+    the one scenario that needs the gate down."""
+    body = _SRC.split("srv = bench_server.start(")[1].split("\n\n")[0]
+    assert 'offer_downgrades=(args.scenario == "bad_version")' in body
+
+
+def test_env_omits_the_flag_when_not_requested(monkeypatch):
+    """Off must mean ABSENT from the env, not present-and-false: the setting is read as a truthy
+    string, so "0" would still arm it in some readings."""
+    src = open(os.path.join(_CIHIL, "bench_server.py")).read()
+    assert '**({"OPENMV_OTA_TEST_OFFER_DOWNGRADES": "1"} if offer_downgrades else {})' in src

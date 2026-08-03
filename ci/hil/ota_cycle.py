@@ -1834,7 +1834,9 @@ def main():
         # Each rig spins up its OWN update server for this run (self-contained; no shared bench
         # server, tamper scenarios work on every board). Point CFG at it BEFORE prepare(), which
         # bakes the URL into the bench app + copies this run's CA onto the board.
-        srv = bench_server.start(ota("python"), log=log)
+        # Only bad_version wants the relaxed offer gate; see bench_server.start.
+        srv = bench_server.start(ota("python"), log=log,
+                                 offer_downgrades=(args.scenario == "bad_version"))
         CFG["server"], CFG["ca_node"], CFG["artifacts"], CFG["token"] = (
             srv["url"], srv["ca"], srv["store"], srv["token"])
         if spec["end"] == "no_slot":

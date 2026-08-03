@@ -108,7 +108,7 @@ def _wait_ready(url, ca, timeout):
     raise RuntimeError("ephemeral OTA server never became ready at %s (%s)" % (url, last))
 
 
-def start(python, port=8443, token="bench-admin-token-1", log=print):
+def start(python, port=8443, token="bench-admin-token-1", log=print, offer_downgrades=False):
     """Bring up the per-run server + registrar. Returns a handle for ``stop()``; also carries
     ``url`` / ``ca`` / ``store`` / ``token`` for the harness to point CFG at."""
     # Free the port first: a lingering server (a prior crashed run, or the old shared one) would
@@ -133,8 +133,16 @@ def start(python, port=8443, token="bench-admin-token-1", log=print):
         OPENMV_OTA_SWD_IDS_VERIFY_TOKEN="benchtoken",
         OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN=token,
         OPENMV_OTA_POLL_AFTER_S="5",
-        OPENMV_OTA_TEST_OFFER_DOWNGRADES="1",         # safe: relaxes only the server OFFER gate;
-        PORT=str(port), SRV_CERT=cert, SRV_KEY=key)   # the device anti-rollback still rejects
+        # OFF unless the scenario needs it. It relaxes the server's anti-rollback OFFER gate, which
+        # only `bad_version` wants (it exists to feed the DEVICE an offer a correct server would
+        # never make, so the device's own rejection can be tested). Left on for EVERY run it makes
+        # the server re-offer a release the device has already installed -- so a device that keeps
+        # running past its promotion is told to install the same version again, forever. That is
+        # exactly what happened once a board finally ran past its promotion: install -> confirm ->
+        # re-offer -> re-install -> `image sha256 does not match the manifest` -> fall back to
+        # golden -> re-offer, on a loop, which reads as an OTA fault and is a bench misconfiguration.
+        **({"OPENMV_OTA_TEST_OFFER_DOWNGRADES": "1"} if offer_downgrades else {}),
+        PORT=str(port), SRV_CERT=cert, SRV_KEY=key)
     slog = open(os.path.join(d, "server.log"), "w")
     reg = subprocess.Popen([python, "-c", _FAKE_REGISTRAR],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
