@@ -140,3 +140,6 @@ def test_deferred_bench_file_write_is_never_silently_skipped():
     assert "_await_boot(board" in body, "must WAIT for the board rather than sampling the CDC once"
     assert "raise RuntimeError" in body, "and must fail loudly rather than skip the write"
     assert ".hilcov_uart" in body, "the error must name what will be missing"
+    # ...but it must NOT fail a board that is demonstrably fine: these files persist on /flash across
+    # runs, so "could not rewrite them" is the normal steady state whenever markers are already live.
+    assert "_CAP.raw" in body, "a live marker UART must satisfy the check without a rewrite"

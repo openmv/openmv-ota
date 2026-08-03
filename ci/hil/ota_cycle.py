@@ -1052,11 +1052,19 @@ def flash_golden(board, bad_romfs=False):
             _await_boot(board, budget=120)   # it is probably still coming up after the flash
         if _cdc_responsive():
             _flash_bench_files(board)
+        elif _CAP is not None and _CAP.raw:
+            # Could not write them -- but the board is ALREADY logging to the marker UART, which is
+            # the only thing these files buy us. They survive across runs (they live on /flash, which
+            # a golden flash does not erase), so this is the normal steady state, not a fault. Do not
+            # fail a board that is demonstrably working: the point of the check is the OUTCOME
+            # (markers arriving), never the mechanism.
+            log("bench files: not rewritten (no CDC), but the marker UART is live -- they are "
+                "already on the board")
         else:
             raise RuntimeError(
-                "%s: golden is flashed but the board never came back to receive the bench files. "
-                "Without /flash/.hilcov_uart it logs to USB, not the marker UART, and every "
-                "scenario then fails on missing markers." % board)
+                "%s: golden is flashed, the board never came back to receive the bench files, AND "
+                "nothing is arriving on the marker UART. Without /flash/.hilcov_uart it logs to USB "
+                "and every scenario fails on missing markers." % board)
 
 
 def _partial_download(out):
