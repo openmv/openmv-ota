@@ -153,6 +153,13 @@ BOARDS = {
         "network": "wifi",                   # onboard CYW4343 -- standard network.WLAN (no shield)
         "flash": "arduino_cli",              # 1200-baud touch -> MCUboot DFU, address-based dfu-util -w
         "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
+        # MEASURED: SWD does not work on this board -- `connect` fails with "Could not connect to
+        # the target device" every time, because the Nicla's tiny SWD pads are not wired on the
+        # bench. The RESET PIN still is, and driving it needs no connection, so recovery here is a
+        # pin pulse and nothing more. (A reset is only ever used on a wedged RUNTIME board: if it is
+        # sitting in DFU, _ensure_cdc leaves DFU properly first -- pulsing nRST there would land it
+        # back in the bootloader, since the touch's stay-in-bootloader flag lives in RAM.)
+        "jlink_swd": False,
     },
     "ARDUINO_PORTENTA_H7": {
         # The update server NEVER writes a device record for these: they sit in its
@@ -1206,7 +1213,15 @@ def jlink_core_reset(board, timeout=60):
     if "jlink_device" not in BOARDS[board]:
         return False
     fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="corereset-")
-    os.write(fd, b"si SWD\nspeed 4000\nconnect\nr\ng\nqc\n")
+    if BOARDS[board].get("jlink_swd", True):
+        os.write(fd, b"si SWD\nspeed 4000\nconnect\nr\ng\nqc\n")
+    else:
+        # No usable SWD on this board -- drive the probe's RESET PIN and nothing else.
+        # SetRESET/ClrRESET toggle a J-Link output; they need no target connection, so they work
+        # when SWCLK/SWDIO are not wired at all (the Nicla: `connect` returns "Could not connect to
+        # the target device" every time). Without `connect` the debugger never halts the core, so
+        # the board simply reboots and runs -- which is the whole point of the reset.
+        os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nqc\n")
     os.close(fd)
     try:
         sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",

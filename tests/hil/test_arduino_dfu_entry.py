@@ -176,11 +176,14 @@ def test_ensure_cdc_never_pulses_the_pin(board, monkeypatch):
     assert waits, "expected the board to be given time to boot"
 
 
-def test_core_reset_never_touches_the_reset_pin():
-    """Kept as a manual-recovery primitive; if it is ever used again it must not touch the pin."""
+def test_swd_boards_reset_through_the_core_not_the_pin():
+    """On a board WITH working SWD the pin must stay untouched -- a pulse whose follow-up connect
+    fails leaves the core halted with no USB (measured on the Portenta, dark for minutes). The pin
+    is only for boards that have no SWD to use, where nothing can halt the core anyway."""
     body = _body("jlink_core_reset")
-    assert "SetRESET" not in body and "ClrRESET" not in body
-    assert "connect" in body
+    swd_branch = body.split('if BOARDS[board].get("jlink_swd", True):')[1].split("else:")[0]
+    assert "connect" in swd_branch
+    assert "SetRESET" not in swd_branch and "ClrRESET" not in swd_branch
 
 
 def test_arduino_flash_watches_the_uart_and_does_not_probe():
@@ -411,3 +414,36 @@ def test_env_omits_the_flag_when_not_requested(monkeypatch):
     string, so "0" would still arm it in some readings."""
     src = open(os.path.join(_CIHIL, "bench_server.py")).read()
     assert '**({"OPENMV_OTA_TEST_OFFER_DOWNGRADES": "1"} if offer_downgrades else {})' in src
+
+
+# ---------------------------------------------------------------------------
+# Reset on a board whose SWD pads are not wired.
+
+
+def test_nicla_is_marked_reset_pin_only():
+    """MEASURED on the bench: `connect` fails with "Could not connect to the target device" on the
+    Nicla every time. The RESET pin is still wired, and driving it needs no target connection."""
+    assert ota_cycle.BOARDS["ARDUINO_NICLA_VISION"].get("jlink_swd") is False
+    assert ota_cycle.BOARDS["ARDUINO_PORTENTA_H7"].get("jlink_swd", True) is True
+
+
+def test_reset_script_matches_the_board(monkeypatch, tmp_path):
+    """A board with SWD gets connect+run; one without gets the pin ALONE. Sending `connect` to a
+    board that cannot answer it wastes the whole timeout and reports a failure that is not one."""
+    written = {}
+
+    def fake_mkstemp(**kw):
+        path = tmp_path / "s.jlink"
+        return os.open(str(path), os.O_CREAT | os.O_WRONLY), str(path)
+    monkeypatch.setattr(ota_cycle.tempfile, "mkstemp", fake_mkstemp)
+    monkeypatch.setattr(ota_cycle, "sh",
+                        lambda cmd, **kw: written.setdefault("script", open(cmd[-1]).read()) and None
+                        or (0, ""))
+    monkeypatch.setattr(os, "unlink", lambda p: None)
+
+    ota_cycle.jlink_core_reset("ARDUINO_NICLA_VISION")
+    assert "SetRESET" in written["script"] and "connect" not in written["script"]
+
+    written.clear()
+    ota_cycle.jlink_core_reset("ARDUINO_PORTENTA_H7")
+    assert "connect" in written["script"] and "SetRESET" not in written["script"]
