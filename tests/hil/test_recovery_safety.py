@@ -143,3 +143,13 @@ def test_deferred_bench_file_write_is_never_silently_skipped():
     # ...but it must NOT fail a board that is demonstrably fine: these files persist on /flash across
     # runs, so "could not rewrite them" is the normal steady state whenever markers are already live.
     assert "_CAP.raw" in body, "a live marker UART must satisfy the check without a rewrite"
+
+
+def test_jlink_helpers_free_a_stale_probe_first():
+    """A J-Link is single-client: one leftover JLinkExe makes every later connect fail, silently --
+    sh(check=False) returns, the helper reports success, and the board is never reset. That is why
+    the N6's SWD reset works when watchdog_bite runs ALONE and fails after nine prior scenarios."""
+    for fn in ("jlink_core_reset", "jlink_reset_pulse"):
+        body = _SRC.split("def %s(" % fn)[1].split("\ndef ")[0]
+        assert "_free_jlink()" in body, fn
+        assert body.index("_free_jlink()") < body.index("CommanderScript"), fn

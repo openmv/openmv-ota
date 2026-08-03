@@ -1169,6 +1169,7 @@ def jlink_reset_pulse(board, timeout=60):
     """
     if "jlink_device" not in BOARDS[board]:
         return False
+    _free_jlink()                         # a stale JLinkExe blocks the probe, silently
     fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
     os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n")
     os.close(fd)
@@ -1285,6 +1286,19 @@ def _await_boot(board, marker="boot: ready", budget=150):
     return False
 
 
+def _free_jlink():
+    """Reap a stale JLinkExe before driving the probe. A J-Link is a SINGLE-CLIENT device: one
+    leftover process (a previous invocation that hung and outlived its timeout) makes every later
+    connect fail, and those failures are silent -- `sh(..., check=False)` returns, the helper reports
+    success, and the board is simply never reset.
+
+    That is why the N6's SWD reset works when watchdog_bite runs ALONE and fails after nine prior
+    scenarios: the leftovers accumulate. Only one J-Link operation is ever in flight per node, so
+    anything still running here is by definition stale."""
+    rc, out = sh("pkill -f JLinkExe 2>/dev/null; true", check=False, quiet=True)
+    del rc, out
+
+
 def jlink_core_reset(board, timeout=60):
     """Reset a board through the DEBUG CORE (``connect; r; g``) -- no nRST pin, no DFU-window games.
 
@@ -1296,6 +1310,7 @@ def jlink_core_reset(board, timeout=60):
     """
     if "jlink_device" not in BOARDS[board]:
         return False
+    _free_jlink()                         # a stale JLinkExe blocks the probe, silently
     fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="corereset-")
     if BOARDS[board].get("jlink_swd", True):
         os.write(fd, b"si SWD\nspeed 4000\nconnect\nr\ng\nqc\n")

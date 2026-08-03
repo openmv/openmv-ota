@@ -436,9 +436,12 @@ def test_reset_script_matches_the_board(monkeypatch, tmp_path):
         path = tmp_path / "s.jlink"
         return os.open(str(path), os.O_CREAT | os.O_WRONLY), str(path)
     monkeypatch.setattr(ota_cycle.tempfile, "mkstemp", fake_mkstemp)
-    monkeypatch.setattr(ota_cycle, "sh",
-                        lambda cmd, **kw: written.setdefault("script", open(cmd[-1]).read()) and None
-                        or (0, ""))
+    def fake_sh(cmd, **kw):
+        # only the JLinkExe invocation is a LIST; _free_jlink passes a shell STRING
+        if isinstance(cmd, list) and "-CommanderScript" in cmd:
+            written["script"] = open(cmd[-1]).read()
+        return (0, "")
+    monkeypatch.setattr(ota_cycle, "sh", fake_sh)
     monkeypatch.setattr(os, "unlink", lambda p: None)
 
     ota_cycle.jlink_core_reset("ARDUINO_NICLA_VISION")
