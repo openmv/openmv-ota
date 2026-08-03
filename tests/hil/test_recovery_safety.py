@@ -89,3 +89,13 @@ def test_failed_dfu_flash_recovers_then_retries():
     assert "_partial_download(out)" in body
     assert "recover_firmware(board)" in body
     assert body.index("_partial_download(out)") < body.index("recover_firmware(board)")
+
+
+def test_firmware_stage2_checks_the_park_instead_of_assuming_it(monkeypatch):
+    """Stage 2 used a plain `dfu-util -w` on the assumption that stage 1 had parked the board. When
+    it had not, that -w waited for a device that was never coming and burned the whole timeout
+    (rc=124 after 400s on the N6). Check, and make a window when there isn't one."""
+    body = _SRC.split("def recover_firmware(")[1].split("\ndef ")[0]
+    stage2 = body.split("stage 2/2")[0]
+    assert "_dfu_present()" in stage2, "stage 2 must verify the park before trusting a plain -w"
+    assert "dfu_reset_catch" in body, "and must be able to MAKE a window when it is not parked"

@@ -1409,9 +1409,18 @@ def recover_firmware(board, firmware=None, timeout=400):
             log("recover: stage 1 failed rc=%d -- %s" % (rc, (out or "")[-200:]))
             return False
         time.sleep(5)                        # let it settle into DFU with nothing to boot
-        log("recover: %s stage 2/2 -- full firmware write (board should sit still now)" % board)
-        rc, out = sh([CFG["dfu"], "-w", "-d", ",%s" % usb, "-a", str(alt),
-                      "--reset", "-D", firmware], timeout=timeout, check=False)
+        # CHECK that stage 1 actually parked it -- do not assume. When it did, a plain `-w` returns
+        # at once and the write has all the time it needs. When it did NOT, that same `-w` waits for
+        # a device that is not coming and burns the whole timeout (measured: rc=124 after 400 s),
+        # so fall back to the reset-catch, which MAKES a window instead of hoping for one.
+        argv = [CFG["dfu"], "-w", "-d", ",%s" % usb, "-a", str(alt), "--reset", "-D", firmware]
+        if _dfu_present():
+            log("recover: %s stage 2/2 -- full firmware write (parked in DFU)" % board)
+            rc, out = sh(argv, timeout=timeout, check=False)
+        else:
+            log("recover: %s stage 2/2 -- not parked after stage 1; writing via the reset window"
+                % board)
+            rc, out = dfu_reset_catch(board, argv, timeout=timeout)
         if rc != 0:
             log("recover: stage 2 failed rc=%d -- %s" % (rc, (out or "")[-200:]))
             return False
