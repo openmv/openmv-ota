@@ -140,6 +140,43 @@ python3 ci/hil/recover.py --board OPENMV4P --probe    # just report whether the 
 python3 ci/hil/recover.py --board OPENMV4P --reset    # only pulse nRST (no DFU)
 ```
 
+### A board that is CYCLING, not dead (corrupt firmware)
+
+Corrupt main firmware does not leave a board dead — it leaves it **looping**: bootloader → crash →
+bootloader, re-enumerating every couple of seconds. Every USB operation then dies partway through,
+and the errors point everywhere except the cause:
+
+* `dfu-util: Error during download get_status (LIBUSB_ERROR_IO)` a third of the way into a write
+* `error: i.MX: the resident SBL did not enumerate / could not be claimed`
+* `/dev/ttyUSB0` renumbering to `ttyUSB1`
+* a USB-CDC that appears and vanishes between probes
+
+It reads as flaky hardware or a marginal hub. **It is deterministic**, and a power cycle does not
+help. Worse, it is self-inflicted-repeatable: a flash that dies at 32% has itself left the firmware
+invalid, so the *next* attempt gets the same short window and dies in the same place.
+
+Fix it in two stages — the order is the whole trick:
+
+1. write a **sector of zeros** to the firmware alt. Small enough to fit the short window a cycling
+   board offers. Nothing valid boots, so the bootloader stops handing over and **parks in DFU**;
+2. write the real firmware, with the board sitting still and no time limit.
+
+Both stages start `dfu-util -w` **first** and pulse reset after, so dfu-util is already waiting and
+catches the window at its start rather than landing mid-cycle.
+
+```sh
+python3 ci/hil/recover.py --board OPENMV_N6 --firmware     # two-stage reflash
+```
+
+Measured on the N6: a direct full write died at 32%, then 36%, then 32% again across three runs;
+two-stage completed both times it was used and the board came back with a working CDC. The harness
+now does this automatically when a DFU flash dies partway (`_partial_download` → `recover_firmware`
+→ retry), so a leg that used to end the run can recover itself.
+
+DFU boards only. An Arduino board's MCUboot has no reset-triggered DFU window (see
+`_arduino_dfu_run` — entry there is the 1200-baud touch), and the imx boards flash through their
+SBL rather than DFU.
+
 Primitives live in `ota_cycle.py`: `jlink_reset_pulse()` (pin pulse **then** connect+go — the pulse
 alone can leave the core halted and never re-enumerating), `dfu_reset_catch()` (run a `-w` command
 while pulsing reset), `recover_erase_romfs()`.
