@@ -148,7 +148,12 @@ BOARDS = {
         # scenario is done, and scores the UART markers instead.
         "server_record": False,                # Arduino Nicla Vision (STM32H747, QSPI ROMFS dual-slot)
         "cov_uart": 4,                       # UART4 on the SDA/SCL header (J2-1=PB9 TX, J2-2=PB8 RX),
-                                             # NOT the P4/P5 pads (those are SWCLK/NRST on the Nicla)
+                                             # NOT the P4/P5 pads (those are SWCLK/NRST on the Nicla).
+                                             # VERIFIED on the bench: driving UART(4) from the REPL
+                                             # lands "MARK_UART_4" byte-perfect on the node's CP2102
+                                             # (UART1 exists too but is not wired; 2/3/6/7/8 do not
+                                             # exist on this board). So a silent marker stream here
+                                             # is NOT the pin -- look for a stale holder of the port.
         "cov_write": "install.xip",          # stm32 XIP write path (dual-slot lives in the QSPI ROMFS)
         "network": "wifi",                   # onboard CYW4343 -- standard network.WLAN (no shield)
         "flash": "arduino_cli",              # 1200-baud touch -> MCUboot DFU, address-based dfu-util -w
