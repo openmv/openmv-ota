@@ -128,3 +128,15 @@ def test_scored_window_reset_cascades_and_spares_the_arduino_pin():
     assert code.index("jlink_core_reset") < code.index("jlink_reset_pulse") < code.index("machine.reset()")
     pin = code[code.index("jlink_reset_pulse") - 400:code.index("jlink_reset_pulse")]
     assert 'flash") != "arduino_cli"' in pin, "the pin step must exclude the Arduino boards"
+
+
+def test_deferred_bench_file_write_is_never_silently_skipped():
+    """This write puts /flash/.hilcov_uart on the board, and that file is the only thing telling the
+    firmware to log to the marker UART. Gating it on an instantaneous CDC check made it a RACE --
+    the board needs ~30s to enumerate after a flash, so it landed sometimes and was skipped in
+    silence otherwise, and the leg then failed 25 minutes later with every marker missing. That was
+    the whole of the N6 watchdog_bite flakiness."""
+    body = _SRC.split("def flash_golden(")[1].split("\ndef ")[0]
+    assert "_await_boot(board" in body, "must WAIT for the board rather than sampling the CDC once"
+    assert "raise RuntimeError" in body, "and must fail loudly rather than skip the write"
+    assert ".hilcov_uart" in body, "the error must name what will be missing"

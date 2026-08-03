@@ -1040,8 +1040,23 @@ def flash_golden(board, bad_romfs=False):
     # Golden is on and the CDC is back, so (re)write the bench files here. prepare() skips them when
     # recovery had to erase the romfs -- this is where a deferred write lands. Idempotent, so the
     # normal path just rewrites the same two files rather than needing a "was it deferred?" flag.
-    if not bad_romfs and _cdc_responsive():
-        _flash_bench_files(board)
+    if not bad_romfs:
+        # WAIT for the board, then FAIL LOUDLY -- do not silently skip. This write is what puts
+        # /flash/.hilcov_uart on the board, and that file is the only thing telling the firmware to
+        # log to the marker UART. Gating it on an instantaneous _cdc_responsive() made it a RACE:
+        # the board needs ~30 s to enumerate after a flash, so when the port was up in time the
+        # write landed and the leg passed, and when it was not the write was skipped in silence, the
+        # board logged to USB instead, and the leg failed 25 minutes later with every marker
+        # missing. That is the whole of the N6 watchdog_bite flakiness -- pass, fail, pass, fail.
+        if not _cdc_responsive():
+            _await_boot(board, budget=120)   # it is probably still coming up after the flash
+        if _cdc_responsive():
+            _flash_bench_files(board)
+        else:
+            raise RuntimeError(
+                "%s: golden is flashed but the board never came back to receive the bench files. "
+                "Without /flash/.hilcov_uart it logs to USB, not the marker UART, and every "
+                "scenario then fails on missing markers." % board)
 
 
 def _partial_download(out):
