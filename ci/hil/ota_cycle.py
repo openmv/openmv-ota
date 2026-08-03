@@ -896,8 +896,19 @@ def bench_main_py(board, net, app="confirm"):
         # crash line inside a SINGLE uart line, drowning the marker stream every scenario depends on
         # and turning one stray Ctrl-C into a board that looks permanently broken. The sleep bounds
         # that to one line every few seconds, so the log stays readable and the markers survive.
+        # FEED WHILE STALLING. The stall is mine, and a stall with an ARMED watchdog would itself
+        # provoke a bite -- turning a stray Ctrl-C into a spurious reset and breaking the very
+        # scenarios that test the watchdog. Feed on the same cadence the app does, so the pause
+        # bounds the log rate without changing what the watchdog sees. No watchdog module (or none
+        # armed) -> a plain sleep.
         "    import time as _t\n"
-        "    _t.sleep(5)\n"
+        "    try:\n"
+        "        import openmv_wdt as _w\n"
+        "        for _ in range(250):\n"
+        "            _w.feed()\n"
+        "            _t.sleep_ms(20)\n"
+        "    except Exception:\n"
+        "        _t.sleep(5)\n"
     )
 
 

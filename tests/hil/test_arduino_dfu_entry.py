@@ -476,3 +476,13 @@ def test_verify_budget_clears_a_slow_boot():
     line that follows it. The budget must have headroom over a slow boot, not sit on top of it."""
     import inspect
     assert inspect.signature(ota_cycle.verify_golden_uart).parameters["budget"].default >= 300
+
+
+def test_crash_stall_feeds_an_armed_watchdog():
+    """The stall is a harness addition; with a watchdog ARMED it would itself provoke a bite, so a
+    stray Ctrl-C would become a spurious reset and break the scenarios that test the watchdog.
+    Feed on the app's own cadence: bound the log rate without changing what the watchdog sees."""
+    src = ota_cycle.bench_main_py("OPENMV_N6", "lan")
+    tail = src.split("app: CRASHED")[1]
+    assert "openmv_wdt" in tail and "feed()" in tail
+    assert "sleep(5)" in tail, "must still bound the rate when there is no watchdog to feed"
