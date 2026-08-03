@@ -946,7 +946,9 @@ def _flash_bench_files(board, _recovered=False):
             want[CFG["ca_board"].rsplit("/", 1)[1]] = open(CFG["ca_node"], "rb").read()
         if _msc_put(want) is not None:
             return                           # written (or already correct) without touching the REPL
-        log("prepare: no USB-MSC disk found -- falling back to the REPL for the bench files")
+        # _msc_put has already said WHY. Name the cost here: the REPL path Ctrl-C's the running app,
+        # which is survivable now (the app stalls after logging) but is exactly what we are avoiding.
+        log("prepare: falling back to the REPL for the bench files -- this interrupts the app")
     # the CA must be on the board for run()'s TLS. Push it so the harness doesn't assume a
     # hand-placed cert (tolerant: a corrupt /flash surfaces on the .hilcov_uart write below).
     if os.path.exists(CFG["ca_node"]):
@@ -1121,10 +1123,14 @@ def _msc_put(files, mnt="/tmp/hil-cam-msc"):
     """
     disk = _msc_disk()
     if disk is None:
+        log("bench files: no camera disk enumerated -- board down, or two cameras attached")
         return None                          # no MSC -> caller uses the REPL path
     sh("mkdir -p %s" % mnt, check=False, quiet=True)
-    rc, _ = sh("sudo mount -t vfat -o ro %s %s" % (disk, mnt), check=False, quiet=True)
+    rc, out = sh("sudo mount -t vfat -o ro %s %s" % (disk, mnt), check=False, quiet=True)
     if rc != 0:
+        # NOT the same failure as "no disk", and saying so matters: a disk that is present but
+        # unmountable is a node/permissions problem, while an absent one is a board problem.
+        log("bench files: %s present but mount failed rc=%d (%s)" % (disk, rc, (out or "").strip()[-160:]))
         return None
     try:
         stale = [n for n, want in files.items()
@@ -1137,6 +1143,7 @@ def _msc_put(files, mnt="/tmp/hil-cam-msc"):
         return False
     rc, out = sh("sudo mount -t vfat -o rw,flush %s %s" % (disk, mnt), check=False, quiet=True)
     if rc != 0:
+        log("bench files: %s would not mount rw rc=%d (%s)" % (disk, rc, (out or "").strip()[-160:]))
         return None
     try:
         for name in stale:
