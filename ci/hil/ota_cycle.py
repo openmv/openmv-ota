@@ -1066,6 +1066,10 @@ def _flash_dfu_cli(board, bad_romfs=False):
     and SKIP -- never the coprocessor-MRAM write that wedges the AE3 (see COPROC_ENABLED). J-Link
     stays ONLY for _ensure_cdc recovery (an SWD nRST pulse revives a board wedged off USB, which the
     CLI's DFU path -- needing a live CDC to enter the bootloader -- can't reach); it never flashes."""
+    # Mark where THIS golden's account of itself begins, so verify can tell a fresh mount
+    # from the one it replaced (see verify_golden_uart).
+    global _FLASH_MARK
+    _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
     _ensure_cdc(board, allow_erase=True)   # pre-flash: safe to erase; the flash below reprovisions
@@ -1614,6 +1618,10 @@ def _flash_blhost_imx(board, bad_romfs=False):
     bad_romfs=True is the no_slot brick: blank the whole OTA romfs region (both slots -> no valid
     trailer -> boot.py finds nothing bootable), leaving firmware + /flash intact -- via the CLI's
     `flash erase --romfs` (which enters the resident SBL and flash-erase-regions the romfs)."""
+    # Mark where THIS golden's account of itself begins, so verify can tell a fresh mount
+    # from the one it replaced (see verify_golden_uart).
+    global _FLASH_MARK
+    _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
     build = CFG["project"] + "/build"
     if bad_romfs:
         log("brick: erase the OTA romfs region (both slots) -> openmv-ota flash erase --romfs")
@@ -1909,13 +1917,23 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
                     device may loop (re-offer -> re-fail -> golden), so we exit once it has
                     SETTLED back on golden with every expected marker seen."""
     log("cycle: hard reset -> autonomous run; end=%s; watching UART + server" % end)
-    # On a board driven entirely off the UART, reset through the DEBUG CORE: it needs no CDC (so it
-    # works when the port has not come back yet) and it cannot Ctrl-C anything. The mpremote route
-    # has to take the REPL to ask for the reset -- harmless in itself, since a reset is what we
-    # wanted, but it fails outright when the port is absent, which is precisely when the scored
-    # window would otherwise never start.
-    if _BOARD and BOARDS[_BOARD].get("flash") == "arduino_cli" and jlink_core_reset(_BOARD):
-        pass                                 # reset landed over SWD; no REPL involved
+    # RESET THROUGH THE DEBUG CORE wherever there is a J-Link. Two reasons, and the second is the
+    # one that bites:
+    #
+    #  1. it needs no CDC, so it still works when the port has not come back yet -- precisely when
+    #     the scored window would otherwise never start;
+    #  2. asking for the reset over mpremote means taking the REPL with a Ctrl-C FIRST, and on a
+    #     board whose app has ARMED THE WATCHDOG that stops the feed. The watchdog then bites before
+    #     machine.reset() ever runs, so the board boots with reset_cause == 3 (watchdog) instead of
+    #     a software reset. wdt_bite's app reads that as "I have already bitten, recover and feed",
+    #     skips the bite sequence entirely, and the scenario fails with wdt.bit and wdt.stop
+    #     missing -- exactly the observed failure. The harness was choosing the reset cause it was
+    #     about to measure.
+    #
+    # A core reset asks the processor directly and never touches the app, so the cause the scenario
+    # sees is the one the scenario arranged.
+    if _BOARD and BOARDS[_BOARD].get("jlink_device") and jlink_core_reset(_BOARD):
+        pass                                 # reset landed over SWD; no REPL, no missed feed
     else:
         try:                                 # machine.reset() drops the USB-CDC -> mpremote
             device_exec("import machine; machine.reset()", timeout=20, check=False)
@@ -2056,11 +2074,17 @@ def main():
                 phase("prepare", lambda: prepare(args.board, args.checkout, network, spec["app"]))
                 phase("build_golden", lambda: build_golden(args.board))
                 phase("flash_golden", lambda: flash_golden(args.board))
-                # verify_golden reads the device_id in the same early (pre-watchdog-arm) exec.
-                devid = phase("verify_golden",
-                              (lambda: verify_golden_uart(args.board))
-                              if BOARDS[args.board].get("flash") == "arduino_cli"
-                              else verify_golden)
+                # VERIFY OFF THE UART ON EVERY BOARD. The mpremote route takes the REPL with a
+                # Ctrl-C, and on a board whose app has ARMED THE WATCHDOG that is fatal: the feed
+                # stops, the watchdog bites, the board reboots, the app re-arms, the next probe
+                # kills it again. Captured on the RT:
+                #     wdt armed=True / wdt: feed / app: CRASHED KeyboardInterrupt()
+                #     app: booting ... reset_cause=3      <- 3 = watchdog reset
+                #     wdt armed=True / wdt: feed / app: CRASHED KeyboardInterrupt()
+                # The harness was fighting the very watchdog the scenario exists to test. Watching
+                # cannot do that. Falls back to the REPL verify by itself when there is no capture
+                # or the markers do not arrive, so a board without a marker UART is unaffected.
+                devid = phase("verify_golden", lambda: verify_golden_uart(args.board))
             if devid is None:                    # --skip-provision: board already up, read it directly
                 devid = device_id()
             trace["device_id"] = devid

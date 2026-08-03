@@ -99,3 +99,17 @@ def test_firmware_stage2_checks_the_park_instead_of_assuming_it(monkeypatch):
     stage2 = body.split("stage 2/2")[0]
     assert "_dfu_present()" in stage2, "stage 2 must verify the park before trusting a plain -w"
     assert "dfu_reset_catch" in body, "and must be able to MAKE a window when it is not parked"
+
+
+def test_scored_window_resets_over_swd_when_a_jlink_exists():
+    """Asking for the reset over mpremote takes the REPL with a Ctrl-C first. On a board whose app
+    has ARMED THE WATCHDOG that stops the feed, so the watchdog bites before machine.reset() runs
+    and the board boots with reset_cause==3. wdt_bite then reads that as "already bitten, recover"
+    and skips the bite sequence -- the scenario fails with wdt.bit/wdt.stop missing. The harness was
+    choosing the reset cause it was about to measure."""
+    body = _SRC.split("def run_cycle(")[1].split("\ndef ")[0]
+    # Strip comments and the docstring: this function EXPLAINS machine.reset() at length, and
+    # matching that prose instead of the call is how the first version of this test failed.
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    assert 'BOARDS[_BOARD].get("jlink_device")' in code, "every J-Link board must reset over SWD"
+    assert code.index("jlink_core_reset") < code.index("machine.reset()"), "SWD first, REPL fallback"
