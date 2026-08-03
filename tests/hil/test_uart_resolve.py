@@ -58,3 +58,15 @@ def test_ignores_non_usb_serial_devices(monkeypatch):
     monkeypatch.setattr(ota_cycle.os.path, "exists", lambda p: False)
     _fake_comports(monkeypatch, [_Port("/dev/ttyS0", vid=None), _Port("/dev/ttyUSB1")])
     assert ota_cycle.resolve_uart("/dev/ttyUSB0") == "/dev/ttyUSB1"
+
+
+def test_capture_frees_a_stale_holder_before_opening(monkeypatch):
+    """A cancelled run leaves its capture thread holding the marker UART. A second reader does NOT
+    get a copy of the stream -- the bytes go to whoever wins the read -- so the next run sees a
+    partial stream or none, waits out its whole timeout, and fails a board that is logging
+    perfectly. Measured on the Nicla node: a `runner` python from a cancelled run still held
+    /dev/ttyUSB0. The CDC path already did this via _ensure_cdc's fuser -k; the UART never did."""
+    src = open(os.path.join(_HERE, "..", "..", "ci", "hil", "ota_cycle.py")).read()
+    body = src.split("class UartCapture:")[1].split("    def start(")[0]
+    assert "fuser -k" in body, "the capture must free a stale holder before it opens the port"
+    assert body.index("fuser -k") < body.index("serial.Serial("), "free it BEFORE opening"

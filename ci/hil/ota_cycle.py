@@ -637,7 +637,20 @@ _FLASH_MARK = 0                              # index into _CAP.raw at the moment
 class UartCapture:
     def __init__(self, port, baud=115200):
         import serial
-        self._ser = serial.Serial(resolve_uart(port), baud, timeout=0.5)
+        dev = resolve_uart(port)
+        # FREE A STALE HOLDER FIRST. A cancelled or killed run leaves its capture thread with this
+        # port still open, and a second reader does NOT get a copy -- the bytes go to whichever
+        # reader wins, so the new run sees a partial stream or none at all. That presents as a board
+        # with no markers: the scenario waits out its whole timeout and fails, while the board is
+        # sitting there logging perfectly into a port somebody else is draining. Measured on the
+        # Nicla node, where a `runner` python from a cancelled run was still holding /dev/ttyUSB0.
+        # (The CDC path already does this via _ensure_cdc's fuser -k; the marker UART never did.)
+        rc, out = sh("fuser -k %s 2>/dev/null" % dev, check=False, quiet=True)
+        if (out or "").strip():
+            log("uart: freed a stale holder of %s (%s) -- a cancelled run leaks its capture"
+                % (dev, (out or "").strip()))
+            time.sleep(1)                    # let the killed reader actually release the fd
+        self._ser = serial.Serial(dev, baud, timeout=0.5)
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
         self.raw = []
