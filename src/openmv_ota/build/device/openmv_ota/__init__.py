@@ -483,8 +483,12 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
             if manifest_url:
                 log.debug("checkin: update offered")
                 install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
-        except Exception:  # hil-residual: transient-failure wrapper (install-retry exercised by corrupt/bad_sig)
-            pass                                     # transient failure -> retry next poll  # hil-residual: bare pass
+        except Exception as e:  # hil-residual: transient-failure wrapper (install-retry exercised by corrupt/bad_sig)
+            # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install
+            # (e.g. the installer read blowing the heap) is indistinguishable on the wire and in
+            # the log from a board with nothing on offer: the same check-in, the same poll wait,
+            # forever. Bounded: one repr of the exception, no traceback buffer.
+            log.warning("run: cycle failed %r" % e)  # hil-residual: transient-failure witness
         _wdt_feed()
         log.debug("run: poll wait")                  # HIL path witness (loop tail; _wdt_feed fed)
         await asyncio.sleep(wait)  # hil-residual: bare loop-tail await (sleep only; nothing follows)
@@ -785,12 +789,26 @@ def _resolve_ca(ca, base):  # pragma: no cover
 def _read_file(path, mode, limit=_ASSET_MAX):  # pragma: no cover
     """Read one of our OWN shipped assets (installer.py, ca.pem) whole -- they
     have to be whole to exec()/parse. Still bounded: these are fixed build
-    artifacts, so exceeding the ceiling means a corrupt romfs, not a big input."""
+    artifacts, so exceeding the ceiling means a corrupt romfs, not a big input.
+
+    Sized by the file's ACTUAL length, never by the ceiling. MicroPython's
+    ``f.read(n)`` pre-allocates n bytes up front, so asking for the 256 KiB limit
+    demanded a 256 KiB contiguous block to read a 68 KiB installer -- a
+    MemoryError on every board with no external SDRAM. Measured on a Nicla
+    Vision sitting idle at 350 KiB free: ``f.read(_ASSET_MAX + 1)`` ->
+    ``memory allocation failed, allocating 262145 bytes``, while the exact-size
+    read returned all 69591 bytes. That raise landed inside ``install()``, so
+    such a board could take the offer and then never install anything, forever.
+    The ceiling is now a stat-time gate rather than an allocation size."""
+    import os
+    size = os.stat(path)[6]
+    if size > limit:
+        raise OSError("%s exceeds the %d-byte asset ceiling" % (path, limit))  # hil-residual: bare raise (corrupt-romfs guard, inject-only)
     f = open(path, mode)
     try:
-        data = f.read(limit + 1)
-        if len(data) > limit:
-            raise OSError("%s exceeds the %d-byte asset ceiling" % (path, limit))  # hil-residual: bare raise (corrupt-romfs guard, inject-only)
+        data = f.read(size + 1)                       # +1: notice a file longer than stat claimed
+        if len(data) > size:
+            raise OSError("%s grew while being read" % path)  # hil-residual: bare raise (stat/read disagreement, inject-only)
         log.debug("asset: read")                      # HIL path witness (installer/ca asset read)
         return data  # hil-residual: bare return of the read asset
     finally:
