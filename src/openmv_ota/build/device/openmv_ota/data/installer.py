@@ -1096,6 +1096,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # parse and TLS, which is how the HIL `watchdog` scenario reset before even the first
             # block witness and fell back to golden.
             worst = 0                                 # longest single erase seen, ms
+            if log:
+                # Witness that the loop was ENTERED, before the first flash op. The b==1 progress
+                # line only prints once an erase has RETURNED, so its absence cannot distinguish
+                # "hung inside the first ioctl" from "never got to the loop at all" -- exactly the
+                # ambiguity left by the RT1060 bite, which reboots ~500 ms into this call while the
+                # identical call takes 63 ms on the retry.
+                log.debug("install: erase loop entered")  # hil-residual: bounded one-shot entry witness; it precedes the first flash op, so no marker can be dominated by it
             with relax():
                 while b < nb:                         # one block per call -> returns to the
                     feed()                            # VM between blocks (no dead-time erase);
