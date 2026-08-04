@@ -1104,6 +1104,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 # identical call takes 63 ms on the retry.
                 log.debug("install: erase loop entered t=%d" % ticks_ms())  # hil-residual: bounded one-shot entry witness; it precedes the first flash op, so no marker can be dominated by it
             with relax():
+                if log:
+                    # Splits the last unlit gap. relax().__enter__ imports machine and allocates a
+                    # machine.Timer, and until it returns NOTHING is feeding -- the app's own loop
+                    # is blocked by this synchronous install, and the ISR feed is what we are still
+                    # setting up. If this line prints and the b=1 line does not, the missing time
+                    # is in the first feed()+erase; if it does not print, it is in __enter__.
+                    log.debug("install: erase relax armed t=%d" % ticks_ms())  # hil-residual: bounded one-shot; it sits between the relax entry and the first flash op, so no marker dominates it
                 while b < nb:                         # one block per call -> returns to the
                     feed()                            # VM between blocks (no dead-time erase);
                     _t0 = ticks_ms()                  # this port is already chunk-granular
