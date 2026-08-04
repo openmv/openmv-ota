@@ -919,6 +919,13 @@ def bench_main_py(board, net, app="confirm"):
         "_blog = logging.getLogger('openmv_ota')\n\n\n"
         "async def main():\n"
         "    _blog.info('app: main() started')\n"
+        # NAME THE APP THE BOARD IS ACTUALLY RUNNING. Every scenario's golden is version 1.0.0, so
+        # verify_golden's payload check cannot tell one scenario's bench app from another's: when a
+        # golden flash silently does not take, the board keeps the PREVIOUS scenario's app and the
+        # run measures the wrong thing for 15 minutes. That is the whole of the N6 `watchdog_bite`
+        # flakiness -- it always follows `watchdog`, whose app differs only in whether it stops
+        # feeding, so the stale app looks entirely healthy while wdt.bit/wdt.stop never arrive.
+        "    _blog.info('app: scenario %s')\n" % app +
         # Print the device_id on the UART so the harness never has to take the REPL to learn it.
         # Reading it over mpremote meant a Ctrl-C, and a Ctrl-C kills this app (KeyboardInterrupt is
         # a BaseException) -- the board can simply say who it is instead.
@@ -1754,7 +1761,7 @@ def _mounted(line):
     return any(m in line for m in _MOUNT_MARKERS)
 
 
-def verify_golden_uart(board, budget=300, golden="1.0.0"):
+def verify_golden_uart(board, budget=300, golden="1.0.0", want_app=None):
     """verify_golden() without taking the REPL: read the board's own account off the UART.
 
     Same two claims as the mpremote version -- golden booted and mounted a valid romfs, and here is
@@ -1795,6 +1802,20 @@ def verify_golden_uart(board, budget=300, golden="1.0.0"):
                     "%s booted payload %d, expected golden %s (%d) -- the golden flash did not take, "
                     "so this scenario would run against the wrong image. Last mount: %r"
                     % (board, payload, golden, want, mounts[-1]))
+            # ASSERT THE RIGHT BENCH APP IS RUNNING. Every scenario's golden is 1.0.0, so the
+            # payload check above cannot tell one scenario's app from another's -- a golden flash
+            # that silently does not take leaves the PREVIOUS scenario's app in place and the run
+            # measures the wrong thing until it times out. Seen on the N6: `watchdog_bite` ran the
+            # `watchdog` app (identical but for the stop-feeding step), looked perfectly healthy on
+            # the UART, and failed 15 minutes later on wdt.bit/wdt.stop that could never appear.
+            if want_app is not None:
+                tags = [ln.split("app: scenario ", 1)[1].strip()
+                        for ln in fresh if "app: scenario " in ln]
+                if tags and tags[-1] != want_app:
+                    raise RuntimeError(
+                        "%s is running the %r bench app but this scenario needs %r -- the golden "
+                        "flash did not take. Both goldens are 1.0.0, so the version check cannot "
+                        "see this." % (board, tags[-1], want_app))
             ids = [ln.split("app: device_id ", 1)[1].strip()
                    for ln in _CAP.raw if "app: device_id " in ln]
             if ids:
@@ -2218,7 +2239,8 @@ def main():
                 # The harness was fighting the very watchdog the scenario exists to test. Watching
                 # cannot do that. Falls back to the REPL verify by itself when there is no capture
                 # or the markers do not arrive, so a board without a marker UART is unaffected.
-                devid = phase("verify_golden", lambda: verify_golden_uart(args.board))
+                devid = phase("verify_golden",
+                              lambda: verify_golden_uart(args.board, want_app=spec["app"]))
             if devid is None:                    # --skip-provision: board already up, read it directly
                 devid = device_id()
             trace["device_id"] = devid
