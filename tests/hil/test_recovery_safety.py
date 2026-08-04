@@ -142,7 +142,9 @@ def test_deferred_bench_file_write_is_never_silently_skipped():
     assert ".hilcov_uart" in body, "the error must name what will be missing"
     # ...but it must NOT fail a board that is demonstrably fine: these files persist on /flash across
     # runs, so "could not rewrite them" is the normal steady state whenever markers are already live.
-    assert "_CAP.raw" in body, "a live marker UART must satisfy the check without a rewrite"
+    assert "_uart_live_since_flash()" in body, (
+        "a live marker UART must satisfy the check without a rewrite -- but liveness has to be\n"
+        "measured SINCE THIS FLASH, since _CAP.raw still holds what the previous firmware wrote")
 
 
 def test_jlink_helpers_free_a_stale_probe_first():

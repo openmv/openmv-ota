@@ -83,7 +83,7 @@ def test_run_refuses_to_score_a_dead_marker_uart():
     # anchor to the TOP-LEVEL def: the generated bench app contains "async def main():" too, and
     # splitting on the bare name grabs that instead
     body = src.split("\ndef main(")[1]
-    guard = body.index("if not cap.raw:")
+    guard = body.index("if not _uart_live_since_flash():")
     reset = body.index("cap.reset(time.time())")
     assert guard < reset, "the check must run BEFORE the scored window starts"
     assert ".hilcov_uart" in body[guard:reset], "the error must name the file to check"

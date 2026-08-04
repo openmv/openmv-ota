@@ -656,6 +656,43 @@ def resolve_uart(port):
     return found[0]
 
 
+def _uart_live_since_flash():
+    """Has the board said ANYTHING on the marker UART since golden was flashed?
+
+    "Since the flash" is the whole point. `_CAP.raw` is the capture's entire history, so it still
+    holds lines the PREVIOUS firmware wrote before this flash -- and reading those as "the marker
+    UART is live" is how a board that went silent at the flash passes for healthy. It cost a full
+    N6 leg: the bench-file write was skipped on that stale evidence, `.hilcov_uart` was not on the
+    board, so it logged to USB, no reset could be seen to "produce a boot", and the scenario failed
+    28 minutes later with every device marker missing -- on a board answering its REPL the whole
+    time. Same reasoning as verify_golden_uart's `fresh`."""
+    return _CAP is not None and bool(_CAP.raw[_FLASH_MARK:])
+
+
+_FAULT = "run: cycle failed"                 # the device's own report of a swallowed poll-cycle
+#                                              exception (openmv_ota.run) -- see device_faults
+
+
+def device_faults(cap):
+    """Distinct ``run: cycle failed <repr>`` reports the device made, with counts, newest last.
+
+    A board that can never install repeats ONE exception forever, and the marker set says only
+    which paths did not run -- never why. Without this, the two look identical from here: no
+    install markers, a timeout, and thousands of UART lines nobody reads. Summarising it names
+    the fault in one line.
+
+    Earned the hard way: a Nicla logged ``MemoryError('memory allocation failed, allocating
+    262145 bytes')`` on every single poll for half an hour, and the run still reported nothing but
+    a list of markers it never reached."""
+    seen = {}
+    for line in (cap.raw if cap is not None else []):
+        at = line.find(_FAULT)
+        if at >= 0:
+            text = line[at + len(_FAULT):].strip()
+            seen[text] = seen.get(text, 0) + 1
+    return seen
+
+
 _CAP = None                                  # the live UartCapture (set by start()); see _await_boot
 _BOARD = None                                # the board under test (set in main); see run_cycle
 _FLASH_MARK = 0                              # index into _CAP.raw at the moment golden was flashed:
@@ -1049,14 +1086,24 @@ def flash_golden(board, bad_romfs=False):
         # missing. That is the whole of the N6 watchdog_bite flakiness -- pass, fail, pass, fail.
         if not _cdc_responsive():
             _await_boot(board, budget=120)   # it is probably still coming up after the flash
+        # POLL for the CDC rather than asking once. _await_boot above waits for a boot MARKER, so
+        # on the very board this matters for -- one whose marker UART is dead -- it cannot succeed
+        # and just burns its whole budget; a single check the instant it gives up is a coin flip.
+        # Measured on the N6: the CDC was absent here, yet answered the REPL fine at verify ~300 s
+        # later, so the one thing needed (writing .hilcov_uart) was skipped over a timing accident.
+        for _ in range(18):
+            if _cdc_responsive():
+                break
+            time.sleep(10)
         if _cdc_responsive():
             _flash_bench_files(board)
-        elif _CAP is not None and _CAP.raw:
+        elif _uart_live_since_flash():
             # Could not write them -- but the board is ALREADY logging to the marker UART, which is
             # the only thing these files buy us. They survive across runs (they live on /flash, which
             # a golden flash does not erase), so this is the normal steady state, not a fault. Do not
             # fail a board that is demonstrably working: the point of the check is the OUTCOME
-            # (markers arriving), never the mechanism.
+            # (markers arriving), never the mechanism -- but the outcome has to be observed SINCE
+            # THIS FLASH (see _uart_live_since_flash), not at any point in the capture's history.
             log("bench files: not rewritten (no CDC), but the marker UART is live -- they are "
                 "already on the board")
         else:
@@ -2188,9 +2235,9 @@ def main():
             # after a recovery erase, and the deferred write did not happen) produced ZERO device
             # lines for 25 minutes, then failed with boot.ready/log.configured missing. The board was
             # fine; it was logging to USB because nothing told it which UART to use.
-            if not cap.raw:
+            if not _uart_live_since_flash():
                 raise RuntimeError(
-                    "no device output on the marker UART (%s) during provisioning -- the board is "
+                    "no device output on the marker UART (%s) since golden was flashed -- the board is "
                     "logging somewhere else. Check that /flash/.hilcov_uart exists and names UART %s "
                     "(prepare writes it; a recovery erase DEFERS that write), and that nothing else "
                     "holds the port." % (CFG["uart"], BOARDS[args.board]["cov_uart"]))
@@ -2213,6 +2260,11 @@ def main():
         if not trace["passed"]:
             log("FAIL: end=%s reached=%s missing=%s forbidden=%s"
                 % (spec["end"], result["reached_end"], missing or "-", forbidden or "-"))
+            # ...and WHY, if the board said. Missing markers name the paths that did not run; this
+            # names the exception that stopped them. A board that can never install repeats one
+            # fault forever, which is otherwise indistinguishable from a board with nothing to do.
+            for text, hits in device_faults(cap).items():
+                log("  the device reported this %d time(s): %s" % (hits, text))
     except Exception as e:
         trace["error"] = str(e)
         log("ERROR: " + str(e))
