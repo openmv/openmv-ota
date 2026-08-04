@@ -130,7 +130,7 @@ jobs:
               # completed an OTA cycle here. It runs and reports; it cannot block someone else's
               # merge while unproven. Drop "advisory" once it goes green.
               {"board": "ARDUINO_NICLA_VISION", "network": "wifi", "label": "board-arduino-nicla",
-               "advisory": true},
+               "advisory": True},
               {"board": "ARDUINO_PORTENTA_H7", "network": "wifi", "label": "board-arduino-portenta"},
               # Portenta also has Ethernet on the breakout -- validated on the bench: link up in 5s,
               # DHCP 192.168.0.38. A SECONDARY interface runs delta only (see regression_scenarios):
