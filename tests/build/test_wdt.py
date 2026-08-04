@@ -86,3 +86,20 @@ def test_reject_stm32_iwdg_honours_the_opt_in(monkeypatch):
     _as_board(monkeypatch, "OpenMV H7 Plus with STM32H743")
     monkeypatch.setattr(_mod, "ALLOW_STM32_IWDG", True)
     assert _mod._reject_stm32_iwdg(0, "test") is None
+
+
+def test_relax_feeds_before_it_allocates():
+    """Setting the ISR feed up is itself unfed.
+
+    `import machine` and the Timer construction both allocate, and an allocation can trigger a
+    collect -- 221 ms measured on an RT1060 with the heap exhausted, ~44% of that port's 500 ms
+    window. Until the timer exists nothing else feeds either: relax() is used from SYNCHRONOUS
+    code, so the app's own feed loop is not running. The RT1060 died exactly here -- its
+    `erase relax armed` witness never printed, on a step that normally takes 7 ms.
+    """
+    import inspect
+    src = inspect.getsource(_mod._Relax.__enter__)
+    body = "\n".join(line.split("#")[0] for line in src.splitlines())
+    feed = body.index("_wdt.feed()")
+    assert feed < body.index("import machine"), "must feed before the import"
+    assert feed < body.index("machine.Timer("), "must feed before the Timer allocation"

@@ -98,6 +98,14 @@ class _Relax:
     def __enter__(self):
         global _timer
         if _wdt is not None and _timer is None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (ENABLED=False on the bench -> body skipped)
+            # FEED FIRST. Setting the ISR feed up is itself unfed: `import machine` and the Timer
+            # allocation below both allocate, and an allocation can trigger a collect -- measured
+            # at 221 ms on an RT1060 with the heap exhausted, ~44% of that port's 500 ms window.
+            # Until the timer exists nothing else is feeding either: relax() is used from
+            # SYNCHRONOUS code, so the app's own feed loop is not running. Entering on a partial
+            # window is how the RT1060 died here -- its `erase relax armed` witness never printed
+            # while the step normally takes 7 ms.
+            _wdt.feed()  # hil-residual: watchdog-enabled pre-setup feed (opt-in; marker-less)
             import machine  # hil-residual: watchdog-enabled timer setup (opt-in; exercised on HW by the watchdog HIL scenario)
             _timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_tick)  # hil-residual: watchdog-enabled ISR-feed timer (opt-in)
         return self
