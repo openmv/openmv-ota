@@ -1104,6 +1104,22 @@ def flash_golden(board, bad_romfs=False):
             time.sleep(10)
         if _cdc_responsive():
             _flash_bench_files(board)
+            # ...AND REBOOT, or this write does nothing for THIS run. openmv_log reads
+            # /flash/.hilcov_uart exactly once, at import, so a file written after the board has
+            # already booted is invisible until it re-mounts. On the normal path prepare() writes
+            # these BEFORE the flash and the flash's own reboot picks them up; on the deferred path
+            # (recovery erased the romfs, so prepare could not write them) the write lands here,
+            # after that reboot, and nothing else restarts the board. Measured on the Portenta:
+            # the files were written here, the board then produced NOTHING on the marker UART, and
+            # the leg failed on "no device output since golden was flashed" -- a perfectly healthy
+            # board that had simply never been told which UART to log to. The REPL is already taken
+            # (the write above uses it), so this reset costs nothing extra.
+            log("bench files: written after the flash -- resetting so the firmware re-reads them")
+            try:
+                device_exec("import machine; machine.reset()", timeout=20, check=False)
+            except Exception:
+                pass                         # an I/O error here just means the reset landed
+            _await_boot(board, budget=150)
         elif _uart_live_since_flash():
             # Could not write them -- but the board is ALREADY logging to the marker UART, which is
             # the only thing these files buy us. They survive across runs (they live on /flash, which
