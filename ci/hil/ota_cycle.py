@@ -162,16 +162,11 @@ BOARDS = {
         "network": "wifi",                   # onboard CYW4343 -- standard network.WLAN (no shield)
         "flash": "arduino_cli",              # 1200-baud touch -> MCUboot DFU, address-based dfu-util -w
         "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
-        # MEASURED: SWD does not work on this board -- `connect` fails with "Could not connect to
-        # the target device" every time, because the Nicla's tiny SWD pads are not wired on the
-        # bench. The RESET PIN still is, and driving it needs no connection, so recovery here is a
-        # pin pulse and nothing more. (A reset is only ever used on a wedged RUNTIME board: if it is
-        # sitting in DFU, _ensure_cdc leaves DFU properly first -- pulsing nRST there would land it
-        # back in the bootloader, since the touch's stay-in-bootloader flag lives in RAM.)
-        # BENCH STATE, NOT A BOARD PROPERTY: flip back to True once the SWD pads are wired (and
-        # note a replacement board arrives with its own USB serial, so the by-id MSC path changes
-        # too -- the glob handles that, but anything pinned to a serial would not).
-        "jlink_swd": False,
+        # SWD IS WIRED AND VERIFIED on the replacement board (the previous unit's pads were not, and
+        # carried jlink_swd: False). Measured: `Found SW-DP 0x6BA02477 -> Cortex-M7 r1p1 -> Cortex-M7
+        # identified`, and a core reset genuinely reboots it (USB device number changes, ttyACM0 back
+        # in ~2 s). JLinkExe logs "Can not attach to CPU. Trying connect under reset." first and then
+        # succeeds -- normal for this part, and the place to look if SWD ever seems flaky here.
     },
     "ARDUINO_PORTENTA_H7": {
         # The update server NEVER writes a device record for these: they sit in its
@@ -615,7 +610,11 @@ def regression_scenarios(board, network):
     # Landing the board on what it proves beats holding it out entirely, and beats pretending the
     # rest passes. Widen this list as the negative paths are fixed -- they still run by hand:
     #   workflow_dispatch board=ARDUINO_PORTENTA_H7 scenario=rollback
-    if board == "ARDUINO_PORTENTA_H7":
+    if BOARDS[board]["flash"] == "arduino_cli":
+        # The Nicla is the same STM32H747 + CYW4343 + romfs geometry as the Portenta, so it takes the
+        # same list rather than being discovered from scratch. If its negative paths turn out to work
+        # where the Portenta's do not, widen it -- but assume the shared silicon behaves the same
+        # until the bench says otherwise.
         return ["delta", "full", "bad_sig", "bad_key"]
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
