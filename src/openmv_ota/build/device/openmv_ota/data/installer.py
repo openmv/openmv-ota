@@ -1091,9 +1091,16 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                     feed()                            # VM between blocks (no dead-time erase);
                     front.ioctl(6, b)                 # this port is already chunk-granular
                     b += 1
-                    if log and "e" not in _seen:      # witness the in-loop erase op once
-                        _seen.add("e")
-                        log.debug("install: erasing block block-device")
+                    if log and (b & 0xFF) == 1:       # the first block, then every 256th:
+                        _seen.add("e")                # witness the in-loop erase op AND report
+                        #                               progress. A 4 MiB erase is ~54 s of silence
+                        #                               here, and a one-shot witness cannot say HOW
+                        #                               FAR it got -- when the RT reset mid-erase
+                        #                               there was no way to tell a first-call hang
+                        #                               from a death 40 blocks in. Bounded: 4 lines
+                        #                               per slot. Same marker text, so it still
+                        #                               witnesses the same coverage point.
+                        log.debug("install: erasing block block-device %d/%d" % (b, nb))
             log.debug("install: erased FRONT block-device")
 
         # Reused block-device scratch (n <= _CHUNK): a readback + a BACK-read buffer, so neither
