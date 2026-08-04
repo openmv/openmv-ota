@@ -1034,6 +1034,15 @@ def prepare(board, checkout, network, app="confirm"):
         sh("grep -q '^ENABLED = True' " + wdt_py)     # fail LOUD if the sed didn't take (else the
         log("prepare: openmv_wdt ENABLED=True (watchdog scenario)")  # watchdog would silently no-op
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
+    # BAKE THE COVERAGE-UART FILE INTO THE ROMFS, so seeing the board never depends on the CDC.
+    # Written to /flash over the REPL it needs a working CDC -- and a scenario whose app ARMS THE
+    # WATCHDOG makes that impossible: every REPL touch kills the app, the feed stops, the watchdog
+    # bites, and the board reboots into the same armed app. So the leg that follows `watchdog` or
+    # `watchdog_bite` can never receive it, logs to USB instead, and the harness reports a dead
+    # board that is in fact perfectly healthy (measured: N6 wifi failed exactly this way right
+    # after a watchdog_bite leg, while the leg before it passed). Baked into golden it is simply
+    # there on the first boot, with nothing to negotiate. openmv_log searches /rom too.
+    open(CFG["project"] + "/app/.hilcov_uart", "w").write(str(BOARDS[board]["cov_uart"]))
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
     _ensure_cdc(board, allow_erase=True)   # pre-flash: erasing the romfs is safe, golden follows

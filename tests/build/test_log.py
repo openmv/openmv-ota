@@ -74,3 +74,25 @@ def test_bench_uart_still_accepts_a_single_path(tmp_path):
     f = tmp_path / ".hilcov_uart"
     f.write_text("2")
     assert _mod._bench_uart(str(f)) == 2
+
+
+def test_the_romfs_is_searched_for_the_bench_uart_file():
+    """The bench must be able to BAKE .hilcov_uart into the golden image.
+
+    Delivered to /flash it needs a working CDC, and a scenario whose app has armed a watchdog makes
+    that impossible: every REPL touch kills the app, the feed stops, the watchdog bites, and the
+    board reboots into the same armed app. The leg that follows `watchdog`/`watchdog_bite` then
+    never receives the file, logs to USB, and reads as a dead board while being perfectly healthy.
+    /rom needs no CDC, no REPL and no writable filesystem."""
+    _BENCH_VOLUMES = _mod._BENCH_VOLUMES
+    assert "/rom" in _BENCH_VOLUMES
+    # ...and LAST: a writable copy must still win, so a board can be re-pointed without a reflash.
+    assert _BENCH_VOLUMES.index("/rom") == len(_BENCH_VOLUMES) - 1
+
+
+def test_a_romfs_bench_file_is_actually_read(tmp_path):
+    """End to end through the real lookup, not just the constant."""
+    rom = tmp_path / "rom"
+    rom.mkdir()
+    (rom / ".hilcov_uart").write_text("7\n")
+    assert _mod._bench_uart([str(rom / ".hilcov_uart")]) == 7

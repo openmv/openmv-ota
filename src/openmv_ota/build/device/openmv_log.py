@@ -82,7 +82,13 @@ def _configure():  # pragma: no cover  (device: handler/UART; runs only when ena
     log.debug("log: configured")             # first line once the handler is live -- witnesses _configure
 
 
-_BENCH_VOLUMES = ("/sdcard", "/flash")   # SD first: when a card is present it is what USB-MSC shows
+_BENCH_VOLUMES = ("/sdcard", "/flash",   # SD first: when a card is present it is what USB-MSC shows
+                  "/rom")                # ...and the read-only romfs LAST, where the bench can bake
+#                                          the file into the image. That path needs no CDC, no REPL
+#                                          and no writable filesystem, so it still works on a board
+#                                          whose app has ARMED A WATCHDOG -- where any REPL touch
+#                                          kills the app, the feed stops and the board resets, so
+#                                          the file can never be delivered any other way.
 
 
 def _bench_uart(paths=None):
