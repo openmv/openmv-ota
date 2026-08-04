@@ -85,6 +85,15 @@ except ImportError:                    # reader's wait loop just spins its bound
     def sleep_ms(_ms):
         pass
 
+try:                                   # device: monotonic ms, used to report the WORST single flash
+    from time import ticks_ms, ticks_diff   # op in an erase -- the number that says whether a
+except ImportError:                    # watchdog bite could have landed inside one call.
+    def ticks_ms():
+        return 0
+
+    def ticks_diff(a, b):
+        return a - b
+
 
 
 class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is frozen)
@@ -1086,12 +1095,17 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # was left of the window -- and hands the FIRST erase whatever survived the manifest
             # parse and TLS, which is how the HIL `watchdog` scenario reset before even the first
             # block witness and fell back to golden.
+            worst = 0                                 # longest single erase seen, ms
             with relax():
                 while b < nb:                         # one block per call -> returns to the
                     feed()                            # VM between blocks (no dead-time erase);
-                    front.ioctl(6, b)                 # this port is already chunk-granular
+                    _t0 = ticks_ms()                  # this port is already chunk-granular
+                    front.ioctl(6, b)
+                    _dt = ticks_diff(ticks_ms(), _t0)
+                    if _dt > worst:
+                        worst = _dt  # hil-residual: witnessed transitively -- a non-zero worst= in the erase progress marker is proof this ran (it is the only writer)
                     b += 1
-                    if log and (b & 0xFF) == 1:       # the first block, then every 256th:
+                    if log and (b & 0x3F) == 1:       # the first block, then every 64th:
                         _seen.add("e")                # witness the in-loop erase op AND report
                         #                               progress. A 4 MiB erase is ~54 s of silence
                         #                               here, and a one-shot witness cannot say HOW
@@ -1100,7 +1114,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                         #                               from a death 40 blocks in. Bounded: 4 lines
                         #                               per slot. Same marker text, so it still
                         #                               witnesses the same coverage point.
-                        log.debug("install: erasing block block-device %d/%d" % (b, nb))
+                        log.debug("install: erasing block block-device %d/%d worst=%dms" % (b, nb, worst))
             log.debug("install: erased FRONT block-device")
 
         # Reused block-device scratch (n <= _CHUNK): a readback + a BACK-read buffer, so neither

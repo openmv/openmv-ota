@@ -1001,3 +1001,12 @@ def test_log_is_a_null_logger_on_host():
     assert log.warning("w") is None
     assert log.error("e") is None
     assert log.critical("c") is None
+
+
+def test_the_host_tick_fallbacks_are_usable():
+    """CPython's `time` has no ticks_ms/ticks_diff, so the installer defines no-op stand-ins. They
+    exist so the erase loop's "worst single flash op" timing compiles and runs on the host; on
+    device the real monotonic ones are imported. A stand-in that raised would only surface on
+    hardware, mid-install, which is the worst possible place to find out."""
+    assert _mod.ticks_ms() == 0
+    assert _mod.ticks_diff(7, 2) == 5
