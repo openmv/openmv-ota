@@ -1684,6 +1684,23 @@ def _flash_blhost_imx(board, bad_romfs=False):
 # Matching only the first missed every boot that reached golden by FALLBACK -- which is exactly what
 # the negative scenarios do -- so corrupt/bad_key/bad_version all failed verify against a board that
 # had booted correctly.
+def _packed_version(v):
+    """A dotted version as the device packs it into a trailer's payload_version -- what the boot line
+    reports: `boot: mounted FRONT (payload 16777216)` is 1.0.0, 16842752 is 1.1.0."""
+    major, minor, patch = (int(x) for x in v.split("."))
+    return (major << 24) | (minor << 16) | (patch << 8)
+
+
+def _mounted_payload(line):
+    """The payload_version out of a mount line, or None if it does not carry one."""
+    if "payload " not in line:
+        return None  # hil-residual: a mount line without a payload (older format)
+    try:
+        return int(line.split("payload ", 1)[1].split(")", 1)[0].strip())
+    except ValueError:
+        return None  # hil-residual: unparseable payload field
+
+
 _MOUNT_MARKERS = ("boot: mounted", "-> mounted ")
 
 
@@ -1691,7 +1708,7 @@ def _mounted(line):
     return any(m in line for m in _MOUNT_MARKERS)
 
 
-def verify_golden_uart(board, budget=300):
+def verify_golden_uart(board, budget=300, golden="1.0.0"):
     """verify_golden() without taking the REPL: read the board's own account off the UART.
 
     Same two claims as the mpremote version -- golden booted and mounted a valid romfs, and here is
@@ -1717,11 +1734,25 @@ def verify_golden_uart(board, budget=300):
     deadline = time.time() + budget
     while time.time() < deadline:
         fresh = _CAP.raw[seen:]
-        if any(_mounted(ln) for ln in fresh):
+        mounts = [ln for ln in fresh if _mounted(ln)]
+        if mounts:
+            # ASSERT IT IS ACTUALLY GOLDEN. A scenario runs after the previous one may have PROMOTED
+            # the device to the target, and if the golden reflash silently does not take, the board
+            # simply keeps running that image. Everything downstream then measures the wrong thing:
+            # observed on the N6, watchdog_bite opened its scored window with the device on
+            # 1.1.0/FRONT and failed 28 minutes later on markers that could never have appeared.
+            # The boot line carries the version, so this costs nothing and fails in seconds.
+            payload = _mounted_payload(mounts[-1])
+            want = _packed_version(golden)
+            if payload is not None and payload != want:
+                raise RuntimeError(
+                    "%s booted payload %d, expected golden %s (%d) -- the golden flash did not take, "
+                    "so this scenario would run against the wrong image. Last mount: %r"
+                    % (board, payload, golden, want, mounts[-1]))
             ids = [ln.split("app: device_id ", 1)[1].strip()
                    for ln in _CAP.raw if "app: device_id " in ln]
             if ids:
-                log("verify: golden mounted; device_id %s" % ids[-1])
+                log("verify: golden mounted (payload %s); device_id %s" % (payload, ids[-1]))
                 return ids[-1]
         time.sleep(2)
     # Do not fail the run on the WATCHING path alone. If the markers did not arrive -- a boot that

@@ -509,3 +509,38 @@ def test_the_stable_boards_keep_the_full_suite():
     n6 = ota_cycle.regression_scenarios("OPENMV_N6", "lan")
     for required in ("rollback", "corrupt", "corrupt_sha", "bad_version"):
         assert required in n6
+
+
+# ---------------------------------------------------------------------------
+# Verify must assert the board is on GOLDEN, not merely that something mounted.
+
+
+def test_verify_rejects_a_board_still_on_the_target(monkeypatch):
+    """A scenario runs after the previous one may have PROMOTED the device. If the golden reflash
+    silently does not take, the board keeps running that image and everything downstream measures
+    the wrong thing -- observed on the N6: watchdog_bite opened its scored window on 1.1.0/FRONT and
+    failed 28 minutes later on markers that could never have appeared."""
+    class Cap:
+        raw = ["INFO openmv_ota: boot: mounted FRONT (payload 16842752)",   # 1.1.0, NOT golden
+               "INFO openmv_ota: app: device_id ABC"]
+    monkeypatch.setattr(ota_cycle, "_CAP", Cap())
+    monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 0)
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="did not take"):
+        ota_cycle.verify_golden_uart("OPENMV_N6", budget=30)
+
+
+def test_verify_accepts_golden(monkeypatch):
+    class Cap:
+        raw = ["INFO openmv_ota: boot: mounted FRONT (payload 16777216)",   # 1.0.0
+               "INFO openmv_ota: app: device_id ABC"]
+    monkeypatch.setattr(ota_cycle, "_CAP", Cap())
+    monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 0)
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    assert ota_cycle.verify_golden_uart("OPENMV_N6", budget=30) == "ABC"
+
+
+def test_version_packing_matches_the_device():
+    """Measured against real boot lines: 1.0.0 -> 16777216, 1.1.0 -> 16842752."""
+    assert ota_cycle._packed_version("1.0.0") == 16777216
+    assert ota_cycle._packed_version("1.1.0") == 16842752
