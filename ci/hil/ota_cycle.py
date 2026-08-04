@@ -718,6 +718,7 @@ class UartCapture:
             log("uart: freed a stale holder of %s (%s) -- a cancelled run leaks its capture"
                 % (dev, (out or "").strip()))
             time.sleep(1)                    # let the killed reader actually release the fd
+        self._port, self._baud = port, baud   # kept so _reopen can re-resolve after a re-enumeration
         self._ser = serial.Serial(dev, baud, timeout=0.5)
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
@@ -737,12 +738,35 @@ class UartCapture:
         _CAP = self
         self._t.start()
 
+    def _reopen(self):
+        """Re-resolve and reopen the marker UART after its port went away. Returns True on success."""
+        import serial
+        try:
+            self._ser.close()
+        except Exception:
+            pass
+        try:
+            dev = resolve_uart(self._port)
+            self._ser = serial.Serial(dev, self._baud, timeout=0.5)
+        except Exception:
+            return False
+        log("uart: reopened %s after the port dropped" % dev)
+        return True
+
     def _run(self):
         buf = b""
         while not self._stop.is_set():
             try:
                 buf += self._ser.read(256)
             except Exception:
+                # THE PORT DIED -- do not spin on it. Linux renumbers ttyUSBn on re-plug and a DFU
+                # flash re-enumerates USB, so the handle opened at start-up can stop existing
+                # mid-leg. `continue` alone span silently for the rest of the run: no lines, no
+                # markers, and the harness then concludes the BOARD is dead. Measured on the N6 lan
+                # leg -- it errored with "the board never came back ... nothing is arriving on the
+                # marker UART", and the very next leg used that same board for 10/10 scenarios.
+                if not self._reopen():
+                    time.sleep(1)            # nothing there yet; back off instead of a hot loop
                 continue
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)

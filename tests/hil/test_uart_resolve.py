@@ -87,3 +87,31 @@ def test_run_refuses_to_score_a_dead_marker_uart():
     reset = body.index("cap.reset(time.time())")
     assert guard < reset, "the check must run BEFORE the scored window starts"
     assert ".hilcov_uart" in body[guard:reset], "the error must name the file to check"
+
+
+def test_the_capture_reopens_a_port_that_dies_mid_run():
+    """A dead port must not silently end the capture.
+
+    Linux renumbers ttyUSBn on re-plug and a DFU flash re-enumerates USB, so the handle opened at
+    start-up can stop existing mid-leg. The read loop used to `continue` on the exception, which
+    span for the rest of the run: no lines, no markers, and the harness concluded the BOARD was
+    dead. Measured on the N6 lan leg, which errored with "the board never came back ... nothing is
+    arriving on the marker UART" -- and the very next leg used that same board for 10/10 scenarios.
+    """
+    import inspect
+    import io
+    import tokenize
+
+    src = inspect.getsource(ota_cycle.UartCapture._run)
+    code = "".join(tok.string if tok.type != tokenize.COMMENT else ""
+                   for tok in tokenize.generate_tokens(io.StringIO(src).readline))
+    assert "_reopen()" in code, "a read failure must try to REOPEN the port, not just continue"
+
+
+def test_reopen_re_resolves_the_device_path():
+    """Reopening the ORIGINAL path is useless when the failure IS a renumbering -- it has to go
+    back through resolve_uart."""
+    import inspect
+
+    src = inspect.getsource(ota_cycle.UartCapture._reopen)
+    assert "resolve_uart(self._port)" in src
