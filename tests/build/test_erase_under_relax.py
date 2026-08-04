@@ -45,6 +45,33 @@ def _relaxed_loops(fn):
     return loops, inside
 
 
+def _erase_loop_body(fn):
+    """The statements of the erase loop, in order, as (kind, text)."""
+    for node in ast.walk(fn):
+        if isinstance(node, (ast.While, ast.For)):
+            return [(type(s).__name__, ast.unparse(s)) for s in node.body]
+    return []
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_the_feed_comes_BEFORE_the_erase_call(index):
+    """On mimxrt a flash erase runs with interrupts disabled (flash.c __disable_irq), so SysTick
+    cannot fire, PendSV cannot run, and machine.Timer -- a SOFT timer there -- cannot dispatch.
+    Nothing can feed the watchdog until the erase returns. A feed placed AFTER the erase therefore
+    hands each call whatever was left of the window, and hands the FIRST call whatever survived the
+    manifest parse and TLS. That is what reset the RT1060 mid-erase, leaving FRONT half-erased and
+    falling back to golden."""
+    body = _erase_loop_body(_erase_funcs()[index])
+    assert body, "erase loop not found"
+    feeds = [i for i, (_, src) in enumerate(body) if src.strip() == "feed()"]
+    erases = [i for i, (_, src) in enumerate(body) if "ioctl(" in src]
+    assert feeds, "the erase loop must feed the watchdog"
+    assert erases, "the erase loop must erase"
+    assert min(feeds) < min(erases), (
+        "feed() must PRECEDE the erase call -- nothing can feed while it runs.\n  loop body: %s"
+        % [src for _, src in body])
+
+
 def test_both_write_paths_define_an_erase():
     """XIP and block-device. If one disappears, this suite must not quietly cover one path."""
     assert len(_erase_funcs()) == 2

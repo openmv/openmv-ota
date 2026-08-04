@@ -768,6 +768,10 @@ def _install_stream(source, write, readback, front_size, block, feed,
         if digest is not None:
             digest.update(chunk)
         if not _is_blank(chunk):                     # erased regions are already 0xFF
+            feed()                                   # the feed at the top of this iteration was
+            #                                          spent by the recv + delta reconstruct above,
+            #                                          and a page program also runs with interrupts
+            #                                          disabled -- so feed again right before it
             write(off, chunk)
             if readback(off, n) != chunk:
                 raise OSError("write verify failed at %d" % off)
@@ -1072,18 +1076,21 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         def erase(total):
             nb = (total + _bs - 1) // _bs
             b = 0
-            # ONE relax() across the WHOLE erase. Feeding between blocks is not enough, because
-            # the bite lands INSIDE a single ioctl: measured on the RT1060, the 4 MiB erase takes
-            # 54 s over ~1024 blocks (~52 ms each, half the 100 ms window) and the FIRST call
-            # after boot stalls seconds -- the HIL `watchdog` scenario reset there every time,
-            # before even the first block witness, and fell back to golden. Same reasoning as the
-            # legacy single-shot erase below, applied to the ranged form. ISR-fed, never disabled:
-            # if the core genuinely wedges, the feed timer stops with it and the watchdog still bites.
+            # FEED FIRST, THEN ERASE. A flash erase on this port runs with interrupts OFF
+            # (mimxrt flash.c wraps flexspi_nor_flash_erase_* in __disable_irq), so for its whole
+            # duration SysTick cannot fire, PendSV cannot run, and machine.Timer -- a SOFT timer
+            # on mimxrt -- cannot dispatch. relax() therefore CANNOT feed across an erase here; it
+            # is kept because it does feed on ports whose Timer is real hardware (stm32/WWDG), but
+            # on mimxrt the only thing that keeps the watchdog alive is the feed on the line
+            # BEFORE the call. Feeding after it, as this loop used to, hands each erase whatever
+            # was left of the window -- and hands the FIRST erase whatever survived the manifest
+            # parse and TLS, which is how the HIL `watchdog` scenario reset before even the first
+            # block witness and fell back to golden.
             with relax():
                 while b < nb:                         # one block per call -> returns to the
-                    front.ioctl(6, b)                 # VM between blocks (no dead-time erase);
-                    b += 1                            # this port is already chunk-granular
-                    feed()
+                    feed()                            # VM between blocks (no dead-time erase);
+                    front.ioctl(6, b)                 # this port is already chunk-granular
+                    b += 1
                     if log and "e" not in _seen:      # witness the in-loop erase op once
                         _seen.add("e")
                         log.debug("install: erasing block block-device")
@@ -1160,17 +1167,17 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             bs = vfs.rom_ioctl(6, 0)
             if isinstance(bs, int) and bs > 0:
                 o = 0
-                # ONE relax() across the whole ranged erase -- see the block-device path for the
-                # measurement. A single ranged prepare is still one unsplittable C call, so a
-                # feed BETWEEN calls cannot cover a bite that lands inside one.
+                # FEED FIRST, THEN ERASE -- see the block-device path above for why: a ranged
+                # prepare is one unsplittable C call, and on a port that erases with interrupts
+                # disabled nothing can feed until it returns. The feed has to precede it.
                 with relax():
                     while o < total:
                         n = bs if total - o > bs else total - o
+                        feed()
                         rc = vfs.rom_ioctl(3, 0, o, n)
                         if rc < 0:
                             raise OSError(-rc)  # hil-residual: bare raise on a negative errno (erase-fault, inject-only)
                         o += n
-                        feed()
                         if log and "e" not in _seen:  # witness the in-loop erase op once
                             _seen.add("e")
                             log.debug("install: erasing block XIP")
