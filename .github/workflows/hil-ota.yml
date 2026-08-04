@@ -125,12 +125,12 @@ jobs:
               {"board": "OPENMV4P", "network": "wifi", "label": "board-openmv-h7-plus"},
               # Arduino MCUboot boards: STM32H7 like the H7 Plus but with ONBOARD cyw4343 wifi
               # instead of a WINC1500 shield -- the control for the H7 Plus watchdog reset loop.
-              # Nicla: replacement board fitted and its SWD is now wired and verified (core reset
-              # genuinely reboots it), so it is back in the matrix -- ADVISORY until it has actually
-              # completed an OTA cycle here. It runs and reports; it cannot block someone else's
-              # merge while unproven. Drop "advisory" once it goes green.
-              {"board": "ARDUINO_NICLA_VISION", "network": "wifi", "label": "board-arduino-nicla",
-               "advisory": True},
+              # Nicla: replacement board fitted, SWD wired and verified (core reset genuinely
+              # reboots it). BLOCKING as of its first green run -- 4/4 on the reduced suite
+              # (delta 286s, full 310s, bad_sig 251s, bad_key 251s). It is the fleet's only board
+              # with no external SDRAM, which is exactly why it is worth blocking on: it caught a
+              # 256 KiB allocation that no SDRAM board could feel.
+              {"board": "ARDUINO_NICLA_VISION", "network": "wifi", "label": "board-arduino-nicla"},
               {"board": "ARDUINO_PORTENTA_H7", "network": "wifi", "label": "board-arduino-portenta"},
               # Portenta also has Ethernet on the breakout -- validated on the bench: link up in 5s,
               # DHCP 192.168.0.38. A SECONDARY interface runs delta only (see regression_scenarios):

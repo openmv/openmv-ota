@@ -46,11 +46,12 @@ def test_a_dispatch_selects_just_that_board():
 
 
 def test_advisory_is_a_python_bool_not_the_json_spelling():
-    """`true` is JSON; this heredoc is Python. json.dumps still emits `true` for the matrix, so the
-    workflow's `matrix.advisory == true` expression keeps working."""
-    legs = _matrix("all", "pull_request")
-    advisory = [leg for leg in legs if "advisory" in leg]
-    assert advisory, "expected at least one advisory leg"
-    for leg in advisory:
-        assert leg["advisory"] is True
-    assert '"advisory": true' in json.dumps({"include": advisory})
+    """`true` is JSON; this heredoc is Python. Not asserted: that an advisory leg EXISTS -- every
+    board being blocking is the goal, so requiring one would make the fleet's best state fail.
+
+    json.dumps still emits `true`, so the job's `matrix.advisory == true` expression keeps working
+    whenever a leg does carry the flag."""
+    for leg in _matrix("all", "pull_request"):
+        if "advisory" in leg:
+            assert leg["advisory"] is True, "advisory must be a bool, not %r" % (leg["advisory"],)
+            assert '"advisory": true' in json.dumps(leg)
