@@ -112,3 +112,31 @@ def test_a_collect_precedes_the_erase():
     collect = body.index("gc_collect()\n", run_at)      # the CALL, not `def gc_collect():`
     erase = body.index("erase(front_size)", run_at)
     assert collect < erase, "the proactive collect must PRECEDE the erase"
+
+
+def test_the_collect_is_fed_on_BOTH_sides():
+    """A collect is one unsplittable pause and relax() cannot be relied on to cover it.
+
+    Measured on the RT1060 with the heap exhausted by 230942 tiny pointer-rich objects: a full
+    mark+sweep is 221 ms, ~44% of that port's 500 ms window. relax() is a SOFT timer there
+    (SysTick -> PendSV -> a Python callback), i.e. the feed is dispatched by the very runtime the
+    collector is pausing. Feeding before means the collect starts on a full window; feeding after
+    means the next unfeedable op -- a flash erase, run under __disable_irq() with an unbounded WIP
+    poll -- gets one too.
+    """
+    src = _SRC.read_text()
+    lines = src.splitlines()
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type == tokenize.COMMENT:
+            (r, c1), (_, c2) = tok.start, tok.end
+            lines[r - 1] = lines[r - 1][:c1] + " " * (c2 - c1) + lines[r - 1][c2:]
+    body = [line.strip() for line in lines]
+    at = body.index("def gc_collect():")
+    # Take the whole body: up to the next def, ignoring the (long) comment block, which blanking
+    # has already turned into empty strings.
+    rest = body[at + 1:]
+    end = next((i for i, line in enumerate(rest) if line.startswith("def ")), len(rest))
+    window = [line for line in rest[:end] if line]
+    collect = window.index("_gc.collect()")
+    assert "feed()" in window[:collect], "must feed BEFORE the collect"
+    assert "feed()" in window[collect + 1:], "must feed AFTER the collect"

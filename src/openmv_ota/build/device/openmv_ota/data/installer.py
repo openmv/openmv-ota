@@ -1059,8 +1059,18 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         import gc as _gc  # hil-residual: watchdog-armed proactive collect (opt-in; covered by the watchdog HIL scenario)
 
         def gc_collect():  # hil-residual: watchdog-armed proactive collect (opt-in; covered by the watchdog HIL scenario)
+            # FEED ON BOTH SIDES. A full-heap collect measured **221 ms** on the RT1060 (230942 tiny
+            # pointer-rich objects, heap exhausted) -- ~44% of that port's 500 ms window in ONE
+            # unsplittable pause. relax() cannot be relied on to cover it there: machine.Timer is a
+            # SOFT timer on mimxrt (TIMER_ID -1, SysTick -> PendSV -> a *Python* callback), i.e. the
+            # feed is dispatched by the very runtime the collector is pausing, and the same is true
+            # of anything holding the scheduler. Feeding BEFORE means the collect starts on a full
+            # window; feeding AFTER means the caller's next unfeedable op -- a flash erase, which
+            # mimxrt runs under __disable_irq() with an unbounded WIP busy-poll -- gets one too.
+            feed()  # hil-residual: watchdog-armed pre-collect feed (opt-in, marker-less)
             with relax():  # hil-residual: relax() feeds the WWDG across the unsplittable gc.collect()
                 _gc.collect()  # hil-residual: proactive collection at a controlled point (device-only)
+            feed()  # hil-residual: watchdog-armed post-collect feed (opt-in, marker-less)
     # Log-only progress, built from RAM + the frozen logger so it survives the FRONT erase.
     progress = _Progress(log) if log is not None else None
     front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
@@ -1096,6 +1106,11 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # parse and TLS, which is how the HIL `watchdog` scenario reset before even the first
             # block witness and fell back to golden.
             worst = 0                                 # longest single erase seen, ms
+            feed()                                    # relax().__enter__ below imports machine and
+            #                                           ALLOCATES a Timer (~7 ms measured, and any
+            #                                           allocation can trigger a collect) -- all of
+            #                                           it before the loop's own first feed. Start
+            #                                           that stretch on a full window.
             if log:
                 # Witness that the loop was ENTERED, before the first flash op. The b==1 progress
                 # line only prints once an erase has RETURNED, so its absence cannot distinguish
@@ -1205,6 +1220,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 # FEED FIRST, THEN ERASE -- see the block-device path above for why: a ranged
                 # prepare is one unsplittable C call, and on a port that erases with interrupts
                 # disabled nothing can feed until it returns. The feed has to precede it.
+                feed()                            # full window before relax()'s allocating entry
                 with relax():
                     while o < total:
                         n = bs if total - o > bs else total - o
