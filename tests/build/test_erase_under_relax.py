@@ -11,7 +11,9 @@ explanation, and a comment saying "runs under relax()" must never be what makes 
 """
 
 import ast
+import io
 import pathlib
+import tokenize
 
 import pytest
 
@@ -85,3 +87,28 @@ def test_every_erase_loop_is_inside_relax(index):
     assert len(relaxed) == len(loops), (
         "erase() at line %d has %d loop(s) but only %d inside `with relax()`. A feed BETWEEN "
         "erase calls cannot cover a bite INSIDE one." % (fn.lineno, len(loops), len(relaxed)))
+
+
+def test_a_collect_precedes_the_erase():
+    """An AUTOMATIC gc.collect() must not be what fires first.
+
+    Everything before the erase -- TLS, the ~68 KiB installer exec'd into RAM, the manifest parse
+    and verify -- churns the heap, so the next allocation can trigger a collection. That is one
+    unsplittable pause: feed() cannot run during it, and on a board with external SDRAM the heap is
+    large enough for the sweep to outrun a 500 ms watchdog window. Measured on the RT1060, which
+    reset between `install: erasing FRONT` and the loop-entry witness -- before a single flash op,
+    where the only code is an integer division. Collecting first, under relax(), removes the race.
+    """
+    src = _SRC.read_text()
+    # Blank comments IN PLACE (layout preserved) so the search matches code, not the comment that
+    # explains it -- and so identifiers keep their spacing.
+    lines = src.splitlines()
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type == tokenize.COMMENT:
+            (r, c1), (_, c2) = tok.start, tok.end
+            lines[r - 1] = lines[r - 1][:c1] + " " * (c2 - c1) + lines[r - 1][c2:]
+    body = "\n".join(line.rstrip() for line in lines)
+    run_at = body.index("def run(manifest_url")
+    collect = body.index("gc_collect()\n", run_at)      # the CALL, not `def gc_collect():`
+    erase = body.index("erase(front_size)", run_at)
+    assert collect < erase, "the proactive collect must PRECEDE the erase"

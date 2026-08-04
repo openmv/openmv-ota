@@ -1279,6 +1279,21 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     body = None
     for attempt in range(attempts):
         try:
+            # COLLECT BEFORE THE ERASE, under relax(). Everything above -- the TLS session, the
+            # ~68 KiB installer exec'd into RAM, the manifest parse and verify -- has churned the
+            # heap, so the very next allocation can trigger an AUTOMATIC gc.collect(). That is one
+            # unsplittable pause; feed() cannot be called during it and relax()'s ISR is the only
+            # thing that can cover it. On a board with external SDRAM the heap is big enough for
+            # that sweep to outrun a 500 ms watchdog window.
+            #
+            # Measured on the RT1060 lan leg: the board reset between `install: erasing FRONT` and
+            # the loop-entry witness -- i.e. before a single flash op, where the only code is
+            # `nb = (total + _bs - 1) // _bs`. Nothing there can take 500 ms except a collection.
+            # Intermittent by nature (5 fails, 2 passes, 1 fail) because it depends on where the
+            # automatic GC happens to land. The write loop already collects on a byte cadence for
+            # exactly this reason; the erase needed the same treatment at its own entry.
+            if gc_collect is not None:
+                gc_collect()  # hil-residual: watchdog-armed pre-erase collect (opt-in; gc_collect is None unless the app armed a watchdog, so only the watchdog HIL scenario reaches it -- and it is marker-less by design, being the pause it exists to prevent)
             log.info("install: erasing FRONT (%d bytes)" % front_size)
             erase(front_size)
             log.info("install: downloading %s (%s)" % (image_url, fmt))
