@@ -1102,7 +1102,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 # "hung inside the first ioctl" from "never got to the loop at all" -- exactly the
                 # ambiguity left by the RT1060 bite, which reboots ~500 ms into this call while the
                 # identical call takes 63 ms on the retry.
-                log.debug("install: erase loop entered")  # hil-residual: bounded one-shot entry witness; it precedes the first flash op, so no marker can be dominated by it
+                log.debug("install: erase loop entered t=%d" % ticks_ms())  # hil-residual: bounded one-shot entry witness; it precedes the first flash op, so no marker can be dominated by it
             with relax():
                 while b < nb:                         # one block per call -> returns to the
                     feed()                            # VM between blocks (no dead-time erase);
@@ -1294,7 +1294,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # exactly this reason; the erase needed the same treatment at its own entry.
             if gc_collect is not None:
                 gc_collect()  # hil-residual: watchdog-armed pre-erase collect (opt-in; gc_collect is None unless the app armed a watchdog, so only the watchdog HIL scenario reaches it -- and it is marker-less by design, being the pause it exists to prevent)
-            log.info("install: erasing FRONT (%d bytes)" % front_size)
+            log.info("install: erasing FRONT (%d bytes) t=%d" % (front_size, ticks_ms()))
             erase(front_size)
             log.info("install: downloading %s (%s)" % (image_url, fmt))
             sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)
