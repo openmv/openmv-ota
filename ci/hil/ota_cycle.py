@@ -91,7 +91,19 @@ COPROC_ENABLED = env("HIL_COPROC", "") == "1"
 #
 # Still runnable by hand: workflow_dispatch with scenario=watchdog. Drop the board from this set
 # once the armed leg passes.
-WATCHDOG_BROKEN = {"OPENMV4P", "ARDUINO_PORTENTA_H7", "ARDUINO_NICLA_VISION"}
+# RETRYING ALL THREE (2026-08-04). The evidence above -- ~5.9 s per boot, about one 5 s poll
+# interval -- pointed at the CHECK-IN as the op that outruns the window. That check-in runs
+# under _wdt_relax(), and relax() used to feed only AFTER allocating its timer: `import
+# machine` + machine.Timer(), with an allocation able to trigger a collect (221-243 ms
+# measured on an RT1060), all of it unfed because relax() is called from synchronous code
+# where the app's own feed loop is not running. That is the same defect that reset the
+# RT1060 mid-erase, and it is now fixed in openmv_wdt. So the premise these three were
+# parked on no longer holds -- measure again rather than keep assuming.
+#
+# Also relevant: WWDG is IN RANGE on this family. The patched driver's own formula gives
+# 64 * 4096 * 128 / (120e6/1000) ~= 280 ms max on the H743/H747, well above TIMEOUT_MS=100,
+# so "the H7 window is too short" was never about the peripheral.
+WATCHDOG_BROKEN = set()
 # The Arduino boards are here by DECISION, not measurement: their armed-watchdog leg has never been
 # run, and chasing it was explicitly deferred so the OTA legs could land. That leaves the H7 Plus
 # question (WINC or H7-wide?) open -- see above. Run it by hand when you want the answer:
@@ -615,7 +627,9 @@ def regression_scenarios(board, network):
         # same list rather than being discovered from scratch. If its negative paths turn out to work
         # where the Portenta's do not, widen it -- but assume the shared silicon behaves the same
         # until the bench says otherwise.
-        return ["delta", "full", "bad_sig", "bad_key"]
+        # `watchdog` included: same STM32H7 WWDG as the H7 Plus, cyw4343 instead of the WINC,
+        # so these two are also the control that says whether the WINC was ever special.
+        return ["delta", "full", "bad_sig", "bad_key", "watchdog"]
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
