@@ -676,14 +676,24 @@ def _partition_apply(entry, path, progress=None):  # pragma: no cover  # hil-res
     for chunk in _file_chunks(path):
         if len(chunk) < _CHUNK:
             chunk = chunk + b"\xff" * (_CHUNK - len(chunk))
+        # FEED IMMEDIATELY BEFORE THE FLASH OP, not after it. A program/verify runs with
+        # interrupts disabled on some ports (mimxrt flash.c), so nothing -- not this feed, not
+        # relax()'s ISR -- can run once it starts; the only thing that helps is entering it on a
+        # FULL window. Feeding afterwards instead handed each write whatever was left after the
+        # previous write, the 0xFF padding above (an allocation, and an allocation can trigger a
+        # collect -- 243 ms measured on an RT1060 with a full heap), the file read, and the
+        # caller's `progress` callback, whose duration we do not control at all.
+        _wdt_feed()
         _write_verified(part_index, off, chunk)       # WRITE one block + verify
         if _first:                                    # witness the write-loop body once (no spam)
             log.debug("partition: writing")
             _first = False
         off += _CHUNK
-        _wdt_feed()                                   # per chunk, like the installer
         if progress is not None:
             progress(off if off < total else total, total)
+    _wdt_feed()                                        # ...and before the flush, which is another
+    #                                                    unfeedable flash op and follows the
+    #                                                    caller's progress callback
     _rom_write(5, part_index)                          # WRITE_COMPLETE: flush cached sub-page
                                                        # writes so they survive reset (NOR/XIP
                                                        # ports cache them; no-op on MRAM), exactly

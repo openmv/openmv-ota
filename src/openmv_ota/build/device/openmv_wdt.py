@@ -33,8 +33,20 @@ use rare and its scope minimal; prefer subdividing + progress-based feeding inst
 
 On every OpenMV port ``machine.Timer`` is the virtual/soft timer (id ``-1`` -- the only
 id it accepts), and ``hard=True`` runs its callback in the SysTick/PendSV interrupt
-handler. That is what lets the feed fire *while the CPU is blocked* in a flash erase; a
-soft (scheduled) callback would wait for the main loop and never run during the op.
+handler, so it can fire while the CPU is busy in a long C call -- **but only while
+interrupts are enabled**.
+
+**It CANNOT feed through a flash erase or program.** This file used to claim the opposite,
+and that single wrong sentence cost a long hunt. On mimxrt, ``ports/mimxrt/flash.c`` wraps
+every erase/program in ``__disable_irq()`` around an *unbounded* poll of the chip's
+write-in-progress bit, so for that whole span SysTick cannot tick, PendSV cannot run, and
+this timer cannot dispatch. Anything that locks the scheduler has the same effect.
+
+So the rule is: **enter every unfeedable region on a FULL window** -- feed on the line
+*before* the flash op, never after it, and feed on both sides of a ``gc.collect()``. A
+collect is one unsplittable pause too: measured at 221-243 ms on an RT1060 with an 8 MB
+heap full of small objects, roughly half that port's 500 ms window. ``relax()`` itself
+feeds before it allocates for exactly this reason -- setting the ISR feed up is unfed.
 
 RAM BUDGET: this module runs inside your application, so its memory is your
 memory. Every buffer here has a ceiling. Nothing is sized by a file's length, a
@@ -78,6 +90,7 @@ FEED_HZ = 50           # relax() ISR feed rate (Hz); keep WELL above 1000 / TIME
 _wdt = None
 _feed = None           # pre-bound _wdt.feed, so the hard-IRQ callback allocates nothing
 _timer = None
+_depth = 0             # relax() nesting depth; the ISR feed stops only when it returns to 0
 
 
 def feed():
@@ -96,7 +109,8 @@ class _Relax:
     loop afterward. A no-op when the watchdog is off."""
 
     def __enter__(self):
-        global _timer
+        global _timer, _depth
+        _depth += 1
         if _wdt is not None and _timer is None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (ENABLED=False on the bench -> body skipped)
             # FEED FIRST. Setting the ISR feed up is itself unfed: `import machine` and the Timer
             # allocation below both allocate, and an allocation can trigger a collect -- measured
@@ -111,8 +125,15 @@ class _Relax:
         return self
 
     def __exit__(self, *args):
-        global _timer
-        if _timer is not None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (no timer started on the bench -> body skipped)
+        global _timer, _depth
+        # COUNT THE NESTING. __enter__ starts the timer only when there isn't one, but this used to
+        # stop it unconditionally -- so an INNER relax() exiting would kill the OUTER region's feed
+        # and leave it running unfed to its end, silently. Nothing nests today; this is the same
+        # class of defect as feeding after the op instead of before, and it costs one integer.
+        _depth -= 1
+        if _depth < 0:                       # unbalanced use: never leave it wedged below zero
+            _depth = 0
+        if _timer is not None and _depth == 0:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (no timer started on the bench -> body skipped)
             _timer.deinit()  # hil-residual: watchdog-enabled timer teardown (opt-in)
             _timer = None  # hil-residual: watchdog-enabled timer clear (opt-in)
             _wdt.feed()  # hil-residual: watchdog-enabled final feed (opt-in)
