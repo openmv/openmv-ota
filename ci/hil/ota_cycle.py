@@ -641,7 +641,15 @@ def regression_scenarios(board, network):
         # until the bench says otherwise.
         # `watchdog` included: same STM32H7 WWDG as the H7 Plus, cyw4343 instead of the WINC,
         # so these two are also the control that says whether the WINC was ever special.
-        return ["delta", "full", "bad_sig", "bad_key", "watchdog"]
+        #
+        # The negative paths are back too. They were dropped at onboarding because they timed out
+        # with `install.*` markers missing -- the device never started the install -- but that was
+        # BEFORE the board could reliably install anything at all: these are the boards that hit
+        # the ceiling-read bug (a 256 KiB allocation to read a 68 KiB installer, fatal without
+        # external SDRAM) and the marker-UART faults that made a healthy board look dead. Every one
+        # of those is fixed, so the premise they were dropped on is stale. Measure again.
+        return ["delta", "full", "rollback", "corrupt", "corrupt_sha",
+                "bad_sig", "bad_key", "bad_version", "watchdog"]
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install

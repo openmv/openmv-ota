@@ -505,19 +505,22 @@ def test_both_arduino_boards_share_the_reduced_suite():
             == ota_cycle.regression_scenarios("ARDUINO_PORTENTA_H7", "wifi"))
 
 
-def test_portenta_runs_only_the_scenarios_it_proves():
-    """Reduced suite: delta/full/bad_sig/bad_key pass on the bench, plus `watchdog` as of
-    2026-08-04. rollback, corrupt, corrupt_sha and bad_version still do not (install.* markers
-    missing -- the device never starts the install); that is newly exercised surface from this
-    board's onboarding, not a regression, and it is the next thing to earn back.
+def test_the_arduino_boards_run_the_negative_paths_again():
+    """They were dropped at onboarding on a premise that is now stale.
 
-    `watchdog` is IN because the reason it was held out no longer holds: the H7 boards were parked
-    on "the check-in outruns the window", and relax() has since been fixed to feed BEFORE it
-    allocates its timer. Measure again rather than keep assuming."""
+    The four negative paths (rollback, corrupt, corrupt_sha, bad_version) timed out back then with
+    `install.*` markers missing -- the device never started the install. But that was BEFORE these
+    boards could reliably install anything: they are the ones that hit the ceiling-read bug (a
+    256 KiB allocation to read a 68 KiB installer, fatal without external SDRAM) and the
+    marker-UART faults that made a healthy board look dead. All fixed, so measure again rather than
+    inherit the exclusion.
+
+    `watchdog` is in on measurement (Nicla 291 s, Portenta 1117 s); only the H7 Plus is held out.
+    """
     got = ota_cycle.regression_scenarios("ARDUINO_PORTENTA_H7", "wifi")
-    assert got == ["delta", "full", "bad_sig", "bad_key", "watchdog"]
-    for unproven in ("rollback", "corrupt", "corrupt_sha", "bad_version"):
-        assert unproven not in got
+    for restored in ("rollback", "corrupt", "corrupt_sha", "bad_version", "watchdog"):
+        assert restored in got, restored
+    assert ota_cycle.regression_scenarios("ARDUINO_NICLA_VISION", "wifi") == got
     # the secondary interface stays delta-only, as for every board
     assert ota_cycle.regression_scenarios("ARDUINO_PORTENTA_H7", "lan") == ["delta"]
 
