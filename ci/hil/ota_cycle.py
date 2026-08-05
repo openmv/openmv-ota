@@ -457,6 +457,28 @@ SCENARIOS = {
                    "install.reboot", "boot.front_reject", "boot.mount.back"],
         "forbid": ["install.armed", "confirm.promoted"],
     },
+    # THE ONLY SCENARIO THAT STARTS FROM A PROMOTED BOARD. Everything else begins on golden, so
+    # the question "what happens when an update fails AFTER you have already taken one" had never
+    # been asked on hardware -- the run always ended when the first cycle settled. It matters in
+    # the field: the device is running the promoted image with only the FACTORY golden behind it,
+    # so a failed install does not cost you the update, it costs you every update ever taken. This
+    # asserts the anti-brick fallback still works from that state, and records where it lands.
+    "reinstall": {
+        "desc": "delta install -> promote, THEN a second update fails its sha256",
+        "publish": "delta", "app": "confirm", "end": "promoted",
+        "expect": ["boot.mount.front", "run.offer", "install.start", "install.armed",
+                   "confirm.promoted"],
+        "forbid": ["install.fallback", "install.reject"],
+        "then": {
+            "desc": "a SECOND install, from the PROMOTED image, fails sha256 -> back to golden",
+            "publish": "corrupt_sha", "version": "1.2.0", "end": "golden",
+            # install.reject_sha is the point: the integrity gate fires on a board that is NOT on
+            # golden. end="golden" then records the cost -- it falls all the way back to the
+            # factory image, losing the promoted version, because that is all BACK ever holds.
+            "expect": ["install.start", "install.reject_sha", "install.retry"],
+            "forbid": ["confirm.promoted"],
+        },
+    },
     "corrupt_sha": {
         # Distinct from `corrupt`: `corrupt` flips a COMPRESSED byte so the download fails mid-
         # decompress (a bare deflate error, before the integrity check). `corrupt_sha` flips a
@@ -650,7 +672,8 @@ def regression_scenarios(board, network):
         # of those is fixed, so the premise they were dropped on is stale. Measure again.
         return ["delta", "full", "rollback", "corrupt", "corrupt_sha",
                 "bad_sig", "bad_key", "bad_version", "watchdog"]
-    scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
+    scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key",
+           "bad_version", "reinstall"]
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
     # path. The negative path (the WDT actually BITES when feeding stops, then recovers as a single
@@ -2398,6 +2421,32 @@ def main():
             # fault forever, which is otherwise indistinguishable from a board with nothing to do.
             for text, hits in device_faults(cap).items():
                 log("  the device reported this %d time(s): %s" % (hits, text))
+        # A SECOND PHASE, for the paths that only exist AFTER a promote. Every scenario above
+        # starts from golden, so the whole "what happens to a board that has already taken an
+        # update" surface was unreachable: the run ends the moment the first cycle settles. That
+        # left the re-install fallback untested across the entire fleet -- the device is on the
+        # promoted image with golden in BACK, a NEW update fails its integrity gate, and where it
+        # lands is the question nobody had answered on hardware.
+        then = spec.get("then")
+        if then and trace["passed"]:
+            log("phase 2: %s" % then["desc"])
+            phase("publish2",
+                  lambda: publish_update(args.board, then["version"], then["publish"]))
+            cap.reset(time.time())               # score phase 2 on its own window
+            expect2, forbid2 = set(then["expect"]), set(then.get("forbid", ()))
+            result2 = phase("reinstall", lambda: run_cycle(
+                devid, "1.0.0", then["version"], then["end"], expect2, cap, args.timeout))
+            time.sleep(2)
+            marks2 = set(cap.points())
+            missing2, forbidden2 = sorted(expect2 - marks2), sorted(forbid2 & marks2)
+            trace["phase2"] = {"result": result2, "missing_expected": missing2,
+                               "forbidden_hit": forbidden2}
+            trace["passed"] = result2["reached_end"] and not missing2 and not forbidden2
+            if not trace["passed"]:
+                log("FAIL (phase 2): end=%s reached=%s missing=%s forbidden=%s"
+                    % (then["end"], result2["reached_end"], missing2 or "-", forbidden2 or "-"))
+                for text, hits in device_faults(cap).items():
+                    log("  the device reported this %d time(s): %s" % (hits, text))
     except Exception as e:
         trace["error"] = str(e)
         log("ERROR: " + str(e))
