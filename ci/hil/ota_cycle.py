@@ -103,7 +103,19 @@ COPROC_ENABLED = env("HIL_COPROC", "") == "1"
 # Also relevant: WWDG is IN RANGE on this family. The patched driver's own formula gives
 # 64 * 4096 * 128 / (120e6/1000) ~= 280 ms max on the H743/H747, well above TIMEOUT_MS=100,
 # so "the H7 window is too short" was never about the peripheral.
-WATCHDOG_BROKEN = set()
+# ANSWERED 2026-08-05, and the answer is the WINC. Same STM32H7, same WWDG, same relax() fix:
+#   Nicla    watchdog PASS (291 s)          cyw43
+#   Portenta watchdog PASS (1117 s / 681 s) cyw43
+#   H7 Plus  watchdog FAIL (1145 s)         ATWINC1500  <- the only difference
+# So it is NOT the H7 family, NOT the WWDG window, and NOT the relax() defect (that one is
+# fixed and is what unblocked the other two). On the H7 Plus the armed leg bites during the
+# install (reset_cause=3), resets again (cause=2), and then the WINC is WEDGED -- 39
+# consecutive `run: cycle failed OSError(22,)` (EINVAL) on the check-in, preceded by one
+# MBEDTLS_ERR_SSL_INVALID_MAC and one TypeError. It never recovers, so no install ever runs.
+# That is a WINC driver/socket-state problem, not a watchdog-window problem, and it needs
+# its own investigation. The board stays out until then -- on MEASUREMENT this time, with the
+# control experiment finally done.
+WATCHDOG_BROKEN = {"OPENMV4P"}
 # The Arduino boards are here by DECISION, not measurement: their armed-watchdog leg has never been
 # run, and chasing it was explicitly deferred so the OTA legs could land. That leaves the H7 Plus
 # question (WINC or H7-wide?) open -- see above. Run it by hand when you want the answer:

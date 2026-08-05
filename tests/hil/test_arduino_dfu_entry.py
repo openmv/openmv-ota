@@ -562,3 +562,21 @@ def test_version_packing_matches_the_device():
     """Measured against real boot lines: 1.0.0 -> 16777216, 1.1.0 -> 16842752."""
     assert ota_cycle._packed_version("1.0.0") == 16777216
     assert ota_cycle._packed_version("1.1.0") == 16842752
+
+
+def test_the_h7_plus_stays_out_of_the_watchdog_suite_on_measurement():
+    """The WINC board is the ONLY one still held out, and now on evidence rather than suspicion.
+
+    Controlled comparison, same STM32H7 family, same WWDG, same relax() fix:
+        Nicla    watchdog PASS   cyw43
+        Portenta watchdog PASS   cyw43
+        H7 Plus  watchdog FAIL   ATWINC1500   <- the only difference
+
+    On the H7 Plus the armed leg bites mid-install, resets again, and then the WINC is wedged: 39
+    consecutive `run: cycle failed OSError(22,)` (EINVAL) on the check-in. That is a WINC
+    socket-state problem, not a watchdog-window one.
+    """
+    assert ota_cycle.WATCHDOG_BROKEN == {"OPENMV4P"}
+    assert "watchdog" not in ota_cycle.regression_scenarios("OPENMV4P", "wifi")
+    for proven in ("ARDUINO_PORTENTA_H7", "ARDUINO_NICLA_VISION"):
+        assert "watchdog" in ota_cycle.regression_scenarios(proven, "wifi")
