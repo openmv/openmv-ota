@@ -230,11 +230,11 @@ def _ca():  # pragma: no cover  (device: filesystem)
         try:
             import openmv_ota
             here = openmv_ota.__file__.rsplit("/", 1)[0]
-            f = open(here + "/data/ca.pem", "r")
-            try:
-                _ca_pem = f.read(_CA_MAX)
-            finally:
-                f.close()
+            # Read through openmv_ota's helper, which sizes the read by the file rather than by
+            # the ceiling: `f.read(_CA_MAX)` pre-allocates 256 KiB in MicroPython and MemoryErrors
+            # on any board without external SDRAM (measured on the Nicla Vision). We are already
+            # inside `import openmv_ota`, so there is no new dependency to carry.
+            _ca_pem = openmv_ota._read_file(here + "/data/ca.pem", "r", _CA_MAX)
         except (ImportError, OSError):
             _ca_pem = False                          # looked, not available
     return _ca_pem or None

@@ -162,16 +162,11 @@ BOARDS = {
         "network": "wifi",                   # onboard CYW4343 -- standard network.WLAN (no shield)
         "flash": "arduino_cli",              # 1200-baud touch -> MCUboot DFU, address-based dfu-util -w
         "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
-        # MEASURED: SWD does not work on this board -- `connect` fails with "Could not connect to
-        # the target device" every time, because the Nicla's tiny SWD pads are not wired on the
-        # bench. The RESET PIN still is, and driving it needs no connection, so recovery here is a
-        # pin pulse and nothing more. (A reset is only ever used on a wedged RUNTIME board: if it is
-        # sitting in DFU, _ensure_cdc leaves DFU properly first -- pulsing nRST there would land it
-        # back in the bootloader, since the touch's stay-in-bootloader flag lives in RAM.)
-        # BENCH STATE, NOT A BOARD PROPERTY: flip back to True once the SWD pads are wired (and
-        # note a replacement board arrives with its own USB serial, so the by-id MSC path changes
-        # too -- the glob handles that, but anything pinned to a serial would not).
-        "jlink_swd": False,
+        # SWD IS WIRED AND VERIFIED on the replacement board (the previous unit's pads were not, and
+        # carried jlink_swd: False). Measured: `Found SW-DP 0x6BA02477 -> Cortex-M7 r1p1 -> Cortex-M7
+        # identified`, and a core reset genuinely reboots it (USB device number changes, ttyACM0 back
+        # in ~2 s). JLinkExe logs "Can not attach to CPU. Trying connect under reset." first and then
+        # succeeds -- normal for this part, and the place to look if SWD ever seems flaky here.
     },
     "ARDUINO_PORTENTA_H7": {
         # The update server NEVER writes a device record for these: they sit in its
@@ -615,7 +610,11 @@ def regression_scenarios(board, network):
     # Landing the board on what it proves beats holding it out entirely, and beats pretending the
     # rest passes. Widen this list as the negative paths are fixed -- they still run by hand:
     #   workflow_dispatch board=ARDUINO_PORTENTA_H7 scenario=rollback
-    if board == "ARDUINO_PORTENTA_H7":
+    if BOARDS[board]["flash"] == "arduino_cli":
+        # The Nicla is the same STM32H747 + CYW4343 + romfs geometry as the Portenta, so it takes the
+        # same list rather than being discovered from scratch. If its negative paths turn out to work
+        # where the Portenta's do not, widen it -- but assume the shared silicon behaves the same
+        # until the bench says otherwise.
         return ["delta", "full", "bad_sig", "bad_key"]
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
@@ -657,6 +656,43 @@ def resolve_uart(port):
     return found[0]
 
 
+def _uart_live_since_flash():
+    """Has the board said ANYTHING on the marker UART since golden was flashed?
+
+    "Since the flash" is the whole point. `_CAP.raw` is the capture's entire history, so it still
+    holds lines the PREVIOUS firmware wrote before this flash -- and reading those as "the marker
+    UART is live" is how a board that went silent at the flash passes for healthy. It cost a full
+    N6 leg: the bench-file write was skipped on that stale evidence, `.hilcov_uart` was not on the
+    board, so it logged to USB, no reset could be seen to "produce a boot", and the scenario failed
+    28 minutes later with every device marker missing -- on a board answering its REPL the whole
+    time. Same reasoning as verify_golden_uart's `fresh`."""
+    return _CAP is not None and bool(_CAP.raw[_FLASH_MARK:])
+
+
+_FAULT = "run: cycle failed"                 # the device's own report of a swallowed poll-cycle
+#                                              exception (openmv_ota.run) -- see device_faults
+
+
+def device_faults(cap):
+    """Distinct ``run: cycle failed <repr>`` reports the device made, with counts, newest last.
+
+    A board that can never install repeats ONE exception forever, and the marker set says only
+    which paths did not run -- never why. Without this, the two look identical from here: no
+    install markers, a timeout, and thousands of UART lines nobody reads. Summarising it names
+    the fault in one line.
+
+    Earned the hard way: a Nicla logged ``MemoryError('memory allocation failed, allocating
+    262145 bytes')`` on every single poll for half an hour, and the run still reported nothing but
+    a list of markers it never reached."""
+    seen = {}
+    for line in (cap.raw if cap is not None else []):
+        at = line.find(_FAULT)
+        if at >= 0:
+            text = line[at + len(_FAULT):].strip()
+            seen[text] = seen.get(text, 0) + 1
+    return seen
+
+
 _CAP = None                                  # the live UartCapture (set by start()); see _await_boot
 _BOARD = None                                # the board under test (set in main); see run_cycle
 _FLASH_MARK = 0                              # index into _CAP.raw at the moment golden was flashed:
@@ -682,6 +718,7 @@ class UartCapture:
             log("uart: freed a stale holder of %s (%s) -- a cancelled run leaks its capture"
                 % (dev, (out or "").strip()))
             time.sleep(1)                    # let the killed reader actually release the fd
+        self._port, self._baud = port, baud   # kept so _reopen can re-resolve after a re-enumeration
         self._ser = serial.Serial(dev, baud, timeout=0.5)
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
@@ -701,12 +738,35 @@ class UartCapture:
         _CAP = self
         self._t.start()
 
+    def _reopen(self):
+        """Re-resolve and reopen the marker UART after its port went away. Returns True on success."""
+        import serial
+        try:
+            self._ser.close()
+        except Exception:
+            pass
+        try:
+            dev = resolve_uart(self._port)
+            self._ser = serial.Serial(dev, self._baud, timeout=0.5)
+        except Exception:
+            return False
+        log("uart: reopened %s after the port dropped" % dev)
+        return True
+
     def _run(self):
         buf = b""
         while not self._stop.is_set():
             try:
                 buf += self._ser.read(256)
             except Exception:
+                # THE PORT DIED -- do not spin on it. Linux renumbers ttyUSBn on re-plug and a DFU
+                # flash re-enumerates USB, so the handle opened at start-up can stop existing
+                # mid-leg. `continue` alone span silently for the rest of the run: no lines, no
+                # markers, and the harness then concludes the BOARD is dead. Measured on the N6 lan
+                # leg -- it errored with "the board never came back ... nothing is arriving on the
+                # marker UART", and the very next leg used that same board for 10/10 scenarios.
+                if not self._reopen():
+                    time.sleep(1)            # nothing there yet; back off instead of a hot loop
                 continue
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
@@ -883,6 +943,13 @@ def bench_main_py(board, net, app="confirm"):
         "_blog = logging.getLogger('openmv_ota')\n\n\n"
         "async def main():\n"
         "    _blog.info('app: main() started')\n"
+        # NAME THE APP THE BOARD IS ACTUALLY RUNNING. Every scenario's golden is version 1.0.0, so
+        # verify_golden's payload check cannot tell one scenario's bench app from another's: when a
+        # golden flash silently does not take, the board keeps the PREVIOUS scenario's app and the
+        # run measures the wrong thing for 15 minutes. That is the whole of the N6 `watchdog_bite`
+        # flakiness -- it always follows `watchdog`, whose app differs only in whether it stops
+        # feeding, so the stale app looks entirely healthy while wdt.bit/wdt.stop never arrive.
+        "    _blog.info('app: scenario %s')\n" % app +
         # Print the device_id on the UART so the harness never has to take the REPL to learn it.
         # Reading it over mpremote meant a Ctrl-C, and a Ctrl-C kills this app (KeyboardInterrupt is
         # a BaseException) -- the board can simply say who it is instead.
@@ -967,6 +1034,15 @@ def prepare(board, checkout, network, app="confirm"):
         sh("grep -q '^ENABLED = True' " + wdt_py)     # fail LOUD if the sed didn't take (else the
         log("prepare: openmv_wdt ENABLED=True (watchdog scenario)")  # watchdog would silently no-op
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
+    # BAKE THE COVERAGE-UART FILE INTO THE ROMFS, so seeing the board never depends on the CDC.
+    # Written to /flash over the REPL it needs a working CDC -- and a scenario whose app ARMS THE
+    # WATCHDOG makes that impossible: every REPL touch kills the app, the feed stops, the watchdog
+    # bites, and the board reboots into the same armed app. So the leg that follows `watchdog` or
+    # `watchdog_bite` can never receive it, logs to USB instead, and the harness reports a dead
+    # board that is in fact perfectly healthy (measured: N6 wifi failed exactly this way right
+    # after a watchdog_bite leg, while the leg before it passed). Baked into golden it is simply
+    # there on the first boot, with nothing to negotiate. openmv_log searches /rom too.
+    open(CFG["project"] + "/app/.hilcov_uart", "w").write(str(BOARDS[board]["cov_uart"]))
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
     _ensure_cdc(board, allow_erase=True)   # pre-flash: erasing the romfs is safe, golden follows
@@ -1050,14 +1126,40 @@ def flash_golden(board, bad_romfs=False):
         # missing. That is the whole of the N6 watchdog_bite flakiness -- pass, fail, pass, fail.
         if not _cdc_responsive():
             _await_boot(board, budget=120)   # it is probably still coming up after the flash
+        # POLL for the CDC rather than asking once. _await_boot above waits for a boot MARKER, so
+        # on the very board this matters for -- one whose marker UART is dead -- it cannot succeed
+        # and just burns its whole budget; a single check the instant it gives up is a coin flip.
+        # Measured on the N6: the CDC was absent here, yet answered the REPL fine at verify ~300 s
+        # later, so the one thing needed (writing .hilcov_uart) was skipped over a timing accident.
+        for _ in range(18):
+            if _cdc_responsive():
+                break
+            time.sleep(10)
         if _cdc_responsive():
             _flash_bench_files(board)
-        elif _CAP is not None and _CAP.raw:
+            # ...AND REBOOT, or this write does nothing for THIS run. openmv_log reads
+            # /flash/.hilcov_uart exactly once, at import, so a file written after the board has
+            # already booted is invisible until it re-mounts. On the normal path prepare() writes
+            # these BEFORE the flash and the flash's own reboot picks them up; on the deferred path
+            # (recovery erased the romfs, so prepare could not write them) the write lands here,
+            # after that reboot, and nothing else restarts the board. Measured on the Portenta:
+            # the files were written here, the board then produced NOTHING on the marker UART, and
+            # the leg failed on "no device output since golden was flashed" -- a perfectly healthy
+            # board that had simply never been told which UART to log to. The REPL is already taken
+            # (the write above uses it), so this reset costs nothing extra.
+            log("bench files: written after the flash -- resetting so the firmware re-reads them")
+            try:
+                device_exec("import machine; machine.reset()", timeout=20, check=False)
+            except Exception:
+                pass                         # an I/O error here just means the reset landed
+            _await_boot(board, budget=150)
+        elif _uart_live_since_flash():
             # Could not write them -- but the board is ALREADY logging to the marker UART, which is
             # the only thing these files buy us. They survive across runs (they live on /flash, which
             # a golden flash does not erase), so this is the normal steady state, not a fault. Do not
             # fail a board that is demonstrably working: the point of the check is the OUTCOME
-            # (markers arriving), never the mechanism.
+            # (markers arriving), never the mechanism -- but the outcome has to be observed SINCE
+            # THIS FLASH (see _uart_live_since_flash), not at any point in the capture's history.
             log("bench files: not rewritten (no CDC), but the marker UART is live -- they are "
                 "already on the board")
         else:
@@ -1708,7 +1810,7 @@ def _mounted(line):
     return any(m in line for m in _MOUNT_MARKERS)
 
 
-def verify_golden_uart(board, budget=300, golden="1.0.0"):
+def verify_golden_uart(board, budget=300, golden="1.0.0", want_app=None):
     """verify_golden() without taking the REPL: read the board's own account off the UART.
 
     Same two claims as the mpremote version -- golden booted and mounted a valid romfs, and here is
@@ -1749,6 +1851,20 @@ def verify_golden_uart(board, budget=300, golden="1.0.0"):
                     "%s booted payload %d, expected golden %s (%d) -- the golden flash did not take, "
                     "so this scenario would run against the wrong image. Last mount: %r"
                     % (board, payload, golden, want, mounts[-1]))
+            # ASSERT THE RIGHT BENCH APP IS RUNNING. Every scenario's golden is 1.0.0, so the
+            # payload check above cannot tell one scenario's app from another's -- a golden flash
+            # that silently does not take leaves the PREVIOUS scenario's app in place and the run
+            # measures the wrong thing until it times out. Seen on the N6: `watchdog_bite` ran the
+            # `watchdog` app (identical but for the stop-feeding step), looked perfectly healthy on
+            # the UART, and failed 15 minutes later on wdt.bit/wdt.stop that could never appear.
+            if want_app is not None:
+                tags = [ln.split("app: scenario ", 1)[1].strip()
+                        for ln in fresh if "app: scenario " in ln]
+                if tags and tags[-1] != want_app:
+                    raise RuntimeError(
+                        "%s is running the %r bench app but this scenario needs %r -- the golden "
+                        "flash did not take. Both goldens are 1.0.0, so the version check cannot "
+                        "see this." % (board, tags[-1], want_app))
             ids = [ln.split("app: device_id ", 1)[1].strip()
                    for ln in _CAP.raw if "app: device_id " in ln]
             if ids:
@@ -2172,7 +2288,8 @@ def main():
                 # The harness was fighting the very watchdog the scenario exists to test. Watching
                 # cannot do that. Falls back to the REPL verify by itself when there is no capture
                 # or the markers do not arrive, so a board without a marker UART is unaffected.
-                devid = phase("verify_golden", lambda: verify_golden_uart(args.board))
+                devid = phase("verify_golden",
+                              lambda: verify_golden_uart(args.board, want_app=spec["app"]))
             if devid is None:                    # --skip-provision: board already up, read it directly
                 devid = device_id()
             trace["device_id"] = devid
@@ -2189,9 +2306,9 @@ def main():
             # after a recovery erase, and the deferred write did not happen) produced ZERO device
             # lines for 25 minutes, then failed with boot.ready/log.configured missing. The board was
             # fine; it was logging to USB because nothing told it which UART to use.
-            if not cap.raw:
+            if not _uart_live_since_flash():
                 raise RuntimeError(
-                    "no device output on the marker UART (%s) during provisioning -- the board is "
+                    "no device output on the marker UART (%s) since golden was flashed -- the board is "
                     "logging somewhere else. Check that /flash/.hilcov_uart exists and names UART %s "
                     "(prepare writes it; a recovery erase DEFERS that write), and that nothing else "
                     "holds the port." % (CFG["uart"], BOARDS[args.board]["cov_uart"]))
@@ -2214,6 +2331,11 @@ def main():
         if not trace["passed"]:
             log("FAIL: end=%s reached=%s missing=%s forbidden=%s"
                 % (spec["end"], result["reached_end"], missing or "-", forbidden or "-"))
+            # ...and WHY, if the board said. Missing markers name the paths that did not run; this
+            # names the exception that stopped them. A board that can never install repeats one
+            # fault forever, which is otherwise indistinguishable from a board with nothing to do.
+            for text, hits in device_faults(cap).items():
+                log("  the device reported this %d time(s): %s" % (hits, text))
     except Exception as e:
         trace["error"] = str(e)
         log("ERROR: " + str(e))

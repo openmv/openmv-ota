@@ -85,6 +85,15 @@ except ImportError:                    # reader's wait loop just spins its bound
     def sleep_ms(_ms):
         pass
 
+try:                                   # device: monotonic ms, used to report the WORST single flash
+    from time import ticks_ms, ticks_diff   # op in an erase -- the number that says whether a
+except ImportError:                    # watchdog bite could have landed inside one call.
+    def ticks_ms():
+        return 0
+
+    def ticks_diff(a, b):
+        return a - b
+
 
 
 class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is frozen)
@@ -768,6 +777,10 @@ def _install_stream(source, write, readback, front_size, block, feed,
         if digest is not None:
             digest.update(chunk)
         if not _is_blank(chunk):                     # erased regions are already 0xFF
+            feed()                                   # the feed at the top of this iteration was
+            #                                          spent by the recv + delta reconstruct above,
+            #                                          and a page program also runs with interrupts
+            #                                          disabled -- so feed again right before it
             write(off, chunk)
             if readback(off, n) != chunk:
                 raise OSError("write verify failed at %d" % off)
@@ -1046,8 +1059,18 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         import gc as _gc  # hil-residual: watchdog-armed proactive collect (opt-in; covered by the watchdog HIL scenario)
 
         def gc_collect():  # hil-residual: watchdog-armed proactive collect (opt-in; covered by the watchdog HIL scenario)
+            # FEED ON BOTH SIDES. A full-heap collect measured **221 ms** on the RT1060 (230942 tiny
+            # pointer-rich objects, heap exhausted) -- ~44% of that port's 500 ms window in ONE
+            # unsplittable pause. relax() cannot be relied on to cover it there: machine.Timer is a
+            # SOFT timer on mimxrt (TIMER_ID -1, SysTick -> PendSV -> a *Python* callback), i.e. the
+            # feed is dispatched by the very runtime the collector is pausing, and the same is true
+            # of anything holding the scheduler. Feeding BEFORE means the collect starts on a full
+            # window; feeding AFTER means the caller's next unfeedable op -- a flash erase, which
+            # mimxrt runs under __disable_irq() with an unbounded WIP busy-poll -- gets one too.
+            feed()  # hil-residual: watchdog-armed pre-collect feed (opt-in, marker-less)
             with relax():  # hil-residual: relax() feeds the WWDG across the unsplittable gc.collect()
                 _gc.collect()  # hil-residual: proactive collection at a controlled point (device-only)
+            feed()  # hil-residual: watchdog-armed post-collect feed (opt-in, marker-less)
     # Log-only progress, built from RAM + the frozen logger so it survives the FRONT erase.
     progress = _Progress(log) if log is not None else None
     front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
@@ -1072,13 +1095,55 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         def erase(total):
             nb = (total + _bs - 1) // _bs
             b = 0
-            while b < nb:                             # one block per call -> returns to the
-                front.ioctl(6, b)                     # VM between blocks (no dead-time erase);
-                b += 1                                # this port is already chunk-granular
-                feed()
-                if log and "e" not in _seen:          # witness the in-loop erase op once
-                    _seen.add("e")
-                    log.debug("install: erasing block block-device")
+            # FEED FIRST, THEN ERASE. A flash erase on this port runs with interrupts OFF
+            # (mimxrt flash.c wraps flexspi_nor_flash_erase_* in __disable_irq), so for its whole
+            # duration SysTick cannot fire, PendSV cannot run, and machine.Timer -- a SOFT timer
+            # on mimxrt -- cannot dispatch. relax() therefore CANNOT feed across an erase here; it
+            # is kept because it does feed on ports whose Timer is real hardware (stm32/WWDG), but
+            # on mimxrt the only thing that keeps the watchdog alive is the feed on the line
+            # BEFORE the call. Feeding after it, as this loop used to, hands each erase whatever
+            # was left of the window -- and hands the FIRST erase whatever survived the manifest
+            # parse and TLS, which is how the HIL `watchdog` scenario reset before even the first
+            # block witness and fell back to golden.
+            worst = 0                                 # longest single erase seen, ms
+            feed()                                    # relax().__enter__ below imports machine and
+            #                                           ALLOCATES a Timer (~7 ms measured, and any
+            #                                           allocation can trigger a collect) -- all of
+            #                                           it before the loop's own first feed. Start
+            #                                           that stretch on a full window.
+            if log:
+                # Witness that the loop was ENTERED, before the first flash op. The b==1 progress
+                # line only prints once an erase has RETURNED, so its absence cannot distinguish
+                # "hung inside the first ioctl" from "never got to the loop at all" -- exactly the
+                # ambiguity left by the RT1060 bite, which reboots ~500 ms into this call while the
+                # identical call takes 63 ms on the retry.
+                log.debug("install: erase loop entered t=%d" % ticks_ms())  # hil-residual: bounded one-shot entry witness; it precedes the first flash op, so no marker can be dominated by it
+            with relax():
+                if log:
+                    # Splits the last unlit gap. relax().__enter__ imports machine and allocates a
+                    # machine.Timer, and until it returns NOTHING is feeding -- the app's own loop
+                    # is blocked by this synchronous install, and the ISR feed is what we are still
+                    # setting up. If this line prints and the b=1 line does not, the missing time
+                    # is in the first feed()+erase; if it does not print, it is in __enter__.
+                    log.debug("install: erase relax armed t=%d" % ticks_ms())  # hil-residual: bounded one-shot; it sits between the relax entry and the first flash op, so no marker dominates it
+                while b < nb:                         # one block per call -> returns to the
+                    feed()                            # VM between blocks (no dead-time erase);
+                    _t0 = ticks_ms()                  # this port is already chunk-granular
+                    front.ioctl(6, b)
+                    _dt = ticks_diff(ticks_ms(), _t0)
+                    if _dt > worst:
+                        worst = _dt  # hil-residual: witnessed transitively -- a non-zero worst= in the erase progress marker is proof this ran (it is the only writer)
+                    b += 1
+                    if log and (b & 0x3F) == 1:       # the first block, then every 64th:
+                        _seen.add("e")                # witness the in-loop erase op AND report
+                        #                               progress. A 4 MiB erase is ~54 s of silence
+                        #                               here, and a one-shot witness cannot say HOW
+                        #                               FAR it got -- when the RT reset mid-erase
+                        #                               there was no way to tell a first-call hang
+                        #                               from a death 40 blocks in. Bounded: 4 lines
+                        #                               per slot. Same marker text, so it still
+                        #                               witnesses the same coverage point.
+                        log.debug("install: erasing block block-device %d/%d worst=%dms" % (b, nb, worst))
             log.debug("install: erased FRONT block-device")
 
         # Reused block-device scratch (n <= _CHUNK): a readback + a BACK-read buffer, so neither
@@ -1152,16 +1217,21 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             bs = vfs.rom_ioctl(6, 0)
             if isinstance(bs, int) and bs > 0:
                 o = 0
-                while o < total:
-                    n = bs if total - o > bs else total - o
-                    rc = vfs.rom_ioctl(3, 0, o, n)
-                    if rc < 0:
-                        raise OSError(-rc)  # hil-residual: bare raise on a negative errno (erase-fault, inject-only)
-                    o += n
-                    feed()
-                    if log and "e" not in _seen:      # witness the in-loop erase op once
-                        _seen.add("e")
-                        log.debug("install: erasing block XIP")
+                # FEED FIRST, THEN ERASE -- see the block-device path above for why: a ranged
+                # prepare is one unsplittable C call, and on a port that erases with interrupts
+                # disabled nothing can feed until it returns. The feed has to precede it.
+                feed()                            # full window before relax()'s allocating entry
+                with relax():
+                    while o < total:
+                        n = bs if total - o > bs else total - o
+                        feed()
+                        rc = vfs.rom_ioctl(3, 0, o, n)
+                        if rc < 0:
+                            raise OSError(-rc)  # hil-residual: bare raise on a negative errno (erase-fault, inject-only)
+                        o += n
+                        if log and "e" not in _seen:  # witness the in-loop erase op once
+                            _seen.add("e")
+                            log.debug("install: erasing block XIP")
                 log.debug("install: erased FRONT XIP")
                 return  # hil-residual: bare return (ranged erase done)
             # Legacy single-shot fallback for firmware WITHOUT #19348 (no ranged prepare). The
@@ -1232,7 +1302,22 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     body = None
     for attempt in range(attempts):
         try:
-            log.info("install: erasing FRONT (%d bytes)" % front_size)
+            # COLLECT BEFORE THE ERASE, under relax(). Everything above -- the TLS session, the
+            # ~68 KiB installer exec'd into RAM, the manifest parse and verify -- has churned the
+            # heap, so the very next allocation can trigger an AUTOMATIC gc.collect(). That is one
+            # unsplittable pause; feed() cannot be called during it and relax()'s ISR is the only
+            # thing that can cover it. On a board with external SDRAM the heap is big enough for
+            # that sweep to outrun a 500 ms watchdog window.
+            #
+            # Measured on the RT1060 lan leg: the board reset between `install: erasing FRONT` and
+            # the loop-entry witness -- i.e. before a single flash op, where the only code is
+            # `nb = (total + _bs - 1) // _bs`. Nothing there can take 500 ms except a collection.
+            # Intermittent by nature (5 fails, 2 passes, 1 fail) because it depends on where the
+            # automatic GC happens to land. The write loop already collects on a byte cadence for
+            # exactly this reason; the erase needed the same treatment at its own entry.
+            if gc_collect is not None:
+                gc_collect()  # hil-residual: watchdog-armed pre-erase collect (opt-in; gc_collect is None unless the app armed a watchdog, so only the watchdog HIL scenario reaches it -- and it is marker-less by design, being the pause it exists to prevent)
+            log.info("install: erasing FRONT (%d bytes) t=%d" % (front_size, ticks_ms()))
             erase(front_size)
             log.info("install: downloading %s (%s)" % (image_url, fmt))
             sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)

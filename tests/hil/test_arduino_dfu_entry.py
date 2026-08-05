@@ -420,37 +420,44 @@ def test_env_omits_the_flag_when_not_requested(monkeypatch):
 # Reset on a board whose SWD pads are not wired.
 
 
-def test_nicla_is_marked_reset_pin_only():
-    """MEASURED on the bench: `connect` fails with "Could not connect to the target device" on the
-    Nicla every time. The RESET pin is still wired, and driving it needs no target connection."""
-    assert ota_cycle.BOARDS["ARDUINO_NICLA_VISION"].get("jlink_swd") is False
-    assert ota_cycle.BOARDS["ARDUINO_PORTENTA_H7"].get("jlink_swd", True) is True
+def test_both_arduino_boards_use_swd_now():
+    """The replacement Nicla has its SWD wired and verified (Found SW-DP 0x6BA02477 -> Cortex-M7
+    identified; a core reset genuinely reboots it). The old unit carried jlink_swd: False because
+    ITS pads were not connected -- bench state, not a board property, and now stale."""
+    for b in ("ARDUINO_NICLA_VISION", "ARDUINO_PORTENTA_H7"):
+        assert ota_cycle.BOARDS[b].get("jlink_swd", True) is True, b
 
 
 def test_reset_script_matches_the_board(monkeypatch, tmp_path):
-    """A board with SWD gets connect+run; one without gets the pin ALONE. Sending `connect` to a
-    board that cannot answer it wastes the whole timeout and reports a failure that is not one."""
+    """A board WITH usable SWD gets connect+run; one without gets the RESET PIN alone. Sending
+    `connect` to a board that cannot answer wastes the whole timeout and reports a failure that is
+    not one -- and pulsing the pin on a board that CAN connect risks leaving the core halted.
+
+    Both real Arduino boards have SWD now, so the pin-only branch is exercised with a synthetic
+    entry: the branch still has to work for the next board that turns up unwired."""
     written = {}
 
     def fake_mkstemp(**kw):
         path = tmp_path / "s.jlink"
         return os.open(str(path), os.O_CREAT | os.O_WRONLY), str(path)
-    monkeypatch.setattr(ota_cycle.tempfile, "mkstemp", fake_mkstemp)
+
     def fake_sh(cmd, **kw):
-        # only the JLinkExe invocation is a LIST; _free_jlink passes a shell STRING
         if isinstance(cmd, list) and "-CommanderScript" in cmd:
             written["script"] = open(cmd[-1]).read()
         return (0, "")
+
+    monkeypatch.setattr(ota_cycle.tempfile, "mkstemp", fake_mkstemp)
     monkeypatch.setattr(ota_cycle, "sh", fake_sh)
     monkeypatch.setattr(os, "unlink", lambda p: None)
 
-    ota_cycle.jlink_core_reset("ARDUINO_NICLA_VISION")
-    assert "SetRESET" in written["script"] and "connect" not in written["script"]
-
-    written.clear()
-    ota_cycle.jlink_core_reset("ARDUINO_PORTENTA_H7")
+    ota_cycle.jlink_core_reset("ARDUINO_PORTENTA_H7")           # SWD wired
     assert "connect" in written["script"] and "SetRESET" not in written["script"]
 
+    written.clear()
+    monkeypatch.setitem(ota_cycle.BOARDS, "SYNTHETIC_NO_SWD",
+                        {"jlink_device": "STM32H747XI_M7", "jlink_swd": False})
+    ota_cycle.jlink_core_reset("SYNTHETIC_NO_SWD")              # pads not wired
+    assert "SetRESET" in written["script"] and "connect" not in written["script"]
 
 def test_verify_accepts_a_FALLBACK_mount(monkeypatch):
     """Golden reached by fallback logs a DIFFERENT line:
@@ -489,6 +496,13 @@ def test_crash_stall_feeds_an_armed_watchdog():
     tail = src.split("app: CRASHED")[1]
     assert "openmv_wdt" in tail and "feed()" in tail
     assert "sleep(5)" in tail, "must still bound the rate when there is no watchdog to feed"
+
+
+def test_both_arduino_boards_share_the_reduced_suite():
+    """Same STM32H747, same CYW4343, same romfs geometry -- so the Nicla takes the Portenta's list
+    rather than rediscovering it. Widen only if the bench shows its negative paths behave better."""
+    assert (ota_cycle.regression_scenarios("ARDUINO_NICLA_VISION", "wifi")
+            == ota_cycle.regression_scenarios("ARDUINO_PORTENTA_H7", "wifi"))
 
 
 def test_portenta_runs_only_the_scenarios_it_proves():

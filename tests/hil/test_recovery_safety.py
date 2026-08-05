@@ -142,7 +142,9 @@ def test_deferred_bench_file_write_is_never_silently_skipped():
     assert ".hilcov_uart" in body, "the error must name what will be missing"
     # ...but it must NOT fail a board that is demonstrably fine: these files persist on /flash across
     # runs, so "could not rewrite them" is the normal steady state whenever markers are already live.
-    assert "_CAP.raw" in body, "a live marker UART must satisfy the check without a rewrite"
+    assert "_uart_live_since_flash()" in body, (
+        "a live marker UART must satisfy the check without a rewrite -- but liveness has to be\n"
+        "measured SINCE THIS FLASH, since _CAP.raw still holds what the previous firmware wrote")
 
 
 def test_jlink_helpers_free_a_stale_probe_first():
@@ -153,3 +155,23 @@ def test_jlink_helpers_free_a_stale_probe_first():
         body = _SRC.split("def %s(" % fn)[1].split("\ndef ")[0]
         assert "_free_jlink()" in body, fn
         assert body.index("_free_jlink()") < body.index("CommanderScript"), fn
+
+
+def test_the_deferred_bench_file_write_is_followed_by_a_reset():
+    """openmv_log reads /flash/.hilcov_uart once, at import. On the DEFERRED path (recovery erased
+    the romfs, so prepare could not write the files) the write lands AFTER the golden flash's
+    reboot, so without another reset the firmware never sees it -- the board logs to USB and the
+    leg fails on 'no device output since golden was flashed' with nothing actually wrong.
+    Measured on the Portenta."""
+    import inspect
+    import io
+    import tokenize
+    src = inspect.getsource(ota_cycle.flash_golden)
+    # Strip comments so the rule matches CODE, not the comment that explains it.
+    body = "".join(
+        tok.string if tok.type != tokenize.COMMENT else ""
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline))
+    write = body.index("_flash_bench_files(board)")
+    reset = body.index("machine.reset()", write)
+    assert reset > write, "the reset must follow the bench-file write"
+    assert "_await_boot(" in body[reset:], "and must be confirmed by the board coming back"
