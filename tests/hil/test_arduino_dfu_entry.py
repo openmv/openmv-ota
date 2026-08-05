@@ -506,13 +506,17 @@ def test_both_arduino_boards_share_the_reduced_suite():
 
 
 def test_portenta_runs_only_the_scenarios_it_proves():
-    """Reduced suite, the AE3's precedent: delta/full/bad_sig/bad_key pass on the bench; rollback,
-    corrupt, corrupt_sha and bad_version do not (install.* markers missing -- the device never
-    starts the install). Not regressions: this board had only ever run `delta`, so that is newly
-    exercised surface. Landing it on what it proves beats holding it out, and beats pretending."""
+    """Reduced suite: delta/full/bad_sig/bad_key pass on the bench, plus `watchdog` as of
+    2026-08-04. rollback, corrupt, corrupt_sha and bad_version still do not (install.* markers
+    missing -- the device never starts the install); that is newly exercised surface from this
+    board's onboarding, not a regression, and it is the next thing to earn back.
+
+    `watchdog` is IN because the reason it was held out no longer holds: the H7 boards were parked
+    on "the check-in outruns the window", and relax() has since been fixed to feed BEFORE it
+    allocates its timer. Measure again rather than keep assuming."""
     got = ota_cycle.regression_scenarios("ARDUINO_PORTENTA_H7", "wifi")
-    assert got == ["delta", "full", "bad_sig", "bad_key"]
-    for unproven in ("rollback", "corrupt", "corrupt_sha", "bad_version", "watchdog"):
+    assert got == ["delta", "full", "bad_sig", "bad_key", "watchdog"]
+    for unproven in ("rollback", "corrupt", "corrupt_sha", "bad_version"):
         assert unproven not in got
     # the secondary interface stays delta-only, as for every board
     assert ota_cycle.regression_scenarios("ARDUINO_PORTENTA_H7", "lan") == ["delta"]
@@ -558,3 +562,21 @@ def test_version_packing_matches_the_device():
     """Measured against real boot lines: 1.0.0 -> 16777216, 1.1.0 -> 16842752."""
     assert ota_cycle._packed_version("1.0.0") == 16777216
     assert ota_cycle._packed_version("1.1.0") == 16842752
+
+
+def test_the_h7_plus_stays_out_of_the_watchdog_suite_on_measurement():
+    """The WINC board is the ONLY one still held out, and now on evidence rather than suspicion.
+
+    Controlled comparison, same STM32H7 family, same WWDG, same relax() fix:
+        Nicla    watchdog PASS   cyw43
+        Portenta watchdog PASS   cyw43
+        H7 Plus  watchdog FAIL   ATWINC1500   <- the only difference
+
+    On the H7 Plus the armed leg bites mid-install, resets again, and then the WINC is wedged: 39
+    consecutive `run: cycle failed OSError(22,)` (EINVAL) on the check-in. That is a WINC
+    socket-state problem, not a watchdog-window one.
+    """
+    assert ota_cycle.WATCHDOG_BROKEN == {"OPENMV4P"}
+    assert "watchdog" not in ota_cycle.regression_scenarios("OPENMV4P", "wifi")
+    for proven in ("ARDUINO_PORTENTA_H7", "ARDUINO_NICLA_VISION"):
+        assert "watchdog" in ota_cycle.regression_scenarios(proven, "wifi")
