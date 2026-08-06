@@ -477,6 +477,10 @@ SCENARIOS = {
             # factory image, losing the promoted version, because that is all BACK ever holds.
             "expect": ["install.start", "install.reject_sha", "install.retry"],
             "forbid": ["confirm.promoted"],
+            # Marker-scored: see the note at the phase-2 call site. The retry-exhaust fallback to
+            # golden is `corrupt`'s job and is slot-sized; asserting it here would make this
+            # scenario pass or fail on how big the board's slot is rather than on the gate.
+            "by_marker": True,
         },
     },
     "corrupt_sha": {
@@ -2190,7 +2194,7 @@ def run_cycle_no_slot(cap, expect, timeout_s):
             "reached_end": expect <= set(cap.points())}
 
 
-def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
+def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=False):
     """Hard-reset the device and watch the server record + UART until the scenario's end
     state is reached (early exit) or the timeout elapses. Returns the observed state; the
     caller decides PASS/FAIL against the scenario's expect/forbid sets.
@@ -2247,7 +2251,7 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
     # the install goes. Waiting on that record means never concluding -- the run watches until its
     # timeout while the device, left running, re-installs over and over. Score their UART markers
     # instead; they are the same evidence the scenario's expect/forbid sets are written against.
-    by_marker = bool(_BOARD) and not BOARDS[_BOARD].get("server_record", True)
+    by_marker = by_marker or (bool(_BOARD) and not BOARDS[_BOARD].get("server_record", True))
     if by_marker:
         log("cycle: %s is not recorded server-side -- scoring the UART markers" % _BOARD)
     deadline = time.time() + timeout_s
@@ -2448,8 +2452,18 @@ def main():
                   lambda: publish_update(args.board, then["version"], then["publish"]))
             cap.reset(time.time())               # score phase 2 on its own window
             expect2, forbid2 = set(then["expect"]), set(then.get("forbid", ()))
+            # SCORE PHASE 2 ON ITS MARKERS, not on a version transition. The assertion is that
+            # the integrity gate fires from a non-golden start and the bad image never promotes --
+            # which the marker set states exactly. Waiting for the device to SETTLE back on golden
+            # additionally requires the retry-exhaust fallback, and that is slot-sized: each attempt
+            # writes the whole image before the sha check fails, so on the N6's 12 MiB slot three
+            # attempts run past the watch window. `corrupt_sha` documents the same trap and dodges
+            # it only because its device never leaves golden, making end="golden" true for free.
+            # Measured: N6 lan phase 2 came back missing=- forbidden=- reached=False -- every marker
+            # hit, nothing promoted, just not settled in time. RT1060 (4 MiB slot) passed.
             result2 = phase("reinstall", lambda: run_cycle(
-                devid, "1.0.0", then["version"], then["end"], expect2, cap, args.timeout))
+                devid, "1.0.0", then["version"], then["end"], expect2, cap, args.timeout,
+                by_marker=then.get("by_marker", False)))
             time.sleep(2)
             marks2 = set(cap.points())
             missing2, forbidden2 = sorted(expect2 - marks2), sorted(forbid2 & marks2)
