@@ -580,3 +580,20 @@ def test_the_h7_plus_stays_out_of_the_watchdog_suite_on_measurement():
     assert "watchdog" not in ota_cycle.regression_scenarios("OPENMV4P", "wifi")
     for proven in ("ARDUINO_PORTENTA_H7", "ARDUINO_NICLA_VISION"):
         assert "watchdog" in ota_cycle.regression_scenarios(proven, "wifi")
+
+
+def test_the_arduino_dfu_write_is_retried():
+    """A USB enumeration race in PROVISIONING must not cost a 9-scenario leg.
+
+    dfu-util intermittently fails right after the 1200-baud touch -- "Failed to retrieve string
+    descriptor 7 / Failed to parse memory layout for alternate interface 1", exit 74 -- because it
+    opened the device before its USB configuration finished enumerating. Two consecutive Portenta
+    legs died this way, first on `delta` and then on `full`, with the other seven scenarios passing
+    both times. Bounded at 3 so a genuinely unflashable board still fails loudly.
+    """
+    import inspect
+    src = inspect.getsource(ota_cycle._flash_arduino_cli)
+    body = "\n".join(line.split("#")[0] for line in src.splitlines())
+    assert "for attempt in range(3)" in body, "the DFU write must be retried"
+    assert body.index("for attempt in range(3)") < body.index('_arduino_dfu_run(board, argv, "flash factory"')
+    assert "after 3 attempts" in src, "and must still fail loudly once the retries are spent"
