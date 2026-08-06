@@ -1158,6 +1158,19 @@ def flash_golden(board, bad_romfs=False):
         # write landed and the leg passed, and when it was not the write was skipped in silence, the
         # board logged to USB instead, and the leg failed 25 minutes later with every marker
         # missing. That is the whole of the N6 watchdog_bite flakiness -- pass, fail, pass, fail.
+        # ASK THE CHEAP, NON-INVASIVE QUESTION FIRST. The only thing these files buy us is a board
+        # logging to the marker UART -- so if it is ALREADY doing that since this flash, they are
+        # on the board and there is nothing to do. Probing the CDC to find that out is both slower
+        # and destructive: _cdc_responsive() takes the REPL with a Ctrl-C, which KILLS the running
+        # app, after which _await_boot waits out its full budget for a boot marker that can no
+        # longer come, and the CDC poll below adds more on top. Measured on the Portenta: the board
+        # was verifiable at 21:18:37 (mount + device_id on the UART) and the harness did not move
+        # on until 21:23:54 -- 316 s burned, per scenario, on a board that was already fine. That
+        # is most of why its legs ran ~4x the Nicla's.
+        if _uart_live_since_flash():
+            log("bench files: the marker UART is already live since this flash -- they are on the "
+                "board; skipping the CDC wait")
+            return
         if not _cdc_responsive():
             _await_boot(board, budget=120)   # it is probably still coming up after the flash
         # POLL for the CDC rather than asking once. _await_boot above waits for a boot MARKER, so

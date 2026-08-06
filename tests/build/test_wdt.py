@@ -103,7 +103,11 @@ def test_relax_feeds_before_it_allocates():
     body = "\n".join(line.split("#")[0] for line in src.splitlines())
     feed = body.index("_wdt.feed()")
     assert feed < body.index("import machine"), "must feed before the import"
-    assert feed < body.index("machine.Timer("), "must feed before the Timer allocation"
+    # ...and again between them: BOTH steps allocate, and two collects back to back (243 ms each,
+    # measured on an RT1060 with a full heap) is ~486 ms against a 500 ms window. One feed at the
+    # top is not enough -- the RT kept dying right here, just less often.
+    between = body.index("_wdt.feed()", body.index("import machine"))
+    assert between < body.index("machine.Timer("), "must feed again before the Timer allocation"
 
 
 def test_relax_nesting_keeps_the_feed_running(monkeypatch):

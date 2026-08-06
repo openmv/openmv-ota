@@ -119,8 +119,15 @@ class _Relax:
             # SYNCHRONOUS code, so the app's own feed loop is not running. Entering on a partial
             # window is how the RT1060 died here -- its `erase relax armed` witness never printed
             # while the step normally takes 7 ms.
+            # ...and feed BETWEEN the two, because there are TWO allocating steps here, not one.
+            # The import can trigger a collect and so can the Timer construction; a collect is
+            # measured at up to 243 ms on an RT1060 with a full heap, so two of them back to back
+            # is ~486 ms against a 500 ms window -- which is why feeding only once at the top was
+            # not enough. The RT1060 kept dying right here (`erase loop entered` printed,
+            # `erase relax armed` never did, reset_cause=3), just far less often than before.
             _wdt.feed()  # hil-residual: watchdog-enabled pre-setup feed (opt-in; marker-less)
             import machine  # hil-residual: watchdog-enabled timer setup (opt-in; exercised on HW by the watchdog HIL scenario)
+            _wdt.feed()  # hil-residual: watchdog-enabled pre-Timer feed (opt-in; marker-less)
             _timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_tick)  # hil-residual: watchdog-enabled ISR-feed timer (opt-in)
         return self
 
