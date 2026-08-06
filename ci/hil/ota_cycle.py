@@ -1781,9 +1781,23 @@ def _flash_arduino_cli(board, bad_romfs=False):
         rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
         if rc == 0:
             break
-        log("flash: %s DFU write failed (attempt %d/3) -- letting USB settle and retrying\n%s"
-            % (board, attempt + 1, out[-300:]))
+        log("flash: %s DFU write failed (attempt %d/3)\n%s" % (board, attempt + 1, out[-300:]))
         time.sleep(10)                       # let the device finish enumerating before re-opening
+        if "LIBUSB_ERROR_PIPE" in (out or ""):
+            # THE DEVICE IS WEDGED, NOT RACING -- retrying alone cannot fix it. A DfuSe device that
+            # hits an error enters dfuERROR and STALLS every subsequent control transfer, so each
+            # attempt fails identically ("Error during special command ERASE_PAGE download: -9").
+            # That is exactly what happened on the Portenta: three identical failures, and then
+            # EVERY later scenario in the leg failed the same way, on both legs, because nothing
+            # ever cleared the state. Confirmed by hand -- once cleared the device reports
+            # "dfuIDLE, No error condition" and erases fine.
+            # Reset it out of DFU through the debug core (no nRST: the stay-in-bootloader flag
+            # lives in RAM and survives the pin), let it boot, and let the next attempt re-enter
+            # DFU with the 1200-baud touch from a clean state.
+            log("flash: %s is in dfuERROR (stalled control transfer) -- core-resetting out of DFU"
+                % board)
+            jlink_core_reset(board)
+            _await_boot(board, budget=90)
     if rc != 0:
         raise RuntimeError("arduino flash factory failed rc=%d after 3 attempts: %s"
                            % (rc, out[-400:]))
