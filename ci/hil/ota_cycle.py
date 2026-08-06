@@ -1769,9 +1769,24 @@ def _flash_arduino_cli(board, bad_romfs=False):
         _await_boot(board, budget=90)
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
-    rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
+    # RETRY THE DFU WRITE. dfu-util intermittently fails to read the device's descriptors right
+    # after the 1200-baud touch -- "Failed to retrieve string descriptor 7 / Could not read name /
+    # Failed to parse memory layout for alternate interface 1", exit 74 -- i.e. it opened the
+    # device before the USB configuration was fully enumerated. It is a race in PROVISIONING, not
+    # anything the scenario is testing, and it lands on whichever scenario happens to be running:
+    # two consecutive Portenta legs failed this way, first on `delta`, then on `full`, with all
+    # seven other scenarios passing both times. Left alone it costs a whole 9-scenario leg (~3 h)
+    # to a transient. Bounded and loud, so a board that is genuinely unflashable still fails.
+    for attempt in range(3):
+        rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
+        if rc == 0:
+            break
+        log("flash: %s DFU write failed (attempt %d/3) -- letting USB settle and retrying\n%s"
+            % (board, attempt + 1, out[-300:]))
+        time.sleep(10)                       # let the device finish enumerating before re-opening
     if rc != 0:
-        raise RuntimeError("arduino flash factory failed rc=%d: %s" % (rc, out[-400:]))
+        raise RuntimeError("arduino flash factory failed rc=%d after 3 attempts: %s"
+                           % (rc, out[-400:]))
     # Just WATCH it come back. Measured by hand, running this exact command and touching nothing:
     # USB drops at :leave and the board re-enumerates 31 s later on its own, with the app checking
     # in -- so `:leave` needs no help. (An earlier claim here that it did was an artifact of the
