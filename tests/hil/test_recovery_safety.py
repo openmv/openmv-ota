@@ -175,3 +175,23 @@ def test_the_deferred_bench_file_write_is_followed_by_a_reset():
     reset = body.index("machine.reset()", write)
     assert reset > write, "the reset must follow the bench-file write"
     assert "_await_boot(" in body[reset:], "and must be confirmed by the board coming back"
+
+
+def test_the_uart_outcome_is_checked_before_the_cdc_is_probed():
+    """Order matters, and the wrong order cost ~316 s PER SCENARIO on the Portenta.
+
+    The only thing the bench files buy is a board logging to the marker UART. If it is already
+    doing that since this flash, they are on the board and there is nothing to do. Probing the CDC
+    to discover that is slower AND destructive: `_cdc_responsive()` Ctrl-Cs the running app, after
+    which `_await_boot` waits out its full budget for a boot marker that can no longer come.
+    Measured: the board was verifiable at 21:18:37 and the harness moved on at 21:23:54.
+    """
+    import inspect
+    import io
+    import tokenize
+    src = inspect.getsource(ota_cycle.flash_golden)
+    body = "".join(
+        tok.string if tok.type != tokenize.COMMENT else ""
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline))
+    assert body.index("_uart_live_since_flash()") < body.index("_cdc_responsive()"), (
+        "the cheap, non-invasive check must come first")
