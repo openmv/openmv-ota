@@ -641,7 +641,15 @@ def regression_scenarios(board, network):
         # until the bench says otherwise.
         # `watchdog` included: same STM32H7 WWDG as the H7 Plus, cyw4343 instead of the WINC,
         # so these two are also the control that says whether the WINC was ever special.
-        return ["delta", "full", "bad_sig", "bad_key", "watchdog"]
+        #
+        # The negative paths are back too. They were dropped at onboarding because they timed out
+        # with `install.*` markers missing -- the device never started the install -- but that was
+        # BEFORE the board could reliably install anything at all: these are the boards that hit
+        # the ceiling-read bug (a 256 KiB allocation to read a 68 KiB installer, fatal without
+        # external SDRAM) and the marker-UART faults that made a healthy board look dead. Every one
+        # of those is fixed, so the premise they were dropped on is stale. Measure again.
+        return ["delta", "full", "rollback", "corrupt", "corrupt_sha",
+                "bad_sig", "bad_key", "bad_version", "watchdog"]
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
@@ -1761,9 +1769,24 @@ def _flash_arduino_cli(board, bad_romfs=False):
         _await_boot(board, budget=90)
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
-    rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
+    # RETRY THE DFU WRITE. dfu-util intermittently fails to read the device's descriptors right
+    # after the 1200-baud touch -- "Failed to retrieve string descriptor 7 / Could not read name /
+    # Failed to parse memory layout for alternate interface 1", exit 74 -- i.e. it opened the
+    # device before the USB configuration was fully enumerated. It is a race in PROVISIONING, not
+    # anything the scenario is testing, and it lands on whichever scenario happens to be running:
+    # two consecutive Portenta legs failed this way, first on `delta`, then on `full`, with all
+    # seven other scenarios passing both times. Left alone it costs a whole 9-scenario leg (~3 h)
+    # to a transient. Bounded and loud, so a board that is genuinely unflashable still fails.
+    for attempt in range(3):
+        rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
+        if rc == 0:
+            break
+        log("flash: %s DFU write failed (attempt %d/3) -- letting USB settle and retrying\n%s"
+            % (board, attempt + 1, out[-300:]))
+        time.sleep(10)                       # let the device finish enumerating before re-opening
     if rc != 0:
-        raise RuntimeError("arduino flash factory failed rc=%d: %s" % (rc, out[-400:]))
+        raise RuntimeError("arduino flash factory failed rc=%d after 3 attempts: %s"
+                           % (rc, out[-400:]))
     # Just WATCH it come back. Measured by hand, running this exact command and touching nothing:
     # USB drops at :leave and the board re-enumerates 31 s later on its own, with the app checking
     # in -- so `:leave` needs no help. (An earlier claim here that it did was an artifact of the
