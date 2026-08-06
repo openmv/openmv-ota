@@ -457,6 +457,32 @@ SCENARIOS = {
                    "install.reboot", "boot.front_reject", "boot.mount.back"],
         "forbid": ["install.armed", "confirm.promoted"],
     },
+    # THE ONLY SCENARIO THAT STARTS FROM A PROMOTED BOARD. Everything else begins on golden, so
+    # the question "what happens when an update fails AFTER you have already taken one" had never
+    # been asked on hardware -- the run always ended when the first cycle settled. It matters in
+    # the field: the device is running the promoted image with only the FACTORY golden behind it,
+    # so a failed install does not cost you the update, it costs you every update ever taken. This
+    # asserts the anti-brick fallback still works from that state, and records where it lands.
+    "reinstall": {
+        "desc": "delta install -> promote, THEN a second update fails its sha256",
+        "publish": "delta", "app": "confirm", "end": "promoted",
+        "expect": ["boot.mount.front", "run.offer", "install.start", "install.armed",
+                   "confirm.promoted"],
+        "forbid": ["install.fallback", "install.reject"],
+        "then": {
+            "desc": "a SECOND install, from the PROMOTED image, fails sha256 -> back to golden",
+            "publish": "corrupt_sha", "version": "1.2.0", "end": "golden",
+            # install.reject_sha is the point: the integrity gate fires on a board that is NOT on
+            # golden. end="golden" then records the cost -- it falls all the way back to the
+            # factory image, losing the promoted version, because that is all BACK ever holds.
+            "expect": ["install.start", "install.reject_sha", "install.retry"],
+            "forbid": ["confirm.promoted"],
+            # Marker-scored: see the note at the phase-2 call site. The retry-exhaust fallback to
+            # golden is `corrupt`'s job and is slot-sized; asserting it here would make this
+            # scenario pass or fail on how big the board's slot is rather than on the gate.
+            "by_marker": True,
+        },
+    },
     "corrupt_sha": {
         # Distinct from `corrupt`: `corrupt` flips a COMPRESSED byte so the download fails mid-
         # decompress (a bare deflate error, before the integrity check). `corrupt_sha` flips a
@@ -650,7 +676,8 @@ def regression_scenarios(board, network):
         # of those is fixed, so the premise they were dropped on is stale. Measure again.
         return ["delta", "full", "rollback", "corrupt", "corrupt_sha",
                 "bad_sig", "bad_key", "bad_version", "watchdog"]
-    scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key", "bad_version"]
+    scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key",
+           "bad_version", "reinstall"]
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
     # path. The negative path (the WDT actually BITES when feeding stops, then recovers as a single
@@ -1794,9 +1821,23 @@ def _flash_arduino_cli(board, bad_romfs=False):
         rc, out = _arduino_dfu_run(board, argv, "flash factory", timeout=1500)
         if rc == 0:
             break
-        log("flash: %s DFU write failed (attempt %d/3) -- letting USB settle and retrying\n%s"
-            % (board, attempt + 1, out[-300:]))
+        log("flash: %s DFU write failed (attempt %d/3)\n%s" % (board, attempt + 1, out[-300:]))
         time.sleep(10)                       # let the device finish enumerating before re-opening
+        if "LIBUSB_ERROR_PIPE" in (out or ""):
+            # THE DEVICE IS WEDGED, NOT RACING -- retrying alone cannot fix it. A DfuSe device that
+            # hits an error enters dfuERROR and STALLS every subsequent control transfer, so each
+            # attempt fails identically ("Error during special command ERASE_PAGE download: -9").
+            # That is exactly what happened on the Portenta: three identical failures, and then
+            # EVERY later scenario in the leg failed the same way, on both legs, because nothing
+            # ever cleared the state. Confirmed by hand -- once cleared the device reports
+            # "dfuIDLE, No error condition" and erases fine.
+            # Reset it out of DFU through the debug core (no nRST: the stay-in-bootloader flag
+            # lives in RAM and survives the pin), let it boot, and let the next attempt re-enter
+            # DFU with the 1200-baud touch from a clean state.
+            log("flash: %s is in dfuERROR (stalled control transfer) -- core-resetting out of DFU"
+                % board)
+            jlink_core_reset(board)
+            _await_boot(board, budget=90)
     if rc != 0:
         raise RuntimeError("arduino flash factory failed rc=%d after 3 attempts: %s"
                            % (rc, out[-400:]))
@@ -2153,7 +2194,7 @@ def run_cycle_no_slot(cap, expect, timeout_s):
             "reached_end": expect <= set(cap.points())}
 
 
-def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
+def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=False):
     """Hard-reset the device and watch the server record + UART until the scenario's end
     state is reached (early exit) or the timeout elapses. Returns the observed state; the
     caller decides PASS/FAIL against the scenario's expect/forbid sets.
@@ -2210,7 +2251,7 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s):
     # the install goes. Waiting on that record means never concluding -- the run watches until its
     # timeout while the device, left running, re-installs over and over. Score their UART markers
     # instead; they are the same evidence the scenario's expect/forbid sets are written against.
-    by_marker = bool(_BOARD) and not BOARDS[_BOARD].get("server_record", True)
+    by_marker = by_marker or (bool(_BOARD) and not BOARDS[_BOARD].get("server_record", True))
     if by_marker:
         log("cycle: %s is not recorded server-side -- scoring the UART markers" % _BOARD)
     deadline = time.time() + timeout_s
@@ -2398,6 +2439,42 @@ def main():
             # fault forever, which is otherwise indistinguishable from a board with nothing to do.
             for text, hits in device_faults(cap).items():
                 log("  the device reported this %d time(s): %s" % (hits, text))
+        # A SECOND PHASE, for the paths that only exist AFTER a promote. Every scenario above
+        # starts from golden, so the whole "what happens to a board that has already taken an
+        # update" surface was unreachable: the run ends the moment the first cycle settles. That
+        # left the re-install fallback untested across the entire fleet -- the device is on the
+        # promoted image with golden in BACK, a NEW update fails its integrity gate, and where it
+        # lands is the question nobody had answered on hardware.
+        then = spec.get("then")
+        if then and trace["passed"]:
+            log("phase 2: %s" % then["desc"])
+            phase("publish2",
+                  lambda: publish_update(args.board, then["version"], then["publish"]))
+            cap.reset(time.time())               # score phase 2 on its own window
+            expect2, forbid2 = set(then["expect"]), set(then.get("forbid", ()))
+            # SCORE PHASE 2 ON ITS MARKERS, not on a version transition. The assertion is that
+            # the integrity gate fires from a non-golden start and the bad image never promotes --
+            # which the marker set states exactly. Waiting for the device to SETTLE back on golden
+            # additionally requires the retry-exhaust fallback, and that is slot-sized: each attempt
+            # writes the whole image before the sha check fails, so on the N6's 12 MiB slot three
+            # attempts run past the watch window. `corrupt_sha` documents the same trap and dodges
+            # it only because its device never leaves golden, making end="golden" true for free.
+            # Measured: N6 lan phase 2 came back missing=- forbidden=- reached=False -- every marker
+            # hit, nothing promoted, just not settled in time. RT1060 (4 MiB slot) passed.
+            result2 = phase("reinstall", lambda: run_cycle(
+                devid, "1.0.0", then["version"], then["end"], expect2, cap, args.timeout,
+                by_marker=then.get("by_marker", False)))
+            time.sleep(2)
+            marks2 = set(cap.points())
+            missing2, forbidden2 = sorted(expect2 - marks2), sorted(forbid2 & marks2)
+            trace["phase2"] = {"result": result2, "missing_expected": missing2,
+                               "forbidden_hit": forbidden2}
+            trace["passed"] = result2["reached_end"] and not missing2 and not forbidden2
+            if not trace["passed"]:
+                log("FAIL (phase 2): end=%s reached=%s missing=%s forbidden=%s"
+                    % (then["end"], result2["reached_end"], missing2 or "-", forbidden2 or "-"))
+                for text, hits in device_faults(cap).items():
+                    log("  the device reported this %d time(s): %s" % (hits, text))
     except Exception as e:
         trace["error"] = str(e)
         log("ERROR: " + str(e))

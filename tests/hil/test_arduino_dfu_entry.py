@@ -202,10 +202,12 @@ def test_arduino_flash_only_watches_after_leave():
     where the probing that followed the flash was killing the app, and it cost a wasted cycle."""
     body = _body("_flash_arduino_cli")
     assert "_await_boot" in body
-    # A pre-flash reset is fine (it is how a wedged board is reached at all). What must NOT happen
-    # is resetting AFTER the write: :leave self-recovers, so a reset there is churn that restarts a
-    # 33 s boot. Split on the flash call itself and check only what follows it.
-    after_flash = body.split("_arduino_dfu_run")[-1]
+    # A pre-flash reset is fine (it is how a wedged board is reached at all), and so is one inside
+    # the RETRY path -- a device stalled in dfuERROR has to be reset out of DFU or every attempt
+    # repeats the same stall. What must NOT happen is resetting after a SUCCESSFUL write: :leave
+    # self-recovers, so a reset there is churn that restarts a 33 s boot. The attempt loop ends at
+    # the raise, so everything after that is the success path.
+    after_flash = body.split("after 3 attempts")[-1]
     assert "jlink_core_reset" not in after_flash, ":leave self-recovers; no reset after the write"
     assert "_ensure_cdc" not in after_flash, (
         "nothing may probe the CDC after the flash -- that is what killed the app")
@@ -600,3 +602,25 @@ def test_the_arduino_dfu_write_is_retried():
     assert "for attempt in range(3)" in body, "the DFU write must be retried"
     assert body.index("for attempt in range(3)") < body.index('_arduino_dfu_run(board, argv, "flash factory"')
     assert "after 3 attempts" in src, "and must still fail loudly once the retries are spent"
+
+
+def test_a_stalled_dfu_device_is_reset_out_of_dfu_not_just_retried():
+    """LIBUSB_ERROR_PIPE means dfuERROR, and retrying a wedged device changes nothing.
+
+    A DfuSe device that hits an error STALLS every subsequent control transfer, so each attempt
+    fails identically ("Error during special command ERASE_PAGE download: -9"). On the Portenta
+    that took out three retries, then EVERY remaining scenario in the leg, then the other leg --
+    because nothing ever cleared the state. Confirmed by hand: once cleared it reports "dfuIDLE,
+    No error condition" and erases normally.
+
+    So the retry has to RECOVER, not repeat: core-reset out of DFU (never the nRST pin -- the
+    stay-in-bootloader flag lives in RAM and survives it) and let the next attempt re-enter with
+    the 1200-baud touch.
+    """
+    import inspect
+    src = inspect.getsource(ota_cycle._flash_arduino_cli)
+    body = "\n".join(line.split("#")[0] for line in src.splitlines())
+    assert "LIBUSB_ERROR_PIPE" in body, "the wedged case must be detected"
+    at = body.index("LIBUSB_ERROR_PIPE")
+    assert "jlink_core_reset(board)" in body[at:], "and recovered by resetting out of DFU"
+    assert "jlink_reset_pulse" not in body, "never the nRST pin on an Arduino board"
