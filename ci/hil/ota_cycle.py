@@ -13,7 +13,7 @@ the environment so nothing secret is committed:
 
     (the update server + its URL/token/store/CA are owned by ci/hil/bench_server -- each run
      spins up its OWN ephemeral server on the node, so no OTA_SERVER/OTA_TOKEN knob exists)
-    OTA_CA_BOARD    CA path ON THE BOARD             (default /flash/bench-ca.pem)
+    OTA_CA_BOARD    CA path ON THE BOARD             (default /rom/bench-ca.pem)
     WIFI_SSID/WIFI_PASSWORD   for WiFi boards
     PROJECT_DIR     the pegged project on the node   (default ~/proj)
     OTA_VENV, SDK_HOME, JLINK, DFU_UTIL, MPREMOTE    tool paths (sensible defaults)
@@ -54,9 +54,6 @@ CFG = {
     # Measured cost of the old way: after a deliberate watchdog bite the file was simply gone
     # and run() died 161 times on ENOENT, unable to check in at all.
     "ca_board": env("OTA_CA_BOARD", "/rom/bench-ca.pem"),
-    # /flash is still fine for things the OTA path does NOT depend on (the coverage UART hint):
-    # losing it costs visibility, not the ability to update.
-    "bench_flash_dir": env("OTA_BENCH_FLASH_DIR", "/flash"),
     "wifi_ssid": env("WIFI_SSID", ""),
     "wifi_pass": env("WIFI_PASSWORD", ""),
     "project": env("PROJECT_DIR", HOME + "/proj"),
@@ -1117,8 +1114,9 @@ def prepare(board, checkout, network, app="confirm"):
         log("prepare: openmv_wdt ENABLED=True (watchdog scenario)")  # watchdog would silently no-op
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
     # BAKE THE COVERAGE-UART FILE INTO THE ROMFS, so seeing the board never depends on the CDC.
-    # Written to /flash over the REPL it needs a working CDC -- and a scenario whose app ARMS THE
-    # WATCHDOG makes that impossible: every REPL touch kills the app, the feed stops, the watchdog
+    # THE HARNESS DOES NOT WRITE /flash AT ALL. Written there over the REPL it needs a working
+    # CDC -- and a scenario whose app ARMS THE WATCHDOG makes that impossible: every REPL touch
+    # kills the app, the feed stops, the watchdog
     # bites, and the board reboots into the same armed app. So the leg that follows `watchdog` or
     # `watchdog_bite` can never receive it, logs to USB instead, and the harness reports a dead
     # board that is in fact perfectly healthy (measured: N6 wifi failed exactly this way right
@@ -1133,55 +1131,8 @@ def prepare(board, checkout, network, app="confirm"):
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
     _ensure_cdc(board, allow_erase=True)   # pre-flash: erasing the romfs is safe, golden follows
-    # The bench files go over the CDC, so they cannot be written when recovery had to erase the
-    # romfs (that frees DFU but leaves no usable port -- see _ensure_cdc). Defer them: flash_golden
-    # reprovisions over DFU and brings the port back, and it writes them itself afterwards. Trying
-    # here regardless is what turned a recoverable board into a failed run.
-    if _cdc_responsive():
-        _flash_bench_files(board)
-    else:
-        log("prepare: no CDC (recovery erased the romfs) -- bench files deferred to after the "
-            "golden flash")
-
-
-def _flash_bench_files(board, _recovered=False):
-    """Push the bench CA + enable the coverage UART. Both live on /flash (survive the OTA): the CA
-    for run()'s TLS, and .hilcov_uart to switch logging onto the coverage UART.
-
-    A CANCELLED prior run can leave the mimxrt's /flash (FAT) corrupt or full, so these writes fail
-    -- the classic 'RESULT: FAIL at 3s' before golden is even reflashed. On an imx board, recover
-    ONCE via the CLI `flash erase`: it wipes just the user disk's MBR sector (blhost in the resident
-    SBL, config-register-free) and the firmware reformats a clean FAT on the next boot. A runtime
-    VfsFat.mkfs would crash the XIP-from-NOR mimxrt, so the SBL-side erase is the safe path. This
-    keeps bench contention (two runs colliding) from wedging the RT until a human power-cycles it."""
-    # PREFER USB-MSC on the boards that have been proven on it: /flash is exposed as a plain FAT
-    # disk, so the same two files can be dropped in as files -- no mpremote, no Ctrl-C, nothing that
-    # can kill a running app. Idempotent, so a normal run writes nothing and needs no reset; when it
-    # DOES write, the golden flash that follows is the re-mount that makes the board see them (the
-    # firmware cannot see a host-side write until it re-mounts).
-    if BOARDS[board].get("flash") == "arduino_cli":
-        want = {".hilcov_uart": str(BOARDS[board]["cov_uart"]).encode()}   # CA is in the romfs now
-        if _msc_put(want) is not None:
-            return                           # written (or already correct) without touching the REPL
-        # _msc_put has already said WHY. Name the cost here: the REPL path Ctrl-C's the running app,
-        # which is survivable now (the app stalls after logging) but is exactly what we are avoiding.
-        log("prepare: falling back to the REPL for the bench files -- this interrupts the app")
-    # The CA is NOT pushed here any more -- it is baked into the romfs (see CFG["ca_board"]).
-    # It is the one file run() cannot start without, so it must not depend on a filesystem that
-    # a cancelled run or a watchdog bite can leave empty.
-    try:
-        # enable the coverage UART on the board (bench-only file; survives across the OTA)
-        device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["bench_flash_dir"] +
-                    "/.hilcov_uart", BOARDS[board]["cov_uart"]))
-    except Exception as e:
-        if _recovered or BOARDS[board]["flash"] != "blhost_imx":
-            raise                            # non-imx, or already tried recovering -- give up loud
-        log("prepare: /flash write failed (%s) -> recover via `flash erase` (disk-MBR reformat)" % e)
-        sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board,
-            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=180)
-        time.sleep(8)                        # let the board boot + auto-reformat the blank FAT
-        _ensure_cdc(board)
-        _flash_bench_files(board, _recovered=True)   # retry on the freshly reformatted /flash
+    # NOTHING IS WRITTEN TO /flash. Both bench files are baked into the romfs above, so there is
+    # no CDC write to defer, no REPL to take, and nothing to re-deliver after the golden flash.
 
 
 def build_golden(board):
@@ -1197,73 +1148,8 @@ def build_golden(board):
 def flash_golden(board, bad_romfs=False):
     fn = globals()["_flash_" + BOARDS[board]["flash"]]
     fn(board, bad_romfs) if bad_romfs else fn(board)
-    # Golden is on and the CDC is back, so (re)write the bench files here. prepare() skips them when
-    # recovery had to erase the romfs -- this is where a deferred write lands. Idempotent, so the
-    # normal path just rewrites the same two files rather than needing a "was it deferred?" flag.
-    if not bad_romfs:
-        # WAIT for the board, then FAIL LOUDLY -- do not silently skip. This write is what puts
-        # /flash/.hilcov_uart on the board, and that file is the only thing telling the firmware to
-        # log to the marker UART. Gating it on an instantaneous _cdc_responsive() made it a RACE:
-        # the board needs ~30 s to enumerate after a flash, so when the port was up in time the
-        # write landed and the leg passed, and when it was not the write was skipped in silence, the
-        # board logged to USB instead, and the leg failed 25 minutes later with every marker
-        # missing. That is the whole of the N6 watchdog_bite flakiness -- pass, fail, pass, fail.
-        # ASK THE CHEAP, NON-INVASIVE QUESTION FIRST. The only thing these files buy us is a board
-        # logging to the marker UART -- so if it is ALREADY doing that since this flash, they are
-        # on the board and there is nothing to do. Probing the CDC to find that out is both slower
-        # and destructive: _cdc_responsive() takes the REPL with a Ctrl-C, which KILLS the running
-        # app, after which _await_boot waits out its full budget for a boot marker that can no
-        # longer come, and the CDC poll below adds more on top. Measured on the Portenta: the board
-        # was verifiable at 21:18:37 (mount + device_id on the UART) and the harness did not move
-        # on until 21:23:54 -- 316 s burned, per scenario, on a board that was already fine. That
-        # is most of why its legs ran ~4x the Nicla's.
-        if _uart_live_since_flash():
-            log("bench files: the marker UART is already live since this flash -- they are on the "
-                "board; skipping the CDC wait")
-            return
-        if not _cdc_responsive():
-            _await_boot(board, budget=120)   # it is probably still coming up after the flash
-        # POLL for the CDC rather than asking once. _await_boot above waits for a boot MARKER, so
-        # on the very board this matters for -- one whose marker UART is dead -- it cannot succeed
-        # and just burns its whole budget; a single check the instant it gives up is a coin flip.
-        # Measured on the N6: the CDC was absent here, yet answered the REPL fine at verify ~300 s
-        # later, so the one thing needed (writing .hilcov_uart) was skipped over a timing accident.
-        for _ in range(18):
-            if _cdc_responsive():
-                break
-            time.sleep(10)
-        if _cdc_responsive():
-            _flash_bench_files(board)
-            # ...AND REBOOT, or this write does nothing for THIS run. openmv_log reads
-            # /flash/.hilcov_uart exactly once, at import, so a file written after the board has
-            # already booted is invisible until it re-mounts. On the normal path prepare() writes
-            # these BEFORE the flash and the flash's own reboot picks them up; on the deferred path
-            # (recovery erased the romfs, so prepare could not write them) the write lands here,
-            # after that reboot, and nothing else restarts the board. Measured on the Portenta:
-            # the files were written here, the board then produced NOTHING on the marker UART, and
-            # the leg failed on "no device output since golden was flashed" -- a perfectly healthy
-            # board that had simply never been told which UART to log to. The REPL is already taken
-            # (the write above uses it), so this reset costs nothing extra.
-            log("bench files: written after the flash -- resetting so the firmware re-reads them")
-            try:
-                device_exec("import machine; machine.reset()", timeout=20, check=False)
-            except Exception:
-                pass                         # an I/O error here just means the reset landed
-            _await_boot(board, budget=150)
-        elif _uart_live_since_flash():
-            # Could not write them -- but the board is ALREADY logging to the marker UART, which is
-            # the only thing these files buy us. They survive across runs (they live on /flash, which
-            # a golden flash does not erase), so this is the normal steady state, not a fault. Do not
-            # fail a board that is demonstrably working: the point of the check is the OUTCOME
-            # (markers arriving), never the mechanism -- but the outcome has to be observed SINCE
-            # THIS FLASH (see _uart_live_since_flash), not at any point in the capture's history.
-            log("bench files: not rewritten (no CDC), but the marker UART is live -- they are "
-                "already on the board")
-        else:
-            raise RuntimeError(
-                "%s: golden is flashed, the board never came back to receive the bench files, AND "
-                "nothing is arriving on the marker UART. Without /flash/.hilcov_uart it logs to USB "
-                "and every scenario fails on missing markers." % board)
+    # NO POST-FLASH BENCH-FILE WRITE. Both files ride in the romfs the flash just wrote, so
+    # they are on the board the moment it boots -- no CDC wait, no REPL, no reset-to-re-read.
 
 
 def _partial_download(out):
@@ -1414,51 +1300,6 @@ def _msc_disk(budget=75):
         if time.time() >= deadline:
             return None
         time.sleep(3)
-
-
-def _msc_put(files, mnt="/tmp/hil-cam-msc"):
-    """Write ``{name: bytes}`` into the camera's FAT over USB-MSC. Returns True iff anything CHANGED.
-
-    IDEMPOTENT ON PURPOSE. A host-side write is not visible to the running firmware until it
-    re-mounts the filesystem, so writing on every run would mean needing a reset on every run. Compare
-    first and write only on a difference: the normal run touches nothing, and the caller only has to
-    force a reset in the rare case something actually changed. (Never write while the board is also
-    writing /flash -- concurrent FAT access is what corrupted the RT's disk.)
-    """
-    disk = _msc_disk()
-    if disk is None:
-        log("bench files: no camera disk enumerated -- board down, or two cameras attached")
-        return None                          # no MSC -> caller uses the REPL path
-    sh("mkdir -p %s" % mnt, check=False, quiet=True)
-    rc, out = sh("sudo mount -t vfat -o ro %s %s" % (disk, mnt), check=False, quiet=True)
-    if rc != 0:
-        # NOT the same failure as "no disk", and saying so matters: a disk that is present but
-        # unmountable is a node/permissions problem, while an absent one is a board problem.
-        log("bench files: %s present but mount failed rc=%d (%s)" % (disk, rc, (out or "").strip()[-160:]))
-        return None
-    try:
-        stale = [n for n, want in files.items()
-                 if not os.path.exists(os.path.join(mnt, n))
-                 or open(os.path.join(mnt, n), "rb").read() != want]
-    finally:
-        sh("sudo umount %s" % mnt, check=False, quiet=True)
-    if not stale:
-        log("bench files: already present and identical -- nothing written (no reset needed)")
-        return False
-    rc, out = sh("sudo mount -t vfat -o rw,flush %s %s" % (disk, mnt), check=False, quiet=True)
-    if rc != 0:
-        log("bench files: %s would not mount rw rc=%d (%s)" % (disk, rc, (out or "").strip()[-160:]))
-        return None
-    try:
-        for name in stale:
-            with open(os.path.join(mnt, name), "wb") as fh:
-                fh.write(files[name])
-        sh("sync", check=False, quiet=True)
-    finally:
-        sh("sudo umount %s" % mnt, check=False, quiet=True)
-    log("bench files: wrote %s over USB-MSC (board sees them after the next reset)"
-        % ", ".join(sorted(stale)))
-    return True
 
 
 def _await_boot(board, marker="boot: ready", budget=150):

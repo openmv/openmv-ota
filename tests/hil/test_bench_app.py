@@ -114,12 +114,12 @@ def test_the_generated_app_reads_the_ca_from_the_romfs():
             assert "/rom/" in src and "/flash/bench-ca" not in src, (net, app)
 
 
-def test_the_coverage_hint_is_not_tied_to_the_ca_location():
-    """These moved apart deliberately: the .hilcov_uart path used to be derived from the CA's
-    directory, so relocating the CA into the read-only romfs would have sent a /flash write
-    into /rom. Losing the coverage hint costs visibility; losing the CA costs updatability."""
+def test_both_bench_files_ride_in_the_romfs():
+    """The coverage hint used to be written to /flash, with its path DERIVED from the CA's
+    directory. Both now ship in the romfs: the CA because run() cannot check in without it, and
+    the hint because /flash writes needed a REPL, and taking the REPL kills a running app."""
     import inspect
 
-    src = inspect.getsource(ota_cycle._flash_bench_files)
-    assert "bench_flash_dir" in src
-    assert 'CFG["ca_board"].rsplit' not in src, "the hint must not follow the CA into the romfs"
+    src = inspect.getsource(ota_cycle.prepare)
+    assert '/app/.hilcov_uart' in src, "the coverage hint must be baked into the image"
+    assert 'ca_board' in src, "so must the CA"
