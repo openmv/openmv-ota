@@ -82,6 +82,10 @@ def _wdt_relax():  # pragma: no cover  (device)  # hil-residual-fn: thin wrapper
     return _wdt.relax() if _wdt is not None else _NoWdt()
 
 
+def _wdt_stall_guard(ms):  # pragma: no cover  (device)  # hil-residual-fn: thin wrapper over openmv_wdt.stall_guard; arms a soft timer, so it does nothing observable on a host
+    return _wdt.stall_guard(ms) if _wdt is not None else _NoWdt()
+
+
 def _wdt_feed():  # pragma: no cover  (device)
     if _wdt is not None:
         _wdt.feed()
@@ -191,7 +195,15 @@ def _should_confirm(slot, status_sector):
 # alignment, so chunked writes never need per-port re-alignment, and only one chunk
 # is ever held in RAM -- never a whole (up to ~1 MiB) image.
 _CHUNK = 4096
-_RESP_HEADERS_MAX = 64       # most a sane server sends is a handful; this only has to be far enough
+# No-progress ceiling for an install (ms). Must sit ABOVE the longest legitimate gap between two
+# feed() calls, and that gap is a relax() region -- relax feeds the HARDWARE watchdog from its ISR
+# but makes no feed() call, so the stall budget drains for its whole duration. So this has to clear
+# openmv_wdt.RELAX_MAX_MS (60 s) with margin. The two then layer cleanly: on a board WITH a watchdog
+# armed, relax's own budget expires first and the watchdog bites; on a board WITHOUT one, this is
+# the only thing left, and it fires here. A false trigger costs one install attempt, which the
+# device retries -- cheap against a hang that needs someone with a power cable.
+_INSTALL_STALL_MS = 90000
+_RESP_HEADERS_MAX = 64     # most a sane server sends is a handful; this only has to be far enough
 #                              above normal that it never trips on a real reply while still ending a
 #                              header stream that never does.
 _RESP_MAX = 8 * 1024         # a check-in reply is grants + version info;
@@ -844,7 +856,17 @@ def install(url, ca=None):  # pragma: no cover
     with _wdt_relax():
         exec(_read_file(here + "/data/installer.py", "r"), ns)
     log.debug("install: staged installer")           # milestone + HIL path witness
-    ns["run"](url, ca, cfg)  # hil-residual: terminal call into the RAM installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
+    # STALL GUARD ACROSS THE WHOLE INSTALL. A blocking network call can park in C and never return
+    # (measured: an N6 and an H7 Plus silent 555 s in the check-in, a Nicla dead mid-download after
+    # its first 4 KB block). Nothing in Python breaks out of that -- the interpreter is not running
+    # -- so on a board with no hardware watchdog armed the device is simply gone until a human
+    # power-cycles it. A HARD-IRQ timer does still fire while the main thread sits in that C call,
+    # and every feed() the installer already makes doubles as a progress report, so a stall resets
+    # the board and the next boot retries. Reversible (a soft timer can be deinit'd, where WWDG and
+    # IWDG cannot), which is what makes it safe to arm here and tear down on the way out -- it
+    # touches no hardware watchdog and so cannot start the stm32 IWDG.
+    with _wdt_stall_guard(_INSTALL_STALL_MS):  # hil-residual: arms a soft timer; its only observable effect is the reset it triggers on a stall, which by definition leaves no marker of its own -- a healthy install is witnessed by install.* as before
+        ns["run"](url, ca, cfg)  # hil-residual: terminal call into the RAM installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
 
 
 def _resolve_ca(ca, base):  # pragma: no cover

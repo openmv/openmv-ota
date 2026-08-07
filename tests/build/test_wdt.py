@@ -259,3 +259,107 @@ def test_relax_max_ms_stays_within_its_derived_range():
 
     assert _mod.RELAX_MAX_MS >= 3 * _CHECKIN_TIMEOUT * 1000
     assert _mod.RELAX_MAX_MS <= 90000
+
+
+# --- stall_guard(): a watchdog that needs no watchdog ---------------------------------
+# The half of the hang that a hardware watchdog cannot cover, because on most boards none is
+# armed. A hard-IRQ timer still fires while the main thread is parked in a C call, so progress
+# (feed()) can be policed from the ISR and a stall turned into a reset.
+
+def test_feed_reports_progress_to_an_armed_guard(monkeypatch):
+    """feed() already marks a step of real work, so the guard needs no new call sites."""
+    monkeypatch.setattr(_mod, "_stall_reload", 10, raising=False)
+    monkeypatch.setattr(_mod, "_stall_budget", 3, raising=False)
+    _mod.feed()
+    assert _mod._stall_budget == 10, "a feed must refill the no-progress allowance"
+
+
+def test_guard_resets_the_board_when_progress_stops(monkeypatch):
+    """The whole point: no feed() for the timeout -> machine.reset()."""
+    resets = []
+    monkeypatch.setattr(_mod, "_reset", lambda: resets.append(1), raising=False)
+    monkeypatch.setattr(_mod, "_stall_reload", 3, raising=False)
+    monkeypatch.setattr(_mod, "_stall_budget", 3, raising=False)
+    for _ in range(3):
+        _mod._stall_tick(None)
+    assert resets == [], "must not reset while the allowance remains"
+    _mod._stall_tick(None)
+    assert resets == [1], "a drained allowance must reset the board"
+
+
+def test_progress_keeps_the_guard_from_firing(monkeypatch):
+    """A slow-but-working install must never be killed."""
+    resets = []
+    monkeypatch.setattr(_mod, "_reset", lambda: resets.append(1), raising=False)
+    monkeypatch.setattr(_mod, "_stall_reload", 2, raising=False)
+    monkeypatch.setattr(_mod, "_stall_budget", 2, raising=False)
+    for _ in range(20):
+        _mod._stall_tick(None)
+        _mod.feed()                     # the installer feeds as it works
+    assert resets == [], "progress must hold the guard off indefinitely"
+
+
+def test_guard_is_disarmed_on_the_way_out(monkeypatch):
+    """Reversible is the property that makes this safe to wrap around just the install --
+    unlike WWDG/IWDG, which cannot be turned off once armed. A guard that outlived its region
+    would reset the app later, for doing nothing wrong."""
+    monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
+    g = _mod.stall_guard(1000)
+    g.__exit__()
+    assert _mod._stall_reload == 0, "a torn-down guard must not police anything"
+    assert _mod._stall_budget == 0
+
+
+def test_a_disarmed_guard_never_resets(monkeypatch):
+    """With reload at 0, feed() leaves the budget at 0 -- so the ISR must not treat an
+    unarmed guard as a stall and reset a perfectly healthy board."""
+    resets = []
+    monkeypatch.setattr(_mod, "_reset", lambda: resets.append(1), raising=False)
+    monkeypatch.setattr(_mod, "_stall_reload", 0, raising=False)
+    monkeypatch.setattr(_mod, "_stall_budget", 0, raising=False)
+    monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
+    _mod.feed()
+    assert _mod._stall_budget == 0
+    # The ISR is only ever wired while a guard is armed, so an unarmed budget is never ticked.
+    assert _mod._stall_timer is None, "no timer means the ISR cannot run"
+
+
+def test_install_stall_ceiling_clears_the_longest_relax_region():
+    """A relax() region makes NO feed() call -- it feeds the hardware watchdog from its ISR --
+    so the stall budget drains for its whole duration. If the install ceiling did not clear
+    RELAX_MAX_MS, every install that took a slow TLS handshake would reset the board."""
+    from openmv_ota.build.device.openmv_ota import _INSTALL_STALL_MS
+
+    assert _INSTALL_STALL_MS > _mod.RELAX_MAX_MS
+
+
+def test_guard_arms_a_hard_irq_timer_and_tears_it_down(monkeypatch):
+    """HARD IRQ is the whole mechanism: a soft-scheduled callback would not run while the main
+    thread is parked in a C call, which is exactly the state this exists to escape."""
+    made = {}
+
+    class _FakeTimer:
+        def __init__(self, tid, freq=None, hard=None, callback=None):
+            made["tid"], made["freq"], made["hard"], made["cb"] = tid, freq, hard, callback
+
+        def deinit(self):
+            made["deinit"] = True
+
+    fake = type(sys)("machine")
+    fake.Timer = _FakeTimer
+    fake.reset = lambda: made.setdefault("reset", True)
+    monkeypatch.setitem(sys.modules, "machine", fake)
+    monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
+    monkeypatch.setattr(_mod, "_stall_reload", 0, raising=False)
+    monkeypatch.setattr(_mod, "_stall_budget", 0, raising=False)
+
+    with _mod.stall_guard(1000):
+        assert made["hard"] is True, "must be a hard-IRQ timer"
+        assert made["tid"] == _mod.TIMER_ID
+        assert _mod._stall_reload == int(1000 * _mod.FEED_HZ / 1000)
+        assert _mod._stall_budget == _mod._stall_reload, "must start with a full allowance"
+        assert _mod._reset is fake.reset, "machine.reset must be PRE-BOUND (no ISR allocation)"
+
+    assert made.get("deinit") is True, "the timer must not outlive the region"
+    assert _mod._stall_timer is None
+    assert _mod._stall_reload == 0

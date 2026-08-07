@@ -124,10 +124,19 @@ _timer = None
 _depth = 0             # relax() nesting depth; the ISR feed stops only when it returns to 0
 _budget = 0            # ISR feeds REMAINING (ticks). Counts down in _tick; at 0 the feeding stops
 #                        and the watchdog is allowed to bite. See RELAX_MAX_MS.
+_stall_timer = None    # stall_guard()'s hard-IRQ timer
+_stall_budget = 0      # ticks of NO PROGRESS remaining before stall_guard() resets the board
+_stall_reload = 0      # what feed() reloads _stall_budget to (0 = no guard armed)
+_reset = None          # pre-bound machine.reset, so the stall ISR allocates nothing
 
 
 def feed():
-    """Feed the watchdog (call from your main loop). No-op when the watchdog is off."""
+    """Feed the watchdog (call from your main loop). No-op when the watchdog is off.
+
+    Also reports PROGRESS to an armed ``stall_guard()`` -- every feed already marks a step of
+    real work, so the guard needs no new call sites."""
+    global _stall_budget
+    _stall_budget = _stall_reload
     if _wdt is not None:
         _wdt.feed()  # pragma: no cover (device)  # hil-residual: watchdog-enabled feed; the bench runs ENABLED=False (opt-in), so _wdt stays None and this is skipped -- now exercised on HW by the watchdog HIL scenario (a passing run proves the armed path ran), but marker-less (no log line), so it stays a residual
 
@@ -208,6 +217,67 @@ def relax(max_ms=None):
     you know is short; keep it comfortably above the op's real worst case, because
     overrunning the budget resets the board."""
     return _Relax(max_ms)
+
+
+def _stall_tick(t):  # pragma: no cover (device)  # hil-residual-fn: stall_guard ISR; fires only while a guard is armed (install path), and its only observable effect is the reset it triggers
+    # NO PROGRESS accounting. feed() reloads the budget from the main thread; this drains it.
+    # Small-int arithmetic on a module global -- no allocation, legal in a hard-IRQ callback.
+    global _stall_budget
+    if _stall_budget > 0:
+        _stall_budget -= 1
+    else:
+        _reset()   # pre-bound machine.reset -- the ONLY exit from a C call that never returns
+
+
+class _StallGuard:
+    """See stall_guard()."""
+
+    def __init__(self, timeout_ms):
+        self._ticks = int(timeout_ms * FEED_HZ / 1000)
+
+    def __enter__(self):
+        global _stall_timer, _stall_budget, _stall_reload, _reset
+        if _stall_timer is None:  # pragma: no cover (device)  # hil-residual: device-only arm (host has no machine.Timer)
+            import machine  # hil-residual: stall-guard timer setup
+            _reset = machine.reset  # hil-residual: pre-bound so the ISR allocates nothing
+            _stall_reload = self._ticks  # hil-residual: what feed() reloads to
+            _stall_budget = self._ticks  # hil-residual: start with a full allowance
+            _stall_timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_stall_tick)  # hil-residual: hard IRQ so it fires while the main thread is parked in C
+        return self
+
+    def __exit__(self, *args):
+        global _stall_timer, _stall_reload, _stall_budget
+        if _stall_timer is not None:  # pragma: no cover (device)  # hil-residual: device-only teardown
+            _stall_timer.deinit()  # hil-residual: the guard must not outlive its region
+            _stall_timer = None  # hil-residual: bare clear
+        _stall_reload = 0
+        _stall_budget = 0
+        return False
+
+
+def stall_guard(timeout_ms):
+    """Reset the board if NO PROGRESS is made for ``timeout_ms`` -- a watchdog that needs no
+    watchdog, and that can be TURNED OFF again.
+
+    This exists because a blocking network call can park in C and never return, and nothing in
+    Python can break out of that: the interpreter is not running, so no timeout fires and no
+    retry happens. On a board with no hardware watchdog armed that state is permanent.
+
+    The trick is that a HARD-IRQ timer still fires while the main thread sits in a C call --
+    interrupts are enabled during network I/O (unlike a flash erase, which disables them, and
+    where the ISR therefore simply does not run and cannot false-trigger). ``feed()`` reloads the
+    budget from the main thread, so every existing feed doubles as a progress report; when the
+    budget drains, the ISR calls ``machine.reset()``.
+
+    Unlike the stm32 hardware watchdogs this is REVERSIBLE -- a soft timer can be deinit'd, where
+    WWDG/IWDG cannot be turned off once armed. That is what makes it safe to wrap around just the
+    install and leave the app with no lasting obligation to feed anything. It touches no hardware
+    watchdog, so it cannot start the IWDG.
+
+    Size ``timeout_ms`` above the longest legitimate no-progress gap (see RELAX_MAX_MS): a false
+    trigger costs one install attempt, which the device then retries -- cheap next to a hang that
+    needs a human with a power cable."""
+    return _StallGuard(timeout_ms)
 
 
 def _reject_stm32_iwdg(wdt_id, why):  # pragma: no cover (device)  # hil-residual-fn: the IWDG guard; reaching it needs an stm32 board with WDT_ID=IWDG or a WWDG-less build, neither of which the bench runs (the boards auto-select a working WWDG)
