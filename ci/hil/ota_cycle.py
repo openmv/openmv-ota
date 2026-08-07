@@ -926,11 +926,18 @@ def bench_main_py(board, net, app="confirm"):
     # GOLDEN boot still starts run() and performs the install, so install.armed and every run.*
     # marker the scenario expects are witnessed exactly as before; only the trial boot goes quiet,
     # which is what makes the rejection deterministic instead of a coin flip.
-    start_run = "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
+    # recover=_bring_up: after 3 consecutive failed cycles run() rebuilds the network rather than
+    # retrying a stack that may be WEDGED. This is not theoretical on the bench -- the H7 Plus's
+    # ATWINC1500 reaches a state where every check-in fails `OSError(22)` (EINVAL) forever, alive and
+    # polling, never recovering, which is what `reinstall` was failing on. _bring_up CONSTRUCTS a new
+    # network.WINC(), and that path hard-resets the chip (winc_init -> nm_bsp_reset), so re-using the
+    # same bring-up the app booted with is what clears it. Wiring it here means the fleet actually
+    # EXERCISES the hook the generated main.py ships with, instead of shipping it untested.
+    start_run = "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5, recover=_bring_up))\n" % (
         CFG["server"], CFG["ca_board"])
     if app == "no_confirm":
         start_run = ("    if not openmv_ota.status().get('trial'):\n"
-                     "        asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5))\n" % (
+                     "        asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5, recover=_bring_up))\n" % (
                          CFG["server"], CFG["ca_board"]))
         trial_policy = (
             "    st = openmv_ota.status()\n"
@@ -1002,6 +1009,11 @@ def bench_main_py(board, net, app="confirm"):
         "import network\n"
         "import openmv_ota\n"
         "_blog = logging.getLogger('openmv_ota')\n\n\n"
+        # The bring-up is a FUNCTION so run() can call it again as its recover hook -- one
+        # definition of "get this device online", used at boot and after a wedge.
+        "async def _bring_up():\n"
+        "    " + bring_up +
+        "\n\n"
         "async def main():\n"
         "    _blog.info('app: main() started')\n"
         # NAME THE APP THE BOARD IS ACTUALLY RUNNING. Every scenario's golden is version 1.0.0, so
@@ -1016,7 +1028,7 @@ def bench_main_py(board, net, app="confirm"):
         # a BaseException) -- the board can simply say who it is instead.
         "    _blog.info('app: device_id %s' % openmv_ota.identity().get('device_id'))\n"
         "    openmv_ota.sync()  # apply bundled coprocessor resources early (no-op if none)\n"
-        "    " + bring_up +
+        "    await _bring_up()\n"
         "    _blog.info('app: network up, starting run()')\n"
         + start_run +
         trial_policy + "\n\n"

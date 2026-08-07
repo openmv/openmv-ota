@@ -4,6 +4,20 @@ Scaffolded into a project at ``device/openmv_wdt.py``; ``build firmware`` freeze
 ``openmv_wdt``) so the installer and your app share one watchdog. Like ``openmv_log``
 it's **yours to edit** and **off by default**.
 
+**WHY AN OTA DEVICE WANTS THIS ARMED -- it is the ONLY thing that recovers a parked board.**
+A blocking network call can park in C and never come back: measured repeatedly on this fleet, an
+N6 and an H7 Plus each sat silent 555 s inside the check-in, and a Nicla stopped dead mid-download
+after its first 4 KB block. Nothing in Python breaks out of that -- the interpreter is not running,
+so no timeout fires and no retry happens.
+
+Nor does a software timer. ``stall_guard()`` below arms a hard-IRQ timer meant to reset a stalled
+board, and on an N6 `delta` leg it was armed, the check-in parked, and it STILL sat silent for
+555 s: a soft timer dispatches through SysTick/PendSV and the scheduler, and a thread parked in
+mbedtls/lwIP does not let that run. So the software backstop is not a substitute for this one.
+
+Only the HARDWARE watchdog counts independently of the CPU. Armed, the park becomes a reset and a
+retry; unarmed, the device is simply gone until someone power-cycles it.
+
 Use the DEEP-SLEEP-SAFE watchdog (``WDT_ID`` below): the one that STOPS in deep sleep, so it
 can't reset you while you sleep. On stm32 that's the WWDG, whose window is **short** -- 167 ms
 max on the N6 -- so this is a **tens-of-ms** discipline, not seconds. Edit the config below,
@@ -30,6 +44,11 @@ Only as a LAST RESORT, for a single op you truly can't subdivide, wrap it::
 **regardless of whether your code is making progress**, so for its duration the watchdog is
 effectively DISABLED (it can only catch a total CPU/interrupt death, not a stuck loop). Keep its
 use rare and its scope minimal; prefer subdividing + progress-based feeding instead.
+
+It is therefore **BOUNDED**: after ``RELAX_MAX_MS`` the ISR stops feeding and the watchdog bites.
+Without that bound a blocking C call that never returns is fed forever, so an armed board hangs
+until it is power-cycled -- the opposite of what arming a watchdog is for, and something we have
+now measured on two boards.
 
 On every OpenMV port ``machine.Timer`` is the virtual/soft timer (id ``-1`` -- the only
 id it accepts), and ``hard=True`` runs its callback in the SysTick/PendSV interrupt
@@ -86,21 +105,58 @@ TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board
 TIMER_ID = -1          # machine.Timer id; on OpenMV ports only the soft timer (-1) exists
 FEED_HZ = 50           # relax() ISR feed rate (Hz); keep WELL above 1000 / TIMEOUT_MS so it feeds
 #                        many times per window (10 Hz was IWDG-era; a ~100 ms window needs ~50+)
+# HOW LONG relax() MAY FEED BEFORE IT GIVES UP. This is what stops relax() from turning a hang into
+# an ETERNAL hang. Its ISR feeds on a timer, NOT on progress, so for the life of the region the
+# watchdog is effectively disabled -- and a blocking C call that never returns is fed forever: the
+# device sits there, armed watchdog and all, until someone power-cycles it. That is measured, not
+# theoretical (an N6 sat silent for 555 s inside the check-in's relax with the watchdog ARMED, and
+# an H7 Plus did the same). Past this budget the ISR stops feeding, the watchdog bites, and the
+# board reboots into a retry -- which is the whole point of arming one.
+# DERIVED, not picked. Both directions are dangerous, so the number is sized off the real ops:
+#   * too LOW resets a healthy-but-slow board, and a board that resets every time the network is
+#     merely slow is worse than the hang -- it never finishes anything.
+#   * too HIGH just leaves the device dead for longer before it recovers.
+# The governing bound is the check-in's own socket timeout (openmv_ota._CHECKIN_TIMEOUT = 15 s),
+# which caps the TLS handshake and each recv; a pathological check-in walks a few of those in one
+# region, so ~60 s is roughly 4x the worst REAL case. The other long region, the NTP walk, is
+# smaller than it looks: openmv_rtc tries the configured host plus ONE rotating fallback per sync
+# at a 4 s timeout each, so ~20 s, not the whole fallback list.
+# Keep this comfortably above both. It is a HANG bound, not a performance knob.
+RELAX_MAX_MS = 60000
 
 _wdt = None
 _feed = None           # pre-bound _wdt.feed, so the hard-IRQ callback allocates nothing
 _timer = None
 _depth = 0             # relax() nesting depth; the ISR feed stops only when it returns to 0
+_budget = 0            # ISR feeds REMAINING (ticks). Counts down in _tick; at 0 the feeding stops
+#                        and the watchdog is allowed to bite. See RELAX_MAX_MS.
+_stall_timer = None    # stall_guard()'s hard-IRQ timer
+_stall_budget = 0      # ticks of NO PROGRESS remaining before stall_guard() resets the board
+_stall_reload = 0      # what feed() reloads _stall_budget to (0 = no guard armed)
+_stall_depth = 0       # stall_guard() nesting depth; the guard is torn down only at 0
+_reset = None          # pre-bound machine.reset, so the stall ISR allocates nothing
 
 
 def feed():
-    """Feed the watchdog (call from your main loop). No-op when the watchdog is off."""
+    """Feed the watchdog (call from your main loop). No-op when the watchdog is off.
+
+    Also reports PROGRESS to an armed ``stall_guard()`` -- every feed already marks a step of
+    real work, so the guard needs no new call sites."""
+    global _stall_budget
+    _stall_budget = _stall_reload
     if _wdt is not None:
         _wdt.feed()  # pragma: no cover (device)  # hil-residual: watchdog-enabled feed; the bench runs ENABLED=False (opt-in), so _wdt stays None and this is skipped -- now exercised on HW by the watchdog HIL scenario (a passing run proves the armed path ran), but marker-less (no log line), so it stays a residual
 
 
 def _tick(t):  # pragma: no cover (device)  # hil-residual-fn: watchdog-enabled ISR callback; only wired when a watchdog is started (ENABLED=True, opt-in) -- now exercised on HW by the watchdog HIL scenario (a passing run proves the armed path ran), but marker-less (no log line), so it stays a residual
-    _feed()    # pre-bound method -- no attribute lookup, safe in a hard-IRQ callback
+    # Feed only while the region still has budget. Small-int arithmetic on a module global:
+    # no allocation, so this stays legal in a hard-IRQ callback (which runs under gc_lock).
+    global _budget
+    if _budget > 0:
+        _budget -= 1
+        _feed()   # pre-bound method -- no attribute lookup, safe in a hard-IRQ callback
+    # else: BUDGET SPENT -- stop feeding on purpose and let the watchdog bite. A region that has
+    # run this long is not slow, it is stuck; a reset is the only way back (see RELAX_MAX_MS).
 
 
 class _Relax:
@@ -108,9 +164,16 @@ class _Relax:
     of a long blocking op, then stops -- so the watchdog goes back to needing the main
     loop afterward. A no-op when the watchdog is off."""
 
+    def __init__(self, max_ms=None):
+        self._ticks = int((RELAX_MAX_MS if max_ms is None else max_ms) * FEED_HZ / 1000)
+
     def __enter__(self):
-        global _timer, _depth
+        global _timer, _depth, _budget
         _depth += 1
+        # Nesting keeps the LONGER budget: an inner region must not shorten the outer one's
+        # allowance and reset a board that was still legitimately working.
+        if self._ticks > _budget:
+            _budget = self._ticks
         if _wdt is not None and _timer is None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (ENABLED=False on the bench -> body skipped)
             # FEED FIRST. Setting the ISR feed up is itself unfed: `import machine` and the Timer
             # allocation below both allocate, and an allocation can trigger a collect -- measured
@@ -132,7 +195,7 @@ class _Relax:
         return self
 
     def __exit__(self, *args):
-        global _timer, _depth
+        global _timer, _depth, _budget
         # COUNT THE NESTING. __enter__ starts the timer only when there isn't one, but this used to
         # stop it unconditionally -- so an INNER relax() exiting would kill the OUTER region's feed
         # and leave it running unfed to its end, silently. Nothing nests today; this is the same
@@ -140,6 +203,8 @@ class _Relax:
         _depth -= 1
         if _depth < 0:                       # unbalanced use: never leave it wedged below zero
             _depth = 0
+        if _depth == 0:
+            _budget = 0                      # region over -- the ISR must not outlive it
         if _timer is not None and _depth == 0:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (no timer started on the bench -> body skipped)
             _timer.deinit()  # hil-residual: watchdog-enabled timer teardown (opt-in)
             _timer = None  # hil-residual: watchdog-enabled timer clear (opt-in)
@@ -147,10 +212,108 @@ class _Relax:
         return False
 
 
-def relax():
+def relax(max_ms=None):
     """A context manager that keeps the watchdog fed (via a timer ISR) across a long
-    blocking op. No-op when the watchdog is off."""
-    return _Relax()
+    blocking op. No-op when the watchdog is off.
+
+    BOUNDED ON PURPOSE. The ISR feeds on a timer, not on progress, so while the region
+    is open the watchdog cannot catch a stuck loop -- and a blocking C call that never
+    returns would otherwise be fed FOREVER, leaving an armed board hung until someone
+    power-cycles it. After ``max_ms`` (default ``RELAX_MAX_MS``) the ISR stops feeding
+    and the watchdog is allowed to do its job. Pass a smaller ``max_ms`` for a region
+    you know is short; keep it comfortably above the op's real worst case, because
+    overrunning the budget resets the board."""
+    return _Relax(max_ms)
+
+
+def _stall_tick(t):  # pragma: no cover (device)  # hil-residual-fn: stall_guard ISR; fires only while a guard is armed (install path), and its only observable effect is the reset it triggers
+    # NO PROGRESS accounting. feed() reloads the budget from the main thread; this drains it.
+    # Small-int arithmetic on a module global -- no allocation, legal in a hard-IRQ callback.
+    global _stall_budget
+    if not _stall_reload:
+        return     # NO GUARD ARMED. Belt-and-braces: if this timer ever outlived its region (a
+        #            deinit that did not take), an unarmed budget of 0 would otherwise read as
+        #            "stalled" and reset a perfectly healthy board, forever. Refuse to act unless
+        #            a region actually armed us.
+    if _stall_budget > 0:
+        _stall_budget -= 1
+    else:
+        _reset()   # pre-bound machine.reset -- the ONLY exit from a C call that never returns
+
+
+class _StallGuard:
+    """See stall_guard()."""
+
+    def __init__(self, timeout_ms):
+        self._ticks = int(timeout_ms * FEED_HZ / 1000)
+
+    def __enter__(self):
+        global _stall_timer, _stall_budget, _stall_reload, _reset, _stall_depth
+        # COUNT THE NESTING, for the same reason relax() has to: an inner region exiting must not
+        # tear down the outer one's guard and leave the rest of it unpoliced. run() guards the
+        # check-in and install() guards itself, so these DO nest the moment an install is offered.
+        _stall_depth += 1
+        if self._ticks > _stall_budget:
+            _stall_budget = self._ticks       # nesting keeps the LONGER allowance
+            _stall_reload = self._ticks
+        if _stall_timer is None:  # pragma: no cover (device)  # hil-residual: device-only arm (host has no machine.Timer)
+            import machine  # hil-residual: stall-guard timer setup
+            _reset = machine.reset  # hil-residual: pre-bound so the ISR allocates nothing
+            _stall_reload = self._ticks  # hil-residual: what feed() reloads to
+            _stall_budget = self._ticks  # hil-residual: start with a full allowance
+            _stall_timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_stall_tick)  # hil-residual: hard IRQ so it fires while the main thread is parked in C
+        return self
+
+    def __exit__(self, *args):
+        global _stall_timer, _stall_reload, _stall_budget, _stall_depth
+        _stall_depth -= 1
+        if _stall_depth < 0:                  # unbalanced use: never wedge below zero
+            _stall_depth = 0
+        if _stall_depth:                      # an OUTER region is still running -- keep policing it
+            return False
+        if _stall_timer is not None:  # pragma: no cover (device)  # hil-residual: device-only teardown
+            _stall_timer.deinit()  # hil-residual: the guard must not outlive its region
+            _stall_timer = None  # hil-residual: bare clear
+        _stall_reload = 0
+        _stall_budget = 0
+        return False
+
+
+def stall_guard(timeout_ms):
+    """Reset the board if NO PROGRESS is made for ``timeout_ms`` -- a watchdog that needs no
+    watchdog, and that can be TURNED OFF again.
+
+    This exists because a blocking network call can park in C and never return, and nothing in
+    Python can break out of that: the interpreter is not running, so no timeout fires and no
+    retry happens. On a board with no hardware watchdog armed that state is permanent.
+
+    The idea is that a HARD-IRQ timer keeps firing while the main thread sits in a C call.
+    ``feed()`` reloads the budget from the main thread, so every existing feed doubles as a
+    progress report; when the budget drains, the ISR calls ``machine.reset()``.
+
+    **MEASURED LIMIT -- this does NOT rescue a park inside the network stack.** On an N6 `delta`
+    leg the check-in parked with this guard armed and the board sat silent for 555 s: the ISR
+    never dispatched, so the reset never came. A soft timer is delivered through SysTick/PendSV
+    and the MicroPython scheduler, and a thread parked inside mbedtls/lwIP evidently does not let
+    that dispatch run. A `time.sleep()` bench test DOES trigger it -- sleep yields to the
+    scheduler -- so that test proved the mechanism, not the case that matters. Do not read a
+    passing bench check as coverage of the real hang.
+
+    What this leaves it good for: stalls where the interpreter is still being scheduled (a Python
+    loop that stops making progress, a driver call that does allow ISRs). For a park inside a
+    blocking C call the ONLY thing that gets the board back is the HARDWARE watchdog, which
+    counts independently of the CPU -- which is why ENABLED matters and why relax() had to stop
+    feeding blindly.
+
+    Unlike the stm32 hardware watchdogs this is REVERSIBLE -- a soft timer can be deinit'd, where
+    WWDG/IWDG cannot be turned off once armed. That is what makes it safe to wrap around just the
+    install and leave the app with no lasting obligation to feed anything. It touches no hardware
+    watchdog, so it cannot start the IWDG.
+
+    Size ``timeout_ms`` above the longest legitimate no-progress gap (see RELAX_MAX_MS): a false
+    trigger costs one install attempt, which the device then retries -- cheap next to a hang that
+    needs a human with a power cable."""
+    return _StallGuard(timeout_ms)
 
 
 def _reject_stm32_iwdg(wdt_id, why):  # pragma: no cover (device)  # hil-residual-fn: the IWDG guard; reaching it needs an stm32 board with WDT_ID=IWDG or a WWDG-less build, neither of which the bench runs (the boards auto-select a working WWDG)

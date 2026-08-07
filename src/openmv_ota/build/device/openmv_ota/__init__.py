@@ -191,6 +191,9 @@ def _should_confirm(slot, status_sector):
 # alignment, so chunked writes never need per-port re-alignment, and only one chunk
 # is ever held in RAM -- never a whole (up to ~1 MiB) image.
 _CHUNK = 4096
+_RESP_HEADERS_MAX = 64     # most a sane server sends is a handful; this only has to be far enough
+#                              above normal that it never trips on a real reply while still ending a
+#                              header stream that never does.
 _RESP_MAX = 8 * 1024         # a check-in reply is grants + version info;
                              # kept roomy on purpose -- rejecting a real
                              # reply breaks OTA, the costlier failure
@@ -440,7 +443,8 @@ def _offer(resp):
 
 
 async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
-              ca=None, ntp_host=None):  # pragma: no cover  (device: the network loop)
+              ca=None, ntp_host=None, recover=None,
+              recover_after=3):  # pragma: no cover  (device: the network loop)
     """The OTA lifecycle loop (async, so it coexists with the app's asyncio work
     and openmv_cloud's background tasks). Forever: resolve the clock, poll the
     update server, hand the response to registered extensions (the live + ingest
@@ -458,40 +462,137 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
 
     ``ca`` are TLS anchors (PEM/path); ``None`` uses the bundled ``data/ca.pem``.
     ``ntp_host`` overrides the NTP server used to set the clock when the RTC is
-    not already trustworthy (``None`` = ntptime's default pool)."""
+    not already trustworthy (``None`` = ntptime's default pool).
+
+    ``recover`` is how a device gets ITSELF out of a WEDGED NETWORK STACK. Retrying
+    a check-in forever is not a recovery strategy: a stack can enter a state where
+    every socket call fails identically no matter how long you wait (measured on the
+    ATWINC1500 -- 39 consecutive ``OSError(22)`` EINVAL check-ins after a reset
+    landed mid-transfer; it never came back on its own). Nothing in the poll loop
+    re-initialises the interface, because run() does not own it -- the app brings the
+    network up. So after ``recover_after`` CONSECUTIVE failed cycles run() calls this
+    hook and the app re-initialises its own transport; a coroutine is awaited, so the
+    generated ``main.py`` can pass its ``bring_up_network`` directly. Re-creating the
+    NIC object is what actually clears a wedge -- on the WINC that path hard-resets
+    the chip (``winc_init`` -> ``nm_bsp_reset``, EN/RST low) -- but this is deliberately
+    transport-AGNOSTIC: the same escalation serves a stuck cyw43, a dead LAN link, or a
+    router that came back on a different subnet. ``None`` keeps the old behaviour
+    (retry forever, never re-initialise).
+
+    The counter tracks CONSECUTIVE failures and resets on any completed cycle, so a
+    flaky link that still gets through now and then never triggers it."""
+    import asyncio  # hil-residual: the restart backoff awaits; imported here for the same reason _poll_forever imports its own
+    while True:  # hil-residual: the RESTART loop emits nothing on the happy path -- every marker comes from _poll_forever inside it
+        try:  # hil-residual: guard only; a healthy loop never leaves it
+            await _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host,  # hil-residual: delegates to the loop; witnessed by run.* markers throughout
+                                recover, recover_after)
+        except Exception as e:  # hil-residual: reached only when the OTA loop is dying, which is precisely the case that otherwise leaves no trace
+            # NEVER DIE PERMANENTLY. run() is an asyncio TASK, and MicroPython reports a dead task
+            # to the REPL, not to our logger -- so an OTA loop killed by anything the body does not
+            # catch simply STOPS: the app keeps running, the board looks healthy, and the device
+            # never updates again with nothing in the log to say why. Measured on an N6: one
+            # `run: OTA LOOP DIED OSError(2,)` on a post-bite boot and the OTA path was gone for
+            # good. The loop's own setup (CA resolve, status read) sits OUTSIDE its while, so a
+            # single transient error there was fatal rather than something to retry.
+            # So: log it, wait a poll, and start over. Nothing an OTA device does is worth giving
+            # up the ability to be updated.
+            log.error("run: OTA LOOP DIED %r -- restarting" % (e,))  # hil-residual: THE witness for a dead OTA loop; no bench scenario kills it on purpose, so it is unexercised -- which is exactly why it must exist before one does
+            await asyncio.sleep(poll_after_s)  # hil-residual: back off one poll before re-entering
+        except BaseException as e:  # hil-residual: cancellation/shutdown -- record, then let it through
+            # NOT restarted: CancelledError and KeyboardInterrupt mean somebody is deliberately
+            # stopping us (asyncio shutdown, or a probe taking the REPL). Restarting through those
+            # would fight the caller. Still logged, because on the bench this is what a harness
+            # Ctrl-C looks like and it was previously indistinguishable from a hang.
+            log.error("run: OTA LOOP STOPPED %r" % (e,))  # hil-residual: witnessed only when something cancels the task
+            raise  # hil-residual: re-raise so cancellation/shutdown still behave
+
+
+async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recover,
+                        recover_after):  # pragma: no cover  (device: the network loop)
+    """run()'s whole body, split out ONLY so run() can wrap it in one handler -- see there."""
     import asyncio
     boot = status()
     if boot.get("trial") and self_test is not None and self_test():
         confirm()  # hil-residual: opt-in boot-time self_test confirm; bench apps confirm in their loop (confirm.promoted), not via self_test, so this call-site is unexercised
     here = __file__.rsplit("/", 1)[0]
     ca = _resolve_ca(ca, here)
+    fails = 0                             # CONSECUTIVE failed cycles; drives the recover escalation
     while True:
         wait = poll_after_s
         _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
+        # SPLIT ON PURPOSE: a failed CHECK-IN is a transport fault, everything after it is a
+        # verdict on the release. Only the first kind may drive the recover escalation.
         try:
-            # The check-in is a BLOCKING socket op (handshake + tiny response) -- a blocking mbedtls C
-            # call that does not yield to asyncio, so it freezes the event loop (and any app feed loop)
-            # longer than a short watchdog window -> relax() ISR-feeds across it. A no-op unless the app
-            # armed a watchdog. Blocking (settimeout, no poll) is also required for the WINC1500 (see
-            # _checkin): asyncio's poller raises EIO on WINC sockets.
-            with _wdt_relax():                        # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
+            # The check-in is a BLOCKING socket op (handshake + tiny response) -- a blocking mbedtls
+            # C call that does not yield to asyncio, so it freezes the event loop (and any app feed
+            # loop) longer than a short watchdog window -> relax() ISR-feeds across it. A no-op
+            # unless the app armed a watchdog. Blocking (settimeout, no poll) is also required for
+            # the WINC1500 (see _checkin): asyncio's poller raises EIO on WINC sockets.
+            # NOTE: a park HERE is not recoverable in software -- see openmv_wdt; only an armed
+            # hardware watchdog gets the board back, which is what relax()'s budget now allows.
+            with _wdt_relax():  # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
                 resp = _checkin(server_url, _collect_body(identity(), status()), ca)
-            log.debug("checkin: response received")
-            _notify(resp)
-            wait = resp.get("poll_after_s", poll_after_s)
-            manifest_url = _offer(resp)
-            if manifest_url:
-                log.debug("checkin: update offered")
-                install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
-        except Exception as e:  # hil-residual: transient-failure wrapper (install-retry exercised by corrupt/bad_sig)
-            # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install
-            # (e.g. the installer read blowing the heap) is indistinguishable on the wire and in
-            # the log from a board with nothing on offer: the same check-in, the same poll wait,
-            # forever. Bounded: one repr of the exception, no traceback buffer.
+        except Exception as e:  # hil-residual: check-in transport failure (the wedge path)
+            # THE TRANSPORT IS SUSPECT. This is the failure a wedged stack produces every poll,
+            # forever (measured: 39 consecutive EINVAL check-ins on an ATWINC1500), so it is the
+            # only one allowed to escalate to recover().
             log.warning("run: cycle failed %r" % e)  # hil-residual: transient-failure witness
+            fails += 1  # hil-residual: counter arithmetic; the COUNT is witnessed downstream -- N `run: cycle failed` lines followed by exactly one `run: recovering transport` is what proves the streak logic on HW
+            if recover is not None and fails >= recover_after:  # hil-residual: the taken branch is witnessed by `run: recovering transport`; the not-taken branch by its ABSENCE after fewer than recover_after failures
+                fails = 0                 # one escalation per streak, not one per cycle after it  # hil-residual: witnessed by there being ONE `run: recovering transport` per streak of failures, not one per poll after the threshold
+                await _recover(recover)  # hil-residual: the witness for this call is emitted by the CALLEE's first line (`run: recovering transport`); the audit cannot see across the call boundary, and a marker here would duplicate it
+        else:
+            # The check-in got through, so the transport WORKS -- whatever happens next is about
+            # the release, not the link. Forget the streak, and never let a rejected update look
+            # like a wedged network: a bad signature, an unknown key or a failed anti-rollback
+            # repeats every poll for as long as that release is offered, and counting those would
+            # have the device tearing down and rebuilding its network forever over an image that
+            # is never going to validate. On the WINC that rebuild is a full chip reset. (Measured
+            # on the bench: bad_sig / bad_key / bad_version each drove a spurious recover.)
+            fails = 0  # hil-residual: the streak RESET is witnessed by absence -- a healthy board polls for a whole run and never emits `run: recovering transport`; a marker here would fire every poll and drown the log
+            try:
+                log.debug("checkin: response received")
+                _notify(resp)
+                wait = resp.get("poll_after_s", poll_after_s)
+                manifest_url = _offer(resp)
+                if manifest_url:
+                    log.debug("checkin: update offered")
+                    install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
+            except Exception as e:  # hil-residual: post-check-in failure (a verdict on the release, or an install fault); exercised by corrupt/bad_sig
+                # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install
+                # (e.g. the installer read blowing the heap) is indistinguishable on the wire and in
+                # the log from a board with nothing on offer: the same check-in, the same poll wait,
+                # forever. Bounded: one repr of the exception, no traceback buffer.
+                log.warning("run: cycle failed %r" % e)  # hil-residual: transient-failure witness
         _wdt_feed()
         log.debug("run: poll wait")                  # HIL path witness (loop tail; _wdt_feed fed)
         await asyncio.sleep(wait)  # hil-residual: bare loop-tail await (sleep only; nothing follows)
+
+
+async def _recover(recover):
+    """Ask the app to re-initialise its transport, and NEVER let that fail the loop.
+
+    A recover hook runs when the network is already broken, so it is the single most
+    likely thing in the loop to raise -- and if it did, it would escape run()'s own
+    ``except`` (which has already been left) and kill the OTA task outright, turning a
+    recoverable wedge into a permanently un-updatable device. So it is wrapped here.
+
+    The hook's work happens inside ``recover()`` when it is a plain function -- a NIC
+    re-init is a long blocking C op (the WINC's chip reset alone sleeps 300 ms), far
+    past a 100 ms watchdog window -- so that call runs under ``relax()``. An async hook
+    only BUILDS its coroutine there and does the work in the ``await``, which yields to
+    asyncio and lets the app's own feed loop run, so the await is deliberately OUTSIDE
+    the relax: holding relax across an await would disable the watchdog for as long as
+    the app felt like taking."""
+    log.warning("run: recovering transport")      # HIL witness + field diagnostic
+    try:
+        with _wdt_relax():
+            res = recover()
+        if hasattr(res, "send"):                  # a coroutine/generator -> an async hook
+            await res
+        log.info("run: transport recovered")      # HIL witness: the hook returned cleanly
+    except Exception as e:
+        log.warning("run: recover failed %r" % e)  # bounded: one repr, no traceback buffer
 
 
 def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
@@ -576,10 +677,21 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
             raise OSError("check-in HTTP %s" % status_line)  # hil-residual: bare raise (non-200; happy path is 200)
         log.debug("checkin: server ok")              # milestone + HIL path witness
         clen = None
+        left = _RESP_HEADERS_MAX                     # CEILING THE HEADER COUNT. Each readline is
+        #                                              bounded by the socket timeout, but the LOOP was
+        #                                              not: a server (or a captive portal) that drips
+        #                                              one header line per timeout keeps the check-in
+        #                                              alive indefinitely. Nothing accumulates in RAM
+        #                                              here -- the lines are discarded -- so this
+        #                                              bounds TIME, the same thing relax()'s budget
+        #                                              bounds one level up.
         while True:                                  # skip headers, noting Content-Length
             line = ss.readline()
             if line in (b"\r\n", b"\n", b""):
                 break
+            left -= 1
+            if left <= 0:
+                raise OSError("check-in sent over %d headers" % _RESP_HEADERS_MAX)  # hil-residual: over-cap guard, inject-only -- no real server sends 64 headers, so reaching it needs a fault-injected reply; the raise surfaces as run's `run: cycle failed` witness
             if line[:15].lower() == b"content-length:":   # read exactly this -> no EOF-wait on the WINC
                 try:
                     clen = int(line.split(b":", 1)[1].strip())
@@ -811,7 +923,15 @@ def _read_file(path, mode, limit=_ASSET_MAX):  # pragma: no cover
     such a board could take the offer and then never install anything, forever.
     The ceiling is now a stat-time gate rather than an allocation size."""
     import os
-    size = os.stat(path)[6]
+    try:
+        size = os.stat(path)[6]
+    except OSError as e:  # hil-residual: missing-asset path; a passing run never takes it (every asset is present), so no marker can witness it -- the raise below is the witness when it does happen
+        # NAME THE FILE. A bare `OSError(2,)` is what this used to surface, and on an N6 that
+        # produced 161 identical lines with no way to tell WHICH asset was missing -- the OTA
+        # loop died, restarted, and died again on the same file for the whole run. errno is
+        # preserved so callers that classify on it still work; the path is what makes the log
+        # actionable.
+        raise OSError(e.args[0] if e.args else 0, "cannot read %s" % path)  # hil-residual: missing/unreadable asset; reaching it needs a genuinely absent file (measured on the bench when /flash lost the CA), not something a passing run hits
     if size > limit:
         raise OSError("%s exceeds the %d-byte asset ceiling" % (path, limit))  # hil-residual: bare raise (corrupt-romfs guard, inject-only)
     f = open(path, mode)

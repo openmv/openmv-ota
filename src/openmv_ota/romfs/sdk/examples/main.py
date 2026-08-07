@@ -73,7 +73,12 @@ async def main():
     # The OTA lifecycle runs concurrently (check-in, install, trial-reboot). install() feeds the
     # watchdog across its own erase/write, so an update completes even though THIS loop stops the
     # moment install() erases the FRONT slot we execute from.
-    asyncio.create_task(openmv_ota.run(SERVER, poll_after_s=POLL_AFTER_S))
+    # recover=: after a few consecutive failed check-ins, run() calls this to REBUILD the network
+    # rather than retrying a stack that may be wedged (a NIC can reach a state where every socket
+    # call fails identically forever -- re-creating the object is what clears it). Reusing the same
+    # bring-up you booted with means there is only one definition of "get this device online".
+    asyncio.create_task(openmv_ota.run(SERVER, poll_after_s=POLL_AFTER_S,
+                                       recover=bring_up_network))
 
     confirmed = False
     while True:

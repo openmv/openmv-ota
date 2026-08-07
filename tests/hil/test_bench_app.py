@@ -61,3 +61,34 @@ def test_other_apps_still_poll_unconditionally(net):
         src = ota_cycle.bench_main_py("OPENMV4P", net, app=app)
         assert "if not openmv_ota.status().get('trial'):" not in src
         assert "asyncio.create_task(openmv_ota.run(" in src
+
+
+# --- the bench app must EXERCISE the wedge-recovery hook -------------------------------
+# The H7 Plus's ATWINC1500 reaches a state where every check-in fails OSError(22) (EINVAL)
+# forever -- the board alive and polling, never recovering. run() grew a `recover` hook for
+# exactly that, and the generated main.py wires it... but the BENCH app did not, so the fleet
+# ran the wedge every time and never once exercised the fix. A hook that ships untested is a
+# hook we do not know works.
+
+@pytest.mark.parametrize("board,net", [
+    ("OPENMV4P", "wifi"),                 # WINC -- the board the wedge was measured on
+    ("ARDUINO_NICLA_VISION", "wifi"),     # cyw43
+    ("OPENMV_N6", "lan"),                 # LAN
+])
+def test_bench_app_passes_its_bring_up_as_the_recover_hook(board, net):
+    for app in _apps():
+        src = ota_cycle.bench_main_py(board, net, app=app)
+        assert "async def _bring_up():" in src, "the bring-up must be a callable to be reusable"
+        assert "await _bring_up()" in src, "boot must use the same definition"
+        assert "recover=_bring_up" in src, (
+            "run() must get the hook, or the fleet never exercises wedge recovery (%s/%s/%s)"
+            % (board, net, app))
+
+
+def test_winc_recover_reconstructs_the_nic():
+    """On the WINC, re-CREATING the object is what clears the wedge: network.WINC() runs
+    winc_init -> nm_bsp_reset, which drives EN/RST low and hard-resets the chip. A hook that
+    reused an existing handle would just re-try a wedged chip forever."""
+    src = ota_cycle.bench_main_py("OPENMV4P", "wifi", app="confirm")
+    bring_up = src.split("async def _bring_up():")[1].split("async def main")[0]
+    assert "network.WINC()" in bring_up, "recover must CONSTRUCT the NIC, not reuse a handle"
