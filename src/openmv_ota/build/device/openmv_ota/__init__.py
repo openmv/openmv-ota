@@ -481,19 +481,30 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
 
     The counter tracks CONSECUTIVE failures and resets on any completed cycle, so a
     flaky link that still gets through now and then never triggers it."""
-    try:  # hil-residual: the guard itself emits nothing on the happy path -- every marker comes from the body it wraps
-        await _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host,  # hil-residual: delegates to the loop; witnessed by run.* markers throughout
-                            recover, recover_after)
-    except BaseException as e:  # hil-residual: reached only when the OTA task is dying, which is precisely the case that leaves no other trace
-        # SAY SO BEFORE DYING. run() is an asyncio TASK, and MicroPython reports a task that dies
-        # to the REPL -- not to our logger -- so an OTA loop killed by anything the loop body does
-        # not catch simply STOPS. The app keeps running, the board looks healthy, and the device
-        # never updates again, with nothing in the log to say why. That is the worst shape a bug in
-        # this project can take, and it is invisible on the bench: a HIL leg just sees markers stop.
-        # BaseException on purpose -- the things that get here (KeyboardInterrupt from a probe
-        # taking the REPL, CancelledError, SystemExit) are exactly the ones Exception misses.
-        log.error("run: OTA LOOP DIED %r" % (e,))  # hil-residual: THE witness for a dead OTA task; no bench scenario kills the loop on purpose today, so it is unexercised -- which is exactly why it must exist before one does
-        raise  # hil-residual: re-raise so cancellation/shutdown still behave; we only add the record
+    import asyncio  # hil-residual: the restart backoff awaits; imported here for the same reason _poll_forever imports its own
+    while True:  # hil-residual: the RESTART loop emits nothing on the happy path -- every marker comes from _poll_forever inside it
+        try:  # hil-residual: guard only; a healthy loop never leaves it
+            await _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host,  # hil-residual: delegates to the loop; witnessed by run.* markers throughout
+                                recover, recover_after)
+        except Exception as e:  # hil-residual: reached only when the OTA loop is dying, which is precisely the case that otherwise leaves no trace
+            # NEVER DIE PERMANENTLY. run() is an asyncio TASK, and MicroPython reports a dead task
+            # to the REPL, not to our logger -- so an OTA loop killed by anything the body does not
+            # catch simply STOPS: the app keeps running, the board looks healthy, and the device
+            # never updates again with nothing in the log to say why. Measured on an N6: one
+            # `run: OTA LOOP DIED OSError(2,)` on a post-bite boot and the OTA path was gone for
+            # good. The loop's own setup (CA resolve, status read) sits OUTSIDE its while, so a
+            # single transient error there was fatal rather than something to retry.
+            # So: log it, wait a poll, and start over. Nothing an OTA device does is worth giving
+            # up the ability to be updated.
+            log.error("run: OTA LOOP DIED %r -- restarting" % (e,))  # hil-residual: THE witness for a dead OTA loop; no bench scenario kills it on purpose, so it is unexercised -- which is exactly why it must exist before one does
+            await asyncio.sleep(poll_after_s)  # hil-residual: back off one poll before re-entering
+        except BaseException as e:  # hil-residual: cancellation/shutdown -- record, then let it through
+            # NOT restarted: CancelledError and KeyboardInterrupt mean somebody is deliberately
+            # stopping us (asyncio shutdown, or a probe taking the REPL). Restarting through those
+            # would fight the caller. Still logged, because on the bench this is what a harness
+            # Ctrl-C looks like and it was previously indistinguishable from a hang.
+            log.error("run: OTA LOOP STOPPED %r" % (e,))  # hil-residual: witnessed only when something cancels the task
+            raise  # hil-residual: re-raise so cancellation/shutdown still behave
 
 
 async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recover,

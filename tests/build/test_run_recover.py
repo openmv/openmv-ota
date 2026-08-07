@@ -206,3 +206,38 @@ def test_a_successful_checkin_clears_the_streak():
     post = _run_src().split("resp = _checkin(")[1].split("else:")[1]
     assert "fails = 0" in post.split("try:")[0], (
         "reaching the else branch means the link is fine; the streak must reset there")
+
+
+# --- the OTA loop must never die permanently -------------------------------------------
+# Measured on an N6 post-bite boot: `run: OTA LOOP DIED OSError(2,)` and the OTA path was
+# gone for the rest of that boot. The loop's setup (CA resolve, status read) sits OUTSIDE
+# its while, so one transient error there was fatal rather than something to retry -- and
+# because MicroPython reports a dead task to the REPL, not our logger, it was invisible.
+
+def test_run_restarts_the_loop_after_an_exception():
+    """A device that stops being updatable is the worst outcome this project has; a
+    transient error must cost one poll, not the rest of the device's life."""
+    import inspect
+
+    from openmv_ota.build.device import openmv_ota as rt
+
+    src = inspect.getsource(rt.run)
+    body = src.split('"""')[-1]                    # past the docstring
+    assert "while True:" in body, "run() must re-enter the loop, not call it once"
+    exc = body.split("except Exception")[1].split("except BaseException")[0]
+    assert "sleep" in exc, "back off a poll before re-entering, don't spin"
+    assert "raise" not in exc, "an ordinary exception must NOT end the loop"
+
+
+def test_cancellation_is_recorded_but_still_propagates():
+    """CancelledError/KeyboardInterrupt mean somebody is deliberately stopping us -- asyncio
+    shutdown, or a probe taking the REPL. Restarting through those would fight the caller,
+    but they must still be logged: on the bench a harness Ctrl-C was previously
+    indistinguishable from a hang, which cost real debugging time."""
+    import inspect
+
+    from openmv_ota.build.device import openmv_ota as rt
+
+    base = inspect.getsource(rt.run).split("except BaseException")[1]
+    assert "log.error" in base, "a cancelled OTA loop must say so"
+    assert "raise" in base, "cancellation must still propagate"
