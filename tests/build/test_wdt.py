@@ -152,3 +152,110 @@ def test_unbalanced_relax_exit_does_not_wedge_the_depth():
     _mod._depth = 0
     _mod._Relax().__exit__()
     assert _mod._depth == 0
+
+
+# --- relax() is BOUNDED --------------------------------------------------------------
+# A relax() region feeds from a timer ISR, not from progress, so while it is open the
+# watchdog cannot catch a stuck call. Unbounded, that turns a blocking C call which never
+# returns into a PERMANENT hang on a board whose watchdog is armed -- measured on an N6
+# (silent 555 s inside the check-in's relax, watchdog armed, no reset) and an H7 Plus.
+
+def test_relax_stops_feeding_once_its_budget_is_spent(monkeypatch):
+    """The core fix: the ISR must give up so the watchdog can bite.
+
+    Simulated by ticking the ISR directly -- the real one is driven by a hardware timer.
+    """
+    fed = []
+    _mod._budget = 0
+    monkeypatch.setattr(_mod, "_feed", lambda: fed.append(1), raising=False)
+    try:
+        _mod._Relax(max_ms=100).__enter__()          # 100 ms at FEED_HZ=50 -> 5 ticks
+        assert _mod._budget == 5
+        for _ in range(20):                          # tick well past the budget
+            _mod._tick(None)
+        assert len(fed) == 5, "must feed exactly its budget, then stop"
+    finally:
+        _mod._budget = 0
+        _mod._depth = 0
+
+
+def test_a_spent_budget_lets_the_watchdog_bite_rather_than_feeding_forever(monkeypatch):
+    """Stated as the behaviour that matters: after the budget, further ticks feed NOTHING,
+    so the hardware watchdog reaches its timeout and resets the board into a retry."""
+    fed = []
+    _mod._budget = 0
+    monkeypatch.setattr(_mod, "_feed", lambda: fed.append(1), raising=False)
+    try:
+        _mod._Relax(max_ms=20).__enter__()           # 1 tick
+        _mod._tick(None)
+        before = len(fed)
+        for _ in range(50):
+            _mod._tick(None)
+        assert len(fed) == before, "a spent region must never feed again"
+    finally:
+        _mod._budget = 0
+        _mod._depth = 0
+
+
+def test_default_budget_comes_from_relax_max_ms():
+    _mod._budget = 0
+    try:
+        _mod._Relax().__enter__()
+        assert _mod._budget == int(_mod.RELAX_MAX_MS * _mod.FEED_HZ / 1000)
+    finally:
+        _mod._budget = 0
+        _mod._depth = 0
+
+
+def test_nesting_keeps_the_longer_budget():
+    """An inner, shorter region must not shorten the outer allowance -- that would reset a
+    board that was still legitimately working."""
+    _mod._budget = 0
+    try:
+        _mod._Relax(max_ms=10000).__enter__()
+        outer = _mod._budget
+        _mod._Relax(max_ms=100).__enter__()
+        assert _mod._budget == outer, "the inner region must not shrink the outer budget"
+    finally:
+        _mod._budget = 0
+        _mod._depth = 0
+
+
+def test_leaving_the_region_clears_the_budget():
+    """The ISR must not outlive its region: a leftover budget would feed the watchdog
+    through whatever the app does next."""
+    _mod._budget = 0
+    _mod._depth = 0
+    r = _mod._Relax(max_ms=10000)
+    r.__enter__()
+    assert _mod._budget > 0
+    r.__exit__()
+    assert _mod._budget == 0
+
+
+def test_budget_is_the_default_ceiling_for_every_existing_call_site():
+    """relax() takes no argument at most call sites, so the ceiling must apply there too --
+    otherwise the bug is only fixed where someone remembered to pass a number."""
+    import inspect
+
+    src = inspect.getsource(_mod.relax)
+    assert "max_ms=None" in src
+    assert "RELAX_MAX_MS" in inspect.getsource(_mod._Relax.__init__)
+
+
+def test_relax_max_ms_stays_within_its_derived_range():
+    """Two-sided on purpose, because BOTH directions are real failures.
+
+    Too low resets a healthy-but-slow board -- a device that reboots whenever the network is
+    merely slow never finishes anything, which is worse than the hang it was meant to catch.
+    The floor is set off the check-in's own socket timeout (openmv_ota._CHECKIN_TIMEOUT = 15 s,
+    a few of which can fall inside one region).
+
+    Too high just leaves a wedged device dead for longer. The ceiling keeps anyone from quietly
+    inflating this back toward "effectively unbounded", which is the bug this whole change
+    exists to fix.
+    """
+    from openmv_ota.build.device.openmv_ota import _CHECKIN_TIMEOUT
+
+    assert _mod.RELAX_MAX_MS >= 3 * _CHECKIN_TIMEOUT * 1000
+    assert _mod.RELAX_MAX_MS <= 90000
