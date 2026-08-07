@@ -47,7 +47,16 @@ CFG = {
     "server": env("OTA_SERVER", "https://192.168.0.100:8443"),
     "token": env("OTA_TOKEN", "bench-admin-token-1"),
     "ca_node": env("OTA_CA_NODE", HOME + "/bench-ca.pem"),
-    "ca_board": env("OTA_CA_BOARD", "/flash/bench-ca.pem"),
+    # THE CA LIVES IN THE ROMFS, not on /flash. A FAT filesystem is corruptible -- a cancelled
+    # run has wedged the mimxrt's /flash before -- and anything OTA REQUIRES must survive that.
+    # Baked into app/ it ships inside every image the harness builds (golden and update alike),
+    # so it is present on any slot the board can actually boot, and an OTA replaces it in step.
+    # Measured cost of the old way: after a deliberate watchdog bite the file was simply gone
+    # and run() died 161 times on ENOENT, unable to check in at all.
+    "ca_board": env("OTA_CA_BOARD", "/rom/bench-ca.pem"),
+    # /flash is still fine for things the OTA path does NOT depend on (the coverage UART hint):
+    # losing it costs visibility, not the ability to update.
+    "bench_flash_dir": env("OTA_BENCH_FLASH_DIR", "/flash"),
     "wifi_ssid": env("WIFI_SSID", ""),
     "wifi_pass": env("WIFI_PASSWORD", ""),
     "project": env("PROJECT_DIR", HOME + "/proj"),
@@ -1116,6 +1125,11 @@ def prepare(board, checkout, network, app="confirm"):
     # after a watchdog_bite leg, while the leg before it passed). Baked into golden it is simply
     # there on the first boot, with nothing to negotiate. openmv_log searches /rom too.
     open(CFG["project"] + "/app/.hilcov_uart", "w").write(str(BOARDS[board]["cov_uart"]))
+    # BAKE THE CA INTO THE ROMFS TOO, for the same reason and a stronger one: run() cannot even
+    # check in without it, so a /flash it happens to be missing from is an un-updatable board.
+    if os.path.exists(CFG["ca_node"]):
+        open(CFG["project"] + "/app/" + CFG["ca_board"].rsplit("/", 1)[1], "wb").write(
+            open(CFG["ca_node"], "rb").read())
     # A prior scenario may have left the AE3 stuck in DFU (no CDC); recover BEFORE the first
     # device op below, since these run ahead of flash_golden's own _ensure_cdc.
     _ensure_cdc(board, allow_erase=True)   # pre-flash: erasing the romfs is safe, golden follows
@@ -1146,21 +1160,18 @@ def _flash_bench_files(board, _recovered=False):
     # DOES write, the golden flash that follows is the re-mount that makes the board see them (the
     # firmware cannot see a host-side write until it re-mounts).
     if BOARDS[board].get("flash") == "arduino_cli":
-        want = {".hilcov_uart": str(BOARDS[board]["cov_uart"]).encode()}
-        if os.path.exists(CFG["ca_node"]):
-            want[CFG["ca_board"].rsplit("/", 1)[1]] = open(CFG["ca_node"], "rb").read()
+        want = {".hilcov_uart": str(BOARDS[board]["cov_uart"]).encode()}   # CA is in the romfs now
         if _msc_put(want) is not None:
             return                           # written (or already correct) without touching the REPL
         # _msc_put has already said WHY. Name the cost here: the REPL path Ctrl-C's the running app,
         # which is survivable now (the app stalls after logging) but is exactly what we are avoiding.
         log("prepare: falling back to the REPL for the bench files -- this interrupts the app")
-    # the CA must be on the board for run()'s TLS. Push it so the harness doesn't assume a
-    # hand-placed cert (tolerant: a corrupt /flash surfaces on the .hilcov_uart write below).
-    if os.path.exists(CFG["ca_node"]):
-        _mpremote(["fs", "cp", CFG["ca_node"], ":" + CFG["ca_board"]], timeout=30, check=False)
+    # The CA is NOT pushed here any more -- it is baked into the romfs (see CFG["ca_board"]).
+    # It is the one file run() cannot start without, so it must not depend on a filesystem that
+    # a cancelled run or a watchdog bite can leave empty.
     try:
         # enable the coverage UART on the board (bench-only file; survives across the OTA)
-        device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["ca_board"].rsplit("/", 1)[0] +
+        device_exec("f=open(%r,'w');f.write('%d');f.close()" % (CFG["bench_flash_dir"] +
                     "/.hilcov_uart", BOARDS[board]["cov_uart"]))
     except Exception as e:
         if _recovered or BOARDS[board]["flash"] != "blhost_imx":
