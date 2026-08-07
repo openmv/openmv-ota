@@ -923,7 +923,15 @@ def _read_file(path, mode, limit=_ASSET_MAX):  # pragma: no cover
     such a board could take the offer and then never install anything, forever.
     The ceiling is now a stat-time gate rather than an allocation size."""
     import os
-    size = os.stat(path)[6]
+    try:
+        size = os.stat(path)[6]
+    except OSError as e:  # hil-residual: missing-asset path; a passing run never takes it (every asset is present), so no marker can witness it -- the raise below is the witness when it does happen
+        # NAME THE FILE. A bare `OSError(2,)` is what this used to surface, and on an N6 that
+        # produced 161 identical lines with no way to tell WHICH asset was missing -- the OTA
+        # loop died, restarted, and died again on the same file for the whole run. errno is
+        # preserved so callers that classify on it still work; the path is what makes the log
+        # actionable.
+        raise OSError(e.args[0] if e.args else 0, "cannot read %s" % path)  # hil-residual: missing/unreadable asset; reaching it needs a genuinely absent file (measured on the bench when /flash lost the CA), not something a passing run hits
     if size > limit:
         raise OSError("%s exceeds the %d-byte asset ceiling" % (path, limit))  # hil-residual: bare raise (corrupt-romfs guard, inject-only)
     f = open(path, mode)
