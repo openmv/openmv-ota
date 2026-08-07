@@ -440,7 +440,8 @@ def _offer(resp):
 
 
 async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
-              ca=None, ntp_host=None):  # pragma: no cover  (device: the network loop)
+              ca=None, ntp_host=None, recover=None,
+              recover_after=3):  # pragma: no cover  (device: the network loop)
     """The OTA lifecycle loop (async, so it coexists with the app's asyncio work
     and openmv_cloud's background tasks). Forever: resolve the clock, poll the
     update server, hand the response to registered extensions (the live + ingest
@@ -458,13 +459,32 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
 
     ``ca`` are TLS anchors (PEM/path); ``None`` uses the bundled ``data/ca.pem``.
     ``ntp_host`` overrides the NTP server used to set the clock when the RTC is
-    not already trustworthy (``None`` = ntptime's default pool)."""
+    not already trustworthy (``None`` = ntptime's default pool).
+
+    ``recover`` is how a device gets ITSELF out of a WEDGED NETWORK STACK. Retrying
+    a check-in forever is not a recovery strategy: a stack can enter a state where
+    every socket call fails identically no matter how long you wait (measured on the
+    ATWINC1500 -- 39 consecutive ``OSError(22)`` EINVAL check-ins after a reset
+    landed mid-transfer; it never came back on its own). Nothing in the poll loop
+    re-initialises the interface, because run() does not own it -- the app brings the
+    network up. So after ``recover_after`` CONSECUTIVE failed cycles run() calls this
+    hook and the app re-initialises its own transport; a coroutine is awaited, so the
+    generated ``main.py`` can pass its ``bring_up_network`` directly. Re-creating the
+    NIC object is what actually clears a wedge -- on the WINC that path hard-resets
+    the chip (``winc_init`` -> ``nm_bsp_reset``, EN/RST low) -- but this is deliberately
+    transport-AGNOSTIC: the same escalation serves a stuck cyw43, a dead LAN link, or a
+    router that came back on a different subnet. ``None`` keeps the old behaviour
+    (retry forever, never re-initialise).
+
+    The counter tracks CONSECUTIVE failures and resets on any completed cycle, so a
+    flaky link that still gets through now and then never triggers it."""
     import asyncio
     boot = status()
     if boot.get("trial") and self_test is not None and self_test():
         confirm()  # hil-residual: opt-in boot-time self_test confirm; bench apps confirm in their loop (confirm.promoted), not via self_test, so this call-site is unexercised
     here = __file__.rsplit("/", 1)[0]
     ca = _resolve_ca(ca, here)
+    fails = 0                             # CONSECUTIVE failed cycles; drives the recover escalation
     while True:
         wait = poll_after_s
         _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
@@ -483,15 +503,46 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
             if manifest_url:
                 log.debug("checkin: update offered")
                 install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
+            fails = 0                     # a cycle completed -> the transport works; forget the streak  # hil-residual: the streak RESET is witnessed by absence -- a healthy board polls for a whole run and never emits `run: recovering transport`; a marker here would fire every poll and drown the log
         except Exception as e:  # hil-residual: transient-failure wrapper (install-retry exercised by corrupt/bad_sig)
             # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install
             # (e.g. the installer read blowing the heap) is indistinguishable on the wire and in
             # the log from a board with nothing on offer: the same check-in, the same poll wait,
             # forever. Bounded: one repr of the exception, no traceback buffer.
             log.warning("run: cycle failed %r" % e)  # hil-residual: transient-failure witness
+            fails += 1  # hil-residual: counter arithmetic; the COUNT is witnessed downstream -- N `run: cycle failed` lines followed by exactly one `run: recovering transport` is what proves the streak logic on HW
+            if recover is not None and fails >= recover_after:  # hil-residual: the taken branch is witnessed by `run: recovering transport`; the not-taken branch by its ABSENCE after fewer than recover_after failures
+                fails = 0                 # one escalation per streak, not one per cycle after it  # hil-residual: witnessed by there being ONE `run: recovering transport` per streak of failures, not one per poll after the threshold
+                await _recover(recover)  # hil-residual: the witness for this call is emitted by the CALLEE's first line (`run: recovering transport`); the audit cannot see across the call boundary, and a marker here would duplicate it
         _wdt_feed()
         log.debug("run: poll wait")                  # HIL path witness (loop tail; _wdt_feed fed)
         await asyncio.sleep(wait)  # hil-residual: bare loop-tail await (sleep only; nothing follows)
+
+
+async def _recover(recover):
+    """Ask the app to re-initialise its transport, and NEVER let that fail the loop.
+
+    A recover hook runs when the network is already broken, so it is the single most
+    likely thing in the loop to raise -- and if it did, it would escape run()'s own
+    ``except`` (which has already been left) and kill the OTA task outright, turning a
+    recoverable wedge into a permanently un-updatable device. So it is wrapped here.
+
+    The hook's work happens inside ``recover()`` when it is a plain function -- a NIC
+    re-init is a long blocking C op (the WINC's chip reset alone sleeps 300 ms), far
+    past a 100 ms watchdog window -- so that call runs under ``relax()``. An async hook
+    only BUILDS its coroutine there and does the work in the ``await``, which yields to
+    asyncio and lets the app's own feed loop run, so the await is deliberately OUTSIDE
+    the relax: holding relax across an await would disable the watchdog for as long as
+    the app felt like taking."""
+    log.warning("run: recovering transport")      # HIL witness + field diagnostic
+    try:
+        with _wdt_relax():
+            res = recover()
+        if hasattr(res, "send"):                  # a coroutine/generator -> an async hook
+            await res
+        log.info("run: transport recovered")      # HIL witness: the hook returned cleanly
+    except Exception as e:
+        log.warning("run: recover failed %r" % e)  # bounded: one repr, no traceback buffer
 
 
 def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
