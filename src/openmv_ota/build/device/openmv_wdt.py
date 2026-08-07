@@ -224,6 +224,11 @@ def _stall_tick(t):  # pragma: no cover (device)  # hil-residual-fn: stall_guard
     # NO PROGRESS accounting. feed() reloads the budget from the main thread; this drains it.
     # Small-int arithmetic on a module global -- no allocation, legal in a hard-IRQ callback.
     global _stall_budget
+    if not _stall_reload:
+        return     # NO GUARD ARMED. Belt-and-braces: if this timer ever outlived its region (a
+        #            deinit that did not take), an unarmed budget of 0 would otherwise read as
+        #            "stalled" and reset a perfectly healthy board, forever. Refuse to act unless
+        #            a region actually armed us.
     if _stall_budget > 0:
         _stall_budget -= 1
     else:

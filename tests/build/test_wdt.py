@@ -411,3 +411,15 @@ def test_checkin_and_install_ceilings_both_clear_the_longest_relax():
 
     assert _CHECKIN_STALL_MS > _mod.RELAX_MAX_MS
     assert _INSTALL_STALL_MS > _mod.RELAX_MAX_MS
+
+
+def test_an_orphaned_timer_must_not_reset_a_healthy_board(monkeypatch):
+    """If the stall timer ever outlived its region -- a deinit that did not take -- the ISR would
+    see budget 0, read it as "stalled", and reset the board. Forever. Refuse unless armed."""
+    resets = []
+    monkeypatch.setattr(_mod, "_reset", lambda: resets.append(1), raising=False)
+    monkeypatch.setattr(_mod, "_stall_reload", 0, raising=False)   # nothing armed
+    monkeypatch.setattr(_mod, "_stall_budget", 0, raising=False)
+    for _ in range(50):
+        _mod._stall_tick(None)
+    assert resets == [], "an unarmed guard must never reset the board"
