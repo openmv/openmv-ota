@@ -4,6 +4,14 @@ Scaffolded into a project at ``device/openmv_wdt.py``; ``build firmware`` freeze
 ``openmv_wdt``) so the installer and your app share one watchdog. Like ``openmv_log``
 it's **yours to edit** and **off by default**.
 
+**WHY AN OTA DEVICE WANTS THIS ARMED.** A blocking network call can park in C and never come
+back -- measured on three boards in one fleet run: an N6 and an H7 Plus each sat silent for
+555 s inside the check-in, and a Nicla stopped dead mid-download after writing its first 4 KB
+block. Nothing in Python can break out of that: the interpreter is not running, so no timeout
+fires, no retry happens, and no amount of defensive code in the OTA library helps. A HARDWARE
+RESET is the only way out, which means an unwatched device in that state is simply gone until
+someone power-cycles it. With a watchdog armed the same park becomes a reset and a retry.
+
 Use the DEEP-SLEEP-SAFE watchdog (``WDT_ID`` below): the one that STOPS in deep sleep, so it
 can't reset you while you sleep. On stm32 that's the WWDG, whose window is **short** -- 167 ms
 max on the N6 -- so this is a **tens-of-ms** discipline, not seconds. Edit the config below,
