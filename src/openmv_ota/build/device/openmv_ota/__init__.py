@@ -203,6 +203,11 @@ _CHUNK = 4096
 # the only thing left, and it fires here. A false trigger costs one install attempt, which the
 # device retries -- cheap against a hang that needs someone with a power cable.
 _INSTALL_STALL_MS = 90000
+# Same ceiling for the check-in and the NTP sync. Nothing inside either calls feed(), so there the
+# guard is a plain DEADLINE on one blocking call rather than a progress watchdog -- which is what
+# that region needs. It still has to clear the legitimate worst case: several _CHECKIN_TIMEOUTs
+# (15 s) inside one call, and an NTP walk of host + one fallback at 4 s each.
+_CHECKIN_STALL_MS = 90000
 _RESP_HEADERS_MAX = 64     # most a sane server sends is a handful; this only has to be far enough
 #                              above normal that it never trips on a real reply while still ending a
 #                              header stream that never does.
@@ -509,7 +514,14 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
             # longer than a short watchdog window -> relax() ISR-feeds across it. A no-op unless the app
             # armed a watchdog. Blocking (settimeout, no poll) is also required for the WINC1500 (see
             # _checkin): asyncio's poller raises EIO on WINC sockets.
-            with _wdt_relax():                        # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
+            # STALL GUARD ON THE CHECK-IN. This is where the parks actually happen -- three of the
+            # four observed hangs died right here, silent for 555 s after `status: read`, which is
+            # the last line before this call. Nothing inside a check-in calls feed(), so for this
+            # region the guard acts as a plain DEADLINE rather than a progress watchdog: a healthy
+            # check-in takes a couple of seconds and leaves long before the budget, a parked one
+            # gets the board reset and retried. Sized like the install guard, above the pathological
+            # (but legitimate) case of several _CHECKIN_TIMEOUTs inside one call.
+            with _wdt_stall_guard(_CHECKIN_STALL_MS), _wdt_relax():  # hil-residual: the guard's only observable effect is the reset it triggers on a park, which leaves no marker of its own; a healthy check-in is witnessed by run.checkin as before
                 resp = _checkin(server_url, _collect_body(identity(), status()), ca)
             log.debug("checkin: response received")
             _notify(resp)
@@ -575,7 +587,11 @@ def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
         # It is worst on a network that BLACKHOLES NTP -- each unreachable server burns its full
         # socket timeout, and sync() walks a fallback list -- which is precisely when a device most
         # needs to stay alive. A no-op once the clock is trusted (the common case: no relax at all).
-        with _wdt_relax():
+        # Guarded for the same reason as the check-in: an NTP sync is a blocking network op, and a
+        # park inside it is just as permanent. This is the case the comment above already flags as
+        # worst -- a network that BLACKHOLES NTP -- which is exactly when a device most needs to
+        # stay alive rather than sit silent.
+        with _wdt_stall_guard(_CHECKIN_STALL_MS), _wdt_relax():
             openmv_rtc.resolve(ntp_host)
         log.debug("clock: resolved")                  # HIL path witness (NTP/RTC each poll)
     except Exception:  # hil-residual: clock-unresolved wrapper (missing module / failed NTP)

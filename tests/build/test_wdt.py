@@ -363,3 +363,51 @@ def test_guard_arms_a_hard_irq_timer_and_tears_it_down(monkeypatch):
     assert made.get("deinit") is True, "the timer must not outlive the region"
     assert _mod._stall_timer is None
     assert _mod._stall_reload == 0
+
+
+def test_nested_guards_keep_policing_the_outer_region(monkeypatch):
+    """Nothing nests TODAY -- run()'s check-in guard closes before install() is called, so the
+    three guard sites are sequential. This pins the behaviour before something does nest, because
+    the failure mode is silent: an inner region exiting would tear the guard down and leave the
+    rest of the outer one unpoliced. That is the exact bug relax() shipped with, and it is worth
+    one integer not to ship it twice."""
+    made = {}
+
+    class _FakeTimer:
+        def __init__(self, *a, **k):
+            made["n"] = made.get("n", 0) + 1
+
+        def deinit(self):
+            made["deinit"] = made.get("deinit", 0) + 1
+
+    fake = type(sys)("machine")
+    fake.Timer = _FakeTimer
+    fake.reset = lambda: None
+    monkeypatch.setitem(sys.modules, "machine", fake)
+    monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
+    monkeypatch.setattr(_mod, "_stall_depth", 0, raising=False)
+    monkeypatch.setattr(_mod, "_stall_budget", 0, raising=False)
+    monkeypatch.setattr(_mod, "_stall_reload", 0, raising=False)
+
+    with _mod.stall_guard(90000):
+        outer = _mod._stall_reload
+        with _mod.stall_guard(1000):
+            pass
+        assert _mod._stall_timer is not None, "the inner exit must NOT tear down the outer guard"
+        assert _mod._stall_reload == outer, "an inner region must not shrink the outer allowance"
+    assert made.get("deinit") == 1, "torn down exactly once, at the outermost exit"
+    assert _mod._stall_depth == 0
+
+
+def test_unbalanced_guard_exit_does_not_wedge_the_depth(monkeypatch):
+    monkeypatch.setattr(_mod, "_stall_depth", 0, raising=False)
+    monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
+    _mod._StallGuard(1000).__exit__()
+    assert _mod._stall_depth == 0
+
+
+def test_checkin_and_install_ceilings_both_clear_the_longest_relax():
+    from openmv_ota.build.device.openmv_ota import _CHECKIN_STALL_MS, _INSTALL_STALL_MS
+
+    assert _CHECKIN_STALL_MS > _mod.RELAX_MAX_MS
+    assert _INSTALL_STALL_MS > _mod.RELAX_MAX_MS

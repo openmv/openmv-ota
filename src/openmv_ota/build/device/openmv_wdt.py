@@ -127,6 +127,7 @@ _budget = 0            # ISR feeds REMAINING (ticks). Counts down in _tick; at 0
 _stall_timer = None    # stall_guard()'s hard-IRQ timer
 _stall_budget = 0      # ticks of NO PROGRESS remaining before stall_guard() resets the board
 _stall_reload = 0      # what feed() reloads _stall_budget to (0 = no guard armed)
+_stall_depth = 0       # stall_guard() nesting depth; the guard is torn down only at 0
 _reset = None          # pre-bound machine.reset, so the stall ISR allocates nothing
 
 
@@ -236,7 +237,14 @@ class _StallGuard:
         self._ticks = int(timeout_ms * FEED_HZ / 1000)
 
     def __enter__(self):
-        global _stall_timer, _stall_budget, _stall_reload, _reset
+        global _stall_timer, _stall_budget, _stall_reload, _reset, _stall_depth
+        # COUNT THE NESTING, for the same reason relax() has to: an inner region exiting must not
+        # tear down the outer one's guard and leave the rest of it unpoliced. run() guards the
+        # check-in and install() guards itself, so these DO nest the moment an install is offered.
+        _stall_depth += 1
+        if self._ticks > _stall_budget:
+            _stall_budget = self._ticks       # nesting keeps the LONGER allowance
+            _stall_reload = self._ticks
         if _stall_timer is None:  # pragma: no cover (device)  # hil-residual: device-only arm (host has no machine.Timer)
             import machine  # hil-residual: stall-guard timer setup
             _reset = machine.reset  # hil-residual: pre-bound so the ISR allocates nothing
@@ -246,7 +254,12 @@ class _StallGuard:
         return self
 
     def __exit__(self, *args):
-        global _stall_timer, _stall_reload, _stall_budget
+        global _stall_timer, _stall_reload, _stall_budget, _stall_depth
+        _stall_depth -= 1
+        if _stall_depth < 0:                  # unbalanced use: never wedge below zero
+            _stall_depth = 0
+        if _stall_depth:                      # an OUTER region is still running -- keep policing it
+            return False
         if _stall_timer is not None:  # pragma: no cover (device)  # hil-residual: device-only teardown
             _stall_timer.deinit()  # hil-residual: the guard must not outlive its region
             _stall_timer = None  # hil-residual: bare clear
