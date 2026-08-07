@@ -498,6 +498,24 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
 
     The counter tracks CONSECUTIVE failures and resets on any completed cycle, so a
     flaky link that still gets through now and then never triggers it."""
+    try:  # hil-residual: the guard itself emits nothing on the happy path -- every marker comes from the body it wraps
+        await _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host,  # hil-residual: delegates to the loop; witnessed by run.* markers throughout
+                            recover, recover_after)
+    except BaseException as e:  # hil-residual: reached only when the OTA task is dying, which is precisely the case that leaves no other trace
+        # SAY SO BEFORE DYING. run() is an asyncio TASK, and MicroPython reports a task that dies
+        # to the REPL -- not to our logger -- so an OTA loop killed by anything the loop body does
+        # not catch simply STOPS. The app keeps running, the board looks healthy, and the device
+        # never updates again, with nothing in the log to say why. That is the worst shape a bug in
+        # this project can take, and it is invisible on the bench: a HIL leg just sees markers stop.
+        # BaseException on purpose -- the things that get here (KeyboardInterrupt from a probe
+        # taking the REPL, CancelledError, SystemExit) are exactly the ones Exception misses.
+        log.error("run: OTA LOOP DIED %r" % (e,))  # hil-residual: THE witness for a dead OTA task; no bench scenario kills the loop on purpose today, so it is unexercised -- which is exactly why it must exist before one does
+        raise  # hil-residual: re-raise so cancellation/shutdown still behave; we only add the record
+
+
+async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recover,
+                        recover_after):  # pragma: no cover  (device: the network loop)
+    """run()'s whole body, split out ONLY so run() can wrap it in one handler -- see there."""
     import asyncio
     boot = status()
     if boot.get("trial") and self_test is not None and self_test():
