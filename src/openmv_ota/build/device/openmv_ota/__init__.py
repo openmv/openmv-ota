@@ -509,35 +509,50 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
     while True:
         wait = poll_after_s
         _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
+        # SPLIT ON PURPOSE: a failed CHECK-IN is a transport fault, everything after it is a
+        # verdict on the release. Only the first kind may drive the recover escalation.
         try:
-            # The check-in is a BLOCKING socket op (handshake + tiny response) -- a blocking mbedtls C
-            # call that does not yield to asyncio, so it freezes the event loop (and any app feed loop)
-            # longer than a short watchdog window -> relax() ISR-feeds across it. A no-op unless the app
-            # armed a watchdog. Blocking (settimeout, no poll) is also required for the WINC1500 (see
-            # _checkin): asyncio's poller raises EIO on WINC sockets.
-            # The check-in is a BLOCKING socket op under relax(). NOTE: a park HERE is not
-            # recoverable in software -- see openmv_wdt; only an armed hardware watchdog gets
-            # the board back, which is what relax()'s budget now allows to happen.
+            # The check-in is a BLOCKING socket op (handshake + tiny response) -- a blocking mbedtls
+            # C call that does not yield to asyncio, so it freezes the event loop (and any app feed
+            # loop) longer than a short watchdog window -> relax() ISR-feeds across it. A no-op
+            # unless the app armed a watchdog. Blocking (settimeout, no poll) is also required for
+            # the WINC1500 (see _checkin): asyncio's poller raises EIO on WINC sockets.
+            # NOTE: a park HERE is not recoverable in software -- see openmv_wdt; only an armed
+            # hardware watchdog gets the board back, which is what relax()'s budget now allows.
             with _wdt_relax():  # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
                 resp = _checkin(server_url, _collect_body(identity(), status()), ca)
-            log.debug("checkin: response received")
-            _notify(resp)
-            wait = resp.get("poll_after_s", poll_after_s)
-            manifest_url = _offer(resp)
-            if manifest_url:
-                log.debug("checkin: update offered")
-                install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
-            fails = 0                     # a cycle completed -> the transport works; forget the streak  # hil-residual: the streak RESET is witnessed by absence -- a healthy board polls for a whole run and never emits `run: recovering transport`; a marker here would fire every poll and drown the log
-        except Exception as e:  # hil-residual: transient-failure wrapper (install-retry exercised by corrupt/bad_sig)
-            # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install
-            # (e.g. the installer read blowing the heap) is indistinguishable on the wire and in
-            # the log from a board with nothing on offer: the same check-in, the same poll wait,
-            # forever. Bounded: one repr of the exception, no traceback buffer.
+        except Exception as e:  # hil-residual: check-in transport failure (the wedge path)
+            # THE TRANSPORT IS SUSPECT. This is the failure a wedged stack produces every poll,
+            # forever (measured: 39 consecutive EINVAL check-ins on an ATWINC1500), so it is the
+            # only one allowed to escalate to recover().
             log.warning("run: cycle failed %r" % e)  # hil-residual: transient-failure witness
             fails += 1  # hil-residual: counter arithmetic; the COUNT is witnessed downstream -- N `run: cycle failed` lines followed by exactly one `run: recovering transport` is what proves the streak logic on HW
             if recover is not None and fails >= recover_after:  # hil-residual: the taken branch is witnessed by `run: recovering transport`; the not-taken branch by its ABSENCE after fewer than recover_after failures
                 fails = 0                 # one escalation per streak, not one per cycle after it  # hil-residual: witnessed by there being ONE `run: recovering transport` per streak of failures, not one per poll after the threshold
                 await _recover(recover)  # hil-residual: the witness for this call is emitted by the CALLEE's first line (`run: recovering transport`); the audit cannot see across the call boundary, and a marker here would duplicate it
+        else:
+            # The check-in got through, so the transport WORKS -- whatever happens next is about
+            # the release, not the link. Forget the streak, and never let a rejected update look
+            # like a wedged network: a bad signature, an unknown key or a failed anti-rollback
+            # repeats every poll for as long as that release is offered, and counting those would
+            # have the device tearing down and rebuilding its network forever over an image that
+            # is never going to validate. On the WINC that rebuild is a full chip reset. (Measured
+            # on the bench: bad_sig / bad_key / bad_version each drove a spurious recover.)
+            fails = 0  # hil-residual: the streak RESET is witnessed by absence -- a healthy board polls for a whole run and never emits `run: recovering transport`; a marker here would fire every poll and drown the log
+            try:
+                log.debug("checkin: response received")
+                _notify(resp)
+                wait = resp.get("poll_after_s", poll_after_s)
+                manifest_url = _offer(resp)
+                if manifest_url:
+                    log.debug("checkin: update offered")
+                    install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
+            except Exception as e:  # hil-residual: post-check-in failure (a verdict on the release, or an install fault); exercised by corrupt/bad_sig
+                # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install
+                # (e.g. the installer read blowing the heap) is indistinguishable on the wire and in
+                # the log from a board with nothing on offer: the same check-in, the same poll wait,
+                # forever. Bounded: one repr of the exception, no traceback buffer.
+                log.warning("run: cycle failed %r" % e)  # hil-residual: transient-failure witness
         _wdt_feed()
         log.debug("run: poll wait")                  # HIL path witness (loop tail; _wdt_feed fed)
         await asyncio.sleep(wait)  # hil-residual: bare loop-tail await (sleep only; nothing follows)

@@ -172,3 +172,37 @@ def test_generated_app_wires_its_own_bring_up_as_the_hook():
     assert "recover=bring_up_network" in main_py
     # And the hook must be the bring-up that CONSTRUCTS the NIC, not one that reuses a handle.
     assert "network.WLAN(network.STA_IF)" in main_py
+
+
+# --- the escalation must fire on TRANSPORT faults only ---------------------------------
+# Caught on hardware: the H7 Plus's bad_sig / bad_key / bad_version legs each drove a
+# spurious `run: recovering transport`. The transport was perfectly healthy -- the update
+# was legitimately REJECTED. Counting rejections means a device rebuilds its network every
+# `recover_after` polls, forever, over a release that is never going to validate. On the
+# WINC that rebuild is a full chip reset (winc_init -> nm_bsp_reset).
+
+def _run_src():
+    import inspect
+
+    from openmv_ota.build.device import openmv_ota as rt
+    return inspect.getsource(rt.run) + inspect.getsource(rt._poll_forever)
+
+
+def test_only_a_failed_checkin_increments_the_streak():
+    """The counter must live in the CHECK-IN's own except, not one wrapping the whole cycle."""
+    src = _run_src()
+    checkin_block = src.split("resp = _checkin(")[1]
+    after = checkin_block.split("else:")[0]
+    assert "fails += 1" in after, "the streak must be driven by the check-in failing"
+    # ...and everything past a SUCCESSFUL check-in must not be able to reach it.
+    post = checkin_block.split("else:")[1]
+    assert "fails += 1" not in post, (
+        "a rejected release must never look like a wedged network")
+    assert "install(" in post, "the install path belongs after a successful check-in"
+
+
+def test_a_successful_checkin_clears_the_streak():
+    """Proof the transport works, whatever the release turns out to be."""
+    post = _run_src().split("resp = _checkin(")[1].split("else:")[1]
+    assert "fails = 0" in post.split("try:")[0], (
+        "reaching the else branch means the link is fine; the streak must reset there")
