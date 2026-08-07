@@ -4,13 +4,19 @@ Scaffolded into a project at ``device/openmv_wdt.py``; ``build firmware`` freeze
 ``openmv_wdt``) so the installer and your app share one watchdog. Like ``openmv_log``
 it's **yours to edit** and **off by default**.
 
-**WHY AN OTA DEVICE WANTS THIS ARMED.** A blocking network call can park in C and never come
-back -- measured on three boards in one fleet run: an N6 and an H7 Plus each sat silent for
-555 s inside the check-in, and a Nicla stopped dead mid-download after writing its first 4 KB
-block. Nothing in Python can break out of that: the interpreter is not running, so no timeout
-fires, no retry happens, and no amount of defensive code in the OTA library helps. A HARDWARE
-RESET is the only way out, which means an unwatched device in that state is simply gone until
-someone power-cycles it. With a watchdog armed the same park becomes a reset and a retry.
+**WHY AN OTA DEVICE WANTS THIS ARMED -- it is the ONLY thing that recovers a parked board.**
+A blocking network call can park in C and never come back: measured repeatedly on this fleet, an
+N6 and an H7 Plus each sat silent 555 s inside the check-in, and a Nicla stopped dead mid-download
+after its first 4 KB block. Nothing in Python breaks out of that -- the interpreter is not running,
+so no timeout fires and no retry happens.
+
+Nor does a software timer. ``stall_guard()`` below arms a hard-IRQ timer meant to reset a stalled
+board, and on an N6 `delta` leg it was armed, the check-in parked, and it STILL sat silent for
+555 s: a soft timer dispatches through SysTick/PendSV and the scheduler, and a thread parked in
+mbedtls/lwIP does not let that run. So the software backstop is not a substitute for this one.
+
+Only the HARDWARE watchdog counts independently of the CPU. Armed, the park becomes a reset and a
+retry; unarmed, the device is simply gone until someone power-cycles it.
 
 Use the DEEP-SLEEP-SAFE watchdog (``WDT_ID`` below): the one that STOPS in deep sleep, so it
 can't reset you while you sleep. On stm32 that's the WWDG, whose window is **short** -- 167 ms
@@ -281,11 +287,23 @@ def stall_guard(timeout_ms):
     Python can break out of that: the interpreter is not running, so no timeout fires and no
     retry happens. On a board with no hardware watchdog armed that state is permanent.
 
-    The trick is that a HARD-IRQ timer still fires while the main thread sits in a C call --
-    interrupts are enabled during network I/O (unlike a flash erase, which disables them, and
-    where the ISR therefore simply does not run and cannot false-trigger). ``feed()`` reloads the
-    budget from the main thread, so every existing feed doubles as a progress report; when the
-    budget drains, the ISR calls ``machine.reset()``.
+    The idea is that a HARD-IRQ timer keeps firing while the main thread sits in a C call.
+    ``feed()`` reloads the budget from the main thread, so every existing feed doubles as a
+    progress report; when the budget drains, the ISR calls ``machine.reset()``.
+
+    **MEASURED LIMIT -- this does NOT rescue a park inside the network stack.** On an N6 `delta`
+    leg the check-in parked with this guard armed and the board sat silent for 555 s: the ISR
+    never dispatched, so the reset never came. A soft timer is delivered through SysTick/PendSV
+    and the MicroPython scheduler, and a thread parked inside mbedtls/lwIP evidently does not let
+    that dispatch run. A `time.sleep()` bench test DOES trigger it -- sleep yields to the
+    scheduler -- so that test proved the mechanism, not the case that matters. Do not read a
+    passing bench check as coverage of the real hang.
+
+    What this leaves it good for: stalls where the interpreter is still being scheduled (a Python
+    loop that stops making progress, a driver call that does allow ISRs). For a park inside a
+    blocking C call the ONLY thing that gets the board back is the HARDWARE watchdog, which
+    counts independently of the CPU -- which is why ENABLED matters and why relax() had to stop
+    feeding blindly.
 
     Unlike the stm32 hardware watchdogs this is REVERSIBLE -- a soft timer can be deinit'd, where
     WWDG/IWDG cannot be turned off once armed. That is what makes it safe to wrap around just the

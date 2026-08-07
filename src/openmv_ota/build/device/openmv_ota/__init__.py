@@ -532,13 +532,17 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # longer than a short watchdog window -> relax() ISR-feeds across it. A no-op unless the app
             # armed a watchdog. Blocking (settimeout, no poll) is also required for the WINC1500 (see
             # _checkin): asyncio's poller raises EIO on WINC sockets.
-            # STALL GUARD ON THE CHECK-IN. This is where the parks actually happen -- three of the
-            # four observed hangs died right here, silent for 555 s after `status: read`, which is
-            # the last line before this call. Nothing inside a check-in calls feed(), so for this
-            # region the guard acts as a plain DEADLINE rather than a progress watchdog: a healthy
-            # check-in takes a couple of seconds and leaves long before the budget, a parked one
-            # gets the board reset and retried. Sized like the install guard, above the pathological
-            # (but legitimate) case of several _CHECKIN_TIMEOUTs inside one call.
+            # STALL GUARD ON THE CHECK-IN. This is where the parks happen -- most of the
+            # observed hangs died right here, silent for 555 s after `status: read`, the last line
+            # before this call. Nothing inside a check-in calls feed(), so for this region the guard
+            # is a plain DEADLINE rather than a progress watchdog: a healthy check-in leaves long
+            # before the budget, a stalled one gets reset and retried.
+            #
+            # MEASURED: this does NOT catch a park inside the network stack. An N6 `delta` leg
+            # parked here with the guard armed and still sat silent 555 s -- the soft timer's
+            # SysTick/PendSV dispatch never ran. It is kept for stalls where the interpreter IS
+            # still scheduled; the only thing that recovers a true park is the HARDWARE watchdog
+            # (see openmv_wdt), which is why relax() had to stop feeding it blindly.
             with _wdt_stall_guard(_CHECKIN_STALL_MS), _wdt_relax():  # hil-residual: the guard's only observable effect is the reset it triggers on a park, which leaves no marker of its own; a healthy check-in is witnessed by run.checkin as before
                 resp = _checkin(server_url, _collect_body(identity(), status()), ca)
             log.debug("checkin: response received")
