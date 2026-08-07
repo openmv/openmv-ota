@@ -191,6 +191,9 @@ def _should_confirm(slot, status_sector):
 # alignment, so chunked writes never need per-port re-alignment, and only one chunk
 # is ever held in RAM -- never a whole (up to ~1 MiB) image.
 _CHUNK = 4096
+_RESP_HEADERS_MAX = 64       # most a sane server sends is a handful; this only has to be far enough
+#                              above normal that it never trips on a real reply while still ending a
+#                              header stream that never does.
 _RESP_MAX = 8 * 1024         # a check-in reply is grants + version info;
                              # kept roomy on purpose -- rejecting a real
                              # reply breaks OTA, the costlier failure
@@ -627,10 +630,21 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
             raise OSError("check-in HTTP %s" % status_line)  # hil-residual: bare raise (non-200; happy path is 200)
         log.debug("checkin: server ok")              # milestone + HIL path witness
         clen = None
+        left = _RESP_HEADERS_MAX                     # CEILING THE HEADER COUNT. Each readline is
+        #                                              bounded by the socket timeout, but the LOOP was
+        #                                              not: a server (or a captive portal) that drips
+        #                                              one header line per timeout keeps the check-in
+        #                                              alive indefinitely. Nothing accumulates in RAM
+        #                                              here -- the lines are discarded -- so this
+        #                                              bounds TIME, the same thing relax()'s budget
+        #                                              bounds one level up.
         while True:                                  # skip headers, noting Content-Length
             line = ss.readline()
             if line in (b"\r\n", b"\n", b""):
                 break
+            left -= 1
+            if left <= 0:
+                raise OSError("check-in sent over %d headers" % _RESP_HEADERS_MAX)  # hil-residual: over-cap guard, inject-only -- no real server sends 64 headers, so reaching it needs a fault-injected reply; the raise surfaces as run's `run: cycle failed` witness
             if line[:15].lower() == b"content-length:":   # read exactly this -> no EOF-wait on the WINC
                 try:
                     clen = int(line.split(b":", 1)[1].strip())
