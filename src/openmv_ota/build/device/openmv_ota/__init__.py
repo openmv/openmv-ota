@@ -82,10 +82,6 @@ def _wdt_relax():  # pragma: no cover  (device)  # hil-residual-fn: thin wrapper
     return _wdt.relax() if _wdt is not None else _NoWdt()
 
 
-def _wdt_stall_guard(ms):  # pragma: no cover  (device)  # hil-residual-fn: thin wrapper over openmv_wdt.stall_guard; arms a soft timer, so it does nothing observable on a host
-    return _wdt.stall_guard(ms) if _wdt is not None else _NoWdt()
-
-
 def _wdt_feed():  # pragma: no cover  (device)
     if _wdt is not None:
         _wdt.feed()
@@ -195,19 +191,6 @@ def _should_confirm(slot, status_sector):
 # alignment, so chunked writes never need per-port re-alignment, and only one chunk
 # is ever held in RAM -- never a whole (up to ~1 MiB) image.
 _CHUNK = 4096
-# No-progress ceiling for an install (ms). Must sit ABOVE the longest legitimate gap between two
-# feed() calls, and that gap is a relax() region -- relax feeds the HARDWARE watchdog from its ISR
-# but makes no feed() call, so the stall budget drains for its whole duration. So this has to clear
-# openmv_wdt.RELAX_MAX_MS (60 s) with margin. The two then layer cleanly: on a board WITH a watchdog
-# armed, relax's own budget expires first and the watchdog bites; on a board WITHOUT one, this is
-# the only thing left, and it fires here. A false trigger costs one install attempt, which the
-# device retries -- cheap against a hang that needs someone with a power cable.
-_INSTALL_STALL_MS = 90000
-# Same ceiling for the check-in and the NTP sync. Nothing inside either calls feed(), so there the
-# guard is a plain DEADLINE on one blocking call rather than a progress watchdog -- which is what
-# that region needs. It still has to clear the legitimate worst case: several _CHECKIN_TIMEOUTs
-# (15 s) inside one call, and an NTP walk of host + one fallback at 4 s each.
-_CHECKIN_STALL_MS = 90000
 _RESP_HEADERS_MAX = 64     # most a sane server sends is a handful; this only has to be far enough
 #                              above normal that it never trips on a real reply while still ending a
 #                              header stream that never does.
@@ -532,18 +515,10 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # longer than a short watchdog window -> relax() ISR-feeds across it. A no-op unless the app
             # armed a watchdog. Blocking (settimeout, no poll) is also required for the WINC1500 (see
             # _checkin): asyncio's poller raises EIO on WINC sockets.
-            # STALL GUARD ON THE CHECK-IN. This is where the parks happen -- most of the
-            # observed hangs died right here, silent for 555 s after `status: read`, the last line
-            # before this call. Nothing inside a check-in calls feed(), so for this region the guard
-            # is a plain DEADLINE rather than a progress watchdog: a healthy check-in leaves long
-            # before the budget, a stalled one gets reset and retried.
-            #
-            # MEASURED: this does NOT catch a park inside the network stack. An N6 `delta` leg
-            # parked here with the guard armed and still sat silent 555 s -- the soft timer's
-            # SysTick/PendSV dispatch never ran. It is kept for stalls where the interpreter IS
-            # still scheduled; the only thing that recovers a true park is the HARDWARE watchdog
-            # (see openmv_wdt), which is why relax() had to stop feeding it blindly.
-            with _wdt_stall_guard(_CHECKIN_STALL_MS), _wdt_relax():  # hil-residual: the guard's only observable effect is the reset it triggers on a park, which leaves no marker of its own; a healthy check-in is witnessed by run.checkin as before
+            # The check-in is a BLOCKING socket op under relax(). NOTE: a park HERE is not
+            # recoverable in software -- see openmv_wdt; only an armed hardware watchdog gets
+            # the board back, which is what relax()'s budget now allows to happen.
+            with _wdt_relax():  # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
                 resp = _checkin(server_url, _collect_body(identity(), status()), ca)
             log.debug("checkin: response received")
             _notify(resp)
@@ -609,11 +584,7 @@ def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
         # It is worst on a network that BLACKHOLES NTP -- each unreachable server burns its full
         # socket timeout, and sync() walks a fallback list -- which is precisely when a device most
         # needs to stay alive. A no-op once the clock is trusted (the common case: no relax at all).
-        # Guarded for the same reason as the check-in: an NTP sync is a blocking network op, and a
-        # park inside it is just as permanent. This is the case the comment above already flags as
-        # worst -- a network that BLACKHOLES NTP -- which is exactly when a device most needs to
-        # stay alive rather than sit silent.
-        with _wdt_stall_guard(_CHECKIN_STALL_MS), _wdt_relax():
+        with _wdt_relax():
             openmv_rtc.resolve(ntp_host)
         log.debug("clock: resolved")                  # HIL path witness (NTP/RTC each poll)
     except Exception:  # hil-residual: clock-unresolved wrapper (missing module / failed NTP)
@@ -894,17 +865,7 @@ def install(url, ca=None):  # pragma: no cover
     with _wdt_relax():
         exec(_read_file(here + "/data/installer.py", "r"), ns)
     log.debug("install: staged installer")           # milestone + HIL path witness
-    # STALL GUARD ACROSS THE WHOLE INSTALL. A blocking network call can park in C and never return
-    # (measured: an N6 and an H7 Plus silent 555 s in the check-in, a Nicla dead mid-download after
-    # its first 4 KB block). Nothing in Python breaks out of that -- the interpreter is not running
-    # -- so on a board with no hardware watchdog armed the device is simply gone until a human
-    # power-cycles it. A HARD-IRQ timer does still fire while the main thread sits in that C call,
-    # and every feed() the installer already makes doubles as a progress report, so a stall resets
-    # the board and the next boot retries. Reversible (a soft timer can be deinit'd, where WWDG and
-    # IWDG cannot), which is what makes it safe to arm here and tear down on the way out -- it
-    # touches no hardware watchdog and so cannot start the stm32 IWDG.
-    with _wdt_stall_guard(_INSTALL_STALL_MS):  # hil-residual: arms a soft timer; its only observable effect is the reset it triggers on a stall, which by definition leaves no marker of its own -- a healthy install is witnessed by install.* as before
-        ns["run"](url, ca, cfg)  # hil-residual: terminal call into the RAM installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
+    ns["run"](url, ca, cfg)  # hil-residual: terminal call into the RAM installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
 
 
 def _resolve_ca(ca, base):  # pragma: no cover

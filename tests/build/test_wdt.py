@@ -7,6 +7,7 @@ disabled paths are reachable off-device -- the machine.WDT/Timer wiring is devic
 """
 
 import importlib.util
+import inspect
 import sys
 from pathlib import Path
 
@@ -324,15 +325,6 @@ def test_a_disarmed_guard_never_resets(monkeypatch):
     assert _mod._stall_timer is None, "no timer means the ISR cannot run"
 
 
-def test_install_stall_ceiling_clears_the_longest_relax_region():
-    """A relax() region makes NO feed() call -- it feeds the hardware watchdog from its ISR --
-    so the stall budget drains for its whole duration. If the install ceiling did not clear
-    RELAX_MAX_MS, every install that took a slow TLS handshake would reset the board."""
-    from openmv_ota.build.device.openmv_ota import _INSTALL_STALL_MS
-
-    assert _INSTALL_STALL_MS > _mod.RELAX_MAX_MS
-
-
 def test_guard_arms_a_hard_irq_timer_and_tears_it_down(monkeypatch):
     """HARD IRQ is the whole mechanism: a soft-scheduled callback would not run while the main
     thread is parked in a C call, which is exactly the state this exists to escape."""
@@ -406,13 +398,6 @@ def test_unbalanced_guard_exit_does_not_wedge_the_depth(monkeypatch):
     assert _mod._stall_depth == 0
 
 
-def test_checkin_and_install_ceilings_both_clear_the_longest_relax():
-    from openmv_ota.build.device.openmv_ota import _CHECKIN_STALL_MS, _INSTALL_STALL_MS
-
-    assert _CHECKIN_STALL_MS > _mod.RELAX_MAX_MS
-    assert _INSTALL_STALL_MS > _mod.RELAX_MAX_MS
-
-
 def test_an_orphaned_timer_must_not_reset_a_healthy_board(monkeypatch):
     """If the stall timer ever outlived its region -- a deinit that did not take -- the ISR would
     see budget 0, read it as "stalled", and reset the board. Forever. Refuse unless armed."""
@@ -423,3 +408,20 @@ def test_an_orphaned_timer_must_not_reset_a_healthy_board(monkeypatch):
     for _ in range(50):
         _mod._stall_tick(None)
     assert resets == [], "an unarmed guard must never reset the board"
+
+
+def test_stall_guard_is_not_wired_into_the_OTA_network_paths():
+    """DELIBERATELY UNWIRED. It was measured NOT to rescue a park inside the network stack (an N6
+    sat silent 555 s with it armed -- the soft timer's SysTick/PendSV dispatch never ran), and
+    wiring it meant a 50 Hz hard IRQ inside the very driver calls that park. Unproven mechanism in
+    the hot path of the bug it failed to fix is a bad trade, so run()/install() use plain relax()
+    and the hardware watchdog is the backstop.
+
+    The API stays available and tested for apps with a stall the interpreter CAN still be
+    scheduled through. This pins the decision so it is not quietly re-wired without new evidence.
+    """
+    from openmv_ota.build.device import openmv_ota as rt
+
+    src = inspect.getsource(rt)
+    assert "stall_guard" not in src, "re-wiring needs evidence it helps; see openmv_wdt docstring"
+    assert callable(_mod.stall_guard), "the tool itself stays available to app authors"
