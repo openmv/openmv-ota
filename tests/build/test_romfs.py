@@ -497,18 +497,42 @@ def test_factory_build_composes_dual_slot(make_project):
                                       compile_py=False, convert_models=False)[0]
     assert r.output.name == "OPENMV_N6-factory-romfs.img" and r.bound == "factory slot"
     img = r.output.read_bytes()
-    assert len(img) == target.partition_size  # the whole partition
+    slot = target.front_size
+    assert len(img) == 2 * slot            # two EQUAL slots (one image must fit either)
 
     block = geometry.ota_block(target.erase_size)
-    front, part = target.front_size, target.partition_size
-    # both slots carry the same golden body, factory-signed
-    assert parse_trailer(img[front - block:]).product_id == 7        # FRONT trailer
-    assert parse_trailer(img[part - block:]).product_id == 7         # BACK trailer
+    # both slots carry the same body, factory-signed
+    assert parse_trailer(img[slot - block:]).product_id == 7           # slot A trailer
+    assert parse_trailer(img[2 * slot - block:]).product_id == 7       # slot B trailer
 
-    fs = img[front - 2 * block: front - block]                     # FRONT status sector
-    bs = img[part - 2 * block: part - block]                       # BACK status sector
-    assert (fs[0:16], fs[16:32], fs[32:48]) == (status.PENDING, status.TRIED, status.CONFIRMED)
-    assert (bs[0:16], bs[16:32], bs[32:48]) == (b"\xff" * 16, b"\xff" * 16, status.CONFIRMED)
+    a = img[slot - 2 * block: slot - block]                           # slot A status sector
+    b = img[2 * slot - 2 * block: 2 * slot - block]                   # slot B status sector
+    # v2: no golden shape. BOTH slots ship CONFIRMED and are told apart by ONE number, the
+    # install counter -- A higher, so A boots and B is what the first update overwrites.
+    for sector in (a, b):
+        assert (sector[0:16], sector[16:32], sector[32:48]) == (
+            b"\xff" * 16, b"\xff" * 16, status.CONFIRMED)
+    co, cn = status.COUNTER_OFFSET, status.COUNTER_SIZE
+    assert a[co:co + cn] == status.encode_counter(2)
+    assert b[co:co + cn] == status.encode_counter(1)
+
+
+def test_provision_slots_by_mode():
+    """A/B lays down the SAME image twice with different counters, so a device has a fallback
+    from its first boot; the counters (not the position) decide which one runs and which one the
+    first update overwrites. SINGLE lays down one slot spanning the partition."""
+    from openmv_ota.ota import geometry
+
+    assert build_mod.provision_slots(12 * 1024 * 1024, 4096) == [(6 * 1024 * 1024, 2),
+                                                                 (6 * 1024 * 1024, 1)]
+    # one-sector board -> one slot, the whole partition
+    assert build_mod.provision_slots(128 * 1024, 128 * 1024) == [(128 * 1024, 1)]
+    # ...and the explicit opt-out gets the same shape on a board that COULD do A/B
+    assert build_mod.provision_slots(12 * 1024 * 1024, 4096, single_image=True) == [
+        (12 * 1024 * 1024, 1)]
+    with pytest.raises(ValueError, match="cannot host OTA"):
+        build_mod.provision_slots(4096, 4096)
+    assert geometry.derive_mode(4096, 4096) is None
 
 
 def test_factory_signed_by_factory_key(make_project):
@@ -523,7 +547,7 @@ def test_factory_signed_by_factory_key(make_project):
     r = build_mod.build_factory_romfs(root, app=app, firmware=repo,
                                       compile_py=False, convert_models=False)[0]
     block = geometry.ota_block(target.erase_size)
-    sector = r.output.read_bytes()[target.partition_size - block:]  # BACK trailer
+    sector = r.output.read_bytes()[2 * target.front_size - block:]  # slot B trailer
     t = parse_trailer(sector)
     entry = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
                  if k.key_id == t.key_id)
@@ -611,19 +635,22 @@ def test_signer_pubkey_must_match_trusted(make_project):
                                       compile_py=False, convert_models=False)
 
 
-def test_factory_refuses_unset_account(make_project):
-    # the golden is permanent, so refuse to burn an accountless one unless it's on purpose
+def test_factory_warns_on_unset_account(make_project, capsys):
+    """v1 REFUSED this: the golden slot was permanent, so an accountless golden was baked for
+    the life of the device and would strand it on fallback. Under A/B both slots are updatable
+    and an account can be introduced by a later release, so the honest gate is a warning."""
     root, repo, app = _build_ota(make_project, account="")
-    with pytest.raises(BuildError, match="no account_id set"):
-        build_mod.build_factory_romfs(root, app=app, firmware=repo,
-                                      compile_py=False, convert_models=False)
+    r = build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                      compile_py=False, convert_models=False)[0]
+    assert r.output.exists()
+    assert "no account_id set" in capsys.readouterr().err
 
 
 def test_factory_no_account_flag_allows_unset(make_project):
     root, repo, app = _build_ota(make_project, account="")
     r = build_mod.build_factory_romfs(root, app=app, firmware=repo, no_account=True,
                                       compile_py=False, convert_models=False)[0]
-    assert r.output.name == "OPENMV_N6-factory-romfs.img"   # explicit self-host golden is fine
+    assert r.output.name == "OPENMV_N6-factory-romfs.img"   # explicit self-host build is fine
 
 
 def test_factory_coprocessor_is_plain(make_project):
@@ -670,7 +697,7 @@ def test_factory_body_too_big(monkeypatch, make_project):
     target = load_project(root, firmware=repo).board("OPENMV_N6")
     front_cap = target.front_size - geometry.slot_overhead(target.erase_size)
     monkeypatch.setattr(build_mod, "build_image", lambda *a, **k: b"\x00" * (front_cap + 1))
-    with pytest.raises(BuildError, match="factory slot holds"):
+    with pytest.raises(BuildError, match="a slot holds"):
         build_mod.build_factory_romfs(root, app=app, firmware=repo,
                                       compile_py=False, convert_models=False)
 

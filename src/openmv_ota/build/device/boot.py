@@ -339,12 +339,19 @@ class OtaBoot:
     def _slots(self):
         """``[(name, offset, size), ...]`` for this device's mode.
 
-        A/B splits the partition; SINGLE is one slot spanning all of it. Everything below is
-        written against this list, so the two modes differ in exactly one place."""
+        A/B splits the partition into two slots OF EQUAL SIZE; SINGLE is one slot spanning all
+        of it. Everything below is written against this list, so the two modes differ in exactly
+        one place.
+
+        Equal sizes are not cosmetic. One OTA image must be installable into EITHER slot -- the
+        installer picks the target at run time -- and the image is slot-sized, with its trailer
+        in the last block. A partition whose half does not divide evenly leaves a remainder
+        below the split; that tail is deliberately unused (under one block per slot) rather
+        than handed to B, which would make B's image a different size from A's."""
         if self.front_size <= 0 or self.front_size >= self.partition_size:
             return [("A", 0, self.partition_size)]          # SINGLE: one slot, whole partition
         return [("A", 0, self.front_size),
-                ("B", self.front_size, self.partition_size - self.front_size)]
+                ("B", self.front_size, self.front_size)]
 
     def _rollback_floor(self):
         """The anti-rollback floor: the highest version any slot has recorded as confirmed.

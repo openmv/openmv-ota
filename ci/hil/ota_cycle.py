@@ -316,7 +316,8 @@ COVERAGE = {
     "-> mounted BACK": "boot.mount.back",
     "boot: FRONT rejected": "boot.front_reject",
     "boot: no bootable slot": "boot.no_slot",
-    "install: erasing FRONT": "install.start",
+    "install: slot surveyed": "install.survey",   # per-slot pre-erase read (counter/floor/version)
+    "install: erasing": "install.start",          # "install: erasing <slot> (N bytes)"
     "install: write path block-device": "install.blockdev",
     "install: write path XIP": "install.xip",
     "install: representation delta": "install.delta",
@@ -346,11 +347,11 @@ COVERAGE = {
     # the step (board-agnostic) and whichever branch runs satisfies it.
     "install: fetching manifest": "install.fetch_manifest",  # pre-erase manifest GET starting
     "install: downloading": "install.download",              # image download opened post-erase
-    "install: writing FRONT": "install.writing",             # streamed write loop starting
+    "install: writing": "install.writing",                   # "install: writing <slot>"
     "install: write path ready block-device": "write.ready",  # closures bound (def lines witnessed)
     "install: write path ready XIP": "write.ready",
-    "install: erased FRONT block-device": "write.erased",     # FRONT slot erased before the write
-    "install: erased FRONT XIP": "write.erased",
+    "install: erased slot block-device": "write.erased",      # target slot erased before the write
+    "install: erased slot XIP": "write.erased",
     "install: erasing block block-device": "write.erased",    # in-loop erase op (loop body witness)
     "install: erasing block XIP": "write.erased",
     "install: back reading block-device": "write.backread",   # in-loop BACK read (delta loop body)
@@ -362,7 +363,7 @@ COVERAGE = {
     "install: back read XIP": "write.backread",
     "install: complete block-device": "write.complete",       # write committed (flush / no-op)
     "install: complete XIP": "write.complete",
-    "install: committed FRONT": "install.committed",          # commit point passed, arming next
+    "install: committed slot": "install.committed",          # commit point passed, arming next
     "install: retry cleanup": "install.retry_cleanup",        # socket closed before a download retry
     "install: rebooting": "install.reboot",                   # _reset() drained the log, about to reset
     "verify: write block-device": "verify.write",             # confirm/rollback write+readback
@@ -412,7 +413,7 @@ COVERAGE = {
     "confirm: floor advanced": "confirm.floor",          # anti-rollback floor raised on confirm
     "checkin: response received": "run.checkin",
     "checkin: update offered": "run.offer",
-    "confirm: kept running FRONT": "confirm.promoted",
+    "confirm: kept the running image": "confirm.promoted",
 }
 
 
@@ -441,7 +442,8 @@ SCENARIOS = {
                    "run.ca_path", "run.ca_bytes", "run.read_at", "run.data_path",
                    "install.fetch_manifest",
                    "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
-                   "install.start", "{cov_write}", "install.download", "install.delta",
+                   "install.survey", "install.start", "{cov_write}", "install.download",
+                   "install.delta",
                    "install.writing", "write.ready", "write.erased", "write.wrote",
                    "write.readback", "write.backread", "write.complete", "install.committed",
                    "install.armed", "install.reboot", "boot.marked", "boot.marked_verify",

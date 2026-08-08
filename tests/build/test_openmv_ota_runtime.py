@@ -61,21 +61,43 @@ def test_status_of_confirmed_image():
     assert rt._needs_confirm(_sector(True, True, True)) is False
 
 
+def test_slot_bounds_mirror_boot():
+    """The SDK reads the running slot's status and rollback sectors; boot.py decides where
+    those are. A third copy of the split (boot.py, installer, here) is the price of device
+    modules that cannot import the host package -- so pin it."""
+    import tests.build.test_device_boot as boot_test        # noqa: PLC0415
+    B = boot_test.B
+
+    class _Cfg:
+        CONTROL_BLOCK = 4096
+
+    for partition, front in ((8192, 0), (8192, 8192), (8192, 4096), (12288, 4096)):
+        _Cfg.PARTITION_SIZE, _Cfg.FRONT_SIZE = partition, front
+        ob = B.OtaBoot(None, None, None, None, partition, front, 4096, 0, {}, 0)
+        for name, off, size in ob._slots():
+            assert rt._slot_bounds(_Cfg, name) == (off, size)
+            assert rt._status_offset(_Cfg, name) == off + size - 2 * 4096
+        # an unknown/None slot answers for A rather than raising -- a device that never ran
+        # boot.py would be looking there anyway
+        assert rt._slot_bounds(_Cfg, None) == rt._slot_bounds(_Cfg, "A")
+
+
 def test_status_of_unconfirmed_trial():
     s = rt._status_of(_sector(True, True, False))  # booted a one-shot trial, not yet kept
     assert s["trial"] is True and s["confirmed"] is False
     assert rt._needs_confirm(_sector(True, True, False)) is True
 
 
-# confirm() acts only when we booted FRONT *and* it's an un-confirmed trial. The slot
-# guard is the safety bit -- see the BACK rows.
+# confirm() acts when we booted a slot AND that slot holds an un-confirmed trial. The caller
+# passes the RUNNING slot's own status sector, so "don't confirm a slot we fell back from" is
+# structural now rather than a name comparison -- there is no sector here for a slot we did not
+# boot. What is left to guard is boot.py not having run at all.
 @pytest.mark.parametrize(("slot", "pending", "tried", "confirmed", "expect"), [
-    ("FRONT", True,  True,  False, True),    # booted FRONT, un-confirmed trial -> confirm
-    ("BACK",  True,  True,  False, False),   # fell back from a failed trial -> do NOT
-    (None,    True,  True,  False, False),   # unknown slot -> never confirm
-    ("FRONT", True,  True,  True,  False),   # already confirmed
-    ("FRONT", True,  False, False, False),   # pending only, not a trial yet
-    ("FRONT", False, False, False, False),   # nothing set
+    ("A",  True,  True,  False, True),    # booted a slot holding an un-confirmed trial
+    ("B",  True,  False, False, True),    # ...and TRIED is no longer required (v2 counts attempts)
+    (None, True,  True,  False, False),   # boot.py never ran -> nothing to confirm
+    ("A",  True,  True,  True,  False),   # already confirmed
+    ("A",  False, False, False, False),   # nothing set (a blank slot)
 ])
 def test_should_confirm(slot, pending, tried, confirmed, expect):
     assert rt._should_confirm(slot, _sector(pending, tried, confirmed)) is expect
@@ -91,11 +113,13 @@ def test_log_reexport_is_a_null_logger_on_host():
     assert rt.log.critical("c") is None
 
 
-def test_status_of_pending_only_is_not_a_trial():
-    # staged but not yet trial-booted (boot.py hasn't armed 'tried') -> nothing to confirm
+def test_status_of_pending_without_tried_is_still_a_trial():
+    """v2: boot.py stopped writing TRIED -- a trial gets several attempts and each is recorded
+    by consuming a byte of the attempt region. Requiring TRIED here would mean no trial was
+    ever confirmable, so every update would roll back."""
     s = rt._status_of(_sector(True, False, False))
-    assert s["trial"] is False
-    assert rt._needs_confirm(_sector(True, False, False)) is False
+    assert s["trial"] is True and s["tried"] is False
+    assert rt._needs_confirm(_sector(True, False, False)) is True
 
 
 def test_status_of_erased_sector():

@@ -231,11 +231,32 @@ ipv4        = dhcp        # dhcp | static
 3. **`boot.py`** — install counter, two-slot validation, newest-valid selection, trial retry counter,
    hand-off to recovery.
 4. **`romfs`/`flash`** — layout for two real slots and for single-image; drop the factory special case.
+   Three things fell out of building it that were not obvious from the design:
+   - **The two A/B slots must be the SAME SIZE.** One OTA image has to be installable into
+     *either* slot (the installer picks the target at run time) and the image is slot-sized with
+     its trailer in the last block. A partition whose half does not divide evenly leaves a
+     remainder below the split, deliberately unused, rather than handing it to B.
+   - **SINGLE keeps the identical four-sector control layout**, rather than packing the records
+     into one block. The saving was 12 KiB on boards that are a curiosity; the cost would have
+     been a second on-flash layout for boot.py, the installer and the builder to agree on
+     forever. (The 4 KiB `control_block()` fix is what made 16 KiB affordable on a 128 KiB
+     partition — 112 KiB left for the image, exactly the budget those boards always had.)
+   - **`confirm()` and `status()` had to move to the RUNNING slot**, and `trial` had to stop
+     requiring `TRIED`. boot.py no longer writes TRIED (attempts are counted in the append
+     region), so the v1 predicate would have made *no* trial confirmable — every update would
+     have rolled back. The v1 "only confirm if we booted FRONT" guard is now structural: the
+     caller reads the running slot's own sector, so there is no sector for a slot we did not boot.
 5. **`server`/`client`** — check-in payload carrying both slots (versions + counters) so the server can
    distinguish "trial in progress" from "settled"; then the cloud work.
 6. **HIL catalog** — every scenario ending "settled back on golden" re-expressed as "rejected and kept
    retrying". The integrity gates (bad_sig, bad_key, sha, anti-rollback) are unchanged; only the
    *recovery* assertion moves.
+   **Known stale, and deliberately left for this step:** the `boot.mount.front` / `boot.mount.back` /
+   `boot.front_reject` coverage keys still match on the words FRONT and BACK, which boot.py no longer
+   logs (it logs `mounted A` / `mounted B`). The static guard cannot catch it, because it strips a
+   trailing runtime slot name by design. Those three markers carry scenario *meaning* — "ended on
+   golden" is what several scenarios assert — so renaming them is the catalog rework, not a
+   search-and-replace. Until step 6 lands, a bench run would silently fail to see them.
 
 Each step proves itself on **one board** before the fleet runs as a regression check.
 

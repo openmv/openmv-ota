@@ -152,8 +152,8 @@ def register(build_parser: argparse.ArgumentParser):
     p_fac.add_argument("--factory-key", type=lambda s: int(s, 0), metavar="ID",
                        help="factory key id to sign with (default 0x0001)")
     p_fac.add_argument("--no-account", action="store_true",
-                       help="burn an accountless (self-host) golden on purpose -- required when "
-                            "[product].account_id is unset, since the golden is permanent")
+                       help="silence the warning about provisioning devices with no "
+                            "[product].account_id (a self-host build)")
     p_fac.add_argument("--keep-build-dir", action="store_true",
                        help="keep the staging dir for inspection")
     _add_signing_flags(p_fac)

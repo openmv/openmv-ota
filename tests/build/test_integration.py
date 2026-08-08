@@ -83,8 +83,8 @@ def test_publish_and_consume_end_to_end(make_project):
     assert body["sha256"] == hashlib.sha256(new_img).hexdigest()
     assert body["representations"][0]["url"] == r.image.name   # relative (host-portable)
 
-    # the delta's base is the factory golden version, read from its BACK trailer
-    back_tr = next(tr for lbl, _b, tr in partition.slots(factory) if lbl == "BACK")
+    # the delta's base is the provisioned version, read from slot B's trailer
+    back_tr = next(tr for lbl, _b, tr in partition.slots(factory) if lbl == "B")
     golden_pv = parse_trailer(back_tr).payload_version
     ocdl = next(rep for rep in body["representations"] if rep["format"] == "ocdl")
     assert ocdl["base_payload_version"] == golden_pv

@@ -210,28 +210,28 @@ _IDENTITY_OVERRIDE_KEYS = ("product_id", "board_name")
 
 
 def _ensure_ota_capable(lock: lock_mod.Lock) -> None:
-    """Raise if any resolved target's ROMFS partition is too small to host OTA — i.e.
-    a slot has no room for a body after its status + trailer sectors. This is the
-    case for boards whose ROMFS is a single large internal-flash sector (the erase
-    block is the whole partition), so the math itself proves OTA is impossible."""
+    """Raise if any resolved target's ROMFS partition cannot host OTA **in any mode**.
+
+    A partition too small for two slots is no longer disqualifying: it builds in
+    single-image mode instead (one slot, no fallback — see ``geometry.derive_mode``). What
+    remains disqualifying is a partition with no room for an image even then, which is pure
+    arithmetic and cannot be worked around."""
     bad = [rb for rb in lock.targets.get("resolved", [])
            if rb.get("role", "main") == "main"
-           and not geometry.is_ota_capable(rb["partition_size"], rb["erase_size"])]
+           and geometry.derive_mode(rb["partition_size"], rb["erase_size"]) is None]
     if not bad:
         return
     lines = [
-        "%s (partition %d): %d-byte ROMFS, %d-byte erase block -> a slot is %d bytes, "
-        "below the %d-byte status+trailer overhead"
+        "%s (partition %d): %d-byte ROMFS, %d-byte erase block -> the %d-byte control area "
+        "alone does not fit"
         % (rb["name"], rb["partition_index"], rb["partition_size"], rb["erase_size"],
-           geometry.front_size(rb["partition_size"], rb["erase_size"]),
            geometry.slot_overhead(rb["erase_size"]))
         for rb in bad
     ]
     raise ProjectError(
-        "not OTA-capable: the ROMFS partition can't be split into two updatable "
-        "slots:\n  - " + "\n  - ".join(lines)
-        + "\nThis board keeps its ROMFS in a single large flash sector; build without "
-        "--ota (a single image that fills the partition).", exit_code=1)
+        "not OTA-capable: the ROMFS partition has no room for an image plus its control "
+        "sectors, in either mode:\n  - " + "\n  - ".join(lines)
+        + "\nBuild without --ota (a single image that fills the partition).", exit_code=1)
 
 
 def _ensure_ota_mbedtls(lock: lock_mod.Lock) -> None:

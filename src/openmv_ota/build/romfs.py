@@ -440,7 +440,7 @@ def _build_one(p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, ve
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-# --- factory image (dual-slot golden + initial FRONT) -----------------------
+# --- provisioning image (both slots, factory-signed) ------------------------
 
 def build_factory_romfs(
     project: str | Path,
@@ -462,17 +462,17 @@ def build_factory_romfs(
     key_passphrase_file: str | Path | None = None,
     allow_dev_key: bool = False,
 ) -> list[BuildResult]:
-    """Compose the factory ROMFS partition image per target: golden BACK + initial
-    FRONT, both factory-signed, with status sectors and padding. One
-    ``<board>-factory-romfs.img`` per main partition. Coprocessor partitions have no
-    golden/trial concept, so they get the same plain ``<board>-coprocessor-romfs.img``
-    as a regular build -- the image the main core writes into the helper slot.
+    """Compose the PROVISIONING ROMFS partition image per target -- the image flashed at
+    manufacture. Under A/B that is the SAME factory-signed image written into both slots with
+    different install counters, so the device is fallback-capable from its first boot; under
+    single-image it is one slot spanning the partition. One ``<board>-factory-romfs.img`` per
+    main partition. Coprocessor partitions have no slot/trial concept, so they get the same
+    plain ``<board>-coprocessor-romfs.img`` as a regular build -- the image the main core
+    writes into the helper slot.
 
-    The golden BACK slot is **permanent** (never OTA-updatable), so its ``account_id``
-    is baked for the life of the device. This refuses to burn an accountless golden
-    unless ``no_account`` is set -- so a maker who will register with a shared/hosted
-    server can't silently ship ``""`` goldens that later strand on fallback, while a
-    self-hoster opts out explicitly."""
+    ``no_account`` silences the accountless warning. It used to be a required opt-out, because
+    the golden slot was permanent and an accountless golden was baked for the life of the
+    device; with both slots updatable an account can be introduced by a later release."""
     from openmv_ota.ota.keys import FACTORY_KEY_ID_BASE
 
     project = Path(project)
@@ -484,12 +484,15 @@ def build_factory_romfs(
         raise BuildError("factory-romfs needs an OTA project (create with "
                          "`openmv-ota project new --ota`)", exit_code=1)
     if not p.config.account_id and not no_account:
-        raise BuildError(
-            "no account_id set, and the golden image is permanent -- a device shipped "
-            "without an account can't be cleanly moved to a hosted/shared server later "
-            "(a golden fallback would strand it). Set [product].account_id in "
-            "openmv-ota.toml, or pass --no-account to burn an accountless self-host "
-            "golden on purpose.", exit_code=1)
+        # v1 made this an ERROR because the golden slot was permanent: an accountless golden
+        # was burned for the life of the device and would strand it on fallback. Under A/B no
+        # slot is permanent -- both are updatable, and an account can be introduced by a later
+        # release -- so the hard gate is no longer honest. It stays a loud warning, because
+        # shipping without an account is still a decision worth making deliberately.
+        print("warning: no account_id set. Both slots are updatable, so this can be fixed by a "
+              "later release, but every device you ship until then is accountless. Set "
+              "[product].account_id in openmv-ota.toml, or pass --no-account to silence this.",
+              file=sys.stderr)
 
     app_dir = Path(app) if app else project / "app"
     copro_dir = project / COPROCESSOR_APP
@@ -563,6 +566,21 @@ def _compose_slot(body: bytes, pad: int, rollback_sector: bytes, status_sector: 
     return slot
 
 
+def provision_slots(partition_size: int, erase_size: int, single_image: bool = False):
+    """The slots a provisioning image lays down, in image order: ``[(size, counter), ...]``.
+
+    A/B writes the SAME image into both slots with different install counters, so a device is
+    fallback-capable from its very first boot rather than after its first successful update.
+    Slot A gets the higher counter, which makes it the one that boots and makes B the target of
+    the first update -- decided by exactly the rule that decides every later update, not by a
+    factory-only special case. SINGLE lays down one slot spanning the partition."""
+    mode = geometry.resolve_mode(partition_size, erase_size, single_image)
+    if mode == geometry.SINGLE:
+        return [(partition_size, 1)]
+    slot = geometry.front_size(partition_size, erase_size)
+    return [(slot, 2), (slot, 1)]        # EQUAL sizes: one OTA image must fit either slot
+
+
 def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vendor, *,
                  convert_models, mpy_extra, keep_build_dir, inject=None) -> BuildResult:
     from openmv_ota.ota import rollback, status
@@ -572,37 +590,36 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
                                          inject=inject, dev=signer.backend.is_dev_key)
     try:
         block = geometry.ota_block(t.erase_size)
-        front_size = t.front_size
-        back_size = t.partition_size - front_size
         overhead = geometry.slot_overhead(t.erase_size)
-        front_cap = front_size - overhead
-        back_cap = back_size - overhead
-        if len(body) > front_cap:  # the smaller slot bounds it
+        slots = provision_slots(t.partition_size, t.erase_size, p.config.single_image)
+        smallest = min(size for size, _counter in slots) - overhead
+        if len(body) > smallest:   # the smaller slot bounds it
             raise BuildError(
-                "%s image is %d bytes but a factory slot holds %d (%d over)"
-                % (t.name, len(body), front_cap, len(body) - front_cap), exit_code=1)
+                "%s image is %d bytes but a slot holds %d (%d over)"
+                % (t.name, len(body), smallest, len(body) - smallest), exit_code=1)
         _warn_unset_product_id(t, system_info)
         # seed the anti-rollback floor at the factory version (the device can never be
         # downgraded below it; confirm() advances it as updates are kept).
         floor = rollback.encode_entry(signer.payload_version)
 
-        # FRONT: mountable at first boot (post-OTA-confirmed shape).
-        front_pad = front_cap - len(body)
-        front = _compose_slot(
-            body, front_pad, floor,
-            status.build_status_sector(block, pending=True, tried=True, confirmed=True),
-            _build_trailer(signer, p, body, system_info, front_pad), block, front_size)
-        # BACK: golden / factory state (confirmed only), never trialed.
-        back_pad = back_cap - len(body)
-        back = _compose_slot(
-            body, back_pad, floor,
-            status.build_status_sector(block, pending=False, tried=False, confirmed=True),
-            _build_trailer(signer, p, body, system_info, back_pad), block, back_size)
+        # Both slots ship CONFIRMED: they have nothing to prove, having never been trialed.
+        # There is no golden shape and no golden slot -- the difference between the two is one
+        # number, the install counter, and after the first update they are just two images with
+        # two counters. That is the whole point of dropping the factory special case: the device
+        # runs one code path from provisioning onward.
+        image = b""
+        for size, counter in slots:
+            pad = size - overhead - len(body)
+            image += _compose_slot(
+                body, pad, floor,
+                status.build_status_sector(block, pending=False, tried=False, confirmed=True,
+                                           counter=counter),
+                _build_trailer(signer, p, body, system_info, pad), block, size)
 
         name = _target_name(t)
         out_path = out_dir / (name + "-factory-romfs.img")
-        out_path.write_bytes(front + back)
-        return BuildResult(t.name, t.partition_index, out_path, len(body), front_cap,
+        out_path.write_bytes(image)
+        return BuildResult(t.name, t.partition_index, out_path, len(body), smallest,
                            bound="factory slot", ota=True,
                            build_dir=tmp if keep_build_dir else None)
     finally:
@@ -610,14 +627,14 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-# --- OTA download image (the gzipped FRONT-slot image a server hosts) --------
+# --- OTA download image (the gzipped slot-sized image a server hosts) --------
 
 @dataclass
 class OtaImageResult:
     target: str
     partition_index: int
     output: Path        # <board>-ota.img.gz
-    image_size: int     # the full FRONT-slot image (uncompressed)
+    image_size: int     # the full slot-sized image (uncompressed)
     gz_size: int        # the gzipped artifact actually written
 
 
@@ -628,12 +645,13 @@ def build_ota_image(
     boards: list[str] | None = None,
     firmware: str | Path | None = None,
 ) -> list[OtaImageResult]:
-    """Assemble the gzipped FRONT-slot OTA *download* image(s) from already-built
+    """Assemble the gzipped slot-sized OTA *download* image(s) from already-built
     bundles -- the artifact a server (e.g. Cloudflare R2) hosts for the device
     ``install()`` to stream in. For each OTA main target it reads the
-    ``<board>-romfs.zip`` bundle, lays the body + signed trailer into a full FRONT-slot
-    image (blank status sector -- the installer arms PENDING last, after verifying the
-    write), gzips it, and writes ``<board>-ota.img.gz``. The gzip collapses the slot's
+    ``<board>-romfs.zip`` bundle, lays the body + signed trailer into a full slot-sized
+    image (blank control sectors -- the installer stamps the counter and arms PENDING last,
+    after verifying the write), gzips it, and writes ``<board>-ota.img.gz``. ONE image serves
+    either slot, which is why the two A/B slots are built the same size. The gzip collapses the slot's
     0xFF gap to almost nothing, so the artifact is ~body-sized regardless of slot size.
 
     The signed body+trailer (the bundle) stay the source of truth; this image is a pure,
@@ -673,11 +691,13 @@ def build_ota_image(
         front_cap = front_size - geometry.slot_overhead(t.erase_size)
         if len(body) > front_cap:
             raise BuildError(
-                "%s body is %d bytes but a FRONT slot holds %d (rebuild within capacity)"
+                "%s body is %d bytes but a slot holds %d (rebuild within capacity)"
                 % (t.name, len(body), front_cap), exit_code=1)
 
-        # Full FRONT slot, all control sectors blank (0xFF): the installer writes this 1:1,
-        # then arms PENDING last. The rollback floor lives in BACK, so FRONT's stays blank.
+        # A full slot, all control sectors blank (0xFF): the installer writes this 1:1, then
+        # stamps the install counter and arms PENDING. The rollback sector stays blank here --
+        # the floor is device state, carried forward by the installer from what the device
+        # already had, and an image cannot know it.
         image = _compose_slot(body, front_cap - len(body), b"", b"\xff" * block,
                               trailer_bytes, block, front_size)
         gz = gzip.compress(image, mtime=0)            # mtime=0: reproducible artifact
@@ -735,8 +755,8 @@ def _delta_bytes(base_bytes: bytes, target_bytes: bytes) -> bytes:
 def build_delta(base: str | Path, target: str | Path,
                 output: str | Path) -> OtaDeltaResult:
     """Build a gzipped OCDL delta that reconstructs ``target`` from ``base`` (each a raw or
-    ``.gz`` image). ``base`` is the device's golden -- the BACK-slot bytes (the back half of
-    the golden ``factory-romfs.img``); ``target`` is the new FRONT image (the new
+    ``.gz`` image). ``base`` is the image the device is running -- slot B's bytes (the second
+    half of its ``factory-romfs.img``); ``target`` is the new slot image (the new
     ``ota.img.gz``). Self-checked: the patch is applied back and must reproduce ``target``
     exactly before it's written, so a published delta always reconstructs its image."""
     import gzip
@@ -1023,9 +1043,9 @@ def _factory_back_trailer(golden: Path):
     from openmv_ota.ota.trailer import parse_trailer
     try:
         back = next((tr for lbl, _b, tr in partition.slots(golden.read_bytes())
-                     if lbl == "BACK"), None)
+                     if lbl == "B"), None)
         if back is None:
-            raise OtaError("no BACK slot")
+            raise OtaError("no second slot")
         return parse_trailer(back)
     except OtaError as e:
         raise BuildError("%s is not a usable factory image: %s" % (golden, e),

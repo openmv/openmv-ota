@@ -161,30 +161,39 @@ def _rollback_append_offset(sector):
 # --- pure logic (host-testable; all flash I/O injected) ---------------------
 
 def _status_of(status_sector):
-    """Decode a FRONT status sector into the app-facing trial state.
+    """Decode a slot's status sector into the app-facing trial state.
 
-    ``trial`` means a one-shot trial that has booted but isn't committed yet
-    (pending + tried + not confirmed) -- the state ``confirm()`` acts on."""
+    ``trial`` means an installed image that has not been committed yet -- the state
+    ``confirm()`` acts on. Under v2 that is ``pending and not confirmed``: boot.py no longer
+    writes TRIED, because a trial now gets several attempts and each is recorded by consuming
+    one byte of the attempt region. TRIED is still decoded (a v1-era slot may carry it) but it
+    is no longer part of the decision, and requiring it here would mean NO trial was ever
+    confirmable -- every update would roll back."""
     pending, tried, confirmed = _markers(status_sector)
     return {
         "pending": pending,
         "tried": tried,
         "confirmed": confirmed,
-        "trial": pending and tried and not confirmed,
+        "trial": pending and not confirmed,
     }
 
 
 def _needs_confirm(status_sector):
-    """True iff the FRONT slot is an un-confirmed one-shot trial."""
+    """True iff this slot holds an un-confirmed trial."""
     return _status_of(status_sector)["trial"]
 
 
 def _should_confirm(slot, status_sector):
-    """True iff confirm() should write CONFIRMED: we actually booted FRONT *and* it's an
-    un-confirmed trial. The slot guard matters -- if we fell back to BACK because FRONT's
-    trial failed, FRONT still looks like an un-confirmed trial, and confirming it would
-    resurrect the bad image on the next boot."""
-    return slot == "FRONT" and _needs_confirm(status_sector)
+    """True iff confirm() should write CONFIRMED: we booted a slot *and* that slot holds an
+    un-confirmed trial.
+
+    In v1 this also checked ``slot == 'FRONT'``, because the status sector was always FRONT's:
+    if we had fallen back to BACK, FRONT still looked like an un-confirmed trial and confirming
+    it would resurrect the bad image. Under A/B the caller reads the RUNNING slot's own sector,
+    so the guard is structural rather than a name comparison -- there is no way to confirm a
+    slot we did not boot. What remains is the case where boot.py did not run at all
+    (``slot`` is None), where there is nothing to confirm."""
+    return slot is not None and _needs_confirm(status_sector)
 
 
 # Streaming unit for partition compare/write. A multiple of every flash write
@@ -252,9 +261,27 @@ class _Progress:
 # _main. Flash reads use uctypes.addressof + bytearray_at (not a whole-partition
 # memoryview slice), so they're safe past the 16 MiB mark on N6/AE3.
 
-def _front_status_offset(cfg):  # pragma: no cover
-    # The FRONT slot's status sector is the block before its trailer block.
-    return cfg.FRONT_SIZE - 2 * cfg.CONTROL_BLOCK  # hil-residual: pure arithmetic getter, no call
+def _slot_bounds(cfg, slot):
+    """``(offset, size)`` of ``slot`` in the partition -- the mirror of ``boot.OtaBoot._slots``
+    (pinned by a test). ``None``/unknown slot answers for A, which is where a device that never
+    ran boot.py would be looking anyway."""
+    front = cfg.FRONT_SIZE
+    if front <= 0 or front >= cfg.PARTITION_SIZE:
+        return 0, cfg.PARTITION_SIZE                  # SINGLE: one slot, whole partition
+    if slot == "B":
+        return front, front
+    return 0, front
+
+
+def _status_offset(cfg, slot):
+    """Absolute offset of ``slot``'s status sector: the block before its trailer block.
+
+    v1 had this hardcoded to FRONT because FRONT was the only slot anything ever wrote. Under
+    A/B, confirm() and status() must read the slot the device is actually RUNNING -- reading
+    A's sector while running B would report the wrong trial state and, worse, confirm the
+    wrong image."""
+    off, size = _slot_bounds(cfg, slot)
+    return off + size - 2 * cfg.CONTROL_BLOCK
 
 
 def _read_at(part_index, off, size):  # pragma: no cover
@@ -332,17 +359,18 @@ def _boot_result():  # pragma: no cover
 def status():  # pragma: no cover
     """What boot.py did this boot, for the app/updater to inspect or report:
 
-        slot             'FRONT' | 'BACK' | None    which image booted
-        fallback_reason  str | None                 why FRONT was rejected (None on FRONT)
+        slot             'A' | 'B' | None            which slot booted
+        fallback_reason  str | None                  why the other slot was rejected, if it was
         payload_version  int                         the booted image's version
-        representation   'full' | 'delta' | None     how the FRONT image was installed
-        pending/tried/confirmed/trial               FRONT's trial-marker state
+        representation   'full' | 'delta' | None     how this image was installed
+        pending/tried/confirmed/trial                the RUNNING slot's trial-marker state
 
-    ``slot == 'BACK'`` with a ``fallback_reason`` means the last update failed and the
-    device is on the golden image -- worth reporting upstream."""
+    A ``fallback_reason`` means the newest slot was rejected and the device is running the
+    previous image -- worth reporting upstream. Under A/B that previous image is the last
+    update that worked, not a years-old factory build."""
     import _ota_config
     slot, version, reason = _boot_result()
-    sector = _read_at(0, _front_status_offset(_ota_config), _STATUS_READ)
+    sector = _read_at(0, _status_offset(_ota_config, slot), _STATUS_READ)
     s = _status_of(sector)
     s["slot"] = slot
     s["fallback_reason"] = reason
@@ -710,14 +738,21 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         log.debug("checkin: closed")                  # HIL path witness (connection closed)
 
 
-def _advance_rollback(cfg, version):  # pragma: no cover (device)
-    """Raise the anti-rollback floor to ``version`` by appending it to BACK's rollback
-    sector (a 1->0 program, no erase). A no-op if the floor already covers ``version`` or
-    the log is full (the floor then stays frozen at its max -- still protective)."""
+def _advance_rollback(cfg, slot, version):  # pragma: no cover (device)
+    """Raise the anti-rollback floor to ``version`` by appending it to the RUNNING slot's
+    rollback sector (a 1->0 program, no erase). A no-op if the floor already covers
+    ``version`` or the log is full (the floor then stays frozen at its max -- still
+    protective).
+
+    v1 wrote this into BACK, which worked only because BACK was permanent. Under A/B every
+    slot is erased in turn, so the floor is written into the slot being confirmed and boot.py
+    reads the max across slots; the installer carries the floor forward into each new slot, so
+    it survives the slot that recorded it being rewritten."""
     import uctypes
     import vfs
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))
-    off = cfg.PARTITION_SIZE - 3 * cfg.CONTROL_BLOCK     # BACK's rollback sector (absolute)
+    soff, size = _slot_bounds(cfg, slot)
+    off = soff + size - 3 * cfg.CONTROL_BLOCK            # this slot's rollback sector (absolute)
     sector = uctypes.bytearray_at(base + off, cfg.CONTROL_BLOCK)
     if _rollback_floor_of(sector) >= version:
         return  # hil-residual: bare early return (nothing to advance)
@@ -729,21 +764,22 @@ def _advance_rollback(cfg, version):  # pragma: no cover (device)
 
 
 def confirm():  # pragma: no cover
-    """Keep the running FRONT image: raise the anti-rollback floor to this version, then
-    write CONFIRMED -- iff we booted FRONT *and* it's an un-confirmed one-shot trial (a
-    no-op otherwise). Advancing the floor *before* CONFIRMED means a crash in between leaves
-    the floor raised but the image un-confirmed, so the next boot safely falls back to the
-    golden (which the floor never locks out). The FRONT-slot guard prevents confirming a
-    failed trial we fell back from. Returns True iff it just confirmed; raises OSError if a
-    write fails. Idempotent -- safe to call every boot once healthy."""
+    """Keep the image we are RUNNING: raise the anti-rollback floor to this version, then
+    write CONFIRMED into this slot -- iff it is an un-confirmed trial (a no-op otherwise).
+    Advancing the floor *before* CONFIRMED means a crash in between leaves the floor raised
+    but the image un-confirmed, so the next boot safely falls back to the previous slot
+    (which the floor never locks out, because that image is at or above it). Everything here
+    is addressed by the RUNNING slot, so there is no way to confirm a trial we fell back from.
+    Returns True iff it just confirmed; raises OSError if a write fails. Idempotent -- safe to
+    call every boot once healthy."""
     import _ota_config
     slot, version, _r = _boot_result()
-    off = _front_status_offset(_ota_config)
+    off = _status_offset(_ota_config, slot)
     if not _should_confirm(slot, _read_at(0, off, 3 * MARKER_SIZE)):
         return False  # hil-residual: bare const return (not confirmable this boot)
-    _advance_rollback(_ota_config, version)
+    _advance_rollback(_ota_config, slot, version)
     _write_verified(0, off + _CONFIRMED_OFF, CONFIRMED)
-    log.info("confirm: kept running FRONT image")
+    log.info("confirm: kept the running image (slot %s)" % slot)
     return True  # hil-residual: bare const return (confirmed)
 
 

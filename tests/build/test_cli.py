@@ -279,10 +279,13 @@ def test_build_factory_romfs_account_rail(make_project, capsys):
     root, repo, app = make_project(ota=True, app_files=files, account="")   # no account
     base = ["build", "factory-romfs", str(root), "--app", str(app), "-f", str(repo),
             "--no-compile-py", "--no-convert-models"]
-    assert main(base) == 1                                   # refused: golden is permanent
+    # v2: a WARNING, not a refusal -- no slot is permanent any more, so an accountless
+    # build can be corrected by a later release rather than stranding the device.
+    assert main(base) == 0
     assert "no account_id set" in capsys.readouterr().err
-    assert main(base + ["--no-account"]) == 0                # opt out on purpose -> builds
-    assert "factory image" in capsys.readouterr().out
+    assert main(base + ["--no-account"]) == 0                # opt out on purpose -> silent
+    out = capsys.readouterr()
+    assert "factory image" in out.out and "no account_id set" not in out.err
 
 
 # --- inspect / verify on a factory (dual-slot partition) image --------------
@@ -302,7 +305,7 @@ def test_build_inspect_factory(make_project, capsys):
     img, _keys = _build_factory_image(make_project, capsys)
     assert main(["build", "inspect", str(img)]) == 0
     out = capsys.readouterr().out
-    assert "== FRONT slot ==" in out and "== BACK slot ==" in out and out.count("app_version") == 2
+    assert "== A slot ==" in out and "== B slot ==" in out and out.count("app_version") == 2
 
 
 def test_build_inspect_factory_json(make_project, capsys):
@@ -310,14 +313,14 @@ def test_build_inspect_factory_json(make_project, capsys):
     img, _keys = _build_factory_image(make_project, capsys)
     assert main(["build", "inspect", str(img), "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert set(data) == {"FRONT", "BACK"} and data["FRONT"]["app_version"] == "1.0.0"
+    assert set(data) == {"A", "B"} and data["A"]["app_version"] == "1.0.0"
 
 
 def test_build_verify_factory_ok(make_project, capsys):
     img, keys = _build_factory_image(make_project, capsys)
     assert main(["build", "verify", str(img), "--trusted-keys", str(keys)]) == 0
     out = capsys.readouterr().out
-    assert "FRONT: verified" in out and "BACK: verified" in out
+    assert "A: verified" in out and "B: verified" in out
 
 
 def test_build_verify_factory_corrupted_slot(make_project, capsys):
@@ -327,7 +330,7 @@ def test_build_verify_factory_corrupted_slot(make_project, capsys):
     img.write_bytes(data)
     assert main(["build", "verify", str(img), "--trusted-keys", str(keys)]) == 1
     cap = capsys.readouterr()
-    assert "FRONT: verification FAILED" in cap.err and "BACK: verified" in cap.out
+    assert "A: verification FAILED" in cap.err and "B: verified" in cap.out
 
 
 # --- partition trailer scanning (unit) --------------------------------------

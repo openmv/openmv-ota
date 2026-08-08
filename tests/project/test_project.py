@@ -347,11 +347,30 @@ def test_create_ota_no_factory_key_errors(tmp_path, make_firmware, make_sdk):
         _create(tmp_path, make_firmware, make_sdk, ota=True, factory_keys=0, ota_keys=2)
 
 
-def test_create_ota_rejects_non_capable_board(tmp_path, make_firmware, make_sdk):
-    # OpenMV4's romfs is a single 128K internal-flash sector -> can't host OTA.
+def test_ensure_ota_capable_rejects_a_partition_with_no_room_for_control():
+    """What is left of the old gate: a partition too small for its control sectors cannot host
+    an image in EITHER mode. That is arithmetic, not a policy, so it stays an error."""
+    lock = lock_mod.Lock(
+        generated_by="t", generated_at="t", config_digest="d", firmware={}, micropython={},
+        sdk={}, toolchain={}, submodules=[], ota=True,
+        targets={"resolved": [{"name": "TINY", "partition_index": 0, "role": "main",
+                               "partition_size": 8192, "erase_size": 4096}]})
     with pytest.raises(ProjectError, match="not OTA-capable"):
-        _create(tmp_path, make_firmware, make_sdk, ota=True, boards=["OPENMV4"],
-                factory_keys=1, ota_keys=2)
+        proj._ensure_ota_capable(lock)
+
+
+def test_create_ota_accepts_a_one_sector_board_in_single_mode(tmp_path, make_firmware, make_sdk):
+    """OpenMV4's romfs is a single 128K internal-flash sector, so it cannot hold two slots --
+    which used to disqualify it from OTA entirely. Under v2 it builds in single-image mode
+    instead: one slot, no fallback, recovery living in the firmware."""
+    from openmv_ota.ota import geometry
+
+    root, (lock, _) = _create(tmp_path, make_firmware, make_sdk, ota=True, boards=["OPENMV4"],
+                              factory_keys=1, ota_keys=2)
+    assert lock.ota is True
+    rb = next(t for t in lock.targets["resolved"] if t.get("role", "main") == "main")
+    assert geometry.derive_mode(rb["partition_size"], rb["erase_size"]) == geometry.SINGLE
+    assert root.exists()
 
 
 def test_create_non_ota_allows_non_capable_board(tmp_path, make_firmware, make_sdk):

@@ -13,7 +13,7 @@ version-pin it separately.
 Public API (see concept plan, Tool 2):
     run(server_url, self_test, wdt, ...)  -> trial-confirm + poll + install loop
     current_version() -> int
-    current_slot()    -> 'FRONT' | 'BACK'
+    current_slot()    -> 'A' | 'B'
     confirm()         -> mark the current trial image confirmed (idempotent)
 
 TODO: implement against boot.py's telemetry hooks (boot.last_slot, etc.) and the

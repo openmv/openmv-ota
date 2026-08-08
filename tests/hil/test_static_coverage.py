@@ -58,7 +58,7 @@ def test_analyzer_finds_the_known_markers():
         found |= {r["src"][m - 1] for m in r["markers"]}
     assert any("no bootable slot" in ln for ln in found)          # boot.py
     assert any("installed + armed" in ln for ln in found)          # installer
-    assert any("kept running FRONT" in ln for ln in found)         # runtime confirm
+    assert any("kept the running image" in ln for ln in found)     # runtime confirm
 
 
 def test_coverable_is_a_subset_of_reachable_body():
