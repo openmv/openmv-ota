@@ -1,6 +1,17 @@
 # v2 — true A/B, single-image mode, and firmware-resident recovery
 
-Status: **planning, for review**. Nothing here is built. The rewrite goes **one verb at a time**
+Status: **steps 1-3 built** on `kwabena/v2-step1-mode` (1792 tests, 100% coverage); step 4 next.
+
+Progress: mode derivation + the control-block fix + project config + `_ota_config` stamping + a
+symmetric A/B `boot.py` are done. **Nothing produces a second real slot yet**, so A/B is exercised
+only by host tests -- that arrives with step 4. Hardware proof is deliberately deferred until the
+whole thing is built, then one board first and the fleet only as a regression gate.
+
+Two findings that changed the design, recorded so they are not re-derived: the erase block was
+sizing control sectors it does not govern (fixed -- `control_block()` is 4 KiB always, which also
+made large-erase boards A/B-capable), and firmware-resident recovery costs **~26 KiB of FIRMWARE
+flash** measured with `mpy-cross`, not the romfs partition -- so the single-image boards' image
+budget is untouched and the mode is viable. The rewrite goes **one verb at a time**
 (`project` → `build` → `boot.py` → `romfs`/`flash` → `server`/`client`), because each verb owns a
 piece of the on-flash contract and changing two at once makes a failure impossible to attribute.
 
