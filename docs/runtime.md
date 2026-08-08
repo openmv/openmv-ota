@@ -17,62 +17,101 @@ host-tested while the device I/O is exercised under QEMU — see [ci.md](ci.md).
 
 ## `boot.py` — slot selection at boot
 
-An OTA partition is split into two slots: **FRONT** (the mutable, OTA-updated image)
-and **BACK** (the immutable, factory-written *golden* image). On every boot `boot.py`
-runs after the board's stock `_boot.py` and:
+An OTA partition holds **two slots of equal size, A and B**. Neither is special: both are
+real, signed, updatable images, and the one that boots is simply the newest valid one. On
+every boot `boot.py` runs after the board's stock `_boot.py` and, **for each slot**:
 
-1. Reads FRONT's signed [trailer](trailer.md) and **verifies the ECDSA signature**
+1. Reads the slot's signed [trailer](trailer.md) and **verifies the ECDSA signature**
    (via the on-device mbedtls shim) *before trusting any header field*.
 2. Checks the authenticated header: **integrity** (body SHA-256), **cross-flash guard**
    (`board_id`), **compatibility** (`min_platform_version`), and **anti-rollback**
    (`payload_version` vs the **rollback floor** — see below).
-3. Runs the **trial state machine** (below) and mounts the chosen slot at `/rom`.
+3. Applies the **trial rules** (below).
 
-If FRONT fails *any* of these, `boot.py` falls back to the golden **BACK** image — so a
-bad, corrupt, mis-targeted, downgraded, or un-confirmable update can never strand the
-device. It records the outcome in module globals (`last_slot`,
-`last_payload_version`, `last_failure_reason`) for the app to read, since the boot path
-can't print.
+Then it mounts the surviving slot with the **highest install counter** at `/rom`. It
+records the outcome in module globals (`last_slot`, `last_payload_version`,
+`last_failure_reason`) for the app to read, since the boot path can't print.
 
-**The anti-rollback floor** is a monotonic minimum version, so a device can't be
-downgraded to an *older signed* release (a replay attack — the signature is genuine, just
-stale). It starts at the factory version and **advances**: each `confirm()` appends the
-running version to an append-only log in the **golden BACK** slot's reserved `rollback`
-sector (a 1→0 flash program, no erase — a power loss mid-append just leaves an ignored torn
-entry; when the fixed-size log fills, the floor simply freezes at its max), and `boot.py`
-takes the highest logged version as the floor. Advancing happens in BACK because FRONT is
-erased on every install; the floor is raised *before* `CONFIRMED` is written, so a crash in
-between safely falls back to golden (which the floor never locks out). Each slot reserves
-four control sectors now — `spare`, `rollback`, `status`, `trailer` — with `spare` held back
-as the body-adjacent buffer so the three used sectors stay contiguous at the slot's end; the
-body shrinks by the two new blocks, slot size unchanged.
+So a bad, corrupt, mis-targeted, downgraded, or un-confirmable update can never strand the
+device: it simply is not the newest *valid* slot, and the previous release — which is still
+sitting in the other slot, untouched — runs instead. If **no** slot survives there is no
+factory image to retreat to; the device hands off to firmware-resident recovery, which
+re-downloads until it has a working image.
+
+**Ordering is an install counter, not the version.** Each install stamps a
+`u32 ‖ ~u32` counter (self-validating, so a torn write reads as *unknown* rather than as
+some other number) into the slot it writes, one higher than anything present. The version
+cannot do this job: installing the *same* version twice is legitimate — a reinstall, a
+re-flash — and must not be ambiguous. The version stays a human-facing fact and an
+anti-rollback input, never a boot-order input. A slot whose counter is unreadable is still
+bootable if it verifies; it just sorts last, because we cannot claim it is newer than
+something that says so.
+
+**The anti-rollback floor** is a monotonic minimum version, so a device can't be downgraded
+to an *older signed* release (a replay attack — the signature is genuine, just stale). It
+starts at the provisioned version and **advances**: each `confirm()` appends the running
+version to an append-only log in the running slot's `rollback` sector (a 1→0 flash program,
+no erase — a power loss mid-append just leaves an ignored torn entry; when the fixed-size
+log fills, the floor simply freezes at its max). `boot.py` takes the highest version logged
+across **both** slots as the floor, and every install **copies the current floor forward**
+into the slot it writes — without that, rewriting whichever slot happened to hold the
+highest entry would silently lower the floor and re-admit a release the device had moved
+past. The floor is raised *before* `CONFIRMED` is written, so a crash in between falls back
+safely (the floor never locks out the image behind it). Each slot reserves four control
+sectors — `spare`, `rollback`, `status`, `trailer` — 4 KiB each, in both A/B and
+single-image mode, so there is one on-flash shape rather than two.
+
+### Single-image mode
+
+Boards whose entire ROMFS is a single erase sector (OpenMV2/3/4) cannot host two slots, so
+they build in **single-image mode**: one slot spanning the partition, no fallback. Erasing
+"the target slot" there *is* destroying the running image, which is why firmware-resident
+recovery is the enabling piece rather than a nicety — a failed update costs a network round
+trip instead of a reboot, and a device that cannot reach the network needs a physical
+reflash. Everywhere else A/B is the default and single-image is an explicit opt-out
+(`single_image = true`), named for what you get.
 
 ## The update lifecycle (and your app's one job)
 
-The trial mechanism is a one-shot commit. Markers in the slot's status sector —
-`pending`, `tried`, `confirmed` — drive it:
+An installed image is on **trial** until your app says otherwise. Markers in the slot's
+status sector drive it, plus an **attempt region** — one byte consumed per trial boot:
 
 ```
-updater stages a new FRONT image, sets `pending`
+updater writes the OTHER slot, stamps the counter, sets `pending`  (the running image is untouched)
         │
-   boot 1 ─ boot.py: pending only → arm `tried`, mount FRONT        (on trial)
+   boot 1 ─ boot.py: newest slot, pending, attempts left → consume one, mount it   (on trial)
         │
    your app runs, validates itself healthy → openmv_ota.confirm()   → `confirmed`
         │
-   later boots: pending+tried+confirmed → mount FRONT               (committed)
+   later boots: pending+confirmed → mount it                        (committed)
 
    …but if the trial image hangs/crashes BEFORE confirm():
-   boot 2 ─ boot.py: pending+tried+!confirmed → reject FRONT → mount golden BACK
+   boots 2, 3 ─ same again, one attempt each
+   boot 4 ─ boot.py: attempts exhausted, never confirmed → reject it → mount the other slot
 ```
 
 So **your app must call `openmv_ota.confirm()` once it has proven itself healthy** —
-otherwise the next boot treats the update as failed and rolls back. Confirm *after* a
-real health check (sensors up, first frame, your self-test), **not** blindly at boot,
-or you defeat the rollback safety.
+otherwise the trial eventually gives up and the device returns to the previous release.
+Confirm *after* a real health check (sensors up, first frame, your self-test), **not**
+blindly at boot, or you defeat the rollback safety.
 
-One subtlety: if `boot.py` can't even *record* the trial (the `tried` write fails or
-won't verify), it does **not** run the untracked FRONT — it falls back to golden. Better
-to run the known-good image than an update we couldn't make recoverable.
+**A trial gets `max_attempts` boots (default 3), not one.** The costs are lopsided: a false
+rejection costs a full re-download, erase and write that the server then offers again —
+minutes, traffic and flash wear, repeatedly — while an extra attempt on a genuinely bad
+image costs one reboot. The honest limit, and why the default stays low: retries only help a
+failure that *self-resets*. A **hang** now hangs N times instead of once. Set
+`[ota].max_attempts = 1` for v1's single-shot behaviour.
+
+The attempt is recorded **before** the image runs, which is what makes a hang count. Two
+subtleties follow from it: if `boot.py` cannot record the attempt (the write fails or won't
+verify) it does **not** run that slot — an untracked trial could hang forever with no way to
+know to move on — and it drops to the next-newest slot rather than abandoning the boot.
+
+**Updates are deferred while a trial is unconfirmed.** The installer writes the slot you are
+*not* running, which during a trial is the last release known to work. Taking a new update
+then would trade a proven fallback for an unproven one, at the moment the device has already
+said it is unsure of itself — so an offered update waits until you `confirm()`. (Single-image
+devices are exempt: there is no fallback to protect, and waiting would strand them.)
 
 ## `openmv_ota` — the runtime library
 
@@ -81,32 +120,38 @@ extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes
 
 - **`status()`** — read-only view of what boot.py did this boot (it mirrors its result
   onto `_ota_config`, the module the lib reads — importing boot.py would re-run it):
-  - `slot` — `'FRONT'` | `'BACK'` | `None` (which image booted),
-  - `fallback_reason` — why FRONT was rejected (`None` when on FRONT); `slot == 'BACK'`
-    with a reason means **the last update failed and you're on the golden image** — worth
-    reporting upstream,
+  - `slot` — `'A'` | `'B'` | `None` (which slot booted),
+  - `fallback_reason` — why the *other* slot was rejected, or `None`. A reason here means
+    **the last update failed and you are running the previous release** — worth reporting
+    upstream,
   - `payload_version` — the booted image's version,
-  - `representation` — `'full'` | `'delta'` | `None` — how the FRONT image was installed
-    (the updater stamps this; `None` for a factory image). Lets you see on-device whether
-    deltas are actually being applied,
-  - `pending` / `tried` / `confirmed` / `trial` — FRONT's trial-marker state.
+  - `representation` — `'full'` | `'delta'` | `None` — how this image was installed
+    (the updater stamps this; `None` for a provisioned image). Lets you see on-device
+    whether deltas are actually being applied,
+  - `pending` / `tried` / `confirmed` / `trial` — the running slot's trial state.
+    (`tried` is a v1 leftover kept for compatibility; v2 counts attempts instead.)
+- **`slots()`** — every slot, newest first: `slot`, `running`, `payload_version`,
+  `counter`, `confirmed`, `pending`. This is the half `status()` cannot tell you — **what
+  the device would fall back to** — and it is what the check-in reports so a fleet operator
+  can see it. One entry in single-image mode.
 - **`identity()`** — the running image's identity/provenance from `/rom/system.json`
   (`board`, `product`, `board_id`, `app_version`, `vendor`, toolchain, …) plus `device_id`
   (this unit's hardware id from `machine.unique_id()`) — what an update server reads to
   decide what to push, and to address the specific device. `{}` if there's no system.json.
 - **`confirm()`** — keep the running image: **advances the anti-rollback floor** to this
-  version, then writes `confirmed` — **iff** you booted FRONT *and* it's an un-confirmed
-  trial, else a no-op. Idempotent (safe to call every boot once healthy), returns whether
-  it just confirmed. The FRONT-slot guard matters: if you fell back to BACK because a trial
-  failed, FRONT still looks like an un-confirmed trial, so confirming it from BACK would
-  resurrect the bad image — `confirm()` refuses to.
+  version, then writes `confirmed` into **the slot you are running** — iff it is an
+  un-confirmed trial, else a no-op. Idempotent (safe to call every boot once healthy),
+  returns whether it just confirmed. Everything is addressed by the running slot, so there
+  is no way to confirm a trial you fell back *from* — the guard is structural rather than a
+  slot-name check. Confirming also **ends the deferral**: an update offered while the trial
+  was unproven is taken on the next poll.
 - **`sync()`** — apply any **bundled resources** (see below) whose on-device target
   differs from the bundled copy. A flash erase + chunked write of a whole partition, so
   **not quick** — it feeds the watchdog (`openmv_wdt`) the same minimal way `install()`
   does (`relax()` around the erase, `feed()` per chunk, including the already-applied
   re-read). Idempotent, returns the names applied; a no-op when nothing is bundled. Call
   it **early**, before a resource's consumer is used (e.g. before the helper core runs).
-- **`install(url, ca=None)`** — download a gzipped FRONT-slot image over HTTPS and install
+- **`install(url, ca=None)`** — download a gzipped slot image over HTTPS and install
   it (see [Installing an update](#installing-an-update-install) below). Does **not** return
   on success — it reboots into the new image's trial.
 
@@ -120,10 +165,10 @@ import openmv_ota
 openmv_ota.sync()                 # early: bring bundled resources (e.g. the helper
                                   # core's romfs) up to date with this image
 # ... start your app; once it has validated itself healthy:
-openmv_ota.confirm()              # keep this update (no-op unless a FRONT trial)
+openmv_ota.confirm()              # keep this update (no-op unless it's a trial)
 
 st = openmv_ota.status()
-if st["fallback_reason"]:         # on golden because the last update failed -> report it
+if st["fallback_reason"]:         # the last update failed and we fell back -> report it
     report_to_server(openmv_ota.identity(), st["fallback_reason"])
 ```
 
@@ -145,34 +190,37 @@ that's obtained is out of scope here). It:
 2. **Fetches + verifies the manifest** (into RAM): checks its ECDSA signature against the
    same frozen trusted keys as an image trailer, then applies the device-relative checks
    — `board_id` cross-flash guard, `min_platform_version`, and the **anti-rollback floor**
-   (the golden BACK image's version) — exactly mirroring what `boot.py` enforces on the
-   image, just *earlier*. Any failure here raises with `/rom` intact.
+   (the highest version any slot has recorded) — exactly mirroring what `boot.py` enforces
+   on the image, just *earlier*. Any failure here raises with `/rom` intact.
 3. **Selects a representation** from the manifest — the **full** image, or a **delta**
-   when one is offered whose base matches this device's golden (BACK) version and it's
-   smaller — and opens a second HTTPS GET for it.
-4. Erases the FRONT slot, then **streams** the image straight in. For a full image:
-   decompress a chunk → write → **read back and compare** → repeat, skipping erased `0xFF`
-   runs. For a delta: stream-decompress the patch and reconstruct against the golden
-   **BACK** slot (copy a run from BACK + add the patch's per-byte difference, vectorised
-   with `ulab`; the patch is never held whole in RAM), writing+verifying the same way.
-   Either way the stream is hashed and checked against the manifest's reconstructed-image
-   **sha256** (fail-fast → golden). A ~1 MB image is never held in RAM. Handles
-   `Content-Length`, chunked, close-delimited responses, and redirects.
-5. Writes the `pending` marker **last**, only after the whole image verified, then
-   reboots into the one-shot trial (your app then calls `confirm()` once healthy).
+   when one is offered whose base matches the version this device is *running* and it's
+   smaller — and opens a second HTTPS GET for it. (Single-image devices never take a delta:
+   the base would be the very slot about to be erased.)
+4. **Picks its target slot — the one the device is not running** — and erases it, then
+   **streams** the image straight in. For a full image: decompress a chunk → write → **read
+   back and compare** → repeat, skipping erased `0xFF` runs. For a delta: stream-decompress
+   the patch and reconstruct against the **running** slot (copy a run from it + add the
+   patch's per-byte difference, vectorised with `ulab`; the patch is never held whole in
+   RAM), writing+verifying the same way. Either way the stream is hashed and checked against
+   the manifest's reconstructed-image **sha256** (fail-fast). A ~1 MB image is never held in
+   RAM. Handles `Content-Length`, chunked, close-delimited responses, and redirects.
+5. Arms the slot **last**, only after the whole image verified: the representation marker,
+   the carried-forward rollback floor, the install counter, and `pending` — in that order,
+   so a slot that dies partway is either not bootable or fully described. Then reboots into
+   the trial (your app calls `confirm()` once healthy).
 
 **It does not return on success — it reboots.** Two consequences:
 
-- **Call it last.** The new image overwrites the FRONT slot the running app executes
-  from, so once the erase starts the app can't continue. Bring the network up, do any
-  teardown, *then* call `install()`. (The installer itself runs from RAM — `install()`
-  reads `data/installer.py` and `exec`s it — so erasing the slot doesn't pull it out
-  from under itself.)
+- **Call it last.** It reboots on success, so nothing after it runs. Bring the network up,
+  do any teardown, *then* call `install()`. (The installer runs from RAM — `install()` reads
+  `data/installer.py` and `exec`s it — which is what makes single-image mode possible at all,
+  since there the erased slot *is* the one the running app executes from.)
 - **Failure is safe.** A pre-flight failure (bad URL, DNS, TLS, HTTP status) raises
-  **before** the erase, with `/rom` intact, so you can catch it and retry without a
-  reboot. A failure *after* the erase reboots into the golden **BACK** image — boot.py
-  rejects the half-written FRONT (bad signature/hash), and `status()` then reports the
-  fallback so you know the update failed.
+  **before** the erase, with `/rom` intact, so you can catch it and retry without a reboot.
+  A failure *after* the erase reboots, and boot.py rejects the half-written slot (bad
+  signature/hash) and mounts the previous release; `status()` then reports the fallback so
+  you know the update failed. Under A/B that previous release is the last update that
+  worked — not a years-old factory build.
 
 ```python
 import network, openmv_ota
@@ -207,19 +255,20 @@ between hosts without re-signing. (The device also accepts absolute `https://` U
 manifest — what a dynamic update server emits when blobs live on a different origin than
 the manifest endpoint — but the build CLI only ever writes relative ones.)
 
-**Deltas.** A delta is a bsdiff-class patch against the **golden** (the immutable BACK
-slot every device keeps): the device reconstructs the new image from BACK + the patch and
-only downloads the changes, so a release that leaves the model blobs untouched (a config
-or key change) ships as a few KB instead of the whole image. Because it carries a
-byte-difference stream, even *scattered* small edits — a recompiled function, a table whose
-pointers all shifted — fold into a cheap copy-with-difference rather than being re-sent.
-It's *opportunistic* — the device picks the delta only when its golden matches the delta's
-base and it's smaller, else the full image. The delta is pure transport: the reconstructed
-slot is still sha256- and signature-verified, so a bad patch just falls back to golden. The
-applier ships in the romfs (it's OTA-patchable like the installer) and uses `ulab` for the
-per-byte add — present on every OTA-capable board (it falls back to plain Python where it
-isn't). One `golden → latest` delta updates any device, whatever version it's currently
-running — there are no per-version delta chains.
+**Deltas.** A delta is a bsdiff-class patch against a **base image the device already
+has** — under A/B, the slot it is currently running, which stays intact while the other is
+written. The device reconstructs the new image from that base + the patch and only downloads
+the changes, so a release that leaves the model blobs untouched (a config or key change)
+ships as a few KB instead of the whole image. Because it carries a byte-difference stream,
+even *scattered* small edits — a recompiled function, a table whose pointers all shifted —
+fold into a cheap copy-with-difference rather than being re-sent. It's *opportunistic* — the
+device picks the delta only when its running version matches the delta's base and the patch
+is smaller, else the full image. The delta is pure transport: the reconstructed slot is
+still sha256- and signature-verified, so a bad patch simply never becomes the newest valid
+slot. The applier ships in the romfs (it's OTA-patchable like the installer) and uses
+`ulab` for the per-byte add — present on every OTA-capable board (it falls back to plain
+Python where it isn't). Single-image devices never take a delta: their base is the slot
+being erased.
 
 ## Bundled resources — applying romfs data to the device
 
@@ -290,7 +339,7 @@ time the installer runs, because TLS cert validation requires it (`ntptime.setti
 and falls back to **monotonic uptime** before the clock is set (e.g. in `boot.py`):
 
 ```
-[   12.345] INFO openmv_ota: boot: mounted FRONT (payload 1)              (RTC unset)
+[   12.345] INFO openmv_ota: boot: mounted A (payload 1)                  (RTC unset)
 [2026-06-25 12:34:56] WARNING openmv_ota: install: FAILED after erase     (RTC set)
 ```
 
@@ -367,8 +416,8 @@ long flash erase (which it can't feed from a loop and which can exceed even the 
 timeout) and `feed()`s the watchdog **per chunk** through the surrounding loops (`install`
 through the download + write; `sync` through its write *and* the already-applied re-read).
 So an OTA install or a `sync()` won't trip an enabled watchdog, yet a genuine stall
-*isn't* masked: if a loop stops or a recv stalls, feeding stops and the watchdog resets to
-golden. `install()` also sets a 30 s socket timeout as the same backstop when no watchdog
+*isn't* masked: if a loop stops or a recv stalls, feeding stops and the watchdog resets the
+board — which lands it back on the previous slot. `install()` also sets a 30 s socket timeout as the same backstop when no watchdog
 is enabled (a stalled download fails cleanly instead of hanging). All a no-op if you
 haven't enabled a watchdog.
 
@@ -376,9 +425,11 @@ haven't enabled a watchdog.
 
 | Property | How |
 |---|---|
-| Never strand the device | `boot.py` falls back to the golden BACK image on any FRONT failure, including a trial it can't record |
-| Auto-rollback of a bad update | one-shot trial: an image that never `confirm()`s is rejected on the next boot |
+| Never strand the device | `boot.py` boots the newest slot that *verifies*, so a bad update is simply not chosen — including a trial whose attempt it can't record. With no valid slot at all it hands off to firmware-resident recovery |
+| Auto-rollback of a bad update | a trial that never `confirm()`s is rejected once its attempts run out, and the previous release runs instead. The attempt is recorded *before* the image runs, so a hang counts too |
 | Writes can't fail silently | every on-device write is read back and verified; failures raise `OSError` |
 | Bounded memory | slot bodies are `uctypes` views (no copy); SHA, resource compare, and the download/install all stream a chunk at a time |
 | Trustworthy resources | bundled resources live in the signed ROMFS body and are applied only from a verified image |
-| Safe install | `install()` downloads over verified HTTPS, read-back-verifies every write, arms `pending` only after the whole image checks out, and reboots into golden BACK on any post-erase failure; the image signature (not TLS) is the integrity boundary |
+| A proven fallback is never traded for an unproven one | an offered update is deferred while the running image is still an un-confirmed trial — enforced on the device, and mirrored on the server so the offer isn't wasted |
+| The rollback floor can't regress | it is the max across both slots, and every install copies the current floor into the slot it writes |
+| Safe install | `install()` writes the slot you are **not** running, downloads over verified HTTPS, read-back-verifies every write, and arms `pending` only after the whole image checks out; the image signature (not TLS) is the integrity boundary |

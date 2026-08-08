@@ -16,8 +16,8 @@
 
 Tooling for building OpenMV ROMFS images and delivering them to cameras over the
 air. `openmv-ota romfs` builds the read-only `/rom` filesystem image; the
-over-the-air update tools deliver signed, anti-rollback updates with a
-golden-image fallback.
+over-the-air update tools deliver signed, anti-rollback updates that fall back to
+the last release that worked.
 
 See [openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md) for the
 OTA design.
@@ -100,8 +100,9 @@ openmv-ota project show ./my-product
 ```
 
 Add `--ota` to `project new` to make it an over-the-air project: it splits each
-partition into a runtime + golden image, provisions the signing keys, and
-scaffolds the app, so `build romfs` can emit a signed image. See
+partition into two updatable slots (A/B), provisions the signing keys, and
+scaffolds the app, so `build romfs` can emit a signed image. Boards too small for
+two slots build in single-image mode instead. See
 [docs/project.md](docs/project.md).
 
 `openmv-ota.toml` and `openmv-ota.lock.json` are committed and carry the firmware
@@ -114,16 +115,17 @@ holds this machine's checkout path.
 target — `.py` to `.mpy` with the pegged mpy-cross, and NPU models with the pegged
 Vela / ST Edge AI. A non-OTA build writes `<board>-romfs.img`; an OTA build writes a
 signed `<board>-romfs.zip` bundle (body + trailer, where the trailer is the manifest).
-`build factory-romfs` composes the whole factory partition image — both slots
-(mutable FRONT + golden BACK), factory-signed — as `<board>-factory-romfs.img`. `build
+`build factory-romfs` composes the whole provisioning partition image — the same
+factory-signed image in both slots, ordered by install counter — as
+`<board>-factory-romfs.img`, so a device has a fallback from its first boot. `build
 firmware` builds the device firmware per board (`<board>-firmware.bin`) by running the
 firmware repo's own `make`; for an OTA project it also freezes an OTA `boot.py` into the image (via a
 generated wrapper manifest, no edits to the firmware tree). On a multi-core board (the
 AE3) the slaved helper core's partition is built too, as a plain
 `<board>-coprocessor-romfs.img`. `build ota-image` renders a built
-bundle into the gzipped FRONT-slot image a server hosts for over-the-air download
+bundle into the gzipped slot-sized image a server hosts for over-the-air download
 (`<board>-ota.img.gz`), which the device's `openmv_ota.install(url)` streams in. `build
-inspect` decodes the trailer(s) of a bundle, a factory image (FRONT + BACK), or a loose
+inspect` decodes the trailer(s) of a bundle, a provisioning image (slots A + B), or a loose
 trailer; `build verify` checks the signature + body hash against the trusted keys for
 each (a CI / pre-publish gate). Both report a plain, unsigned romfs as such instead of
 erroring.

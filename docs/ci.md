@@ -13,16 +13,23 @@ host-tested (the hardware `_main` wiring is the only excluded part).
 The **trial state machine** is covered exhaustively rather than by example, since its
 edge cases are where update-safety bugs hide:
 
-- `evaluate_slot` is tested against **all 8** `(pending, tried, confirmed)` marker
-  combinations for **both** the FRONT slot (one-shot trial: arm → mount → roll back if
-  un-confirmed; reject a `confirmed`-without-`tried` forgery) and the BACK slot (only the
-  golden `(F,F,T)` mounts; every other state → `back-not-factory`).
-- `OtaBoot.run` is tested for each *boot decision* — FRONT committed, FRONT on trial,
-  FRONT `trial-failed` → roll back to golden BACK, FRONT signature-reject → BACK, a trial
-  that can't be armed → BACK, and both slots failing → `no-slot`.
-- `openmv_ota._should_confirm` is parametrized over slot × markers, pinning the slot
-  guard: only a FRONT boot's un-confirmed trial confirms, so falling back to BACK never
-  resurrects the failed FRONT image.
+- `evaluate_slot` is tested against the marker combinations for **one** rule applied to
+  both slots — v2 evaluates them symmetrically, so the v1 asymmetry checks
+  (`forged-confirm`, `back-not-factory`) are gone along with the roles that motivated them.
+- The **install counter** and **attempt region** are tested as pure logic: `install_counter`
+  rejects a blank or torn field, `select_slot` orders by counter with an unreadable one
+  sorting last and ties broken toward `CONFIRMED`, and `attempt_offset` walks the append
+  region to its cap.
+- `OtaBoot.run` is tested for each *boot decision* — newest slot committed, newest on trial,
+  newest `trial-failed` → the previous slot, newest signature-rejected → the previous slot,
+  a trial whose attempt can't be recorded → **dropped, then re-select** (not abandon), and
+  both slots failing → `no-slot`.
+- `openmv_ota._should_confirm` is parametrized over slot × markers. The v1 slot-name guard
+  is gone because it became structural: `confirm()` reads the **running** slot's own status
+  sector, so there is no sector for a slot you did not boot.
+- `_defer_install` and the server's `settled()` are pinned to the same rule from both sides:
+  an update offered while the running image is an un-confirmed trial waits, because the slot
+  it would overwrite is the last release known to work.
 
 The **update path** is covered at every layer: the signed-manifest codec + policy
 (`ota.manifest` — parse/verify/`update_reject_reason`/`select_representation`), the
@@ -30,7 +37,7 @@ copy-with-difference **delta codec** (`ota.delta` — make/apply across identica
 edit, shift, insert/delete, and truncation cases), and the device installer's *mirrors* of
 both (pinned byte-for-byte to the host codecs). A **black-box end-to-end test**
 ([`tests/build/test_integration.py`](../tests/build/test_integration.py)) then publishes a
-real golden→new image + delta + manifest with the build tools and consumes them through the
+real base→new image + delta + manifest with the build tools and consumes them through the
 installer's own parse / select / streaming delta-apply, asserting the manifest's sha256+size
 match the image and the install-time hash check passes — catching cross-tool drift.
 
@@ -55,8 +62,8 @@ Runs the **real** frozen `boot.py` on actual MicroPython under `qemu-system-arm`
 on **two** machines — an MPS2-AN500 (Cortex-M7, a 4 MiB partition) and an
 MPS3-AN547 (Cortex-M55, a 32 MiB partition) — covering what host unit tests can't:
 that boot.py behaves the same on MicroPython, and that the real `vfs.rom_ioctl`
-read + `vfs.VfsRom` mount + FRONT/BACK slot selection work on-device. The large
-MPS3 partition specifically exercises the BACK slot **past the 16 MiB mark** — on
+read + `vfs.VfsRom` mount + A/B slot selection work on-device. The large
+MPS3 partition specifically exercises the second slot **past the 16 MiB mark** — on
 32-bit MicroPython a `memoryview`'s offset field is only 24-bit, so boot.py reads
 each slot at its absolute XIP address via `uctypes.bytearray_at` rather than
 slicing one whole-partition memoryview (which would overflow on the 24 MiB N6/AE3
@@ -67,20 +74,24 @@ manifest + delta paths):
 
 1. **All boot paths** — `evaluate_slot`/`parse_trailer` exercised for every reject
    reason (`magic`/`crc`/`key`/`sig`/`board`/`compat`/`size`/`body-sha`/`rollback`/
-   `trial-failed`/`forged-confirm`/`status`/`back-not-factory`) and the valid cases,
-   mirroring the host suite but on MicroPython.
-2. **Real mount → FRONT** — a partitioned romfs (FRONT + BACK, distinct markers) is
-   loaded into the emulated XIP region; `OtaBoot.run` reads it via `vfs.rom_ioctl`
-   and mounts FRONT.
-3. **Corrupt FRONT → BACK** — a broken FRONT body falls back to the golden BACK slot.
-4. **Arm `tried` fails → BACK** — a pending FRONT with the *real* verified `write_marker`:
-   the read-only qemu port rejects the write, so boot.py can't record the trial and falls
-   back to the golden image (`reason trial-arm`) rather than running an untracked FRONT.
+   `trial-failed`/`status`) and the valid cases, mirroring the host suite but on
+   MicroPython. It also asserts the shape v1 called `forged-confirm` — confirmed, never
+   pending — is now **accepted**, because that is exactly what a provisioned slot looks
+   like.
+2. **Real mount → the newest slot** — a two-slot romfs (distinct markers, A carrying the
+   higher install counter, laid out like the provisioning image) is loaded into the
+   emulated XIP region; `OtaBoot.run` reads it via `vfs.rom_ioctl` and mounts A.
+3. **Corrupt A → B** — a broken A body falls back to the other slot (`reason A:body-sha`).
+4. **Attempt write fails → B** — a trial in A with the *real* verified `write_marker`: the
+   read-only qemu port rejects the write, so boot.py cannot bound the trial, drops that
+   slot, and mounts the next-newest (`reason A:trial-arm`) rather than running an untracked
+   trial that might hang forever.
 5. **`openmv_ota` runtime lib** — a romfs carrying the real `app/lib/openmv_ota/`
-   runtime helpers + a matching `_ota_config` + a `/rom/system.json`, with the FRONT
+   runtime helpers + a matching `_ota_config` + a `/rom/system.json`, with slot A's
    status sector crafted as an un-confirmed trial: `status()` reflects the slot (read via
-   the `_ota_config` channel) + the trial, `identity()` reads system.json, `confirm()`
-   keeps a FRONT trial but no-ops once we pretend we fell back to BACK (the slot guard),
+   the `_ota_config` channel) + the trial, `slots()` reports both slots newest-first,
+   `identity()` reads system.json, `confirm()` keeps A's trial but no-ops once we pretend we
+   booted B (structural now — it reads the running slot's own sector, and B's is blank),
    and `sync()` finds + plans its bundled resource. This covers the lib's device wiring
    (the read/decision/plan paths, `__file__`-based data resolution, the boot-result
    channel, the slot guard) that host tests can't reach. The flash *writes* no-op on the
@@ -103,7 +114,7 @@ manifest + delta paths):
    manifest under MicroPython (the struct/json/binascii/crc decode) + `_select_rep`/
    `_update_reject` — and the **delta** path end-to-end: a host-built gzipped patch streamed
    through the real `DeflateIO → _PatchReader → _delta_stream → _GenReader`, reconstructing
-   the target against a stand-in golden and asserting the on-device **`ulab`** add ran
+   the target against a stand-in base image and asserting the on-device **`ulab`** add ran
    (`_np is not None`) — ulab is built on every OTA-capable board (and the MPS emulators),
    so this is real vectorised reconstruction. The real `socket`/`ssl`/`rom_ioctl` wiring
    stays QEMU-unreachable (no network, read-only `rom_ioctl`) and is covered by host tests.
@@ -135,7 +146,7 @@ behaviour), and the driver asserts the CLI's outcome:
 
 | Class | Boards (examples) | What is asserted |
 |---|---|---|
-| **full** (OTA-capable) | N6, AE3, 4P, PT, RT1060, Portenta, Giga, Nicla | `project new --ota`; build firmware + romfs + factory-romfs; `inspect` + `verify` the OTA bundle (as a `.zip` and as loose `romfs.img`/`trailer.bin`) **and the factory image** (both FRONT + BACK slots); a corrupted body **and** a corrupted factory slot must **fail** verify; the factory image is the full partition. A multi-core board (AE3) also builds + checks its plain `coprocessor-romfs.img`. |
+| **full** (OTA-capable) | N6, AE3, 4P, PT, RT1060, Portenta, Giga, Nicla | `project new --ota`; build firmware + romfs + factory-romfs; `inspect` + `verify` the OTA bundle (as a `.zip` and as loose `romfs.img`/`trailer.bin`) **and the provisioning image** (both slots, A + B); a corrupted body **and** a corrupted slot must **fail** verify. A multi-core board (AE3) also builds + checks its plain `coprocessor-romfs.img`. |
 | **classic** (romfs, not OTA-capable) | OPENMV2 / 3 / 4 | `project new`; build firmware + single-image romfs; `project new --ota` must fail cleanly (*not OTA-capable*); `factory-romfs` must fail cleanly (*needs an OTA project*). |
 | **noromfs** (no ROMFS partition) | Arduino Nano 33 BLE / RP2040 | `project new` must fail cleanly (*no partition size*). |
 
@@ -146,7 +157,7 @@ so structurally instead of exploding. Boards in the **noromfs** class never invo
 
 The factory image is crypto-verified too: `build inspect`/`build verify` understand
 the dual-slot partition layout (they locate each slot's trailer by scanning
-block-aligned offsets), so CI verifies **both** the FRONT and BACK slots through the
+block-aligned offsets), so CI verifies **both** slots through the
 CLI and confirms a corrupted factory slot is rejected — no coupling to the tool's
 internals, just the same `openmv-ota` a pip user runs.
 

@@ -38,7 +38,7 @@ identity and provenance, the same in a non-OTA and an OTA build. See
 The capacity is the whole partition for a single-image project, or half the
 partition less two flash erase blocks (a status sector + a trailer; 8 KiB on
 OTA-capable boards) for an OTA project (`project new
---ota`) — each OTA partition holds a regular image and a golden fallback. The build
+--ota`) — each OTA partition holds two updatable slots. The build
 summary reports the percentage of whichever bound applies.
 
 The app source defaults to `<project>/app`; pass `--app` to use another directory.
@@ -163,22 +163,24 @@ into the partition's two slots:
 
 | Slot | Contents | Status sector | Role |
 |---|---|---|---|
-| **FRONT** | body + pad + status + trailer | `pending` + `tried` + `confirmed` | the mutable slot OTA writes to; ships already-confirmed so the first boot mounts it |
-| **BACK** | body + pad + status + trailer | `confirmed` only | the golden fallback, never overwritten by OTA |
+| **A** | body + pad + control sectors | `confirmed`, install counter **2** | boots first (higher counter) |
+| **B** | body + pad + control sectors | `confirmed`, install counter **1** | the fallback, and the target of the first update |
 
-The partition is split in half (the FRONT half aligned down to the flash erase
-block); each slot ends with a one-block **status sector** and a one-block
-**trailer**, with `0xFF` padding filling the gap between the body and those two
-blocks. Both slots carry the same body but their own trailer, each signed
-independently with the recorded `pad_size`.
+Both slots hold the **same signed image** and the **same shape**. There is no golden slot
+and no golden state: the only thing telling them apart is the install counter, so which one
+boots is decided by exactly the rule that decides it after every later update, rather than
+by a factory-only special case. Writing both means a device has a real fallback from its
+very first boot instead of after its first successful update.
 
-The two status sectors are what make the slots distinguishable on a fresh board.
-FRONT ships in the post-OTA *confirmed* state — `pending`, `tried`, and `confirmed`
-markers all set — so the device's `boot.py` mounts it on the very first boot
-without a trial cycle. BACK carries only `confirmed`: that is the golden-slot
-shape, and `boot.py` will not mount a *FRONT* in that shape (a confirmed-only
-FRONT means a torn or invalid initial flash), so the markers also encode which slot
-is which.
+The two slots are the **same size** — an OTA image must be installable into either, and the
+image is slot-sized with its trailer in the last block — so a partition whose half does not
+divide evenly leaves a sub-block remainder unused rather than handing it to B. Each slot
+ends with four 4 KiB control sectors (`spare`, `rollback`, `status`, `trailer`), with `0xFF`
+padding filling the gap between the body and them. Both slots carry the same body but their
+own trailer, each signed independently with the recorded `pad_size`.
+
+On a board too small for two slots the same command writes **one** slot spanning the
+partition (single-image mode); everything above still holds, minus the fallback.
 
 ### Signed with a factory key
 
@@ -244,7 +246,7 @@ option:
   temporary *wrapper manifest* that `include`s the board's own manifest and adds the
   boot script, and points the build at it with `make FROZEN_MANIFEST=<wrapper>`. The
   frozen `boot.py` runs after the board's stock `_boot.py` (the stock boot is left
-  untouched). It selects the FRONT (mutable runtime) or BACK (golden) ROMFS slot,
+  untouched). It selects the newest valid ROMFS slot,
   verifies the chosen slot's signed trailer (ECDSA + SHA-256, over the firmware's own
   mbedtls), enforces the integrity / cross-flash / compatibility / anti-rollback
   checks, runs the trial-boot status state machine, and mounts the slot it picks.
@@ -276,7 +278,7 @@ Two read-only commands operate on a built image. They accept the `<board>-romfs.
 bundle directly, the loose `romfs.img` / `trailer.bin` (e.g. if you've unzipped),
 **or the `<board>-factory-romfs.img`** — the factory image is a dual-slot partition,
 so both commands locate each slot's trailer (by scanning block-aligned offsets and
-CRC-validating) and report/verify **FRONT and BACK** independently. A plain,
+CRC-validating) and report/verify **each slot** independently. A plain,
 **unsigned** romfs (a non-OTA `<board>-romfs.img` or a `<board>-coprocessor-romfs.img`)
 has no trailer: `inspect` reports it as such (and exits 0), while `verify` says there
 is nothing to verify (and exits non-zero, so it's never mistaken for "verified").
@@ -287,7 +289,7 @@ They live under `build` because they validate build outputs.
 ```bash
 openmv-ota build inspect build/OPENMV_N6-romfs.zip
 openmv-ota build inspect build/OPENMV_N6-romfs.zip --json
-openmv-ota build inspect build/OPENMV_N6-factory-romfs.img   # prints the FRONT + BACK slots
+openmv-ota build inspect build/OPENMV_N6-factory-romfs.img   # prints slots A + B
 ```
 
 Decodes the signed trailer and prints it: product / board / `board_id` /
@@ -311,7 +313,7 @@ matches the signed size + SHA-256. Exit 0 on success, 1 on a verification failur
 (with the reason), 2 on a bad argument. Pass the `.zip` (one argument), the loose
 `romfs.img trailer.bin` (two), or a `<board>-factory-romfs.img` — for a factory
 image every slot is verified and the command fails if **any** slot fails (each
-slot's verdict is printed with a `FRONT:` / `BACK:` prefix). Trusted keys come from
+slot's verdict is printed with an `A:` / `B:` prefix). Trusted keys come from
 `--trusted-keys` (default `keys/trusted_keys.json`), so running it from a project
 root just works.
 

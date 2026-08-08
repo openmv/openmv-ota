@@ -44,7 +44,7 @@ building.
 
 Add `--ota` to declare an over-the-air project. `new --ota` also provisions the
 signing keys and scaffolds an `app/`, so `build romfs` produces a signed,
-anti-rollback image with a golden fallback:
+anti-rollback image with an A/B fallback:
 
 ```bash
 openmv-ota project new ./my-product -f ~/openmv -b OPENMV_N6 --ota

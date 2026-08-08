@@ -291,7 +291,7 @@ mode is left to the IDE.
 ## Typical use
 
 ```
-# Manufacturing — provision a fresh board (firmware + the golden factory image):
+# Manufacturing — provision a fresh board (firmware + both slots):
 openmv-ota build firmware       -b OPENMV4
 openmv-ota build factory-romfs  -b OPENMV4
 openmv-ota flash factory        -b OPENMV4

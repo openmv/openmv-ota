@@ -209,7 +209,7 @@ project is ready to build a signed image with one command.
 ### What `--ota` changes
 
 - **Partition split.** Each partition is split into two halves — a regular image
-  and a golden fallback — so each image gets half the partition, less a status
+  and a fallback — so each image gets half the partition, less a status
   sector and a trailer (one flash erase block each — 8 KiB on OTA-capable boards).
   `build romfs` enforces that halved budget for an OTA project and the full
   partition otherwise; `show` reports which mode a project is in. The mode is
@@ -268,7 +268,7 @@ The `[ota]` section records the mode and the current signing key:
 
 ```toml
 [ota]
-enabled = true            # each partition holds a regular + golden image
+enabled = true            # each partition holds two updatable slots (A/B)
 signing_key_id = 256      # current OTA signing key (in keys/trusted_keys.json)
 ```
 
@@ -304,7 +304,7 @@ network, like the SDK download), and you can replace it with your provider's roo
 
 To produce what `install()` downloads, run **`openmv-ota build ota-romfs`** — one command,
 straight from app source (like `build factory-romfs`). It compiles + signs the romfs bundle,
-renders the gzipped full FRONT-slot image (`<board>-ota.img.gz`), and signs the **manifest**
+renders the gzipped slot-sized image (`<board>-ota.img.gz`), and signs the **manifest**
 (`<board>-manifest.bin`) — the descriptor `install()` fetches first, which names the image's
 size/sha256 + representations and binds board/version/anti-rollback under the same key as the
 image. Host both beside each other and point `install()` at the manifest. (`build romfs`
@@ -318,9 +318,9 @@ the manifest endpoint — but `build ota-romfs` only ever writes relative ones.
 
 To ship a smaller **delta** download, add **`--delta-from <board>-factory-romfs.img`**
 (or a directory of per-board factory images). The delta is computed against the factory
-image's **BACK slot** — the exact golden bytes the device keeps — so a device copies the
-unchanged bulk from its own BACK slot and downloads only the changes. It's opportunistic
-(picked only when the device's golden matches and it's smaller) and still
+image's **second slot** — the exact bytes a provisioned device keeps — so a device copies
+the unchanged bulk from the slot it is running and downloads only the changes. It's
+opportunistic (picked only when the device's running version matches and it's smaller) and still
 sha256/signature-verified (see [the runtime docs](runtime.md)).
 
 For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in
@@ -499,7 +499,7 @@ and whether the project is OTA). Everything else is resolved into
 - per target (each board, and each of its targeted partitions): the arch and
   mpy-cross flags, the NPU type and its full compiler config (Vela / ST Edge AI
   arguments and config-file references), the alignment rules, and the partition
-  size, flash erase block, and FRONT slot size.
+  size, flash erase block, and per-slot size.
 
 Partition sizes come from the firmware's `boards/<BOARD>/board_config.h`. When a
 board's size is build-variant conditional, the bundled default is used instead
@@ -548,7 +548,7 @@ OTA update to the main carries the matching helper image, and your app calls
 [`openmv_ota.sync()`](#the-device-runtime-library-openmv_ota) early in `main.py` to
 write it into the helper partition (only when it differs). Because the nested image
 travels *with* the main, `sync()` always writes the helper image that matches the main
-that's actually running — so it stays consistent even across a rollback to the golden
+that's actually running — so it stays consistent even across a rollback to the previous
 image. (The standalone `-coprocessor-romfs.img` is for flashing the helper partition
 directly at the factory; the nested copy is byte-identical.)
 
@@ -565,7 +565,7 @@ from openmv_ota.project import load_project
 p = load_project("./my-product")  # raises if the firmware has drifted
 p.vela_path                       # path to the vela binary on this machine
 p.targets                         # every (board, partition) target to build for
-p.board("OPENMV_N6").front_size   # firmware-resolved FRONT partition size
+p.board("OPENMV_N6").front_size   # firmware-resolved per-slot size
 p.board("OPENMV_N6").alignment_rules
 p.board("OPENMV_AE3", 1).npu_config   # HE-core NPU type, args, and file refs
 ```

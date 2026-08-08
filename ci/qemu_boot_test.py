@@ -14,9 +14,10 @@ bundled ``mpremote`` (``run`` a pasted script -- no filesystem mount needed):
    crafted trailers + an injected ``verify`` for every reject reason and the valid
    cases, mirroring the host suite but on MicroPython. (The ECDSA C shim itself is
    covered by the 100%-gcov host test; mbedtls isn't built for the qemu port yet.)
-2. **Real mount** -- a partitioned romfs (FRONT + BACK) is loaded into the
+2. **Real mount** -- a two-slot romfs (A + B) is loaded into the
    emulated XIP region; ``OtaBoot.run`` reads it through ``vfs.rom_ioctl`` and
-   mounts the chosen slot. Valid -> FRONT; a corrupted FRONT body -> BACK.
+   mounts the newest valid slot. Both valid -> A (higher install counter); a corrupted
+   A body -> B.
 
 Usage:
     qemu_boot_test.py --firmware /path/to/openmv [--board MPS2_AN500 ...]
@@ -50,7 +51,7 @@ BOARD = 0x1234            # the trailer product_id the path cases use (a test va
 PLAT = 5 << 24
 V1 = 1 << 24
 
-# Per-board: qemu machine, romfs XIP origin, and partition + FRONT slot sizes.
+# Per-board: qemu machine, romfs XIP origin, and partition + per-slot sizes.
 BOARDS = {
     "MPS2_AN500": dict(machine="mps2-an500", origin=0x60C00000, part=4194304, front=2097152),
     "MPS3_AN547": dict(machine="mps3-an547", origin=0x62000000, part=33554432, front=16777216),
@@ -70,37 +71,51 @@ def _trailer(body, *, board=BOARD, minplat=0, pv=V1, floor=0, body_size=None, ke
     return host_trailer.pack_trailer(t)
 
 
-def _status(p, tr, c):
-    return host_status.build_status_sector(BLOCK, pending=p, tried=tr, confirmed=c)
+def _status(p, tr, c, counter=None):
+    return host_status.build_status_sector(BLOCK, pending=p, tried=tr, confirmed=c,
+                                           counter=counter)
+
+
+def _confirmed_status(counter):
+    """A settled slot with an install counter -- what provisioning writes into both slots."""
+    return _status(0, 0, 1, counter=counter)
 
 
 def _path_cases():
-    """(label, body, status, trailer, is_front, floor, board, plat, verify_ret, expected).
-    Board-independent: exercises evaluate_slot/parse_trailer with in-memory bytes."""
+    """(label, body, status, trailer, floor, board, plat, verify_ret, expected).
+    Board-independent: exercises evaluate_slot/parse_trailer with in-memory bytes.
+
+    v2 dropped the ``is_front`` parameter: both slots are real, updatable images evaluated by
+    ONE rule, and which of them wins is the caller's job (``select_slot``), not this
+    function's. That also retired two reasons -- ``forged-confirm`` and ``back-not-factory``
+    -- which existed only to police the asymmetry."""
     b = b"app" * 40
     tb = _trailer(b)
     bad_crc = tb[:-1] + bytes([tb[-1] ^ 0xFF])
     corrupt = bytearray(b)
     corrupt[0] ^= 0xFF
+    spent = bytearray(_status(1, 0, 0))          # a trial whose attempts are all consumed
+    spent[72:72 + 3] = b"\x00\x00\x00"
     C = [
-        ("front_confirmed", b, _status(1, 1, 1), tb, True, 0, BOARD, PLAT, True, "OK"),
-        ("front_trial_arm", b, _status(1, 0, 0), tb, True, 0, BOARD, PLAT, True, "OK"),
-        ("sig_reject", b, _status(1, 1, 1), tb, True, 0, BOARD, PLAT, False, "sig"),
-        ("key_unknown", b, _status(1, 1, 1), tb, True, 0, BOARD, PLAT, True, "key"),
-        ("bad_magic", b, _status(1, 1, 1), b"XX" + tb[2:], True, 0, BOARD, PLAT, True, "magic"),
-        ("bad_crc", b, _status(1, 1, 1), bad_crc, True, 0, BOARD, PLAT, True, "crc"),
-        ("board_mismatch", b, _status(1, 1, 1), _trailer(b, board=0x9999), True, 0, BOARD, PLAT, True, "board"),
-        ("compat_old", b, _status(1, 1, 1), _trailer(b, minplat=6 << 24), True, 0, BOARD, PLAT, True, "compat"),
-        ("body_sha", bytes(corrupt), _status(1, 1, 1), tb, True, 0, BOARD, PLAT, True, "body-sha"),
-        ("rollback", b, _status(1, 1, 1), tb, True, 2 << 24, BOARD, PLAT, True, "rollback"),
-        ("trial_failed", b, _status(1, 1, 0), tb, True, 0, BOARD, PLAT, True, "trial-failed"),
-        ("forged_confirm", b, _status(0, 0, 1), tb, True, 0, BOARD, PLAT, True, "forged-confirm"),
-        ("status_none", b, _status(0, 0, 0), tb, True, 0, BOARD, PLAT, True, "status"),
-        ("back_factory", b, _status(0, 0, 1), tb, False, 0, BOARD, PLAT, True, "OK"),
-        ("back_not_factory", b, _status(1, 1, 1), tb, False, 0, BOARD, PLAT, True, "back-not-factory"),
+        ("confirmed", b, _status(1, 1, 1), tb, 0, BOARD, PLAT, True, "OK"),
+        ("trial_with_attempts", b, _status(1, 0, 0), tb, 0, BOARD, PLAT, True, "OK"),
+        ("sig_reject", b, _status(1, 1, 1), tb, 0, BOARD, PLAT, False, "sig"),
+        ("key_unknown", b, _status(1, 1, 1), tb, 0, BOARD, PLAT, True, "key"),
+        ("bad_magic", b, _status(1, 1, 1), b"XX" + tb[2:], 0, BOARD, PLAT, True, "magic"),
+        ("bad_crc", b, _status(1, 1, 1), bad_crc, 0, BOARD, PLAT, True, "crc"),
+        ("board_mismatch", b, _status(1, 1, 1), _trailer(b, board=0x9999), 0, BOARD, PLAT, True, "board"),
+        ("compat_old", b, _status(1, 1, 1), _trailer(b, minplat=6 << 24), 0, BOARD, PLAT, True, "compat"),
+        ("body_sha", bytes(corrupt), _status(1, 1, 1), tb, 0, BOARD, PLAT, True, "body-sha"),
+        ("rollback", b, _status(1, 1, 1), tb, 2 << 24, BOARD, PLAT, True, "rollback"),
+        # v2: a trial fails once its ATTEMPTS are spent, not on the second boot
+        ("trial_failed", bytes(b), bytes(spent), tb, 0, BOARD, PLAT, True, "trial-failed"),
+        ("status_none", b, _status(0, 0, 0), tb, 0, BOARD, PLAT, True, "status"),
+        # ...and the shape v1 called `forged-confirm` (confirmed, never pending) is now
+        # legitimate: it is exactly what a provisioned slot looks like.
+        ("provisioned", b, _status(0, 0, 1), tb, 0, BOARD, PLAT, True, "OK"),
     ]
-    return [(lbl, body.hex(), st.hex(), tr.hex(), isf, fl, bd, pl, vr, exp)
-            for (lbl, body, st, tr, isf, fl, bd, pl, vr, exp) in C]
+    return [(lbl, body.hex(), st.hex(), tr.hex(), fl, bd, pl, vr, exp)
+            for (lbl, body, st, tr, fl, bd, pl, vr, exp) in C]
 
 
 def _vfsrom(marker: str) -> bytes:
@@ -121,15 +136,20 @@ def _slot(body: bytes, status: bytes, trailer: bytes, slot_size: int) -> bytes:
     return bytes(out)
 
 
-def _partition(part: int, front: int, corrupt_front=False, front_status=None) -> bytes:
-    """A FRONT + BACK (golden) romfs partition with mountable bodies. FRONT defaults to
-    the confirmed shape; pass ``front_status`` (e.g. pending-only) to exercise arming."""
-    fb, bb = _vfsrom("SLOT=FRONT"), _vfsrom("SLOT=BACK")
-    fs = front_status if front_status is not None else _status(1, 1, 1)
-    img = bytearray(_slot(fb, fs, _trailer(fb, board=0), front)
-                    + _slot(bb, _status(0, 0, 1), _trailer(bb, board=0), part - front))
-    if corrupt_front:
-        img[0] ^= 0xFF                       # break FRONT body SHA -> fall back to BACK
+def _partition(part: int, front: int, corrupt_a=False, a_status=None) -> bytes:
+    """A two-slot romfs partition with mountable bodies, laid out the way the provisioning
+    image is: the same shape in both slots, told apart by the INSTALL COUNTER (A higher, so A
+    boots and B is the fallback). Pass ``a_status`` (e.g. pending-only) to exercise a trial.
+
+    Slots are EQUAL SIZE -- one image must fit either -- so the partition's remainder past
+    2*front is left unused, exactly as on the device."""
+    ab, bb = _vfsrom("SLOT=A"), _vfsrom("SLOT=B")
+    a_st = a_status if a_status is not None else _confirmed_status(2)
+    img = bytearray(_slot(ab, a_st, _trailer(ab, board=0), front)
+                    + _slot(bb, _confirmed_status(1), _trailer(bb, board=0), front))
+    img += b"\xff" * (part - len(img))
+    if corrupt_a:
+        img[0] ^= 0xFF                       # break A's body SHA -> fall back to B
     return bytes(img)
 
 
@@ -142,11 +162,11 @@ def _h(s): return binascii.unhexlify(s)
 _CASES = %r
 _PUB = _h("04" + "00" * 64)
 _fail = 0; _n = 0
-for (label, bh, sh, th, isf, fl, bd, pl, vr, exp) in _CASES:
+for (label, bh, sh, th, fl, bd, pl, vr, exp) in _CASES:
     _n += 1
     trusted = {} if label == "key_unknown" else {0x100: _PUB}
     try:
-        evaluate_slot(_h(bh), _h(sh), _h(th), isf, fl, bd, trusted, pl,
+        evaluate_slot(_h(bh), _h(sh), _h(th), fl, bd, trusted, pl,
                       (lambda a, p, s, m, _v=vr: _v))
         got = "OK"
     except OtaReject as e:
@@ -178,9 +198,10 @@ print("SLOT", slot, "REASON", reason, "MARKER", mk)
 
 
 def _arm_fail_script(part: int, front: int) -> str:
-    # Like _mount_script but with the *real* verified write_marker (rom_ioctl + read
-    # back). On the read-only qemu port arming 'tried' fails, so Option B must fall
-    # back to the golden BACK image with reason 'trial-arm'.
+    # Like _mount_script but with the *real* verified write_marker (rom_ioctl + read back).
+    # On the read-only qemu port recording the trial ATTEMPT fails, and boot.py refuses to run
+    # a trial it cannot bound -- an untracked trial that hung would be retried forever -- so it
+    # drops that slot and mounts the next-newest, reporting `A:trial-arm`.
     runner = '''
 import vfs, binascii, uctypes
 _base = uctypes.addressof(vfs.rom_ioctl(2, 0))
@@ -208,9 +229,9 @@ _RUNTIME_LIB = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
 
 
 def _runtime_partition(part: int, front: int) -> bytes:
-    """A partition whose FRONT body is a romfs carrying the real openmv_ota runtime
-    lib + a matching _ota_config + a sync() resource, with the FRONT status sector
-    crafted as an un-confirmed one-shot trial (pending + tried)."""
+    """A partition whose slot-A body is a romfs carrying the real openmv_ota runtime lib +
+    a matching _ota_config + a sync() resource, with A's status sector crafted as an
+    un-confirmed trial so status()/confirm() have something to act on."""
     src = Path(tempfile.mkdtemp(prefix="omv-qemu-rt-"))
     (src / "lib" / "openmv_ota" / "data").mkdir(parents=True)
     (src / "lib" / "openmv_ota" / "__init__.py").write_text(_RUNTIME_LIB.read_text())
@@ -219,15 +240,16 @@ def _runtime_partition(part: int, front: int) -> bytes:
     (src / "lib" / "openmv_ota" / "data" / "coprocessor.romfs").write_bytes(b"COPRO-IMAGE")
     (src / "system.json").write_text('{"board": "qemu", "app_version": "1.2.3"}')
     (src / "_ota_config.py").write_text(
-        "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nOTA_BLOCK=%d\n"
+        "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nCONTROL_BLOCK=%d\n"
         "PRODUCT_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
     body = build_image(str(src))
     shutil.rmtree(src, ignore_errors=True)
     img = bytearray(b"\xff" * part)
     img[0:len(body)] = body
-    so = front - 2 * BLOCK                         # FRONT status sector offset
+    so = front - 2 * BLOCK                         # slot A's status sector offset
     img[so:so + 16] = host_status.PENDING          # craft an un-confirmed trial
-    img[so + 16:so + 32] = host_status.TRIED
+    img[so + 16:so + 32] = host_status.TRIED       # (v2 ignores TRIED; harmless, and it
+    #                                                proves a v1-era sector still decodes)
     return bytes(img)
 
 
@@ -236,15 +258,16 @@ def _runtime_script() -> str:
     # so the lib + _ota_config import directly. We set _ota_config.last_slot ourselves
     # (the channel boot.py's _main mirrors its result onto) since this script doesn't run
     # the real boot. Then: status() reflects the slot + the crafted trial; identity()
-    # reads /rom/system.json; confirm() on a FRONT trial reaches its flash write, which
-    # the read-only qemu port rejects -> raises (verifying read/decide/plan + the rc
-    # check); the slot guard makes confirm() a no-op once we pretend we fell back to BACK;
-    # sync() likewise reaches its write and raises. (Real-hardware writes succeed; that
-    # path is host-logic-tested.)
+    # reads /rom/system.json; confirm() on a trial reaches its flash write, which the
+    # read-only qemu port rejects -> raises (verifying read/decide/plan + the rc check);
+    # once we pretend we booted the OTHER slot, confirm() no-ops -- under v2 that is
+    # structural rather than a name check, because confirm() reads the RUNNING slot's own
+    # status sector and B's is blank; sync() likewise reaches its write and raises.
+    # (Real-hardware writes succeed; that path is host-logic-tested.)
     return '''
 import openmv_ota as o
 import _ota_config
-_ota_config.last_slot = "FRONT"
+_ota_config.last_slot = "A"
 _ota_config.last_failure_reason = None
 s = o.status()
 ident = o.identity()
@@ -252,16 +275,18 @@ try:
     o.confirm(); cw = "no-raise"
 except OSError:
     cw = "raised"
-_ota_config.last_slot = "BACK"          # pretend we fell back -> confirm() must no-op
+_ota_config.last_slot = "B"             # pretend we booted the other slot -> confirm() no-ops
 guard = (o.confirm() is False)
 try:
     o.sync(); sw = "no-raise"
 except OSError:
     sw = "raised"
-ok = (s["trial"] and s["slot"] == "FRONT" and ident.get("board") == "qemu"
-      and cw == "raised" and guard and sw == "raised")
-print("RT trial=%s slot=%s id=%s confirm=%s guard=%s sync=%s"
-      % (s["trial"], s["slot"], ident.get("board"), cw, guard, sw))
+sl = o.slots()
+ok = (s["trial"] and s["slot"] == "A" and ident.get("board") == "qemu"
+      and cw == "raised" and guard and sw == "raised"
+      and len(sl) == 2 and sl[0]["running"] and sl[0]["slot"] == "A")
+print("RT trial=%s slot=%s id=%s confirm=%s guard=%s sync=%s slots=%d"
+      % (s["trial"], s["slot"], ident.get("board"), cw, guard, sw, len(sl)))
 print("RTRESULT", "PASS" if ok else "FAIL")
 '''
 
@@ -275,7 +300,7 @@ _LOG = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
 
 
 def _installer_partition(fw: Path, part: int, front: int) -> bytes:
-    """A partition whose FRONT romfs carries the runtime lib + the installer *source*
+    """A partition whose slot-A romfs carries the runtime lib + the installer *source*
     (data/installer.py) + a fake ca.pem + a matching _ota_config -- enough to exec the
     installer into RAM and exercise its logic on real MicroPython. Also ships openmv_log +
     the real micropython-lib logging.py (the emulator boards don't freeze logging, but
@@ -291,7 +316,7 @@ def _installer_partition(fw: Path, part: int, front: int) -> bytes:
                    / "python-stdlib" / "logging" / "logging.py")
     (src / "logging.py").write_text(logging_lib.read_text())
     (src / "_ota_config.py").write_text(
-        "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nOTA_BLOCK=%d\n"
+        "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nCONTROL_BLOCK=%d\n"
         "PRODUCT_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
     body = build_image(str(src))
     shutil.rmtree(src, ignore_errors=True)
@@ -384,8 +409,8 @@ while True:
 resume_stream_ok = out3 == __PAYLOAD__
 
 BLOCK = 4096
-FRONT = 3 * BLOCK
-mem = bytearray(b"\\x00" * FRONT)
+SLOT = 5 * BLOCK                         # body + the four control sectors
+mem = bytearray(b"\\x00" * SLOT)
 
 
 def erase(total):
@@ -413,7 +438,7 @@ class _SourceOf:
         return n
 
 
-img = bytearray(b"\\xff" * FRONT)
+img = bytearray(b"\\xff" * SLOT)
 img[0:4] = b"DATA"
 fed = []
 
@@ -425,13 +450,17 @@ class _RecLog:
         self.n += 1
 
 plog = _RecLog()
-erase(FRONT)                             # the caller erases before _install_stream now
-P["_install_stream"](_SourceOf(bytes(img)), write, readback, FRONT, BLOCK,
+erase(SLOT)                              # the caller erases before _install_stream now
+P["_install_stream"](_SourceOf(bytes(img)), write, readback, SLOT, BLOCK,
                      lambda: fed.append(1), P["_Progress"](plog),   # the real RAM reporter
-                     None, P["REPR_DELTA"])                         # record the representation
-so = FRONT - 2 * BLOCK
+                     None, P["REPR_DELTA"],                         # record the representation
+                     None, None, 7, 0x01020000)                     # counter + carried floor
+so = SLOT - 2 * BLOCK
+ro = SLOT - 3 * BLOCK
 install_ok = (mem[0:4] == b"DATA" and bytes(mem[so:so + 16]) == P["PENDING"]
               and bytes(mem[so + 48:so + 64]) == P["REPR_DELTA"]   # repr marker written
+              and bytes(mem[so + 64:so + 72]) == P["_encode_counter"](7)   # ordered
+              and P["_rollback_floor_of"](bytes(mem[ro:ro + BLOCK])) == 0x01020000
               and len(fed) > 0           # fed the watchdog per chunk
               and plog.n > 0)            # progress logged through the installer's reporter
 
@@ -469,7 +498,7 @@ manifest_ok = (len(_m["signature"]) == 64                 # ES256 R||S parsed ou
 
 # Delta apply: stream a *gzipped* patch through the real DeflateIO -> _PatchReader ->
 # _delta_stream -> _GenReader (the on-device path), reconstructing against a base that
-# stands in for the BACK slot. The scattered-edit diffs go through the real ulab _add.
+# stands in for the base (running) slot. The scattered-edit diffs go through the real ulab _add.
 import deflate as _deflate
 _dbase = __DELTA_BASE__
 _dio = _deflate.DeflateIO(io.BytesIO(__DELTA_PATCH_GZ__), _deflate.GZIP)
@@ -608,18 +637,18 @@ def main(argv=None) -> int:
         section("%s boot paths" % board,
                 _run_scenario(fw, mpremote, board, _partition(part, front), _paths_script()),
                 lambda o: "RESULT PASS" in o)
-        section("%s real mount -> FRONT" % board,
+        section("%s real mount -> newest slot (A)" % board,
                 _run_scenario(fw, mpremote, board, _partition(part, front), _mount_script(part, front)),
-                lambda o: "SLOT FRONT REASON None MARKER SLOT=FRONT" in o)
-        section("%s corrupt FRONT -> BACK" % board,
-                _run_scenario(fw, mpremote, board, _partition(part, front, corrupt_front=True),
+                lambda o: "SLOT A REASON None MARKER SLOT=A" in o)
+        section("%s corrupt A -> falls back to B" % board,
+                _run_scenario(fw, mpremote, board, _partition(part, front, corrupt_a=True),
                               _mount_script(part, front)),
-                lambda o: "SLOT BACK REASON body-sha" in o)
-        section("%s arm 'tried' fails -> BACK" % board,
+                lambda o: "SLOT B REASON A:body-sha" in o)
+        section("%s attempt write fails -> falls back to B" % board,
                 _run_scenario(fw, mpremote, board,
-                              _partition(part, front, front_status=_status(1, 0, 0)),
+                              _partition(part, front, a_status=_status(1, 0, 0, counter=3)),
                               _arm_fail_script(part, front)),
-                lambda o: "SLOT BACK REASON trial-arm" in o)
+                lambda o: "SLOT B REASON A:trial-arm" in o)
         section("%s openmv_ota runtime (status/confirm/sync)" % board,
                 _run_scenario(fw, mpremote, board, _runtime_partition(part, front),
                               _runtime_script()),

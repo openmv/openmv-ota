@@ -16,7 +16,7 @@ together authenticate the whole image (see
 On the camera, that checking is the job of **`boot.py`** — a small, fixed startup
 script compiled into the firmware (not user-editable). At boot it chooses which
 image slot to mount and verifies that slot's trailer first, falling back to the
-golden image if the check fails. It is kept deliberately tiny and parser-free on
+previous slot if the check fails. It is kept deliberately tiny and parser-free on
 the trust path. The host signer (`build romfs`) and `boot.py` agree on exactly the
 format described here.
 
@@ -64,7 +64,7 @@ The fixed header is 80 bytes, all scalar fields 4-byte aligned. In order:
 | `sig_size` | `uint32` | Byte length of the signature; must equal the algorithm's size. |
 | `board_id` | `uint32` | Target product id; the cross-flash guard. The build auto-assigns a nonzero id, so this is `0` (check skipped) only if you override it to `0`. |
 | `min_platform_version` | `uint32` | Minimum platform version the payload needs, encoded `(major<<24)\|(minor<<16)\|(patch<<8)\|build`. For a ROMFS app the platform is the OpenMV base firmware. `0` = no constraint. |
-| `payload_version` | `uint32` | The monotonic anti-rollback counter / OTA epoch. `boot.py` rejects a FRONT older than BACK. Distinct from any human version string. |
+| `payload_version` | `uint32` | The monotonic anti-rollback counter / OTA epoch. `boot.py` rejects any slot below the recorded rollback floor. Distinct from any human version string. Note this does **not** order the slots — the install counter does. |
 | `payload_version_floor` | `uint32` | A forward rollback floor this image asserts: every later update must be `>=` it. Set from `settings.json`'s `rollback_floor` (encoded like `payload_version`); `0` = no extra floor. |
 | `key_id` | `uint32` | Which trusted key signed; a selector into the device's baked-in key table, not trust itself. |
 | `sig_alg` | `int32` | COSE algorithm id (negative — hence signed); authenticated, so the algorithm can't be downgraded. |
@@ -145,7 +145,7 @@ not the megabytes. On the device, `boot.py`:
 3. verifies the signature over the signed region;
 4. recomputes SHA-256 of the body and compares it to `body_sha256`;
 5. enforces `board_id`, `min_platform_version`, and the anti-rollback rule against
-   BACK; on any FRONT failure it falls back to the golden BACK image.
+   each slot; it boots the newest one that passes.
 
 The CRC is checked first as a cheap torn-write reject; it is not a trust check.
 The trusted public keys come only from the firmware's baked-in set — an embedded
