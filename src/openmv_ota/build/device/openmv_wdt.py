@@ -110,7 +110,22 @@ ALLOW_STM32_IWDG = False
 #
 # What this does NOT cover is the app's own code. If you leave ENABLED False, a crash or hang in
 # your loop is still yours to catch; we only guarantee the window we are driving.
-ARM_FOR_INSTALL = True
+# DEFAULT OFF, on MEASUREMENT. Turning this on reset boards mid-install: the Nicla went from 9/9
+# to failing `full` and `corrupt_sha` (the 2 MB writes) while the small scenarios still passed, and
+# the whole fleet went 6-green to 3-green. The board reboots between `install: readback` and the
+# next block, which is a WWDG bite -- MicroPython's stm32 reset_cause() decodes the IWDG flag and
+# not the WWDG one, so it surfaces as reset_cause=0 rather than 3, which is why this did not look
+# like a watchdog at first glance.
+#
+# The cause is structural, not a stray slow step: the stm32 WWDG maxes at ~167 ms (N6) and this
+# module runs a 100 ms window, so an armed install has no margin for jitter across a multi-MB
+# write. The mimxrt WDOG (500 ms min) and the alif WDT are far more forgiving -- so this is worth
+# re-enabling PER PORT once each one's install path is measured armed, not fleet-wide on a guess.
+#
+# The capability stays because the reasoning behind it is right: during an install the app has
+# stopped and only a hardware reset escapes a park. What is missing is the evidence that each
+# board's install path fits inside its own window.
+ARM_FOR_INSTALL = False
 TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board WDT max (N6 WWDG max
 #                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often. If
 #                        a port rejects a value this small (a coarse WDOG), raise it to the board min.
