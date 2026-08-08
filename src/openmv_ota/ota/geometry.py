@@ -118,16 +118,18 @@ SINGLE = "single"
 AB = "ab"
 
 
-# Control area for SINGLE mode. NOT erase-block sized, unlike A/B's control sectors.
+# Control area for SINGLE mode: THE SAME FOUR 4 KiB SECTORS AS A/B.
 #
-# In A/B each control sector gets its own erase block so it can be rewritten without disturbing
-# the body. SINGLE never needs that: the body and its control data are erased together, once, and
-# everything written afterwards is a 1->0 program. So the control area only has to be big enough
-# to HOLD the data, not to be separately erasable -- and sizing it by the erase block is what made
-# the one-sector boards look impossible (four 128 KiB sectors demanded 512 KiB of a 128 KiB
-# partition). One 4 KiB region is ample for the markers, the install counter, the rollback log and
-# the trailer, and costs 3% of a 128 KiB partition instead of 400%.
-SINGLE_CONTROL_BYTES = MIN_OTA_BLOCK   # == CONTROL_SECTORS records packed into one block
+# What made the one-sector boards look impossible was never the number of control sectors, it was
+# sizing each one by the erase block -- four 128 KiB sectors demanded 512 KiB of a 128 KiB
+# partition. With ``control_block()`` fixed at 4 KiB that is 16 KiB, which a 128 KiB partition can
+# host with 112 KiB left for the image.
+#
+# So SINGLE keeps the identical layout rather than packing the four records into one block. The
+# packing would save 12 KiB on boards that are a curiosity (OpenMV2/3/4), and it would cost a
+# second on-flash layout for boot.py, the installer and the builder to agree on -- a permanent
+# source of drift for a one-off saving. One layout, both modes.
+SINGLE_CONTROL_BYTES = CONTROL_SECTORS * MIN_OTA_BLOCK
 
 
 def single_body_capacity(partition_size: int, erase_size: int) -> int:

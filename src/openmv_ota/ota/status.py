@@ -10,6 +10,8 @@ torn/partial write — or an unwritten slot — reads as "not set" (the safe def
     offset 16  tried      boot.py wrote it on the first (one-shot) trial boot
     offset 32  confirmed  the app wrote it after its self-test passed
     offset 48  repr       how the updater installed the image (REPR_FULL / REPR_DELTA)
+    offset 64  counter    the install counter (u32 || ~u32) — which slot is newer
+    offset 72  attempts   one byte per trial boot consumed (0xFF -> 0x00 each)
 
 ``pending``/``tried``/``confirmed`` are the trial state machine boot.py acts on; ``repr``
 is the provenance the updater stamps beside ``pending`` so a later boot's ``status()`` can
@@ -18,17 +20,32 @@ reads as neither). 16 bytes = 128 bits (overwhelming collision resistance) and e
 AE3-MRAM write unit, so each marker is a single atomic write. The values are SHA-256 of
 labelled strings — reproducible and documented, not arbitrary magic. boot.py, the updater,
 and ``build factory-romfs`` all share these definitions so they can't drift.
+
+The two v2 fields past the markers exist because A/B needs an *order* and a trial needs a
+*budget*, and neither can be a value that gets rewritten: everything here is written over
+erased ``0xFF`` and there is no erase available after the slot's one erase pass. So the
+counter is written once (with its ones-complement, so a torn write is detectable rather
+than believed) and the attempt budget is an append region — one byte consumed per boot,
+exactly like the rollback log's append-only entries.
 """
 
 from __future__ import annotations
 
 import hashlib
+import struct
 
 MARKER_SIZE = 16
 PENDING_OFFSET = 0
 TRIED_OFFSET = 16
 CONFIRMED_OFFSET = 32
 REPR_OFFSET = 48
+
+# --- v2 fields (mirror of boot.py's _COUNTER_OFF / _ATTEMPTS_OFF) ------------
+COUNTER_OFFSET = 64
+COUNTER_SIZE = 8                     # u32 value || u32 ~value
+ATTEMPTS_OFFSET = 72
+ATTEMPTS_MAX = 64                    # a slot needing 64 boots to come up is not coming back
+_MASK = 0xFFFFFFFF
 
 
 def _marker(label: bytes) -> bytes:
@@ -42,16 +59,25 @@ REPR_FULL = _marker(b"repr.full")
 REPR_DELTA = _marker(b"repr.ocdl")
 
 
-def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bool) -> bytes:
+def encode_counter(value: int) -> bytes:
+    """The install-counter field recording ``value``: the u32 plus its ones-complement.
+
+    Same self-validating shape as a rollback entry, and for the same reason — the field is
+    written into flash that cannot be erased again, so a power loss mid-write has to read as
+    *unknown* rather than as some other number. ``boot.install_counter`` rejects any pair whose
+    halves disagree, and a slot with no readable counter simply sorts last."""
+    return struct.pack("<II", value & _MASK, (value & _MASK) ^ _MASK)
+
+
+def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bool,
+                        counter: int | None = None) -> bytes:
     """A ``block``-sized status sector with the requested markers set (rest ``0xFF``).
 
-    The two factory shapes:
-
-    - **BACK** (golden / factory state): ``confirmed`` only.
-    - **FRONT** (initial ship): ``pending + tried + confirmed`` — the
-      "post-OTA-confirmed" shape, because boot.py's FRONT branch rejects the
-      ``confirmed``-only shape (that's BACK-only).
-    """
+    Under v2 both slots are real, updatable images and share one shape: an installed slot is
+    ``pending`` (a trial) and becomes ``confirmed`` when the app keeps it. A provisioned board
+    ships both slots already ``confirmed`` — they have nothing to prove — and ``counter`` orders
+    them, so which one boots is decided by the same rule that decides it after every later
+    update rather than by a factory-only special case."""
     sector = bytearray(b"\xff" * block)
     if pending:
         sector[PENDING_OFFSET:PENDING_OFFSET + MARKER_SIZE] = PENDING
@@ -59,4 +85,6 @@ def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bo
         sector[TRIED_OFFSET:TRIED_OFFSET + MARKER_SIZE] = TRIED
     if confirmed:
         sector[CONFIRMED_OFFSET:CONFIRMED_OFFSET + MARKER_SIZE] = CONFIRMED
+    if counter is not None:
+        sector[COUNTER_OFFSET:COUNTER_OFFSET + COUNTER_SIZE] = encode_counter(counter)
     return bytes(sector)

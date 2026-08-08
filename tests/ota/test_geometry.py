@@ -91,12 +91,15 @@ def test_one_sector_boards_derive_single_rather_than_nothing():
     """The whole point of the mode. These boards were arithmetically excluded before, because
     the control sectors were sized by the ERASE BLOCK so they could be erased independently --
     four 128 KiB sectors in a 128 KiB partition. SINGLE never erases control separately from the
-    body, so the area only has to HOLD the data."""
+    body, so the same four 4 KiB sectors fit with the image."""
     from openmv_ota.ota import geometry as g
 
     assert g.is_ota_capable(128 * 1024, 128 * 1024) is False   # no room for two slots
     assert g.derive_mode(128 * 1024, 128 * 1024) == g.SINGLE
     assert g.single_body_capacity(128 * 1024, 128 * 1024) == 128 * 1024 - g.SINGLE_CONTROL_BYTES
+    # ...and the layout is the SAME one A/B uses, so there is only ever one on-flash shape.
+    assert g.SINGLE_CONTROL_BYTES == g.slot_overhead(128 * 1024) == 16 * 1024
+    assert g.single_body_capacity(128 * 1024, 128 * 1024) == 112 * 1024   # OpenMV2/4 budget
 
 
 def test_a_partition_too_small_for_control_hosts_nothing():

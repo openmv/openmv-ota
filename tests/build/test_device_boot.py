@@ -80,6 +80,20 @@ def test_constants_match_host():
     for alg in (-7, -35, -36):
         assert B._ALG_SIG_SIZE[alg] == algorithm_for(alg).sig_size
     assert B._ROLLBACK_ENTRY == host_rollback.ENTRY_SIZE
+    assert (B._COUNTER_OFF, B._COUNTER_LEN) == (
+        host_status.COUNTER_OFFSET, host_status.COUNTER_SIZE)
+    assert (B._ATTEMPTS_OFF, B._ATTEMPTS_MAX) == (
+        host_status.ATTEMPTS_OFFSET, host_status.ATTEMPTS_MAX)
+
+
+def test_install_counter_reads_the_host_encoding():
+    # The builder writes the counter; boot.py reads it. Pin the two together -- a mismatch
+    # here would ship a device that cannot tell which of its two slots is newer.
+    sector = host_status.build_status_sector(BLOCK, pending=False, tried=False,
+                                             confirmed=True, counter=7)
+    assert B.install_counter(sector) == 7
+    assert B.install_counter(host_status.build_status_sector(
+        BLOCK, pending=False, tried=False, confirmed=True)) is None
 
 
 def test_rollback_floor_of_matches_host():
