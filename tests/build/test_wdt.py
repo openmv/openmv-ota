@@ -425,3 +425,55 @@ def test_stall_guard_is_not_wired_into_the_OTA_network_paths():
     src = inspect.getsource(rt)
     assert "stall_guard" not in src, "re-wiring needs evidence it helps; see openmv_wdt docstring"
     assert callable(_mod.stall_guard), "the tool itself stays available to app authors"
+
+
+# --- the OTA install arms the watchdog itself ------------------------------------------
+# User's rule: during an install WE own the device, so we arm it. The app may legitimately
+# leave it off (a crash in their own loop is their problem); the install window is ours.
+
+def test_arm_for_install_is_on_by_default():
+    assert _mod.ARM_FOR_INSTALL is True
+
+
+def test_arm_for_install_never_raises_when_there_is_no_usable_watchdog(monkeypatch):
+    """A board whose _start refuses (stm32 with no WWDG -- the IWDG is a one-way door we will
+    not arm) must still be able to INSTALL. Unwatched is worse than watched; refusing to update
+    is worse than both."""
+    def _boom():
+        raise ValueError("refusing to arm the stm32 IWDG")
+
+    monkeypatch.setattr(_mod, "_start", _boom)
+    monkeypatch.setattr(_mod, "_wdt", None, raising=False)
+    assert _mod.arm_for_install() is False        # must not raise
+
+
+def test_arm_for_install_can_be_turned_off(monkeypatch):
+    """Kept switchable: a board whose armed install misbehaves must be recoverable without a
+    code change (the H7 Plus's armed leg is still the least proven on the fleet)."""
+    monkeypatch.setattr(_mod, "ARM_FOR_INSTALL", False)
+    assert _mod.arm_for_install() is False
+
+
+def test_arm_for_install_reports_success_only_when_a_watchdog_is_live(monkeypatch):
+    monkeypatch.setattr(_mod, "_start", lambda: None)
+    monkeypatch.setattr(_mod, "_wdt", object(), raising=False)
+    assert _mod.arm_for_install() is True
+
+
+def test_the_installer_arms_at_the_point_of_NO_RETURN(monkeypatch):
+    """Placement is the whole safety argument. On stm32 the WWDG cannot be disarmed by software,
+    so arming is only safe in a region every exit of which REBOOTS -- the write loop does
+    (success -> reset into the trial, retry-exhaustion -> reset to golden). Arming before the
+    manifest is vetted would leave the app owing a feed forever after a pre-erase failure that
+    simply raises.
+    """
+    from pathlib import Path
+
+    import openmv_ota
+
+    src = (Path(openmv_ota.__file__).parent / "build" / "device" / "openmv_ota" / "data"
+           / "installer.py").read_text()
+    arm = src.index("arm_for_install()")
+    loop = src.index("for attempt in range(attempts):")
+    fetch = src.index("_fetch_manifest(")
+    assert fetch < arm < loop, "arm AFTER the manifest is vetted and BEFORE the write loop"

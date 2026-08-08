@@ -95,6 +95,22 @@ WDT_ID = None
 # sleep (the IWDG keeps counting through it) AND must feed reliably enough that a starve is impossible.
 # Non-stm32 ports are unaffected -- their WDT(0) is the deep-sleep-safe WDOG / alif WDT, not an IWDG.
 ALLOW_STM32_IWDG = False
+# ARM THE WATCHDOG FOR AN OTA INSTALL, even when ENABLED is False. During an install WE own the
+# device -- the app has stopped, /rom is being erased, and a park anywhere in that window leaves a
+# board that cannot boot and cannot be recovered remotely. A park is only escapable by a HARDWARE
+# reset (a soft timer does not dispatch through it -- measured, see stall_guard), so the watchdog
+# is not defence in depth here, it is the whole defence.
+#
+# Safe because the install is a REGION WITH NO NORMAL EXIT: every path out of the write loop
+# reboots (success -> reset into the trial, retry-exhaustion -> reset to golden), and a reset
+# clears the WWDG. That matters on stm32, where the watchdog cannot be disarmed by software -- so
+# arming it anywhere the code might simply RETURN would leave the app owing a feed forever. It is
+# armed at the point of no return, never before: a pre-erase failure still raises to the app with
+# nothing armed and nothing erased.
+#
+# What this does NOT cover is the app's own code. If you leave ENABLED False, a crash or hang in
+# your loop is still yours to catch; we only guarantee the window we are driving.
+ARM_FOR_INSTALL = True
 TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board WDT max (N6 WWDG max
 #                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often. If
 #                        a port rejects a value this small (a coarse WDOG), raise it to the board min.
@@ -345,6 +361,33 @@ def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardwa
                 _reject_stm32_iwdg(0, "WWDG unavailable on stm32")
                 _wdt = machine.WDT(0, TIMEOUT_MS)       # mimxrt/alif: the default deep-sleep-safe WDT
         _feed = _wdt.feed
+
+
+def arm_for_install():  # pragma: no cover (device)  # hil-residual-fn: arms real hardware; the host has no machine.WDT, and on the bench a passing install with `install: wdt armed` in the log is the witness
+    """Arm the watchdog for an OTA install regardless of ENABLED -- see ARM_FOR_INSTALL.
+
+    Returns True iff a watchdog is now running. NEVER RAISES: a board with no usable watchdog
+    (an stm32 whose build has no WWDG, where _start refuses the IWDG rather than arm a
+    one-way door) must still be able to install -- unwatched is worse than not at all, but
+    refusing to update is worse than both."""
+    if not ARM_FOR_INSTALL:
+        return False  # hil-residual: opt-out branch; the bench runs with it on
+    try:
+        _start()
+    except Exception as e:
+        # The IWDG refusal lands here. Say so once -- silently installing unwatched on a board
+        # the operator believes is protected is the kind of gap that only shows up in the field.
+        log_unavailable(e)
+        return False
+    return _wdt is not None
+
+
+def log_unavailable(e):  # pragma: no cover (device)  # hil-residual-fn: only reachable when _start refuses (stm32 without WWDG); the bench boards all have one
+    try:
+        from openmv_log import log as _l
+        _l.warning("install: no usable watchdog (%r) -- installing UNWATCHED" % (e,))
+    except Exception:
+        pass  # hil-residual: logging must never be what breaks an install
 
 
 def start():

@@ -1300,6 +1300,16 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # verify miscompare) is treated the same: retry, then fall back.
     attempts = getattr(cfg, "INSTALL_RETRIES", 3)
     body = None
+    # ARM THE WATCHDOG. This is the point of no return: the manifest is vetted, and from here every
+    # exit reboots (success -> the trial, retry-exhaustion -> golden), which is what makes arming
+    # safe on stm32 where software cannot disarm it. Past this line WE own the device -- the app has
+    # stopped and /rom is about to be erased -- so a park in the download or the write leaves a board
+    # that cannot boot and cannot be reached remotely. Only a HARDWARE reset escapes a park (a soft
+    # timer does not dispatch through one -- measured), so this is the whole recovery story, not a
+    # belt-and-braces extra. Arms even when the app left openmv_wdt disabled; never raises, because a
+    # board with no usable watchdog must still be able to update (see arm_for_install).
+    if openmv_wdt is not None and openmv_wdt.arm_for_install():  # hil-residual: watchdog-arm for the install; the bench witnesses it via the log line below
+        log.info("install: wdt armed for the install")           # HIL witness: the install is watched
     for attempt in range(attempts):
         try:
             # COLLECT BEFORE THE ERASE, under relax(). Everything above -- the TLS session, the
