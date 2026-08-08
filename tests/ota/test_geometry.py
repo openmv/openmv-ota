@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from openmv_ota.ota import geometry
 
 
@@ -50,3 +52,51 @@ def test_single_sector_partition_not_capable():
     assert geometry.body_capacity(0x20000, 0x20000) <= 0
     # OpenMV3: 256 KiB romfs, 256 KiB sector -> same.
     assert not geometry.is_ota_capable(0x40000, 0x40000)
+
+
+# --- v2 mode selection ------------------------------------------------------------------
+# A/B is the default wherever it fits; SINGLE exists for the legacy one-sector boards. The
+# asymmetry is deliberate: opting DOWN is a maker's choice, opting UP is not a thing.
+
+def test_ab_is_derived_wherever_two_slots_fit():
+    from openmv_ota.ota import geometry as g
+
+    assert g.derive_mode(12 * 1024 * 1024, 4096) == g.AB      # N6-class
+    assert g.derive_mode(4 * 1024 * 1024, 4096) == g.AB
+
+
+def test_one_sector_boards_derive_single_rather_than_nothing():
+    """The whole point of the mode. These boards were arithmetically excluded before, because
+    the control sectors were sized by the ERASE BLOCK so they could be erased independently --
+    four 128 KiB sectors in a 128 KiB partition. SINGLE never erases control separately from the
+    body, so the area only has to HOLD the data."""
+    from openmv_ota.ota import geometry as g
+
+    assert g.is_ota_capable(128 * 1024, 128 * 1024) is False   # no room for two slots
+    assert g.derive_mode(128 * 1024, 128 * 1024) == g.SINGLE
+    assert g.single_body_capacity(128 * 1024, 128 * 1024) == 128 * 1024 - g.SINGLE_CONTROL_BYTES
+
+
+def test_a_partition_too_small_for_control_hosts_nothing():
+    from openmv_ota.ota import geometry as g
+
+    assert g.derive_mode(4096, 4096) is None
+    with pytest.raises(ValueError, match="cannot host OTA in any mode"):
+        g.resolve_mode(4096, 4096)
+
+
+def test_single_image_opt_out_is_honoured_on_a_capable_partition():
+    """Buying back a full image of flash is a legitimate choice; it is just not the default."""
+    from openmv_ota.ota import geometry as g
+
+    assert g.resolve_mode(12 * 1024 * 1024, 4096) == g.AB                      # default
+    assert g.resolve_mode(12 * 1024 * 1024, 4096, single_image=True) == g.SINGLE
+
+
+def test_there_is_no_way_to_opt_UP_into_ab():
+    """A board without room for two slots must not be able to ask for A/B and get a silent
+    downgrade -- resolve_mode simply never returns AB for such a partition."""
+    from openmv_ota.ota import geometry as g
+
+    assert g.resolve_mode(128 * 1024, 128 * 1024) == g.SINGLE
+    assert g.resolve_mode(128 * 1024, 128 * 1024, single_image=True) == g.SINGLE
