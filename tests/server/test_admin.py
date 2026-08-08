@@ -371,13 +371,33 @@ def test_devices_cohort_filter_and_paging(tmp_path):
 def test_fleet_devices_audit(tmp_path):
     app, store = _app(tmp_path)
     store.upsert_device(device_id="d1", product_id=BID, board="OPENMV_N6", current_version="1.0.0",
-                        slot="FRONT")
+                        slot="A", confirmed=1, fallback_payload_version=0x01000000)
     store.append_audit(actor="ci", action="release.publish", entity_type="release", entity_id="r1")
     c = TestClient(app)
     assert c.get("/api/v1/admin/fleet", headers=AUTH).json()["total"] == 1
-    assert c.get("/api/v1/admin/devices", headers=AUTH).json()["devices"][0]["device_id"] == "d1"
+    dev = c.get("/api/v1/admin/devices", headers=AUTH).json()["devices"][0]
+    assert dev["device_id"] == "d1"
+    # the packed number is what the store keeps; a READER gets it decoded, so nobody has to
+    # work out that 16777216 means 1.0.0 to answer "what would this device fall back to"
+    assert dev["fallback_payload_version"] == 0x01000000 and dev["fallback_version"] == "1.0.0"
     events = c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
     assert events[0]["action"] == "release.publish"
+
+
+def test_fleet_summary_reports_exposure_not_slot_names(tmp_path):
+    """What an operator watching a rollout needs: who fell back, who is still unproven, and
+    what the fleet would fall back TO. A slot NAME answers none of those under A/B."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="ok", product_id=BID, current_version="1.1.0", slot="B",
+                        confirmed=1, fallback_payload_version=0x01000000)
+    store.upsert_device(device_id="trial", product_id=BID, current_version="1.1.0", slot="A",
+                        confirmed=0, fallback_payload_version=0x01000000)
+    store.upsert_device(device_id="back", product_id=BID, current_version="1.0.0", slot="B",
+                        confirmed=1, fallback_reason="A:body-sha")
+    fs = TestClient(app).get("/api/v1/admin/fleet", headers=AUTH).json()
+    assert fs["total"] == 3 and fs["fell_back"] == 1 and fs["unconfirmed"] == 1
+    # decoded, and a device that did not report its slots reads as "unknown" -- never as 0.0.0
+    assert fs["by_fallback"] == {"1.0.0": 2, "unknown": 1}
 
 
 # --- account isolation (adversarial: B must never see or touch A's data) --------------------

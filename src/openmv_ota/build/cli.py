@@ -1,7 +1,7 @@
 """CLI handlers for the ``openmv-ota build`` command group.
 
     romfs         compile + pack a romfs image from a project
-    factory-romfs compose the dual-slot factory image (flashed at manufacture)
+    factory-romfs compose the provisioning image, both slots (flashed at manufacture)
     firmware      build firmware per board (OTA projects freeze a boot.py)
     ota-romfs     build the cloud-published OTA set: image + signed manifest (+ delta)
     inspect       decode + print an OTA artifact (trailer, manifest, or delta)
@@ -128,7 +128,8 @@ def register(build_parser: argparse.ArgumentParser):
     p_ver.add_argument("--target", help="expected new image, to confirm a delta reconstructs it")
     p_ver.set_defaults(func=cmd_verify, _command="build verify")
 
-    p_fac = sub.add_parser("factory-romfs", help="compose the dual-slot factory ROMFS image")
+    p_fac = sub.add_parser("factory-romfs",
+                           help="compose the provisioning ROMFS image (both slots)")
     p_fac.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
     p_fac.add_argument("--app", help="app source dir (default: <project>/app)")
     p_fac.add_argument("-o", "--output", help="output dir (default: <project>/build)")

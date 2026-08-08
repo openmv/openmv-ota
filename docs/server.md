@@ -140,8 +140,22 @@ openmv-ota client rollout raise  --id <rollout-id> --percent 50        # promote
 openmv-ota client rollout pause  --id <rollout-id>                     # halt (auto-pauses on failures too)
 openmv-ota client rollout resume --id <rollout-id>
 openmv-ota client rollout rollback --id <rollout-id>                   # stop offering (shipped devices keep it)
-openmv-ota client fleet | client devices [--board-id N] | client audit
+openmv-ota client fleet | client devices [--product-id N] | client audit
 ```
+
+`client fleet` is the rollout dashboard, and under A/B it reports **exposure** rather than
+which slot a device happens to be running from:
+
+| Field | What it answers |
+|---|---|
+| `by_version` | what the fleet is running |
+| `by_fallback` | what it would fall back **to**. A fleet whose devices all have the previous release behind them is in a very different position from one where half report `unknown` — and that is invisible in `by_version` |
+| `fell_back` | devices whose last boot rejected a slot. The direct rollout alarm |
+| `unconfirmed` | devices running an image that has not confirmed itself yet. They are mid-trial, and therefore also **deferring** further updates until they settle |
+
+`unknown` in `by_fallback` means the device did not say — a single-image board, which has no
+fallback by design. `client devices` carries the same fallback per device, decoded
+(`fallback_version`) alongside the packed `fallback_payload_version`.
 
 `publish` uploads the exact signed bytes the build produced (`<board>-manifest.bin`,
 `<board>-ota.img.gz`, and `<board>-ota.delta.gz` if present). The server derives all metadata from

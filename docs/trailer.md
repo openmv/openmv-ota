@@ -62,7 +62,7 @@ The fixed header is 80 bytes, all scalar fields 4-byte aligned. In order:
 | `pad_size` | `uint32` | Count of `0xFF` bytes between the body and the status/trailer sectors. `body_size + pad_size` = where the status sector begins, making the slot self-describing across boards with different erase geometry. |
 | `meta_size` | `uint32` | Byte length of the JSON metadata blob. |
 | `sig_size` | `uint32` | Byte length of the signature; must equal the algorithm's size. |
-| `board_id` | `uint32` | Target product id; the cross-flash guard. The build auto-assigns a nonzero id, so this is `0` (check skipped) only if you override it to `0`. |
+| `product_id` | `uint32` | Target product id; the cross-flash guard. The build auto-assigns a nonzero id, so this is `0` (check skipped) only if you override it to `0`. |
 | `min_platform_version` | `uint32` | Minimum platform version the payload needs, encoded `(major<<24)\|(minor<<16)\|(patch<<8)\|build`. For a ROMFS app the platform is the OpenMV base firmware. `0` = no constraint. |
 | `payload_version` | `uint32` | The monotonic anti-rollback counter / OTA epoch. `boot.py` rejects any slot below the recorded rollback floor. Distinct from any human version string. Note this does **not** order the slots — the install counter does. |
 | `payload_version_floor` | `uint32` | A forward rollback floor this image asserts: every later update must be `>=` it. Set from `settings.json`'s `rollback_floor` (encoded like `payload_version`); `0` = no extra floor. |
@@ -100,7 +100,7 @@ first.
 {
   "product": "orchard-sentry",
   "board": "OPENMV_N6",
-  "board_id": 4097,
+  "product_id": 4097,
   "board_name": "OrchardSentry Pro",
   "app_version": "2.3.0",
   "vendor": "Acme Robotics",
@@ -111,7 +111,7 @@ first.
 }
 ```
 
-The trust-critical fields (`board_id`, `payload_version`, `sig_alg`, …) are also
+The trust-critical fields (`product_id`, `payload_version`, `sig_alg`, …) are also
 in the fixed header and enforced there; the JSON is provenance, not trust input.
 
 ## Signature algorithms
@@ -144,7 +144,7 @@ not the megabytes. On the device, `boot.py`:
    rejected without verifying), and reads `sig_alg` for the curve + hash;
 3. verifies the signature over the signed region;
 4. recomputes SHA-256 of the body and compares it to `body_sha256`;
-5. enforces `board_id`, `min_platform_version`, and the anti-rollback rule against
+5. enforces `product_id`, `min_platform_version`, and the anti-rollback rule against
    each slot; it boots the newest one that passes.
 
 The CRC is checked first as a cheap torn-write reject; it is not a trust check.

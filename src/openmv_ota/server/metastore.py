@@ -371,14 +371,36 @@ class SqlMetadataStore:
         return [_d(r) for r in rows]
 
     def fleet_summary(self, product_id: int | None = None, account_id=None) -> dict:
+        """What an operator wants to know about a fleet mid-rollout.
+
+        v1 reported `by_slot`, which answered "how many devices are on golden" -- i.e. how many
+        updates had failed -- because FRONT and BACK meant something. Under A/B a slot name is
+        just which half of flash a device happens to be running from, and counting it says
+        nothing at all. The same question now has better answers:
+
+          fell_back    -- devices whose last boot REJECTED a slot. The direct rollout alarm.
+          unconfirmed  -- devices running an image that has not confirmed itself yet. They are
+                          mid-trial, so they are also the devices deferring further updates.
+          by_fallback  -- what the fleet would fall back TO. A rollout where every device has
+                          the previous release behind it is in a very different position from
+                          one where half of them report nothing, and that is invisible in
+                          by_version."""
         where, params = _scope(account_id, product_id)
+        and_ = (where + " AND ") if where else "WHERE "
         by_version = {r["current_version"]: r["n"] for r in self.query_all(
             "SELECT current_version, COUNT(*) AS n FROM devices " + where
             + " GROUP BY current_version", params)}
-        by_slot = {r["slot"]: r["n"] for r in self.query_all(
-            "SELECT slot, COUNT(*) AS n FROM devices " + where + " GROUP BY slot", params)}
+        by_fallback = {r["fallback_payload_version"]: r["n"] for r in self.query_all(
+            "SELECT fallback_payload_version, COUNT(*) AS n FROM devices " + where
+            + " GROUP BY fallback_payload_version", params)}
         total = self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
-        return {"total": total, "by_version": by_version, "by_slot": by_slot}
+        fell_back = self.query_one(
+            "SELECT COUNT(*) AS n FROM devices " + and_ + "fallback_reason IS NOT NULL",
+            params)["n"]
+        unconfirmed = self.query_one(
+            "SELECT COUNT(*) AS n FROM devices " + and_ + "confirmed = 0", params)["n"]
+        return {"total": total, "by_version": by_version, "by_fallback": by_fallback,
+                "fell_back": fell_back, "unconfirmed": unconfirmed}
 
     def list_cohorts(self, product_id: int | None = None, account_id=None) -> list[dict]:
         """The cohorts in use (per board), with a device count each."""

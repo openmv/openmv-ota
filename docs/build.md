@@ -29,7 +29,7 @@ into the helper partition — see
 [Multi-core boards](project.md#multi-core-boards-a-coprocessor-partition).
 
 Every image also gets a generated, read-only `system.json` at `/rom/system.json` —
-board identity (`board`, `board_id`, `board_name`, `product`), the app version, and
+board identity (`board`, `product_id`, `board_name`, `product`), the app version, and
 build provenance (firmware / MicroPython / toolchain versions) — composed from the
 lock and the per-board config. It gives the app one consistent way to read its own
 identity and provenance, the same in a non-OTA and an OTA build. See
@@ -65,7 +65,7 @@ verifiable, anti-rollback OTA image rather than a bare ROMFS body. No extra flag
   `[ota].signing_key_id` from `openmv-ota.toml`; its private key is loaded from
   `keys/private/ota-<id>.pem`, and the trailer records `key_id` + the COSE
   algorithm so the device selects the matching trusted public key.
-- **Per-board identity + provenance stamped in.** `board_id` / `board_name` come
+- **Per-board identity + provenance stamped in.** `product_id` / `board_name` come
   from each `[targets.<BOARD>]` table; the firmware / MicroPython / toolchain / SDK
   versions and commit come from the lock. These are exactly the `system.json`
   fields, and the trailer's JSON metadata carries a **verbatim copy of
@@ -81,7 +81,7 @@ An OTA build writes a single **bundle**, `<board>-romfs.zip`, containing two ent
 
 One file is easier to flash / upload / track, but the pieces stay separate
 *entries* — a zip is random-access, so the update server reads `trailer.bin`
-(version / `board_id` / signature, including its verbatim copy of `system.json`)
+(version / `product_id` / signature, including its verbatim copy of `system.json`)
 without touching the multi-MB body. The trailer *is* the manifest, so there is no
 separate `manifest.json` to keep in sync. The device never gets the zip (it can't
 hold the body in RAM to unzip): a server unbundles and streams the body + trailer
@@ -94,9 +94,9 @@ OTA-slot budget. See [trailer.md](trailer.md) for the on-flash format.
 a missing or unreadable `app/settings.json`, a missing or non-semver
 `app_version`, a `signing_key_id` that isn't in `keys/trusted_keys.json`, or a
 missing private key (only the signing machine has `keys/private/`). It *warns*
-(but still builds) if a target's `board_id` is `0` — which only happens if you
+(but still builds) if a target's `product_id` is `0` — which only happens if you
 override the auto-assigned id to `0`, turning the cross-flash guard off — or if two
-boards share the same `board_id` (the guard can't tell them apart).
+boards share the same `product_id` (the guard can't tell them apart).
 
 ### Compiling
 
@@ -292,7 +292,7 @@ openmv-ota build inspect build/OPENMV_N6-romfs.zip --json
 openmv-ota build inspect build/OPENMV_N6-factory-romfs.img   # prints slots A + B
 ```
 
-Decodes the signed trailer and prints it: product / board / `board_id` /
+Decodes the signed trailer and prints it: product / board / `product_id` /
 `board_name`, the app version (and the `payload_version` / `rollback_floor` /
 `min_platform_version` it encodes, shown as semver), the signing key and
 algorithm, the body size + SHA-256, and a provenance line (firmware / MicroPython
@@ -317,7 +317,7 @@ slot's verdict is printed with an `A:` / `B:` prefix). Trusted keys come from
 `--trusted-keys` (default `keys/trusted_keys.json`), so running it from a project
 root just works.
 
-It deliberately does **not** check the device-relative fields — `board_id` against
+It deliberately does **not** check the device-relative fields — `product_id` against
 a device, `payload_version` anti-rollback against the installed image,
 `min_platform_version` against the running firmware — because those need a device,
 not a host. Those remain `boot.py`'s job.

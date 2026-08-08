@@ -377,7 +377,17 @@ def pin_cohort(body: CohortPin, request: Request,
 @admin.get("/fleet")
 def fleet(request: Request, product_id: int | None = None,
           principal: Principal = Depends(require_scope("observe"))):
-    return request.app.state.metastore.fleet_summary(product_id, account_id=principal.account_id)
+    from openmv_ota.ota.version import decode_app_version
+
+    summary = request.app.state.metastore.fleet_summary(product_id,
+                                                        account_id=principal.account_id)
+    # by_fallback is keyed by the packed uint32 the device reports; render it the way
+    # by_version already reads. "unknown" is the device that did not say -- a single-image
+    # board, or one on a payload from before the slots field existed.
+    summary["by_fallback"] = {
+        (decode_app_version(k) if k else "unknown"): n
+        for k, n in summary["by_fallback"].items()}
+    return summary
 
 
 @admin.get("/releases")
@@ -387,12 +397,27 @@ def releases(request: Request, product_id: int | None = None, limit: int | None 
         product_id, account_id=principal.account_id, limit=limit, offset=offset)}
 
 
+def _with_fallback_version(rows: list[dict]) -> list[dict]:
+    """Add a human-readable ``fallback_version`` beside the stored uint32.
+
+    The store keeps the packed number because that is what the device reports and what
+    comparisons need; a reader should not have to decode `16711680` in their head to answer
+    "what would this device fall back to". Absent when the device did not tell us, which is
+    deliberately distinct from a device that reported no fallback."""
+    from openmv_ota.ota.version import decode_app_version
+
+    for row in rows:
+        packed = row.get("fallback_payload_version")
+        row["fallback_version"] = decode_app_version(packed) if packed else None
+    return rows
+
+
 @admin.get("/devices")
 def devices(request: Request, product_id: int | None = None, limit: int = 100,
             cohort: str | None = None, offset: int = 0,
             principal: Principal = Depends(require_scope("observe"))):
-    return {"devices": request.app.state.metastore.list_devices(
-        product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset)}
+    return {"devices": _with_fallback_version(request.app.state.metastore.list_devices(
+        product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset))}
 
 
 @admin.post("/devices/{device_id}/viewer-grant")

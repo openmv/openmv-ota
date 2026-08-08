@@ -48,7 +48,7 @@ anti-rollback image with an A/B fallback:
 
 ```bash
 openmv-ota project new ./my-product -f ~/openmv -b OPENMV_N6 --ota
-# bump your version in app/settings.json (board_id is auto-assigned)
+# bump your version in app/settings.json (product_id is auto-assigned)
 openmv-ota build romfs ./my-product
 ```
 

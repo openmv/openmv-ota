@@ -93,17 +93,25 @@ def test_device_cohort_not_reset_by_checkin():
 
 
 def test_list_devices_and_fleet_summary():
+    """The summary answers "how exposed is this rollout", which under A/B is no longer a
+    question about slot NAMES -- those just say which half of flash a device is running from."""
     s = _store()
-    s.upsert_device(device_id="d1", product_id=1, current_version="1.0.0", slot="FRONT")
-    s.upsert_device(device_id="d2", product_id=1, current_version="1.1.0", slot="FRONT")
-    s.upsert_device(device_id="d3", product_id=1, current_version="1.0.0", slot="BACK")
-    s.upsert_device(device_id="e1", product_id=2, current_version="9.0.0", slot="FRONT")
+    s.upsert_device(device_id="d1", product_id=1, current_version="1.0.0", slot="A",
+                    confirmed=1, fallback_payload_version=0x00FF0000)
+    s.upsert_device(device_id="d2", product_id=1, current_version="1.1.0", slot="B",
+                    confirmed=0, fallback_payload_version=0x01000000)   # mid-trial
+    s.upsert_device(device_id="d3", product_id=1, current_version="1.0.0", slot="A",
+                    confirmed=1, fallback_reason="B:body-sha")          # fell back
+    s.upsert_device(device_id="e1", product_id=2, current_version="9.0.0", slot="A")
     assert {d["device_id"] for d in s.list_devices(1)} == {"d1", "d2", "d3"}
     assert len(s.list_devices()) == 4 and len(s.list_devices(1, limit=2)) == 2
     fs = s.fleet_summary(1)
     assert fs["total"] == 3
     assert fs["by_version"] == {"1.0.0": 2, "1.1.0": 1}
-    assert fs["by_slot"] == {"FRONT": 2, "BACK": 1}
+    assert fs["fell_back"] == 1          # the rollout alarm
+    assert fs["unconfirmed"] == 1        # mid-trial, and therefore deferring further updates
+    # what the fleet would fall back TO -- None means the device did not say
+    assert fs["by_fallback"] == {0x00FF0000: 1, 0x01000000: 1, None: 1}
     assert s.fleet_summary()["total"] == 4
 
 

@@ -140,7 +140,7 @@ separate, read-only **`system.json`** into every image (OTA or not) at
 {
   "product": "orchard-sentry",
   "board": "OPENMV_N6",
-  "board_id": 4097,
+  "product_id": 4097,
   "board_name": "OrchardSentry Pro",
   "app_version": "2.3.0",
   "vendor": "Acme Robotics",
@@ -154,7 +154,7 @@ separate, read-only **`system.json`** into every image (OTA or not) at
 This gives the app **one consistent read path for system state, the same in a
 non-OTA and an OTA build** — `json.load(open("/rom/system.json"))`. It is composed
 from the lock (firmware / MicroPython / toolchain provenance) and the config
-(per-board `board_id` / `board_name`); for an OTA image the signed
+(per-board `product_id` / `board_name`); for an OTA image the signed
 [trailer](trailer.md) also carries a verbatim copy, so host tools can read it
 without mounting the ROMFS. `system.json` is generated into the built image only —
 never into your `app/` source — so there is nothing to edit or accidentally commit.
@@ -187,11 +187,11 @@ name = "my-product"          # product, shared by every board
 boards = ["OPENMV_N6", "OPENMV_AE3"]
 
 [targets.OPENMV_N6]
-board_id   = 1001
+product_id   = 1001
 board_name = "My Product Lite"
 
 [targets.OPENMV_AE3]
-board_id   = 1002
+product_id   = 1002
 board_name = "My Product Pro"
 ```
 
@@ -229,7 +229,7 @@ project is ready to build a signed image with one command.
   writes it under `keys/`.
 
 - **Per-board identity.** Each target board gets a `[targets.<BOARD>]` table for
-  its `board_id` / `board_name` (see [Board identity](#board-identity)).
+  its `product_id` / `board_name` (see [Board identity](#board-identity)).
 
 (The starter `app/` — including the `app_version` the build stamps into the image
 — is scaffolded for every project, not just OTA; see
@@ -277,7 +277,7 @@ and each target board gets an active table for its identity (see
 
 ```toml
 [targets.OPENMV_N6]
-board_id   = 3064072142  # stable product id (auto-assigned; keep it once devices ship)
+product_id   = 3064072142  # stable product id (auto-assigned; keep it once devices ship)
 board_name = "my-product"  # human label; defaults to the product name, rename freely
 ```
 
@@ -410,25 +410,25 @@ openmv-ota project keys unrevoke 0x0100
 
 ### Board identity
 
-`board_id` is a `uint32` that names a product (the cross-flash guard), and
+`product_id` is a `uint32` that names a product (the cross-flash guard), and
 `board_name` is a human label for it. They live only in `openmv-ota.toml` (per
 `[targets.<BOARD>]`) and are pure identity — **excluded from the lock and its
 `config_digest`** — so setting a product id or renaming a board never trips drift
 (unlike geometry overrides, which are firmware-relevant and *are* digested).
 `build romfs` reads them and stamps them into `system.json` and the trailer: the
-device's `board_id` guards against cross-flashing the wrong product; `board_name`
+device's `product_id` guards against cross-flashing the wrong product; `board_name`
 is metadata only.
 
 **You never have to invent the number.** `project new --ota` auto-assigns each
-board a stable `board_id`, derived deterministically from the product + board name
+board a stable `product_id`, derived deterministically from the product + board name
 (distinct per board, reproducible). It's written into the config so it's frozen —
-**keep it once devices ship**, because a device bakes its `board_id` in and rejects
+**keep it once devices ship**, because a device bakes its `product_id` in and rejects
 any image whose id doesn't match; a later change would reject updates on fielded
 devices. You can still override it (e.g. to match an existing product numbering),
 and `build romfs` warns if you set it to `0` (guard off) or if two boards collide
 on the same id.
 
-A **non-OTA** project doesn't pin a `board_id` in its config (the guard only
+A **non-OTA** project doesn't pin a `product_id` in its config (the guard only
 applies to OTA), but `build romfs` still derives the same stable id and records it
 in `system.json`, so a non-OTA app reads the same product identity — and nothing
 changes when you later move to OTA. One app folder can target several boards or
@@ -508,7 +508,7 @@ and the source is recorded in `geometry_source`; set `partition_size` under a
 
 The lock's `config_digest` covers only the *firmware-relevant* config — boards,
 geometry overrides like `partition_size`, and the OTA mode — so changing any of
-those is drift you must `sync`. Pure-identity fields (`board_id`, `board_name`)
+those is drift you must `sync`. Pure-identity fields (`product_id`, `board_name`)
 and metadata (product / vendor name, app version) are deliberately **excluded**,
 so editing a product id or bumping your app version never invalidates the lock.
 

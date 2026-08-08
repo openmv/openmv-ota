@@ -24,7 +24,7 @@ every boot `boot.py` runs after the board's stock `_boot.py` and, **for each slo
 1. Reads the slot's signed [trailer](trailer.md) and **verifies the ECDSA signature**
    (via the on-device mbedtls shim) *before trusting any header field*.
 2. Checks the authenticated header: **integrity** (body SHA-256), **cross-flash guard**
-   (`board_id`), **compatibility** (`min_platform_version`), and **anti-rollback**
+   (`product_id`), **compatibility** (`min_platform_version`), and **anti-rollback**
    (`payload_version` vs the **rollback floor** — see below).
 3. Applies the **trial rules** (below).
 
@@ -135,7 +135,7 @@ extend); `build romfs` compiles + packs it to `/rom/lib/openmv_ota/`. It exposes
   the device would fall back to** — and it is what the check-in reports so a fleet operator
   can see it. One entry in single-image mode.
 - **`identity()`** — the running image's identity/provenance from `/rom/system.json`
-  (`board`, `product`, `board_id`, `app_version`, `vendor`, toolchain, …) plus `device_id`
+  (`board`, `product`, `product_id`, `app_version`, `vendor`, toolchain, …) plus `device_id`
   (this unit's hardware id from `machine.unique_id()`) — what an update server reads to
   decide what to push, and to address the specific device. `{}` if there's no system.json.
 - **`confirm()`** — keep the running image: **advances the anti-rollback floor** to this
@@ -189,7 +189,7 @@ that's obtained is out of scope here). It:
    against `ca` with `CERT_REQUIRED` + SNI — all **before** erasing anything.
 2. **Fetches + verifies the manifest** (into RAM): checks its ECDSA signature against the
    same frozen trusted keys as an image trailer, then applies the device-relative checks
-   — `board_id` cross-flash guard, `min_platform_version`, and the **anti-rollback floor**
+   — `product_id` cross-flash guard, `min_platform_version`, and the **anti-rollback floor**
    (the highest version any slot has recorded) — exactly mirroring what `boot.py` enforces
    on the image, just *earlier*. Any failure here raises with `/rom` intact.
 3. **Selects a representation** from the manifest — the **full** image, or a **delta**
@@ -244,7 +244,7 @@ serve a stale signed update, which the anti-rollback floor blocks, or deny the d
 
 **The manifest + image.** `install()` consumes a signed manifest, which names the
 reconstructed image's size/sha256 and the available **representations** and binds
-`board_id`/`payload_version`/`min_platform_version` under one ECDSA signature (same keys as
+`product_id`/`payload_version`/`min_platform_version` under one ECDSA signature (same keys as
 the image). **One command** builds the whole publishable set from app source:
 **`build ota-romfs`** — compiles + signs the bundle, renders `<board>-ota.img.gz`, signs
 `<board>-manifest.bin`, and — with `--delta-from <factory-romfs.img>` — emits
