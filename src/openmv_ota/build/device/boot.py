@@ -79,6 +79,7 @@ _COUNTER_OFF = 64                       # u32 value || u32 ~value -- a torn writ
 _COUNTER_LEN = 8
 _ATTEMPTS_OFF = 72                      # one byte per boot attempt: 0xFF -> 0x00 as each is used
 _ATTEMPTS_MAX = 64                      # ...capped; a slot that needs 64 boots is not coming back
+DEFAULT_MAX_ATTEMPTS = 3                # boots a trial gets to confirm (openmv-ota.toml may lower it)
 
 
 def _marker(label):
@@ -251,12 +252,13 @@ def select_slot(candidates):
     return None if best is None else best[0]
 
 
-def evaluate_slot(body, status, trailer_bytes, is_front, rollback_floor,
-                  product_id, trusted_keys, platform_version, verify):
+def evaluate_slot(body, status, trailer_bytes, rollback_floor,
+                  product_id, trusted_keys, platform_version, verify,
+                  max_attempts=DEFAULT_MAX_ATTEMPTS):
     """Verify one slot and decide whether it may be mounted.
 
-    Returns ``(trailer, write_tried)`` -- ``write_tried`` is True only for a FRONT
-    first trial boot, telling the caller to set the ``tried`` marker before mounting.
+    Returns ``(trailer, consume_attempt)`` -- ``consume_attempt`` is True when this is a trial
+    boot, telling the caller to burn one attempt byte before mounting.
     Raises :class:`OtaReject` (reason code) on any failure. ``body`` is the slot's
     body region (a memoryview on device); ``status`` is its status sector.
 
@@ -282,23 +284,31 @@ def evaluate_slot(body, status, trailer_bytes, is_front, rollback_floor,
     if _sha256(memoryview(body)[:t.body_size]) != t.body_sha256:
         raise OtaReject("body-sha")
 
-    pending, tried, confirmed = _markers(status)
-    if not is_front:
-        # BACK must be exactly the golden factory shape: confirmed only.
-        if not (confirmed and not pending and not tried):
-            raise OtaReject("back-not-factory")
-        return t, False
+    pending, _tried, confirmed = _markers(status)   # `tried` is superseded by the attempt region
 
-    if t.payload_version < rollback_floor:              # anti-rollback vs BACK
+    # SYMMETRIC. v1 required BACK to be "exactly the golden factory shape: confirmed only",
+    # because BACK *was* the factory image and only FRONT was ever written. Under A/B both slots
+    # are real, updatable images and either may be the newest, so the same rule has to hold for
+    # both -- and the caller decides which one wins via select_slot(), not this function.
+    if t.payload_version < rollback_floor:              # anti-rollback
         raise OtaReject("rollback")
-    if pending and tried and confirmed:
-        return t, False                                 # post-OTA confirmed
-    if pending and not tried and not confirmed:
-        return t, True                                  # one-shot trial: arm 'tried'
-    if pending and tried and not confirmed:
-        raise OtaReject("trial-failed")                 # tried but never confirmed
-    if confirmed and not pending and not tried:
-        raise OtaReject("forged-confirm")               # BACK shape on FRONT
+    if confirmed:
+        return t, False                                 # ran and was kept; boot it, consume nothing
+    if pending:
+        # A trial gets max_attempts boots to confirm, not one. The costs are lopsided: a FALSE
+        # rejection costs a full re-download + erase + write that the server then offers again,
+        # while an extra attempt on a genuinely bad image costs one reboot. See the plan.
+        if attempts_used(status) >= max_attempts:
+            raise OtaReject("trial-failed")             # spent its attempts, never confirmed
+        return t, True                                  # trial: caller consumes one attempt
+    # Neither confirmed nor pending: nothing was ever installed here (a blank slot, or a status
+    # sector lost to a torn write). Not bootable.
+    #
+    # v1 also rejected "confirmed with no pending" as `forged-confirm`, on the grounds that it was
+    # BACK's shape appearing on FRONT. That check is meaningless now: both slots use one shape, and
+    # a factory-flashed slot legitimately looks exactly like that. It never bought much anyway --
+    # forging a confirm skips the TRIAL, not the signature, so it needs flash-write access to make
+    # an already-validly-signed image skip its probation.
     raise OtaReject("status")
 
 
@@ -311,7 +321,8 @@ class OtaBoot:
     """
 
     def __init__(self, read, verify, mount, write_marker, partition_size,
-                 front_size, block, product_id, trusted_keys, platform_version):
+                 front_size, block, product_id, trusted_keys, platform_version,
+                 max_attempts=DEFAULT_MAX_ATTEMPTS):
         self.read = read
         self.verify = verify
         self.mount = mount
@@ -322,62 +333,97 @@ class OtaBoot:
         self.product_id = product_id
         self.trusted_keys = trusted_keys
         self.platform_version = platform_version
+        self.max_attempts = max_attempts
+        self._pending = {}
+
+    def _slots(self):
+        """``[(name, offset, size), ...]`` for this device's mode.
+
+        A/B splits the partition; SINGLE is one slot spanning all of it. Everything below is
+        written against this list, so the two modes differ in exactly one place."""
+        if self.front_size <= 0 or self.front_size >= self.partition_size:
+            return [("A", 0, self.partition_size)]          # SINGLE: one slot, whole partition
+        return [("A", 0, self.front_size),
+                ("B", self.front_size, self.partition_size - self.front_size)]
 
     def _rollback_floor(self):
-        """The anti-rollback floor for FRONT: the higher of BACK's factory version and the
-        monotonic floor in BACK's rollback sector (advanced by confirm() as updates are
-        kept). 0 if BACK's trailer doesn't parse (a torn factory image) and no floor logged."""
-        back = self.read(self.partition_size - self.block, self.block)
-        try:
-            base = parse_trailer(back).payload_version
-        except OtaReject:
-            base = 0
-        logged = _rollback_floor_of(self.read(self.partition_size - 3 * self.block, self.block))
-        return logged if logged > base else base
+        """The anti-rollback floor: the highest version any slot has recorded as confirmed.
 
-    def _try_slot(self, offset, slot_size, is_front, rollback_floor):
+        v1 read this from BACK alone, which worked because BACK was the factory image and was
+        never erased. Under A/B every slot is erased in turn, so a floor living in one slot would
+        be lost the moment that slot is rewritten. Taking the max across both keeps it monotonic
+        as long as an install carries the current floor into the slot it writes -- which is the
+        installer's job (step 4), and the reason the floor is read from every slot here rather
+        than from a designated one."""
+        floor = 0
+        for _name, offset, size in self._slots():
+            logged = _rollback_floor_of(self.read(offset + size - 3 * self.block, self.block))
+            if logged > floor:
+                floor = logged
+        return floor
+
+    def _read_slot(self, offset, size):
         blk = self.block
-        body = self.read(offset, slot_size - 2 * blk)
-        status = self.read(offset + slot_size - 2 * blk, blk)
-        trailer = self.read(offset + slot_size - blk, blk)
-        t, write_tried = evaluate_slot(
-            body, status, trailer, is_front, rollback_floor, self.product_id,
-            self.trusted_keys, self.platform_version, self.verify)
-        if write_tried:
-            # Arm 'tried' *before* mounting: if the trial image hangs, the next boot
-            # sees pending+tried+!confirmed and rejects FRONT, falling back to BACK.
-            try:
-                self.write_marker(offset + slot_size - 2 * blk + _TRIED_OFF, TRIED)
-            except OSError:
-                # The arm write failed/can't be verified. Running FRONT now would be an
-                # untracked trial -- if it hung, the next boot couldn't tell to recover.
-                # So don't trust it; fall back to the golden image instead.
-                raise OtaReject("trial-arm")
-        self.mount(memoryview(body)[:t.body_size])
-        return t
+        body = self.read(offset, size - 2 * blk)
+        status = self.read(offset + size - 2 * blk, blk)
+        trailer = self.read(offset + size - blk, blk)
+        return body, status, trailer
 
     def run(self):
-        """Mount FRONT, else BACK. Returns ``(slot, trailer, front_reason)`` where
-        ``front_reason`` is the FRONT rejection reason when BACK was used (else
-        None). Raises :class:`OtaReject('no-slot:...')` if neither slot mounts."""
+        """Mount the newest valid slot. Returns ``(slot, trailer, reason)`` where ``reason`` is
+        the rejection of the slot NOT chosen (or None when there was only one candidate).
+
+        Raises :class:`OtaReject('no-slot:...')` when nothing is bootable -- which under v2 is
+        not the end of the road: there is no factory image to fall back to, so the caller hands
+        to the firmware-resident recovery flow, which re-downloads until a working image exists.
+        """
         floor = self._rollback_floor()
-        try:
-            t = self._try_slot(0, self.front_size, True, floor)
-            return "FRONT", t, None
-        except OtaReject as front_err:
+        candidates, rejects = [], []
+        for name, offset, size in self._slots():
+            body, status, trailer = self._read_slot(offset, size)
             try:
-                t = self._try_slot(self.front_size,
-                                   self.partition_size - self.front_size, False, 0)
-                return "BACK", t, str(front_err)
-            except OtaReject as back_err:
-                raise OtaReject("no-slot:%s/%s" % (front_err, back_err))
+                t, consume = evaluate_slot(
+                    body, status, trailer, floor, self.product_id, self.trusted_keys,
+                    self.platform_version, self.verify, self.max_attempts)
+            except OtaReject as e:
+                rejects.append("%s:%s" % (name, e))
+                continue
+            _p, _tr, confirmed = _markers(status)
+            candidates.append((name, install_counter(status), bool(confirmed)))
+            self._pending[name] = (offset, size, body, status, t, consume)
 
+        # Try the newest, and if it cannot be ARMED fall through to the next-newest rather than
+        # abandoning the boot. Failing to record an attempt is a reason to distrust that slot, not
+        # a reason to strand a device that has another valid image sitting right there.
+        while True:
+            winner = select_slot(candidates)
+            if winner is None:
+                raise OtaReject("no-slot:%s" % (",".join(rejects) or "empty"))
+            try:
+                return self._mount(winner, rejects)
+            except OtaReject as e:
+                rejects.append("%s:%s" % (winner, e))
+                candidates = [c for c in candidates if c[0] != winner]
 
-# --- Telemetry the app reads after boot completes ---------------------------
-# boot.py can't write to UART/REPL (not initialised yet in the frozen boot path), so it
-# records the outcome for the app to read once it's running. _main also mirrors these
-# onto the _ota_config module (see below) -- that's the channel the app-side openmv_ota
-# library actually reads, since importing *this* module would re-run the boot logic.
+    def _mount(self, winner, rejects):
+        offset, size, body, status, t, consume = self._pending[winner]
+        if consume:
+            # BURN THE ATTEMPT BEFORE MOUNTING. If the trial image hangs, nothing after this
+            # point runs -- so an attempt recorded afterwards would never be recorded at all and
+            # the same slot would be retried forever. Consuming it first is what makes a hang
+            # count against the trial and eventually give up.
+            off = attempt_offset(status)
+            if off is None:
+                raise OtaReject("trial-attempts-full")
+            try:
+                self.write_marker(offset + size - 2 * self.block + off, b"\x00")
+            except OSError:
+                # Cannot record the attempt, so cannot bound the trial. Running it anyway would
+                # be an untracked trial: if it hung, the next boot could not tell to move on.
+                raise OtaReject("trial-arm")
+        self.mount(memoryview(body)[:t.body_size])
+        return winner, t, (",".join(rejects) or None)
+
 
 last_slot = None              # 'FRONT' or 'BACK'
 last_payload_version = 0      # the mounted image's payload_version
