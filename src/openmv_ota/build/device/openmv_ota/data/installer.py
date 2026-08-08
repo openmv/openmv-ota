@@ -698,8 +698,19 @@ class _GenReader:
 # --- pure: the flash write (host-testable; all I/O injected) -----------------
 
 def _is_blank(chunk):
-    """True if ``chunk`` is all 0xFF -- already-erased flash we needn't rewrite."""
-    return chunk == _FF_MV[:len(chunk)]          # compare vs a hoisted view -> no per-call alloc
+    """True if ``chunk`` is all 0xFF -- already-erased flash we needn't rewrite.
+
+    NO SLICE ON THE COMMON PATH. `_FF_MV[:n]` builds a NEW memoryview every call -- the old comment
+    here claimed otherwise and it was wrong. The erase-verify walks the whole slot in _CHUNK steps,
+    so on a 12 MiB FRONT that was ~3000 allocations, and with the install armed the automatic
+    collect they provoke is 65-100 ms on the N6 -- its entire watchdog window. Measured: the board
+    died in this loop, between `install: readback` and the first written block. Only the final
+    short chunk slices now.
+    """
+    n = len(chunk)
+    if n == _CHUNK:
+        return chunk == _FF_MV                   # full chunk: compare the hoisted view AS IS
+    return chunk == _FF_MV[:n]                   # only the tail slices, and only once
 
 
 class _Progress:
@@ -726,7 +737,8 @@ class _Progress:
 
 
 def _install_stream(source, write, readback, front_size, block, feed,
-                    progress=None, expect_sha=None, repr_marker=None, gc_collect=None):
+                    progress=None, expect_sha=None, repr_marker=None, gc_collect=None,
+                    work=None):
     """Stream the decompressed image into the ALREADY-ERASED FRONT slot 1:1
     (verifying every write by read-back, skipping already-erased 0xFF runs), then
     arm the trial.
@@ -751,14 +763,42 @@ def _install_stream(source, write, readback, front_size, block, feed,
     exception into a reboot into golden."""
     off = 0
     while off < front_size:                          # confirm the caller's erase took
+        feed()                                       # FEED FIRST: the end-of-body feed leaves the
+        #                                              first iteration (and everything between the
+        #                                              arm and it) running on whatever is left of
+        #                                              the window -- which on the N6 is 100 ms.
         n = _CHUNK if front_size - off >= _CHUNK else front_size - off
         if not _is_blank(readback(off, n)):
             raise OSError("erase verify failed at %d" % off)
         off += n
         feed()
 
+    # ENTER THE WRITE LOOP ON A FULL WINDOW. The two allocations below -- the sha256 state and the
+    # 4 KiB write buffer -- can each trigger an AUTOMATIC collect, and on the N6's multi-MB heap any
+    # collect is 65-100 ms, i.e. at or past that port's 100 ms window. The only feed behind them is
+    # the verify loop's last one, so the board can be bitten here before a single block is written.
+    # Measured with the install armed: the device died between `install: readback` and the first
+    # progress line, having logged no feed gap -- the gap that kills you is the one you never get to
+    # report. Collect PROACTIVELY (gc_collect feeds on both sides) so the automatic one cannot fire,
+    # then feed again immediately before allocating.
+    # FEED BEFORE THE ALLOCATIONS BELOW. The verify loop feeds at its TOP, so once it exits there
+    # is no feed behind the sha256 state and the (fallback) buffer -- and an allocation can trigger
+    # an automatic collect, 65-100 ms on the N6, its whole window. Measured: with the loop finally
+    # completing all 3072 chunks, the board died right here, between the last `verify i=` line and
+    # the first written block.
+    feed()
     digest = hashlib.sha256() if expect_sha is not None else None
-    work = bytearray(_CHUNK)                          # the ONE reused write buffer -> zero-alloc loop
+    if work is None:                                  # pragma: no cover  (device: run() hoists it)
+        work = bytearray(_CHUNK)   # hil-residual: fallback for direct callers; run() preallocates before arming
+    feed()                                            # ...and again, with the allocations behind us
+    # COLLECT BEFORE THE FIRST READ. The first source.readinto() is where deflate.DeflateIO
+    # allocates its ~32 KiB window, lazily, on first use -- the single biggest allocation in the
+    # armed region, and an automatic collect behind it is 65-100 ms on the N6, its whole window.
+    # gc_collect() feeds on BOTH sides, so doing it deliberately here cannot bite, while letting it
+    # happen by itself can. Measured: with the post-verify feeds in place the board still died
+    # between the last `verify i=` line and the first written block, which is exactly this read.
+    if gc_collect is not None:
+        gc_collect()  # hil-residual: watchdog-armed proactive collect before the decompressor's first allocation
     mv = memoryview(work)
     off = 0
     since_gc = 0
@@ -767,7 +807,17 @@ def _install_stream(source, write, readback, front_size, block, feed,
         want = _CHUNK if front_size - off >= _CHUNK else front_size - off
         n = 0
         while n < want:                              # fill a full aligned chunk: re-chunks the
-            k = source.readinto(mv[n:want])          # arbitrary delta/deflate pieces into one buffer
+            feed()                                   # FEED PER READ. This loop had none: the only
+            #                                          feed was the outer loop's, so ONE chunk fill
+            #                                          -- which on the first pass is where DeflateIO
+            #                                          allocates its ~32 KiB window, plus however
+            #                                          many recvs it takes -- ran on a single 100 ms
+            #                                          window. Measured on the N6: the armed install
+            #                                          died between the last `verify i=` line and the
+            #                                          first written block, i.e. in this fill.
+            # ...and take the FULL buffer when we can: mv[n:want] builds a new memoryview on every
+            # read, and this is the hottest loop in the install.
+            k = source.readinto(mv if n == 0 and want == _CHUNK else mv[n:want])
             if k == 0:
                 break                                # EOF: a short tail is caught by the size check
             n += k
@@ -1300,16 +1350,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # verify miscompare) is treated the same: retry, then fall back.
     attempts = getattr(cfg, "INSTALL_RETRIES", 3)
     body = None
-    # ARM THE WATCHDOG. This is the point of no return: the manifest is vetted, and from here every
-    # exit reboots (success -> the trial, retry-exhaustion -> golden), which is what makes arming
-    # safe on stm32 where software cannot disarm it. Past this line WE own the device -- the app has
-    # stopped and /rom is about to be erased -- so a park in the download or the write leaves a board
-    # that cannot boot and cannot be reached remotely. Only a HARDWARE reset escapes a park (a soft
-    # timer does not dispatch through one -- measured), so this is the whole recovery story, not a
-    # belt-and-braces extra. Arms even when the app left openmv_wdt disabled; never raises, because a
-    # board with no usable watchdog must still be able to update (see arm_for_install).
-    if openmv_wdt is not None and openmv_wdt.arm_for_install():  # hil-residual: watchdog-arm for the install; the bench witnesses it via the log line below
-        log.info("install: wdt armed for the install")           # HIL witness: the install is watched
+    # PREALLOCATE EVERYTHING THE ARMED REGION WILL NEED, BEFORE ARMING. An automatic gc.collect()
+    # is one unsplittable pause -- 65-100 ms on the N6's multi-MB heap, i.e. at or past that port's
+    # whole 100 ms window -- so any allocation inside the armed region is a chance to be bitten for
+    # doing nothing wrong. Feeding either side of each allocation only narrows the window; not
+    # allocating at all closes it. This is the reused write buffer; _rb/_br (the readback views) are
+    # hoisted the same way further up.
+    work = bytearray(_CHUNK)
     for attempt in range(attempts):
         try:
             # COLLECT BEFORE THE ERASE, under relax(). Everything above -- the TLS session, the
@@ -1349,9 +1396,24 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 source = dio                          # DeflateIO is itself a readinto source
                 repr_marker = REPR_FULL
                 log.debug("install: representation full")
+            # ARM HERE -- as late as possible, and only once every allocating step is behind us:
+            # the socket, the TLS session, the deflate window and the delta reader are all built,
+            # and the write buffer was preallocated before the loop. What remains is flash writes
+            # and streamed reads. Arming any earlier put an automatic collect inside the armed
+            # window; measured, that bit the N6 between `install: readback` and the first block.
+            #
+            # Still the point of no return, which is what makes arming safe on stm32 where software
+            # cannot disarm: every exit from here reboots (success -> the trial, retry-exhaustion ->
+            # golden), and a reset clears the WWDG. Past this line WE own the device -- the app has
+            # stopped and the slot is erased -- so a park leaves a board that cannot boot and cannot
+            # be reached remotely, and only a HARDWARE reset escapes a park (a soft timer does not
+            # dispatch through one -- measured). Arms even when the app left openmv_wdt disabled;
+            # never raises, because a board with no usable watchdog must still be able to update.
+            if openmv_wdt is not None and openmv_wdt.arm_for_install():  # hil-residual: watchdog-arm for the write; witnessed by the log line below
+                log.info("install: wdt armed for the install")           # HIL witness: the write is watched
             log.info("install: writing FRONT")
             _install_stream(source, write, readback, front_size, block, feed,
-                            progress, expect_sha, repr_marker, gc_collect)
+                            progress, expect_sha, repr_marker, gc_collect, work)
             # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
             # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
             # ports cache the final sub-page writes -- the trailer + arm markers -- and

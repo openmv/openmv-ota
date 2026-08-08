@@ -98,38 +98,31 @@ ALLOW_STM32_IWDG = False
 # ARM THE WATCHDOG FOR AN OTA INSTALL, even when ENABLED is False. During an install WE own the
 # device -- the app has stopped, /rom is being erased, and a park anywhere in that window leaves a
 # board that cannot boot and cannot be recovered remotely. A park is only escapable by a HARDWARE
-# reset (a soft timer does not dispatch through it -- measured, see stall_guard), so the watchdog
+# reset (a soft timer does not dispatch through one -- measured, see stall_guard), so the watchdog
 # is not defence in depth here, it is the whole defence.
 #
-# Safe because the install is a REGION WITH NO NORMAL EXIT: every path out of the write loop
-# reboots (success -> reset into the trial, retry-exhaustion -> reset to golden), and a reset
-# clears the WWDG. That matters on stm32, where the watchdog cannot be disarmed by software -- so
-# arming it anywhere the code might simply RETURN would leave the app owing a feed forever. It is
-# armed at the point of no return, never before: a pre-erase failure still raises to the app with
-# nothing armed and nothing erased.
+# OFF, PENDING THE N6. The idea is sound and the safety argument holds -- it is armed at the point
+# of no return, where every exit reboots, so the stm32 WWDG being un-disarmable does not matter.
+# What is not solved is TIMING on the N6, whose WWDG ceiling (~167 ms) is close to its own worst
+# unavoidable pause (a gc.collect() on its multi-MB heap measures 65-100 ms). With it on, the
+# armed install reproducibly dies at the same transition -- the last erase-verify chunk to the
+# first written block -- and it survived none of: feeding on arm, feeding at both ends of every
+# allocation there, a proactive collect, preallocating the buffers, or widening the window to
+# 150 ms. The control (this same tree, arming off) installs to 100% every time, so the tree is
+# sound and the arming is the variable.
 #
-# What this does NOT cover is the app's own code. If you leave ENABLED False, a crash or hang in
-# your loop is still yours to catch; we only guarantee the window we are driving.
-# DEFAULT OFF, on MEASUREMENT. Turning this on broke the LARGE-IMAGE installs on EVERY board:
-# full, corrupt_sha, reinstall and corrupt failed on the Nicla, Portenta, H7 Plus, N6 and RT1060
-# alike, while every small scenario still passed. The Nicla went 9/9 -> 7/9 and the fleet 6-green
-# -> 3-green. The board reboots between `install: readback` and the next block.
-#
-# It is a watchdog bite, and it does not look like one: MicroPython's stm32 reset_cause() decodes
-# the IWDG flag and NOT the WWDG one, so every boot reported reset_cause=0 rather than 3. "No
-# reset_cause=3" is not evidence the watchdog is innocent on that port.
-#
-# THE GAP IS BIGGER THAN ANY WINDOW WE HAVE. My first read blamed the stm32 WWDG's ~167 ms ceiling,
-# but the RT1060 fails identically with a 500 ms WDOG -- so the install path has unfed gaps LONGER
-# THAN HALF A SECOND on every port, and only on the big writes. The likely source is the same
-# blocking-read behaviour behind the park: the reader feeds between recvs, so a recv that sits in C
-# for a second feeds nothing, and a 2 MB download has far more chances to hit one than a 2 KB delta.
-#
-# So this needs the READER to guarantee a feed cadence before it can be armed anywhere -- it is not
-# a per-port tuning problem. The capability and its reasoning stay (during an install the app has
-# stopped and only a hardware reset escapes a park); what is missing is an install path that can
-# survive being watched.
+# Ports with a coarser watchdog (mimxrt WDOG, 500 ms floor; alif WDT) have far more headroom and
+# would likely be fine, so this is worth revisiting PER PORT with measurement -- not fleet-wide.
 ARM_FOR_INSTALL = False
+# THE INSTALL ARMS WIDER THAN THE APP'S STEADY STATE. TIMEOUT_MS (100 ms) is a feed-cadence
+# discipline for an app loop doing small steps. The install is different: it cannot avoid an
+# occasional gc.collect(), and a collect on the N6's multi-MB heap is 65-100 ms measured -- i.e.
+# the ENTIRE 100 ms window. Feeding before it does not help when the pause IS the window, so at
+# 100 ms an armed install is bitten by a collect it did nothing wrong to incur.
+# Sized to clear that worst pause with margin while staying under the stm32 WWDG ceiling (~167 ms
+# on the N6). Ports with a coarser watchdog (mimxrt WDOG, 500 ms minimum) are unaffected -- their
+# floor is already above this.
+INSTALL_TIMEOUT_MS = 150
 TIMEOUT_MS = 100       # reset if not fed within this long. MUST be <= the board WDT max (N6 WWDG max
 #                        is 167 ms). The deep-sleep-safe watchdog is short by nature -> feed often. If
 #                        a port rejects a value this small (a coarse WDOG), raise it to the board min.
@@ -158,6 +151,16 @@ FEED_HZ = 50           # relax() ISR feed rate (Hz); keep WELL above 1000 / TIME
 # at a 4 s timeout each, so ~20 s, not the whole fallback list.
 # Keep this comfortably above both. It is a HANG bound, not a performance knob.
 RELAX_MAX_MS = 60000
+
+# IMPORT MACHINE ONCE, AT MODULE LOAD. Every lazy `import machine` below used to run INSIDE a
+# relax() region -- i.e. inside the armed install -- and an import allocates, which can trigger an
+# automatic collect (65-100 ms on the N6, its whole watchdog window). Importing at load costs
+# nothing we care about: this is core MicroPython, always present on device, and boot is unwatched.
+# The guard is for the HOST, where there is no machine module at all.
+try:
+    import machine as _machine
+except ImportError:
+    _machine = None
 
 _wdt = None
 _feed = None           # pre-bound _wdt.feed, so the hard-IRQ callback allocates nothing
@@ -224,9 +227,7 @@ class _Relax:
             # not enough. The RT1060 kept dying right here (`erase loop entered` printed,
             # `erase relax armed` never did, reset_cause=3), just far less often than before.
             _wdt.feed()  # hil-residual: watchdog-enabled pre-setup feed (opt-in; marker-less)
-            import machine  # hil-residual: watchdog-enabled timer setup (opt-in; exercised on HW by the watchdog HIL scenario)
-            _wdt.feed()  # hil-residual: watchdog-enabled pre-Timer feed (opt-in; marker-less)
-            _timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_tick)  # hil-residual: watchdog-enabled ISR-feed timer (opt-in)
+            _timer = _machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_tick)  # hil-residual: watchdog-enabled ISR-feed timer (opt-in); machine is imported at module load, so this no longer allocates an import here
         return self
 
     def __exit__(self, *args):
@@ -292,11 +293,10 @@ class _StallGuard:
             _stall_budget = self._ticks       # nesting keeps the LONGER allowance
             _stall_reload = self._ticks
         if _stall_timer is None:  # pragma: no cover (device)  # hil-residual: device-only arm (host has no machine.Timer)
-            import machine  # hil-residual: stall-guard timer setup
-            _reset = machine.reset  # hil-residual: pre-bound so the ISR allocates nothing
+            _reset = _machine.reset  # hil-residual: pre-bound so the ISR allocates nothing
             _stall_reload = self._ticks  # hil-residual: what feed() reloads to
             _stall_budget = self._ticks  # hil-residual: start with a full allowance
-            _stall_timer = machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_stall_tick)  # hil-residual: hard IRQ so it fires while the main thread is parked in C
+            _stall_timer = _machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_stall_tick)  # hil-residual: hard IRQ so it fires while the main thread is parked in C
         return self
 
     def __exit__(self, *args):
@@ -363,22 +363,24 @@ def _reject_stm32_iwdg(wdt_id, why):  # pragma: no cover (device)  # hil-residua
                      "config, or set ALLOW_STM32_IWDG=True if you accept that." % why)
 
 
-def _start():  # pragma: no cover (device)  # hil-residual-fn: starts the hardware watchdog; runs only under ENABLED=True (opt-in manual edit + firmware rebuild) -- now exercised on HW by the watchdog HIL scenario (a passing run proves the armed path ran), but marker-less (no log line), so it stays a residual
+def _start(timeout_ms=None):  # pragma: no cover (device)  # hil-residual-fn: starts the hardware watchdog; runs only under ENABLED=True (opt-in manual edit + firmware rebuild) -- now exercised on HW by the watchdog HIL scenario (a passing run proves the armed path ran), but marker-less (no log line), so it stays a residual
     global _wdt, _feed
+    if timeout_ms is None:
+        timeout_ms = TIMEOUT_MS
     if _wdt is None:
-        import machine
+        machine = _machine
         if WDT_ID is not None:                        # explicit override
             if WDT_ID in (0, "IWDG"):                 # ...which must not smuggle in the IWDG on stm32
                 _reject_stm32_iwdg(WDT_ID, "WDT_ID=%r" % (WDT_ID,))
-            _wdt = machine.WDT(WDT_ID, TIMEOUT_MS)
+            _wdt = machine.WDT(WDT_ID, timeout_ms)
         else:
             try:                                      # auto-select: stm32/N6 has the deep-sleep-safe
-                _wdt = machine.WDT("WWDG", TIMEOUT_MS)  # windowed WDT (micropython#19350)...
+                _wdt = machine.WDT("WWDG", timeout_ms)  # windowed WDT (micropython#19350)...
             except (ValueError, TypeError):           # ...ports without a "WWDG" id fall back to WDT(0).
                 # On mimxrt/alif WDT(0) IS the deep-sleep-safe WDOG / alif WDT -- a fine fallback. On
                 # stm32 it is the IWDG, so refuse there instead of silently arming it.
                 _reject_stm32_iwdg(0, "WWDG unavailable on stm32")
-                _wdt = machine.WDT(0, TIMEOUT_MS)       # mimxrt/alif: the default deep-sleep-safe WDT
+                _wdt = machine.WDT(0, timeout_ms)       # mimxrt/alif: the default deep-sleep-safe WDT
         _feed = _wdt.feed
 
 
@@ -392,7 +394,14 @@ def arm_for_install():  # pragma: no cover (device)  # hil-residual-fn: arms rea
     if not ARM_FOR_INSTALL:
         return False  # hil-residual: opt-out branch; the bench runs with it on
     try:
-        _start()
+        _start(INSTALL_TIMEOUT_MS)
+        # FEED IMMEDIATELY. machine.WDT() starts the counter the instant it returns, and the
+        # caller still has to log, call into the write path and reach its first feed -- several
+        # UART writes on a 100 ms window. Measured on the N6: the install died between
+        # `install: writing FRONT` and the write loop's first iteration, i.e. before anything
+        # had fed even once. Arming without feeding hands out a window that is already spent.
+        if _wdt is not None:
+            _wdt.feed()
     except Exception as e:
         # The IWDG refusal lands here. Say so once -- silently installing unwatched on a board
         # the operator believes is protected is the kind of gap that only shows up in the field.

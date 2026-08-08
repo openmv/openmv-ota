@@ -90,26 +90,20 @@ def test_reject_stm32_iwdg_honours_the_opt_in(monkeypatch):
     assert _mod._reject_stm32_iwdg(0, "test") is None
 
 
-def test_relax_feeds_before_it_allocates():
-    """Setting the ISR feed up is itself unfed.
+def test_relax_does_not_import_inside_the_armed_region():
+    """`import machine` used to live in here, and relax() runs INSIDE the armed install (the erase,
+    the TLS handshake). An import allocates, and an allocation can trigger an automatic collect --
+    65-100 ms on the N6, its entire watchdog window -- so the setup for the thing protecting us was
+    itself a chance to be bitten. It is imported at module load now: core MicroPython, always
+    present, and boot is unwatched.
 
-    `import machine` and the Timer construction both allocate, and an allocation can trigger a
-    collect -- 221 ms measured on an RT1060 with the heap exhausted, ~44% of that port's 500 ms
-    window. Until the timer exists nothing else feeds either: relax() is used from SYNCHRONOUS
-    code, so the app's own feed loop is not running. The RT1060 died exactly here -- its
-    `erase relax armed` witness never printed, on a step that normally takes 7 ms.
-    """
+    The feed still comes first, because the Timer construction below allocates."""
     import inspect
+
     src = inspect.getsource(_mod._Relax.__enter__)
     body = "\n".join(line.split("#")[0] for line in src.splitlines())
-    feed = body.index("_wdt.feed()")
-    assert feed < body.index("import machine"), "must feed before the import"
-    # ...and again between them: BOTH steps allocate, and two collects back to back (243 ms each,
-    # measured on an RT1060 with a full heap) is ~486 ms against a 500 ms window. One feed at the
-    # top is not enough -- the RT kept dying right here, just less often.
-    between = body.index("_wdt.feed()", body.index("import machine"))
-    assert between < body.index("machine.Timer("), "must feed again before the Timer allocation"
-
+    assert "import " not in body, "no import may run inside a relax region"
+    assert body.index("_wdt.feed()") < body.index("_machine.Timer("), "feed before allocating"
 
 def test_relax_nesting_keeps_the_feed_running(monkeypatch):
     """An INNER relax() exiting must not stop the OUTER region's feed.
@@ -134,8 +128,9 @@ def test_relax_nesting_keeps_the_feed_running(monkeypatch):
     monkeypatch.setattr(_mod, "_wdt", _FakeWdt(), raising=False)
     monkeypatch.setattr(_mod, "_timer", None, raising=False)
     monkeypatch.setattr(_mod, "_depth", 0, raising=False)
-    monkeypatch.setitem(sys.modules, "machine", type(sys)("machine"))
-    sys.modules["machine"].Timer = _FakeTimer
+    fake = type(sys)("machine")
+    fake.Timer = _FakeTimer
+    monkeypatch.setattr(_mod, "_machine", fake, raising=False)
 
     with _mod.relax():
         with _mod.relax():
@@ -340,7 +335,7 @@ def test_guard_arms_a_hard_irq_timer_and_tears_it_down(monkeypatch):
     fake = type(sys)("machine")
     fake.Timer = _FakeTimer
     fake.reset = lambda: made.setdefault("reset", True)
-    monkeypatch.setitem(sys.modules, "machine", fake)
+    monkeypatch.setattr(_mod, "_machine", fake, raising=False)
     monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
     monkeypatch.setattr(_mod, "_stall_reload", 0, raising=False)
     monkeypatch.setattr(_mod, "_stall_budget", 0, raising=False)
@@ -375,7 +370,7 @@ def test_nested_guards_keep_policing_the_outer_region(monkeypatch):
     fake = type(sys)("machine")
     fake.Timer = _FakeTimer
     fake.reset = lambda: None
-    monkeypatch.setitem(sys.modules, "machine", fake)
+    monkeypatch.setattr(_mod, "_machine", fake, raising=False)
     monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
     monkeypatch.setattr(_mod, "_stall_depth", 0, raising=False)
     monkeypatch.setattr(_mod, "_stall_budget", 0, raising=False)
@@ -431,12 +426,15 @@ def test_stall_guard_is_not_wired_into_the_OTA_network_paths():
 # User's rule: during an install WE own the device, so we arm it. The app may legitimately
 # leave it off (a crash in their own loop is their problem); the install window is ours.
 
-def test_arm_for_install_is_off_by_default_until_each_port_is_measured():
-    """OFF on MEASUREMENT, not caution. Enabling it fleet-wide reset boards mid-install: the Nicla
-    went 9/9 -> failing `full` and `corrupt_sha` (the 2 MB writes) while small scenarios passed.
-    Not a per-port tuning problem: the RT1060 fails identically with a 500 ms WDOG, so the install
-    path has unfed gaps longer than half a second on every port, and only on the big writes.
-    Re-enable once the READER guarantees a feed cadence -- see the note in openmv_wdt."""
+def test_arm_for_install_is_off_pending_the_n6():
+    """Off on MEASUREMENT. The armed install dies reproducibly on the N6 at one transition -- the
+    last erase-verify chunk to the first written block -- and survived none of: feeding on arm,
+    feeding around every allocation there, a proactive collect, preallocating the buffers, or a
+    150 ms window. The control (same tree, arming off) installs to 100% every time.
+
+    The N6's WWDG ceiling (~167 ms) sits close to its own worst unavoidable pause (a collect on its
+    multi-MB heap is 65-100 ms), which is the suspected squeeze. Ports with a coarser watchdog have
+    far more headroom, so revisit per port with measurement rather than fleet-wide."""
     assert _mod.ARM_FOR_INSTALL is False
 
 
@@ -444,7 +442,7 @@ def test_arm_for_install_never_raises_when_there_is_no_usable_watchdog(monkeypat
     """A board whose _start refuses (stm32 with no WWDG -- the IWDG is a one-way door we will
     not arm) must still be able to INSTALL. Unwatched is worse than watched; refusing to update
     is worse than both."""
-    def _boom():
+    def _boom(*a):
         raise ValueError("refusing to arm the stm32 IWDG")
 
     monkeypatch.setattr(_mod, "ARM_FOR_INSTALL", True)      # the per-port opt-in
@@ -462,17 +460,26 @@ def test_arm_for_install_can_be_turned_off(monkeypatch):
 
 def test_arm_for_install_reports_success_only_when_a_watchdog_is_live(monkeypatch):
     monkeypatch.setattr(_mod, "ARM_FOR_INSTALL", True)      # the per-port opt-in
-    monkeypatch.setattr(_mod, "_start", lambda: None)
-    monkeypatch.setattr(_mod, "_wdt", object(), raising=False)
+    monkeypatch.setattr(_mod, "_start", lambda *a: None)   # _start takes the window now
+    class _Fake:                                          # arm_for_install feeds right after
+        def feed(self):                                   # arming, so the fake needs the method
+            pass
+
+    monkeypatch.setattr(_mod, "_wdt", _Fake(), raising=False)
     assert _mod.arm_for_install() is True
 
 
-def test_the_installer_arms_at_the_point_of_NO_RETURN(monkeypatch):
-    """Placement is the whole safety argument. On stm32 the WWDG cannot be disarmed by software,
-    so arming is only safe in a region every exit of which REBOOTS -- the write loop does
-    (success -> reset into the trial, retry-exhaustion -> reset to golden). Arming before the
-    manifest is vetted would leave the app owing a feed forever after a pre-erase failure that
-    simply raises.
+def test_the_installer_arms_only_after_every_allocating_step():
+    """Placement is the whole safety argument, and it has TWO halves.
+
+    Late enough: the socket, TLS session, deflate window and delta reader are all built before we
+    arm, and the write buffer is preallocated before the retry loop. An automatic gc.collect() is
+    one unsplittable pause -- 65-100 ms on the N6's multi-MB heap, its entire window -- so an
+    allocation inside the armed region is a chance to be bitten for doing nothing wrong. Feeding
+    either side of an allocation only narrows that; not allocating closes it.
+
+    Still at the point of no return: on stm32 the WWDG cannot be disarmed by software, so arming
+    is only safe where every exit reboots -- which is true from the write onward.
     """
     from pathlib import Path
 
@@ -480,7 +487,11 @@ def test_the_installer_arms_at_the_point_of_NO_RETURN(monkeypatch):
 
     src = (Path(openmv_ota.__file__).parent / "build" / "device" / "openmv_ota" / "data"
            / "installer.py").read_text()
-    arm = src.index("arm_for_install()")
+    prealloc = src.index("work = bytearray(_CHUNK)")
     loop = src.index("for attempt in range(attempts):")
-    fetch = src.index("_fetch_manifest(")
-    assert fetch < arm < loop, "arm AFTER the manifest is vetted and BEFORE the write loop"
+    open_call = src.index("sock, raw_body = _open(")
+    arm = src.index("arm_for_install()", loop)
+    write = src.index("_install_stream(source, write,", loop)
+    assert prealloc < loop, "the write buffer must be allocated before the retry loop"
+    assert open_call < arm, "arm AFTER the socket/TLS allocations"
+    assert arm < write, "...and before the write, which is the point of no return"
