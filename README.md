@@ -19,8 +19,8 @@ air. `openmv-ota romfs` builds the read-only `/rom` filesystem image; the
 over-the-air update tools deliver signed, anti-rollback updates that fall back to
 the last release that worked.
 
-See [openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md) for the
-OTA design.
+See [docs/architecture.md](docs/architecture.md) for the OTA design, and
+[docs/v2-plan.md](docs/v2-plan.md) for the reasoning behind the current slot model.
 
 - [Status](#status)
 - [Installation](#installation)
@@ -148,15 +148,14 @@ compilation. See [docs/build.md](docs/build.md) and, for the signed image format
 ### OTA
 
 `project new --ota`, `build romfs`, and `build factory-romfs` (above) produce the
-signed, anti-rollback OTA payload and the dual-slot factory partition image, and
-`build firmware` freezes the slot-selecting `boot.py` + on-device ECDSA verify into
-an OTA firmware, and `project new --ota` scaffolds the `openmv_ota` device runtime
-library (`status`/`confirm`/`sync`) into the app — so on-device the app can complete a
-trial (`confirm()`) and write a multi-core helper's partition (`sync()`); see
-[docs/runtime.md](docs/runtime.md) for the on-device side (boot.py + `openmv_ota`). The
-remaining piece — the on-device updater that downloads and stages an image, and the
-update server it talks to — builds on this; see
-[openmv-romfs-ota-concept-plan.md](openmv-romfs-ota-concept-plan.md).
+signed, anti-rollback OTA payload and the two-slot provisioning image; `build firmware`
+freezes the slot-selecting `boot.py` + the on-device ECDSA verify into an OTA firmware;
+and `project new --ota` scaffolds the `openmv_ota` device runtime library into the app,
+so on-device it can report what booted (`status`/`slots`), keep an update
+(`confirm()`), write a multi-core helper's partition (`sync()`), and download + install
+a release (`install()`). See [docs/runtime.md](docs/runtime.md) for the device contract
+and [docs/server.md](docs/server.md) for the update server that stages releases across a
+fleet.
 
 ## Contributing to the project
 

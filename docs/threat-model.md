@@ -1,6 +1,6 @@
 # Threat model
 
-> Stub. See [../openmv-romfs-ota-concept-plan.md](../openmv-romfs-ota-concept-plan.md)
+> Stub. See [architecture.md](architecture.md) and [v2-plan.md](v2-plan.md)
 > ("Threat model", "Out of scope", "Concept scope: explicit non-goals").
 
 **In scope:** OTA-borne threats — signed-or-unsigned artefacts pushed over a

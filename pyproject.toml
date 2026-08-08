@@ -64,7 +64,6 @@ where = ["src"]
     "data/n6_bootloader/*",      # static N6 CubeProgrammer FSBL/loader + FlashLayout.tsv
     "build/device/*.c",          # the ECDSA verify C module dropped into modules/
     "build/device/openmv_ota/data/*",  # the installer source, scaffolded into projects
-    "romfs/sdk/**/*",
     "server/deploy/*",           # Dockerfile + render.yaml Blueprint for self-hosters
     "server/docs_static/*",      # self-hosted /docs API reference (ReDoc bundle + logo)
 ]
@@ -78,10 +77,6 @@ norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv",
 
 [tool.coverage.run]
 source = ["openmv_ota"]
-omit = [
-    # The on-device SDK is illustrative MicroPython, not host-side code.
-    "*/romfs/sdk/*",
-]
 
 [tool.coverage.report]
 show_missing = true
@@ -92,7 +87,3 @@ exclude_also = [
 
 [tool.ruff]
 line-length = 100
-# The on-device SDK and its examples are illustrative MicroPython snippets
-# (intentional comma-imports, references to user-supplied callbacks); they are
-# not part of the host-side lint surface.
-extend-exclude = ["src/openmv_ota/romfs/sdk/examples"]

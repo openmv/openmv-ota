@@ -12,11 +12,8 @@ signing, or updates. See :doc:`docs/romfs.md`.
 * :mod:`~openmv_ota.romfs.builder` — directory <-> image, capacity + verify.
 * :mod:`~openmv_ota.romfs.cli` — the ``openmv-ota romfs`` command group.
 
-**Layer 2 — the OTA layers.** Everything that makes an image updatable. Compose +
-sign (factory / OTA slots) and the firmware build with the frozen ``boot.py`` are
-implemented in :mod:`openmv_ota.build` and :mod:`openmv_ota.ota` (ECDSA-over-mbedtls
-signing). What remains under this package are forward stubs:
-
-* :mod:`~openmv_ota.romfs.update_server` — stateless update server.
-* ``sdk/`` — the on-device ``openmv_ota`` package, bundled into the ROMFS.
+**Layer 2 — the OTA layers** live elsewhere, and nothing under this package is a
+placeholder for them any more: composing + signing the slots is
+:mod:`openmv_ota.build` and :mod:`openmv_ota.ota`, the device runtime is
+``openmv_ota.build.device``, and the update server is :mod:`openmv_ota.server`.
 """

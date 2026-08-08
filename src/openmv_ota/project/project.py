@@ -705,6 +705,7 @@ _APP_MAIN_OTA = '''\
 import asyncio
 import logging
 
+import network
 import openmv_ota
 import openmv_wdt
 from openmv_cloud import configure, csi, datalog, logs
@@ -729,13 +730,37 @@ log = logging.getLogger("app")
 # ==== END GENERATED ========================================================
 
 
+# ==== YOUR APP: network ====================================================
+# Bring your link up here. This runs at startup AND, unchanged, as the OTA
+# recovery hook below -- so write it to work from cold every time.
+async def bring_up_network():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.connect("SSID", "PASSWORD")     # your credentials
+    while not wlan.isconnected():
+        await asyncio.sleep_ms(200)
+    return wlan
+# ==== END YOUR APP =========================================================
+
+
 async def main():
+    await bring_up_network()
+
     # ==== GENERATED: OTA + cloud services ==================================
     # One task runs the entire cloud lifecycle in the background: it resolves the
     # clock (kept across deep sleep, else set from NTP), polls for updates, and
     # delivers the Live/telemetry grants. Point the URL at your own server if you
     # self-host. It does NOT confirm updates -- your app does that, below.
-    asyncio.create_task(openmv_ota.run("https://ota.cloud.openmv.io"))
+    #
+    # recover= is the one that is easy to leave out and expensive to miss. A network
+    # stack can WEDGE: measured on an ATWINC1500, every check-in failed EINVAL forever
+    # while the board stayed alive and polling. No timeout escapes that, because
+    # nothing is stuck -- the calls return, they just always fail. After a few
+    # consecutive failed check-ins run() calls this hook to rebuild the link, and it
+    # must be the bring-up that CONSTRUCTS the NIC (as above), not one that reuses a
+    # handle: making a new network.WLAN is what resets the chip.
+    asyncio.create_task(openmv_ota.run("https://ota.cloud.openmv.io",
+                                       recover=bring_up_network))
     # ==== END GENERATED ====================================================
 
     # ==== YOUR APP: camera setup ===========================================

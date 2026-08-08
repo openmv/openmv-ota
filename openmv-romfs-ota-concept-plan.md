@@ -1,5 +1,17 @@
 # mboot-style boot.py + ROMFS self-update — concept plan (v8)
 
+> **HISTORICAL. This is the design as it stood before the device side was built, and it is
+> kept for the reasoning, not as a specification.** Several of its decisions have since been
+> superseded on purpose — most importantly the FRONT/BACK split with an immutable golden
+> image, which v2 replaced with two equal, updatable slots ordered by an install counter.
+>
+> For what the system actually does now, read
+> **[docs/architecture.md](docs/architecture.md)** (the short version),
+> **[docs/v2-plan.md](docs/v2-plan.md)** (the design and why), and
+> **[docs/runtime.md](docs/runtime.md)** (the device contract). Where this file and those
+> disagree, they win.
+
+
 > **Amendments since v7 (reconciled with the implemented host tooling).** The
 > host side — `openmv-ota romfs` / `project` / `build romfs` — is built and
 > tested; the on-device side (boot.py, the verify shim, slot composition, the
