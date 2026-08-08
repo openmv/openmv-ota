@@ -1,11 +1,20 @@
 # v2 — true A/B, single-image mode, and firmware-resident recovery
 
-Status: **steps 1-3 built** on `kwabena/v2-step1-mode` (1792 tests, 100% coverage); step 4 next.
+Status: **all six steps built** on `kwabena/v2-step1-mode` (1836 tests, 100% coverage).
+**Nothing has run on hardware yet** -- that is the next thing, and the only thing between this and
+a working v2.
 
-Progress: mode derivation + the control-block fix + project config + `_ota_config` stamping + a
-symmetric A/B `boot.py` are done. **Nothing produces a second real slot yet**, so A/B is exercised
-only by host tests -- that arrives with step 4. Hardware proof is deliberately deferred until the
-whole thing is built, then one board first and the fleet only as a regression gate.
+Progress: mode derivation, the control-block fix, project config, `_ota_config` stamping, the
+symmetric A/B `boot.py`, the install path retargeted to the non-running slot, the provisioning
+image writing two real slots, the check-in reporting both slots, and the HIL catalog. The docs and
+the QEMU suite were swept with it -- the QEMU job was calling `evaluate_slot`'s v1 signature and
+would have failed. Per the bench rule, hardware proof is one board and the targeted scenarios
+first; the fleet runs afterwards as a regression gate, never as a debugger.
+
+**Still unbuilt, and named honestly:** firmware-resident recovery itself. `boot.py` hands off to
+it and the config it needs is stamped into the firmware, but the flow does not exist -- so today a
+device with no valid slot halts rather than re-downloading. That only bites single-image boards
+and the both-slots-bad case, but it is the piece that makes single-image mode honest.
 
 Two findings that changed the design, recorded so they are not re-derived: the erase block was
 sizing control sectors it does not govern (fixed -- `control_block()` is 4 KiB always, which also
