@@ -211,14 +211,18 @@ def _reset_checkin_registry():
 def test_checkin_body_maps_identity_and_status():
     info = {"device_id": "d1", "product_id": 7, "account_id": "acct",
             "board": "OPENMV_N6", "product": "robot", "app_version": "1.2.0"}
-    st = {"payload_version": 5, "slot": "FRONT", "representation": "full",
+    st = {"payload_version": 5, "slot": "A", "representation": "full",
           "fallback_reason": None, "confirmed": True}
-    body = rt._checkin_body(info, st)
+    reported = [{"slot": "A", "running": True, "payload_version": 5, "counter": 4,
+                 "confirmed": True, "pending": True},
+                {"slot": "B", "running": False, "payload_version": 4, "counter": 3,
+                 "confirmed": True, "pending": True}]
+    body = rt._checkin_body(info, st, reported)
     assert body == {
         "device_id": "d1", "product_id": 7, "account_id": "acct",
         "board": "OPENMV_N6", "product": "robot", "app_version": "1.2.0",
-        "payload_version": 5, "slot": "FRONT", "representation": "full",
-        "fallback_reason": None, "confirmed": True,
+        "payload_version": 5, "slot": "A", "representation": "full",
+        "fallback_reason": None, "confirmed": True, "slots": reported,
     }
 
 
@@ -227,6 +231,86 @@ def test_checkin_body_defaults_for_missing_fields():
     assert body["device_id"] == "" and body["product_id"] == 0
     assert body["account_id"] == "" and body["confirmed"] is False
     assert body["payload_version"] == 0
+    assert body["slots"] == []          # an older/simpler caller still produces a valid body
+
+
+def test_slot_names_mirror_boot():
+    """slots() must enumerate exactly the slots boot.py believes in -- reporting a B that
+    boot.py never reads would put a phantom fallback on an operator's dashboard."""
+    import tests.build.test_device_boot as boot_test        # noqa: PLC0415
+
+    class _Cfg:
+        CONTROL_BLOCK = 4096
+
+    for partition, front in ((8192, 0), (8192, 8192), (8192, 4096), (12288, 4096)):
+        _Cfg.PARTITION_SIZE, _Cfg.FRONT_SIZE = partition, front
+        ob = boot_test.B.OtaBoot(None, None, None, None, partition, front, 4096, 0, {}, 0)
+        assert rt._slot_names(_Cfg) == [name for name, _o, _s in ob._slots()]
+
+
+def test_install_counter_mirrors_boot():
+    from openmv_ota.ota import status as host_status
+
+    sector = host_status.build_status_sector(4096, pending=True, tried=False,
+                                             confirmed=False, counter=11)
+    assert rt._install_counter(sector) == 11
+    assert rt._install_counter(b"\xff" * 4096) is None     # blank -> unknown
+    assert rt._install_counter(b"\xff" * 8) is None        # too short to hold the field
+
+
+def test_slot_report_is_the_line_a_server_reads():
+    from openmv_ota.ota import status as host_status
+
+    sector = host_status.build_status_sector(4096, pending=True, tried=False,
+                                             confirmed=False, counter=9)
+    assert rt._slot_report("B", "A", sector, 0x01020000) == {
+        "slot": "B", "running": False, "payload_version": 0x01020000, "counter": 9,
+        "confirmed": False, "pending": True}
+    # a blank slot: no counter, nothing set -- reported as-is rather than guessed at
+    blank = b"\xff" * 4096
+    assert rt._slot_report("B", "B", blank, 0) == {
+        "slot": "B", "running": True, "payload_version": 0, "counter": None,
+        "confirmed": False, "pending": False}
+
+
+def test_counter_key_sorts_an_unreadable_counter_last():
+    """slots() reports newest-first, and 'newest' has to mean what boot.select_slot means:
+    a slot whose counter we cannot read is never claimed to be the newer one."""
+    entries = [{"counter": None}, {"counter": 2}, {"counter": 7}]
+    assert [e["counter"] for e in sorted(entries, key=rt._counter_key, reverse=True)] == [
+        7, 2, None]
+
+
+def test_trailer_version_offset_is_pinned_to_the_host_trailer():
+    """The SDK reads ONE field out of a trailer by raw offset, because the app has no room
+    for a trailer parser. Pin the offset against the real packer -- a silent drift here
+    would report a plausible-looking wrong version for the fallback slot."""
+    import hashlib
+
+    from openmv_ota.ota import ES256, Trailer, signed_region
+    from openmv_ota.ota.version import encode_app_version
+
+    pv = encode_app_version("3.4.5")
+    t = Trailer(body_size=8, pad_size=0, meta={}, product_id=7, min_platform_version=0,
+                payload_version=pv, payload_version_floor=0, key_id=1, sig_alg=ES256,
+                body_sha256=hashlib.sha256(b"x").digest())
+    assert rt._trailer_version(signed_region(t)) == pv
+    assert rt._trailer_version(b"XXXX" + b"\x00" * 40) == 0     # bad magic -> 0
+    assert rt._trailer_version(b"\xff" * 4) == 0                # too short -> 0
+
+
+@pytest.mark.parametrize(("trial", "n_slots", "expect"), [
+    (True,  2, "running an unconfirmed trial"),   # the fallback is a PROVEN release: protect it
+    (False, 2, None),                             # settled -> the other slot is expendable
+    (True,  1, None),                             # single-image: no fallback to protect...
+    (False, 1, None),                             # ...and nothing to wait for either
+])
+def test_defer_install_protects_a_proven_fallback(trial, n_slots, expect):
+    """The installer writes the slot we are NOT running -- during a trial, that is the last
+    release known to work. Taking a new update then trades a proven fallback for an unproven
+    one, at the moment the device has already said it is unsure of itself."""
+    st = {"trial": trial}
+    assert rt._defer_install(st, [{}] * n_slots) == expect
 
 
 def test_contributors_merge_into_the_body_and_bad_ones_are_skipped():

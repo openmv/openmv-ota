@@ -115,8 +115,36 @@ def _markers(status):
             status[_CONFIRMED_OFF:_CONFIRMED_OFF + MARKER_SIZE] == CONFIRMED)
 
 
+_COUNTER_OFF = 64                                # install counter: u32 || ~u32
+_COUNTER_LEN = 8
+_SLOT_READ = _COUNTER_OFF + _COUNTER_LEN         # markers + repr + counter
+
+# Just enough of a slot trailer to read its payload_version -- the ONLY field wanted here.
+# Parsing no further is deliberate: this runs inside the app on every check-in, and the
+# authoritative parse (with the signature check that makes the fields trustworthy) already
+# happened in boot.py. What is read here is a REPORT, never a decision.
+_TRAILER_MAGIC = b"OMVR"
+_TRAILER_VERSION_OFF = 32                        # payload_version (pinned by a test)
+_TRAILER_READ = _TRAILER_VERSION_OFF + 4
+
+
+def _trailer_version(trailer):
+    """A slot trailer's ``payload_version``; 0 if it does not parse (blank or torn)."""
+    if len(trailer) < _TRAILER_READ or bytes(trailer[:4]) != _TRAILER_MAGIC:
+        return 0
+    return struct.unpack_from("<I", trailer, _TRAILER_VERSION_OFF)[0]
+
+
+def _install_counter(status):
+    """A slot's install counter, or ``None`` if blank/torn (mirror of ``boot.install_counter``)."""
+    if len(status) < _COUNTER_OFF + _COUNTER_LEN:
+        return None
+    value, check = struct.unpack_from("<II", status, _COUNTER_OFF)
+    return value if (value ^ 0xFFFFFFFF) == check else None
+
+
 def _representation_of(status):
-    """How the FRONT image was installed: ``"full"`` / ``"delta"`` / ``None`` (unwritten)."""
+    """How this slot's image was installed: ``"full"`` / ``"delta"`` / ``None`` (unwritten)."""
     m = status[_REPR_OFF:_REPR_OFF + MARKER_SIZE]
     if m == REPR_FULL:
         return "full"
@@ -380,6 +408,63 @@ def status():  # pragma: no cover
     return s  # hil-residual: bare return of the status dict
 
 
+def _slot_names(cfg):
+    """``['A']`` in single-image mode, ``['A', 'B']`` under A/B -- the mirror of the slot
+    table boot.py and the installer build (pinned by a test)."""
+    front = cfg.FRONT_SIZE
+    if front <= 0 or front >= cfg.PARTITION_SIZE:
+        return ["A"]
+    return ["A", "B"]
+
+
+def _slot_report(name, running, sector, version):
+    """One slot's line in the check-in payload -- pure, so it is host-testable."""
+    pending, _tried, confirmed = _markers(sector)
+    return {
+        "slot": name,
+        "running": name == running,
+        "payload_version": int(version),
+        "counter": _install_counter(sector),
+        "confirmed": bool(confirmed),
+        "pending": bool(pending),
+    }
+
+
+def slots():  # pragma: no cover
+    """Every slot's state, newest-first by install counter -- what the device is running AND
+    what it would fall back to.
+
+    This is the one thing an operator cannot infer from the running image alone, and under A/B
+    it is the thing worth knowing: a device running an unconfirmed trial with a confirmed
+    previous release behind it is in a different position from one whose only other slot is
+    blank. Bounded by construction -- at most two slots, six small fields each -- and the flash
+    reads are ``uctypes`` aliases over the XIP mapping, so nothing here copies a sector."""
+    import _ota_config
+    import uctypes
+    import vfs
+    base = uctypes.addressof(vfs.rom_ioctl(2, 0))
+    running, _v, _r = _boot_result()
+    out = []
+    for name in _slot_names(_ota_config):
+        off, size = _slot_bounds(_ota_config, name)
+        sector = uctypes.bytearray_at(base + off + size - 2 * _ota_config.CONTROL_BLOCK,
+                                      _SLOT_READ)
+        trailer = uctypes.bytearray_at(base + off + size - _ota_config.CONTROL_BLOCK,
+                                       _TRAILER_READ)
+        out.append(_slot_report(name, running, sector, _trailer_version(trailer)))
+        log.debug("status: slot read")                 # bounded: once per slot (at most twice)
+    out.sort(key=_counter_key, reverse=True)
+    log.debug("status: slots ready")                   # ...and once for the sorted result
+    return out  # hil-residual: bare return of the slot list
+
+
+def _counter_key(entry):
+    """Sort key for :func:`slots`: an unreadable counter sorts LAST, exactly as it does in
+    ``boot.select_slot`` -- a slot we cannot order is never claimed to be the newest."""
+    counter = entry.get("counter")
+    return -1 if counter is None else counter
+
+
 def identity():  # pragma: no cover
     """The running image's identity/provenance from ``/rom/system.json`` (board, product,
     product_id, app_version, vendor, toolchain, ...) plus ``device_id`` -- this unit's unique
@@ -427,8 +512,8 @@ def register_checkin(contribute=None, on_response=None, key=None):
         _checkin_observers[ident] = on_response
 
 
-def _checkin_body(info, st):
-    """The base check-in payload from identity() + status() -- pure, so it's
+def _checkin_body(info, st, slot_states=None):
+    """The base check-in payload from identity() + status() (+ slots()) -- pure, so it's
     host-testable; extension fields (e.g. streams) are merged by contributors."""
     return {
         "device_id": info.get("device_id", ""),
@@ -442,11 +527,38 @@ def _checkin_body(info, st):
         "representation": st.get("representation"),
         "fallback_reason": st.get("fallback_reason"),
         "confirmed": bool(st.get("confirmed", False)),
+        # BOTH slots, newest first. The fields above describe the image that is RUNNING; these
+        # describe what the device would fall back to, which is the thing a fleet operator
+        # cannot infer from the running image and the thing A/B made worth knowing. An older
+        # server ignores the key; a single-image device sends one entry.
+        "slots": list(slot_states or []),
     }
 
 
-def _collect_body(info, st):
-    body = _checkin_body(info, st)
+def _defer_install(st, slot_states):
+    """Why an offered update must WAIT, or ``None`` to go ahead.
+
+    ONE rule, and it only exists under A/B: **do not install while the running image is an
+    unconfirmed trial.** The installer writes the slot we are not running -- which, during a
+    trial, is the slot holding the last release known to work. Taking a new update then trades
+    a proven fallback for an unproven one, and it does it at the exact moment the device has
+    already told us it is unsure of itself.
+
+    Costs are lopsided again. Waiting costs one poll interval, and the wait ends the moment the
+    app calls ``confirm()``. Not waiting costs the fallback, and only matters when the update
+    also turns out to be bad -- i.e. precisely when you needed it.
+
+    In SINGLE mode there is no fallback to protect and nothing to wait for, so the rule does
+    not apply: gating there would strand a one-slot device on a trial it cannot leave."""
+    if len(slot_states) < 2:
+        return None
+    if st.get("trial"):
+        return "running an unconfirmed trial"
+    return None
+
+
+def _collect_body(info, st, slot_states=None):
+    body = _checkin_body(info, st, slot_states)
     for contribute in list(_checkin_contributors.values()):
         try:
             extra = contribute()
@@ -558,8 +670,10 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # the WINC1500 (see _checkin): asyncio's poller raises EIO on WINC sockets.
             # NOTE: a park HERE is not recoverable in software -- see openmv_wdt; only an armed
             # hardware watchdog gets the board back, which is what relax()'s budget now allows.
+            st = status()
+            slot_states = slots()
             with _wdt_relax():  # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
-                resp = _checkin(server_url, _collect_body(identity(), status()), ca)
+                resp = _checkin(server_url, _collect_body(identity(), st, slot_states), ca)
         except Exception as e:  # hil-residual: check-in transport failure (the wedge path)
             # THE TRANSPORT IS SUSPECT. This is the failure a wedged stack produces every poll,
             # forever (measured: 39 consecutive EINVAL check-ins on an ATWINC1500), so it is the
@@ -585,7 +699,15 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
                 manifest_url = _offer(resp)
                 if manifest_url:
                     log.debug("checkin: update offered")
-                    install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
+                    defer = _defer_install(st, slot_states)  # hil-residual: the DEFER path needs a device to be mid-trial at the moment an update is offered, which no current scenario produces (the bench apps confirm as soon as they boot) -- the scenario for it lands with the step-6 catalog rework
+                    if defer:  # hil-residual: see above; the not-taken branch is witnessed by install.start on every install scenario
+                        # Not a failure and not a rejection -- the offer stands, we are simply
+                        # not in a position to take it yet. Says WHY, because a device that
+                        # polls, is offered an update, and does nothing is otherwise
+                        # indistinguishable in the log from one that is broken.
+                        log.info("checkin: deferring the update (%s)" % defer)  # hil-residual: emitted only on the deferred path above (no scenario reaches it yet); it is a field diagnostic until the step-6 defer scenario exists
+                    else:
+                        install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
             except Exception as e:  # hil-residual: post-check-in failure (a verdict on the release, or an install fault); exercised by corrupt/bad_sig
                 # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install
                 # (e.g. the installer read blowing the heap) is indistinguishable on the wire and in

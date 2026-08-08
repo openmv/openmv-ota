@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from openmv_ota.server.rollout import offers_update, should_autopause, staged_in
+import pytest
+
+from openmv_ota.server.rollout import (
+    fallback_payload_version, offers_update, settled, should_autopause, staged_in,
+)
 
 
 def test_staged_in_bounds():
@@ -40,6 +44,52 @@ def test_offers_update_gates():
     assert offers_update(**{**base, "release_payload_version": 1}) is False   # equal
     assert offers_update(**{**base, "release_payload_version": 0}) is False   # older
     assert offers_update(**{**base, "rollout_percent": 0}) is False           # not staged
+
+
+def _slots(running_pending, running_confirmed, n=2):
+    out = [{"slot": "A", "running": True, "payload_version": 2, "counter": 4,
+            "pending": running_pending, "confirmed": running_confirmed}]
+    if n == 2:
+        out.append({"slot": "B", "running": False, "payload_version": 1, "counter": 3,
+                    "pending": True, "confirmed": True})
+    return out
+
+
+def test_settled_holds_an_update_back_while_a_trial_is_unproven():
+    """The slot an install writes is the one holding the last proven release. Updating during a
+    trial trades a known-good fallback for an unproven one, at the moment the device has already
+    said it is unsure of itself. Waiting ends as soon as it confirms."""
+    assert settled(_slots(running_pending=True, running_confirmed=False)) is False
+    assert settled(_slots(running_pending=True, running_confirmed=True)) is True   # settled
+    assert settled(_slots(running_pending=False, running_confirmed=False)) is True  # not a trial
+
+
+@pytest.mark.parametrize("slots", [
+    None, [],                                            # v1 payload / didn't say
+    _slots(True, False, n=1),                            # single-image: no fallback to protect
+    [{"slot": "A", "running": False}, {"slot": "B", "running": False}],   # nothing running
+])
+def test_settled_treats_unknown_as_ok_to_offer(slots):
+    """This gate protects a fallback. A device that has none, or that never told us, must not be
+    held back by it -- the DEVICE is the authoritative check either way."""
+    assert settled(slots) is True
+
+
+def test_offers_update_defers_to_a_mid_trial_device():
+    base = dict(current_payload_version=1, release_payload_version=2, rollout_state="active",
+                rollout_percent=100, rollout_id="r", device_id="d")
+    assert offers_update(**base, slots=_slots(True, True)) is True
+    assert offers_update(**base, slots=_slots(True, False)) is False    # mid-trial: wait
+
+
+def test_fallback_payload_version_reports_the_other_slot():
+    assert fallback_payload_version(_slots(True, True)) == 1
+    assert fallback_payload_version(_slots(True, True, n=1)) is None    # no other slot
+    assert fallback_payload_version(None) is None                       # didn't say
+    # a blank second slot is "unknown", not "version 0" -- never render that to an operator
+    assert fallback_payload_version(
+        [{"slot": "A", "running": True, "payload_version": 2},
+         {"slot": "B", "running": False, "payload_version": 0}]) is None
 
 
 def test_offers_update_allow_downgrade():

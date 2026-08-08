@@ -153,6 +153,14 @@ _MIGRATIONS: list[list[str]] = [
         # panes without waiting for the device to be online, which is what a dashboard needs.
         "ALTER TABLE devices ADD COLUMN streams TEXT NOT NULL DEFAULT ''",
     ],
+    [   # v11 -- what the device would fall back to (A/B). The columns above describe the image
+        # that is RUNNING; an operator watching a rollout needs the other half: a fleet where every
+        # device's fallback is the previous release is in a very different position from one where
+        # half the devices have no second image at all. NULL means the device did not say --
+        # a single-image board, or a payload from before the slots field existed -- which is
+        # deliberately distinct from "reported no fallback".
+        "ALTER TABLE devices ADD COLUMN fallback_payload_version INTEGER",
+    ],
 ]
 
 
@@ -292,27 +300,34 @@ class SqlMetadataStore:
                       current_version=None, current_payload_version=None, slot=None,
                       representation=None, fallback_reason=None, confirmed=None,
                       last_offered_release_id=None, registrar_ref=None, account_id="",
-                      streams=None) -> None:
+                      streams=None, fallback_payload_version=None) -> None:
         now = _now_iso()
         if self.query_one("SELECT 1 FROM devices WHERE device_id = ?", (device_id,)) is None:
             self.execute(
                 "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
                 "current_payload_version, slot, representation, fallback_reason, confirmed, "
-                "last_offered_release_id, registrar_ref, account_id, streams, first_seen, "
-                "last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "last_offered_release_id, registrar_ref, account_id, streams, "
+                "fallback_payload_version, first_seen, last_seen) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (device_id, product_id, board, cohort, current_version, current_payload_version,
                  slot, representation, fallback_reason, confirmed, last_offered_release_id,
-                 registrar_ref, account_id, ",".join(streams or ()), now, now))
+                 registrar_ref, account_id, ",".join(streams or ()), fallback_payload_version,
+                 now, now))
         else:                                               # cohort is admin-controlled, not by check-in
             self.execute(
                 "UPDATE devices SET product_id = ?, board = ?, current_version = ?, "
                 "current_payload_version = ?, slot = ?, representation = ?, fallback_reason = ?, "
                 "confirmed = ?, last_offered_release_id = COALESCE(?, last_offered_release_id), "
                 "registrar_ref = COALESCE(?, registrar_ref), account_id = ?, "
-                "streams = COALESCE(?, streams), last_seen = ? WHERE device_id = ?",
+                "streams = COALESCE(?, streams), "
+                # COALESCE: a device that stops reporting slots (or never did) keeps whatever it
+                # last told us, rather than having its fallback silently blanked.
+                "fallback_payload_version = COALESCE(?, fallback_payload_version), "
+                "last_seen = ? WHERE device_id = ?",
                 (product_id, board, current_version, current_payload_version, slot, representation,
                  fallback_reason, confirmed, last_offered_release_id, registrar_ref, account_id,
-                 ",".join(streams) if streams else None, now, device_id))
+                 ",".join(streams) if streams else None, fallback_payload_version,
+                 now, device_id))
 
     def get_device(self, device_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))

@@ -117,6 +117,56 @@ def test_unverified_board_no_rollout_returns_nothing(tmp_path):
     assert store.get_device("dev1") is None
 
 
+# --- A/B slots: what the device reports, and what the server does with it --------------------
+
+_TRIAL = [{"slot": "B", "running": True, "payload_version": 0x01000000, "counter": 5,
+           "pending": True, "confirmed": False},
+          {"slot": "A", "running": False, "payload_version": 0x00FF0000, "counter": 4,
+           "pending": True, "confirmed": True}]
+_SETTLED = [{"slot": "B", "running": True, "payload_version": 0x01000000, "counter": 5,
+             "pending": True, "confirmed": True},
+            {"slot": "A", "running": False, "payload_version": 0x00FF0000, "counter": 4,
+             "pending": True, "confirmed": True}]
+
+
+def test_mid_trial_device_is_not_offered_an_update(tmp_path):
+    """It would be offered a release it is going to refuse anyway (the device defers too), and
+    taking it would overwrite the confirmed image that is its only fallback."""
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, storage=storage, percent=100)
+    c = TestClient(app)
+    assert c.post("/api/v1/check", json=_checkin(slots=_TRIAL)).json()["update"] is False
+    # ...and the moment it confirms, the same rollout reaches it
+    assert c.post("/api/v1/check", json=_checkin(slots=_SETTLED)).json()["update"] is True
+
+
+def test_mid_trial_device_is_not_offered_a_pin_either(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, storage=storage, percent=0)                 # rollout reaches nobody
+    store.set_cohort_pin(BID, "__default__", "rel1")         # ...but a pin would
+    c = TestClient(app)
+    assert c.post("/api/v1/check", json=_checkin(slots=_TRIAL)).json()["update"] is False
+    assert c.post("/api/v1/check", json=_checkin(slots=_SETTLED)).json()["release_id"] == "rel1"
+
+
+def test_fallback_version_is_recorded_and_survives_a_silent_checkin(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+    c.post("/api/v1/check", json=_checkin(slots=_SETTLED))
+    assert store.get_device("dev1")["fallback_payload_version"] == 0x00FF0000
+    # a later check-in that says nothing about slots keeps what we were last told, rather than
+    # blanking the operator's view of the fleet
+    c.post("/api/v1/check", json=_checkin())
+    assert store.get_device("dev1")["fallback_payload_version"] == 0x00FF0000
+
+
+def test_a_device_that_reports_no_slots_is_still_offered_updates(tmp_path):
+    """The gate protects a fallback. A single-image device has none and must not be held back."""
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, storage=storage, percent=100)
+    assert TestClient(app).post("/api/v1/check", json=_checkin()).json()["update"] is True
+
+
 # --- version pins (override rollouts) -------------------------------------------------------
 
 def _seed_rel2(store):

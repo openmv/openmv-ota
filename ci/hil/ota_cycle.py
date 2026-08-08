@@ -316,6 +316,8 @@ COVERAGE = {
     "-> mounted BACK": "boot.mount.back",
     "boot: FRONT rejected": "boot.front_reject",
     "boot: no bootable slot": "boot.no_slot",
+    "status: slot read": "status.slots",          # per-slot A/B report, built every check-in
+    "status: slots ready": "status.slots",
     "install: slot surveyed": "install.survey",   # per-slot pre-erase read (counter/floor/version)
     "install: erasing": "install.start",          # "install: erasing <slot> (N bytes)"
     "install: write path block-device": "install.blockdev",
@@ -442,7 +444,8 @@ SCENARIOS = {
                    "run.ca_path", "run.ca_bytes", "run.read_at", "run.data_path",
                    "install.fetch_manifest",
                    "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
-                   "install.survey", "install.start", "{cov_write}", "install.download",
+                   "status.slots", "install.survey", "install.start", "{cov_write}",
+                   "install.download",
                    "install.delta",
                    "install.writing", "write.ready", "write.erased", "write.wrote",
                    "write.readback", "write.backread", "write.complete", "install.committed",
