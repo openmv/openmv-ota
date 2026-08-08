@@ -20,11 +20,33 @@ def test_front_size_aligns_down_to_block():
     assert geometry.front_size(0x1800000 + 0x1000, 4096) == 0xC00000
 
 
-def test_slot_overhead_is_four_blocks():
-    # rollback + spare + status + trailer, each one block
+def test_slot_overhead_is_four_control_blocks_regardless_of_erase_size():
+    """Control sizing is 4 KiB per record, NOT the erase block.
+
+    The erase block governs where SLOTS may split (erasing A must not disturb B); it says nothing
+    about how much room the trailer/status/rollback/spare records need. And no control sector is
+    ever erased independently -- there is one erase call in the whole device tree, after which
+    every control write is a 1->0 program. Sizing them by the erase block reserved 4 x 128 KiB per
+    slot on a large-block board to hold a few hundred bytes, which on smaller partitions was the
+    difference between OTA-capable and not."""
     assert geometry.slot_overhead(4096) == 4 * 4096
-    assert geometry.slot_overhead(16) == 4 * 4096   # floored block -> 4 x 4 KiB
-    assert geometry.slot_overhead(131072) == 4 * 131072
+    assert geometry.slot_overhead(16) == 4 * 4096        # floored to 4 KiB
+    assert geometry.slot_overhead(131072) == 4 * 4096    # NOT 4 x 128 KiB
+
+
+def test_a_large_erase_block_no_longer_costs_ota_capability():
+    """The regression this prevents: a 1 MiB partition with a 128 KiB erase block used to need
+    512 KiB of control per slot and came out not OTA-capable at all."""
+    assert geometry.slot_overhead(131072) < geometry.front_size(1024 * 1024, 131072)
+    assert geometry.is_ota_capable(1024 * 1024, 131072) is True
+
+
+def test_slot_boundaries_still_align_to_the_ERASE_block():
+    """The half that must not change: A/B is only safe if erasing one slot cannot touch the
+    other, so the split still lands on an erase boundary."""
+    assert geometry.front_size(1024 * 1024, 131072) % 131072 == 0
+    # ...and a partition that is a single erase block cannot be split at all
+    assert geometry.front_size(131072, 131072) == 0
 
 
 def test_control_sector_offsets():

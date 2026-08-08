@@ -38,8 +38,29 @@ CONTROL_SECTORS = 4   # spare, rollback, status, trailer (in ascending offset or
 
 
 def ota_block(erase_size: int) -> int:
-    """The block the OTA layout aligns to: the flash erase block, floored to 4 KiB."""
+    """The block SLOT BOUNDARIES align to: the flash erase block, floored to 4 KiB.
+
+    This one genuinely needs the erase block. A/B only works if erasing one slot cannot disturb
+    the other, so the split has to land on an erase boundary."""
     return max(int(erase_size), MIN_OTA_BLOCK)
+
+
+def control_block(erase_size: int = 0) -> int:
+    """The granularity of the CONTROL sectors -- always 4 KiB, never the erase block.
+
+    Sizing these to the erase block conflated two different things. The erase block matters for
+    keeping SLOTS separable; it says nothing about how much room the trailer, status, rollback and
+    spare records need. And they are never erased independently of their slot: there is exactly one
+    erase call in the whole device tree (the installer's slot erase), after which every control
+    write is a 1->0 program -- status markers written once each as the trial advances, the rollback
+    log append-only, the trailer written at install.
+
+    So on a board with a 128 KiB erase block the old sizing reserved 4 x 128 KiB = 512 KiB of
+    control PER SLOT to hold a few hundred bytes of records, which on smaller partitions was the
+    difference between OTA-capable and not. ``erase_size`` is accepted and ignored so call sites
+    read symmetrically with ``ota_block``."""
+    del erase_size
+    return MIN_OTA_BLOCK
 
 
 def front_size(partition_size: int, erase_size: int) -> int:
@@ -51,22 +72,22 @@ def front_size(partition_size: int, erase_size: int) -> int:
 
 def slot_overhead(erase_size: int) -> int:
     """Per-slot control overhead: the trailer/status/rollback/spare sectors (one block each)."""
-    return CONTROL_SECTORS * ota_block(erase_size)
+    return CONTROL_SECTORS * control_block(erase_size)
 
 
 def trailer_offset(slot_size: int, erase_size: int) -> int:
     """Offset of the trailer sector within a slot (the last block)."""
-    return slot_size - ota_block(erase_size)
+    return slot_size - control_block(erase_size)
 
 
 def status_offset(slot_size: int, erase_size: int) -> int:
     """Offset of the status sector within a slot."""
-    return slot_size - 2 * ota_block(erase_size)
+    return slot_size - 2 * control_block(erase_size)
 
 
 def rollback_offset(slot_size: int, erase_size: int) -> int:
     """Offset of the anti-rollback (version-floor) sector within a slot."""
-    return slot_size - 3 * ota_block(erase_size)
+    return slot_size - 3 * control_block(erase_size)
 
 
 def body_capacity(partition_size: int, erase_size: int) -> int:
@@ -106,7 +127,7 @@ AB = "ab"
 # the one-sector boards look impossible (four 128 KiB sectors demanded 512 KiB of a 128 KiB
 # partition). One 4 KiB region is ample for the markers, the install counter, the rollback log and
 # the trailer, and costs 3% of a 128 KiB partition instead of 400%.
-SINGLE_CONTROL_BYTES = MIN_OTA_BLOCK
+SINGLE_CONTROL_BYTES = MIN_OTA_BLOCK   # == CONTROL_SECTORS records packed into one block
 
 
 def single_body_capacity(partition_size: int, erase_size: int) -> int:
