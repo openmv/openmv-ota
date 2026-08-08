@@ -158,7 +158,7 @@ def analyze(filename):
     # Marker lines come from hil_coverage.find_source -- the SAME mapping the actual fold uses --
     # so the static set agrees with it. find_source matches the longest literal PREFIX of a marker,
     # so a format-string log ("boot: mounted %s") is recognized as its runtime marker
-    # ("boot: mounted FRONT"); a plain `substring in line` test would miss it and mis-report a gap.
+    # ("boot: mounted A"); a plain `substring in line` test would miss it and mis-report a gap.
     import hil_coverage
     rel = os.path.relpath(filename, _REPO)
     marker_lines = set()

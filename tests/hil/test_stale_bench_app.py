@@ -23,7 +23,7 @@ def _cap(lines):
     ota_cycle._FLASH_MARK = 0
 
 
-GOLDEN = "boot: mounted FRONT (payload 16777216)"
+GOLDEN = "boot: mounted A (payload 16777216)"
 
 
 def test_the_wrong_scenario_app_is_caught(monkeypatch):

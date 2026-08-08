@@ -261,6 +261,12 @@ def _render_ota_config(p, name: str) -> str:
         # not a reboot into the other half.
         + "MODE = %r\n" % geometry.resolve_mode(t.partition_size, t.erase_size,
                                                 single_image=p.config.single_image)
+        # BOOTS A TRIAL GETS TO CONFIRM ITSELF. Default 3; the costs are lopsided (a FALSE
+        # rejection costs a full re-download the server then offers again, while an extra
+        # attempt on a genuinely bad image costs one reboot), which is the whole argument for
+        # more than one. It stays small and configurable because retries only help a failure
+        # that self-resets: a HANG now hangs N times instead of once. 1 reproduces v1 exactly.
+        + "MAX_ATTEMPTS = %d\n" % p.config.max_attempts
         # RECOVERY CONFIG -- in the FIRMWARE, deliberately, not the romfs. A device whose image is
         # gone still needs both of these to reach the server, which is exactly when recovery runs;
         # keeping them in the app is what made recovery impossible in v1. Empty CA = bundled roots.

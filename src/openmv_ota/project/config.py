@@ -42,6 +42,11 @@ class OtaConfig:
     # choose it -- without a B slot a failed update needs a network round trip to recover, and a
     # device that cannot reach the network needs physical reflashing.
     single_image: bool = False
+    # Boots a newly-installed image gets to call confirm() before it is rejected and the device
+    # falls back. 1 is v1's one-shot behaviour; the default 3 buys tolerance of a transient boot
+    # failure (a sensor that fails to initialise on a long cable is already documented in this
+    # project) at the cost of one reboot per extra attempt on an image that is genuinely bad.
+    max_attempts: int = 3
     overrides: dict[str, dict] = field(default_factory=dict)
 
 
@@ -64,6 +69,24 @@ def load_config(path: Path) -> OtaConfig:
     except OSError:
         raise ProjectError("no %s found (is this a project directory?)" % CONFIG_NAME) from None
     return parse_config(text, path.parent.name)
+
+
+def _max_attempts(ota: dict) -> int:
+    """``[ota].max_attempts``, validated. Must be at least 1 -- zero would reject every image on
+    its first boot, i.e. make the device permanently un-updatable, and it is the kind of typo
+    (or clever-looking "disable trials" guess) worth catching at build time rather than in the
+    field. Capped at the attempt region's size, which is what the flash can actually record."""
+    value = ota.get("max_attempts", 3)
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise ProjectError("[ota].max_attempts must be an integer, got %r" % (value,)) from None
+    if not 1 <= value <= 64:
+        raise ProjectError(
+            "[ota].max_attempts must be between 1 and 64, got %d. 1 gives a new image a single "
+            "boot to confirm itself; more tolerates a transient boot failure at the cost of one "
+            "reboot per extra attempt on an image that is genuinely bad." % value)
+    return value
 
 
 def parse_config(text: str, default_name: str) -> OtaConfig:
@@ -91,6 +114,7 @@ def parse_config(text: str, default_name: str) -> OtaConfig:
         server_url=str(ota.get("server_url") or ""),
         ca=str(ota.get("ca") or ""),
         single_image=bool(ota.get("single_image", False)),
+        max_attempts=_max_attempts(ota),
         overrides=overrides,
     )
 
@@ -171,7 +195,14 @@ def render_config(
             "#                           flash. The trade, which is invisible until it bites:\n"
             "#                           a failed update then recovers by re-downloading, so a\n"
             "#                           device that cannot reach the network needs a physical reflash.\n"
-            "#                           Otherwise this is derived -- A/B wherever two slots fit.\n\n"
+            "#                           Otherwise this is derived -- A/B wherever two slots fit.\n"
+            "\n"
+            "# max_attempts = 3        # boots a newly-installed image gets to call confirm()\n"
+            "#                           before it is rejected and the device falls back. 1 gives\n"
+            "#                           it a single try; higher tolerates a transient boot failure\n"
+            "#                           at the cost of one reboot per extra attempt on an image\n"
+            "#                           that is genuinely bad. Retries only help a failure that\n"
+            "#                           RESETS -- a hang just hangs this many times.\n\n"
             % (signing_key_id or 0)
         )
     else:

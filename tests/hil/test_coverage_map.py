@@ -32,7 +32,14 @@ import hil_coverage    # noqa: E402
 _LOGCALL = re.compile(r"\.(?:info|debug|warning|error)\(")
 # Slot names substituted into "boot: mounted %s" / "-> mounted %s" at runtime; every other
 # marker is a plain literal chosen to appear verbatim in the source.
-_RUNTIME_TAIL = {"FRONT", "BACK"}
+#
+# This escape hatch is why the A/B rename could go stale silently: a COVERAGE key ending in a
+# runtime-substituted word is checked against the source with that word STRIPPED, so
+# "boot: mounted FRONT" kept matching `log.info("boot: mounted %s ...")` long after the device
+# had stopped ever printing the word FRONT. The v2 keys avoid the trap by not naming a slot at
+# all ("boot: mounted", "boot: rejected"), which is why the set below is now empty -- keep it
+# that way, and prefer a key that stops before the %s over one that guesses what fills it.
+_RUNTIME_TAIL: set[str] = set()
 
 
 def _stable_literal(substr):

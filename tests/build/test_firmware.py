@@ -237,6 +237,8 @@ def test_ota_config_values(make_project, monkeypatch):
     exec((r.build_dir / "_ota_config.py").read_text(), ns)  # noqa: S102 (generated code)
     assert ns["PARTITION_SIZE"] > 0 and 0 < ns["FRONT_SIZE"] < ns["PARTITION_SIZE"]
     assert ns["CONTROL_BLOCK"] == 4096
+    assert ns["MODE"] == "ab"                      # the N6 has room for two slots
+    assert ns["MAX_ATTEMPTS"] == 3                 # the trial budget boot.py enforces
     assert isinstance(ns["PRODUCT_ID"], int) and ns["PRODUCT_ID"] != 0   # OTA pins it
     assert isinstance(ns["PLATFORM_VERSION"], int)
     keys = ns["TRUSTED_KEYS"]

@@ -270,7 +270,7 @@ def test_bench_app_prints_its_device_id():
 def test_verify_from_uart_rejects_a_pre_flash_mount(monkeypatch):
     """A `boot: mounted` from BEFORE the flash would verify the image the flash just replaced."""
     class Cap:
-        raw = ["INFO openmv_ota: boot: mounted FRONT (payload 16777216)",
+        raw = ["INFO openmv_ota: boot: mounted A (payload 16777216)",
                "INFO openmv_ota: app: device_id ABC123"]      # both STALE, pre-flash
     monkeypatch.setattr(ota_cycle, "_CAP", Cap())
     monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 2)          # the flash came AFTER those lines
@@ -283,7 +283,7 @@ def test_verify_from_uart_accepts_the_boot_the_flash_caused(monkeypatch):
     """The boot being verified happens between the flash and this call -- keying "fresh" off the
     CALL would demand a second boot nothing triggers, failing a board whose golden came up fine."""
     class Cap:
-        raw = ["INFO openmv_ota: boot: mounted FRONT (payload 16777216)",
+        raw = ["INFO openmv_ota: boot: mounted A (payload 16777216)",
                "INFO openmv_ota: app: device_id ABC123"]
     monkeypatch.setattr(ota_cycle, "_CAP", Cap())
     monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 0)          # flash preceded both lines
@@ -297,7 +297,7 @@ def test_verify_from_uart_returns_the_id(monkeypatch):
     monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 0)
 
     def boot(_s):
-        cap.raw.append("INFO openmv_ota: boot: mounted FRONT (payload 16777216)")
+        cap.raw.append("INFO openmv_ota: boot: mounted A (payload 16777216)")
         cap.raw.append("INFO openmv_ota: app: device_id DEADBEEF")
     monkeypatch.setattr(ota_cycle.time, "sleep", boot)
     assert ota_cycle.verify_golden_uart("ARDUINO_PORTENTA_H7", budget=30) == "DEADBEEF"
@@ -529,7 +529,7 @@ def test_verify_rejects_a_board_still_on_the_target(monkeypatch):
     the wrong thing -- observed on the N6: watchdog_bite opened its scored window on 1.1.0/FRONT and
     failed 28 minutes later on markers that could never have appeared."""
     class Cap:
-        raw = ["INFO openmv_ota: boot: mounted FRONT (payload 16842752)",   # 1.1.0, NOT golden
+        raw = ["INFO openmv_ota: boot: mounted A (payload 16842752)",   # 1.1.0, NOT golden
                "INFO openmv_ota: app: device_id ABC"]
     monkeypatch.setattr(ota_cycle, "_CAP", Cap())
     monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 0)
@@ -540,7 +540,7 @@ def test_verify_rejects_a_board_still_on_the_target(monkeypatch):
 
 def test_verify_accepts_golden(monkeypatch):
     class Cap:
-        raw = ["INFO openmv_ota: boot: mounted FRONT (payload 16777216)",   # 1.0.0
+        raw = ["INFO openmv_ota: boot: mounted A (payload 16777216)",   # 1.0.0
                "INFO openmv_ota: app: device_id ABC"]
     monkeypatch.setattr(ota_cycle, "_CAP", Cap())
     monkeypatch.setattr(ota_cycle, "_FLASH_MARK", 0)

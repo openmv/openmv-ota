@@ -188,3 +188,13 @@ def test_the_scaffolded_config_documents_the_trade_not_just_the_key():
     assert "physical reflash" in text, "the opt-out must state its consequence"
     assert "server_url" in text and "ca =" in text
     assert "BAKED INTO THE FIRMWARE" in text, "say where these live, and why"
+
+def test_max_attempts_defaults_and_validates():
+    """0 would reject every image on its first boot -- a permanently un-updatable device -- and
+    it is exactly the value someone reaches for to "turn trials off". Catch it at build time."""
+    base = 'name = "p"\n[targets]\nboards = ["OPENMV_N6"]\n[ota]\nenabled = true\n'
+    assert cfg.parse_config('[product]\n' + base, "p").max_attempts == 3        # default
+    assert cfg.parse_config('[product]\n' + base + "max_attempts = 1\n", "p").max_attempts == 1
+    for bad in ("0", "-1", "65", '"three"'):
+        with pytest.raises(ProjectError, match="max_attempts"):
+            cfg.parse_config('[product]\n' + base + "max_attempts = %s\n" % bad, "p")

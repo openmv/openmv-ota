@@ -1,11 +1,11 @@
 """The frozen OTA ``boot.py`` -- the module openmv runs at boot.
 
 This is the file the firmware build freezes into the image as ``boot.py``; on the
-camera it runs after the board's stock ``_boot.py``. It selects the FRONT (mutable
-runtime) or BACK (golden) ROMFS slot, verifies the slot's signed trailer (ECDSA
-over the firmware's mbedtls, via an injected ``verify``), checks integrity /
-cross-flash / compatibility / anti-rollback, runs the trial-boot status state
-machine, and mounts the chosen slot.
+camera it runs after the board's stock ``_boot.py``. It selects the NEWEST VALID
+ROMFS slot -- A or B, ordered by install counter, with no privileged "golden" among
+them -- verifies that slot's signed trailer (ECDSA over the firmware's mbedtls, via
+an injected ``verify``), checks integrity / cross-flash / compatibility /
+anti-rollback, runs the trial state machine, and mounts it.
 
 The decision logic (``parse_trailer`` / ``evaluate_slot`` / ``OtaBoot``) is pure
 and host-testable -- all flash I/O is injected. The **device entry** at the bottom
@@ -91,7 +91,7 @@ TRIED = _marker(b"tried")
 CONFIRMED = _marker(b"confirmed")
 
 # --- Anti-rollback floor (mirror of openmv_ota.ota.rollback) ----------------
-_ROLLBACK_ENTRY = 8                     # u32 version || u32 ~version, in BACK's rollback sector
+_ROLLBACK_ENTRY = 8                     # u32 version || u32 ~version, in a slot's rollback sector
 
 
 def _rollback_floor_of(sector):
@@ -432,9 +432,9 @@ class OtaBoot:
         return winner, t, (",".join(rejects) or None)
 
 
-last_slot = None              # 'FRONT' or 'BACK'
+last_slot = None              # 'A' or 'B'
 last_payload_version = 0      # the mounted image's payload_version
-last_failure_reason = None    # the FRONT rejection reason, if BACK was used
+last_failure_reason = None    # why the OTHER slot was rejected, if this one is a fallback
 
 
 # --- Device entry -----------------------------------------------------------
@@ -506,26 +506,30 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         log.debug("boot: no prior mount")   # mp_init didn't auto-mount /rom (blank/invalid romfs)
 
     try:
-        slot, trailer, front_reason = OtaBoot(
+        slot, trailer, reject_reason = OtaBoot(
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
-            cfg.CONTROL_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
+            cfg.CONTROL_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION,
+            getattr(cfg, "MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)).run()
     except OtaReject as e:
         log.error("boot: no bootable slot: %s" % e)
         raise  # hil-residual: bare re-raise to halt boot; the boot.no_slot log above is witnessed
-    if front_reason is None:
+    if reject_reason is None:
         log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
     else:
-        log.warning("boot: FRONT rejected (%s) -> mounted %s (payload %d)"
-                    % (front_reason, slot, trailer.payload_version))
+        # NOT "FRONT rejected": under A/B the rejected slot may be either one, and which it was
+        # is the useful half of this line. It also means a REJECTION HAPPENED, which is what the
+        # negative HIL paths key on -- a happy boot never emits it.
+        log.warning("boot: rejected %s -> mounted %s (payload %d)"
+                    % (reject_reason, slot, trailer.payload_version))
 
     global last_slot, last_payload_version, last_failure_reason
     last_slot, last_payload_version, last_failure_reason = (
-        slot, trailer.payload_version, front_reason)
+        slot, trailer.payload_version, reject_reason)
     # Mirror onto _ota_config, the module the app's openmv_ota lib reads (both import it,
     # and modules are cached, so this persists in-VM without re-running boot.py).
     cfg.last_slot = slot
     cfg.last_payload_version = trailer.payload_version
-    cfg.last_failure_reason = front_reason
+    cfg.last_failure_reason = reject_reason
 
     os.chdir("/rom")
     sys.path.append("/rom")
