@@ -434,9 +434,9 @@ def test_stall_guard_is_not_wired_into_the_OTA_network_paths():
 def test_arm_for_install_is_off_by_default_until_each_port_is_measured():
     """OFF on MEASUREMENT, not caution. Enabling it fleet-wide reset boards mid-install: the Nicla
     went 9/9 -> failing `full` and `corrupt_sha` (the 2 MB writes) while small scenarios passed.
-    The stm32 WWDG maxes at ~167 ms and this module runs a 100 ms window, so an armed install has
-    no margin across a multi-MB write. Re-enable per port once that port's install path is
-    measured armed."""
+    Not a per-port tuning problem: the RT1060 fails identically with a 500 ms WDOG, so the install
+    path has unfed gaps longer than half a second on every port, and only on the big writes.
+    Re-enable once the READER guarantees a feed cadence -- see the note in openmv_wdt."""
     assert _mod.ARM_FOR_INSTALL is False
 
 
