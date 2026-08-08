@@ -1410,7 +1410,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # dispatch through one -- measured). Arms even when the app left openmv_wdt disabled;
             # never raises, because a board with no usable watchdog must still be able to update.
             if openmv_wdt is not None and openmv_wdt.arm_for_install():  # hil-residual: watchdog-arm for the write; witnessed by the log line below
-                log.info("install: wdt armed for the install")           # HIL witness: the write is watched
+                log.info("install: wdt armed for the install")  # hil-residual: only emitted when openmv_wdt.ARM_FOR_INSTALL is on, which is off by default -- no bench scenario reaches it, so it carries no marker
             log.info("install: writing FRONT")
             _install_stream(source, write, readback, front_size, block, feed,
                             progress, expect_sha, repr_marker, gc_collect, work)
