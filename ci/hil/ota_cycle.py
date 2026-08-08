@@ -316,6 +316,7 @@ COVERAGE = {
     "-> mounted BACK": "boot.mount.back",
     "boot: FRONT rejected": "boot.front_reject",
     "boot: no bootable slot": "boot.no_slot",
+    "install: wdt armed for the install": "install.wdt_armed",   # the install window is WATCHED
     "install: erasing FRONT": "install.start",
     "install: write path block-device": "install.blockdev",
     "install: write path XIP": "install.xip",
@@ -439,7 +440,7 @@ SCENARIOS = {
                    "run.checkin", "run.status", "run.boot_result", "run.identity",
                    "run.identity_uid", "run.offer", "run.asset_read", "run.asset_closed",
                    "run.ca_path", "run.ca_bytes", "run.read_at", "run.data_path",
-                   "install.fetch_manifest",
+                   "install.fetch_manifest", "install.wdt_armed",
                    "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
                    "install.start", "{cov_write}", "install.download", "install.delta",
                    "install.writing", "write.ready", "write.erased", "write.wrote",
