@@ -1048,8 +1048,8 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop):
 
         body_dict = m["body"]
         base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # partition XIP base
-        floor = _golden_floor(uctypes.bytearray_at(base + cfg.PARTITION_SIZE - cfg.OTA_BLOCK,
-                                                  cfg.OTA_BLOCK))
+        floor = _golden_floor(uctypes.bytearray_at(base + cfg.PARTITION_SIZE - cfg.CONTROL_BLOCK,
+                                                  cfg.CONTROL_BLOCK))
         reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
                                 getattr(cfg, "ACCOUNT_ID", ""))
         if reason is not None:
@@ -1123,7 +1123,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             feed()  # hil-residual: watchdog-armed post-collect feed (opt-in, marker-less)
     # Log-only progress, built from RAM + the frozen logger so it survives the FRONT erase.
     progress = _Progress(log) if log is not None else None
-    front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
+    front_size, block = cfg.FRONT_SIZE, cfg.CONTROL_BLOCK
 
     # The romfs write path has two flavours across ports; detect which from the
     # FRONT partition object. An XIP-mapped port (stm32/alif/samd) returns a

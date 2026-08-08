@@ -236,7 +236,7 @@ def test_ota_config_values(make_project, monkeypatch):
     ns = {}
     exec((r.build_dir / "_ota_config.py").read_text(), ns)  # noqa: S102 (generated code)
     assert ns["PARTITION_SIZE"] > 0 and 0 < ns["FRONT_SIZE"] < ns["PARTITION_SIZE"]
-    assert ns["OTA_BLOCK"] == 4096
+    assert ns["CONTROL_BLOCK"] == 4096
     assert isinstance(ns["PRODUCT_ID"], int) and ns["PRODUCT_ID"] != 0   # OTA pins it
     assert isinstance(ns["PLATFORM_VERSION"], int)
     keys = ns["TRUSTED_KEYS"]
@@ -460,3 +460,44 @@ def test_build_time_is_zero_when_the_lock_has_no_usable_stamp():
     for stamp in ("", "not-a-date", None):
         lock = type("L", (), {"generated_at": stamp})()
         assert _build_time(type("P", (), {"lock": lock})()) == 0
+
+
+# --- v2: mode + recovery config stamped into _ota_config ---------------------------------
+
+class _FakeCfg:
+    def __init__(self, ca="", server_url="", single_image=False):
+        self.ca, self.server_url, self.single_image = ca, server_url, single_image
+
+
+class _FakeProj:
+    def __init__(self, root, **kw):
+        self.root, self.config = root, _FakeCfg(**kw)
+
+
+def test_recovery_ca_empty_means_the_bundled_public_roots(tmp_path):
+    """Most servers sit behind a public CA, so 'unset' has to be a first-class answer rather
+    than something the maker has to work around."""
+    from openmv_ota.build.firmware import _recovery_ca
+
+    assert _recovery_ca(_FakeProj(tmp_path)) == b""
+    assert _recovery_ca(_FakeProj(tmp_path, ca="   ")) == b""
+
+
+def test_recovery_ca_is_read_at_BUILD_time_not_looked_up_on_device(tmp_path):
+    """The device must never have to find this file: recovery runs precisely when the
+    filesystem that would hold it is gone. So the bytes go into the firmware image."""
+    from openmv_ota.build.firmware import _recovery_ca
+
+    (tmp_path / "certs").mkdir()
+    (tmp_path / "certs" / "root.pem").write_bytes(b"-----BEGIN CERTIFICATE-----\nxx\n")
+    assert _recovery_ca(_FakeProj(tmp_path, ca="certs/root.pem")).startswith(b"-----BEGIN")
+
+
+def test_an_unreadable_ca_fails_the_build_loudly(tmp_path):
+    """Silently shipping firmware with no trust anchor would strand every device it recovers:
+    it would reach the server and refuse the certificate, with nothing to say why."""
+    from openmv_ota.build.errors import BuildError
+    from openmv_ota.build.firmware import _recovery_ca
+
+    with pytest.raises(BuildError, match="not readable"):
+        _recovery_ca(_FakeProj(tmp_path, ca="certs/missing.pem"))

@@ -366,7 +366,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     try:
         slot, trailer, front_reason = OtaBoot(
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
-            cfg.OTA_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
+            cfg.CONTROL_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
     except OtaReject as e:
         log.error("boot: no bootable slot: %s" % e)
         raise  # hil-residual: bare re-raise to halt boot; the boot.no_slot log above is witnessed

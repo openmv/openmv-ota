@@ -254,7 +254,7 @@ class _Progress:
 
 def _front_status_offset(cfg):  # pragma: no cover
     # The FRONT slot's status sector is the block before its trailer block.
-    return cfg.FRONT_SIZE - 2 * cfg.OTA_BLOCK  # hil-residual: pure arithmetic getter, no call
+    return cfg.FRONT_SIZE - 2 * cfg.CONTROL_BLOCK  # hil-residual: pure arithmetic getter, no call
 
 
 def _read_at(part_index, off, size):  # pragma: no cover
@@ -717,8 +717,8 @@ def _advance_rollback(cfg, version):  # pragma: no cover (device)
     import uctypes
     import vfs
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))
-    off = cfg.PARTITION_SIZE - 3 * cfg.OTA_BLOCK     # BACK's rollback sector (absolute)
-    sector = uctypes.bytearray_at(base + off, cfg.OTA_BLOCK)
+    off = cfg.PARTITION_SIZE - 3 * cfg.CONTROL_BLOCK     # BACK's rollback sector (absolute)
+    sector = uctypes.bytearray_at(base + off, cfg.CONTROL_BLOCK)
     if _rollback_floor_of(sector) >= version:
         return  # hil-residual: bare early return (nothing to advance)
     pos = _rollback_append_offset(sector)

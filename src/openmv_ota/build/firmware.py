@@ -207,6 +207,22 @@ def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
     return tmp
 
 
+def _recovery_ca(p) -> bytes:
+    """The TLS anchors baked into the firmware for recovery, read at build time.
+
+    Empty means "use the bundled public roots" -- correct for a server behind a public CA, which
+    is most of them. A project-relative path is read here so the device never has to find a file:
+    the whole point is that recovery works when the filesystem holding it is gone."""
+    rel = (p.config.ca or "").strip()
+    if not rel:
+        return b""
+    path = p.root / rel
+    try:
+        return path.read_bytes()
+    except OSError as e:
+        raise BuildError("ota.ca %r is not readable: %s" % (rel, e)) from None
+
+
 def _render_ota_config(p, name: str) -> str:
     """Generate ``_ota_config.py`` -- the build-time constants the frozen ``boot.py``
     reads: the partition geometry, this device's ``product_id`` + the running firmware's
@@ -232,9 +248,24 @@ def _render_ota_config(p, name: str) -> str:
         "# Build-time constants the frozen boot.py reads.\n"
         "PARTITION_SIZE = %d\n" % t.partition_size
         + "FRONT_SIZE = %d\n" % t.front_size
-        + "OTA_BLOCK = %d\n" % geometry.ota_block(t.erase_size)
+        + "CONTROL_BLOCK = %d\n" % geometry.control_block(t.erase_size)  # NOT the erase block:
+        #   the device only ever uses this for control-sector OFFSETS, and it gets the real
+        #   erase size from the runtime (rom_ioctl(6)). Stamping the erase block here is what
+        #   let the two meanings blur -- see geometry.control_block.
+        
         + "PRODUCT_ID = %d\n" % product_id
         + "ACCOUNT_ID = %r\n" % p.config.account_id
+        # THE MODE THE DEVICE IS BUILT FOR. Derived from geometry (A/B wherever two slots fit),
+        # honouring the project's single_image opt-out. boot.py needs it to know whether there is a
+        # second slot to fall back to at all -- on a SINGLE board a failed trial means recovery,
+        # not a reboot into the other half.
+        + "MODE = %r\n" % geometry.resolve_mode(t.partition_size, t.erase_size,
+                                                single_image=p.config.single_image)
+        # RECOVERY CONFIG -- in the FIRMWARE, deliberately, not the romfs. A device whose image is
+        # gone still needs both of these to reach the server, which is exactly when recovery runs;
+        # keeping them in the app is what made recovery impossible in v1. Empty CA = bundled roots.
+        + "SERVER_URL = %r\n" % p.config.server_url
+        + "CA_PEM = %r\n" % _recovery_ca(p)
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
         + "BUILD_TIME = %d\n" % _build_time(p)
         + "TRUSTED_KEYS = {\n%s}\n" % keys
