@@ -70,6 +70,15 @@ MARKER_SIZE = 16
 _PENDING_OFF = 0
 _TRIED_OFF = 16
 _CONFIRMED_OFF = 32
+# --- v2 status fields -------------------------------------------------------
+# Both live in the same status sector, past the four 16-byte markers (offset 64 on), and both are
+# written WITHOUT erasing: the sector is blank (0xFF) after the slot erase and every write from
+# then on only clears bits. That is what lets control data share an erase block with the body on
+# the single-sector boards.
+_COUNTER_OFF = 64                       # u32 value || u32 ~value -- a torn write is detectable
+_COUNTER_LEN = 8
+_ATTEMPTS_OFF = 72                      # one byte per boot attempt: 0xFF -> 0x00 as each is used
+_ATTEMPTS_MAX = 64                      # ...capped; a slot that needs 64 boots is not coming back
 
 
 def _marker(label):
@@ -160,6 +169,86 @@ def _markers(status):
     return (status[_PENDING_OFF:_PENDING_OFF + MARKER_SIZE] == PENDING,
             status[_TRIED_OFF:_TRIED_OFF + MARKER_SIZE] == TRIED,
             status[_CONFIRMED_OFF:_CONFIRMED_OFF + MARKER_SIZE] == CONFIRMED)
+
+
+def install_counter(status):
+    """This slot's install counter, or ``None`` if unwritten/torn.
+
+    A/B ordering hangs on this rather than on the image version. The version cannot order two
+    slots when the SAME version is legitimately installed twice -- a re-install, or a re-flash of
+    the same release -- and that is a case worth supporting rather than blocking. The counter says
+    which install happened later and nothing else; the version stays a human-facing fact and an
+    anti-rollback input.
+
+    ``u32 value || u32 ~value`` so a half-written counter is *detected* rather than believed: an
+    install that lost power partway must not be able to claim it is the newest."""
+    raw = bytes(status[_COUNTER_OFF:_COUNTER_OFF + _COUNTER_LEN])
+    if len(raw) < _COUNTER_LEN:
+        return None
+    value = int.from_bytes(raw[:4], "little")
+    check = int.from_bytes(raw[4:], "little")
+    if (value ^ 0xFFFFFFFF) != check:
+        return None
+    return value
+
+
+def attempts_used(status):
+    """How many boot attempts this slot has consumed (see ``attempt_offset``)."""
+    region = bytes(status[_ATTEMPTS_OFF:_ATTEMPTS_OFF + _ATTEMPTS_MAX])
+    used = 0
+    for b in region:
+        if b == 0xFF:
+            break
+        used += 1
+    return used
+
+
+def attempt_offset(status):
+    """Offset of the next free attempt byte, or ``None`` when the region is full.
+
+    An append region rather than a counter because flash cannot be incremented in place without
+    an erase, and there is no erase available here -- the slot is erased once at install and every
+    write after that is a 1->0 program. Consuming one byte per boot costs nothing and a torn write
+    costs a single attempt instead of corrupting a count."""
+    used = attempts_used(status)
+    if used >= _ATTEMPTS_MAX:
+        return None
+    return _ATTEMPTS_OFF + used
+
+
+def select_slot(candidates):
+    """Pick which slot to boot from ``[(name, counter, confirmed), ...]`` -- already-validated
+    slots only. Returns the winning name, or ``None`` when there is nothing bootable (recovery).
+
+    Newest wins, and "newest" is the install counter: see ``install_counter`` for why the version
+    cannot do this job. A slot whose counter is unreadable (blank or torn) is still bootable if it
+    verified -- it just sorts last, because we cannot claim it is newer than something that says
+    so. That matters for the very first boot after a factory flash, where nothing has a counter yet.
+
+    Ties are possible in exactly two situations -- a factory flash that wrote both slots, and
+    corruption -- so they get a defined answer rather than whatever order the caller passed:
+    prefer a CONFIRMED slot (it is known to have run), then the first listed. Deliberately NOT the
+    version: two slots holding the same version is the case this whole scheme exists to support."""
+    best = None
+    for name, counter, confirmed in candidates:
+        if best is None:
+            best = (name, counter, confirmed)
+            continue
+        bname, bcounter, bconfirmed = best
+        # None sorts below any real counter
+        if counter is None and bcounter is None:
+            better = confirmed and not bconfirmed
+        elif counter is None:
+            better = False
+        elif bcounter is None:
+            better = True
+        elif counter != bcounter:
+            better = counter > bcounter
+        else:
+            better = confirmed and not bconfirmed
+        if better:
+            best = (name, counter, confirmed)
+    return None if best is None else best[0]
 
 
 def evaluate_slot(body, status, trailer_bytes, is_front, rollback_floor,

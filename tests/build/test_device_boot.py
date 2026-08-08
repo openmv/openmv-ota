@@ -435,3 +435,117 @@ def test_log_is_a_null_logger_on_host():
     assert B.log.warning("w") is None
     assert B.log.error("e") is None
     assert B.log.critical("c") is None
+
+
+# --- v2: install counter + attempt region ------------------------------------------------
+# Both live in the status sector past the four markers, and both are written WITHOUT erasing:
+# the sector is blank after the slot erase and every write from then on only clears bits. That
+# is what lets control data share an erase block with the body on the single-sector boards.
+
+def _blank_status():
+    return bytearray(b"\xff" * 4096)
+
+
+def _with_counter(value):
+    st = _blank_status()
+    st[64:68] = value.to_bytes(4, "little")
+    st[68:72] = (value ^ 0xFFFFFFFF).to_bytes(4, "little")
+    return st
+
+
+def test_install_counter_orders_slots_without_consulting_the_version():
+    """A/B ordering hangs on this rather than the version, because the version cannot order two
+    slots when the SAME version is legitimately installed twice -- a re-install, or a re-flash of
+    the same release. Supporting that is the point."""
+    assert B.install_counter(_with_counter(0)) == 0
+    assert B.install_counter(_with_counter(7)) == 7
+    assert B.install_counter(_with_counter(0xFFFFFFFE)) == 0xFFFFFFFE
+
+
+def test_an_unwritten_counter_is_not_a_counter():
+    """Blank flash is 0xFF everywhere, which as a u32 is a very large number. Reading that as
+    'newest' would make an erased slot outrank a real install."""
+    assert B.install_counter(_blank_status()) is None
+
+
+def test_a_torn_counter_is_rejected_rather_than_believed():
+    """An install that lost power partway must not be able to claim it is the newest slot."""
+    st = _with_counter(7)
+    st[68] ^= 0x01                                   # corrupt the complement
+    assert B.install_counter(st) is None
+
+
+def test_attempts_append_rather_than_increment():
+    """Flash cannot be incremented in place without an erase, and there is none available here:
+    the slot is erased once at install and everything after is a 1->0 program. One byte per boot
+    costs nothing, and a torn write costs one attempt instead of corrupting a count."""
+    st = _blank_status()
+    assert B.attempts_used(st) == 0
+    assert B.attempt_offset(st) == 72
+
+    st[72] = 0x00
+    assert B.attempts_used(st) == 1
+    assert B.attempt_offset(st) == 73
+
+    st[73] = 0x00
+    assert B.attempts_used(st) == 2
+
+
+def test_the_attempt_region_is_bounded():
+    """A slot that has needed 64 boots is not coming back; the region must not run off the end
+    of the status sector into whatever follows."""
+    st = _blank_status()
+    for i in range(64):
+        st[72 + i] = 0x00
+    assert B.attempts_used(st) == 64
+    assert B.attempt_offset(st) is None
+
+
+# --- v2: which slot boots ----------------------------------------------------------------
+
+def test_newest_install_counter_wins():
+    assert B.select_slot([("A", 3, True), ("B", 5, False)]) == "B"
+    assert B.select_slot([("A", 9, False), ("B", 5, True)]) == "A"
+
+
+def test_nothing_bootable_means_recovery():
+    """The v1 answer was 'fall back to the factory image'. There isn't one any more, so the
+    honest answer is None and the caller hands to the firmware-resident OTA flow."""
+    assert B.select_slot([]) is None
+
+
+def test_a_slot_with_no_readable_counter_still_boots_but_sorts_last():
+    """It must remain bootable -- the first boot after a factory flash has no counter anywhere --
+    but it cannot outrank a slot that actually claims to be newer."""
+    assert B.select_slot([("A", None, True), ("B", 0, False)]) == "B"
+    assert B.select_slot([("A", None, True)]) == "A"
+
+
+def test_ties_prefer_a_confirmed_slot():
+    """Ties happen for exactly two reasons -- a factory flash that wrote both slots, and
+    corruption -- so they get a defined answer rather than input order. A CONFIRMED slot is known
+    to have run, which is the better bet."""
+    assert B.select_slot([("A", 4, False), ("B", 4, True)]) == "B"
+    assert B.select_slot([("A", None, False), ("B", None, True)]) == "B"
+
+
+def test_ordering_never_consults_the_version():
+    """The whole reason for a counter: two slots holding the SAME version is the case this
+    supports, so version can play no part in choosing between them."""
+    import inspect
+
+    src = inspect.getsource(B.select_slot)
+    assert "version" not in src.split('"""')[2], "select_slot must not read a version"
+
+
+def test_a_truncated_status_sector_yields_no_counter():
+    """Defensive: a short read must not be parsed as a counter. Anything that produces a number
+    from garbage here would let a damaged slot claim to be the newest."""
+    assert B.install_counter(bytearray(b"\xff" * 4)) is None
+
+
+def test_a_real_counter_outranks_an_unreadable_one_in_either_order():
+    """Pins both directions of the None comparison, so the result cannot depend on which slot
+    the caller happened to list first."""
+    assert B.select_slot([("A", 2, False), ("B", None, True)]) == "A"
+    assert B.select_slot([("A", None, True), ("B", 2, False)]) == "B"
