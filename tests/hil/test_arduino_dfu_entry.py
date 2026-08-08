@@ -254,21 +254,6 @@ def test_bench_app_reports_a_keyboardinterrupt_death():
 # the bench files. The CDC probe is what killed the app, so the goal is to need the CDC nowhere.
 
 
-def test_msc_write_is_idempotent(monkeypatch, tmp_path):
-    """A host-side FAT write is invisible to the firmware until it re-mounts, so writing every run
-    would mean a reset every run. Identical content must write NOTHING."""
-    (tmp_path / ".hilcov_uart").write_bytes(b"1")
-    monkeypatch.setattr(ota_cycle, "_msc_disk", lambda: "/dev/fake1")
-    monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (0, ""))
-    assert ota_cycle._msc_put({".hilcov_uart": b"1"}, mnt=str(tmp_path)) is False
-
-
-def test_msc_write_happens_when_content_differs(monkeypatch, tmp_path):
-    (tmp_path / ".hilcov_uart").write_bytes(b"3")            # stale: a different UART
-    monkeypatch.setattr(ota_cycle, "_msc_disk", lambda: "/dev/fake1")
-    monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (0, ""))
-    assert ota_cycle._msc_put({".hilcov_uart": b"1"}, mnt=str(tmp_path)) is True
-    assert (tmp_path / ".hilcov_uart").read_bytes() == b"1"
 
 
 def test_msc_disk_refuses_to_guess_between_cameras(monkeypatch):

@@ -130,22 +130,6 @@ def test_scored_window_reset_cascades_and_spares_the_arduino_pin():
     assert 'flash") != "arduino_cli"' in pin, "the pin step must exclude the Arduino boards"
 
 
-def test_deferred_bench_file_write_is_never_silently_skipped():
-    """This write puts /flash/.hilcov_uart on the board, and that file is the only thing telling the
-    firmware to log to the marker UART. Gating it on an instantaneous CDC check made it a RACE --
-    the board needs ~30s to enumerate after a flash, so it landed sometimes and was skipped in
-    silence otherwise, and the leg then failed 25 minutes later with every marker missing. That was
-    the whole of the N6 watchdog_bite flakiness."""
-    body = _SRC.split("def flash_golden(")[1].split("\ndef ")[0]
-    assert "_await_boot(board" in body, "must WAIT for the board rather than sampling the CDC once"
-    assert "raise RuntimeError" in body, "and must fail loudly rather than skip the write"
-    assert ".hilcov_uart" in body, "the error must name what will be missing"
-    # ...but it must NOT fail a board that is demonstrably fine: these files persist on /flash across
-    # runs, so "could not rewrite them" is the normal steady state whenever markers are already live.
-    assert "_uart_live_since_flash()" in body, (
-        "a live marker UART must satisfy the check without a rewrite -- but liveness has to be\n"
-        "measured SINCE THIS FLASH, since _CAP.raw still holds what the previous firmware wrote")
-
 
 def test_jlink_helpers_free_a_stale_probe_first():
     """A J-Link is single-client: one leftover JLinkExe makes every later connect fail, silently --
@@ -156,42 +140,28 @@ def test_jlink_helpers_free_a_stale_probe_first():
         assert "_free_jlink()" in body, fn
         assert body.index("_free_jlink()") < body.index("CommanderScript"), fn
 
+# The three tests that used to live here pinned the DEFERRED /flash bench-file write: the CDC
+# poll, the "never silently skip" guard, and the reset that made the firmware re-read the file.
+# All of that machinery is gone -- the harness no longer writes /flash at all. Both bench files
+# ride in the romfs, so they are on the board the moment it boots. What replaced them is the
+# single invariant below.
 
-def test_the_deferred_bench_file_write_is_followed_by_a_reset():
-    """openmv_log reads /flash/.hilcov_uart once, at import. On the DEFERRED path (recovery erased
-    the romfs, so prepare could not write the files) the write lands AFTER the golden flash's
-    reboot, so without another reset the firmware never sees it -- the board logs to USB and the
-    leg fails on 'no device output since golden was flashed' with nothing actually wrong.
-    Measured on the Portenta."""
-    import inspect
-    import io
-    import tokenize
-    src = inspect.getsource(ota_cycle.flash_golden)
-    # Strip comments so the rule matches CODE, not the comment that explains it.
-    body = "".join(
-        tok.string if tok.type != tokenize.COMMENT else ""
-        for tok in tokenize.generate_tokens(io.StringIO(src).readline))
-    write = body.index("_flash_bench_files(board)")
-    reset = body.index("machine.reset()", write)
-    assert reset > write, "the reset must follow the bench-file write"
-    assert "_await_boot(" in body[reset:], "and must be confirmed by the board coming back"
+def test_the_harness_never_writes_to_flash():
+    """/flash is CORRUPTIBLE -- a cancelled run has wedged the mimxrt's, and a watchdog bite left
+    the N6's missing the CA (161 ENOENT deaths, no check-in). Everything the HIL needs on the
+    board now rides in the romfs the golden flash writes.
 
-
-def test_the_uart_outcome_is_checked_before_the_cdc_is_probed():
-    """Order matters, and the wrong order cost ~316 s PER SCENARIO on the Portenta.
-
-    The only thing the bench files buy is a board logging to the marker UART. If it is already
-    doing that since this flash, they are on the board and there is nothing to do. Probing the CDC
-    to discover that is slower AND destructive: `_cdc_responsive()` Ctrl-Cs the running app, after
-    which `_await_boot` waits out its full budget for a boot marker that can no longer come.
-    Measured: the board was verifiable at 21:18:37 and the harness moved on at 21:23:54.
+    Deleting the writes deleted their whole tail of complexity with them: the CDC wait, the
+    reset-to-re-read, the USB-MSC drop-in, the `flash erase` self-heal, and -- the one that cost
+    real debugging -- the REPL fallback, whose Ctrl-C KILLS a running app and produced the
+    `CRASHED KeyboardInterrupt()` seen inside scored windows.
     """
     import inspect
-    import io
-    import tokenize
-    src = inspect.getsource(ota_cycle.flash_golden)
-    body = "".join(
-        tok.string if tok.type != tokenize.COMMENT else ""
-        for tok in tokenize.generate_tokens(io.StringIO(src).readline))
-    assert body.index("_uart_live_since_flash()") < body.index("_cdc_responsive()"), (
-        "the cheap, non-invasive check must come first")
+
+    import ota_cycle
+
+    for fn in (ota_cycle.prepare, ota_cycle.flash_golden):
+        src = inspect.getsource(fn)
+        assert "_flash_bench_files" not in src, fn.__name__
+    assert not hasattr(ota_cycle, "_flash_bench_files"), "the /flash writer must be gone"
+    assert not hasattr(ota_cycle, "_msc_put"), "its USB-MSC path goes with it"

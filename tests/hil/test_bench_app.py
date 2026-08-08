@@ -92,3 +92,34 @@ def test_winc_recover_reconstructs_the_nic():
     src = ota_cycle.bench_main_py("OPENMV4P", "wifi", app="confirm")
     bring_up = src.split("async def _bring_up():")[1].split("async def main")[0]
     assert "network.WINC()" in bring_up, "recover must CONSTRUCT the NIC, not reuse a handle"
+
+
+# --- the CA must live in the ROMFS, not on /flash ---------------------------------------
+# A FAT filesystem is corruptible (a cancelled run has wedged the mimxrt's /flash before),
+# and run() cannot even check in without the CA -- so putting it there made a corruptible
+# filesystem a hard dependency for being updatable. Measured: after a deliberate watchdog
+# bite the file was gone and run() died 161 times on ENOENT, never reaching a check-in.
+
+def test_ca_is_read_from_the_romfs():
+    """Baked into app/, so it ships inside every image the harness builds -- golden and
+    update alike -- and is therefore present on any slot the board can actually boot."""
+    assert ota_cycle.CFG["ca_board"].startswith("/rom/"), (
+        "the CA must not depend on a filesystem a corruption or a bite can empty")
+
+
+def test_the_generated_app_reads_the_ca_from_the_romfs():
+    for net in _NETS:
+        for app in _apps():
+            src = ota_cycle.bench_main_py("OPENMV4P", net, app=app)
+            assert "/rom/" in src and "/flash/bench-ca" not in src, (net, app)
+
+
+def test_both_bench_files_ride_in_the_romfs():
+    """The coverage hint used to be written to /flash, with its path DERIVED from the CA's
+    directory. Both now ship in the romfs: the CA because run() cannot check in without it, and
+    the hint because /flash writes needed a REPL, and taking the REPL kills a running app."""
+    import inspect
+
+    src = inspect.getsource(ota_cycle.prepare)
+    assert '/app/.hilcov_uart' in src, "the coverage hint must be baked into the image"
+    assert 'ca_board' in src, "so must the CA"
