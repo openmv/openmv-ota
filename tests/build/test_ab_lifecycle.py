@@ -338,6 +338,34 @@ def test_a_failed_update_can_be_retried_into_the_same_slot():
 
 # --- the invariants that only a full cycle can break ------------------------
 
+def test_the_fallback_survives_every_confirm():
+    """The property A/B exists for, across repeated updates: after each confirm the device must
+    STILL have a bootable previous release.
+
+    This was broken and hardware found it. `confirm()` raises the floor to the running version,
+    so the slot behind it is below the floor by construction -- and the boot-time anti-rollback
+    check was rejecting it, leaving the device one bad update from nothing to return to. A Nicla
+    logged `boot: rejected A:rollback` right after promoting 1.1.0."""
+    dev = Device()
+    dev.provision("1.0.0")
+    dev.boot()
+    for version in ("1.1.0", "1.2.0", "1.3.0"):
+        dev.install(version)
+        dev.boot()
+        assert dev.confirm() is True
+        # the OTHER slot -- the previous release -- must still evaluate as bootable
+        other = "B" if dev.slot == "A" else "A"
+        off, size = rt._slot_bounds(dev.cfg, other)
+        body = dev.flash.read(off, size - 2 * BLOCK)
+        status = dev.flash.read(off + size - 2 * BLOCK, BLOCK)
+        trailer = dev.flash.read(off + size - BLOCK, BLOCK)
+        floor = max(INST._rollback_floor_of(dev.flash.read(o + SLOT - 3 * BLOCK, BLOCK))
+                    for o in (0, SLOT))
+        t, _consume = B.evaluate_slot(body, status, trailer, floor, 0, TRUSTED, 0, _verify, 3)
+        assert t.payload_version < floor      # it IS below the floor...
+        # ...and is still bootable, which is the whole point
+
+
 def test_the_install_carries_the_floor_into_the_slot_it_writes():
     """The floor lives in the slots, and an install ERASES one. It survives only because the
     installer copies the current floor into the slot it writes.

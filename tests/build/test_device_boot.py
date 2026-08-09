@@ -535,14 +535,31 @@ def test_evaluate_rejects_a_body_whose_hash_does_not_match():
               trusted={0x100: pub})
 
 
-def test_evaluate_rejects_a_version_below_the_rollback_floor():
-    """Anti-rollback still applies per slot under A/B -- what changed is only WHERE the floor
-    comes from (the max across slots, since every slot is erased in turn)."""
+def test_evaluate_rejects_an_UNPROVEN_version_below_the_rollback_floor():
+    """Anti-rollback gates what may be PROMOTED: a slot that has not been confirmed and is
+    below the floor is a replayed old release and must not run."""
     priv, pub = _key()
     body = b"app" * 40
     with pytest.raises(B.OtaReject, match="rollback"):
-        _eval(_trailer(priv, 0x100, body, payload_version=2), body, _status(True, True, True),
+        _eval(_trailer(priv, 0x100, body, payload_version=2), body, _status(True, False, False),
               trusted={0x100: pub}, floor=99)
+
+
+def test_a_CONFIRMED_slot_below_the_floor_is_still_bootable():
+    """The fallback must survive its own success. The floor rises to the running version on
+    every confirm, so the slot behind an accepted update is below the floor BY CONSTRUCTION --
+    rejecting it there deletes the safety net at the moment the device finished proving it did
+    not need it, leaving it one bad update from having nothing to return to.
+
+    Found on hardware: a Nicla that confirmed 1.1.0 then logged `boot: rejected A:rollback`.
+    The floor is enforced where it belongs -- pre-erase in the installer, and above on any slot
+    not yet confirmed. An attacker who can force a trial to fail can force this downgrade
+    anyway; the plan says so outright, as inherent to A/B."""
+    priv, pub = _key()
+    body = b"app" * 40
+    t, consume = _eval(_trailer(priv, 0x100, body, payload_version=2), body,
+                       _status(True, True, True), trusted={0x100: pub}, floor=99)
+    assert consume is False and t.payload_version == 2
 
 
 def test_single_mode_presents_one_slot_spanning_the_partition():

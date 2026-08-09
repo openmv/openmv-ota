@@ -106,6 +106,14 @@ ever tie (factory-fresh, or corruption): prefer `CONFIRMED`, then `BUILD_TIME`, 
 4. Boot the survivor with the highest counter.
 5. None → recovery.
 
+**The floor gates INSTALLS, not the fallback.** `confirm()` raises the floor to the running
+version, so the slot behind an accepted update is below the floor *by construction*. Applying
+anti-rollback to it at boot deletes the safety net at the exact moment the device finished
+proving it did not need it — leaving it one bad update from having nothing to return to.
+(Hardware found this: a Nicla that confirmed 1.1.0 then logged `boot: rejected A:rollback`.)
+So a **confirmed** slot is exempt at boot; the floor is enforced pre-erase in the installer and
+on any slot not yet confirmed, which is where a replayed old release actually arrives.
+
 **Security note.** In v1 a failed trial fell back to the *factory* image; under A/B it falls back to
 the *previous update*. An attacker who can force a trial to fail can still force a downgrade — that
 is inherent to A/B and mcuboot shares it — but the floor is now "last working release" rather than

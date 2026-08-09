@@ -305,10 +305,24 @@ def evaluate_slot(body, status, trailer_bytes, rollback_floor,
     # because BACK *was* the factory image and only FRONT was ever written. Under A/B both slots
     # are real, updatable images and either may be the newest, so the same rule has to hold for
     # both -- and the caller decides which one wins via select_slot(), not this function.
-    if t.payload_version < rollback_floor:              # anti-rollback
-        raise OtaReject("rollback")
     if confirmed:
+        # ANTI-ROLLBACK DOES NOT APPLY TO A CONFIRMED SLOT, and this is the difference between
+        # A/B working and A/B being pointless. The floor rises to the running version on every
+        # confirm, so once an update is kept, the slot behind it is BELOW the floor by
+        # construction -- and rejecting it there would delete the fallback at the exact moment
+        # the device finished proving it did not need it. Caught on hardware: a Nicla that
+        # confirmed 1.1.0 then logged `boot: rejected A:rollback`, leaving itself one bad
+        # update from having nothing to fall back to.
+        #
+        # The floor's job is to gate what may be INSTALLED -- an attacker replaying an old
+        # signed release -- and that is enforced where it belongs, pre-erase in the installer
+        # and again on any slot that has NOT yet been confirmed (below). A slot marked
+        # confirmed is one this device already ran and kept; refusing to return to it buys no
+        # security (an attacker who can force a trial to fail can force that downgrade anyway,
+        # which the plan states outright as inherent to A/B) and costs the whole safety net.
         return t, False                                 # ran and was kept; boot it, consume nothing
+    if t.payload_version < rollback_floor:              # anti-rollback, for anything unproven
+        raise OtaReject("rollback")
     if pending:
         # A trial gets max_attempts boots to confirm, not one. The costs are lopsided: a FALSE
         # rejection costs a full re-download + erase + write that the server then offers again,
