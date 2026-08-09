@@ -318,9 +318,12 @@ the manifest endpoint — but `build ota-romfs` only ever writes relative ones.
 
 To ship a smaller **delta** download, add **`--delta-from <board>-factory-romfs.img`**
 (or a directory of per-board factory images). The delta is computed against the factory
-image's **second slot** — the exact bytes a provisioned device keeps — so a device copies
-the unchanged bulk from the slot it is running and downloads only the changes. It's
-opportunistic (picked only when the device's running version matches and it's smaller) and still
+image's **second slot, body region only** — the signed bytes every device of that release
+holds identically, excluding the control sectors that carry per-device state — so a device
+copies the unchanged bulk from the slot it is running and downloads only the changes.
+`--delta-from` is repeatable: publish one base per version still in the field, or those
+devices take the full image. It's opportunistic (picked only when the device's running
+version matches and it's smaller) and still
 sha256/signature-verified (see [the runtime docs](runtime.md)).
 
 For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in

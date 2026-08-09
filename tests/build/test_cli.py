@@ -81,7 +81,7 @@ def test_build_ota_romfs_cli_with_delta(make_project, capsys):
                "--no-compile-py", "--no-convert-models"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "OPENMV_N6-ota.delta.gz" in out
+    assert "OPENMV_N6-ota.delta-1.0.0.gz" in out
     body = parse_manifest((root / "build" / "OPENMV_N6-manifest.bin").read_bytes()).body
     fmts = {r["format"] for r in body["representations"]}
     assert fmts == {"full", "ocdl"}

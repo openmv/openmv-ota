@@ -779,6 +779,7 @@ def build_manifest(
     firmware: str | Path | None = None,
     delta: str | Path | None = None,
     delta_base_version: str | None = None,
+    deltas: list | None = None,
     key_passphrase_file: str | Path | None = None,
     allow_dev_key: bool = False,
 ) -> list[OtaManifestResult]:
@@ -787,12 +788,15 @@ def build_manifest(
     *before* it downloads/erases. Each manifest names the reconstructed image's size +
     sha256 and the representations that produce it (the full image; an ``ocdl`` delta when
     ``delta`` is given), and binds product_id / payload_version / min_platform from the image's
-    own signed trailer. Signed with the project's OTA key, exactly like the image.
+    own signed trailer. A manifest may carry SEVERAL deltas, one per base version -- the
+    device picks the one whose base matches the release it is running, which under A/B varies
+    across a fleet mid-rollout. Signed with the project's OTA key, exactly like the image.
     Representation URLs are **relative filenames by default** (resolved on-device against the
     manifest's own URL, so the signed manifest is host-portable); pass ``url_base`` (an
     absolute ``https://`` dir) to pin absolute URLs instead. The image must be rendered
-    first (``build ota-romfs`` does that, then calls here). Pass ``delta`` +
-    ``delta_base_version`` (the golden's version) to add the delta rep."""
+    first (``build ota-romfs`` does that, then calls here). Pass ``deltas`` (a list of
+    ``(path, base_version)``) to add delta reps; ``delta`` + ``delta_base_version`` is the
+    single-delta spelling of the same thing."""
     import gzip
 
     from openmv_ota.ota import bundle
@@ -806,6 +810,7 @@ def build_manifest(
         raise BuildError("manifest --url-base must be an absolute https:// URL", exit_code=1)
     if delta and not delta_base_version:
         raise BuildError("manifest --delta also needs --delta-base-version", exit_code=1)
+    delta_list = list(deltas or ([(Path(delta), delta_base_version)] if delta else []))
     _base = url_base.rstrip("/") if url_base else None
 
     def _rep_url(name):
@@ -828,7 +833,7 @@ def build_manifest(
     targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
     if not targets:
         raise BuildError("no matching main targets in this project")
-    if delta and len(targets) > 1:
+    if delta_list and len(targets) > 1:
         raise BuildError("manifest --delta applies to one board - select it with --board",
                          exit_code=1)
 
@@ -849,8 +854,8 @@ def build_manifest(
 
         reps = [{"format": "full", "url": _rep_url(img_path.name),
                  "size": img_path.stat().st_size}]
-        if delta:
-            delta_path = Path(delta)
+        for entry in delta_list:
+            delta_path, base_version = Path(entry[0]), entry[1]
             patch = _read_maybe_gz(delta_path)
             try:
                 if delta_target_size(patch) != len(image):
@@ -862,7 +867,7 @@ def build_manifest(
             reps.append({"format": DELTA_FORMAT,
                          "url": _rep_url(delta_path.name),
                          "size": delta_path.stat().st_size,
-                         "base_payload_version": encode_app_version(delta_base_version)})
+                         "base_payload_version": encode_app_version(base_version)})
 
         body = {
             "schema": SCHEMA,
@@ -894,7 +899,7 @@ class OtaRomfsResult:
     target: str
     partition_index: int
     image: Path             # <board>-ota.img.gz
-    delta: Path | None      # <board>-ota.delta.gz (when --delta-from supplied a golden)
+    deltas: list           # <board>-ota.delta-<base>.gz, one per base version (may be empty)
     manifest: Path          # <board>-manifest.bin
     key_id: int
 
@@ -948,16 +953,20 @@ def build_ota_romfs(
     if not targets:
         raise BuildError("no matching main targets in this project")
 
-    delta_dir = delta_file = None
+    delta_dirs: list[Path] = []
+    delta_files: list[Path] = []
     if delta_from is not None:
-        dp = Path(delta_from)
-        if dp.is_dir():
-            delta_dir = dp
-        elif len(targets) > 1:
-            raise BuildError("--delta-from a single file needs one board (--board); pass a "
-                             "directory of <board>-factory-romfs.img for several", exit_code=1)
-        else:
-            delta_file = dp
+        entries = delta_from if isinstance(delta_from, (list, tuple)) else [delta_from]
+        for entry in entries:
+            dp = Path(entry)
+            if dp.is_dir():
+                delta_dirs.append(dp)
+            elif len(targets) > 1:
+                raise BuildError("--delta-from a single file needs one board (--board); pass "
+                                 "a directory of <board>-factory-romfs.img for several",
+                                 exit_code=1)
+            else:
+                delta_files.append(dp)
 
     from openmv_ota.project import ledger
     app_dir = Path(app) if app else project / "app"
@@ -986,69 +995,110 @@ def build_ota_romfs(
                 "republish/downgrade (pass --allow-republish to override)"
                 % (name, signer.app_version, last["version"]), exit_code=1)
 
-        delta_path = base_version = None
-        golden = _resolve_golden(project, name, delta_from, delta_file, delta_dir)
-        if golden is not None:
-            back_tr = _factory_back_trailer(golden)                 # #2 validate the golden
+        # ONE DELTA PER BASE. The device picks by exact base match, so a release that ships
+        # only a delta-from-provisioning reaches nobody who has already updated -- which under
+        # A/B is everybody, because the base is whatever release the device is running.
+        deltas = []
+        seen_bases = set()
+        for base_path in _resolve_bases(project, name, delta_from, delta_files, delta_dirs):
+            base_body, base_tr = _base_slot(base_path, t.erase_size)
             bid = _product_id_for(p, t)
-            if bid and back_tr.product_id and back_tr.product_id != bid:
-                raise BuildError("%s: golden %s is for product_id %d, not this board's %d"
-                                 % (name, golden, back_tr.product_id, bid), exit_code=1)
-            if back_tr.payload_version >= new_pv:
+            if bid and base_tr.product_id and base_tr.product_id != bid:
+                raise BuildError("%s: delta base %s is for product_id %d, not this board's %d"
+                                 % (name, base_path, base_tr.product_id, bid), exit_code=1)
+            if base_tr.payload_version >= new_pv:
                 raise BuildError(
-                    "%s: golden version %s is not older than this release %s (deltas go "
-                    "golden -> new)" % (name, decode_app_version(back_tr.payload_version),
+                    "%s: delta base %s is version %s, not older than this release %s (deltas "
+                    "go old -> new)" % (name, base_path,
+                                        decode_app_version(base_tr.payload_version),
                                         signer.app_version), exit_code=1)
-            base_version = decode_app_version(back_tr.payload_version)
-            patch = _delta_bytes(golden.read_bytes()[t.front_size:], image)   # BACK golden bytes
-            delta_path = out_dir / (name + "-ota.delta.gz")
+            base_version = decode_app_version(base_tr.payload_version)
+            if base_version in seen_bases:      # two files for one version -> one rep
+                continue
+            seen_bases.add(base_version)
+            # The base is the BODY REGION only; the target is the full slot image. That
+            # asymmetry is the fix for the per-device control sectors -- no delta op can
+            # reference them, so the reconstruction is identical on every device.
+            patch = _delta_bytes(base_body, image)
+            delta_path = out_dir / ("%s-ota.delta-%s.gz" % (name, base_version))
             delta_path.write_bytes(gzip.compress(patch, mtime=0))
+            deltas.append((delta_path, base_version))
 
         [mres] = build_manifest(project, output=output, app=app,
                                 boards=[name], firmware=firmware,
-                                delta=delta_path, delta_base_version=base_version,
+                                deltas=deltas,
                                 key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
         ledger.record_release(project, name, version=signer.app_version, payload_version=new_pv,
                               sha256=hashlib.sha256(image).hexdigest(), key_id=mres.key_id)
-        results.append(OtaRomfsResult(t.name, t.partition_index, img_path, delta_path,
+        results.append(OtaRomfsResult(t.name, t.partition_index, img_path,
+                                      [d for d, _v in deltas],
                                       mres.output, mres.key_id))
     return results
 
 
-def _resolve_golden(project, name, delta_from, delta_file, delta_dir):
-    """The factory image to diff against, or None (-> full image only, with a warning).
-    Explicit ``--delta-from`` wins; otherwise the golden recorded in the ledger."""
+def _resolve_bases(project, name, delta_from, delta_files, delta_dirs) -> list[Path]:
+    """Every image to build a delta against, or ``[]`` (-> full image only).
+
+    Explicit ``--delta-from`` wins and is REPEATABLE, because under A/B one base is not
+    enough: a device's delta base is the release it is *running*, so a fleet mid-rollout is
+    spread across several versions and a single base reaches only the devices still on it.
+    Each entry is a provisioning image, a previous release's ``-ota.img.gz``, or a directory
+    holding the per-board file. With none given, the ledger's recorded provisioning image is
+    the one base -- which is right for a fleet that has never updated, and is why publishing
+    the previous release as a base is worth doing explicitly."""
     if delta_from is not None:
-        fac = delta_file or (delta_dir / (name + "-factory-romfs.img"))
-        if fac.exists():
-            return fac
-        print("warning: no factory golden for %s at %s - full image only"
-              % (name, fac), file=sys.stderr)
-        return None
+        out = []
+        for f in delta_files:
+            out.append(f)
+        for d in delta_dirs:
+            fac = d / (name + "-factory-romfs.img")
+            if fac.exists():
+                out.append(fac)
+            else:
+                print("warning: no provisioning image for %s at %s - skipping that base"
+                      % (name, fac), file=sys.stderr)
+        if not out:
+            print("warning: no delta base for %s - full image only" % name, file=sys.stderr)
+        return out
     from openmv_ota.project import ledger
     g = ledger.golden_for(project, name)
     if g is None:
-        return None
+        return []
     path = Path(project) / g["path"]
     if not path.exists():
-        print("warning: %s's recorded golden is missing at %s - full image only (keep your "
-              "factory images)" % (name, path), file=sys.stderr)
-        return None
-    return path
+        print("warning: %s's recorded provisioning image is missing at %s - full image only "
+              "(keep your factory images)" % (name, path), file=sys.stderr)
+        return []
+    return [path]
 
 
-def _factory_back_trailer(golden: Path):
+def _base_slot(path: Path, erase_size: int):
+    """``(body_region_bytes, trailer)`` for a delta base image.
+
+    Accepts both shapes a base can take: a **provisioning image** (two slots -- take the
+    second, they are identical bar the install counter) and a **single slot image**, i.e. a
+    previous release's ``-ota.img.gz``. Which it is, is read from the image rather than from
+    the filename, so publishing "a delta from last release" needs no new flag.
+
+    Returns the BODY REGION only. The control sectors are excluded deliberately and that is
+    the whole point of this function -- see ``geometry.delta_base_len``."""
     from openmv_ota.ota import partition
     from openmv_ota.ota.errors import OtaError
     from openmv_ota.ota.trailer import parse_trailer
+
+    raw = _read_maybe_gz(path)
     try:
-        back = next((tr for lbl, _b, tr in partition.slots(golden.read_bytes())
-                     if lbl == "B"), None)
-        if back is None:
-            raise OtaError("no second slot")
-        return parse_trailer(back)
+        found = partition.slots(raw)
+        if not found:
+            raise OtaError("no signed trailer")
+        # two slots -> a provisioning image, and its slots are equal-sized
+        _label, _body, trailer_bytes = found[-1]
+        slot_size = len(raw) // 2 if len(found) == 2 else len(raw)
+        start = slot_size if len(found) == 2 else 0
+        return (raw[start:start + geometry.delta_base_len(slot_size, erase_size)],
+                parse_trailer(trailer_bytes))
     except OtaError as e:
-        raise BuildError("%s is not a usable factory image: %s" % (golden, e),
+        raise BuildError("%s is not a usable delta base: %s" % (path, e),
                          exit_code=1) from None
 
 

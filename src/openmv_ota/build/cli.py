@@ -83,9 +83,12 @@ def register(build_parser: argparse.ArgumentParser):
                            help="build the cloud-published OTA set from app source: image + "
                                 "signed manifest (+ optional delta)")
     p_otr.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
-    p_otr.add_argument("--delta-from", metavar="PATH",
-                       help="the factory image (<board>-factory-romfs.img, or a dir of them) "
-                            "to build a delta against the golden BACK slot")
+    p_otr.add_argument("--delta-from", metavar="PATH", action="append",
+                       help="an image to build a delta against: a provisioning image "
+                            "(<board>-factory-romfs.img, or a dir of them) or a previous "
+                            "release's -ota.img.gz. REPEATABLE -- a device patches against "
+                            "the release it is RUNNING, so publish a base per version still "
+                            "in the field or those devices take the full image")
     p_otr.add_argument("--app", help="app source dir (default: <project>/app)")
     p_otr.add_argument("-o", "--output", help="output dir (default: <project>/build)")
     p_otr.add_argument("-b", "--board", action="append", metavar="NAME",
@@ -235,12 +238,12 @@ def cmd_ota_romfs(args: argparse.Namespace) -> int:
         return e.exit_code
 
     for r in results:
-        extra = (" + %s" % r.delta.name) if r.delta else ""
+        extra = ("".join(" + %s" % d.name for d in r.deltas)) if r.deltas else ""
         print("Built %s%s + %s  (OTA set, key 0x%04x)"
               % (r.image.name, extra, r.manifest.name, r.key_id))
     history.record(args.project, "build-ota-romfs", sets=[
         {"board": r.target, "image": r.image.name, "manifest": r.manifest.name,
-         "delta": (r.delta.name if r.delta else None), "key_id": r.key_id}
+         "deltas": [d.name for d in r.deltas], "key_id": r.key_id}
         for r in results])
     return 0
 

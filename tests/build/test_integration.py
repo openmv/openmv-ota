@@ -12,7 +12,10 @@ import hashlib
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from openmv_ota.build import romfs as build_mod
+from openmv_ota.ota import geometry
 
 
 def _load_installer():
@@ -58,12 +61,14 @@ def test_publish_and_consume_end_to_end(make_project):
     out = root / "build"
     t = load_project(root, firmware=repo).board("OPENMV_N6")
 
-    # v1.0.0 is the *factory* golden -- its BACK slot is exactly what the device keeps.
+    # v1.0.0 is what the board is provisioned with; slot B is what a device patches against.
     (app / "settings.json").write_text('{"app_version": "1.0.0", "vendor": "Acme"}\n')
     build_mod.build_factory_romfs(root, app=app, firmware=repo,
                                   compile_py=False, convert_models=False)
     factory = (out / "OPENMV_N6-factory-romfs.img").read_bytes()
-    device_back = factory[t.front_size:]                    # what the device reads as `old`
+    slot = t.front_size
+    base_len = geometry.delta_base_len(slot, t.erase_size)
+    device_base = factory[slot:slot + base_len]             # the BODY REGION the device reads
 
     # v1.1.0 release, published in ONE shot from app source: compile+sign the bundle, render
     # the image, build the delta(vs factory golden) + sign the manifest. Relative URLs.
@@ -71,9 +76,10 @@ def test_publish_and_consume_end_to_end(make_project):
     [r] = build_mod.build_ota_romfs(root, app=app, firmware=repo,
                                     compile_py=False, convert_models=False,
                                     delta_from=out / "OPENMV_N6-factory-romfs.img")
-    assert r.delta is not None
+    assert len(r.deltas) == 1
+    delta_path = r.deltas[0]
     new_img = gzip.decompress(r.image.read_bytes())
-    assert r.delta.stat().st_size < r.image.stat().st_size  # delta beats the full download
+    assert delta_path.stat().st_size < r.image.stat().st_size  # delta beats the full download
 
     # --- host contract: the manifest is genuine and consistent with the image ---
     manifest_bytes = r.manifest.read_bytes()
@@ -96,12 +102,36 @@ def test_publish_and_consume_end_to_end(make_project):
     assert rep["format"] == "ocdl"
     # the relative URL resolves against the manifest's own URL
     assert (inst._resolve_url("https://dl.x.io/fw/OPENMV_N6-manifest.bin", rep["url"])
-            == "https://dl.x.io/fw/" + r.delta.name)
-    # reconstruct exactly as install() does: stream the patch against the REAL device BACK
-    # bytes (factory back slot, confirmed status) -- the masking-free check.
-    delta = gzip.decompress(r.delta.read_bytes())
+            == "https://dl.x.io/fw/" + delta_path.name)
+    # reconstruct exactly as install() does: stream the patch against the device's base
+    delta = gzip.decompress(delta_path.read_bytes())
     gen = inst._delta_stream(inst._PatchReader(_SrcOf(delta)),
-                             lambda o, n: device_back[o:o + n], 4096)
+                             lambda o, n: device_base[o:o + n], 4096)
     recon = b"".join(bytes(p) for p in gen)
     assert recon == new_img
     assert hashlib.sha256(recon).hexdigest() == body["sha256"]   # the install-time check
+
+    # THE REGRESSION THAT MATTERS. A real device's slot is not the published file: its control
+    # sectors carry per-device state -- rollback entries appended by confirm(), the install
+    # counter, attempt bytes consumed at each trial boot, the CONFIRMED marker. If a delta may
+    # reference that region it reconstructs differently on every device and fails the sha256
+    # gate, so the update never lands. Measured before the fix: 26 wrong bytes, all in the
+    # control sectors. Drift the whole control area to prove the delta cannot see it.
+    drifted = bytearray(factory[slot:slot + slot])
+    for i in range(base_len, slot):
+        drifted[i] &= 0x5A                                  # 1->0 programs, as flash allows
+    gen = inst._delta_stream(inst._PatchReader(_SrcOf(delta)),
+                             lambda o, n: bytes(drifted[o:o + n]), 4096)
+    assert b"".join(bytes(p) for p in gen) == new_img
+
+    # ...and the device REFUSES a patch that reaches past the body region at all, rather than
+    # silently mixing its own state into an image.
+    with pytest.raises(ValueError, match="past the base body region"):
+        base_limit = base_len
+
+        def _bounded(off, n):
+            if off + n > base_limit:
+                raise ValueError("delta reads past the base body region")
+            return device_base[off:off + n]
+        list(inst._delta_stream(inst._PatchReader(_SrcOf(delta)),
+                                lambda o, n: _bounded(o, n + base_len), 4096))

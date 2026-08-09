@@ -1479,7 +1479,18 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     def readback(off, n):
         return read_at(target_off + off, n)  # hil-residual: bare return of the slot-relative read
 
+    # A delta may reference the base slot's BODY REGION ONLY -- never its control sectors.
+    # Those hold per-device state (install counter, rollback entries, attempt bytes, the
+    # CONFIRMED marker), so bytes copied out of them would differ on every device and the
+    # reconstructed image would fail its sha256 on some and pass on others. The builder
+    # computes the patch against this same region, so a read past it means the patch and the
+    # device disagree about the contract -- fail loudly rather than silently mixing device
+    # state into an image.
+    base_limit = slot_size - 4 * block
+
     def base_read(off, n):                            # the delta base: the RUNNING slot
+        if off + n > base_limit:  # hil-residual: contract guard -- the builder computes the patch against this same region, so a real bench delta never trips it; the taken branch is unit-tested
+            raise ValueError("delta reads past the base body region")  # hil-residual: contract violation (a patch built against the whole slot); the bench's deltas are body-only so it is unreachable there
         return base_read_at(base_off + off, n)  # hil-residual: bare return of the slot-relative base read
 
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the

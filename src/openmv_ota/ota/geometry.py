@@ -90,6 +90,20 @@ def rollback_offset(slot_size: int, erase_size: int) -> int:
     return slot_size - 3 * control_block(erase_size)
 
 
+def delta_base_len(slot_size: int, erase_size: int) -> int:
+    """How many bytes of a slot a delta may be computed against: the body region, i.e. the
+    slot minus its control sectors.
+
+    A delta's base has to be **the same bytes on every device**. The body region is -- it is
+    the signed image. The control sectors are NOT: they carry install counters, rollback
+    entries, consumed attempt bytes and the CONFIRMED marker, all written per device at
+    per-device times. A delta computed over the whole slot can legally copy from that region,
+    and then reconstructs differently on each device -- failing the sha256 gate, so the update
+    never lands. (Measured, and it applied to v1's golden base too: `confirm()` appended to
+    that slot's rollback sector, so it drifted as well.)"""
+    return int(slot_size) - slot_overhead(erase_size)
+
+
 def body_capacity(partition_size: int, erase_size: int) -> int:
     """Usable OTA image bytes in a slot. ``<= 0`` means the partition can't host OTA."""
     return front_size(partition_size, erase_size) - slot_overhead(erase_size)

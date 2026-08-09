@@ -257,13 +257,20 @@ the manifest endpoint — but the build CLI only ever writes relative ones.)
 
 **Deltas.** A delta is a bsdiff-class patch against a **base image the device already
 has** — under A/B, the slot it is currently running, which stays intact while the other is
-written. The device reconstructs the new image from that base + the patch and only downloads
+written. The base is that slot's **body region only**, never its control sectors: those hold
+per-device state (install counter, rollback entries, consumed attempt bytes, `CONFIRMED`), so
+a patch allowed to copy from them would reconstruct differently on every device and fail the
+sha256 gate. The installer refuses a patch that reads past the body region rather than
+silently mixing device state into an image. The device reconstructs the new image from that base + the patch and only downloads
 the changes, so a release that leaves the model blobs untouched (a config or key change)
 ships as a few KB instead of the whole image. Because it carries a byte-difference stream,
 even *scattered* small edits — a recompiled function, a table whose pointers all shifted —
 fold into a cheap copy-with-difference rather than being re-sent. It's *opportunistic* — the
 device picks the delta only when its running version matches the delta's base and the patch
-is smaller, else the full image. The delta is pure transport: the reconstructed slot is
+is smaller, else the full image. A release may therefore ship **several** deltas, one per base
+version still in the field — with only one, every device that has already updated falls back
+to the full download, because under A/B the base is whatever release the device is running
+(unlike v1, where every device kept the same golden forever). The delta is pure transport: the reconstructed slot is
 still sha256- and signature-verified, so a bad patch simply never becomes the newest valid
 slot. The applier ships in the romfs (it's OTA-patchable like the installer) and uses
 `ulab` for the per-byte add — present on every OTA-capable board (it falls back to plain
