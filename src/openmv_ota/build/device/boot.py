@@ -512,7 +512,17 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
             getattr(cfg, "MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)).run()
     except OtaReject as e:
         log.error("boot: no bootable slot: %s" % e)
-        raise  # hil-residual: bare re-raise to halt boot; the boot.no_slot log above is witnessed
+        # NOT the end of the road under v2. There is no factory image to retreat to, so hand
+        # off to the firmware-resident recovery flow, which brings up the network and installs
+        # until a working image exists. It does not return. If it is somehow absent (a firmware
+        # built without it), re-raise -- halting is at least visible, where continuing into an
+        # unmounted /rom would not be.
+        try:  # hil-residual: the no-slot path itself is the `no_slot` scenario; this import guard sits inside it
+            import openmv_recovery  # hil-residual: frozen module, present in every OTA firmware; the ImportError arm below is for a build without it
+        except ImportError:  # hil-residual: firmware built without the recovery modules
+            raise e from None  # hil-residual: bare re-raise; boot.no_slot above is the witness
+        openmv_recovery.run(cfg)  # hil-residual: recovery never returns (installs + reboots, or retries forever)
+        raise  # hil-residual: unreachable unless recovery declined (no SERVER_URL stamped)
     if reject_reason is None:
         log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
     else:

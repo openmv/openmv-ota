@@ -49,7 +49,12 @@ _BOOT_PY = _DEVICE_DIR / "boot.py"
 # and the clock (openmv_rtc, which reads BUILD_TIME out of the generated _ota_config).
 # The project's device/<name> copy is preferred; the bundled build/device/<name> default
 # is the fallback.
-_FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py")
+_FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py",
+                          # RECOVERY. These three exist so a device with NO usable romfs can
+                          # still update itself: the settings parser, the flow, and the
+                          # installer -- which normally ships in the romfs and is exec'd into
+                          # RAM, but cannot be when the romfs is the thing that is gone.
+                          "openmv_netcfg.py", "openmv_recovery.py")
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 
@@ -200,6 +205,12 @@ def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
         src = p.root / "device" / mod
         shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, tmp / mod)
         freezes.append('freeze("%s", "%s")\n' % (tmp.as_posix(), mod))
+    # The installer, frozen as `openmv_installer`. It is the SAME source the romfs ships and
+    # openmv_ota.install() exec's into RAM -- one implementation, so a fix cannot land on the
+    # normal path and miss the recovery one. The romfs copy stays: on a healthy device it is
+    # OTA-updatable, while this one is the floor that a bad update cannot erase.
+    shutil.copy2(_DEVICE_DIR / "openmv_ota" / "data" / "installer.py", tmp / "openmv_installer.py")
+    freezes.append('freeze("%s", "openmv_installer.py")\n' % tmp.as_posix())
     board_manifest = repo / "boards" / name / "manifest.py"
     (tmp / "manifest.py").write_text(
         'include("%s")\n' % board_manifest.as_posix() + "".join(freezes),

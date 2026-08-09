@@ -46,6 +46,8 @@ DEVICE_FILES = [
     os.path.join(DEVICE, "openmv_ota/data/installer.py"),
     os.path.join(DEVICE, "openmv_rtc.py"),
     os.path.join(DEVICE, "openmv_log.py"),
+    os.path.join(DEVICE, "openmv_netcfg.py"),
+    os.path.join(DEVICE, "openmv_recovery.py"),
 ]
 _LOGCALL = re.compile(r"\.(?:info|debug|warning|error)\(")
 

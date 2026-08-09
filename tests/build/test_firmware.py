@@ -211,6 +211,16 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     manifest = (r.build_dir / "manifest.py").read_text()
     assert "include(" in manifest and "boards/OPENMV_N6/manifest.py" in manifest
     assert 'freeze(' in manifest and "boot.py" in manifest and "_ota_config.py" in manifest
+    # RECOVERY must be in the FIRMWARE, not the romfs -- it runs precisely when the romfs is
+    # gone. That includes the installer: the romfs copy is the OTA-updatable one, this is the
+    # floor a bad update cannot erase.
+    for mod in ("openmv_netcfg.py", "openmv_recovery.py", "openmv_installer.py"):
+        assert mod in manifest, "%s is not frozen -- recovery could not run" % mod
+        assert (r.build_dir / mod).exists()
+    # ...and the frozen installer is byte-identical to the one the romfs ships, so a fix
+    # cannot land on the normal path and miss the recovery one
+    shipped = (Path(fw.__file__).parent / "device" / "openmv_ota" / "data" / "installer.py")
+    assert (r.build_dir / "openmv_installer.py").read_bytes() == shipped.read_bytes()
     assert "openmv_log.py" in manifest and "openmv_wdt.py" in manifest  # logger + watchdog frozen
     # the real boot.py (not a placeholder) + the generated config + device modules are present
     assert "OtaBoot" in (r.build_dir / "boot.py").read_text()
