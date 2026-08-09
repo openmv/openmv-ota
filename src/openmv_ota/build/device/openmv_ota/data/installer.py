@@ -142,6 +142,28 @@ _ZERO_MV = memoryview(_ZERO_CHUNK)
 _FF_CHUNK = b"\xff" * _CHUNK
 _FF_MV = memoryview(_FF_CHUNK)
 
+# THE LAST BYTES OF AN XIP-MAPPED PARTITION MUST NEVER BE BULK-READ.
+#
+# On the STM32H7 QUADSPI, a memory-mapped BURST that reaches the final address of the mapped
+# device leaves the peripheral wedged: every later memory-mapped read then hangs the AHB
+# forever. There is no fault, no exception, no log and no reset -- the board simply stops, in
+# the middle of an install, with the target slot half-written. Measured on the H7 Plus, whose
+# romfs partition ends exactly at the end of its 32 MiB QSPI (0x91800000 + 8 MiB = 0x92000000):
+# ONE 4 KiB compare of the final block is enough to wedge it, and the next read of ANY address
+# never returns. Scalar byte reads of the same addresses are fine -- it is the burst that does
+# it -- which is why boot.py, which only parses a trailer header, is unaffected.
+#
+# Measured guard: stopping 16 bytes short of the end still wedges; stopping 512 bytes short
+# does not. 512 is what we keep away from, which is deep inside the trailer block's 0xFF
+# padding (a trailer parses from offset 0, so nothing readable lives there).
+#
+# v1 never hit this: its update target was the FRONT slot, so no loop walked to the end of the
+# partition. Under v2 slot B IS the end of the partition, so the erase-verify walks straight
+# into it -- and `full` survived only by luck, because its next flash touch after the verify is
+# a driver-mediated write, which resets the peripheral before anything reads XIP again. `delta`
+# reads its patch base straight off XIP and dies there instead.
+_XIP_TAIL_GUARD = 512
+
 # Bytes of image written between PROACTIVE, relax()-fed garbage collections during the write.
 # Preallocation removed the megabyte-scale delta churn, but small residual churn (memoryview
 # slices, the compressed-download reader) still trips an automatic GC every few MB -- and on the
@@ -793,6 +815,19 @@ class _GenReader:
 
 # --- pure: the flash write (host-testable; all I/O injected) -----------------
 
+def _clamp_to(off, n, end):
+    """``n``, shortened so that ``[off, off + n)`` never reaches past ``end``; 0 if it starts
+    past it. Used to keep every XIP alias clear of the guarded tail of a memory-mapped
+    partition -- see :data:`_XIP_TAIL_GUARD` for why touching it bricks the install.
+
+    Pure arithmetic, deliberately lifted out of the closure that uses it so it is host-tested
+    rather than only witnessed on hardware: an off-by-one here either re-opens a silent brick
+    or silently stops verifying the tail of every slot."""
+    if off + n <= end:
+        return n
+    return end - off if off < end else 0
+
+
 def _is_blank(chunk):
     """True if ``chunk`` is all 0xFF -- already-erased flash we needn't rewrite.
 
@@ -933,7 +968,12 @@ def _install_stream(source, write, readback, slot_size, block, feed,
             #                                          and a page program also runs with interrupts
             #                                          disabled -- so feed again right before it
             write(off, chunk)
-            if readback(off, n) != chunk:
+            rb = readback(off, n)                    # SHORT only at the very end of an XIP
+            k = len(rb)                              # partition (see _XIP_TAIL_GUARD); every
+            #                                          other port always returns the full n, so
+            #                                          the slice below never runs on them and the
+            #                                          common path stays allocation-free.
+            if rb != (chunk if k == n else chunk[:k]):
                 raise OSError("write verify failed at %d" % off)
         off += n
         feed()
@@ -1374,16 +1414,22 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     else:                                             # XIP-mapped romfs (stm32/alif/samd)
         log.debug("install: write path XIP")
         base = uctypes.addressof(part)                # partition XIP base
+        # Never hand out an alias that reaches the end of the mapped partition -- a bulk read of
+        # it wedges the QUADSPI and silently kills the board mid-install (see _XIP_TAIL_GUARD).
+        # Reads are SHORTENED, never moved, and only ever at the very end of the last slot, which
+        # is trailer padding: a trailer parses from offset 0 and the erase/write verifies simply
+        # cover that much less. Everything else is byte-for-byte the alias it was before.
+        readable_end = len(part) - _XIP_TAIL_GUARD
 
         def read_at(off, n):                          # absolute partition offset
-            r = uctypes.bytearray_at(base + off, n)
+            r = uctypes.bytearray_at(base + off, _clamp_to(off, n, readable_end))
             if log and "r" not in _seen:
                 _seen.add("r")
                 log.debug("install: readback XIP")
             return r  # hil-residual: bare return of the XIP readback alias
 
         def base_read_at(off, n):
-            r = uctypes.bytearray_at(base + off, n)
+            r = uctypes.bytearray_at(base + off, _clamp_to(off, n, readable_end))
             if log and "br" not in _seen:
                 _seen.add("br")
                 log.debug("install: back read XIP")

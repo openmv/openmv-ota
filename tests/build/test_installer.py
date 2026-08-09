@@ -223,6 +223,35 @@ def test_is_blank():
     assert inst("_is_blank")(b"") is True
 
 
+# --- _clamp_to: the XIP tail guard ------------------------------------------
+#
+# This arithmetic is what keeps every memory-mapped alias clear of the last bytes of the
+# partition. Getting it wrong in one direction re-opens a SILENT BRICK (a bulk read that
+# reaches the end of an STM32H7 QUADSPI wedges the peripheral and the board just stops
+# mid-install); in the other it stops verifying the tail of every slot. Hence unit tests
+# rather than trusting a hardware run to notice.
+
+@pytest.mark.parametrize("off,n,end,want", [
+    (0, 4096, 8 << 20, 4096),                 # nowhere near the end: untouched
+    ((8 << 20) - 4096 - 512, 4096, (8 << 20) - 512, 4096),   # ends exactly ON the guard: untouched
+    ((8 << 20) - 4096, 4096, (8 << 20) - 512, 3584),         # the final block: shortened
+    ((8 << 20) - 16, 16, (8 << 20) - 512, 0),                # wholly inside the guard: nothing
+    ((8 << 20) - 512, 512, (8 << 20) - 512, 0),              # starts exactly at the guard
+    (0, 0, 8 << 20, 0),
+])
+def test_clamp_to(off, n, end, want):
+    assert inst("_clamp_to")(off, n, end) == want
+
+
+def test_clamp_to_never_reaches_the_guarded_tail():
+    """The property that actually matters: no (off, n) can produce a range crossing ``end``."""
+    end = 4096 - 512
+    for off in range(0, 4096, 7):
+        n = inst("_clamp_to")(off, 4096 - off, end)
+        assert n >= 0
+        assert off + n <= end or n == 0
+
+
 # --- _Reader ----------------------------------------------------------------
 
 def _recv_of(*pieces):
@@ -648,6 +677,58 @@ def test_install_stream_writes_and_arms():
     # the all-0xFF gap was never written (skipped)
     assert all(off < len(body) or off >= front - block for off, _ in flash.writes
                if off < front - 2 * block)
+
+
+def test_install_stream_accepts_a_readback_shortened_by_the_xip_tail_guard():
+    """On an XIP port the last readback of the last slot comes back SHORT -- the guard keeps the
+    alias off the final bytes of the partition. The write still has to verify: comparing the full
+    chunk against a short read would fail every install on the H7 Plus, which is the board this
+    guard exists for."""
+    block, front, guard = 4096, 4 * 4096, 512
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    image[front - block:front - block + 8] = b"TRAILER."
+    image[front - 100:] = b"\x5a" * 100          # real data inside the guarded tail
+
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    readable = front - guard
+    reads = []
+
+    def readback(off, n):
+        k = inst("_clamp_to")(off, n, readable)
+        reads.append((off, n, k))
+        return bytes(flash.mem[off:off + k])
+
+    inst("_install_stream")(_SourceOf(bytes(image)), flash.write, readback,
+                            front, block, _noop, None, None, None, None, None, None, 0)
+
+    # it did not raise -> the shortened verify was accepted...
+    assert any(k < n for _, n, k in reads), "the guard never actually shortened a read"
+    # ...and the guarded bytes were still WRITTEN, they are merely not read back
+    assert bytes(flash.mem[front - 100:]) == b"\x5a" * 100
+
+
+def test_install_stream_still_catches_a_bad_write_outside_the_guard():
+    """The shortened compare must not become a blanket 'any readback passes'."""
+    block, front, guard = 4096, 4 * 4096, 512
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    readable = front - guard
+
+    def readback(off, n):
+        k = inst("_clamp_to")(off, n, readable)
+        buf = bytearray(flash.mem[off:off + k])
+        if off == 0 and buf:
+            buf[0] ^= 0xFF                        # corrupt a byte well clear of the guard
+        return bytes(buf)
+
+    with pytest.raises(OSError):
+        inst("_install_stream")(_SourceOf(bytes(image)), flash.write, readback,
+                                front, block, _noop, None, None, None, None, None, None, 0)
 
 
 def test_install_stream_stamps_the_counter_and_carries_the_floor():
