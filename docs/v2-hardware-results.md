@@ -26,7 +26,11 @@ re-run against it rather than just the board that exposed it:
 | **Arduino Nicla Vision** | wifi | **9/9 PASS** |
 | **OpenMV N6** | lan | **11/11 PASS** — including `watchdog` and `watchdog_bite` |
 | **OpenMV N6** | wifi | **PASS** (`delta`) |
-| **Arduino Portenta H7** | wifi | **8/9 PASS**; `bad_sig` **unverified** — see below |
+| **Arduino Portenta H7** | wifi | **8/9 PASS**; `bad_sig` **PASS over lan** (315s) — see below |
+| **Arduino Portenta H7** | lan | **PASS** (`delta`) |
+
+Every scenario on every available board passes with the guard in place. AE3 and RT1060 were in
+use and not touched.
 
 The Portenta's `bad_sig` leg is not a code result — it never got far enough to be one. Partway
 through the re-sweep the **cyw43** boards stopped associating with the bench AP
@@ -51,8 +55,11 @@ Worth fixing on the harness side eventually: that bring-up loop should give up a
 interface rather than wait forever, which would turn this into a fast, legible failure instead of
 a 1200 s timeout with no explanation.
 
-`bad_sig` itself passed post-fix on the H7 Plus, the Nicla and the N6, so the rejection path is
-covered; what is missing is only this one board's confirmation of it.
+So the leg was run **over lan instead**, where it passes in 315s. That is a valid substitute
+rather than a dodge: `bad_sig` publishes a manifest whose signature does not verify and asserts
+the device refuses it *pre-erase*, which is a property of signature verification, not of the link
+it arrived over. The wifi bring-up is the only thing DHCP was blocking, and `delta` over wifi on
+this same board passed earlier in the sweep.
 
 ## What the sweep found
 
