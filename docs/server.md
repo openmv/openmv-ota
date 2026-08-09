@@ -171,7 +171,20 @@ openmv-ota client publish . -b OPENMV_N6                       # uploads all of 
 ```
 
 Lose the build directory, re-clone the repo, or hand the release to a colleague, and the bases
-are still there. A release whose image has aged out of retention returns `410`-shaped
+are still there.
+
+Retention has **no depth limit** — images are small, and only you know how long a version stays
+in the field, so nothing expires on its own. Reclaiming space is a deliberate act:
+
+```
+openmv-ota client prune --release rel_abc123      # delete that release's stored objects
+```
+
+The release **row** survives: it is the audit trail and the anti-rollback history, and it is
+what lets `GET /releases/{id}/image` answer *"image is no longer retained"* rather than a bare
+404 — a caller must be able to tell "existed, bytes gone" from "never existed". Pruning is
+**refused while a rollout still offers that release**, because those are the devices
+downloading it right now; pause or roll back first, or pass `--force` if you mean it. A release whose image has aged out of retention returns `410`-shaped
 `404 image is no longer retained` — the release row survives its bytes, and that is a different
 problem for the caller than "no such release".
 

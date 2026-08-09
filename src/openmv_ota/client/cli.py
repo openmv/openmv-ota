@@ -82,6 +82,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_bases)
     p_bases.set_defaults(func=cmd_bases, _command="client bases")
 
+    p_prune = sub.add_parser("prune", help="delete a release's stored artifacts (keeps history)")
+    p_prune.add_argument("--release", required=True, help="release id whose objects to delete")
+    p_prune.add_argument("--force", action="store_true",
+                         help="delete even while a rollout still offers this release")
+    _creds(p_prune)
+    p_prune.set_defaults(func=cmd_prune, _command="client prune")
+
     p_bind = sub.add_parser("bind", help="bind a device to your account (re-account / recover)")
     p_bind.add_argument("--id", required=True)
     _creds(p_bind)
@@ -252,6 +259,18 @@ def cmd_bases(args: argparse.Namespace) -> int:
             path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, rel["version"]))
             path.write_bytes(api.release_image(rel["release_id"]))
             print("%s  (%s, %d bytes)" % (path, rel["version"], path.stat().st_size))
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return 0
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    """Delete a release's stored objects. The release row (audit + version history) stays."""
+    try:
+        cfg = config.resolve(args.server, args.token)
+        res = _make_api(cfg).delete_release_artifacts(args.release, force=args.force)
+        print("deleted %d object(s) for %s" % (len(res["deleted"]), res["release_id"]))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

@@ -400,6 +400,79 @@ def test_release_image_404s_when_not_retained(tmp_path):
                                headers=AUTH).status_code == 404
 
 
+def _seeded_release(app, store, *, release_id="rel1", deltas=()):
+    storage = app.state.storage
+    storage.put("m/%s" % release_id, b"MANIFEST", "application/octet-stream")
+    storage.put("i/%s" % release_id, b"IMAGE", "application/gzip")
+    reps = [{"format": "full", "url": "x-ota.img.gz", "size": 5}]
+    for name in deltas:
+        storage.put("artifacts/%s/%s" % (release_id, name), b"PATCH", "application/gzip")
+        reps.append({"format": "ocdl", "url": name, "size": 1, "base_payload_version": 1})
+    store.add_release(release_id=release_id, product_id=BID, product="P", version="1.0.0",
+                      payload_version=0x01000000, min_platform_version=0,
+                      image_sha256="ab" * 32, image_size=5, representations=reps,
+                      manifest_key="m/%s" % release_id, image_key="i/%s" % release_id)
+    return storage
+
+
+def test_prune_deletes_every_object_and_keeps_the_row(tmp_path):
+    """Retention has no depth limit, so reclaiming space is a deliberate act. The release ROW
+    survives it: that is the audit trail and the anti-rollback history, and the image endpoint
+    already distinguishes 'existed, bytes gone' from 'never existed'."""
+    app, store = _app(tmp_path, scopes=("publish", "observe"))
+    storage = _seeded_release(app, store, deltas=("x-ota.delta-1.0.0.gz",))
+    c = TestClient(app)
+    r = c.delete("/api/v1/admin/releases/rel1/artifacts", headers=AUTH)
+    assert r.status_code == 200 and len(r.json()["deleted"]) == 3   # manifest + image + delta
+
+    assert store.get_release("rel1") is not None                    # history kept
+    assert c.get("/api/v1/admin/releases/rel1/image", headers=AUTH).status_code == 404
+    from openmv_ota.server.errors import ServerError
+    for key in ("m/rel1", "i/rel1", "artifacts/rel1/x-ota.delta-1.0.0.gz"):
+        try:
+            storage.get(key)
+            raise AssertionError("%s survived the prune" % key)
+        except ServerError:
+            pass
+    # deleting again is not an error -- the operator should not have to care what is left
+    assert c.delete("/api/v1/admin/releases/rel1/artifacts", headers=AUTH).json()["deleted"] == []
+
+
+def test_prune_refuses_while_a_rollout_still_offers_the_release(tmp_path):
+    """Deleting mid-rollout turns every in-flight download into a 404."""
+    app, store = _app(tmp_path, scopes=("publish", "observe"))
+    _seeded_release(app, store)
+    store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID,
+                      cohort="__default__", percent=100)
+    c = TestClient(app)
+    r = c.delete("/api/v1/admin/releases/rel1/artifacts", headers=AUTH)
+    assert r.status_code == 409 and "ro1" in r.json()["detail"]
+    assert c.get("/api/v1/admin/releases/rel1/image", headers=AUTH).status_code == 200
+
+    # pausing the rollout clears the way...
+    store.update_rollout("ro1", state="paused")
+    assert c.delete("/api/v1/admin/releases/rel1/artifacts", headers=AUTH).status_code == 200
+
+
+def test_prune_force_overrides_the_rollout_guard(tmp_path):
+    app, store = _app(tmp_path, scopes=("publish", "observe"))
+    _seeded_release(app, store)
+    store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID,
+                      cohort="__default__", percent=100)
+    r = TestClient(app).delete("/api/v1/admin/releases/rel1/artifacts?force=true", headers=AUTH)
+    assert r.status_code == 200
+    assert [e for e in store.read_audit() if e["action"] == "release.artifacts.delete"]
+
+
+def test_prune_is_account_scoped(tmp_path):
+    app, store = _app(tmp_path, scopes=("publish", "observe"))
+    _seeded_release(app, store)
+    store.add_token(hash_token("other"), "them", ["publish"], account_id="acctB")
+    r = TestClient(app).delete("/api/v1/admin/releases/rel1/artifacts",
+                               headers={"Authorization": "Bearer other"})
+    assert r.status_code == 404                     # not 403: no probing for release ids
+
+
 def test_fleet_devices_audit(tmp_path):
     app, store = _app(tmp_path)
     store.upsert_device(device_id="d1", product_id=BID, board="OPENMV_N6", current_version="1.0.0",

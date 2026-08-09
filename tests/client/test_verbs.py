@@ -163,6 +163,35 @@ def test_bases_reports_when_there_is_no_history_yet(wired, tmp_path, capsys):
     assert "no retained releases" in capsys.readouterr().err
 
 
+def test_prune_deletes_a_release_s_objects(wired, tmp_path, capsys):
+    """Retention is unbounded, so removing a release's bytes is a deliberate operator action.
+    The release row -- audit trail and version history -- is untouched."""
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    rel_id = store.list_releases(BID)[0]["release_id"]
+    capsys.readouterr()
+
+    assert main(["client", "prune", "--release", rel_id]) == 0
+    assert "deleted 2 object(s)" in capsys.readouterr().out    # manifest + image
+    assert store.get_release(rel_id) is not None               # history survives
+
+
+def test_prune_refuses_a_release_a_rollout_still_offers(wired, tmp_path, capsys):
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6",
+                 "--rollout", "beta:100"]) == 0
+    rel_id = store.list_releases(BID)[0]["release_id"]
+    capsys.readouterr()
+    assert main(["client", "prune", "--release", rel_id]) == 1
+    assert "still being offered" in capsys.readouterr().err
+    # ...and --force is the explicit override
+    assert main(["client", "prune", "--release", rel_id, "--force"]) == 0
+
+
 def test_publish_missing_artifacts(wired, tmp_path, capsys):
     store, _ = wired
     assert main(["client", "publish", str(tmp_path / "empty"), "-b", "OPENMV_N6"]) == 2

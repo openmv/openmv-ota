@@ -64,6 +64,10 @@ class Api:
                               % (release_id, resp.status_code, _detail(resp)), exit_code=1)
         return resp.content
 
+    def delete_release_artifacts(self, release_id: str, force: bool = False):
+        return self._req("DELETE", "/api/v1/admin/releases/%s/artifacts" % release_id,
+                         params={"force": "true"} if force else {})
+
     def create_rollout(self, release_id: str, cohort: str, percent: float):
         return self._req("POST", "/api/v1/admin/rollouts",
                          json={"release_id": release_id, "cohort": cohort, "percent": percent})

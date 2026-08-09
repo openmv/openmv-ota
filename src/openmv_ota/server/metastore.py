@@ -282,6 +282,16 @@ class SqlMetadataStore:
             params = (*params, limit, offset)
         return [_d(r) for r in self.query_all(sql, params)]
 
+    def rollouts_for_release(self, release_id: str, account_id=None) -> list[dict]:
+        """Every rollout pointing at a release. The guard on deleting its artifacts: a rollout
+        that is still offering a release has devices mid-download of it."""
+        sql = "SELECT * FROM rollouts WHERE release_id = ?"
+        params: tuple = (release_id,)
+        if account_id is not None:
+            sql += " AND account_id = ?"
+            params = (*params, account_id)
+        return [_d(r) for r in self.query_all(sql, params)]
+
     def update_rollout(self, rollout_id: str, **fields) -> None:
         fields = {**fields, "updated_at": _now_iso()}       # column names are code-controlled
         assigns = ", ".join(k + " = ?" for k in fields)
