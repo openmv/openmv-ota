@@ -28,14 +28,31 @@ re-run against it rather than just the board that exposed it:
 | **OpenMV N6** | wifi | **PASS** (`delta`) |
 | **Arduino Portenta H7** | wifi | **8/9 PASS**; `bad_sig` **unverified** — see below |
 
-The Portenta's `bad_sig` leg is not a code result. Partway through the re-sweep the bench AP
-(`TP-Link_7384`) stopped accepting associations: the device boots, gets its `device_id`, and then
-never reaches `network up, starting run()`, so no check-in happens and no marker after boot is
-ever witnessed. It is not the board and not the scenario — a Portenta leg that had passed 90
-minutes earlier (`bad_version`) fails identically, and so does the Nicla, which had just gone
-9/9 on the same AP. The nodes' wired LAN is unaffected. `bad_sig` itself passed post-fix on the
-H7 Plus, the Nicla and the N6, so the path is covered; what is missing is this one board's
-confirmation.
+The Portenta's `bad_sig` leg is not a code result — it never got far enough to be one. Partway
+through the re-sweep the **cyw43** boards stopped associating with the bench AP
+(`TP-Link_7384`): the device boots, gets its `device_id`, and then never reaches `network up,
+starting run()`, so no check-in happens and no marker past boot is ever witnessed.
+
+It is not the board, not the scenario, and not the AP being off the air:
+
+- a Portenta leg that had passed 90 minutes earlier (`bad_version`) fails identically;
+- so does the Nicla, which had just gone 9/9 on the same AP;
+- but the **H7 Plus passes `delta` over wifi** during the same window — it reaches the AP through
+  an ATWINC1500 rather than a cyw43;
+- and the Portenta's own **lan** `delta` passes, so that board is healthy.
+
+Two cyw43 boards failing while a WINC board succeeds points at the lease rather than the radio:
+`isconnected()` only goes true once DHCP completes, and the bench app's bring-up is
+`while not wl.isconnected(): sleep_ms(200)` — no timeout, so a DHCP that never lands is
+indistinguishable from a hang and burns the whole scenario. A board already holding a lease
+(the H7 Plus) keeps working while new clients cannot get one.
+
+Worth fixing on the harness side eventually: that bring-up loop should give up and rebuild the
+interface rather than wait forever, which would turn this into a fast, legible failure instead of
+a 1200 s timeout with no explanation.
+
+`bad_sig` itself passed post-fix on the H7 Plus, the Nicla and the N6, so the rejection path is
+covered; what is missing is only this one board's confirmation of it.
 
 ## What the sweep found
 
