@@ -44,6 +44,22 @@ least one delta op was parsed.
   in-place adds take **7 ms — ~36 MB/s**, so the whole 4 MiB slot is ~115 ms of ulab. It is
   not the bottleneck. Do not re-chase this.
 
+## Sharpened by a second round of measurement
+
+- **The download is not the problem, on size grounds.** The delta artifact is **4,675 bytes**
+  compressed (the full image is 164,706). A stall while fetching 4.6 KB is not a bandwidth or
+  transfer-length story. What the delta *does* do is inflate to **4,194,337 bytes** — a ~900:1
+  ratio, because a diff run is almost all zeros — so the device streams 4 MiB out of
+  `DeflateIO` where the full-image path streams the same 4 MiB out of a 164 KB artifact.
+- **Inflate is fast on a comparable board.** On the Nicla (same STM32H7 family, same QSPI
+  romfs, delta passes there 9/9): 512 KiB inflated in **62 ms — 8.2 MB/s**, so 4 MiB is ~0.5 s.
+  Not measured on the H7 Plus itself: after its failed `reinstall` the board would not enter
+  the raw REPL, and a J-Link reset left it silent on the marker UART pending a reflash.
+
+So the surviving difference between the working and failing paths on this board is narrow:
+both write the same 4 MiB to the same flash, and the failing one additionally pulls its bytes
+through `DeflateIO` at a 900:1 expansion while interleaving base reads.
+
 ## What is still unproven
 
 The remaining suspect is the download stalling mid-patch: a recv that never returns and never
@@ -52,11 +68,18 @@ the documented **C-level park** class, and the WINC1500 is its worst case. But i
 proven — the one halt sampled a hot function rather than the blocked call, and no second
 sample was taken while genuinely stalled.
 
-**Next step when the board is free:** re-run `delta` under `ci/hil`-style stall detection and
-take *several* stacked-PC samples inside the silent window (MSP+0x18), resolving each with
-`arm-none-eabi-addr2line`. A parked mbedtls/WINC read will show up repeatedly; a slow loop
-will show a moving PC. One sample is not enough — that is the mistake this document exists to
-stop being repeated.
+**Next step when the board is free:** two things, in this order.
+
+1. **Measure `DeflateIO` on the H7 Plus itself**, with the same 512 KiB-of-zeros stream used on
+   the Nicla (build the gzip on the host and `binascii.a2b_base64` it in — this firmware's
+   `DeflateIO` has no compressor, so it cannot make its own). If it comes back at a few KB/s
+   rather than megabytes, the whole mystery is arithmetic and the fix is a bigger read window
+   on that path, not a park.
+2. Only if inflate is fast: re-run `delta` under stall detection and take **several** stacked-PC
+   samples inside the silent window (MSP+0x18), resolving each with `arm-none-eabi-addr2line`.
+   A parked mbedtls/WINC read shows up repeatedly; a slow loop shows a moving PC. One sample is
+   not enough — that is the mistake this document exists to stop being repeated, and it already
+   cost one wrong conclusion (ulab).
 
 Related: `project_c_level_park_hang`, and the openmv-ota memory note on the Nicla `full`
 download hang (same silent shape, seen once).
