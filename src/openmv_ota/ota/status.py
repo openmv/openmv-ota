@@ -11,7 +11,7 @@ torn/partial write — or an unwritten slot — reads as "not set" (the safe def
     offset 32  confirmed  the app wrote it after its self-test passed
     offset 48  repr       how the updater installed the image (REPR_FULL / REPR_DELTA)
     offset 64  counter    the install counter (u32 || ~u32) — which slot is newer
-    offset 72  attempts   one byte per trial boot consumed (0xFF -> 0x00 each)
+    offset 80  attempts   one 16-byte marker per trial boot consumed
 
 ``pending``/``tried``/``confirmed`` are the trial state machine boot.py acts on; ``repr``
 is the provenance the updater stamps beside ``pending`` so a later boot's ``status()`` can
@@ -25,8 +25,8 @@ The two v2 fields past the markers exist because A/B needs an *order* and a tria
 *budget*, and neither can be a value that gets rewritten: everything here is written over
 erased ``0xFF`` and there is no erase available after the slot's one erase pass. So the
 counter is written once (with its ones-complement, so a torn write is detectable rather
-than believed) and the attempt budget is an append region — one byte consumed per boot,
-exactly like the rollback log's append-only entries.
+than believed) and the attempt budget is an append region — one 16-byte marker consumed per
+boot, exactly like the rollback log's append-only entries.
 """
 
 from __future__ import annotations
@@ -43,7 +43,12 @@ REPR_OFFSET = 48
 # --- v2 fields (mirror of boot.py's _COUNTER_OFF / _ATTEMPTS_OFF) ------------
 COUNTER_OFFSET = 64
 COUNTER_SIZE = 8                     # u32 value || u32 ~value
-ATTEMPTS_OFFSET = 72
+# ONE 16-BYTE MARKER PER ATTEMPT. 16 is the portable flash write unit here -- exactly one AE3
+# MRAM write unit, and what every marker above already uses. A one-byte write is NOT portable:
+# the N6's XSPI runs octal DTR (two bytes per clock) and a single-byte program hard faults in
+# the driver -- silently, on the first boot of every trial. Found on hardware.
+ATTEMPT_UNIT = 16
+ATTEMPTS_OFFSET = 80                 # 16-byte aligned, clear of the counter at 64..71
 ATTEMPTS_MAX = 64                    # a slot needing 64 boots to come up is not coming back
 _MASK = 0xFFFFFFFF
 

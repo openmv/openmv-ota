@@ -58,6 +58,18 @@ def _status(pending, tried, confirmed):
                                            confirmed=confirmed)
 
 
+def _spend_attempts(status, n):
+    """Consume ``n`` attempt markers in a status sector, the way boot.py does on device.
+
+    16 bytes each, not one -- see the constants test. Writing single bytes here would let a
+    test pass against a layout the N6 hard faults on, which is exactly what happened."""
+    out = bytearray(status)
+    for i in range(n):
+        off = B._ATTEMPTS_OFF + i * B._ATTEMPT_UNIT
+        out[off:off + B._ATTEMPT_UNIT] = B.ATTEMPT
+    return bytes(out)
+
+
 def _slot(body, trailer_bytes, status_sector, slot_size):
     out = bytearray(b"\xff" * slot_size)
     out[0:len(body)] = body
@@ -82,8 +94,14 @@ def test_constants_match_host():
     assert B._ROLLBACK_ENTRY == host_rollback.ENTRY_SIZE
     assert (B._COUNTER_OFF, B._COUNTER_LEN) == (
         host_status.COUNTER_OFFSET, host_status.COUNTER_SIZE)
-    assert (B._ATTEMPTS_OFF, B._ATTEMPTS_MAX) == (
-        host_status.ATTEMPTS_OFFSET, host_status.ATTEMPTS_MAX)
+    assert (B._ATTEMPTS_OFF, B._ATTEMPTS_MAX, B._ATTEMPT_UNIT) == (
+        host_status.ATTEMPTS_OFFSET, host_status.ATTEMPTS_MAX, host_status.ATTEMPT_UNIT)
+    # EVERY flash write this system makes is 8 or 16 bytes. A 1-byte write is not portable --
+    # the N6's octal-DTR XSPI hard faults on one -- and the attempt marker was the only odd
+    # size in the tree until hardware found it.
+    assert B._ATTEMPT_UNIT == B.MARKER_SIZE == 16
+    assert B._ATTEMPTS_OFF % B.MARKER_SIZE == 0
+    assert len(B.ATTEMPT) == B._ATTEMPT_UNIT
 
 
 def test_install_counter_reads_the_host_encoding():
@@ -225,9 +243,7 @@ _V2_MARKERS = [
 def test_evaluate_slot_v2_truth_table(pending, confirmed, attempts, expect):
     priv, pub = _key()
     body = b"app" * 40
-    status = bytearray(_status(pending, False, confirmed))
-    for i in range(attempts):
-        status[72 + i] = 0x00
+    status = _spend_attempts(_status(pending, False, confirmed), attempts)
     args = (_trailer(priv, 0x100, body), body, status)
     if expect in ("trial", "mount"):
         t, consume = _eval(*args, trusted={0x100: pub}, max_attempts=3)
@@ -257,8 +273,7 @@ def test_max_attempts_of_one_is_the_old_one_shot_behaviour():
                        trusted={0x100: pub}, max_attempts=1)
     assert consume is True                       # first boot still gets its one attempt
 
-    spent = bytearray(_status(True, False, False))
-    spent[72] = 0x00
+    spent = _spend_attempts(_status(True, False, False), 1)
     with pytest.raises(B.OtaReject, match="trial-failed"):
         _eval(_trailer(priv, 0x100, body), body, spent, trusted={0x100: pub}, max_attempts=1)
 
@@ -310,8 +325,7 @@ def test_a_spent_trial_falls_back_to_the_OTHER_SLOT_not_a_factory_image():
     a, bdy_b = b"aaa" * 40, b"bbb" * 40
     sa = _counter(bytearray(_status(True, True, True)), 3)
     sb = _counter(bytearray(_status(True, False, False)), 4)
-    for i in range(3):
-        sb[72 + i] = 0x00                                       # attempts exhausted
+    sb = bytearray(_spend_attempts(sb, 3))                                       # attempts exhausted
     dev = _Dev(_partition(_front(priv, 0x100, a, sa), _back(priv, 0x100, bdy_b, sb)))
     slot, _t, reason = dev.boot({0x100: pub})
     assert slot == "A" and "trial-failed" in reason
@@ -396,17 +410,21 @@ def test_a_torn_counter_is_rejected_rather_than_believed():
 
 def test_attempts_append_rather_than_increment():
     """Flash cannot be incremented in place without an erase, and there is none available here:
-    the slot is erased once at install and everything after is a 1->0 program. One byte per boot
-    costs nothing, and a torn write costs one attempt instead of corrupting a count."""
+    the slot is erased once at install and everything after is a 1->0 program. Appending costs
+    nothing, and a torn write costs one attempt instead of corrupting a count.
+
+    One 16-BYTE marker per boot, not one byte: 16 is the portable write unit (one AE3 MRAM
+    write, and what every other marker uses). A 1-byte program hard faults on the N6's octal
+    DTR XSPI -- silently, on the first boot of every trial -- which is how hardware found it."""
     st = _blank_status()
     assert B.attempts_used(st) == 0
-    assert B.attempt_offset(st) == 72
+    assert B.attempt_offset(st) == B._ATTEMPTS_OFF
 
-    st[72] = 0x00
+    st = bytearray(_spend_attempts(st, 1))
     assert B.attempts_used(st) == 1
-    assert B.attempt_offset(st) == 73
+    assert B.attempt_offset(st) == B._ATTEMPTS_OFF + B._ATTEMPT_UNIT
 
-    st[73] = 0x00
+    st = bytearray(_spend_attempts(st, 2))
     assert B.attempts_used(st) == 2
 
 
@@ -414,8 +432,7 @@ def test_the_attempt_region_is_bounded():
     """A slot that has needed 64 boots is not coming back; the region must not run off the end
     of the status sector into whatever follows."""
     st = _blank_status()
-    for i in range(64):
-        st[72 + i] = 0x00
+    st = bytearray(_spend_attempts(st, 64))
     assert B.attempts_used(st) == 64
     assert B.attempt_offset(st) is None
 
@@ -558,8 +575,7 @@ def test_a_slot_whose_attempt_region_is_full_is_not_bootable():
     a, bdy_b = b"aaa" * 40, b"bbb" * 40
     sa = _counter(bytearray(_status(True, True, True)), 3)
     sb = _counter(bytearray(_status(True, False, False)), 4)
-    for i in range(64):
-        sb[72 + i] = 0x00                      # region full, but max_attempts is higher still
+    sb = bytearray(_spend_attempts(sb, 64))                      # region full, but max_attempts is higher still
     dev = _Dev(_partition(_front(priv, 0x100, a, sa), _back(priv, 0x100, bdy_b, sb)))
     ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE,
                    FRONT_SIZE, BLOCK, PRODUCT_ID, {0x100: pub}, PLATFORM, max_attempts=999)

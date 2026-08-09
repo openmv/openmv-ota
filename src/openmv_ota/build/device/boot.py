@@ -77,7 +77,17 @@ _CONFIRMED_OFF = 32
 # the single-sector boards.
 _COUNTER_OFF = 64                       # u32 value || u32 ~value -- a torn write is detectable
 _COUNTER_LEN = 8
-_ATTEMPTS_OFF = 72                      # one byte per boot attempt: 0xFF -> 0x00 as each is used
+# ONE 16-BYTE MARKER PER BOOT ATTEMPT, not one byte.
+#
+# 16 is the portable flash write unit in this system -- it is exactly one AE3 MRAM write unit,
+# and it is what every status marker already uses. A ONE-BYTE write is not portable, and the
+# N6 proves it: its XSPI runs in octal DTR mode, which transfers two bytes per clock, and a
+# single-byte program HARD FAULTS inside xspi_write_888_dtr_ext. That is a silent death -- no
+# exception, no log line, no reset -- on the first boot of every trial, which is the worst
+# possible place for it. Caught on hardware; the whole system otherwise only ever writes 8- or
+# 16-byte units, so this was the one odd size in the tree.
+_ATTEMPT_UNIT = 16
+_ATTEMPTS_OFF = 80                      # 16-byte aligned, clear of the counter at 64..71
 _ATTEMPTS_MAX = 64                      # ...capped; a slot that needs 64 boots is not coming back
 DEFAULT_MAX_ATTEMPTS = 3                # boots a trial gets to confirm (openmv-ota.toml may lower it)
 
@@ -89,6 +99,8 @@ def _marker(label):
 PENDING = _marker(b"pending")
 TRIED = _marker(b"tried")
 CONFIRMED = _marker(b"confirmed")
+ATTEMPT = _marker(b"attempt")           # written once per trial boot; see _ATTEMPT_UNIT
+_BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
 
 # --- Anti-rollback floor (mirror of openmv_ota.ota.rollback) ----------------
 _ROLLBACK_ENTRY = 8                     # u32 version || u32 ~version, in a slot's rollback sector
@@ -195,12 +207,15 @@ def install_counter(status):
 
 def attempts_used(status):
     """How many boot attempts this slot has consumed (see ``attempt_offset``)."""
-    region = bytes(status[_ATTEMPTS_OFF:_ATTEMPTS_OFF + _ATTEMPTS_MAX])
+    region = bytes(status[_ATTEMPTS_OFF:_ATTEMPTS_OFF + _ATTEMPTS_MAX * _ATTEMPT_UNIT])
     used = 0
-    for b in region:
-        if b == 0xFF:
+    off = 0
+    n = len(region)
+    while off + _ATTEMPT_UNIT <= n:
+        if region[off:off + _ATTEMPT_UNIT] == _BLANK_ATTEMPT:
             break
         used += 1
+        off += _ATTEMPT_UNIT
     return used
 
 
@@ -214,7 +229,7 @@ def attempt_offset(status):
     used = attempts_used(status)
     if used >= _ATTEMPTS_MAX:
         return None
-    return _ATTEMPTS_OFF + used
+    return _ATTEMPTS_OFF + used * _ATTEMPT_UNIT
 
 
 def select_slot(candidates):
@@ -423,7 +438,7 @@ class OtaBoot:
             if off is None:
                 raise OtaReject("trial-attempts-full")
             try:
-                self.write_marker(offset + size - 2 * self.block + off, b"\x00")
+                self.write_marker(offset + size - 2 * self.block + off, ATTEMPT)
             except OSError:
                 # Cannot record the attempt, so cannot bound the trial. Running it anyway would
                 # be an untracked trial: if it hung, the next boot could not tell to move on.
