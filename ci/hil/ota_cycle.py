@@ -1934,7 +1934,10 @@ def publish_update(board, version, variant="delta"):
         # A full-only build does NOT produce a .delta.gz, but a prior delta build left one in
         # the build dir -- and `client publish` uploads every artifact present, so the server
         # rejects (delta uploaded, manifest declares none). Drop the stale delta first.
-        sh("rm -f %s/build/%s-ota.delta.gz" % (CFG["project"], board), check=False)
+        # (Belt and braces: `client publish` now uploads only what the SIGNED manifest declares,
+        # so a stale delta on disk is ignored rather than rejected by the server. Clearing it
+        # keeps the build dir honest, and the glob covers the v2 per-base naming.)
+        sh("rm -f %s/build/%s-ota.delta*.gz" % (CFG["project"], board), check=False)
     subprocess.run(build, env=penv, check=True, timeout=900)
     _s = artifact_sizes(board)   # log the real download sizes -> ota_metrics.py folds them per run
     log("OTA sizes: manifest=%s  full=%s  delta=%s%s"
@@ -2004,7 +2007,10 @@ def _tamper(board, which):
         # (see publish_update): a delta's decompressed patch has structure a flip would break at
         # the patch parser, not the sha. Size is unchanged (a 1-byte flip), so only the sha moves.
         import gzip
-        fulls = [p for p in imgs if os.path.dirname(p).endswith(rel) and not p.endswith(".delta.gz")]
+        # Select the FULL image by its own name. "not *.delta.gz" was the v1 test and it no
+        # longer excludes anything -- v2 deltas are named `-ota.delta-<base>.gz`.
+        fulls = [p for p in imgs
+                 if os.path.dirname(p).endswith(rel) and p.endswith("-ota.img.gz")]
         target = fulls[-1] if fulls else newest
         with open(target, "rb") as f:
             raw = bytearray(gzip.decompress(f.read()))
@@ -2015,18 +2021,26 @@ def _tamper(board, which):
         log("  tampered image_body byte@%d of %s (re-gzipped; sha256 now mismatches)"
             % (mid, os.path.basename(target)))
         return
-    # image: mid-stream flip -> the download decompress/sha256 fails AFTER the FRONT erase.
-    deltas = [p for p in imgs if os.path.dirname(p).endswith(rel) and p.endswith(".delta.gz")]
-    target = deltas[-1] if deltas else newest
-    with open(target, "r+b") as f:
-        f.seek(0, 2)
-        n = f.tell()
-        mid = n // 2                                     # flip one byte mid-stream
-        f.seek(mid)
-        b = f.read(1)
-        f.seek(mid)
-        f.write(bytes([b[0] ^ 0xFF]))
-    log("  tampered %s byte@%d of %s" % (which, mid, os.path.basename(target)))
+    # image: mid-stream flip -> the download decompress/sha256 fails AFTER the slot erase.
+    #
+    # EVERY representation gets flipped, not just one. A v2 release ships a full image AND one
+    # delta per base version, and the device picks whichever matches the release it is running
+    # -- so corrupting a single artifact leaves the scenario at the mercy of that choice. It
+    # already bit: this used to target `*.delta.gz`, the v1 name, so under v2 it flipped the
+    # full image while the device happily installed the untouched delta and the scenario failed
+    # with `install.armed` where it expected a fallback. Tampering the whole set makes the test
+    # say what it means -- "the image this device downloads is corrupt" -- whatever it picks.
+    reps = [p for p in imgs if os.path.dirname(p).endswith(rel)]
+    for target in reps:
+        with open(target, "r+b") as f:
+            f.seek(0, 2)
+            n = f.tell()
+            mid = n // 2                                 # flip one byte mid-stream
+            f.seek(mid)
+            b = f.read(1)
+            f.seek(mid)
+            f.write(bytes([b[0] ^ 0xFF]))
+        log("  tampered %s byte@%d of %s" % (which, mid, os.path.basename(target)))
 
 
 def device_record():
