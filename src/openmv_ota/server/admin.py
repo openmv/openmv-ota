@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from . import live as live_mod
@@ -410,6 +410,35 @@ def _with_fallback_version(rows: list[dict]) -> list[dict]:
         packed = row.get("fallback_payload_version")
         row["fallback_version"] = decode_app_version(packed) if packed else None
     return rows
+
+
+@admin.get("/releases/{release_id}/image")
+def release_image(release_id: str, request: Request,
+                  principal: Principal = Depends(require_scope("observe"))):
+    """Download a retained release's image -- the bytes needed to build a delta FROM it.
+
+    The server keeps every published image, and this is what that retention is for. A delta
+    must be named in the SIGNED manifest, and the server never holds signing keys, so it can
+    never generate one itself: the maker builds deltas locally and therefore needs the older
+    images. Serving them back means a build machine does not have to hoard artifacts for every
+    version still in the field -- lose the directory, re-clone the repo, or hand the release
+    to a colleague, and the bases are still there.
+
+    Account-scoped like every other release read: another account's release is a 404, not a
+    403, so this cannot be used to probe for release ids."""
+    from .errors import ServerError
+
+    st = request.app.state
+    rel = _owned(st.metastore.get_release(release_id), principal)
+    try:
+        data = st.storage.get(rel["image_key"])
+    except ServerError:
+        # The row survives its bytes: a storage lifecycle rule, a bucket migration, or a
+        # retention tier that has expired. Say so plainly -- "the release exists but its image
+        # is gone" is a different problem for the caller than "no such release".
+        raise HTTPException(status_code=404,
+                            detail="image is no longer retained") from None
+    return Response(content=data, media_type="application/gzip")
 
 
 @admin.get("/devices")

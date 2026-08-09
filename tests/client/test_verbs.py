@@ -138,6 +138,31 @@ def test_publish_rejects_an_unreadable_manifest(wired, tmp_path, capsys):
     assert "unreadable manifest" in capsys.readouterr().err
 
 
+def test_bases_downloads_retained_images_for_the_build_to_diff_against(wired, tmp_path, capsys):
+    """The retention loop, end to end: publish a release, then pull its image back as a delta
+    base. The build machine keeps nothing -- the server does -- and the file lands with the
+    name `build ota-romfs --delta-from <dir>` looks for."""
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    capsys.readouterr()
+
+    dest = tmp_path / "bases"
+    assert main(["client", "bases", "-b", "OPENMV_N6", "-o", str(dest)]) == 0
+    written = sorted(p.name for p in dest.iterdir())
+    assert written == ["OPENMV_N6-base-2.0.0.img.gz"]
+    # ...and it is the published image byte-for-byte, which is what a delta must diff against
+    assert (dest / written[0]).read_bytes() == (
+        project / "build" / "OPENMV_N6-ota.img.gz").read_bytes()
+
+
+def test_bases_reports_when_there_is_no_history_yet(wired, tmp_path, capsys):
+    store, _ = wired
+    assert main(["client", "bases", "-b", "OPENMV_N6", "-o", str(tmp_path / "b")]) == 2
+    assert "no retained releases" in capsys.readouterr().err
+
+
 def test_publish_missing_artifacts(wired, tmp_path, capsys):
     store, _ = wired
     assert main(["client", "publish", str(tmp_path / "empty"), "-b", "OPENMV_N6"]) == 2

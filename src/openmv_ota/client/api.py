@@ -54,6 +54,16 @@ class Api:
         params = {"allow_republish": "true"} if allow_republish else {}
         return self._req("POST", "/api/v1/admin/releases", files=files, params=params)
 
+    def release_image(self, release_id: str) -> bytes:
+        """The raw gzipped image of a retained release -- a delta base."""
+        resp = self._client.request(
+            "GET", "/api/v1/admin/releases/%s/image" % release_id,
+            headers={"Authorization": "Bearer %s" % self._token})
+        if resp.status_code >= 400:
+            raise ClientError("GET release image %s -> %d: %s"
+                              % (release_id, resp.status_code, _detail(resp)), exit_code=1)
+        return resp.content
+
     def create_rollout(self, release_id: str, cohort: str, percent: float):
         return self._req("POST", "/api/v1/admin/rollouts",
                          json={"release_id": release_id, "cohort": cohort, "percent": percent})

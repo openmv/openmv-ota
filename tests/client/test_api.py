@@ -97,6 +97,21 @@ def test_publish_shapes_multipart_and_params():
     assert [n for n, _p in kw2["files"]] == ["manifest", "image"] and kw2["params"] == {}
 
 
+def test_release_image_returns_raw_bytes_and_maps_errors():
+    """A delta base is BYTES, not JSON, so this bypasses the json-decoding path -- including
+    for errors, where a release whose image has aged out of retention must read as an error
+    rather than as a zero-byte base that silently produces a broken delta."""
+    api, c = _api(_Resp(200, payload=None, content=b"GZIPPED-IMAGE"))
+    assert api.release_image("rel1") == b"GZIPPED-IMAGE"
+    method, path, kw = c.calls[0]
+    assert (method, path) == ("GET", "/api/v1/admin/releases/rel1/image")
+    assert kw["headers"]["Authorization"] == "Bearer tok"
+
+    api2, _ = _api(_Resp(404, {"detail": "image is no longer retained"}))
+    with pytest.raises(ClientError, match="no longer retained"):
+        api2.release_image("rel1")
+
+
 def test_rollout_calls():
     api, c = _api(_Resp(200, {}))
     api.create_rollout("r1", "beta", 5)

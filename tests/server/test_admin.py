@@ -368,6 +368,38 @@ def test_devices_cohort_filter_and_paging(tmp_path):
                      headers=AUTH).json()["devices"]) == 2
 
 
+def test_release_image_is_retained_and_downloadable(tmp_path):
+    """Retention is what makes multi-base deltas practical. A delta must be named in the
+    SIGNED manifest and the server never holds signing keys, so it can never build one itself
+    -- the maker does, locally, and therefore needs the OLD images. Keeping them server-side
+    means a build machine does not have to hoard artifacts for every version in the field."""
+    app, store = _app(tmp_path)
+    storage = app.state.storage
+    storage.put("image/rel1", b"OLD-IMAGE-BYTES", "application/gzip")
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="1.0.0",
+                      payload_version=0x01000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=15, representations=[{"format": "full", "url": "x.img.gz",
+                                                       "size": 15}],
+                      manifest_key="m/rel1", image_key="image/rel1")
+    r = TestClient(app).get("/api/v1/admin/releases/rel1/image", headers=AUTH)
+    assert r.status_code == 200 and r.content == b"OLD-IMAGE-BYTES"
+    assert r.headers["content-type"] == "application/gzip"
+
+
+def test_release_image_404s_when_not_retained(tmp_path):
+    app, store = _app(tmp_path)
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="1.0.0",
+                      payload_version=0x01000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[{"format": "full", "url": "x.img.gz",
+                                                      "size": 1}],
+                      manifest_key="m/rel1", image_key="image/gone")
+    r = TestClient(app).get("/api/v1/admin/releases/rel1/image", headers=AUTH)
+    assert r.status_code == 404 and "no longer retained" in r.json()["detail"]
+    # ...and an unknown release is a plain 404, indistinguishable from another account's
+    assert TestClient(app).get("/api/v1/admin/releases/nope/image",
+                               headers=AUTH).status_code == 404
+
+
 def test_fleet_devices_audit(tmp_path):
     app, store = _app(tmp_path)
     store.upsert_device(device_id="d1", product_id=BID, board="OPENMV_N6", current_version="1.0.0",

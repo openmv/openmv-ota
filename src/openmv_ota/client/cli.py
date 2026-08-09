@@ -71,6 +71,17 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_coa)
     p_coa.set_defaults(func=cmd_cohort, _command="client cohort assign", action="assign")
 
+    p_bases = sub.add_parser("bases", help="download recent release images to build deltas from")
+    p_bases.add_argument("-b", "--board", required=True,
+                         help="board these bases are for (names the files)")
+    p_bases.add_argument("--product-id", type=int, help="only this product's releases")
+    p_bases.add_argument("--last", type=int, default=3,
+                         help="how many recent releases to fetch (default: 3)")
+    p_bases.add_argument("-o", "--output", default="build/bases",
+                         help="directory to write into (default: build/bases)")
+    _creds(p_bases)
+    p_bases.set_defaults(func=cmd_bases, _command="client bases")
+
     p_bind = sub.add_parser("bind", help="bind a device to your account (re-account / recover)")
     p_bind.add_argument("--id", required=True)
     _creds(p_bind)
@@ -217,6 +228,34 @@ def _declared_deltas(manifest: Path, out: Path) -> dict:
                               "`build ota-romfs`" % (manifest.name, name, path))
         deltas[name] = path.read_bytes()
     return deltas
+
+
+BASE_PREFIX = "-base-"       # <board>-base-<version>.img.gz, what `build --delta-from <dir>` picks up
+
+
+def cmd_bases(args: argparse.Namespace) -> int:
+    """Download recent release images to build deltas FROM.
+
+    A device patches against the release it is running, so a fleet mid-rollout needs one delta
+    base per version still out there. Those bases are the published images, and the server
+    keeps them -- so a build machine does not have to. This pulls the most recent N back into
+    a directory that `build ota-romfs --delta-from <dir>` reads directly."""
+    try:
+        cfg = config.resolve(args.server, args.token)
+        api = _make_api(cfg)
+        out = Path(args.output)
+        out.mkdir(parents=True, exist_ok=True)
+        releases = api.releases(args.product_id, limit=args.last)["releases"]
+        if not releases:
+            raise ClientError("no retained releases to use as delta bases")
+        for rel in releases:
+            path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, rel["version"]))
+            path.write_bytes(api.release_image(rel["release_id"]))
+            print("%s  (%s, %d bytes)" % (path, rel["version"], path.stat().st_size))
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return 0
 
 
 def cmd_publish(args: argparse.Namespace) -> int:

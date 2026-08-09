@@ -1051,12 +1051,19 @@ def _resolve_bases(project, name, delta_from, delta_files, delta_dirs) -> list[P
         for f in delta_files:
             out.append(f)
         for d in delta_dirs:
+            # A directory contributes the board's provisioning image AND any bases pulled back
+            # from the server by `client bases` (<board>-base-<version>.img.gz). Matching a
+            # fixed pattern rather than "every file here" keeps an output directory full of
+            # unrelated artifacts from being fed to the delta builder.
+            found = sorted(d.glob(name + "-base-*.img.gz"))
             fac = d / (name + "-factory-romfs.img")
             if fac.exists():
-                out.append(fac)
+                found.append(fac)
+            if found:
+                out.extend(found)
             else:
-                print("warning: no provisioning image for %s at %s - skipping that base"
-                      % (name, fac), file=sys.stderr)
+                print("warning: no delta base for %s in %s - skipping that directory"
+                      % (name, d), file=sys.stderr)
         if not out:
             print("warning: no delta base for %s - full image only" % name, file=sys.stderr)
         return out
