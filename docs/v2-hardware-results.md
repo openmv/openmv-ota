@@ -15,6 +15,28 @@ someone else and were not touched). Every leg ran the board's own regression set
 | **Arduino Portenta H7** | lan | **PASS** (`delta`) |
 | **OpenMV H7 Plus** | wifi | `full` **PASS**; every delta-based scenario timed out — **root-caused and fixed**, see [h7plus-xip-tail-wedge.md](h7plus-xip-tail-wedge.md) |
 
+## The re-sweep, after the XIP tail guard
+
+Bug 3 below is in the *shared* XIP read path, not an H7-Plus-only patch, so the whole fleet was
+re-run against it rather than just the board that exposed it:
+
+| board | interface | result |
+|---|---|---|
+| **OpenMV H7 Plus** | wifi | **9/9 PASS** — was 1/9. delta 293s, full 362s, rollback 311s, corrupt 342s, corrupt_sha 339s, bad_sig 252s, bad_key 243s, bad_version 242s, reinstall 434s |
+| **Arduino Nicla Vision** | wifi | **9/9 PASS** |
+| **OpenMV N6** | lan | **11/11 PASS** — including `watchdog` and `watchdog_bite` |
+| **OpenMV N6** | wifi | **PASS** (`delta`) |
+| **Arduino Portenta H7** | wifi | **8/9 PASS**; `bad_sig` **unverified** — see below |
+
+The Portenta's `bad_sig` leg is not a code result. Partway through the re-sweep the bench AP
+(`TP-Link_7384`) stopped accepting associations: the device boots, gets its `device_id`, and then
+never reaches `network up, starting run()`, so no check-in happens and no marker after boot is
+ever witnessed. It is not the board and not the scenario — a Portenta leg that had passed 90
+minutes earlier (`bad_version`) fails identically, and so does the Nicla, which had just gone
+9/9 on the same AP. The nodes' wired LAN is unaffected. `bad_sig` itself passed post-fix on the
+H7 Plus, the Nicla and the N6, so the path is covered; what is missing is this one board's
+confirmation.
+
 ## What the sweep found
 
 Three real bugs, all invisible to the host suite, all fixed. Every one of them is a **silent**
