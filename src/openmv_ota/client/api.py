@@ -42,12 +42,15 @@ class Api:
                               exit_code=1)
         return resp.json() if resp.content else {}
 
-    def publish_release(self, manifest: bytes, image: bytes, delta: bytes | None,
-                        allow_republish: bool):
-        files = {"manifest": ("manifest.bin", manifest, "application/octet-stream"),
-                 "image": ("image.gz", image, "application/gzip")}
-        if delta is not None:
-            files["delta"] = ("delta.gz", delta, "application/gzip")
+    def publish_release(self, manifest: bytes, image: bytes, deltas, allow_republish: bool):
+        """Upload a release. ``deltas`` is ``{filename: gzipped patch}`` -- a release carries
+        one per base version, and each is uploaded UNDER THE NAME THE MANIFEST DECLARES,
+        because that name is how the server matches an artifact to its representation and how
+        a device later asks for it."""
+        files = [("manifest", ("manifest.bin", manifest, "application/octet-stream")),
+                 ("image", ("image.gz", image, "application/gzip"))]
+        for filename, patch in sorted((deltas or {}).items()):
+            files.append(("delta", (filename, patch, "application/gzip")))
         params = {"allow_republish": "true"} if allow_republish else {}
         return self._req("POST", "/api/v1/admin/releases", files=files, params=params)
 

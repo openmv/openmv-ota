@@ -79,15 +79,22 @@ def test_error_detail_falls_back_to_text():
 
 
 def test_publish_shapes_multipart_and_params():
+    """A release carries one delta per base version, so the multipart is a LIST of parts --
+    and each keeps the filename the manifest declares, which is how the server matches an
+    artifact to its representation and how a device later asks for it."""
     api, c = _api(_Resp(200, {"release_id": "r1"}))
-    api.publish_release(b"MAN", b"IMG", b"DEL", True)
+    api.publish_release(b"MAN", b"IMG",
+                        {"n6-ota.delta-1.0.0.gz": b"D0", "n6-ota.delta-1.1.0.gz": b"D1"}, True)
     _, path, kw = c.calls[0]
     assert path == "/api/v1/admin/releases"
-    assert set(kw["files"]) == {"manifest", "image", "delta"}
+    fields = [name for name, _part in kw["files"]]
+    assert fields == ["manifest", "image", "delta", "delta"]
+    assert [part[0] for name, part in kw["files"] if name == "delta"] == [
+        "n6-ota.delta-1.0.0.gz", "n6-ota.delta-1.1.0.gz"]        # sorted, named as declared
     assert kw["params"] == {"allow_republish": "true"}
     api.publish_release(b"MAN", b"IMG", None, False)          # no delta, no republish
     _, _, kw2 = c.calls[1]
-    assert "delta" not in kw2["files"] and kw2["params"] == {}
+    assert [n for n, _p in kw2["files"]] == ["manifest", "image"] and kw2["params"] == {}
 
 
 def test_rollout_calls():

@@ -59,7 +59,7 @@ _MIGRATIONS: list[list[str]] = [
             version TEXT NOT NULL, payload_version INTEGER NOT NULL,
             min_platform_version INTEGER NOT NULL DEFAULT 0,
             image_sha256 TEXT NOT NULL, image_size INTEGER NOT NULL, representations TEXT NOT NULL,
-            manifest_key TEXT NOT NULL, image_key TEXT NOT NULL, delta_key TEXT,
+            manifest_key TEXT NOT NULL, image_key TEXT NOT NULL, delta_key TEXT,  -- delta_key: unused since a release carries N deltas, keyed by name
             key_id INTEGER, uploaded_by TEXT, uploaded_at TEXT NOT NULL)""",
         """CREATE TABLE rollouts (
             rollout_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, product_id INTEGER NOT NULL,

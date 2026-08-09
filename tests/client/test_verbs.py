@@ -66,6 +66,17 @@ def _build_release(project, board="OPENMV_N6", pv=0x02000000):
     return build
 
 
+def _rewrite_manifest(build, board, reps):
+    """Re-sign-shape the built manifest with a different representation set."""
+    from openmv_ota.ota.manifest import Manifest, pack_manifest, parse_manifest
+
+    path = build / ("%s-manifest.bin" % board)
+    body = parse_manifest(path.read_bytes()).body
+    body["representations"] = reps
+    path.write_bytes(pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256,
+                                            signature=b"\x00" * 64)))
+
+
 def test_publish_and_rollout(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
@@ -75,6 +86,56 @@ def test_publish_and_rollout(wired, tmp_path, capsys):
     assert "published rel_" in out and "rollout ro_" in out
     releases = store.list_releases(BID)
     assert len(releases) == 1 and store.list_rollouts(BID)[0]["cohort"] == "beta"
+
+
+def test_publish_uploads_every_delta_the_manifest_declares(wired, tmp_path, capsys):
+    """The manifest is the authority on which artifacts belong to a release. A release now
+    ships one delta per base version, so there is no single filename to guess at -- and a
+    client that guessed would silently publish a release missing most of its deltas."""
+    from openmv_ota.ota.delta import make_delta
+    from openmv_ota.ota.manifest import DELTA_FORMAT
+
+    store, _ = wired
+    project = tmp_path / "proj"
+    build = _build_release(project)
+    board = "OPENMV_N6"
+    image = gzip.decompress((build / ("%s-ota.img.gz" % board)).read_bytes())
+    reps = [{"format": "full", "url": "%s-ota.img.gz" % board, "size": 10}]
+    for base, filler in (("1.0.0", b"\x00"), ("1.1.0", b"\x11")):
+        name = "%s-ota.delta-%s.gz" % (board, base)
+        (build / name).write_bytes(gzip.compress(make_delta(filler * 128, image), mtime=0))
+        reps.append({"format": DELTA_FORMAT, "url": name, "size": 1,
+                     "base_payload_version": 0x01000000})
+    _rewrite_manifest(build, board, reps)
+
+    assert main(["client", "publish", str(project), "-b", board]) == 0
+    rel = store.list_releases(BID)[0]
+    assert len([r for r in rel["representations"] if r["format"] == DELTA_FORMAT]) == 2
+
+
+def test_publish_errors_when_a_declared_delta_is_missing(wired, tmp_path, capsys):
+    """Caught locally, where the fix is, rather than as a 400 from the server."""
+    from openmv_ota.ota.manifest import DELTA_FORMAT
+
+    store, _ = wired
+    project = tmp_path / "proj"
+    build = _build_release(project)
+    board = "OPENMV_N6"
+    _rewrite_manifest(build, board, [
+        {"format": "full", "url": "%s-ota.img.gz" % board, "size": 10},
+        {"format": DELTA_FORMAT, "url": "%s-ota.delta-9.9.9.gz" % board, "size": 1,
+         "base_payload_version": 0x01000000}])
+    assert main(["client", "publish", str(project), "-b", board]) == 2
+    assert "declares delta" in capsys.readouterr().err
+
+
+def test_publish_rejects_an_unreadable_manifest(wired, tmp_path, capsys):
+    store, _ = wired
+    project = tmp_path / "proj"
+    build = _build_release(project)
+    (build / "OPENMV_N6-manifest.bin").write_bytes(b"not a manifest at all")
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 2
+    assert "unreadable manifest" in capsys.readouterr().err
 
 
 def test_publish_missing_artifacts(wired, tmp_path, capsys):

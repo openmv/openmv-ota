@@ -379,12 +379,21 @@ def _media_type(filename: str) -> str:
 
 
 def _artifact_key(release: dict, filename: str) -> str | None:
-    """The storage key for the artifact named ``filename`` within ``release`` (or None)."""
+    """The storage key for the artifact named ``filename`` within ``release`` (or None).
+
+    Derived from the release id and the requested name rather than from a per-format column.
+    That is what lets a release carry SEVERAL deltas: it does now, one per base version, and a
+    lookup keyed on format would hand every one of them the same stored object -- so a device
+    asking for the 1.1.0 patch would receive the 1.0.0 patch, fail its sha256, and never
+    install. The name must still match a representation the SIGNED manifest names, so this
+    cannot be used to fish for arbitrary keys."""
     if filename == "manifest.bin":
         return release["manifest_key"]
     for rep in release["representations"]:
-        if rep["url"] == filename:
-            return release["image_key"] if rep["format"] == "full" else release["delta_key"]
+        if rep["url"].rsplit("/", 1)[-1] == filename:
+            if rep["format"] == "full":
+                return release["image_key"]
+            return "artifacts/%s/%s" % (release["release_id"], filename)
     return None
 
 
