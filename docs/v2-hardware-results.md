@@ -13,11 +13,13 @@ someone else and were not touched). Every leg ran the board's own regression set
 | **Arduino Nicla Vision** | wifi | **9/9 PASS, twice** — run a second time to prove it was stable, not lucky |
 | **Arduino Portenta H7** | wifi | **9/9 PASS** |
 | **Arduino Portenta H7** | lan | **PASS** (`delta`) |
-| **OpenMV H7 Plus** | wifi | `full` **PASS**; every delta-based scenario **times out** — see [h7plus-delta-stall.md](h7plus-delta-stall.md) |
+| **OpenMV H7 Plus** | wifi | `full` **PASS**; every delta-based scenario timed out — **root-caused and fixed**, see [h7plus-xip-tail-wedge.md](h7plus-xip-tail-wedge.md) |
 
 ## What the sweep found
 
-Two real bugs, both invisible to the host suite, both fixed:
+Three real bugs, all invisible to the host suite, all fixed. Every one of them is a **silent**
+failure — no fault, no exception, no log — which is the shape this whole exercise exists to
+catch, and the reason the sweep is worth its wall-clock.
 
 1. **A silent HardFault on the N6** (`72930c5`). v2 added a one-byte attempt marker — the only
    odd-sized flash write in the tree. The N6's XSPI runs octal DTR (two bytes per clock), so a
@@ -32,6 +34,14 @@ Two real bugs, both invisible to the host suite, both fixed:
    lost its fallback on its first successful update, which is to say A/B would have bought
    nothing. A **confirmed** slot is now exempt at boot; the floor still gates installs and any
    unconfirmed slot, which is where a replayed release actually arrives.
+
+3. **A bulk XIP read that reaches the end of the QSPI wedges the H7 Plus** (`959c463`). v2 puts
+   slot B at the end of the partition, and on that board the partition ends exactly at the end of
+   its 32 MiB QSPI — so the erase-verify's last read wedges the QUADSPI and every later
+   memory-mapped read hangs forever. `full` survived on luck; `delta` reads its patch base
+   straight off XIP and died there. Fixed with a 512-byte tail guard on every XIP alias. Full
+   write-up, including the two wrong conclusions it cost, in
+   [h7plus-xip-tail-wedge.md](h7plus-xip-tail-wedge.md).
 
 Plus one harness bug (`153fcca`): `_tamper` selected artifacts by the v1 name `*.delta.gz`, so
 under v2's per-base naming it corrupted the wrong file and the device installed the untouched
