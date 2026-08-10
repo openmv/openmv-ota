@@ -28,8 +28,27 @@ re-run against it rather than just the board that exposed it:
 | **OpenMV N6** | wifi | **PASS** (`delta`) |
 | **Arduino Portenta H7** | wifi | **9/9 PASS** (`bad_sig` re-run after the own goal below; also passes over lan, 315s) |
 | **Arduino Portenta H7** | lan | **PASS** (`delta`) |
+| **OpenMV RT1062** | lan | **11/11 PASS** — delta 362s, full 447s, rollback 403s, corrupt 463s, corrupt_sha 432s, bad_sig 298s, bad_key 298s, bad_version 297s, reinstall 532s, watchdog 363s, no_slot 137s |
+| **OpenMV RT1062** | wifi | **PASS** (`delta`, 358s) |
+| **OpenMV AE3** | wifi | **NOT RUN** — its node has no coverage-UART bridge attached, see below |
 
-Every scenario on every board passes with the guard in place.
+Every scenario on every *reachable* board passes with the guard in place. The RT1062 matters
+here beyond being another board: it is the **block-device** port, so it exercises the one part of
+this change that is not XIP-specific — the write-verify now compares the prefix it read back, and
+on that port the readback is never short, so the slice must never run.
+
+### The AE3 is not covered, and it is the board that most needs to be
+
+`OPENMV_AE3 wifi` could not be run: the node has no `/dev/ttyUSB*` coverage-UART bridge attached
+(a documented node fixture — see `ci/hil/NODE_REQUIREMENTS.md`), so every leg dies in 2s with
+`could not open port /dev/ttyUSB0`. No CP210x has enumerated on that node in its uptime. Its CI
+runner is online, so the PR gate's AE3 leg will run and fail until the adapter is reconnected.
+
+This is worth stating plainly rather than filing as an environment nit: the AE3 is an **Alif XIP
+port**, and `_XIP_TAIL_GUARD` changes exactly the XIP read path. Whether its romfs partition also
+ends flush against the end of its flash decides whether it shared the H7 Plus's silent wedge. Of
+every board in the fleet it is the one whose result carries the most information about this
+change, and it is the one we do not have.
 
 ### A wifi "outage" that was an own goal, worth writing down
 
