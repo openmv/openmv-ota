@@ -37,6 +37,26 @@ here beyond being another board: it is the **block-device** port, so it exercise
 this change that is not XIP-specific — the write-verify now compares the prefix it read back, and
 on that port the readback is never short, so the slice must never run.
 
+### What the PR gate caught that the bench sweep could not
+
+The branch's first CI run (PR #62) failed six checks, and **none of them were device code** —
+this branch had never had CI run against it, only the host suite locally, so several checks were
+still asserting v1 behaviour:
+
+- `build OPENMV2/3/4` asserted `project new --ota` is REFUSED as "not OTA-capable". v2 flipped
+  exactly that: a one-slot partition now builds in single-image mode. The command still failed,
+  just on the next error down (the signing-key passphrase), which is why it read as a build break.
+- The QEMU `trial_failed` case spent attempts at the **pre-16-byte offset**, so it handed in a
+  trial that was not actually spent and had been asserting nothing since the N6 hard-fault fix.
+- The QEMU `rollback` case expected a **confirmed** slot below the floor to be rejected — the very
+  behaviour that cost the fleet its fallback, and which `dfa6c83` deliberately reversed.
+- `ota-cycle ARDUINO_NICLA_VISION wifi` failed on an **orphaned bench server** left holding
+  port 8443 by a hand-run leg killed without its child. See `bench_server._assert_is_our_server`.
+
+Worth drawing the lesson: a green bench sweep is not a green gate. The sweep runs one scenario at
+a time against a hand-launched harness; the gate runs the *checks*, and the checks are where the
+stale assumptions live. Run CI on a long-lived branch early, not once at the end.
+
 ### The AE3 is not covered, and it is the board that most needs to be
 
 `OPENMV_AE3 wifi` could not be run: the node has no `/dev/ttyUSB*` coverage-UART bridge attached
