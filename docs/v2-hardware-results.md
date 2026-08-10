@@ -26,40 +26,46 @@ re-run against it rather than just the board that exposed it:
 | **Arduino Nicla Vision** | wifi | **9/9 PASS** |
 | **OpenMV N6** | lan | **11/11 PASS** — including `watchdog` and `watchdog_bite` |
 | **OpenMV N6** | wifi | **PASS** (`delta`) |
-| **Arduino Portenta H7** | wifi | **8/9 PASS**; `bad_sig` **PASS over lan** (315s) — see below |
+| **Arduino Portenta H7** | wifi | **9/9 PASS** (`bad_sig` re-run after the own goal below; also passes over lan, 315s) |
 | **Arduino Portenta H7** | lan | **PASS** (`delta`) |
 
-Every scenario on every available board passes with the guard in place. AE3 and RT1060 were in
-use and not touched.
+Every scenario on every board passes with the guard in place.
 
-The Portenta's `bad_sig` leg is not a code result — it never got far enough to be one. Partway
-through the re-sweep the **cyw43** boards stopped associating with the bench AP
-(`TP-Link_7384`): the device boots, gets its `device_id`, and then never reaches `network up,
-starting run()`, so no check-in happens and no marker past boot is ever witnessed.
+### A wifi "outage" that was an own goal, worth writing down
 
-It is not the board, not the scenario, and not the AP being off the air:
+Partway through the re-sweep several wifi legs began failing with the device booting, getting its
+`device_id`, and then never reaching `network up, starting run()` — no check-in, no offer, no
+marker past boot. It looked exactly like a bench outage, and was diagnosed twice as one (first as
+the AP being down, then as DHCP lease exhaustion), on evidence that seemed to fit: two cyw43
+boards failing while the WINC-based H7 Plus kept passing, and the same board's lan leg passing.
 
-- a Portenta leg that had passed 90 minutes earlier (`bad_version`) fails identically;
-- so does the Nicla, which had just gone 9/9 on the same AP;
-- but the **H7 Plus passes `delta` over wifi** during the same window — it reaches the AP through
-  an ATWINC1500 rather than a cyw43;
-- and the Portenta's own **lan** `delta` passes, so that board is healthy.
+**None of that was true.** Asked directly, the board associates and gets a lease in 5–7 seconds:
 
-Two cyw43 boards failing while a WINC board succeeds points at the lease rather than the radio:
-`isconnected()` only goes true once DHCP completes, and the bench app's bring-up is
-`while not wl.isconnected(): sleep_ms(200)` — no timeout, so a DHCP that never lands is
-indistinguishable from a hang and burns the whole scenario. A board already holding a lease
-(the H7 Plus) keeps working while new clients cannot get one.
+```
+CONN t=5s status=3 connected=True
+CONN ifconfig: ('192.168.0.158', '255.255.255.0', '192.168.0.1', '192.168.0.1')
+```
 
-Worth fixing on the harness side eventually: that bring-up loop should give up and rebuild the
-interface rather than wait forever, which would turn this into a fast, legible failure instead of
-a 1200 s timeout with no explanation.
+The failing runs were launched by ad-hoc one-off scripts that did not `. "$HOME/.hil-env"`, so
+`WIFI_SSID`/`WIFI_PASSWORD` were unset in the environment `ota_cycle.py` ran in, and
+`bench_main_py` baked an **empty SSID** into the golden app. The device then sat in
+`while not wl.isconnected()` forever, exactly like a dead AP. Every leg that passed was launched
+by `regress_generic.sh`, which does source it; every leg that "failed" was not — and the one
+apparent counter-example, `bad_sig` passing over lan, passes because lan needs no credentials at
+all.
 
-So the leg was run **over lan instead**, where it passes in 315s. That is a valid substitute
-rather than a dodge: `bad_sig` publishes a manifest whose signature does not verify and asserts
-the device refuses it *pre-erase*, which is a property of signature verification, not of the link
-it arrived over. The wifi bring-up is the only thing DHCP was blocking, and `delta` over wifi on
-this same board passed earlier in the sweep.
+Two lessons, both cheap:
+
+- **The correlation that looked causal (cyw43 vs WINC) was an artifact of which launcher each
+  board happened to be run from.** Two independent boards failing the same way is not proof of an
+  environmental cause.
+- **Ask the device.** One REPL session — scan, connect, print `status()` — settled in two minutes
+  what two rounds of inference got wrong. The AP was visible at RSSI −25 the whole time.
+
+Worth fixing on the harness side regardless: the bench app's bring-up is
+`while not wl.isconnected(): sleep_ms(200)` with no timeout, and it does not check that the SSID
+it was handed is non-empty. Either one would have turned this into an immediate, legible failure
+instead of a 1200 s timeout with nothing logged.
 
 ## What the sweep found
 
