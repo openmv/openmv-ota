@@ -14,12 +14,17 @@
 #                              verify the OTA bundle (bundle and loose
 #                              body+trailer); a corrupted body must FAIL verify;
 #                              the factory image is the full partition.
-#   classic  (romfs, small):   project new; build firmware + single-image romfs;
-#                              `build factory-romfs` must fail cleanly (needs an
-#                              OTA project). Under v2 these boards ARE OTA-capable
+#   classic  (romfs, small):   BOTH paths, because under v2 these boards are OTA-capable
 #                              -- a partition with room for only one slot builds in
-#                              single-image mode instead of being refused -- so
-#                              `project new --ota --dev` must now SUCCEED.
+#                              SINGLE-IMAGE mode instead of being refused. So:
+#                              `project new --ota --dev` must SUCCEED, and the mode
+#                              must then produce a usable image (bundle + factory
+#                              image, inspect + verify, a corrupted body REJECTED --
+#                              on one slot there is no fallback, so verify-before-flash
+#                              is the whole safety story); AND the non-OTA path still
+#                              works (project new; build firmware + single-image
+#                              romfs; `build factory-romfs` fails cleanly without an
+#                              OTA project).
 #   noromfs  (no partition):   `project new` must fail cleanly (no partition size).
 #
 # Every expected failure is asserted to be a clean tool error (no Python
@@ -235,14 +240,48 @@ do_full() {  # board  work
 }
 
 do_classic() {  # board  work
-  local board="$1" work="$2" proj="$2/plain"
+  local board="$1" work="$2" proj="$2/plain" ota="$2/ota" keys zip fimg fbad
   # v2 FLIPPED THIS. Under v1 a partition with room for only one slot was refused as "not
   # OTA-capable"; v2 builds it in SINGLE-IMAGE mode instead (one slot, no fallback -- see
   # geometry.derive_mode), which is the whole point of the mode. So the assertion is now that
   # these boards are ACCEPTED. What is still refused is a partition with no room for an image
   # even in single mode, which is pure arithmetic -- and that is the `noromfs` class below.
   expect_success "project new --ota (single-image mode on a one-slot partition)" \
-    $OTA project new "$work/ota_attempt" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
+    $OTA project new "$ota" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
+  # ...and then actually BUILD it. Asserting only that the project can be created proves the
+  # capability check flipped, not that the mode produces a usable image -- and single-image is
+  # the whole reason these boards are OTA-capable at all. The artifacts are the same shape as
+  # the A/B ones (a signed bundle + a factory image that fills the partition); what differs is
+  # that there is one slot inside, which `build inspect` reports.
+  if [ "$LAST_RC" -eq 0 ]; then
+    keys="$ota/keys/trusted_keys.json"
+    build_firmware "$ota" "$board"
+    expect_success "build romfs (single-image OTA bundle)" \
+      $OTA build romfs "$ota" -b "$board" --allow-dev-key
+    zip="$ota/build/$board-romfs.zip"
+    expect_file "single-image OTA bundle written (<board>-romfs.zip)" "$zip"
+    if [ -f "$zip" ]; then
+      expect_success "build inspect decodes the single-image bundle" $OTA build inspect "$zip"
+      expect_success "build verify (single-image bundle)" \
+        $OTA build verify "$zip" --trusted-keys "$keys"
+    fi
+    expect_success "build factory-romfs (single image)" \
+      $OTA build factory-romfs "$ota" -b "$board" --allow-dev-key --no-account
+    fimg="$ota/build/$board-factory-romfs.img"
+    expect_file "single-image factory image written" "$fimg"
+    if [ -f "$fimg" ]; then
+      verify_factory_size "$ota" "$board" "$fimg"
+      expect_success "build verify (single-image factory image)" \
+        $OTA build verify "$fimg" --trusted-keys "$keys"
+      # A corrupted body must still be REFUSED. On a single-image board this is the whole
+      # safety story: there is no second slot to fall back to, so verification before flashing
+      # is the only thing standing between a bad build and an unbootable board.
+      fbad="$work/factory-corrupt.img"; cp "$fimg" "$fbad"
+      dd if=/dev/zero of="$fbad" bs=1 seek=0 count=32 conv=notrunc 2>/dev/null
+      expect_verify_reject "build verify REJECTS a corrupted single image (exit 1)" \
+        $OTA build verify "$fbad" --trusted-keys "$keys"
+    fi
+  fi
 
   expect_success "project new (non-OTA)" \
     $OTA project new "$proj" -f "$FW" -b "$board" $SDK_FLAG
