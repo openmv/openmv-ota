@@ -382,6 +382,7 @@ def _start(timeout_ms=None):  # pragma: no cover (device)  # hil-residual-fn: st
                 _reject_stm32_iwdg(0, "WWDG unavailable on stm32")
                 _wdt = machine.WDT(0, timeout_ms)       # mimxrt/alif: the default deep-sleep-safe WDT
         _feed = _wdt.feed
+        _log_armed(timeout_ms)
 
 
 def arm_for_install():  # pragma: no cover (device)  # hil-residual-fn: arms real hardware; the host has no machine.WDT, and on the bench a passing install with `install: wdt armed` in the log is the witness
@@ -410,10 +411,26 @@ def arm_for_install():  # pragma: no cover (device)  # hil-residual-fn: arms rea
     return _wdt is not None
 
 
-def log_unavailable(e):  # pragma: no cover (device)  # hil-residual-fn: only reachable when _start refuses (stm32 without WWDG); the bench boards all have one
+def _log_armed(timeout_ms):  # pragma: no cover (device)  # hil-residual-fn: device-only; witnessed on HW by the `wdt.armed` marker the watchdog scenario now requires
+    """Witness that a watchdog is REALLY running, with its window.
+
+    Without this the armed path had no marker at all, and the HIL `watchdog` scenario proved it
+    only by inference: an armed watchdog that outran its window would reset mid-cycle, so
+    reaching `promoted` was taken as proof it had not. That inference is only sound if the
+    watchdog armed in the first place -- and on a port with no ``machine.WDT`` (the Alif AE3
+    today) it does not, so the leg would pass having watched nothing. The scenario now requires
+    this marker, so "the install survived" can no longer stand in for "the watchdog was on"."""
     try:
         from openmv_log import log as _l
-        _l.warning("install: no usable watchdog (%r) -- installing UNWATCHED" % (e,))
+        _l.info("wdt: armed %dms" % timeout_ms)
+    except Exception:
+        pass  # hil-residual: logging must never be what breaks an arm
+
+
+def log_unavailable(e, what="install"):  # pragma: no cover (device)  # hil-residual-fn: reachable when _start refuses (stm32 without WWDG) or the port has no machine.WDT at all (alif); the bench's A/B boards all have one
+    try:
+        from openmv_log import log as _l
+        _l.warning("wdt: no usable watchdog (%r) -- running %s UNWATCHED" % (e, what))
     except Exception:
         pass  # hil-residual: logging must never be what breaks an install
 
@@ -427,4 +444,16 @@ def start():
     ``start()`` call, the watchdog never runs. After an OTA trial reboot ``machine.reset()`` clears the
     WWDG, so boot runs unwatched and your app re-arms here -- boot itself needs no feeding."""
     if ENABLED:
-        _start()  # pragma: no cover (device)  # hil-residual: watchdog-enabled arm; ENABLED=False on the bench so start() no-ops -- the ENABLED=True arm is an opt-in edit + rebuild, now exercised on HW by the watchdog HIL scenario
+        # A PORT WITH NO USABLE WATCHDOG MUST NOT TAKE THE APP DOWN WITH IT. `_start` raises on a
+        # port without `machine.WDT` at all (the Alif AE3: AttributeError) and on an stm32 whose
+        # build has no WWDG (the IWDG refusal) -- and this ran UNGUARDED, so `ENABLED = True` on
+        # such a board crashed the app at startup. Measured on the AE3: `app: CRASHED
+        # AttributeError("module 'machine' has no attribute 'WDT'")`, after which the device sat
+        # doing nothing for the rest of the run. That is strictly worse than running unwatched,
+        # and it is the opposite of what arm_for_install() already does one screen down, which
+        # catches everything and installs anyway. Same judgement here, same loud line: a
+        # watchdog you cannot have is a warning, not a dead device.
+        try:
+            _start()  # hil-residual: the arm itself; witnessed on HW by the `wdt.armed` marker the watchdog scenario now requires
+        except Exception as e:
+            log_unavailable(e, "the app")  # hil-residual: emits `wdt: no usable watchdog`, but only on a port that HAS no usable watchdog -- the A/B bench boards all do, so no passing leg can witness it

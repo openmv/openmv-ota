@@ -42,6 +42,27 @@ def test_start_is_a_noop_when_disabled():
     assert _mod._wdt is None
 
 
+def test_start_does_not_take_the_app_down_when_the_port_has_no_watchdog(monkeypatch):
+    """ENABLED=True on a port with no ``machine.WDT`` must WARN, not crash the app.
+
+    This is not hypothetical: the Alif AE3 has no ``machine.WDT``, and `start()` used to call
+    `_start()` unguarded, so the armed-watchdog app died at boot with
+    ``AttributeError("module 'machine' has no attribute 'WDT'")`` and the device then sat doing
+    nothing. A watchdog you cannot have is a warning; a dead app is strictly worse than an
+    unwatched one -- which is the judgement ``arm_for_install`` already makes."""
+    seen = []
+    monkeypatch.setattr(_mod, "ENABLED", True)
+    monkeypatch.setattr(_mod, "_wdt", None, raising=False)
+    monkeypatch.setattr(_mod, "_machine", object())          # a machine module with no WDT
+    monkeypatch.setattr(_mod, "log_unavailable", lambda e, what: seen.append((e, what)))
+
+    _mod.start()                                             # must not raise
+
+    assert _mod._wdt is None, "nothing may look armed when the port has no watchdog"
+    assert len(seen) == 1 and isinstance(seen[0][0], AttributeError)
+    assert seen[0][1] == "the app"
+
+
 def test_relax_is_a_noop_context_when_disabled():
     # no watchdog -> relax() enters/exits without starting a timer
     with _mod.relax():

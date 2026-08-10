@@ -408,6 +408,7 @@ COVERAGE = {
     "identity: ready": "run.identity",                   # device_id + system.json read
     "identity: device id": "run.identity_uid",           # machine.unique_id() read into identity
     "data: path": "run.data_path",                       # sync() located a bundled data/ resource
+    "wdt: armed": "wdt.armed",                            # a watchdog is REALLY running (with its window)
     "wdt: feed": "run.wdt_feed",                          # watchdog fed each poll (no-op when off)
     "app: wdt STOP feeding": "wdt.stop",                  # bite test: the app deliberately stopped feeding
     "app: wdt BIT": "wdt.bit",                            # bite test: WWDG reset (reset_cause==3), then recovered
@@ -613,6 +614,11 @@ SCENARIOS["watchdog"] = dict(
     SCENARIOS["delta"],
     desc="watchdog ENABLED: delta install survives a real OTA cycle with the WWDG armed",
     app="wdt",
+    # ...AND require proof the watchdog actually ARMED. Reaching `promoted` only implies the
+    # watchdog never outran its window IF one was running at all; on a port with no machine.WDT
+    # (the Alif AE3) nothing arms and the leg would pass having watched nothing. openmv_wdt logs
+    # `wdt: armed <window>` the moment it has a real WDT, so require that marker too.
+    expect=SCENARIOS["delta"]["expect"] + ["wdt.armed"],
 )
 
 # The watchdog NEGATIVE path: prove the WWDG actually BITES when feeding stops -- and recovers as a
