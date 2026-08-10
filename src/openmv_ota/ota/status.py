@@ -62,6 +62,13 @@ TRIED = _marker(b"tried")
 CONFIRMED = _marker(b"confirmed")
 REPR_FULL = _marker(b"repr.full")
 REPR_DELTA = _marker(b"repr.ocdl")
+# The value written into the attempt region, one marker per trial boot. This module already
+# describes WHERE that region is (ATTEMPTS_OFFSET/ATTEMPT_UNIT/ATTEMPTS_MAX); carrying the value
+# too is what lets anything off-device build a spent-trial sector without hand-rolling bytes.
+# It is not decoration: the QEMU suite did hand-roll them, against the pre-16-byte layout, and
+# the resulting sector still had attempts left -- so its "a spent trial is rejected" case
+# silently asserted nothing until CI caught it.
+ATTEMPT = _marker(b"attempt")
 
 
 def encode_counter(value: int) -> bytes:

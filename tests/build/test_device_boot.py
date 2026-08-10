@@ -102,6 +102,10 @@ def test_constants_match_host():
     assert B._ATTEMPT_UNIT == B.MARKER_SIZE == 16
     assert B._ATTEMPTS_OFF % B.MARKER_SIZE == 0
     assert len(B.ATTEMPT) == B._ATTEMPT_UNIT
+    # ...and the VALUE too, not just the geometry: anything off-device that builds a spent-trial
+    # sector (the QEMU suite does) writes host_status.ATTEMPT, so a drift here would make it
+    # craft sectors boot.py reads as "attempts remaining" and quietly stop testing the rejection.
+    assert B.ATTEMPT == host_status.ATTEMPT
 
 
 def test_install_counter_reads_the_host_encoding():

@@ -94,8 +94,15 @@ def _path_cases():
     bad_crc = tb[:-1] + bytes([tb[-1] ^ 0xFF])
     corrupt = bytearray(b)
     corrupt[0] ^= 0xFF
-    spent = bytearray(_status(1, 0, 0))          # a trial whose attempts are all consumed
-    spent[72:72 + 3] = b"\x00\x00\x00"
+    # A trial whose attempts are all consumed. The attempt region is ATTEMPTS_OFFSET (80) and
+    # each consumed attempt is a 16-BYTE marker, not a byte: a one-byte flash write is not an
+    # operation the N6's octal-DTR XSPI can perform and it hard faults the board. Spending them
+    # by hand here has to match that layout exactly, or the slot still has attempts left and
+    # this case silently stops testing anything (which is how it failed: got=OK want=trial-failed).
+    spent = bytearray(_status(1, 0, 0))
+    for _i in range(host_status.ATTEMPTS_MAX):
+        _o = host_status.ATTEMPTS_OFFSET + _i * host_status.ATTEMPT_UNIT
+        spent[_o:_o + host_status.ATTEMPT_UNIT] = host_status.ATTEMPT
     C = [
         ("confirmed", b, _status(1, 1, 1), tb, 0, BOARD, PLAT, True, "OK"),
         ("trial_with_attempts", b, _status(1, 0, 0), tb, 0, BOARD, PLAT, True, "OK"),
@@ -106,7 +113,15 @@ def _path_cases():
         ("board_mismatch", b, _status(1, 1, 1), _trailer(b, board=0x9999), 0, BOARD, PLAT, True, "board"),
         ("compat_old", b, _status(1, 1, 1), _trailer(b, minplat=6 << 24), 0, BOARD, PLAT, True, "compat"),
         ("body_sha", bytes(corrupt), _status(1, 1, 1), tb, 0, BOARD, PLAT, True, "body-sha"),
-        ("rollback", b, _status(1, 1, 1), tb, 2 << 24, BOARD, PLAT, True, "rollback"),
+        # ANTI-ROLLBACK GATES THE UNPROVEN, NOT THE PROVEN. This case used to hand in a
+        # CONFIRMED slot below the floor and expect a rejection; on hardware that is exactly the
+        # fallback A/B exists to keep, and rejecting it cost the fleet its fallback on the first
+        # successful update (a Nicla confirmed 1.1.0 and immediately logged `boot: rejected
+        # A:rollback`). A confirmed slot is now exempt, so the floor is exercised with an
+        # UNCONFIRMED one -- which is where a replayed release actually arrives.
+        ("rollback", b, _status(1, 1, 0), tb, 2 << 24, BOARD, PLAT, True, "rollback"),
+        # ...and the exemption itself, so it cannot regress silently in the other direction.
+        ("confirmed_below_floor", b, _status(1, 1, 1), tb, 2 << 24, BOARD, PLAT, True, "OK"),
         # v2: a trial fails once its ATTEMPTS are spent, not on the second boot
         ("trial_failed", bytes(b), bytes(spent), tb, 0, BOARD, PLAT, True, "trial-failed"),
         ("status_none", b, _status(0, 0, 0), tb, 0, BOARD, PLAT, True, "status"),
@@ -275,18 +290,22 @@ try:
     o.confirm(); cw = "no-raise"
 except OSError:
     cw = "raised"
+# slots() WHILE WE ARE STILL "RUNNING" A. It reports which slot is running by reading
+# _ota_config.last_slot, so it has to be read before the guard test below flips that to B --
+# otherwise `running` is asserted against a slot we just told it we are not on, and the case
+# fails for a reason that has nothing to do with slots().
+sl = o.slots()
+running_first = len(sl) == 2 and sl[0]["running"] and sl[0]["slot"] == "A"
 _ota_config.last_slot = "B"             # pretend we booted the other slot -> confirm() no-ops
 guard = (o.confirm() is False)
 try:
     o.sync(); sw = "no-raise"
 except OSError:
     sw = "raised"
-sl = o.slots()
 ok = (s["trial"] and s["slot"] == "A" and ident.get("board") == "qemu"
-      and cw == "raised" and guard and sw == "raised"
-      and len(sl) == 2 and sl[0]["running"] and sl[0]["slot"] == "A")
-print("RT trial=%s slot=%s id=%s confirm=%s guard=%s sync=%s slots=%d"
-      % (s["trial"], s["slot"], ident.get("board"), cw, guard, sw, len(sl)))
+      and cw == "raised" and guard and sw == "raised" and running_first)
+print("RT trial=%s slot=%s id=%s confirm=%s guard=%s sync=%s slots=%d running_first=%s"
+      % (s["trial"], s["slot"], ident.get("board"), cw, guard, sw, len(sl), running_first))
 print("RTRESULT", "PASS" if ok else "FAIL")
 '''
 
