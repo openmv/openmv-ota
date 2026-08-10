@@ -36,7 +36,7 @@ from .boardmap import swd_ids_board_code
 from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter
-from .rollout import offers_update, should_autopause
+from .rollout import fallback_payload_version, offers_update, settled, should_autopause
 from .storage import build_storage
 from .verify import build_verifier
 
@@ -357,6 +357,11 @@ class CheckIn(BaseModel):
     confirmed: bool = False
     streams: list[str] = []                  # live image stream names (multi-camera boards);
     #                                          empty -> the default single stream
+    # EVERY slot, newest first (v2). The fields above describe the RUNNING image; this says what
+    # the device would fall back to, and whether its current image has settled. Absent from a
+    # single-image device and from any older payload, which is why every reader treats an empty
+    # list as "unknown" rather than as "no fallback".
+    slots: list[dict] = []
 
 
 class Feedback(BaseModel):
@@ -374,12 +379,21 @@ def _media_type(filename: str) -> str:
 
 
 def _artifact_key(release: dict, filename: str) -> str | None:
-    """The storage key for the artifact named ``filename`` within ``release`` (or None)."""
+    """The storage key for the artifact named ``filename`` within ``release`` (or None).
+
+    Derived from the release id and the requested name rather than from a per-format column.
+    That is what lets a release carry SEVERAL deltas: it does now, one per base version, and a
+    lookup keyed on format would hand every one of them the same stored object -- so a device
+    asking for the 1.1.0 patch would receive the 1.0.0 patch, fail its sha256, and never
+    install. The name must still match a representation the SIGNED manifest names, so this
+    cannot be used to fish for arbitrary keys."""
     if filename == "manifest.bin":
         return release["manifest_key"]
     for rep in release["representations"]:
-        if rep["url"] == filename:
-            return release["image_key"] if rep["format"] == "full" else release["delta_key"]
+        if rep["url"].rsplit("/", 1)[-1] == filename:
+            if rep["format"] == "full":
+                return release["image_key"]
+            return "artifacts/%s/%s" % (release["release_id"], filename)
     return None
 
 
@@ -402,8 +416,11 @@ def _decide(state, checkin, cohort, existing=None, account_id=""):
         rel = ms.get_release(pinned)
         # a release is only ever offered to a device of its own account (defense in depth behind
         # the admin-side pin check): a cross-account or missing/older pin just holds the device.
+        # A pin overrides the ROLLOUT, not the device's own safety: a mid-trial device would
+        # defer the install anyway, so offering here would only mint a token nobody uses.
         if (rel is None or rel["account_id"] != account_id
-                or rel["payload_version"] <= checkin.payload_version):
+                or rel["payload_version"] <= checkin.payload_version
+                or not settled(checkin.slots)):
             return None, rel, False, None
         return None, rel, True, _offer(state, rel)
     ro = ms.active_rollout(checkin.product_id, cohort, account_id=account_id)
@@ -416,7 +433,7 @@ def _decide(state, checkin, cohort, existing=None, account_id=""):
         current_payload_version=checkin.payload_version,
         release_payload_version=rel["payload_version"], rollout_state=ro["state"],
         rollout_percent=ro["percent"], rollout_id=ro["rollout_id"], device_id=checkin.device_id,
-        allow_downgrade=state.settings.test_offer_downgrades)
+        allow_downgrade=state.settings.test_offer_downgrades, slots=checkin.slots)
     if not offered:
         return ro, rel, False, None
     return ro, rel, True, _offer(state, rel)
@@ -509,6 +526,7 @@ def check(checkin: CheckIn, request: Request):
         current_version=checkin.app_version, current_payload_version=checkin.payload_version,
         slot=checkin.slot, representation=checkin.representation,
         streams=checkin.streams,
+        fallback_payload_version=fallback_payload_version(checkin.slots),
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
         account_id=account_id)

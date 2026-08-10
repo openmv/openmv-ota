@@ -56,11 +56,14 @@ def _manifest(body):
     return pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256, signature=b"\x00" * 64))
 
 
+DELTA_NAME = "x-ota.delta.gz"          # must equal the rep url the manifest declares
+
+
 def _files(manifest, image_gz, delta_gz=None):
     files = {"manifest": ("manifest.bin", manifest, "application/octet-stream"),
              "image": ("img.gz", image_gz, "application/gzip")}
     if delta_gz is not None:
-        files["delta"] = ("delta.gz", delta_gz, "application/gzip")
+        files["delta"] = (DELTA_NAME, delta_gz, "application/gzip")
     return files
 
 
@@ -106,7 +109,9 @@ def test_publish_with_delta(tmp_path):
     assert r.status_code == 200, r.text
     assert r.json()["representations"] == ["full", DELTA_FORMAT]
     rel = store.get_release(r.json()["release_id"])
-    assert rel["delta_key"] and storage.get(rel["delta_key"]) == _gz(patch)
+    # stored under the name the manifest declares -- that is how the gateway finds it, and
+    # how a release can carry several deltas without them overwriting each other
+    assert storage.get("artifacts/%s/%s" % (rel["release_id"], DELTA_NAME)) == _gz(patch)
 
 
 # --- auth + scopes --------------------------------------------------------------------------
@@ -181,11 +186,48 @@ def test_publish_size_mismatch_400(tmp_path):
     assert r.status_code == 400 and "size does not match" in r.json()["detail"]
 
 
+def test_publish_several_deltas_are_stored_and_served_separately(tmp_path):
+    """The bug this exists for: with one delta_key per release, every ocdl rep resolved to the
+    SAME stored object, so a device asking for the 1.1.0 patch got the 1.0.0 patch, failed its
+    sha256, and never installed. A release now carries one delta per base version."""
+    from openmv_ota.server import capability
+
+    app, store, storage = _app(tmp_path)
+    img = b"IMAGE-BYTES" * 40
+    p0 = delta_codec.make_delta(b"\x00" * 128, img)
+    p1 = delta_codec.make_delta(b"\x11" * 128, img)
+    body = _body(img)
+    body["representations"] += [
+        {"format": DELTA_FORMAT, "url": "n6-ota.delta-1.0.0.gz", "size": 1,
+         "base_payload_version": 0x01000000},
+        {"format": DELTA_FORMAT, "url": "n6-ota.delta-1.1.0.gz", "size": 1,
+         "base_payload_version": 0x01010000},
+    ]
+    files = {"manifest": ("manifest.bin", _manifest(body), "application/octet-stream"),
+             "image": ("image.gz", _gz(img), "application/gzip")}
+    r = TestClient(app).post(
+        "/api/v1/admin/releases", headers=AUTH,
+        files=[("manifest", files["manifest"]), ("image", files["image"]),
+               ("delta", ("n6-ota.delta-1.0.0.gz", _gz(p0), "application/gzip")),
+               ("delta", ("n6-ota.delta-1.1.0.gz", _gz(p1), "application/gzip"))])
+    assert r.status_code == 200, r.text
+    rel_id = r.json()["release_id"]
+
+    # each is stored under its own name...
+    assert storage.get("artifacts/%s/n6-ota.delta-1.0.0.gz" % rel_id) == _gz(p0)
+    assert storage.get("artifacts/%s/n6-ota.delta-1.1.0.gz" % rel_id) == _gz(p1)
+    # ...and the capability gateway serves each the right bytes, which is the actual fix
+    c = TestClient(app)
+    tok = capability.mint(app.state.secret, rel_id)
+    assert c.get("/d/%s/n6-ota.delta-1.0.0.gz" % tok).content == _gz(p0)
+    assert c.get("/d/%s/n6-ota.delta-1.1.0.gz" % tok).content == _gz(p1)
+
+
 def test_publish_delta_declared_but_missing_400(tmp_path):
     app, store, storage = _app(tmp_path)
     img = b"\xA5" * 64
     r = _post(app, _manifest(_body(img, with_delta=True)), _gz(img))
-    assert r.status_code == 400 and "declares a delta" in r.json()["detail"]
+    assert r.status_code == 400 and "declares delta(s) not uploaded" in r.json()["detail"]
 
 
 def test_publish_delta_uploaded_but_not_declared_400(tmp_path):
@@ -193,14 +235,14 @@ def test_publish_delta_uploaded_but_not_declared_400(tmp_path):
     img = b"\xA5" * 64
     patch = delta_codec.make_delta(b"\x00" * 64, img)
     r = _post(app, _manifest(_body(img)), _gz(img), _gz(patch))
-    assert r.status_code == 400 and "declares none" in r.json()["detail"]
+    assert r.status_code == 400 and "does not declare" in r.json()["detail"]
 
 
 def test_publish_delta_not_gzip_400(tmp_path):
     app, store, storage = _app(tmp_path)
     img = b"\xA5" * 64
     r = _post(app, _manifest(_body(img, with_delta=True)), _gz(img), b"not gzip")
-    assert r.status_code == 400 and "delta is not gzip" in r.json()["detail"]
+    assert r.status_code == 400 and "is not gzip" in r.json()["detail"]
 
 
 def test_publish_delta_target_size_mismatch_400(tmp_path):

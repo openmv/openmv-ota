@@ -150,3 +150,51 @@ def test_render_local_no_sdk_home(tmp_path):
     text = cfg.render_local(Path("/abs/openmv"), None)
     local = cfg.load_local(_write(tmp_path / cfg.LOCAL_NAME, text))
     assert local.sdk_home is None
+
+
+# --- v2: recovery config + the single-image opt-out --------------------------------------
+
+def test_recovery_config_parses_and_defaults_empty():
+    """server_url and ca are the MAKER's and constant per build, so they get baked into the
+    firmware rather than the romfs -- a device whose image is gone still needs both to reach the
+    server, which is the case recovery exists for. Empty means 'use the bundled public CAs'."""
+    parsed = cfg.parse_config(
+        '[product]\nname = "demo"\n'
+        '[targets]\nboards = ["OPENMV_N6"]\n'
+        '[ota]\nenabled = true\n'
+        'server_url = "https://updates.example.com"\n'
+        'ca = "certs/root.pem"\n', "demo")
+    assert parsed.server_url == "https://updates.example.com"
+    assert parsed.ca == "certs/root.pem"
+
+    bare = cfg.parse_config('[targets]\nboards = ["OPENMV_N6"]\n', "demo")
+    assert bare.server_url == "" and bare.ca == ""
+
+
+def test_single_image_is_an_explicit_opt_out_defaulting_off():
+    """A/B is derived wherever it fits; this is the only way to refuse it. Named for what you
+    GET rather than `ab = false`, because the cost is invisible at the moment you choose it."""
+    parsed = cfg.parse_config(
+        '[targets]\nboards = ["OPENMV_N6"]\n[ota]\nenabled = true\nsingle_image = true\n', "demo")
+    assert parsed.single_image is True
+    assert cfg.parse_config('[targets]\nboards = ["OPENMV_N6"]\n', "demo").single_image is False
+
+
+def test_the_scaffolded_config_documents_the_trade_not_just_the_key():
+    """A commented-out knob whose consequence is undocumented is a footgun. The rendered
+    template has to say what opting out costs, since nothing else will tell them."""
+    text = cfg.render_config(name="demo", vendor=None, boards=["OPENMV_N6"], ota=True, signing_key_id=1)
+    assert "single_image" in text
+    assert "physical reflash" in text, "the opt-out must state its consequence"
+    assert "server_url" in text and "ca =" in text
+    assert "BAKED INTO THE FIRMWARE" in text, "say where these live, and why"
+
+def test_max_attempts_defaults_and_validates():
+    """0 would reject every image on its first boot -- a permanently un-updatable device -- and
+    it is exactly the value someone reaches for to "turn trials off". Catch it at build time."""
+    base = 'name = "p"\n[targets]\nboards = ["OPENMV_N6"]\n[ota]\nenabled = true\n'
+    assert cfg.parse_config('[product]\n' + base, "p").max_attempts == 3        # default
+    assert cfg.parse_config('[product]\n' + base + "max_attempts = 1\n", "p").max_attempts == 1
+    for bad in ("0", "-1", "65", '"three"'):
+        with pytest.raises(ProjectError, match="max_attempts"):
+            cfg.parse_config('[product]\n' + base + "max_attempts = %s\n" % bad, "p")

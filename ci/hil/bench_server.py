@@ -91,6 +91,18 @@ def _ensure_cert(ip):
     return cert, key
 
 
+def _peer_cert_der(url, timeout=3):
+    """The DER certificate the server at ``url`` actually presents (no verification)."""
+    hostport = url.split("://", 1)[1]
+    host, _, port = hostport.partition(":")
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with socket.create_connection((host, int(port or 443)), timeout=timeout) as sock, \
+            ctx.wrap_socket(sock, server_hostname=host) as tls:
+        return tls.getpeercert(binary_form=True)
+
+
 def _wait_ready(url, ca, timeout):
     ctx = ssl.create_default_context(cafile=ca)
     ctx.check_hostname = False                       # readiness poll only -- the DEVICE verifies
@@ -101,11 +113,43 @@ def _wait_ready(url, ca, timeout):
         try:
             with urllib.request.urlopen(url + "/healthz", context=ctx, timeout=3) as r:
                 if r.status == 200:
+                    _assert_is_our_server(url, ca)
                     return
         except Exception as e:                       # not up yet
             last = e
         time.sleep(1)
     raise RuntimeError("ephemeral OTA server never became ready at %s (%s)" % (url, last))
+
+
+def _assert_is_our_server(url, ca):
+    """Fail LOUDLY if something *else* is answering on our port.
+
+    The readiness poll deliberately does not verify (the DEVICE is what verifies), so a
+    server left behind by an earlier run answers it perfectly happily -- and then the whole
+    run publishes into, and tampers with, a store that is not the one it thinks it owns.
+    That is a gate that LIES: it reported `certificate verify failed: self-signed certificate`
+    from `client publish` and read as a device/code failure, on a PR whose device code was fine.
+
+    The port-freeing above cannot prevent it: `pkill`/`fuser` run as whoever launched the run,
+    and the orphan belonged to another user (a bench run started by hand, killed without its
+    child), so both silently no-op'd -- they are `check=False` with output captured. The cert
+    is per-user, so the stale server presents a different one, which is exactly what makes this
+    detectable: compare what the port PRESENTS against the cert we just handed our own server.
+    """
+    try:
+        theirs = _peer_cert_der(url)
+    except Exception:
+        return                                       # transient; the poll above owns liveness
+    with open(ca) as fh:
+        ours = ssl.PEM_cert_to_DER_cert(fh.read())
+    if theirs != ours:
+        raise RuntimeError(
+            "%s is served by a DIFFERENT process than the one this run started -- it presents a "
+            "certificate we did not issue. Almost certainly an orphaned bench server from an "
+            "earlier run (often another user's, which is why pkill/fuser above could not clear "
+            "it). Clear it and re-run:\n"
+            "    pkill -9 -f 'openmv_ota.server.cli'; fuser -k %s/tcp"
+            % (url, url.rsplit(":", 1)[1]))
 
 
 def start(python, port=8443, token="bench-admin-token-1", log=print, offer_downgrades=False):

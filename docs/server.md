@@ -140,8 +140,57 @@ openmv-ota client rollout raise  --id <rollout-id> --percent 50        # promote
 openmv-ota client rollout pause  --id <rollout-id>                     # halt (auto-pauses on failures too)
 openmv-ota client rollout resume --id <rollout-id>
 openmv-ota client rollout rollback --id <rollout-id>                   # stop offering (shipped devices keep it)
-openmv-ota client fleet | client devices [--board-id N] | client audit
+openmv-ota client fleet | client devices [--product-id N] | client audit
 ```
+
+`client fleet` is the rollout dashboard, and under A/B it reports **exposure** rather than
+which slot a device happens to be running from:
+
+| Field | What it answers |
+|---|---|
+| `by_version` | what the fleet is running |
+| `by_fallback` | what it would fall back **to**. A fleet whose devices all have the previous release behind them is in a very different position from one where half report `unknown` — and that is invisible in `by_version` |
+| `fell_back` | devices whose last boot rejected a slot. The direct rollout alarm |
+| `unconfirmed` | devices running an image that has not confirmed itself yet. They are mid-trial, and therefore also **deferring** further updates until they settle |
+
+### Delta bases, and why the server keeps every image
+
+A device patches against **the release it is running**, so a fleet mid-rollout is spread over
+several versions and one delta reaches only the devices still on its base. A release therefore
+ships **one delta per base version still in the field**.
+
+The server cannot build those for you, and that is structural rather than a gap: a delta has to
+be named in the **signed** manifest, and the server never holds signing keys. So the maker
+builds deltas locally — and needs the older *images* to diff against. The server keeps every
+published image so a build machine does not have to:
+
+```
+openmv-ota client bases -b OPENMV_N6 --last 3 -o build/bases   # pull recent images back
+openmv-ota build ota-romfs . --delta-from build/bases          # one delta per base
+openmv-ota client publish . -b OPENMV_N6                       # uploads all of them
+```
+
+Lose the build directory, re-clone the repo, or hand the release to a colleague, and the bases
+are still there.
+
+Retention has **no depth limit** — images are small, and only you know how long a version stays
+in the field, so nothing expires on its own. Reclaiming space is a deliberate act:
+
+```
+openmv-ota client prune --release rel_abc123      # delete that release's stored objects
+```
+
+The release **row** survives: it is the audit trail and the anti-rollback history, and it is
+what lets `GET /releases/{id}/image` answer *"image is no longer retained"* rather than a bare
+404 — a caller must be able to tell "existed, bytes gone" from "never existed". Pruning is
+**refused while a rollout still offers that release**, because those are the devices
+downloading it right now; pause or roll back first, or pass `--force` if you mean it. A release whose image has aged out of retention returns `410`-shaped
+`404 image is no longer retained` — the release row survives its bytes, and that is a different
+problem for the caller than "no such release".
+
+`unknown` in `by_fallback` means the device did not say — a single-image board, which has no
+fallback by design. `client devices` carries the same fallback per device, decoded
+(`fallback_version`) alongside the packed `fallback_payload_version`.
 
 `publish` uploads the exact signed bytes the build produced (`<board>-manifest.bin`,
 `<board>-ota.img.gz`, and `<board>-ota.delta.gz` if present). The server derives all metadata from

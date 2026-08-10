@@ -42,14 +42,31 @@ class Api:
                               exit_code=1)
         return resp.json() if resp.content else {}
 
-    def publish_release(self, manifest: bytes, image: bytes, delta: bytes | None,
-                        allow_republish: bool):
-        files = {"manifest": ("manifest.bin", manifest, "application/octet-stream"),
-                 "image": ("image.gz", image, "application/gzip")}
-        if delta is not None:
-            files["delta"] = ("delta.gz", delta, "application/gzip")
+    def publish_release(self, manifest: bytes, image: bytes, deltas, allow_republish: bool):
+        """Upload a release. ``deltas`` is ``{filename: gzipped patch}`` -- a release carries
+        one per base version, and each is uploaded UNDER THE NAME THE MANIFEST DECLARES,
+        because that name is how the server matches an artifact to its representation and how
+        a device later asks for it."""
+        files = [("manifest", ("manifest.bin", manifest, "application/octet-stream")),
+                 ("image", ("image.gz", image, "application/gzip"))]
+        for filename, patch in sorted((deltas or {}).items()):
+            files.append(("delta", (filename, patch, "application/gzip")))
         params = {"allow_republish": "true"} if allow_republish else {}
         return self._req("POST", "/api/v1/admin/releases", files=files, params=params)
+
+    def release_image(self, release_id: str) -> bytes:
+        """The raw gzipped image of a retained release -- a delta base."""
+        resp = self._client.request(
+            "GET", "/api/v1/admin/releases/%s/image" % release_id,
+            headers={"Authorization": "Bearer %s" % self._token})
+        if resp.status_code >= 400:
+            raise ClientError("GET release image %s -> %d: %s"
+                              % (release_id, resp.status_code, _detail(resp)), exit_code=1)
+        return resp.content
+
+    def delete_release_artifacts(self, release_id: str, force: bool = False):
+        return self._req("DELETE", "/api/v1/admin/releases/%s/artifacts" % release_id,
+                         params={"force": "true"} if force else {})
 
     def create_rollout(self, release_id: str, cohort: str, percent: float):
         return self._req("POST", "/api/v1/admin/rollouts",

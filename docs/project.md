@@ -140,7 +140,7 @@ separate, read-only **`system.json`** into every image (OTA or not) at
 {
   "product": "orchard-sentry",
   "board": "OPENMV_N6",
-  "board_id": 4097,
+  "product_id": 4097,
   "board_name": "OrchardSentry Pro",
   "app_version": "2.3.0",
   "vendor": "Acme Robotics",
@@ -154,7 +154,7 @@ separate, read-only **`system.json`** into every image (OTA or not) at
 This gives the app **one consistent read path for system state, the same in a
 non-OTA and an OTA build** — `json.load(open("/rom/system.json"))`. It is composed
 from the lock (firmware / MicroPython / toolchain provenance) and the config
-(per-board `board_id` / `board_name`); for an OTA image the signed
+(per-board `product_id` / `board_name`); for an OTA image the signed
 [trailer](trailer.md) also carries a verbatim copy, so host tools can read it
 without mounting the ROMFS. `system.json` is generated into the built image only —
 never into your `app/` source — so there is nothing to edit or accidentally commit.
@@ -187,11 +187,11 @@ name = "my-product"          # product, shared by every board
 boards = ["OPENMV_N6", "OPENMV_AE3"]
 
 [targets.OPENMV_N6]
-board_id   = 1001
+product_id   = 1001
 board_name = "My Product Lite"
 
 [targets.OPENMV_AE3]
-board_id   = 1002
+product_id   = 1002
 board_name = "My Product Pro"
 ```
 
@@ -209,7 +209,7 @@ project is ready to build a signed image with one command.
 ### What `--ota` changes
 
 - **Partition split.** Each partition is split into two halves — a regular image
-  and a golden fallback — so each image gets half the partition, less a status
+  and a fallback — so each image gets half the partition, less a status
   sector and a trailer (one flash erase block each — 8 KiB on OTA-capable boards).
   `build romfs` enforces that halved budget for an OTA project and the full
   partition otherwise; `show` reports which mode a project is in. The mode is
@@ -229,7 +229,7 @@ project is ready to build a signed image with one command.
   writes it under `keys/`.
 
 - **Per-board identity.** Each target board gets a `[targets.<BOARD>]` table for
-  its `board_id` / `board_name` (see [Board identity](#board-identity)).
+  its `product_id` / `board_name` (see [Board identity](#board-identity)).
 
 (The starter `app/` — including the `app_version` the build stamps into the image
 — is scaffolded for every project, not just OTA; see
@@ -268,7 +268,7 @@ The `[ota]` section records the mode and the current signing key:
 
 ```toml
 [ota]
-enabled = true            # each partition holds a regular + golden image
+enabled = true            # each partition holds two updatable slots (A/B)
 signing_key_id = 256      # current OTA signing key (in keys/trusted_keys.json)
 ```
 
@@ -277,7 +277,7 @@ and each target board gets an active table for its identity (see
 
 ```toml
 [targets.OPENMV_N6]
-board_id   = 3064072142  # stable product id (auto-assigned; keep it once devices ship)
+product_id   = 3064072142  # stable product id (auto-assigned; keep it once devices ship)
 board_name = "my-product"  # human label; defaults to the product name, rename freely
 ```
 
@@ -304,7 +304,7 @@ network, like the SDK download), and you can replace it with your provider's roo
 
 To produce what `install()` downloads, run **`openmv-ota build ota-romfs`** — one command,
 straight from app source (like `build factory-romfs`). It compiles + signs the romfs bundle,
-renders the gzipped full FRONT-slot image (`<board>-ota.img.gz`), and signs the **manifest**
+renders the gzipped slot-sized image (`<board>-ota.img.gz`), and signs the **manifest**
 (`<board>-manifest.bin`) — the descriptor `install()` fetches first, which names the image's
 size/sha256 + representations and binds board/version/anti-rollback under the same key as the
 image. Host both beside each other and point `install()` at the manifest. (`build romfs`
@@ -318,9 +318,12 @@ the manifest endpoint — but `build ota-romfs` only ever writes relative ones.
 
 To ship a smaller **delta** download, add **`--delta-from <board>-factory-romfs.img`**
 (or a directory of per-board factory images). The delta is computed against the factory
-image's **BACK slot** — the exact golden bytes the device keeps — so a device copies the
-unchanged bulk from its own BACK slot and downloads only the changes. It's opportunistic
-(picked only when the device's golden matches and it's smaller) and still
+image's **second slot, body region only** — the signed bytes every device of that release
+holds identically, excluding the control sectors that carry per-device state — so a device
+copies the unchanged bulk from the slot it is running and downloads only the changes.
+`--delta-from` is repeatable: publish one base per version still in the field, or those
+devices take the full image. It's opportunistic (picked only when the device's running
+version matches and it's smaller) and still
 sha256/signature-verified (see [the runtime docs](runtime.md)).
 
 For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in
@@ -410,25 +413,25 @@ openmv-ota project keys unrevoke 0x0100
 
 ### Board identity
 
-`board_id` is a `uint32` that names a product (the cross-flash guard), and
+`product_id` is a `uint32` that names a product (the cross-flash guard), and
 `board_name` is a human label for it. They live only in `openmv-ota.toml` (per
 `[targets.<BOARD>]`) and are pure identity — **excluded from the lock and its
 `config_digest`** — so setting a product id or renaming a board never trips drift
 (unlike geometry overrides, which are firmware-relevant and *are* digested).
 `build romfs` reads them and stamps them into `system.json` and the trailer: the
-device's `board_id` guards against cross-flashing the wrong product; `board_name`
+device's `product_id` guards against cross-flashing the wrong product; `board_name`
 is metadata only.
 
 **You never have to invent the number.** `project new --ota` auto-assigns each
-board a stable `board_id`, derived deterministically from the product + board name
+board a stable `product_id`, derived deterministically from the product + board name
 (distinct per board, reproducible). It's written into the config so it's frozen —
-**keep it once devices ship**, because a device bakes its `board_id` in and rejects
+**keep it once devices ship**, because a device bakes its `product_id` in and rejects
 any image whose id doesn't match; a later change would reject updates on fielded
 devices. You can still override it (e.g. to match an existing product numbering),
 and `build romfs` warns if you set it to `0` (guard off) or if two boards collide
 on the same id.
 
-A **non-OTA** project doesn't pin a `board_id` in its config (the guard only
+A **non-OTA** project doesn't pin a `product_id` in its config (the guard only
 applies to OTA), but `build romfs` still derives the same stable id and records it
 in `system.json`, so a non-OTA app reads the same product identity — and nothing
 changes when you later move to OTA. One app folder can target several boards or
@@ -499,7 +502,7 @@ and whether the project is OTA). Everything else is resolved into
 - per target (each board, and each of its targeted partitions): the arch and
   mpy-cross flags, the NPU type and its full compiler config (Vela / ST Edge AI
   arguments and config-file references), the alignment rules, and the partition
-  size, flash erase block, and FRONT slot size.
+  size, flash erase block, and per-slot size.
 
 Partition sizes come from the firmware's `boards/<BOARD>/board_config.h`. When a
 board's size is build-variant conditional, the bundled default is used instead
@@ -508,7 +511,7 @@ and the source is recorded in `geometry_source`; set `partition_size` under a
 
 The lock's `config_digest` covers only the *firmware-relevant* config — boards,
 geometry overrides like `partition_size`, and the OTA mode — so changing any of
-those is drift you must `sync`. Pure-identity fields (`board_id`, `board_name`)
+those is drift you must `sync`. Pure-identity fields (`product_id`, `board_name`)
 and metadata (product / vendor name, app version) are deliberately **excluded**,
 so editing a product id or bumping your app version never invalidates the lock.
 
@@ -548,7 +551,7 @@ OTA update to the main carries the matching helper image, and your app calls
 [`openmv_ota.sync()`](#the-device-runtime-library-openmv_ota) early in `main.py` to
 write it into the helper partition (only when it differs). Because the nested image
 travels *with* the main, `sync()` always writes the helper image that matches the main
-that's actually running — so it stays consistent even across a rollback to the golden
+that's actually running — so it stays consistent even across a rollback to the previous
 image. (The standalone `-coprocessor-romfs.img` is for flashing the helper partition
 directly at the factory; the nested copy is byte-identical.)
 
@@ -565,7 +568,7 @@ from openmv_ota.project import load_project
 p = load_project("./my-product")  # raises if the firmware has drifted
 p.vela_path                       # path to the vela binary on this machine
 p.targets                         # every (board, partition) target to build for
-p.board("OPENMV_N6").front_size   # firmware-resolved FRONT partition size
+p.board("OPENMV_N6").front_size   # firmware-resolved per-slot size
 p.board("OPENMV_N6").alignment_rules
 p.board("OPENMV_AE3", 1).npu_config   # HE-core NPU type, args, and file refs
 ```

@@ -1,11 +1,11 @@
 """The frozen OTA ``boot.py`` -- the module openmv runs at boot.
 
 This is the file the firmware build freezes into the image as ``boot.py``; on the
-camera it runs after the board's stock ``_boot.py``. It selects the FRONT (mutable
-runtime) or BACK (golden) ROMFS slot, verifies the slot's signed trailer (ECDSA
-over the firmware's mbedtls, via an injected ``verify``), checks integrity /
-cross-flash / compatibility / anti-rollback, runs the trial-boot status state
-machine, and mounts the chosen slot.
+camera it runs after the board's stock ``_boot.py``. It selects the NEWEST VALID
+ROMFS slot -- A or B, ordered by install counter, with no privileged "golden" among
+them -- verifies that slot's signed trailer (ECDSA over the firmware's mbedtls, via
+an injected ``verify``), checks integrity / cross-flash / compatibility /
+anti-rollback, runs the trial state machine, and mounts it.
 
 The decision logic (``parse_trailer`` / ``evaluate_slot`` / ``OtaBoot``) is pure
 and host-testable -- all flash I/O is injected. The **device entry** at the bottom
@@ -70,6 +70,26 @@ MARKER_SIZE = 16
 _PENDING_OFF = 0
 _TRIED_OFF = 16
 _CONFIRMED_OFF = 32
+# --- v2 status fields -------------------------------------------------------
+# Both live in the same status sector, past the four 16-byte markers (offset 64 on), and both are
+# written WITHOUT erasing: the sector is blank (0xFF) after the slot erase and every write from
+# then on only clears bits. That is what lets control data share an erase block with the body on
+# the single-sector boards.
+_COUNTER_OFF = 64                       # u32 value || u32 ~value -- a torn write is detectable
+_COUNTER_LEN = 8
+# ONE 16-BYTE MARKER PER BOOT ATTEMPT, not one byte.
+#
+# 16 is the portable flash write unit in this system -- it is exactly one AE3 MRAM write unit,
+# and it is what every status marker already uses. A ONE-BYTE write is not portable, and the
+# N6 proves it: its XSPI runs in octal DTR mode, which transfers two bytes per clock, and a
+# single-byte program HARD FAULTS inside xspi_write_888_dtr_ext. That is a silent death -- no
+# exception, no log line, no reset -- on the first boot of every trial, which is the worst
+# possible place for it. Caught on hardware; the whole system otherwise only ever writes 8- or
+# 16-byte units, so this was the one odd size in the tree.
+_ATTEMPT_UNIT = 16
+_ATTEMPTS_OFF = 80                      # 16-byte aligned, clear of the counter at 64..71
+_ATTEMPTS_MAX = 64                      # ...capped; a slot that needs 64 boots is not coming back
+DEFAULT_MAX_ATTEMPTS = 3                # boots a trial gets to confirm (openmv-ota.toml may lower it)
 
 
 def _marker(label):
@@ -79,9 +99,11 @@ def _marker(label):
 PENDING = _marker(b"pending")
 TRIED = _marker(b"tried")
 CONFIRMED = _marker(b"confirmed")
+ATTEMPT = _marker(b"attempt")           # written once per trial boot; see _ATTEMPT_UNIT
+_BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
 
 # --- Anti-rollback floor (mirror of openmv_ota.ota.rollback) ----------------
-_ROLLBACK_ENTRY = 8                     # u32 version || u32 ~version, in BACK's rollback sector
+_ROLLBACK_ENTRY = 8                     # u32 version || u32 ~version, in a slot's rollback sector
 
 
 def _rollback_floor_of(sector):
@@ -162,12 +184,96 @@ def _markers(status):
             status[_CONFIRMED_OFF:_CONFIRMED_OFF + MARKER_SIZE] == CONFIRMED)
 
 
-def evaluate_slot(body, status, trailer_bytes, is_front, rollback_floor,
-                  product_id, trusted_keys, platform_version, verify):
+def install_counter(status):
+    """This slot's install counter, or ``None`` if unwritten/torn.
+
+    A/B ordering hangs on this rather than on the image version. The version cannot order two
+    slots when the SAME version is legitimately installed twice -- a re-install, or a re-flash of
+    the same release -- and that is a case worth supporting rather than blocking. The counter says
+    which install happened later and nothing else; the version stays a human-facing fact and an
+    anti-rollback input.
+
+    ``u32 value || u32 ~value`` so a half-written counter is *detected* rather than believed: an
+    install that lost power partway must not be able to claim it is the newest."""
+    raw = bytes(status[_COUNTER_OFF:_COUNTER_OFF + _COUNTER_LEN])
+    if len(raw) < _COUNTER_LEN:
+        return None
+    value = int.from_bytes(raw[:4], "little")
+    check = int.from_bytes(raw[4:], "little")
+    if (value ^ 0xFFFFFFFF) != check:
+        return None
+    return value
+
+
+def attempts_used(status):
+    """How many boot attempts this slot has consumed (see ``attempt_offset``)."""
+    region = bytes(status[_ATTEMPTS_OFF:_ATTEMPTS_OFF + _ATTEMPTS_MAX * _ATTEMPT_UNIT])
+    used = 0
+    off = 0
+    n = len(region)
+    while off + _ATTEMPT_UNIT <= n:
+        if region[off:off + _ATTEMPT_UNIT] == _BLANK_ATTEMPT:
+            break
+        used += 1
+        off += _ATTEMPT_UNIT
+    return used
+
+
+def attempt_offset(status):
+    """Offset of the next free attempt byte, or ``None`` when the region is full.
+
+    An append region rather than a counter because flash cannot be incremented in place without
+    an erase, and there is no erase available here -- the slot is erased once at install and every
+    write after that is a 1->0 program. Consuming one byte per boot costs nothing and a torn write
+    costs a single attempt instead of corrupting a count."""
+    used = attempts_used(status)
+    if used >= _ATTEMPTS_MAX:
+        return None
+    return _ATTEMPTS_OFF + used * _ATTEMPT_UNIT
+
+
+def select_slot(candidates):
+    """Pick which slot to boot from ``[(name, counter, confirmed), ...]`` -- already-validated
+    slots only. Returns the winning name, or ``None`` when there is nothing bootable (recovery).
+
+    Newest wins, and "newest" is the install counter: see ``install_counter`` for why the version
+    cannot do this job. A slot whose counter is unreadable (blank or torn) is still bootable if it
+    verified -- it just sorts last, because we cannot claim it is newer than something that says
+    so. That matters for the very first boot after a factory flash, where nothing has a counter yet.
+
+    Ties are possible in exactly two situations -- a factory flash that wrote both slots, and
+    corruption -- so they get a defined answer rather than whatever order the caller passed:
+    prefer a CONFIRMED slot (it is known to have run), then the first listed. Deliberately NOT the
+    version: two slots holding the same version is the case this whole scheme exists to support."""
+    best = None
+    for name, counter, confirmed in candidates:
+        if best is None:
+            best = (name, counter, confirmed)
+            continue
+        bname, bcounter, bconfirmed = best
+        # None sorts below any real counter
+        if counter is None and bcounter is None:
+            better = confirmed and not bconfirmed
+        elif counter is None:
+            better = False
+        elif bcounter is None:
+            better = True
+        elif counter != bcounter:
+            better = counter > bcounter
+        else:
+            better = confirmed and not bconfirmed
+        if better:
+            best = (name, counter, confirmed)
+    return None if best is None else best[0]
+
+
+def evaluate_slot(body, status, trailer_bytes, rollback_floor,
+                  product_id, trusted_keys, platform_version, verify,
+                  max_attempts=DEFAULT_MAX_ATTEMPTS):
     """Verify one slot and decide whether it may be mounted.
 
-    Returns ``(trailer, write_tried)`` -- ``write_tried`` is True only for a FRONT
-    first trial boot, telling the caller to set the ``tried`` marker before mounting.
+    Returns ``(trailer, consume_attempt)`` -- ``consume_attempt`` is True when this is a trial
+    boot, telling the caller to burn one attempt byte before mounting.
     Raises :class:`OtaReject` (reason code) on any failure. ``body`` is the slot's
     body region (a memoryview on device); ``status`` is its status sector.
 
@@ -193,23 +299,45 @@ def evaluate_slot(body, status, trailer_bytes, is_front, rollback_floor,
     if _sha256(memoryview(body)[:t.body_size]) != t.body_sha256:
         raise OtaReject("body-sha")
 
-    pending, tried, confirmed = _markers(status)
-    if not is_front:
-        # BACK must be exactly the golden factory shape: confirmed only.
-        if not (confirmed and not pending and not tried):
-            raise OtaReject("back-not-factory")
-        return t, False
+    pending, _tried, confirmed = _markers(status)   # `tried` is superseded by the attempt region
 
-    if t.payload_version < rollback_floor:              # anti-rollback vs BACK
+    # SYMMETRIC. v1 required BACK to be "exactly the golden factory shape: confirmed only",
+    # because BACK *was* the factory image and only FRONT was ever written. Under A/B both slots
+    # are real, updatable images and either may be the newest, so the same rule has to hold for
+    # both -- and the caller decides which one wins via select_slot(), not this function.
+    if confirmed:
+        # ANTI-ROLLBACK DOES NOT APPLY TO A CONFIRMED SLOT, and this is the difference between
+        # A/B working and A/B being pointless. The floor rises to the running version on every
+        # confirm, so once an update is kept, the slot behind it is BELOW the floor by
+        # construction -- and rejecting it there would delete the fallback at the exact moment
+        # the device finished proving it did not need it. Caught on hardware: a Nicla that
+        # confirmed 1.1.0 then logged `boot: rejected A:rollback`, leaving itself one bad
+        # update from having nothing to fall back to.
+        #
+        # The floor's job is to gate what may be INSTALLED -- an attacker replaying an old
+        # signed release -- and that is enforced where it belongs, pre-erase in the installer
+        # and again on any slot that has NOT yet been confirmed (below). A slot marked
+        # confirmed is one this device already ran and kept; refusing to return to it buys no
+        # security (an attacker who can force a trial to fail can force that downgrade anyway,
+        # which the plan states outright as inherent to A/B) and costs the whole safety net.
+        return t, False                                 # ran and was kept; boot it, consume nothing
+    if t.payload_version < rollback_floor:              # anti-rollback, for anything unproven
         raise OtaReject("rollback")
-    if pending and tried and confirmed:
-        return t, False                                 # post-OTA confirmed
-    if pending and not tried and not confirmed:
-        return t, True                                  # one-shot trial: arm 'tried'
-    if pending and tried and not confirmed:
-        raise OtaReject("trial-failed")                 # tried but never confirmed
-    if confirmed and not pending and not tried:
-        raise OtaReject("forged-confirm")               # BACK shape on FRONT
+    if pending:
+        # A trial gets max_attempts boots to confirm, not one. The costs are lopsided: a FALSE
+        # rejection costs a full re-download + erase + write that the server then offers again,
+        # while an extra attempt on a genuinely bad image costs one reboot. See the plan.
+        if attempts_used(status) >= max_attempts:
+            raise OtaReject("trial-failed")             # spent its attempts, never confirmed
+        return t, True                                  # trial: caller consumes one attempt
+    # Neither confirmed nor pending: nothing was ever installed here (a blank slot, or a status
+    # sector lost to a torn write). Not bootable.
+    #
+    # v1 also rejected "confirmed with no pending" as `forged-confirm`, on the grounds that it was
+    # BACK's shape appearing on FRONT. That check is meaningless now: both slots use one shape, and
+    # a factory-flashed slot legitimately looks exactly like that. It never bought much anyway --
+    # forging a confirm skips the TRIAL, not the signature, so it needs flash-write access to make
+    # an already-validly-signed image skip its probation.
     raise OtaReject("status")
 
 
@@ -222,7 +350,8 @@ class OtaBoot:
     """
 
     def __init__(self, read, verify, mount, write_marker, partition_size,
-                 front_size, block, product_id, trusted_keys, platform_version):
+                 front_size, block, product_id, trusted_keys, platform_version,
+                 max_attempts=DEFAULT_MAX_ATTEMPTS):
         self.read = read
         self.verify = verify
         self.mount = mount
@@ -233,66 +362,108 @@ class OtaBoot:
         self.product_id = product_id
         self.trusted_keys = trusted_keys
         self.platform_version = platform_version
+        self.max_attempts = max_attempts
+        self._pending = {}
+
+    def _slots(self):
+        """``[(name, offset, size), ...]`` for this device's mode.
+
+        A/B splits the partition into two slots OF EQUAL SIZE; SINGLE is one slot spanning all
+        of it. Everything below is written against this list, so the two modes differ in exactly
+        one place.
+
+        Equal sizes are not cosmetic. One OTA image must be installable into EITHER slot -- the
+        installer picks the target at run time -- and the image is slot-sized, with its trailer
+        in the last block. A partition whose half does not divide evenly leaves a remainder
+        below the split; that tail is deliberately unused (under one block per slot) rather
+        than handed to B, which would make B's image a different size from A's."""
+        if self.front_size <= 0 or self.front_size >= self.partition_size:
+            return [("A", 0, self.partition_size)]          # SINGLE: one slot, whole partition
+        return [("A", 0, self.front_size),
+                ("B", self.front_size, self.front_size)]
 
     def _rollback_floor(self):
-        """The anti-rollback floor for FRONT: the higher of BACK's factory version and the
-        monotonic floor in BACK's rollback sector (advanced by confirm() as updates are
-        kept). 0 if BACK's trailer doesn't parse (a torn factory image) and no floor logged."""
-        back = self.read(self.partition_size - self.block, self.block)
-        try:
-            base = parse_trailer(back).payload_version
-        except OtaReject:
-            base = 0
-        logged = _rollback_floor_of(self.read(self.partition_size - 3 * self.block, self.block))
-        return logged if logged > base else base
+        """The anti-rollback floor: the highest version any slot has recorded as confirmed.
 
-    def _try_slot(self, offset, slot_size, is_front, rollback_floor):
+        v1 read this from BACK alone, which worked because BACK was the factory image and was
+        never erased. Under A/B every slot is erased in turn, so a floor living in one slot would
+        be lost the moment that slot is rewritten. Taking the max across both keeps it monotonic
+        as long as an install carries the current floor into the slot it writes -- which is the
+        installer's job (step 4), and the reason the floor is read from every slot here rather
+        than from a designated one."""
+        floor = 0
+        for _name, offset, size in self._slots():
+            logged = _rollback_floor_of(self.read(offset + size - 3 * self.block, self.block))
+            if logged > floor:
+                floor = logged
+        return floor
+
+    def _read_slot(self, offset, size):
         blk = self.block
-        body = self.read(offset, slot_size - 2 * blk)
-        status = self.read(offset + slot_size - 2 * blk, blk)
-        trailer = self.read(offset + slot_size - blk, blk)
-        t, write_tried = evaluate_slot(
-            body, status, trailer, is_front, rollback_floor, self.product_id,
-            self.trusted_keys, self.platform_version, self.verify)
-        if write_tried:
-            # Arm 'tried' *before* mounting: if the trial image hangs, the next boot
-            # sees pending+tried+!confirmed and rejects FRONT, falling back to BACK.
-            try:
-                self.write_marker(offset + slot_size - 2 * blk + _TRIED_OFF, TRIED)
-            except OSError:
-                # The arm write failed/can't be verified. Running FRONT now would be an
-                # untracked trial -- if it hung, the next boot couldn't tell to recover.
-                # So don't trust it; fall back to the golden image instead.
-                raise OtaReject("trial-arm")
-        self.mount(memoryview(body)[:t.body_size])
-        return t
+        body = self.read(offset, size - 2 * blk)
+        status = self.read(offset + size - 2 * blk, blk)
+        trailer = self.read(offset + size - blk, blk)
+        return body, status, trailer
 
     def run(self):
-        """Mount FRONT, else BACK. Returns ``(slot, trailer, front_reason)`` where
-        ``front_reason`` is the FRONT rejection reason when BACK was used (else
-        None). Raises :class:`OtaReject('no-slot:...')` if neither slot mounts."""
+        """Mount the newest valid slot. Returns ``(slot, trailer, reason)`` where ``reason`` is
+        the rejection of the slot NOT chosen (or None when there was only one candidate).
+
+        Raises :class:`OtaReject('no-slot:...')` when nothing is bootable -- which under v2 is
+        not the end of the road: there is no factory image to fall back to, so the caller hands
+        to the firmware-resident recovery flow, which re-downloads until a working image exists.
+        """
         floor = self._rollback_floor()
-        try:
-            t = self._try_slot(0, self.front_size, True, floor)
-            return "FRONT", t, None
-        except OtaReject as front_err:
+        candidates, rejects = [], []
+        for name, offset, size in self._slots():
+            body, status, trailer = self._read_slot(offset, size)
             try:
-                t = self._try_slot(self.front_size,
-                                   self.partition_size - self.front_size, False, 0)
-                return "BACK", t, str(front_err)
-            except OtaReject as back_err:
-                raise OtaReject("no-slot:%s/%s" % (front_err, back_err))
+                t, consume = evaluate_slot(
+                    body, status, trailer, floor, self.product_id, self.trusted_keys,
+                    self.platform_version, self.verify, self.max_attempts)
+            except OtaReject as e:
+                rejects.append("%s:%s" % (name, e))
+                continue
+            _p, _tr, confirmed = _markers(status)
+            candidates.append((name, install_counter(status), bool(confirmed)))
+            self._pending[name] = (offset, size, body, status, t, consume)
+
+        # Try the newest, and if it cannot be ARMED fall through to the next-newest rather than
+        # abandoning the boot. Failing to record an attempt is a reason to distrust that slot, not
+        # a reason to strand a device that has another valid image sitting right there.
+        while True:
+            winner = select_slot(candidates)
+            if winner is None:
+                raise OtaReject("no-slot:%s" % (",".join(rejects) or "empty"))
+            try:
+                return self._mount(winner, rejects)
+            except OtaReject as e:
+                rejects.append("%s:%s" % (winner, e))
+                candidates = [c for c in candidates if c[0] != winner]
+
+    def _mount(self, winner, rejects):
+        offset, size, body, status, t, consume = self._pending[winner]
+        if consume:
+            # BURN THE ATTEMPT BEFORE MOUNTING. If the trial image hangs, nothing after this
+            # point runs -- so an attempt recorded afterwards would never be recorded at all and
+            # the same slot would be retried forever. Consuming it first is what makes a hang
+            # count against the trial and eventually give up.
+            off = attempt_offset(status)
+            if off is None:
+                raise OtaReject("trial-attempts-full")
+            try:
+                self.write_marker(offset + size - 2 * self.block + off, ATTEMPT)
+            except OSError:
+                # Cannot record the attempt, so cannot bound the trial. Running it anyway would
+                # be an untracked trial: if it hung, the next boot could not tell to move on.
+                raise OtaReject("trial-arm")
+        self.mount(memoryview(body)[:t.body_size])
+        return winner, t, (",".join(rejects) or None)
 
 
-# --- Telemetry the app reads after boot completes ---------------------------
-# boot.py can't write to UART/REPL (not initialised yet in the frozen boot path), so it
-# records the outcome for the app to read once it's running. _main also mirrors these
-# onto the _ota_config module (see below) -- that's the channel the app-side openmv_ota
-# library actually reads, since importing *this* module would re-run the boot logic.
-
-last_slot = None              # 'FRONT' or 'BACK'
+last_slot = None              # 'A' or 'B'
 last_payload_version = 0      # the mounted image's payload_version
-last_failure_reason = None    # the FRONT rejection reason, if BACK was used
+last_failure_reason = None    # why the OTHER slot was rejected, if this one is a fallback
 
 
 # --- Device entry -----------------------------------------------------------
@@ -364,26 +535,40 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         log.debug("boot: no prior mount")   # mp_init didn't auto-mount /rom (blank/invalid romfs)
 
     try:
-        slot, trailer, front_reason = OtaBoot(
+        slot, trailer, reject_reason = OtaBoot(
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
-            cfg.OTA_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION).run()
+            cfg.CONTROL_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION,
+            getattr(cfg, "MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)).run()
     except OtaReject as e:
         log.error("boot: no bootable slot: %s" % e)
-        raise  # hil-residual: bare re-raise to halt boot; the boot.no_slot log above is witnessed
-    if front_reason is None:
+        # NOT the end of the road under v2. There is no factory image to retreat to, so hand
+        # off to the firmware-resident recovery flow, which brings up the network and installs
+        # until a working image exists. It does not return. If it is somehow absent (a firmware
+        # built without it), re-raise -- halting is at least visible, where continuing into an
+        # unmounted /rom would not be.
+        try:  # hil-residual: the no-slot path itself is the `no_slot` scenario; this import guard sits inside it
+            import openmv_recovery  # hil-residual: frozen module, present in every OTA firmware; the ImportError arm below is for a build without it
+        except ImportError:  # hil-residual: firmware built without the recovery modules
+            raise e from None  # hil-residual: bare re-raise; boot.no_slot above is the witness
+        openmv_recovery.run(cfg)  # hil-residual: recovery never returns (installs + reboots, or retries forever)
+        raise  # hil-residual: unreachable unless recovery declined (no SERVER_URL stamped)
+    if reject_reason is None:
         log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
     else:
-        log.warning("boot: FRONT rejected (%s) -> mounted %s (payload %d)"
-                    % (front_reason, slot, trailer.payload_version))
+        # NOT "FRONT rejected": under A/B the rejected slot may be either one, and which it was
+        # is the useful half of this line. It also means a REJECTION HAPPENED, which is what the
+        # negative HIL paths key on -- a happy boot never emits it.
+        log.warning("boot: rejected %s -> mounted %s (payload %d)"
+                    % (reject_reason, slot, trailer.payload_version))
 
     global last_slot, last_payload_version, last_failure_reason
     last_slot, last_payload_version, last_failure_reason = (
-        slot, trailer.payload_version, front_reason)
+        slot, trailer.payload_version, reject_reason)
     # Mirror onto _ota_config, the module the app's openmv_ota lib reads (both import it,
     # and modules are cached, so this persists in-VM without re-running boot.py).
     cfg.last_slot = slot
     cfg.last_payload_version = trailer.payload_version
-    cfg.last_failure_reason = front_reason
+    cfg.last_failure_reason = reject_reason
 
     os.chdir("/rom")
     sys.path.append("/rom")

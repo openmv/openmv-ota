@@ -368,16 +368,141 @@ def test_devices_cohort_filter_and_paging(tmp_path):
                      headers=AUTH).json()["devices"]) == 2
 
 
+def test_release_image_is_retained_and_downloadable(tmp_path):
+    """Retention is what makes multi-base deltas practical. A delta must be named in the
+    SIGNED manifest and the server never holds signing keys, so it can never build one itself
+    -- the maker does, locally, and therefore needs the OLD images. Keeping them server-side
+    means a build machine does not have to hoard artifacts for every version in the field."""
+    app, store = _app(tmp_path)
+    storage = app.state.storage
+    storage.put("image/rel1", b"OLD-IMAGE-BYTES", "application/gzip")
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="1.0.0",
+                      payload_version=0x01000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=15, representations=[{"format": "full", "url": "x.img.gz",
+                                                       "size": 15}],
+                      manifest_key="m/rel1", image_key="image/rel1")
+    r = TestClient(app).get("/api/v1/admin/releases/rel1/image", headers=AUTH)
+    assert r.status_code == 200 and r.content == b"OLD-IMAGE-BYTES"
+    assert r.headers["content-type"] == "application/gzip"
+
+
+def test_release_image_404s_when_not_retained(tmp_path):
+    app, store = _app(tmp_path)
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="1.0.0",
+                      payload_version=0x01000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[{"format": "full", "url": "x.img.gz",
+                                                      "size": 1}],
+                      manifest_key="m/rel1", image_key="image/gone")
+    r = TestClient(app).get("/api/v1/admin/releases/rel1/image", headers=AUTH)
+    assert r.status_code == 404 and "no longer retained" in r.json()["detail"]
+    # ...and an unknown release is a plain 404, indistinguishable from another account's
+    assert TestClient(app).get("/api/v1/admin/releases/nope/image",
+                               headers=AUTH).status_code == 404
+
+
+def _seeded_release(app, store, *, release_id="rel1", deltas=()):
+    storage = app.state.storage
+    storage.put("m/%s" % release_id, b"MANIFEST", "application/octet-stream")
+    storage.put("i/%s" % release_id, b"IMAGE", "application/gzip")
+    reps = [{"format": "full", "url": "x-ota.img.gz", "size": 5}]
+    for name in deltas:
+        storage.put("artifacts/%s/%s" % (release_id, name), b"PATCH", "application/gzip")
+        reps.append({"format": "ocdl", "url": name, "size": 1, "base_payload_version": 1})
+    store.add_release(release_id=release_id, product_id=BID, product="P", version="1.0.0",
+                      payload_version=0x01000000, min_platform_version=0,
+                      image_sha256="ab" * 32, image_size=5, representations=reps,
+                      manifest_key="m/%s" % release_id, image_key="i/%s" % release_id)
+    return storage
+
+
+def test_prune_deletes_every_object_and_keeps_the_row(tmp_path):
+    """Retention has no depth limit, so reclaiming space is a deliberate act. The release ROW
+    survives it: that is the audit trail and the anti-rollback history, and the image endpoint
+    already distinguishes 'existed, bytes gone' from 'never existed'."""
+    app, store = _app(tmp_path, scopes=("publish", "observe"))
+    storage = _seeded_release(app, store, deltas=("x-ota.delta-1.0.0.gz",))
+    c = TestClient(app)
+    r = c.delete("/api/v1/admin/releases/rel1/artifacts", headers=AUTH)
+    assert r.status_code == 200 and len(r.json()["deleted"]) == 3   # manifest + image + delta
+
+    assert store.get_release("rel1") is not None                    # history kept
+    assert c.get("/api/v1/admin/releases/rel1/image", headers=AUTH).status_code == 404
+    from openmv_ota.server.errors import ServerError
+    for key in ("m/rel1", "i/rel1", "artifacts/rel1/x-ota.delta-1.0.0.gz"):
+        try:
+            storage.get(key)
+            raise AssertionError("%s survived the prune" % key)
+        except ServerError:
+            pass
+    # deleting again is not an error -- the operator should not have to care what is left
+    assert c.delete("/api/v1/admin/releases/rel1/artifacts", headers=AUTH).json()["deleted"] == []
+
+
+def test_prune_refuses_while_a_rollout_still_offers_the_release(tmp_path):
+    """Deleting mid-rollout turns every in-flight download into a 404."""
+    app, store = _app(tmp_path, scopes=("publish", "observe"))
+    _seeded_release(app, store)
+    store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID,
+                      cohort="__default__", percent=100)
+    c = TestClient(app)
+    r = c.delete("/api/v1/admin/releases/rel1/artifacts", headers=AUTH)
+    assert r.status_code == 409 and "ro1" in r.json()["detail"]
+    assert c.get("/api/v1/admin/releases/rel1/image", headers=AUTH).status_code == 200
+
+    # pausing the rollout clears the way...
+    store.update_rollout("ro1", state="paused")
+    assert c.delete("/api/v1/admin/releases/rel1/artifacts", headers=AUTH).status_code == 200
+
+
+def test_prune_force_overrides_the_rollout_guard(tmp_path):
+    app, store = _app(tmp_path, scopes=("publish", "observe"))
+    _seeded_release(app, store)
+    store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID,
+                      cohort="__default__", percent=100)
+    r = TestClient(app).delete("/api/v1/admin/releases/rel1/artifacts?force=true", headers=AUTH)
+    assert r.status_code == 200
+    assert [e for e in store.read_audit() if e["action"] == "release.artifacts.delete"]
+
+
+def test_prune_is_account_scoped(tmp_path):
+    app, store = _app(tmp_path, scopes=("publish", "observe"))
+    _seeded_release(app, store)
+    store.add_token(hash_token("other"), "them", ["publish"], account_id="acctB")
+    r = TestClient(app).delete("/api/v1/admin/releases/rel1/artifacts",
+                               headers={"Authorization": "Bearer other"})
+    assert r.status_code == 404                     # not 403: no probing for release ids
+
+
 def test_fleet_devices_audit(tmp_path):
     app, store = _app(tmp_path)
     store.upsert_device(device_id="d1", product_id=BID, board="OPENMV_N6", current_version="1.0.0",
-                        slot="FRONT")
+                        slot="A", confirmed=1, fallback_payload_version=0x01000000)
     store.append_audit(actor="ci", action="release.publish", entity_type="release", entity_id="r1")
     c = TestClient(app)
     assert c.get("/api/v1/admin/fleet", headers=AUTH).json()["total"] == 1
-    assert c.get("/api/v1/admin/devices", headers=AUTH).json()["devices"][0]["device_id"] == "d1"
+    dev = c.get("/api/v1/admin/devices", headers=AUTH).json()["devices"][0]
+    assert dev["device_id"] == "d1"
+    # the packed number is what the store keeps; a READER gets it decoded, so nobody has to
+    # work out that 16777216 means 1.0.0 to answer "what would this device fall back to"
+    assert dev["fallback_payload_version"] == 0x01000000 and dev["fallback_version"] == "1.0.0"
     events = c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
     assert events[0]["action"] == "release.publish"
+
+
+def test_fleet_summary_reports_exposure_not_slot_names(tmp_path):
+    """What an operator watching a rollout needs: who fell back, who is still unproven, and
+    what the fleet would fall back TO. A slot NAME answers none of those under A/B."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="ok", product_id=BID, current_version="1.1.0", slot="B",
+                        confirmed=1, fallback_payload_version=0x01000000)
+    store.upsert_device(device_id="trial", product_id=BID, current_version="1.1.0", slot="A",
+                        confirmed=0, fallback_payload_version=0x01000000)
+    store.upsert_device(device_id="back", product_id=BID, current_version="1.0.0", slot="B",
+                        confirmed=1, fallback_reason="A:body-sha")
+    fs = TestClient(app).get("/api/v1/admin/fleet", headers=AUTH).json()
+    assert fs["total"] == 3 and fs["fell_back"] == 1 and fs["unconfirmed"] == 1
+    # decoded, and a device that did not report its slots reads as "unknown" -- never as 0.0.0
+    assert fs["by_fallback"] == {"1.0.0": 2, "unknown": 1}
 
 
 # --- account isolation (adversarial: B must never see or touch A's data) --------------------

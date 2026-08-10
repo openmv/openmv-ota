@@ -14,10 +14,12 @@
 #                              verify the OTA bundle (bundle and loose
 #                              body+trailer); a corrupted body must FAIL verify;
 #                              the factory image is the full partition.
-#   classic  (romfs, not OTA): project new; build firmware + single-image romfs;
-#                              `project new --ota` must fail cleanly (not
-#                              OTA-capable); `build factory-romfs` must fail
-#                              cleanly (needs an OTA project).
+#   classic  (romfs, small):   project new; build firmware + single-image romfs;
+#                              `build factory-romfs` must fail cleanly (needs an
+#                              OTA project). Under v2 these boards ARE OTA-capable
+#                              -- a partition with room for only one slot builds in
+#                              single-image mode instead of being refused -- so
+#                              `project new --ota --dev` must now SUCCEED.
 #   noromfs  (no partition):   `project new` must fail cleanly (no partition size).
 #
 # Every expected failure is asserted to be a clean tool error (no Python
@@ -234,8 +236,13 @@ do_full() {  # board  work
 
 do_classic() {  # board  work
   local board="$1" work="$2" proj="$2/plain"
-  expect_clean_fail "project new --ota refused cleanly (not OTA-capable)" 1 "not OTA-capable" \
-    $OTA project new "$work/ota_attempt" -f "$FW" -b "$board" --ota $SDK_FLAG
+  # v2 FLIPPED THIS. Under v1 a partition with room for only one slot was refused as "not
+  # OTA-capable"; v2 builds it in SINGLE-IMAGE mode instead (one slot, no fallback -- see
+  # geometry.derive_mode), which is the whole point of the mode. So the assertion is now that
+  # these boards are ACCEPTED. What is still refused is a partition with no room for an image
+  # even in single mode, which is pure arithmetic -- and that is the `noromfs` class below.
+  expect_success "project new --ota (single-image mode on a one-slot partition)" \
+    $OTA project new "$work/ota_attempt" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
 
   expect_success "project new (non-OTA)" \
     $OTA project new "$proj" -f "$FW" -b "$board" $SDK_FLAG

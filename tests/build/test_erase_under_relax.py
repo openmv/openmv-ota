@@ -96,7 +96,7 @@ def test_a_collect_precedes_the_erase():
     and verify -- churns the heap, so the next allocation can trigger a collection. That is one
     unsplittable pause: feed() cannot run during it, and on a board with external SDRAM the heap is
     large enough for the sweep to outrun a 500 ms watchdog window. Measured on the RT1060, which
-    reset between `install: erasing FRONT` and the loop-entry witness -- before a single flash op,
+    reset between `install: erasing <slot>` and the loop-entry witness -- before a single flash op,
     where the only code is an integer division. Collecting first, under relax(), removes the race.
     """
     src = _SRC.read_text()
@@ -110,7 +110,7 @@ def test_a_collect_precedes_the_erase():
     body = "\n".join(line.rstrip() for line in lines)
     run_at = body.index("def run(manifest_url")
     collect = body.index("gc_collect()\n", run_at)      # the CALL, not `def gc_collect():`
-    erase = body.index("erase(front_size)", run_at)
+    erase = body.index("erase(target_off, slot_size)", run_at)
     assert collect < erase, "the proactive collect must PRECEDE the erase"
 
 

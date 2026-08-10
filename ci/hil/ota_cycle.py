@@ -309,14 +309,22 @@ def log(msg):
 # Update this when a path's log wording changes (the one coupling we accept for a single,
 # no-special-markers logging channel).
 COVERAGE = {
-    "boot: mounted FRONT": "boot.mount.front",
-    # BACK is only ever mounted as a FALLBACK (FRONT rejected), which boot.py logs as one
-    # line -- "boot: FRONT rejected (<reason>) -> mounted BACK ..." -- so key on that tail,
-    # not a standalone "boot: mounted BACK" line (which never occurs).
-    "-> mounted BACK": "boot.mount.back",
-    "boot: FRONT rejected": "boot.front_reject",
+    # v2 HAS NO GOLDEN SLOT, so these no longer name one. boot.py mounts whichever slot is
+    # newest and valid (A or B, by install counter), and the interesting distinction is not
+    # WHICH slot ran but WHETHER a slot had to be rejected to get there:
+    #
+    #   boot.mount     -- a slot mounted, full stop. Every healthy boot.
+    #   boot.fallback  -- the newest slot was REJECTED and an older one ran instead. This is
+    #                     the negative paths' signature, and a happy boot never emits it. It
+    #                     replaces both boot.mount.back and boot.front_reject, which were two
+    #                     ids keyed on one log line back when "the older slot" meant "golden".
+    "boot: mounted": "boot.mount",
+    "boot: rejected": "boot.fallback",
     "boot: no bootable slot": "boot.no_slot",
-    "install: erasing FRONT": "install.start",
+    "status: slot read": "status.slots",          # per-slot A/B report, built every check-in
+    "status: slots ready": "status.slots",
+    "install: slot surveyed": "install.survey",   # per-slot pre-erase read (counter/floor/version)
+    "install: erasing": "install.start",          # "install: erasing <slot> (N bytes)"
     "install: write path block-device": "install.blockdev",
     "install: write path XIP": "install.xip",
     "install: representation delta": "install.delta",
@@ -346,11 +354,11 @@ COVERAGE = {
     # the step (board-agnostic) and whichever branch runs satisfies it.
     "install: fetching manifest": "install.fetch_manifest",  # pre-erase manifest GET starting
     "install: downloading": "install.download",              # image download opened post-erase
-    "install: writing FRONT": "install.writing",             # streamed write loop starting
+    "install: writing": "install.writing",                   # "install: writing <slot>"
     "install: write path ready block-device": "write.ready",  # closures bound (def lines witnessed)
     "install: write path ready XIP": "write.ready",
-    "install: erased FRONT block-device": "write.erased",     # FRONT slot erased before the write
-    "install: erased FRONT XIP": "write.erased",
+    "install: erased slot block-device": "write.erased",      # target slot erased before the write
+    "install: erased slot XIP": "write.erased",
     "install: erasing block block-device": "write.erased",    # in-loop erase op (loop body witness)
     "install: erasing block XIP": "write.erased",
     "install: back reading block-device": "write.backread",   # in-loop BACK read (delta loop body)
@@ -362,7 +370,7 @@ COVERAGE = {
     "install: back read XIP": "write.backread",
     "install: complete block-device": "write.complete",       # write committed (flush / no-op)
     "install: complete XIP": "write.complete",
-    "install: committed FRONT": "install.committed",          # commit point passed, arming next
+    "install: committed slot": "install.committed",          # commit point passed, arming next
     "install: retry cleanup": "install.retry_cleanup",        # socket closed before a download retry
     "install: rebooting": "install.reboot",                   # _reset() drained the log, about to reset
     "verify: write block-device": "verify.write",             # confirm/rollback write+readback
@@ -412,7 +420,7 @@ COVERAGE = {
     "confirm: floor advanced": "confirm.floor",          # anti-rollback floor raised on confirm
     "checkin: response received": "run.checkin",
     "checkin: update offered": "run.offer",
-    "confirm: kept running FRONT": "confirm.promoted",
+    "confirm: kept the running image": "confirm.promoted",
 }
 
 
@@ -420,9 +428,12 @@ COVERAGE = {
 # The scenario catalog. Each entry drives the conditions that make its code paths run and
 # declares what it MUST cover ("expect") and what it must NOT ("forbid"), plus how it ends:
 #   end="promoted" -- device installs, trials, confirms, and promotes to the target version
-#                     on FRONT (the happy paths).
-#   end="golden"   -- device stays on / falls back to the golden (the negative paths): the
-#                     update is refused pre-erase, or installs then rolls back / falls back.
+#                     (the happy paths). WHICH slot it lands in is not asserted: under A/B an
+#                     update goes to whichever slot was not running, so it alternates.
+#   end="golden"   -- device stays on / falls back to the version it was provisioned with (the
+#                     negative paths): the update is refused pre-erase, or installs then rolls
+#                     back. The name is v1's; what it asserts is "the version did not move",
+#                     which is still exactly right. There is no golden SLOT any more.
 # "publish" picks how the update is produced (see publish_update); "app" picks the bench app
 # variant (see bench_main_py). "{cov_write}" resolves per-board to install.xip / .blockdev.
 # A run PASSES iff the end state matches AND every expect marker fired AND no forbid marker
@@ -433,7 +444,7 @@ SCENARIOS = {
     "delta": {
         "desc": "happy path: delta install -> trial -> confirm -> promote",
         "publish": "delta", "app": "confirm", "end": "promoted",
-        "expect": ["boot.mount.front", "boot.ready", "log.configured", "run.clock", "run.checkin_http",
+        "expect": ["boot.mount", "boot.ready", "log.configured", "run.clock", "run.checkin_http",
                    "run.body_read", "run.body_chunk", "run.checkin_clen", "run.checkin_parsed",
                    "run.checkin_closed",
                    "run.checkin", "run.status", "run.boot_result", "run.identity",
@@ -441,46 +452,49 @@ SCENARIOS = {
                    "run.ca_path", "run.ca_bytes", "run.read_at", "run.data_path",
                    "install.fetch_manifest",
                    "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
-                   "install.start", "{cov_write}", "install.download", "install.delta",
+                   "status.slots", "install.survey", "install.start", "{cov_write}",
+                   "install.download",
+                   "install.delta",
                    "install.writing", "write.ready", "write.erased", "write.wrote",
                    "write.readback", "write.backread", "write.complete", "install.committed",
                    "install.armed", "install.reboot", "boot.marked", "boot.marked_verify",
                    "verify.write", "confirm.floor", "confirm.promoted", "boot.mount_call",
                    "boot.read"],
-        "forbid": ["install.full", "install.fallback", "install.reject", "boot.mount.back"],
+        "forbid": ["install.full", "install.fallback", "install.reject", "boot.fallback"],
     },
     "full": {
         "desc": "full (non-delta) image install -> trial -> confirm -> promote",
         "publish": "full", "app": "confirm", "end": "promoted",
-        "expect": ["boot.mount.front", "run.offer", "install.start",
+        "expect": ["boot.mount", "run.offer", "install.start",
                    "{cov_write}", "install.full", "install.armed", "confirm.promoted"],
         "forbid": ["install.delta", "install.fallback", "install.reject"],
     },
     "corrupt": {
-        "desc": "tampered image fails integrity -> retries exhausted -> golden BACK",
+        "desc": "tampered image fails integrity -> retries exhausted -> falls back",
         "publish": "corrupt", "app": "confirm", "end": "golden",
         "expect": ["install.start", "install.retry", "install.retry_cleanup", "install.fallback",
-                   "install.reboot", "boot.front_reject", "boot.mount.back"],
+                   "install.reboot", "boot.fallback"],
         "forbid": ["install.armed", "confirm.promoted"],
     },
-    # THE ONLY SCENARIO THAT STARTS FROM A PROMOTED BOARD. Everything else begins on golden, so
-    # the question "what happens when an update fails AFTER you have already taken one" had never
-    # been asked on hardware -- the run always ended when the first cycle settled. It matters in
-    # the field: the device is running the promoted image with only the FACTORY golden behind it,
-    # so a failed install does not cost you the update, it costs you every update ever taken. This
-    # asserts the anti-brick fallback still works from that state, and records where it lands.
+    # THE ONLY SCENARIO THAT STARTS FROM A PROMOTED BOARD, and under v2 it is the one that
+    # demonstrates why v2 exists. In v1 the device ran the promoted image with only the FACTORY
+    # image behind it, so a failed second install did not cost you the update -- it cost you
+    # every update ever taken. Under A/B the slot behind it holds the LAST RELEASE THAT WORKED,
+    # so the same failure costs one release. Same scenario, materially different blast radius;
+    # it is worth keeping precisely because it measures that.
     "reinstall": {
         "desc": "delta install -> promote, THEN a second update fails its sha256",
         "publish": "delta", "app": "confirm", "end": "promoted",
-        "expect": ["boot.mount.front", "run.offer", "install.start", "install.armed",
+        "expect": ["boot.mount", "run.offer", "install.start", "install.armed",
                    "confirm.promoted"],
         "forbid": ["install.fallback", "install.reject"],
         "then": {
-            "desc": "a SECOND install, from the PROMOTED image, fails sha256 -> back to golden",
+            "desc": "a SECOND install, from the PROMOTED image, fails sha256 -> keeps 1.1.0",
             "publish": "corrupt_sha", "version": "1.2.0", "end": "golden",
-            # install.reject_sha is the point: the integrity gate fires on a board that is NOT on
-            # golden. end="golden" then records the cost -- it falls all the way back to the
-            # factory image, losing the promoted version, because that is all BACK ever holds.
+            # install.reject_sha is the point: the integrity gate fires on a board that is NOT
+            # on its provisioned image. Marker-scored, so no end-version is asserted -- and under
+            # A/B the honest expectation CHANGED: the device keeps the promoted 1.1.0 rather than
+            # losing it, because the slot behind it is that release and not the factory build.
             "expect": ["install.start", "install.reject_sha", "install.retry"],
             "forbid": ["confirm.promoted"],
             # Marker-scored: see the note at the phase-2 call site. The retry-exhaust fallback to
@@ -497,7 +511,7 @@ SCENARIOS = {
         # The sha256 GATE (install.reject_sha) is the point. The retry-exhaust -> golden fallback is
         # `corrupt`'s job and is SLOW here: each attempt writes the FULL image before the sha check
         # fails (~3x the N6's 12 MiB slot -> past the watch window). So assert the gate fired and the
-        # bad image was retried, never committed -- the device stays on the golden VERSION throughout
+        # bad image was retried, never committed -- the device stays on its provisioned VERSION
         # (it never promotes 1.1.0), which satisfies end="golden".
         "desc": "image decompresses but sha256 mismatches -> integrity gate rejects the update",
         "publish": "corrupt_sha", "app": "confirm", "end": "golden",
@@ -505,20 +519,26 @@ SCENARIOS = {
         "forbid": ["install.armed", "install.committed", "confirm.promoted"],
     },
     "rollback": {
-        "desc": "trial never confirms -> next boot rejects FRONT -> golden BACK",
+        # v2 gives a trial MAX_ATTEMPTS boots (default 3), not one, so this scenario now needs
+        # the no_confirm app to reset that many times before the rejection lands -- each boot
+        # consumes one byte of the attempt region, and only the boot after the last one rejects.
+        # The app already resets on every unconfirmed trial boot, so it converges without change;
+        # it just takes ~3x as long. A bench build can set [ota].max_attempts = 1 to restore v1's
+        # single-shot timing, which is also the cheapest way to prove the config knob works.
+        "desc": "trial never confirms -> attempts exhausted -> falls back to the previous slot",
         "publish": "delta", "app": "no_confirm", "end": "golden",
-        "expect": ["install.armed", "boot.front_reject", "boot.mount.back"],
+        "expect": ["install.armed", "boot.fallback"],
         "forbid": ["confirm.promoted"],
     },
     "bad_sig": {
-        "desc": "manifest signature does not verify -> refused pre-erase, stays golden",
+        "desc": "manifest signature does not verify -> refused pre-erase, version unchanged",
         "publish": "bad_sig", "app": "confirm", "end": "golden",
         # run.poll_tail + run.wdt_feed live AFTER run()'s install() call: a pre-erase REJECT raises
         # out of install() (no reboot), so run() reaches the loop tail and feeds the watchdog -- the
         # happy paths reboot at install() before the tail, so this is where those two are witnessed.
         "expect": ["run.offer", "install.reject", "install.reject_sig",
                    "run.poll_tail", "run.wdt_feed"],
-        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
+        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.fallback"],
     },
     "bad_key": {
         "desc": "manifest signed by a key not in the trusted allowlist -> refused pre-erase",
@@ -527,7 +547,7 @@ SCENARIOS = {
         # miss) -- an attacker signing with their own key. Both must reject pre-erase.
         "publish": "bad_key", "app": "confirm", "end": "golden",
         "expect": ["run.offer", "install.reject", "install.reject_key"],
-        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
+        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.fallback"],
     },
     "bad_version": {
         "desc": "version <= anti-rollback floor -> device refuses pre-erase, stays golden",
@@ -535,7 +555,7 @@ SCENARIOS = {
         # OLDER than golden -- the device rejects it at the version check, before rep selection.
         "publish": "full", "app": "confirm", "end": "golden", "version": "0.9.0",
         "expect": ["run.offer", "install.reject", "install.reject_vet"],
-        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.mount.back"],
+        "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.fallback"],
         # NEEDS the bench server started with test_offer_downgrades on
         # (OPENMV_OTA_TEST_OFFER_DOWNGRADES=1). A correct server never OFFERS a release <= a
         # device's current version (its own anti-rollback), so the device's anti-rollback --
@@ -552,7 +572,7 @@ SCENARIOS = {
         # boot.no_prior_mount: the post-brick boot has both slots blank, so mp_init can't
         # auto-mount /rom -> boot.py's umount("/rom") raises -> the no-prior-mount path runs.
         "expect": ["boot.no_slot", "boot.no_prior_mount"],
-        # NOT boot.mount.front: entering the SBL via machine.bootloader() boots the (still-valid)
+        # NOT boot.mount: entering the SBL via machine.bootloader() boots the (still-valid)
         # golden ONCE before blhost erases it, so a FRONT mount precedes the brick -- expected.
         # Forbid the things that prove the device is genuinely bricked if ABSENT: it ran no app
         # (no check-in) and did no OTA.
@@ -567,7 +587,7 @@ SCENARIOS = {
         # runs. Idempotent: a second boot would match (sync.skip) -- forbidden here so this run
         # proves the WRITE path, not just the compare.
         "publish": "none", "app": "confirm", "end": "golden",
-        "expect": ["boot.mount.front", "boot.ready", "run.checkin", "partition.compare",
+        "expect": ["boot.mount", "boot.ready", "run.checkin", "partition.compare",
                    "sync.applying", "partition.prepare", "partition.write", "sync.applied"],
         "forbid": ["install.start", "install.armed", "sync.skip"],
     },
@@ -577,7 +597,7 @@ SCENARIOS = {
         # finds it matches the bundle, and skips -- proving idempotence: no needless erase/write
         # of the helper-core partition on every boot.
         "publish": "none", "app": "confirm", "end": "golden",
-        "expect": ["boot.mount.front", "run.checkin", "partition.compare", "sync.skip"],
+        "expect": ["boot.mount", "run.checkin", "partition.compare", "sync.skip"],
         "forbid": ["sync.applying", "partition.prepare", "partition.write", "sync.applied"],
     },
 }
@@ -1747,15 +1767,16 @@ def _flash_blhost_imx(board, bad_romfs=False):
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
 
 
-# A boot reports its mount in TWO forms, and both mean "golden is up":
-#   log.info("boot: mounted %s (payload %d)")                       -> "boot: mounted FRONT"
-#   log.warning("boot: FRONT rejected (%s) -> mounted %s ...")      -> "-> mounted BACK"
-# Matching only the first missed every boot that reached golden by FALLBACK -- which is exactly what
-# the negative scenarios do -- so corrupt/bad_key/bad_version all failed verify against a board that
-# had booted correctly.
+# A boot reports its mount in TWO forms, and both mean "a slot is up":
+#   log.info("boot: mounted %s (payload %d)")                     -> "boot: mounted A"
+#   log.warning("boot: rejected %s -> mounted %s (payload %d)")   -> "-> mounted B"
+# Matching only the first missed every boot that got there by FALLBACK -- which is exactly what the
+# negative scenarios do -- so corrupt/bad_key/bad_version all failed verify against a board that had
+# booted correctly. Both forms end in "(payload N)", which is what _mounted_payload keys on, so the
+# slot NAME never has to be parsed -- which is why the A/B rename did not touch this.
 def _packed_version(v):
     """A dotted version as the device packs it into a trailer's payload_version -- what the boot line
-    reports: `boot: mounted FRONT (payload 16777216)` is 1.0.0, 16842752 is 1.1.0."""
+    reports: `boot: mounted A (payload 16777216)` is 1.0.0, 16842752 is 1.1.0."""
     major, minor, patch = (int(x) for x in v.split("."))
     return (major << 24) | (minor << 16) | (patch << 8)
 
@@ -1913,7 +1934,10 @@ def publish_update(board, version, variant="delta"):
         # A full-only build does NOT produce a .delta.gz, but a prior delta build left one in
         # the build dir -- and `client publish` uploads every artifact present, so the server
         # rejects (delta uploaded, manifest declares none). Drop the stale delta first.
-        sh("rm -f %s/build/%s-ota.delta.gz" % (CFG["project"], board), check=False)
+        # (Belt and braces: `client publish` now uploads only what the SIGNED manifest declares,
+        # so a stale delta on disk is ignored rather than rejected by the server. Clearing it
+        # keeps the build dir honest, and the glob covers the v2 per-base naming.)
+        sh("rm -f %s/build/%s-ota.delta*.gz" % (CFG["project"], board), check=False)
     subprocess.run(build, env=penv, check=True, timeout=900)
     _s = artifact_sizes(board)   # log the real download sizes -> ota_metrics.py folds them per run
     log("OTA sizes: manifest=%s  full=%s  delta=%s%s"
@@ -1983,7 +2007,10 @@ def _tamper(board, which):
         # (see publish_update): a delta's decompressed patch has structure a flip would break at
         # the patch parser, not the sha. Size is unchanged (a 1-byte flip), so only the sha moves.
         import gzip
-        fulls = [p for p in imgs if os.path.dirname(p).endswith(rel) and not p.endswith(".delta.gz")]
+        # Select the FULL image by its own name. "not *.delta.gz" was the v1 test and it no
+        # longer excludes anything -- v2 deltas are named `-ota.delta-<base>.gz`.
+        fulls = [p for p in imgs
+                 if os.path.dirname(p).endswith(rel) and p.endswith("-ota.img.gz")]
         target = fulls[-1] if fulls else newest
         with open(target, "rb") as f:
             raw = bytearray(gzip.decompress(f.read()))
@@ -1994,18 +2021,26 @@ def _tamper(board, which):
         log("  tampered image_body byte@%d of %s (re-gzipped; sha256 now mismatches)"
             % (mid, os.path.basename(target)))
         return
-    # image: mid-stream flip -> the download decompress/sha256 fails AFTER the FRONT erase.
-    deltas = [p for p in imgs if os.path.dirname(p).endswith(rel) and p.endswith(".delta.gz")]
-    target = deltas[-1] if deltas else newest
-    with open(target, "r+b") as f:
-        f.seek(0, 2)
-        n = f.tell()
-        mid = n // 2                                     # flip one byte mid-stream
-        f.seek(mid)
-        b = f.read(1)
-        f.seek(mid)
-        f.write(bytes([b[0] ^ 0xFF]))
-    log("  tampered %s byte@%d of %s" % (which, mid, os.path.basename(target)))
+    # image: mid-stream flip -> the download decompress/sha256 fails AFTER the slot erase.
+    #
+    # EVERY representation gets flipped, not just one. A v2 release ships a full image AND one
+    # delta per base version, and the device picks whichever matches the release it is running
+    # -- so corrupting a single artifact leaves the scenario at the mercy of that choice. It
+    # already bit: this used to target `*.delta.gz`, the v1 name, so under v2 it flipped the
+    # full image while the device happily installed the untouched delta and the scenario failed
+    # with `install.armed` where it expected a fallback. Tampering the whole set makes the test
+    # say what it means -- "the image this device downloads is corrupt" -- whatever it picks.
+    reps = [p for p in imgs if os.path.dirname(p).endswith(rel)]
+    for target in reps:
+        with open(target, "r+b") as f:
+            f.seek(0, 2)
+            n = f.tell()
+            mid = n // 2                                 # flip one byte mid-stream
+            f.seek(mid)
+            b = f.read(1)
+            f.seek(mid)
+            f.write(bytes([b[0] ^ 0xFF]))
+        log("  tampered %s byte@%d of %s" % (which, mid, os.path.basename(target)))
 
 
 def device_record():
@@ -2154,12 +2189,17 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=Fals
                 break                        # no server record to corroborate: the device's own
                 #                              markers ARE the evidence, and they are complete
         elif end == "promoted":
-            if saw_golden and v == target and slot == "FRONT" and have:
-                break                        # real golden->target transition, all paths hit
+            if saw_golden and v == target and slot and have:
+                break                        # real pre-update -> target transition, all paths hit
         elif saw_golden and v == golden and have:
             break                            # settled back on golden, all negative paths hit
+    # NOT `slot == "FRONT"`. Under v2 an update lands in whichever slot the device was not
+    # running, so the promoted image is legitimately in A on one cycle and B on the next --
+    # pinning the name here would fail every happy path on a board that happens to be running
+    # from B. What the assertion actually needs is that a slot was selected and the VERSION
+    # moved, which is what the two clauses below check.
     reached = (have if by_marker else
-               ((end == "promoted" and saw_golden and v == target and slot == "FRONT")
+               ((end == "promoted" and saw_golden and v == target and bool(slot))
                 or (end == "golden" and saw_golden and v == golden)))
     return {"saw_golden": saw_golden, "saw_target": saw_target,
             "version": v, "slot": slot, "reached_end": reached}

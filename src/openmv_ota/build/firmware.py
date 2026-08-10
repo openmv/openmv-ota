@@ -49,7 +49,12 @@ _BOOT_PY = _DEVICE_DIR / "boot.py"
 # and the clock (openmv_rtc, which reads BUILD_TIME out of the generated _ota_config).
 # The project's device/<name> copy is preferred; the bundled build/device/<name> default
 # is the fallback.
-_FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py")
+_FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py",
+                          # RECOVERY. These three exist so a device with NO usable romfs can
+                          # still update itself: the settings parser, the flow, and the
+                          # installer -- which normally ships in the romfs and is exec'd into
+                          # RAM, but cannot be when the romfs is the thing that is gone.
+                          "openmv_netcfg.py", "openmv_recovery.py")
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 
@@ -200,11 +205,33 @@ def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
         src = p.root / "device" / mod
         shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, tmp / mod)
         freezes.append('freeze("%s", "%s")\n' % (tmp.as_posix(), mod))
+    # The installer, frozen as `openmv_installer`. It is the SAME source the romfs ships and
+    # openmv_ota.install() exec's into RAM -- one implementation, so a fix cannot land on the
+    # normal path and miss the recovery one. The romfs copy stays: on a healthy device it is
+    # OTA-updatable, while this one is the floor that a bad update cannot erase.
+    shutil.copy2(_DEVICE_DIR / "openmv_ota" / "data" / "installer.py", tmp / "openmv_installer.py")
+    freezes.append('freeze("%s", "openmv_installer.py")\n' % tmp.as_posix())
     board_manifest = repo / "boards" / name / "manifest.py"
     (tmp / "manifest.py").write_text(
         'include("%s")\n' % board_manifest.as_posix() + "".join(freezes),
         encoding="utf-8")
     return tmp
+
+
+def _recovery_ca(p) -> bytes:
+    """The TLS anchors baked into the firmware for recovery, read at build time.
+
+    Empty means "use the bundled public roots" -- correct for a server behind a public CA, which
+    is most of them. A project-relative path is read here so the device never has to find a file:
+    the whole point is that recovery works when the filesystem holding it is gone."""
+    rel = (p.config.ca or "").strip()
+    if not rel:
+        return b""
+    path = p.root / rel
+    try:
+        return path.read_bytes()
+    except OSError as e:
+        raise BuildError("ota.ca %r is not readable: %s" % (rel, e)) from None
 
 
 def _render_ota_config(p, name: str) -> str:
@@ -232,9 +259,30 @@ def _render_ota_config(p, name: str) -> str:
         "# Build-time constants the frozen boot.py reads.\n"
         "PARTITION_SIZE = %d\n" % t.partition_size
         + "FRONT_SIZE = %d\n" % t.front_size
-        + "OTA_BLOCK = %d\n" % geometry.ota_block(t.erase_size)
+        + "CONTROL_BLOCK = %d\n" % geometry.control_block(t.erase_size)  # NOT the erase block:
+        #   the device only ever uses this for control-sector OFFSETS, and it gets the real
+        #   erase size from the runtime (rom_ioctl(6)). Stamping the erase block here is what
+        #   let the two meanings blur -- see geometry.control_block.
+        
         + "PRODUCT_ID = %d\n" % product_id
         + "ACCOUNT_ID = %r\n" % p.config.account_id
+        # THE MODE THE DEVICE IS BUILT FOR. Derived from geometry (A/B wherever two slots fit),
+        # honouring the project's single_image opt-out. boot.py needs it to know whether there is a
+        # second slot to fall back to at all -- on a SINGLE board a failed trial means recovery,
+        # not a reboot into the other half.
+        + "MODE = %r\n" % geometry.resolve_mode(t.partition_size, t.erase_size,
+                                                single_image=p.config.single_image)
+        # BOOTS A TRIAL GETS TO CONFIRM ITSELF. Default 3; the costs are lopsided (a FALSE
+        # rejection costs a full re-download the server then offers again, while an extra
+        # attempt on a genuinely bad image costs one reboot), which is the whole argument for
+        # more than one. It stays small and configurable because retries only help a failure
+        # that self-resets: a HANG now hangs N times instead of once. 1 reproduces v1 exactly.
+        + "MAX_ATTEMPTS = %d\n" % p.config.max_attempts
+        # RECOVERY CONFIG -- in the FIRMWARE, deliberately, not the romfs. A device whose image is
+        # gone still needs both of these to reach the server, which is exactly when recovery runs;
+        # keeping them in the app is what made recovery impossible in v1. Empty CA = bundled roots.
+        + "SERVER_URL = %r\n" % p.config.server_url
+        + "CA_PEM = %r\n" % _recovery_ca(p)
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
         + "BUILD_TIME = %d\n" % _build_time(p)
         + "TRUSTED_KEYS = {\n%s}\n" % keys

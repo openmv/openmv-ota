@@ -34,6 +34,22 @@ def test_repr_markers_distinct():
     assert all(len(m) == 16 for m in ms) and len(set(ms)) == 5   # all distinct
 
 
+def test_encode_counter_is_value_plus_complement():
+    assert status.encode_counter(1) == b"\x01\x00\x00\x00\xfe\xff\xff\xff"
+    assert len(status.encode_counter(0xFFFFFFFF)) == status.COUNTER_SIZE
+    # a blank field must never decode as a real counter: 0xFF.. is not its own complement
+    assert status.encode_counter(0xFFFFFFFF) != b"\xff" * status.COUNTER_SIZE
+
+
+def test_status_sector_counter_is_optional_and_placed():
+    off, n = status.COUNTER_OFFSET, status.COUNTER_SIZE
+    s = status.build_status_sector(4096, pending=False, tried=False, confirmed=True, counter=3)
+    assert s[off:off + n] == status.encode_counter(3)
+    assert s[off + n:] == b"\xff" * (4096 - off - n)          # attempts region left blank
+    bare = status.build_status_sector(4096, pending=False, tried=False, confirmed=True)
+    assert bare[off:off + n] == b"\xff" * n                    # no counter unless asked
+
+
 def test_build_status_sector_leaves_repr_unwritten():
     # repr is install-time provenance only -- a factory status sector never sets it
     s = status.build_status_sector(4096, pending=True, tried=True, confirmed=True)

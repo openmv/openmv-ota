@@ -37,6 +37,88 @@ def test_pending_marker_matches_status_module():
     assert inst("_REPR_OFF") == status.REPR_OFFSET
 
 
+def test_ab_constants_match_boot_and_host():
+    """The installer WRITES what boot.py READS. These three copies of the layout (host
+    builder, installer, boot.py) exist because the device modules cannot import the host
+    package, so drift is only caught here."""
+    from openmv_ota.ota import rollback, status
+
+    import tests.build.test_device_boot as boot_test        # noqa: PLC0415  (the frozen boot.py)
+    B = boot_test.B
+    assert (inst("_COUNTER_OFF"), inst("_COUNTER_LEN")) == (
+        status.COUNTER_OFFSET, status.COUNTER_SIZE) == (B._COUNTER_OFF, B._COUNTER_LEN)
+    assert inst("_ROLLBACK_ENTRY") == rollback.ENTRY_SIZE == B._ROLLBACK_ENTRY
+    assert inst("_encode_counter")(9) == status.encode_counter(9)
+    assert inst("_install_counter")(status.encode_counter(9).rjust(
+        status.COUNTER_OFFSET + status.COUNTER_SIZE, b"\xff")) == 9
+    assert inst("_install_counter")(b"\xff" * 80) is None    # blank -> unknown
+    assert inst("_install_counter")(b"\xff" * 4) is None     # too short -> unknown
+    torn = bytearray(b"\xff" * 80)
+    torn[status.COUNTER_OFFSET:status.COUNTER_OFFSET + 4] = b"\x05\x00\x00\x00"
+    assert inst("_install_counter")(bytes(torn)) is None     # value written, check not
+
+
+def test_rollback_floor_of_mirrors_boot_and_host():
+    """The installer reads the floor off both slots to carry the max forward; boot.py reads it
+    to reject a downgrade. Same sector, three decoders -- pin them together."""
+    from openmv_ota.ota import rollback
+
+    import tests.build.test_device_boot as boot_test        # noqa: PLC0415
+    sector = bytearray(b"\xff" * 4096)
+    sector[0:8] = rollback.encode_entry(0x01000000)
+    sector[8:16] = rollback.encode_entry(0x01020000)
+    sector[16:20] = b"\x05\x00\x00\x00"                       # a torn entry: ignored, not trusted
+    assert (inst("_rollback_floor_of")(bytes(sector))
+            == boot_test.B._rollback_floor_of(bytes(sector))
+            == rollback.floor_of(sector) == 0x01020000)
+    assert inst("_rollback_floor_of")(b"\xff" * 4096) == 0        # blank -> no floor
+    assert inst("_rollback_floor_of")(b"\xff" * 4) == 0           # shorter than one entry
+
+
+def test_slot_table_mirrors_boot():
+    import tests.build.test_device_boot as boot_test        # noqa: PLC0415
+    B = boot_test.B
+
+    for partition, front in ((8192, 0), (8192, 8192), (8192, 4096), (12288, 4096)):
+        ob = B.OtaBoot(None, None, None, None, partition, front, 4096, 0, {}, 0)
+        assert inst("_slot_table")(partition, front) == ob._slots()
+
+
+@pytest.mark.parametrize("running,counters,expect", [
+    # the normal case: never the running slot, whatever the counters say
+    ("A", {"A": 5, "B": 4}, ("B", 6)),
+    ("B", {"A": 4, "B": 5}, ("A", 6)),
+    # ...INCLUDING when the running slot somehow looks older -- exclusion beats ordering,
+    # because overwriting the image we are executing is the one unrecoverable move.
+    ("A", {"A": 1, "B": 9}, ("B", 10)),
+    # no running slot (recovery): fall back to the oldest, unreadable counting as oldest
+    (None, {"A": 5, "B": 4}, ("B", 6)),
+    (None, {"A": None, "B": 4}, ("A", 5)),
+    (None, {"A": 4, "B": None}, ("B", 5)),
+    (None, {"A": None, "B": None}, ("B", 1)),   # nothing to order by -> defined, not incidental
+    (None, {"A": 4, "B": 4}, ("B", 5)),         # tie -> last listed
+])
+def test_install_target_never_picks_the_running_slot(running, counters, expect):
+    slots = inst("_slot_table")(8192, 4096)
+    name, off, size, counter = inst("_install_target")(slots, running, counters)
+    assert (name, counter) == expect
+    assert (off, size) == ((0, 4096) if name == "A" else (4096, 4096))
+
+
+def test_install_target_in_single_mode_is_the_only_slot():
+    """SINGLE mode's whole price: the target IS the running image. The counter still advances,
+    so a device that later gains a second slot orders correctly."""
+    slots = inst("_slot_table")(8192, 0)
+    assert inst("_install_target")(slots, "A", {"A": 3}) == ("A", 0, 8192, 4)
+
+
+def test_install_counter_outranks_an_unreadable_neighbour():
+    """max(existing)+1, not other+1: the new image must sort above a slot whose counter we
+    could not read, or a torn counter on the OTHER slot could outrank a good install."""
+    slots = inst("_slot_table")(8192, 4096)
+    assert inst("_install_target")(slots, "A", {"A": 7, "B": None})[3] == 8
+
+
 def test_install_stream_writes_repr_marker():
     from openmv_ota.ota import status
     block, front = 4096, 3 * 4096
@@ -139,6 +221,35 @@ def test_is_blank():
     assert inst("_is_blank")(b"\xff" * 8) is True
     assert inst("_is_blank")(b"\xff\x00\xff") is False
     assert inst("_is_blank")(b"") is True
+
+
+# --- _clamp_to: the XIP tail guard ------------------------------------------
+#
+# This arithmetic is what keeps every memory-mapped alias clear of the last bytes of the
+# partition. Getting it wrong in one direction re-opens a SILENT BRICK (a bulk read that
+# reaches the end of an STM32H7 QUADSPI wedges the peripheral and the board just stops
+# mid-install); in the other it stops verifying the tail of every slot. Hence unit tests
+# rather than trusting a hardware run to notice.
+
+@pytest.mark.parametrize("off,n,end,want", [
+    (0, 4096, 8 << 20, 4096),                 # nowhere near the end: untouched
+    ((8 << 20) - 4096 - 512, 4096, (8 << 20) - 512, 4096),   # ends exactly ON the guard: untouched
+    ((8 << 20) - 4096, 4096, (8 << 20) - 512, 3584),         # the final block: shortened
+    ((8 << 20) - 16, 16, (8 << 20) - 512, 0),                # wholly inside the guard: nothing
+    ((8 << 20) - 512, 512, (8 << 20) - 512, 0),              # starts exactly at the guard
+    (0, 0, 8 << 20, 0),
+])
+def test_clamp_to(off, n, end, want):
+    assert inst("_clamp_to")(off, n, end) == want
+
+
+def test_clamp_to_never_reaches_the_guarded_tail():
+    """The property that actually matters: no (off, n) can produce a range crossing ``end``."""
+    end = 4096 - 512
+    for off in range(0, 4096, 7):
+        n = inst("_clamp_to")(off, 4096 - off, end)
+        assert n >= 0
+        assert off + n <= end or n == 0
 
 
 # --- _Reader ----------------------------------------------------------------
@@ -540,12 +651,12 @@ def _noop():
 
 
 def _run_install(image, front_size, block, feed=_noop, progress=None, expect_sha=None,
-                 repr_marker=None):
+                 repr_marker=None, counter=None, floor=0):
     flash = _FakeFlash(front_size)
     flash.erase(front_size)                 # the caller erases before _install_stream now
     inst("_install_stream")(_SourceOf(image), flash.write,
                             flash.readback, front_size, block, feed, progress, expect_sha,
-                            repr_marker)
+                            repr_marker, None, None, counter, floor)
     return flash
 
 
@@ -566,6 +677,111 @@ def test_install_stream_writes_and_arms():
     # the all-0xFF gap was never written (skipped)
     assert all(off < len(body) or off >= front - block for off, _ in flash.writes
                if off < front - 2 * block)
+
+
+def test_install_stream_accepts_a_readback_shortened_by_the_xip_tail_guard():
+    """On an XIP port the last readback of the last slot comes back SHORT -- the guard keeps the
+    alias off the final bytes of the partition. The write still has to verify: comparing the full
+    chunk against a short read would fail every install on the H7 Plus, which is the board this
+    guard exists for."""
+    block, front, guard = 4096, 4 * 4096, 512
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    image[front - block:front - block + 8] = b"TRAILER."
+    image[front - 100:] = b"\x5a" * 100          # real data inside the guarded tail
+
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    readable = front - guard
+    reads = []
+
+    def readback(off, n):
+        k = inst("_clamp_to")(off, n, readable)
+        reads.append((off, n, k))
+        return bytes(flash.mem[off:off + k])
+
+    inst("_install_stream")(_SourceOf(bytes(image)), flash.write, readback,
+                            front, block, _noop, None, None, None, None, None, None, 0)
+
+    # it did not raise -> the shortened verify was accepted...
+    assert any(k < n for _, n, k in reads), "the guard never actually shortened a read"
+    # ...and the guarded bytes were still WRITTEN, they are merely not read back
+    assert bytes(flash.mem[front - 100:]) == b"\x5a" * 100
+
+
+def test_install_stream_still_catches_a_bad_write_outside_the_guard():
+    """The shortened compare must not become a blanket 'any readback passes'."""
+    block, front, guard = 4096, 4 * 4096, 512
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    readable = front - guard
+
+    def readback(off, n):
+        k = inst("_clamp_to")(off, n, readable)
+        buf = bytearray(flash.mem[off:off + k])
+        if off == 0 and buf:
+            buf[0] ^= 0xFF                        # corrupt a byte well clear of the guard
+        return bytes(buf)
+
+    with pytest.raises(OSError):
+        inst("_install_stream")(_SourceOf(bytes(image)), flash.write, readback,
+                                front, block, _noop, None, None, None, None, None, None, 0)
+
+
+def test_install_stream_stamps_the_counter_and_carries_the_floor():
+    """The arm sequence, in order. Everything boot.py reads about this slot is written here,
+    and PENDING -- the only thing that makes the slot bootable -- must be written last."""
+    from openmv_ota.ota import rollback, status
+
+    block, front = 4096, 5 * 4096
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    flash = _run_install(bytes(image), front, block, counter=12, floor=0x01020000,
+                         repr_marker=inst("REPR_FULL"))
+    so, ro = front - 2 * block, front - 3 * block
+    assert flash.mem[so + status.COUNTER_OFFSET:
+                     so + status.COUNTER_OFFSET + status.COUNTER_SIZE] == \
+        status.encode_counter(12)
+    assert rollback.floor_of(flash.mem[ro:ro + block]) == 0x01020000
+    # PENDING is the LAST write of the whole install -- nothing is bootable before it.
+    assert flash.writes[-1][0] == so
+
+
+def test_install_stream_without_a_floor_leaves_the_rollback_sector_blank():
+    """floor 0 means nothing has ever been confirmed, so there is nothing to carry. Writing a
+    zero entry would claim a floor of 0 rather than none -- harmless today, but it would burn
+    an append slot per install for no information."""
+    block, front = 4096, 5 * 4096
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    flash = _run_install(bytes(image), front, block, counter=1, floor=0)
+    ro = front - 3 * block
+    assert flash.mem[ro:ro + block] == b"\xff" * block
+
+
+def test_install_stream_counter_and_floor_verify_their_writes():
+    """A flash that silently drops a write must fail the install, not produce a slot that
+    boot.py cannot order (or one whose floor quietly regressed)."""
+    block, front = 4096, 5 * 4096
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+
+    for drop in (front - 3 * block, front - 2 * block + 64):
+        flash = _FakeFlash(front)
+        flash.erase(front)
+        real = flash.write
+
+        def write(off, data, drop=drop, real=real):
+            if off != drop:
+                real(off, data)
+
+        with pytest.raises(OSError):
+            inst("_install_stream")(_SourceOf(bytes(image)), write, flash.readback,
+                                    front, block, _noop, None, None, None, None, None,
+                                    5, 0x01020000)
 
 
 def test_install_stream_feeds_the_watchdog_per_chunk():
@@ -797,7 +1013,7 @@ def test_select_rep_none_when_nothing_usable():
     assert inst("_select_rep")(body, False, 0) is None
 
 
-def test_golden_floor_mirrors_trailer():
+def test_trailer_version_mirrors_trailer():
     import hashlib
 
     from openmv_ota.ota import ES256, Trailer, algorithm_for, pack_trailer, signed_region
@@ -813,9 +1029,9 @@ def test_golden_floor_mirrors_trailer():
                 body_sha256=hashlib.sha256(body).digest())
     t.signature = sign_region(priv, signed_region(t), spec)
     trailer = pack_trailer(t)
-    assert inst("_golden_floor")(trailer) == pv            # reads payload_version
-    assert inst("_golden_floor")(b"\x00" * 4) == 0         # too short -> floor 0
-    assert inst("_golden_floor")(b"XXXX" + trailer[4:]) == 0  # bad magic -> floor 0
+    assert inst("_trailer_version")(trailer) == pv            # reads payload_version
+    assert inst("_trailer_version")(b"\x00" * 4) == 0         # too short -> 0
+    assert inst("_trailer_version")(b"XXXX" + trailer[4:]) == 0  # bad magic -> 0
 
 
 # --- delta apply: device streaming mirror of ota.delta.apply_delta -----------

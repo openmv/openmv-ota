@@ -66,6 +66,17 @@ def _build_release(project, board="OPENMV_N6", pv=0x02000000):
     return build
 
 
+def _rewrite_manifest(build, board, reps):
+    """Re-sign-shape the built manifest with a different representation set."""
+    from openmv_ota.ota.manifest import Manifest, pack_manifest, parse_manifest
+
+    path = build / ("%s-manifest.bin" % board)
+    body = parse_manifest(path.read_bytes()).body
+    body["representations"] = reps
+    path.write_bytes(pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256,
+                                            signature=b"\x00" * 64)))
+
+
 def test_publish_and_rollout(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
@@ -75,6 +86,110 @@ def test_publish_and_rollout(wired, tmp_path, capsys):
     assert "published rel_" in out and "rollout ro_" in out
     releases = store.list_releases(BID)
     assert len(releases) == 1 and store.list_rollouts(BID)[0]["cohort"] == "beta"
+
+
+def test_publish_uploads_every_delta_the_manifest_declares(wired, tmp_path, capsys):
+    """The manifest is the authority on which artifacts belong to a release. A release now
+    ships one delta per base version, so there is no single filename to guess at -- and a
+    client that guessed would silently publish a release missing most of its deltas."""
+    from openmv_ota.ota.delta import make_delta
+    from openmv_ota.ota.manifest import DELTA_FORMAT
+
+    store, _ = wired
+    project = tmp_path / "proj"
+    build = _build_release(project)
+    board = "OPENMV_N6"
+    image = gzip.decompress((build / ("%s-ota.img.gz" % board)).read_bytes())
+    reps = [{"format": "full", "url": "%s-ota.img.gz" % board, "size": 10}]
+    for base, filler in (("1.0.0", b"\x00"), ("1.1.0", b"\x11")):
+        name = "%s-ota.delta-%s.gz" % (board, base)
+        (build / name).write_bytes(gzip.compress(make_delta(filler * 128, image), mtime=0))
+        reps.append({"format": DELTA_FORMAT, "url": name, "size": 1,
+                     "base_payload_version": 0x01000000})
+    _rewrite_manifest(build, board, reps)
+
+    assert main(["client", "publish", str(project), "-b", board]) == 0
+    rel = store.list_releases(BID)[0]
+    assert len([r for r in rel["representations"] if r["format"] == DELTA_FORMAT]) == 2
+
+
+def test_publish_errors_when_a_declared_delta_is_missing(wired, tmp_path, capsys):
+    """Caught locally, where the fix is, rather than as a 400 from the server."""
+    from openmv_ota.ota.manifest import DELTA_FORMAT
+
+    store, _ = wired
+    project = tmp_path / "proj"
+    build = _build_release(project)
+    board = "OPENMV_N6"
+    _rewrite_manifest(build, board, [
+        {"format": "full", "url": "%s-ota.img.gz" % board, "size": 10},
+        {"format": DELTA_FORMAT, "url": "%s-ota.delta-9.9.9.gz" % board, "size": 1,
+         "base_payload_version": 0x01000000}])
+    assert main(["client", "publish", str(project), "-b", board]) == 2
+    assert "declares delta" in capsys.readouterr().err
+
+
+def test_publish_rejects_an_unreadable_manifest(wired, tmp_path, capsys):
+    store, _ = wired
+    project = tmp_path / "proj"
+    build = _build_release(project)
+    (build / "OPENMV_N6-manifest.bin").write_bytes(b"not a manifest at all")
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 2
+    assert "unreadable manifest" in capsys.readouterr().err
+
+
+def test_bases_downloads_retained_images_for_the_build_to_diff_against(wired, tmp_path, capsys):
+    """The retention loop, end to end: publish a release, then pull its image back as a delta
+    base. The build machine keeps nothing -- the server does -- and the file lands with the
+    name `build ota-romfs --delta-from <dir>` looks for."""
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    capsys.readouterr()
+
+    dest = tmp_path / "bases"
+    assert main(["client", "bases", "-b", "OPENMV_N6", "-o", str(dest)]) == 0
+    written = sorted(p.name for p in dest.iterdir())
+    assert written == ["OPENMV_N6-base-2.0.0.img.gz"]
+    # ...and it is the published image byte-for-byte, which is what a delta must diff against
+    assert (dest / written[0]).read_bytes() == (
+        project / "build" / "OPENMV_N6-ota.img.gz").read_bytes()
+
+
+def test_bases_reports_when_there_is_no_history_yet(wired, tmp_path, capsys):
+    store, _ = wired
+    assert main(["client", "bases", "-b", "OPENMV_N6", "-o", str(tmp_path / "b")]) == 2
+    assert "no retained releases" in capsys.readouterr().err
+
+
+def test_prune_deletes_a_release_s_objects(wired, tmp_path, capsys):
+    """Retention is unbounded, so removing a release's bytes is a deliberate operator action.
+    The release row -- audit trail and version history -- is untouched."""
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    rel_id = store.list_releases(BID)[0]["release_id"]
+    capsys.readouterr()
+
+    assert main(["client", "prune", "--release", rel_id]) == 0
+    assert "deleted 2 object(s)" in capsys.readouterr().out    # manifest + image
+    assert store.get_release(rel_id) is not None               # history survives
+
+
+def test_prune_refuses_a_release_a_rollout_still_offers(wired, tmp_path, capsys):
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6",
+                 "--rollout", "beta:100"]) == 0
+    rel_id = store.list_releases(BID)[0]["release_id"]
+    capsys.readouterr()
+    assert main(["client", "prune", "--release", rel_id]) == 1
+    assert "still being offered" in capsys.readouterr().err
+    # ...and --force is the explicit override
+    assert main(["client", "prune", "--release", rel_id, "--force"]) == 0
 
 
 def test_publish_missing_artifacts(wired, tmp_path, capsys):

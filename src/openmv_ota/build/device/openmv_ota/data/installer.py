@@ -1,21 +1,29 @@
 """The OTA installer -- fetches a signed manifest over HTTPS, picks the image it points
-to, writes that into the FRONT slot, then arms the trial and reboots.
+to, writes that into the slot the device is NOT running, then arms the trial and reboots.
+
+Which slot that is, is decided in ``run()`` before anything is erased (see
+``_install_target``): under A/B it is always the other one, so the image currently running is
+still there if this install dies halfway. In SINGLE mode there is only one slot and the erase
+destroys the running image -- which is why that mode's failure path is firmware-resident
+recovery rather than a reboot.
 
 This file ships in the romfs as **source** (it is exempt from the .py->.mpy build
-step) so ``openmv_ota.install()`` can ``exec()`` it into RAM before the FRONT slot
-is erased: the running app's code lives in that slot, so once the erase starts
+step) so ``openmv_ota.install()`` can ``exec()`` it into RAM before the target slot
+is erased: the running app's code lives in a slot, so once an erase starts
 nothing on it can be executed -- but this module, compiled into RAM by ``exec``,
-runs from RAM throughout. ``run()`` first fetches + verifies the manifest and vets it
+runs from RAM throughout. (Under A/B the erase is of the *other* slot, so the app's code
+survives; the exec is still what makes SINGLE mode possible at all, and it costs nothing to
+keep one path.) ``run()`` first fetches + verifies the manifest and vets it
 (signature, board, anti-rollback) with ``/rom`` intact, then never returns: on success
 it sets PENDING and ``machine.reset()``s into the trial; on any post-erase failure it
-resets into the golden BACK image (boot.py rejects the half-written FRONT). Pre-erase
+resets, and boot.py picks the newest slot that still verifies. Pre-erase
 failures (bad URL, DNS, TLS, a bad/forbidden manifest) raise normally -- ``/rom`` is
 still intact, so the app catches them and can retry without a reboot.
 
 WHY THIS IS SYNCHRONOUS (and must stay so), and how it feeds an enabled watchdog: an app may
 turn on ``openmv_wdt``, which this install has to keep fed the whole way through. It runs
 SYNCHRONOUSLY -- and MUST, from the erase onward -- because the app's own coroutines (its main
-loop, ``run()``, every task on the asyncio event loop) live in the FRONT slot being erased. So
+loop, ``run()``, every task on the asyncio event loop) live in a slot that may be erased. So
 if any post-erase op ``await``\\ed and YIELDED to the event loop, the loop would resume that
 now-erased bytecode straight from flash and HardFault. Post-erase work therefore must not yield.
 That rules OUT async sockets for the download; instead the recv is **non-blocking + progress-
@@ -25,7 +33,7 @@ feed cadence driven from the main thread, with no reliance on ``select.poll`` or
 AE3's SSL poll() blocks through its own timeout, and relax()'s ISR is not serviced inside an
 mbedtls read, so only a main-thread feed is reliable there). A slow/paced link stays fed while a
 dead link (no data at all) stops producing and trips the watchdog after ``_SOCK_TIMEOUT`` ->
-golden. The erase/write loops feed per block/piece the same way. ``relax()`` (an ISR feed that also does not yield) is a LAST
+a reboot into the surviving slot. The erase/write loops feed per block/piece the same way. ``relax()`` (an ISR feed that also does not yield) is a LAST
 RESORT, used ONLY for the two genuinely unsplittable single C calls with no seam to feed
 through: the TLS handshake (``_connect``) and this file's own ``exec`` compile (in
 ``openmv_ota.install``). All of it is a no-op unless the app armed a watchdog. (Pre-erase --
@@ -121,7 +129,7 @@ PENDING = _marker(b"pending")
 REPR_FULL = _marker(b"repr.full")
 REPR_DELTA = _marker(b"repr.ocdl")
 
-# Stream/flash unit. FRONT_SIZE is always a multiple of this (it is block-aligned
+# Stream/flash unit. A slot size is always a multiple of this (it is block-aligned
 # and the block is >= 4096), so every flash write is a full, aligned chunk.
 _CHUNK = 4096
 # Preallocated, immutable compare buffers (memoryview-sliced, never copied). The streamed delta
@@ -134,6 +142,28 @@ _ZERO_MV = memoryview(_ZERO_CHUNK)
 _FF_CHUNK = b"\xff" * _CHUNK
 _FF_MV = memoryview(_FF_CHUNK)
 
+# THE LAST BYTES OF AN XIP-MAPPED PARTITION MUST NEVER BE BULK-READ.
+#
+# On the STM32H7 QUADSPI, a memory-mapped BURST that reaches the final address of the mapped
+# device leaves the peripheral wedged: every later memory-mapped read then hangs the AHB
+# forever. There is no fault, no exception, no log and no reset -- the board simply stops, in
+# the middle of an install, with the target slot half-written. Measured on the H7 Plus, whose
+# romfs partition ends exactly at the end of its 32 MiB QSPI (0x91800000 + 8 MiB = 0x92000000):
+# ONE 4 KiB compare of the final block is enough to wedge it, and the next read of ANY address
+# never returns. Scalar byte reads of the same addresses are fine -- it is the burst that does
+# it -- which is why boot.py, which only parses a trailer header, is unaffected.
+#
+# Measured guard: stopping 16 bytes short of the end still wedges; stopping 512 bytes short
+# does not. 512 is what we keep away from, which is deep inside the trailer block's 0xFF
+# padding (a trailer parses from offset 0, so nothing readable lives there).
+#
+# v1 never hit this: its update target was the FRONT slot, so no loop walked to the end of the
+# partition. Under v2 slot B IS the end of the partition, so the erase-verify walks straight
+# into it -- and `full` survived only by luck, because its next flash touch after the verify is
+# a driver-mediated write, which resets the peripheral before anything reads XIP again. `delta`
+# reads its patch base straight off XIP and dies there instead.
+_XIP_TAIL_GUARD = 512
+
 # Bytes of image written between PROACTIVE, relax()-fed garbage collections during the write.
 # Preallocation removed the megabyte-scale delta churn, but small residual churn (memoryview
 # slices, the compressed-download reader) still trips an automatic GC every few MB -- and on the
@@ -144,7 +174,7 @@ _FF_MV = memoryview(_FF_CHUNK)
 _GC_EVERY = 512 * _CHUNK      # ~2 MB: well under the ~5 MB automatic-GC interval measured on HW
 
 # Socket timeout (s) for the download: bounds the TLS handshake and every recv so a
-# stalled connection fails the install cleanly (-> reboot to golden) instead of hanging.
+# stalled connection fails the install cleanly (-> reboot, other slot) instead of hanging.
 _SOCK_TIMEOUT = 30
 # Poll slice (ms) for the non-blocking download recv: the reader waits for data in slices this long,
 # feeding the watchdog each slice, so it must stay WELL under the watchdog window (~100 ms) -> a few
@@ -274,7 +304,7 @@ class _Reader:
         # WHATEVER IS AVAILABLE (< _CHUNK is fine; the caller re-fills) also avoids a *blocking* read that
         # waits for a whole chunk -- which mid-stream spans several TLS records on a paced Wi-Fi link and
         # starves the watchdog between reads (that bit the WWDG on the N6 image download). A dead link
-        # produces nothing until _SOCK_TIMEOUT -> clean install error -> golden. Feed is a no-op unless a
+        # produces nothing until _SOCK_TIMEOUT -> clean install error -> reboot. Feed is a no-op unless a
         # watchdog is armed; the watchdog-off path is unaffected (recv still returns data the same way).
         waited = 0
         while True:
@@ -283,7 +313,7 @@ class _Reader:
                 d = self._recv(_CHUNK)               # non-blocking: available bytes / None / b'' (EOF)
             except OSError as e:                      # would-block -> treat as "no data yet"
                 if not (e.args and e.args[0] in _EAGAIN):
-                    raise                             # a real error (ECONNRESET, ...) -> install -> golden
+                    raise                             # a real error (ECONNRESET, ...) -> install fails
                 d = None
             if d:
                 self._buf += d
@@ -488,14 +518,19 @@ def _update_reject(body, product_id, platform_version, rollback_floor, account_i
     return None
 
 
-def _select_rep(body, delta_capable, golden_payload_version):
+def _select_rep(body, delta_capable, base_payload_version):
     """Pick the cheapest usable representation (mirror of
-    openmv_ota.ota.manifest.select_representation). Returns the rep dict, or None."""
+    openmv_ota.ota.manifest.select_representation). Returns the rep dict, or None.
+
+    ``base_payload_version`` is the version of the image a delta would be reconstructed
+    AGAINST -- under A/B that is the slot the device is running (which stays intact while the
+    other slot is written), not a fixed golden. In SINGLE mode there is no surviving base at
+    all, so the caller passes ``delta_capable=False``."""
     best = None
     for rep in body.get("representations", []):
         fmt = rep.get("format")
         if fmt == _DELTA_FORMAT:
-            if not delta_capable or rep.get("base_payload_version") != golden_payload_version:
+            if not delta_capable or rep.get("base_payload_version") != base_payload_version:
                 continue
         elif fmt != "full":
             continue
@@ -504,9 +539,8 @@ def _select_rep(body, delta_capable, golden_payload_version):
     return best
 
 
-def _golden_floor(trailer):
-    """The anti-rollback floor: BACK golden's ``payload_version`` (mirror of
-    boot._rollback_floor). 0 if BACK's trailer doesn't parse (a torn factory image)."""
+def _trailer_version(trailer):
+    """A slot trailer's ``payload_version``; 0 if it doesn't parse (blank or torn)."""
     if len(trailer) < struct.calcsize(_TRAILER_HEADER_STRUCT):
         return 0
     fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
@@ -515,9 +549,93 @@ def _golden_floor(trailer):
     return fields[8]                              # payload_version (9th header field)
 
 
+# --- pure: A/B slot arithmetic (mirror of boot.py; pinned by a test) ---------
+
+_ROLLBACK_ENTRY = 8                               # u32 version || u32 ~version
+_COUNTER_OFF = 64                                 # within the status sector
+_COUNTER_LEN = 8
+_MASK32 = 0xFFFFFFFF
+
+
+def _slot_table(partition_size, front_size):
+    """``[(name, offset, size), ...]`` for this device -- the mirror of ``boot.OtaBoot._slots``.
+
+    The two modes differ here and nowhere else: SINGLE is one slot spanning the partition, A/B
+    splits it at ``front_size``. Keeping the split in one function is what lets the install path
+    below be written once for both."""
+    if front_size <= 0 or front_size >= partition_size:
+        return [("A", 0, partition_size)]
+    return [("A", 0, front_size), ("B", front_size, front_size)]   # equal slots -- one image size
+
+
+def _install_counter(status):
+    """The install counter in a status sector, or ``None`` if blank/torn (mirror of
+    ``boot.install_counter``)."""
+    if len(status) < _COUNTER_OFF + _COUNTER_LEN:
+        return None
+    value, check = struct.unpack_from("<II", status, _COUNTER_OFF)
+    return value if (value ^ _MASK32) == check else None
+
+
+def _rollback_floor_of(sector):
+    """The highest valid version in a rollback sector (mirror of ``boot._rollback_floor_of``)."""
+    floor = 0
+    i = 0
+    n = len(sector)
+    while i + _ROLLBACK_ENTRY <= n:
+        version, check = struct.unpack_from("<II", sector, i)
+        if (version ^ _MASK32) == check and version > floor:
+            floor = version
+        i += _ROLLBACK_ENTRY
+    return floor
+
+
+def _encode_counter(value):
+    """The install-counter field (mirror of ``openmv_ota.ota.status.encode_counter``)."""
+    value &= _MASK32
+    return struct.pack("<II", value, value ^ _MASK32)
+
+
+def _install_target(slots, running, counters):
+    """Which slot the new image goes into, and the counter to stamp on it:
+    ``(name, offset, size, counter)``.
+
+    Two rules, in this order:
+
+    1. **Never the running slot.** It holds the code that must survive if this install fails,
+       and in A/B there is always another. This is a hard exclusion, not a preference -- it does
+       not depend on the counters being readable, which matters because the counters are exactly
+       what a torn write can take away. (In SINGLE mode there is no other slot, which is the
+       mode's whole price: the erase destroys the running image.)
+    2. **Otherwise the oldest.** Lowest install counter, an unreadable counter counting as older
+       than any real one -- a slot we cannot order is not one to preserve. Ties go to the last
+       listed, so the choice is defined rather than incidental.
+
+    The new counter is ``max(existing) + 1`` rather than ``other + 1`` so the written slot
+    outranks *everything* present, including a slot whose counter we could not read and did not
+    choose. Blank counters count as 0, so the first install on a freshly provisioned board still
+    lands above its factory slots."""
+    highest = 0
+    for _name, _off, _size in slots:
+        c = counters.get(_name)
+        if c is not None and c > highest:
+            highest = c
+    candidates = [s for s in slots if s[0] != running] or list(slots)
+    best = None
+    for name, off, size in candidates:
+        c = counters.get(name)
+        if best is None:
+            best = (name, off, size, c)
+            continue
+        bc = best[3]
+        if c is None or (bc is not None and c <= bc):   # None is oldest; ties -> last listed
+            best = (name, off, size, c)
+    return best[0], best[1], best[2], (highest + 1) & _MASK32
+
+
 # --- pure: delta apply (kept in sync with openmv_ota.ota.delta) --------------
-# A selected delta is reconstructed against the golden BACK slot: for each op, emit the
-# `extra` literals, seek the base cursor, then emit the diff region = BACK + diff (mod 256).
+# A selected delta is reconstructed against the RUNNING slot: for each op, emit the
+# `extra` literals, seek the base cursor, then emit the diff region = base + diff (mod 256).
 # The diff stream is image-sized (mostly zeros), so the patch is *streamed* through the
 # decompressor (never held whole in RAM). The add is vectorised with ulab on-device (with a
 # pure fallback); the result is still sha256- + trailer-verified, so the patch isn't trusted.
@@ -607,11 +725,11 @@ class _PatchReader:
 
 def _delta_stream(reader, old_read, chunk):
     """Yield the reconstructed image in <=``chunk`` pieces from a streamed OCDL patch (``reader``)
-    + the golden base (``old_read(off, n)`` -> a view over the XIP'd BACK slot). Mirror of
+    + the base image (``old_read(off, n)`` -> a view over the XIP'd running slot). Mirror of
     openmv_ota.ota.delta.apply_delta, streamed both ways so neither is held whole. Each piece is a
     memoryview into ONE reused buffer -- the consumer MUST copy it before pulling the next (that is
     what ``_GenReader`` does). Zero per-piece allocation: the diff add is done in place (ulab on
-    device; a pure-Python twin off it). Raises OSError on a bad/short patch (-> reboot to golden)."""
+    device; a pure-Python twin off it). Raises OSError on a bad/short patch (-> reboot)."""
     if reader.read_exact(4) != _DELTA_MAGIC:
         raise OSError("bad delta magic")
     target_size = reader.read_uvarint()
@@ -632,13 +750,13 @@ def _delta_stream(reader, old_read, chunk):
             left -= m
         o = old
         left = diff_len
-        while left:                                      # diff run: (BACK + patch) mod 256
+        while left:                                      # diff run: (base + patch) mod 256
             m = left if left < chunk else chunk
             reader.read_into(mv[:m])                      # out[:m] = the diff bytes
-            old_v = old_read(o, m)                        # BACK view (XIP alias, no copy)
-            if mv[:m] == _ZERO_MV[:m]:                    # unchanged bulk -> result is just BACK
+            old_v = old_read(o, m)                        # base view (XIP alias, no copy)
+            if mv[:m] == _ZERO_MV[:m]:                    # unchanged bulk -> result is just base
                 mv[:m] = old_v
-            elif acc is not None:                         # ulab in-place: out += BACK (uint8 wraps)
+            elif acc is not None:                         # ulab in-place: out += base (uint8 wraps)
                 acc[:m] += _np.frombuffer(old_v, dtype=_np.uint8)  # pragma: no cover (device/ulab)  # hil-residual: ulab in-place vectorised add (device-only, no ulab on host); the pure branch below is host-tested and the delta scenario's sha256 gate proves the ulab path end-to-end (install.armed -> confirm.promoted)
             else:                                         # pure fallback (host + no-ulab boards)
                 for i in range(m):
@@ -654,7 +772,7 @@ class _GenReader:
     """Adapt a generator of memoryview pieces to a ``readinto(dst)`` source for _install_stream:
     copy each piece into the caller's buffer (overflow into one reused hold buffer) so the write
     loop stays zero-alloc. ``feed`` fires per generator piece -- one _CHUNK fill can pull MANY delta
-    pieces (each a patch read + BACK read + add) while the write loop only feeds once per _CHUNK, so
+    pieces (each a patch read + base read + add) while the write loop only feeds once per _CHUNK, so
     feeding here keeps an armed watchdog alive between those coarser feeds. No-op feed by default."""
 
     def __init__(self, gen, feed=_noop):
@@ -697,15 +815,39 @@ class _GenReader:
 
 # --- pure: the flash write (host-testable; all I/O injected) -----------------
 
+def _clamp_to(off, n, end):
+    """``n``, shortened so that ``[off, off + n)`` never reaches past ``end``; 0 if it starts
+    past it. Used to keep every XIP alias clear of the guarded tail of a memory-mapped
+    partition -- see :data:`_XIP_TAIL_GUARD` for why touching it bricks the install.
+
+    Pure arithmetic, deliberately lifted out of the closure that uses it so it is host-tested
+    rather than only witnessed on hardware: an off-by-one here either re-opens a silent brick
+    or silently stops verifying the tail of every slot."""
+    if off + n <= end:
+        return n
+    return end - off if off < end else 0
+
+
 def _is_blank(chunk):
-    """True if ``chunk`` is all 0xFF -- already-erased flash we needn't rewrite."""
-    return chunk == _FF_MV[:len(chunk)]          # compare vs a hoisted view -> no per-call alloc
+    """True if ``chunk`` is all 0xFF -- already-erased flash we needn't rewrite.
+
+    NO SLICE ON THE COMMON PATH. `_FF_MV[:n]` builds a NEW memoryview every call -- the old comment
+    here claimed otherwise and it was wrong. The erase-verify walks the whole slot in _CHUNK steps,
+    so on a 12 MiB slot that was ~3000 allocations, and with the install armed the automatic
+    collect they provoke is 65-100 ms on the N6 -- its entire watchdog window. Measured: the board
+    died in this loop, between `install: readback` and the first written block. Only the final
+    short chunk slices now.
+    """
+    n = len(chunk)
+    if n == _CHUNK:
+        return chunk == _FF_MV                   # full chunk: compare the hoisted view AS IS
+    return chunk == _FF_MV[:n]                   # only the tail slices, and only once
 
 
 class _Progress:
     """Per-chunk install progress -> the (frozen) logger, throttled to one line per new
     10% step. Defined *here* so ``exec`` compiles it into RAM: it is called from the write
-    loop *after* the FRONT slot is erased, so its bytecode must not live in that slot. A
+    loop *after* the target slot is erased, so its bytecode must not live in that slot. A
     reporter (or any app callback) from the romfs ``openmv_ota``/app -- which is in the
     slot being erased -- would XIP its bytecode from erased flash and fault. For the same
     reason install progress is log-only: there is no safe app callback to invoke here."""
@@ -725,13 +867,19 @@ class _Progress:
             self._log.info("install: %d%% (%d/%d bytes)" % (pct, done, total))
 
 
-def _install_stream(source, write, readback, front_size, block, feed,
-                    progress=None, expect_sha=None, repr_marker=None, gc_collect=None):
-    """Stream the decompressed image into the ALREADY-ERASED FRONT slot 1:1
+def _install_stream(source, write, readback, slot_size, block, feed,
+                    progress=None, expect_sha=None, repr_marker=None, gc_collect=None,
+                    work=None, counter=None, floor=0):
+    """Stream the decompressed image into the ALREADY-ERASED TARGET slot 1:1
     (verifying every write by read-back, skipping already-erased 0xFF runs), then
     arm the trial.
 
-    The caller MUST erase the FRONT slot BEFORE calling this AND before opening the
+    ``write``/``readback`` are SLOT-RELATIVE: the caller's closures add the target slot's
+    partition offset, so this function is identical for slot A, slot B and SINGLE mode.
+    ``counter`` is the install counter to stamp (what makes this slot the newest) and ``floor``
+    the anti-rollback floor to carry forward into it -- see the arm sequence at the bottom.
+
+    The caller MUST erase the target slot BEFORE calling this AND before opening the
     download stream ``source`` draws from -- so the download socket is never left idle
     during the multi-second erase (a slow flash on a power-saving link drops an idle
     connection, and the write loop would then read a truncated body). This function
@@ -743,31 +891,69 @@ def _install_stream(source, write, readback, front_size, block, feed,
     allocation happens and automatic GC never fires to bite an armed watchdog. ``write(off, data)``
     programs flash; ``readback(off, n)`` returns the ``n`` bytes at ``off``; ``feed()`` is called
     once per chunk so the watchdog stays alive through the loops *without* masking a hang (if the
-    loop stops iterating, feeding stops); ``progress(done, front_size)`` (if given) is called once
+    loop stops iterating, feeding stops); ``progress(done, slot_size)`` (if given) is called once
     per written chunk; ``expect_sha`` (if given, the manifest's hex sha256 of the reconstructed
     image) is checked over the streamed bytes and must match; ``repr_marker`` (if given) records
     which representation was applied (REPR_FULL / REPR_DELTA) for status() to report. Raises on any
     size/hash mismatch or read-back miscompare; this runs after the erase, so the caller turns any
-    exception into a reboot into golden."""
+    exception into a reboot, after which boot.py picks the newest slot that still verifies."""
     off = 0
-    while off < front_size:                          # confirm the caller's erase took
-        n = _CHUNK if front_size - off >= _CHUNK else front_size - off
+    while off < slot_size:                          # confirm the caller's erase took
+        feed()                                       # FEED FIRST: the end-of-body feed leaves the
+        #                                              first iteration (and everything between the
+        #                                              arm and it) running on whatever is left of
+        #                                              the window -- which on the N6 is 100 ms.
+        n = _CHUNK if slot_size - off >= _CHUNK else slot_size - off
         if not _is_blank(readback(off, n)):
             raise OSError("erase verify failed at %d" % off)
         off += n
         feed()
 
+    # ENTER THE WRITE LOOP ON A FULL WINDOW. The two allocations below -- the sha256 state and the
+    # 4 KiB write buffer -- can each trigger an AUTOMATIC collect, and on the N6's multi-MB heap any
+    # collect is 65-100 ms, i.e. at or past that port's 100 ms window. The only feed behind them is
+    # the verify loop's last one, so the board can be bitten here before a single block is written.
+    # Measured with the install armed: the device died between `install: readback` and the first
+    # progress line, having logged no feed gap -- the gap that kills you is the one you never get to
+    # report. Collect PROACTIVELY (gc_collect feeds on both sides) so the automatic one cannot fire,
+    # then feed again immediately before allocating.
+    # FEED BEFORE THE ALLOCATIONS BELOW. The verify loop feeds at its TOP, so once it exits there
+    # is no feed behind the sha256 state and the (fallback) buffer -- and an allocation can trigger
+    # an automatic collect, 65-100 ms on the N6, its whole window. Measured: with the loop finally
+    # completing all 3072 chunks, the board died right here, between the last `verify i=` line and
+    # the first written block.
+    feed()
     digest = hashlib.sha256() if expect_sha is not None else None
-    work = bytearray(_CHUNK)                          # the ONE reused write buffer -> zero-alloc loop
+    if work is None:                                  # pragma: no cover  (device: run() hoists it)
+        work = bytearray(_CHUNK)   # hil-residual: fallback for direct callers; run() preallocates before arming
+    feed()                                            # ...and again, with the allocations behind us
+    # COLLECT BEFORE THE FIRST READ. The first source.readinto() is where deflate.DeflateIO
+    # allocates its ~32 KiB window, lazily, on first use -- the single biggest allocation in the
+    # armed region, and an automatic collect behind it is 65-100 ms on the N6, its whole window.
+    # gc_collect() feeds on BOTH sides, so doing it deliberately here cannot bite, while letting it
+    # happen by itself can. Measured: with the post-verify feeds in place the board still died
+    # between the last `verify i=` line and the first written block, which is exactly this read.
+    if gc_collect is not None:
+        gc_collect()  # hil-residual: watchdog-armed proactive collect before the decompressor's first allocation
     mv = memoryview(work)
     off = 0
     since_gc = 0
-    while off < front_size:
+    while off < slot_size:
         feed()                                       # before the (recv + delta reconstruct) fill
-        want = _CHUNK if front_size - off >= _CHUNK else front_size - off
+        want = _CHUNK if slot_size - off >= _CHUNK else slot_size - off
         n = 0
         while n < want:                              # fill a full aligned chunk: re-chunks the
-            k = source.readinto(mv[n:want])          # arbitrary delta/deflate pieces into one buffer
+            feed()                                   # FEED PER READ. This loop had none: the only
+            #                                          feed was the outer loop's, so ONE chunk fill
+            #                                          -- which on the first pass is where DeflateIO
+            #                                          allocates its ~32 KiB window, plus however
+            #                                          many recvs it takes -- ran on a single 100 ms
+            #                                          window. Measured on the N6: the armed install
+            #                                          died between the last `verify i=` line and the
+            #                                          first written block, i.e. in this fill.
+            # ...and take the FULL buffer when we can: mv[n:want] builds a new memoryview on every
+            # read, and this is the hottest loop in the install.
+            k = source.readinto(mv if n == 0 and want == _CHUNK else mv[n:want])
             if k == 0:
                 break                                # EOF: a short tail is caught by the size check
             n += k
@@ -782,7 +968,12 @@ def _install_stream(source, write, readback, front_size, block, feed,
             #                                          and a page program also runs with interrupts
             #                                          disabled -- so feed again right before it
             write(off, chunk)
-            if readback(off, n) != chunk:
+            rb = readback(off, n)                    # SHORT only at the very end of an XIP
+            k = len(rb)                              # partition (see _XIP_TAIL_GUARD); every
+            #                                          other port always returns the full n, so
+            #                                          the slice below never runs on them and the
+            #                                          common path stays allocation-free.
+            if rb != (chunk if k == n else chunk[:k]):
                 raise OSError("write verify failed at %d" % off)
         off += n
         feed()
@@ -791,25 +982,50 @@ def _install_stream(source, write, readback, front_size, block, feed,
             gc_collect()                             # proactive relax()-fed collect -> auto-GC never fires
             since_gc = 0
         if progress is not None:
-            progress(off, front_size)
-    if off == front_size and source.readinto(mv[:1]):    # any bytes beyond the slot -> wrong image
-        raise ValueError("image larger than the %d-byte slot" % front_size)
-    if off != front_size:
+            progress(off, slot_size)
+    if off == slot_size and source.readinto(mv[:1]):    # any bytes beyond the slot -> wrong image
+        raise ValueError("image larger than the %d-byte slot" % slot_size)
+    if off != slot_size:
         raise ValueError("image is %d bytes, expected a full %d-byte slot"
-                         % (off, front_size))
+                         % (off, slot_size))
     # MicroPython's hashlib has no .hexdigest() (CPython-only) -- hexlify the raw
     # digest instead, so the check runs identically on-device and on the host.
     if digest is not None and binascii.hexlify(digest.digest()).decode() != expect_sha:
         log.warning("install: reject sha")           # the integrity trust boundary rejected the image
         raise OSError("image sha256 does not match the manifest")
 
-    pending_off = front_size - 2 * block             # the status sector
+    # ARM, IN THIS ORDER: provenance, then the carried floor, then the counter, then PENDING.
+    # Every one of these is a 1->0 program into a region the image left blank, and a power cut
+    # between any two of them has to leave a slot that is either not bootable or fully described.
+    # PENDING is what makes the slot bootable at all, so it goes LAST -- a slot that dies before
+    # it simply is not a candidate, and one that dies after it carries everything boot.py reads.
+    status_off = slot_size - 2 * block               # the status sector
     if repr_marker is not None:                      # record which rep was applied (1->0 only)
-        write(pending_off + _REPR_OFF, repr_marker)
-        if readback(pending_off + _REPR_OFF, len(repr_marker)) != repr_marker:
+        write(status_off + _REPR_OFF, repr_marker)
+        if readback(status_off + _REPR_OFF, len(repr_marker)) != repr_marker:
             raise OSError("repr marker verify failed")
-    write(pending_off, PENDING)                       # arm the one-shot trial, LAST
-    if readback(pending_off, len(PENDING)) != PENDING:
+    if floor:
+        # CARRY THE ANTI-ROLLBACK FLOOR INTO THE NEW SLOT. boot.py takes the floor as the max
+        # across slots, which only stays monotonic if every install copies the current floor
+        # forward: without this, rewriting the slot that happened to hold the highest recorded
+        # version would LOWER the device's floor and re-admit a signed release it had already
+        # moved past. In SINGLE mode it is starker still -- the one slot holding the floor is
+        # the one being erased, so nothing survives unless it is written back here.
+        entry = struct.pack("<II", floor & _MASK32, (floor & _MASK32) ^ _MASK32)
+        rollback_off = slot_size - 3 * block
+        write(rollback_off, entry)
+        if readback(rollback_off, len(entry)) != entry:
+            raise OSError("rollback floor verify failed")
+    if counter is not None:
+        # The ORDER against the image bytes is what matters here: a half-written image can never
+        # carry a valid counter, because the counter is written only once the whole slot has been
+        # streamed, read-back verified and sha256-checked.
+        field = _encode_counter(counter)
+        write(status_off + _COUNTER_OFF, field)
+        if readback(status_off + _COUNTER_OFF, len(field)) != field:
+            raise OSError("install counter verify failed")
+    write(status_off, PENDING)                        # arm the trial, LAST
+    if readback(status_off, len(PENDING)) != PENDING:
         raise OSError("arm verify failed")
 
 
@@ -856,7 +1072,7 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
             # misses the OS page cache), and on the AE3 neither poll() nor relax() feeds that wait
             # (its SSL poll() blocks through its timeout; relax()'s ISR isn't serviced inside an mbedtls
             # read). A main-thread non-blocking recv + sleep loop feeds it regardless. Bounded by
-            # _SOCK_TIMEOUT (the reader's wait counter), so a dead server still falls cleanly to golden.
+            # _SOCK_TIMEOUT (the reader's wait counter), so a dead server still fails cleanly.
             sock.setblocking(False)
             reader = _Reader(sock.read, feed)
             code, headers = _read_response(reader)
@@ -877,7 +1093,7 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
             # We asked to RESUME but the server sent the whole entity from byte 0 (no Range
             # support, or a proxy that stripped it). We cannot use it: the decompressor is
             # mid-stream and its state cannot be rewound, so replaying from 0 would corrupt the
-            # image. Fail cleanly -- the caller falls to golden and the next poll starts over.
+            # image. Fail cleanly -- the caller reboots and the next poll starts over.
             sock.close()
             raise OSError("resume unsupported: HTTP %d for a Range request" % code)
         log.debug("install: fetched body")
@@ -895,7 +1111,7 @@ class _ResumingBody(io.IOBase):
     a Python object usable as a C-LEVEL STREAM, which is what ``deflate.DeflateIO`` requires of its
     source. A plain class with a ``readinto`` method is NOT enough -- DeflateIO rejects it at the
     first read with ``OSError('stream operation not supported')``, which on the bench looked like a
-    mid-install failure that fell back to golden. Host tests cannot catch this (CPython happily
+    mid-install failure that rebooted into the other slot. Host tests cannot catch this (CPython happily
     reads any object with the right methods), so it is pinned by an explicit subclass assertion.
 
     A poor link cannot always finish a long download in one connection: the WINC1500 aborts
@@ -913,7 +1129,7 @@ class _ResumingBody(io.IOBase):
     attempt cap would abandon it for being slow rather than for being broken. "Stuck" is the
     honest failure, so only ``_RESUME_MAX_STALLS`` consecutive re-opens that deliver ZERO new
     bytes give up. This cannot run forever: the server's capability token expires (ttl 3600 s),
-    after which a resume gets a 404 and falls cleanly to golden.
+    after which a resume gets a 404 and fails cleanly.
     """
 
     def __init__(self, url, ca_pem, socket, ssl, feed, sock, body):
@@ -956,14 +1172,20 @@ class _ResumingBody(io.IOBase):
             pass
 
 
-def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop):  # pragma: no cover
+def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop,
+                    floor=0, base_version=0, delta_capable=True):  # pragma: no cover
     """Pre-erase: fetch the signed manifest, verify its signature against the frozen
     trusted keys (exactly as boot.py verifies an image trailer), apply the device-relative
     checks (board / platform / anti-rollback), and pick a representation. Returns
     ``(image_url, fmt, expect_sha)``. Raises (to the app, /rom intact) on any failure --
-    nothing is erased."""
-    import uctypes
-    import vfs
+    nothing is erased.
+
+    ``floor`` (the anti-rollback floor) and ``base_version`` (what a delta may patch against)
+    are passed in rather than read here, because under A/B they are no longer the same number:
+    the floor is the highest version ANY slot has recorded, while the delta base is the version
+    of the one slot that will still be there when the other is erased. v1 read a single value
+    off the golden trailer and used it for both, which was only correct because BACK was
+    permanent."""
 
     # CONNECTION PHASE -- open + read. Everything here (DNS, TCP, the TLS handshake and its cert
     # validation, each body read) is TRANSPORT: it says nothing about the release, so run() defers
@@ -997,17 +1219,15 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop):
             raise OSError("manifest signature does not verify")  # hil-residual: bare raise (reject witnessed by install.reject_sig)
 
         body_dict = m["body"]
-        base = uctypes.addressof(vfs.rom_ioctl(2, 0))     # partition XIP base
-        floor = _golden_floor(uctypes.bytearray_at(base + cfg.PARTITION_SIZE - cfg.OTA_BLOCK,
-                                                  cfg.OTA_BLOCK))
         reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
                                 getattr(cfg, "ACCOUNT_ID", ""))
         if reason is not None:
             log.warning("install: reject vetting")   # rejected: witness the boundary
             raise OSError("manifest rejected (%s)" % reason)  # hil-residual: bare raise (reject witnessed by install.reject_vet)
-        # The delta applier is pure Python (no ulab/C), so every board is delta-capable; the
-        # delta is used only when its base matches this device's golden (BACK) version.
-        rep = _select_rep(body_dict, True, floor)
+        # The delta applier is pure Python (no ulab/C), so every board is delta-capable in the
+        # A/B sense; ``delta_capable`` is False only in SINGLE mode, where the base is the very
+        # slot about to be erased.
+        rep = _select_rep(body_dict, delta_capable, base_version)
     if rep is None:
         raise OSError("manifest has no usable representation")  # hil-residual: bare raise (no-rep guard, inject-only)
     image_url = _resolve_url(manifest_url, rep["url"])
@@ -1034,7 +1254,7 @@ def _reset():  # pragma: no cover
 def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     """Fetch the signed manifest at ``manifest_url``, verify + vet it, then download and
     install the chosen image. Never returns: reboots into the new image's trial on
-    success, or into the golden BACK image if anything fails after the erase commits.
+    success, or into whatever slot still verifies if anything fails after the erase commits.
     A pre-flight failure (bad URL/DNS/TLS, bad/forbidden manifest) raises to the app with
     ``/rom`` intact. Progress is logged from here (RAM + the frozen logger) at every 10%
     step -- it can't be a caller callback, whose code is being erased."""
@@ -1048,7 +1268,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
 
     # Watchdog (if the app enabled one): relax() feeds it from a timer ISR ONLY around the
     # single multi-second erase the main loop can't reach; feed() keeps it alive per chunk
-    # through the loops -- so a hung loop (or a stalled recv) still trips it -> golden.
+    # through the loops -- so a hung loop (or a stalled recv) still trips it -> reboot.
     relax = openmv_wdt.relax if openmv_wdt is not None else _NoWdt
     feed = openmv_wdt.feed if openmv_wdt is not None else _noop
     # Proactive GC hook (only when a watchdog is armed): the write loop calls this on a byte
@@ -1071,30 +1291,33 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             with relax():  # hil-residual: relax() feeds the WWDG across the unsplittable gc.collect()
                 _gc.collect()  # hil-residual: proactive collection at a controlled point (device-only)
             feed()  # hil-residual: watchdog-armed post-collect feed (opt-in, marker-less)
-    # Log-only progress, built from RAM + the frozen logger so it survives the FRONT erase.
+    # Log-only progress, built from RAM + the frozen logger so it survives the slot erase.
     progress = _Progress(log) if log is not None else None
-    front_size, block = cfg.FRONT_SIZE, cfg.OTA_BLOCK
+    block = cfg.CONTROL_BLOCK
 
     # The romfs write path has two flavours across ports; detect which from the
-    # FRONT partition object. An XIP-mapped port (stm32/alif/samd) returns a
+    # partition object. An XIP-mapped port (stm32/alif/samd) returns a
     # buffer we address directly and erase/write via rom_ioctl(3/4/5). A
     # block-device port (mimxrt) returns a Flash object with the block protocol,
     # driven via ioctl(6)=erase-block + the extended (3-arg) writeblocks/readblocks
     # for byte-granular access. _install_stream is agnostic -- it only sees
-    # erase/write/readback/back_read -- so all the divergence lives here.
-    front = vfs.rom_ioctl(2, 0)
+    # erase/write/readback/base_read -- so all the divergence lives here.
+    #
+    # ONE partition object, addressed by absolute offset. A block-device port exposes ONE
+    # segment covering the whole partition and rom_ioctl(2, <id>) ignores the id (mimxrt returns
+    # the same object for 0 and 1), so slots are never separate devices in either flavour --
+    # which is what lets `part_read` below serve every slot and lets the target's offset be
+    # nothing more than an addend.
+    part = vfs.rom_ioctl(2, 0)
     _seen = set()                                     # one-shot log guard: emit each per-chunk
-    if hasattr(front, "ioctl"):                       # write marker once (bounded, RAM-safe)
+    if hasattr(part, "ioctl"):                        # write marker once (bounded, RAM-safe)
         log.debug("install: write path block-device")
-        _bs = front.ioctl(5, 0)                       # block size
-        # A block-device port exposes ONE segment covering the WHOLE partition, and
-        # rom_ioctl(2, <id>) ignores the id (mimxrt returns the same object for 0 and 1).
-        # So FRONT and BACK are the same device addressed by offset: FRONT at 0, BACK at
-        # front_size -- exactly as the XIP branch does with base / base+front_size.
+        _bs = part.ioctl(5, 0)                        # block size
 
-        def erase(total):
+        def erase(start, total):
             nb = (total + _bs - 1) // _bs
-            b = 0
+            b = start // _bs                          # the target slot's first block
+            nb += b
             # FEED FIRST, THEN ERASE. A flash erase on this port runs with interrupts OFF
             # (mimxrt flash.c wraps flexspi_nor_flash_erase_* in __disable_irq), so for its whole
             # duration SysTick cannot fire, PendSV cannot run, and machine.Timer -- a SOFT timer
@@ -1104,7 +1327,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # BEFORE the call. Feeding after it, as this loop used to, hands each erase whatever
             # was left of the window -- and hands the FIRST erase whatever survived the manifest
             # parse and TLS, which is how the HIL `watchdog` scenario reset before even the first
-            # block witness and fell back to golden.
+            # block witness and rebooted.
             worst = 0                                 # longest single erase seen, ms
             feed()                                    # relax().__enter__ below imports machine and
             #                                           ALLOCATES a Timer (~7 ms measured, and any
@@ -1129,7 +1352,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 while b < nb:                         # one block per call -> returns to the
                     feed()                            # VM between blocks (no dead-time erase);
                     _t0 = ticks_ms()                  # this port is already chunk-granular
-                    front.ioctl(6, b)
+                    part.ioctl(6, b)
                     _dt = ticks_diff(ticks_ms(), _t0)
                     if _dt > worst:
                         worst = _dt  # hil-residual: witnessed transitively -- a non-zero worst= in the erase progress marker is proof this ran (it is the only writer)
@@ -1144,45 +1367,45 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                         #                               per slot. Same marker text, so it still
                         #                               witnesses the same coverage point.
                         log.debug("install: erasing block block-device %d/%d worst=%dms" % (b, nb, worst))
-            log.debug("install: erased FRONT block-device")
+            log.debug("install: erased slot block-device")
 
-        # Reused block-device scratch (n <= _CHUNK): a readback + a BACK-read buffer, so neither
+        # Reused block-device scratch (n <= _CHUNK): a readback and a base-read buffer, so neither
         # closure allocates per chunk -- the same zero-alloc discipline as the XIP path, needed so
         # an armed watchdog isn't bitten by GC churn on this port. Each returned view is consumed
         # (compared / added) before the next call reuses its buffer.
         _rb = memoryview(bytearray(_CHUNK))
         _br = memoryview(bytearray(_CHUNK))
 
-        def write(off, data):                         # extended writeblocks: byte-granular,
-            front.writeblocks(off // _bs, data, off % _bs)   # so sub-block markers work too
+        def write_at(off, data):                      # extended writeblocks: byte-granular,
+            part.writeblocks(off // _bs, data, off % _bs)    # so sub-block markers work too
             if log and "w" not in _seen:
                 _seen.add("w")
                 log.debug("install: wrote block block-device")
 
-        def readback(off, n):
-            front.readblocks(off // _bs, _rb[:n], off % _bs)  # FRONT at partition offset off
+        def read_at(off, n):                          # absolute partition offset
+            part.readblocks(off // _bs, _rb[:n], off % _bs)
             if log and "r" not in _seen:
                 _seen.add("r")
                 log.debug("install: readback block-device")
             return _rb[:n]  # hil-residual: bare return of the reused readback view
 
-        def back_read(off, n):                        # arbitrary range from BACK, block-safe
-            done = 0                                  # BACK lives at front_size within the one
-            while done < n:                           # partition (NOT a separate rom_ioctl(2,1)
-                a = front_size + off + done           # segment -- that returns FRONT on mimxrt)
+        def base_read_at(off, n):                     # arbitrary absolute range, block-safe
+            done = 0                                  # (the delta base slot lives in the SAME
+            while done < n:                           # partition -- NOT a separate rom_ioctl(2,1)
+                a = off + done                        # segment, which returns slot A on mimxrt)
                 blk, o = a // _bs, a % _bs
                 take = _bs - o
                 if take > n - done:
                     take = n - done  # hil-residual: bare arithmetic clamp (final partial block)
-                front.readblocks(blk, _br[done:done + take], o)
+                part.readblocks(blk, _br[done:done + take], o)
                 done += take
-                if log and "brl" not in _seen:        # witness the in-loop BACK read once
+                if log and "brl" not in _seen:        # witness the in-loop base read once
                     _seen.add("brl")
                     log.debug("install: back reading block-device")
             if log and "br" not in _seen:
                 _seen.add("br")
                 log.debug("install: back read block-device")
-            return _br[:n]  # hil-residual: bare return of the reused BACK-read view
+            return _br[:n]  # hil-residual: bare return of the reused base-read view
 
         def complete():
             log.debug("install: complete block-device")
@@ -1190,23 +1413,29 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
 
     else:                                             # XIP-mapped romfs (stm32/alif/samd)
         log.debug("install: write path XIP")
-        base = uctypes.addressof(front)               # FRONT partition XIP base
+        base = uctypes.addressof(part)                # partition XIP base
+        # Never hand out an alias that reaches the end of the mapped partition -- a bulk read of
+        # it wedges the QUADSPI and silently kills the board mid-install (see _XIP_TAIL_GUARD).
+        # Reads are SHORTENED, never moved, and only ever at the very end of the last slot, which
+        # is trailer padding: a trailer parses from offset 0 and the erase/write verifies simply
+        # cover that much less. Everything else is byte-for-byte the alias it was before.
+        readable_end = len(part) - _XIP_TAIL_GUARD
 
-        def readback(off, n):
-            r = uctypes.bytearray_at(base + off, n)
+        def read_at(off, n):                          # absolute partition offset
+            r = uctypes.bytearray_at(base + off, _clamp_to(off, n, readable_end))
             if log and "r" not in _seen:
                 _seen.add("r")
                 log.debug("install: readback XIP")
             return r  # hil-residual: bare return of the XIP readback alias
 
-        def back_read(off, n):
-            r = uctypes.bytearray_at(base + front_size + off, n)   # BACK at front_size
+        def base_read_at(off, n):
+            r = uctypes.bytearray_at(base + off, _clamp_to(off, n, readable_end))
             if log and "br" not in _seen:
                 _seen.add("br")
                 log.debug("install: back read XIP")
-            return r  # hil-residual: bare return of the XIP BACK-read alias
+            return r  # hil-residual: bare return of the XIP base-read alias
 
-        def erase(total):
+        def erase(start, total):
             # Erase INCREMENTALLY where the port supports the ranged prepare
             # (rom_ioctl 6 = min-prepare size, and the 4-arg rom_ioctl 3 with an
             # offset -- micropython PR #19348). One whole-slot erase is seconds of
@@ -1216,14 +1445,15 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # single-shot erase under relax().
             bs = vfs.rom_ioctl(6, 0)
             if isinstance(bs, int) and bs > 0:
-                o = 0
+                o = start
                 # FEED FIRST, THEN ERASE -- see the block-device path above for why: a ranged
                 # prepare is one unsplittable C call, and on a port that erases with interrupts
                 # disabled nothing can feed until it returns. The feed has to precede it.
                 feed()                            # full window before relax()'s allocating entry
+                end = start + total
                 with relax():
-                    while o < total:
-                        n = bs if total - o > bs else total - o
+                    while o < end:
+                        n = bs if end - o > bs else end - o
                         feed()
                         rc = vfs.rom_ioctl(3, 0, o, n)
                         if rc < 0:
@@ -1232,18 +1462,24 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                         if log and "e" not in _seen:  # witness the in-loop erase op once
                             _seen.add("e")
                             log.debug("install: erasing block XIP")
-                log.debug("install: erased FRONT XIP")
+                log.debug("install: erased slot XIP")
                 return  # hil-residual: bare return (ranged erase done)
             # Legacy single-shot fallback for firmware WITHOUT #19348 (no ranged prepare). The
             # bench always applies #19348, so rom_ioctl(6) returns a size and the ranged branch
             # above is taken; the single-shot erase is also the exact op that faults partway on
             # the N6's 12 MiB XSPI slot (the bug #19348 fixes), so it can't be exercised on HW.
+            if start:  # hil-residual: legacy-firmware guard, inside the pre-#19348 fallback below (the bench firmware has the ranged erase, so this branch is unreachable there)
+                # ...and it cannot target a slot at an offset -- the legacy form always erases
+                # from 0. Refusing is the only safe answer: erasing from 0 here would destroy the
+                # slot the device is RUNNING while claiming to write the other one. So A/B needs
+                # #19348; SINGLE (start == 0) still works on old firmware.
+                raise OSError("firmware without a ranged erase cannot write slot B")  # hil-residual: legacy-firmware A/B guard (the bench firmware has #19348)
             with relax():                             # hil-residual: legacy pre-#19348 single-shot erase (unreachable on the patched bench; faults the N6)
                 rc = vfs.rom_ioctl(3, 0, total)  # hil-residual: legacy single-shot erase call (pre-#19348)
                 if rc < 0:  # hil-residual: legacy single-shot errno check (pre-#19348)
                     raise OSError(-rc)  # hil-residual: bare raise (legacy single-shot erase fault)
 
-        def write(off, data):
+        def write_at(off, data):
             rc = vfs.rom_ioctl(4, 0, off, data)
             if rc < 0:
                 raise OSError(-rc)  # hil-residual: bare raise on a negative errno (write-fault, inject-only)
@@ -1256,8 +1492,55 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             log.debug("install: complete XIP")
         log.debug("install: write path ready XIP")
 
+    # --- pick the slot to write, BEFORE anything is erased --------------------
+    #
+    # Everything read here comes off flash that is about to change, so it is read once, now, and
+    # carried in RAM: the counters that order the slots, the anti-rollback floor to carry into
+    # the new slot, and the running slot's version (what a delta may patch against).
+    # The survey below is deliberately BRANCHLESS -- it reads the same three records from every
+    # slot and decides afterwards. Branching per slot would save two 4 KiB reads on a two-slot
+    # board and cost a device path that no HIL marker can witness, since which branch runs
+    # depends on which slot happens to be running.
+    slots = _slot_table(cfg.PARTITION_SIZE, cfg.FRONT_SIZE)
+    running = getattr(cfg, "last_slot", None)         # set by boot.py when it mounted a slot
+    counters, floors, versions, offsets = {}, {}, {}, {}
+    for _name, _off, _size in slots:
+        counters[_name] = _install_counter(read_at(_off + _size - 2 * block, block))
+        floors[_name] = _rollback_floor_of(read_at(_off + _size - 3 * block, block))
+        versions[_name] = _trailer_version(read_at(_off + _size - block, block))
+        offsets[_name] = _off
+        log.debug("install: slot surveyed")            # bounded: once per slot (at most twice)
+    floor = max(floors.values())                      # the floor is the MAX across slots...
+    base_off = offsets.get(running, 0)                # ...and the delta base is the running slot
+    base_version = versions.get(running, 0)
+    target, target_off, slot_size, counter = _install_target(slots, running, counters)
+    # SINGLE mode erases the only slot there is, so there is no surviving image to patch against.
+    delta_capable = len(slots) > 1 and base_version != 0
+    log.info("install: target slot %s at %d (%d bytes), counter %d, floor %d"
+             % (target, target_off, slot_size, counter, floor))
+
+    def write(off, data):                             # SLOT-RELATIVE, so _install_stream and the
+        write_at(target_off + off, data)  # hil-residual: bare delegation (write_at carries the write marker)
+
+    def readback(off, n):
+        return read_at(target_off + off, n)  # hil-residual: bare return of the slot-relative read
+
+    # A delta may reference the base slot's BODY REGION ONLY -- never its control sectors.
+    # Those hold per-device state (install counter, rollback entries, attempt bytes, the
+    # CONFIRMED marker), so bytes copied out of them would differ on every device and the
+    # reconstructed image would fail its sha256 on some and pass on others. The builder
+    # computes the patch against this same region, so a read past it means the patch and the
+    # device disagree about the contract -- fail loudly rather than silently mixing device
+    # state into an image.
+    base_limit = slot_size - 4 * block
+
+    def base_read(off, n):                            # the delta base: the RUNNING slot
+        if off + n > base_limit:  # hil-residual: contract guard -- the builder computes the patch against this same region, so a real bench delta never trips it; the taken branch is unit-tested
+            raise ValueError("delta reads past the base body region")  # hil-residual: contract violation (a patch built against the whole slot); the bench's deltas are body-only so it is unreachable there
+        return base_read_at(base_off + off, n)  # hil-residual: bare return of the slot-relative base read
+
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the
-    # app (the FRONT slot is untouched). Log the reason first: run() swallows this exception
+    # app (the target slot is untouched). Log the reason first: run() swallows this exception
     # (transient failures retry next poll), so without a line here a REJECTED update -- bad
     # signature, untrusted key, failed board/version/platform vetting -- is invisible in the
     # field, exactly when an operator most needs to know why a release won't take.
@@ -1267,7 +1550,9 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # PROGRESS-fed per block/piece, so a hung flash/reconstruct loop is still caught. All no-op off.
     log.info("install: fetching manifest %s" % manifest_url)
     try:
-        image_url, fmt, expect_sha = _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed)
+        image_url, fmt, expect_sha = _fetch_manifest(
+            manifest_url, ca_pem, cfg, verify, socket, ssl, feed,
+            floor=floor, base_version=base_version, delta_capable=delta_capable)
     except Exception as e:
         # Two very different failures land here and only ONE is a rejected update. A REJECTION -- bad
         # signature/key, failed vetting, or a corrupt/unparseable manifest -- must read as install.reject
@@ -1282,24 +1567,33 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         raise  # hil-residual: bare re-raise to the app (reject -> install.reject; transport -> retry next poll, marker-less)
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
-    # failure reboots into the golden image instead of propagating. ERASE FIRST,
+    # failure reboots -- into the OTHER slot under A/B (the previous working image, which was
+    # never touched), or into firmware-resident recovery in SINGLE mode, where the erase took
+    # the only image with it. ERASE FIRST,
     # THEN open the download: the whole-slot erase takes seconds, and if the socket
     # were already open it would sit idle that whole time -- a slow flash (the AE3's
     # external OSPI) on a power-saving WiFi link drops an idle connection, and the
     # write loop then reads a truncated body. Opening the download only after the
     # erase means it is read continuously. (A download-open failure here is rare --
     # the manifest was just fetched from the same server -- and lands cleanly in
-    # golden.)
+    # the surviving slot.)
     # A flaky link (WiFi power-save, a slow OSPI flash, cellular) drops the download
     # mid-stream -- a transient transport error, not a bad update. Since the installer
     # already runs from RAM (exec'd before the erase) and re-erase + re-download is
     # idempotent, retry the whole download a bounded number of times before giving up.
     # Only an EXHAUSTED retry (or a non-transient failure surfacing every attempt)
-    # reboots into golden BACK -- so one hiccup no longer costs a reboot + a full poll
+    # reboots into the surviving slot -- so one hiccup no longer costs a reboot + a full poll
     # cycle. Anything raised here (short body, TLS/ECONNRESET/ECONNABORTED/timeout,
     # verify miscompare) is treated the same: retry, then fall back.
     attempts = getattr(cfg, "INSTALL_RETRIES", 3)
     body = None
+    # PREALLOCATE EVERYTHING THE ARMED REGION WILL NEED, BEFORE ARMING. An automatic gc.collect()
+    # is one unsplittable pause -- 65-100 ms on the N6's multi-MB heap, i.e. at or past that port's
+    # whole 100 ms window -- so any allocation inside the armed region is a chance to be bitten for
+    # doing nothing wrong. Feeding either side of each allocation only narrows the window; not
+    # allocating at all closes it. This is the reused write buffer; _rb/_br (the readback views) are
+    # hoisted the same way further up.
+    work = bytearray(_CHUNK)
     for attempt in range(attempts):
         try:
             # COLLECT BEFORE THE ERASE, under relax(). Everything above -- the TLS session, the
@@ -1309,7 +1603,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # thing that can cover it. On a board with external SDRAM the heap is big enough for
             # that sweep to outrun a 500 ms watchdog window.
             #
-            # Measured on the RT1060 lan leg: the board reset between `install: erasing FRONT` and
+            # Measured on the RT1060 lan leg: the board reset between `install: erasing <slot>` and
             # the loop-entry witness -- i.e. before a single flash op, where the only code is
             # `nb = (total + _bs - 1) // _bs`. Nothing there can take 500 ms except a collection.
             # Intermittent by nature (5 fails, 2 passes, 1 fail) because it depends on where the
@@ -1317,8 +1611,8 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # exactly this reason; the erase needed the same treatment at its own entry.
             if gc_collect is not None:
                 gc_collect()  # hil-residual: watchdog-armed pre-erase collect (opt-in; gc_collect is None unless the app armed a watchdog, so only the watchdog HIL scenario reaches it -- and it is marker-less by design, being the pause it exists to prevent)
-            log.info("install: erasing FRONT (%d bytes) t=%d" % (front_size, ticks_ms()))
-            erase(front_size)
+            log.info("install: erasing %s (%d bytes) t=%d" % (target, slot_size, ticks_ms()))
+            erase(target_off, slot_size)
             log.info("install: downloading %s (%s)" % (image_url, fmt))
             sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)
             # Wrap the body so a dropped connection RESUMES at the compressed offset already
@@ -1330,25 +1624,41 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             dio = deflate.DeflateIO(body, deflate.GZIP)
             if fmt == _DELTA_FORMAT:
                 # Delta: stream-decompress the patch and reconstruct the image against the
-                # golden BACK slot (copy-with-diff, ulab add) -- both the patch and the output
-                # are streamed into FRONT, neither is materialised.
-                source = _GenReader(_delta_stream(_PatchReader(dio), back_read, _CHUNK), feed)
+                # RUNNING slot (copy-with-diff, ulab add) -- both the patch and the output are
+                # streamed into the target slot, neither is materialised.
+                source = _GenReader(_delta_stream(_PatchReader(dio), base_read, _CHUNK), feed)
                 repr_marker = REPR_DELTA
                 log.debug("install: representation delta")
             else:
                 source = dio                          # DeflateIO is itself a readinto source
                 repr_marker = REPR_FULL
                 log.debug("install: representation full")
-            log.info("install: writing FRONT")
-            _install_stream(source, write, readback, front_size, block, feed,
-                            progress, expect_sha, repr_marker, gc_collect)
+            # ARM HERE -- as late as possible, and only once every allocating step is behind us:
+            # the socket, the TLS session, the deflate window and the delta reader are all built,
+            # and the write buffer was preallocated before the loop. What remains is flash writes
+            # and streamed reads. Arming any earlier put an automatic collect inside the armed
+            # window; measured, that bit the N6 between `install: readback` and the first block.
+            #
+            # Still the point of no return, which is what makes arming safe on stm32 where software
+            # cannot disarm: every exit from here reboots (success -> the trial, retry-exhaustion ->
+            # the other slot), and a reset clears the WWDG. Past this line WE own the device -- the app has
+            # stopped and the target slot is erased -- so a park leaves a board mid-install that cannot
+            # be reached remotely, and only a HARDWARE reset escapes a park (a soft timer does not
+            # dispatch through one -- measured). Arms even when the app left openmv_wdt disabled;
+            # never raises, because a board with no usable watchdog must still be able to update.
+            if openmv_wdt is not None and openmv_wdt.arm_for_install():  # hil-residual: watchdog-arm for the write; witnessed by the log line below
+                log.info("install: wdt armed for the install")  # hil-residual: only emitted when openmv_wdt.ARM_FOR_INSTALL is on, which is off by default -- no bench scenario reaches it, so it carries no marker
+            log.info("install: writing %s" % target)
+            _install_stream(source, write, readback, slot_size, block, feed,
+                            progress, expect_sha, repr_marker, gc_collect, work,
+                            counter=counter, floor=floor)
             # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
             # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
             # ports cache the final sub-page writes -- the trailer + arm markers -- and
             # lose them at reset without it. Block-device ports persist on writeblocks,
             # so complete() there is a no-op.
             complete()
-            log.debug("install: committed FRONT")
+            log.debug("install: committed slot")
             break  # hil-residual: bare break (success -> arm + reboot; witnessed by install.committed)
         except Exception as e:
             if body is not None:
@@ -1356,9 +1666,9 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 body = None
                 log.debug("install: retry cleanup")  # HIL path witness (socket closed before a retry)
             if attempt + 1 >= attempts:
-                log.error("install: FAILED after %d attempts (%r); rebooting to golden BACK"
+                log.error("install: FAILED after %d attempts (%r); rebooting to the other slot"
                           % (attempts, e))                # %r: show the exception CLASS even when
-                _reset()  # hil-residual: terminal reset to golden on retry exhaustion (witnessed by install.fallback + install.reboot)
+                _reset()  # hil-residual: terminal reset to the surviving slot on retry exhaustion (witnessed by install.fallback + install.reboot)
             log.error("install: attempt %d/%d failed (%r); retrying"   # its message is empty (a bare
                       % (attempt + 1, attempts, e))                    # deflate OSError) -> legible in the field
             if progress is not None:  # hil-residual: progress callback is unused on the bench (install() passes none), so this guard is False

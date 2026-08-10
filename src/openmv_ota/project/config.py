@@ -30,6 +30,23 @@ class OtaConfig:
     ota: bool = False
     signing_key_id: int | None = None  # current OTA signing key
     account_id: str = ""               # the maker's OTA account (baked into system.json; '' = self-host)
+    # RECOVERY CONFIG -- baked into the FIRMWARE, not the romfs.
+    #
+    # These are the maker's and constant per build, and a device whose romfs is gone still needs
+    # them to reach the server: that is precisely why recovery could not work while they lived in
+    # the app. `ca` is a path relative to the project root; empty means the bundled Mozilla set.
+    server_url: str = ""
+    ca: str = ""
+    # Opt DOWN to one slot. Asymmetric on purpose: A/B is derived wherever it fits, and this is
+    # the only way to refuse it. Named for what you GET, because the cost is invisible when you
+    # choose it -- without a B slot a failed update needs a network round trip to recover, and a
+    # device that cannot reach the network needs physical reflashing.
+    single_image: bool = False
+    # Boots a newly-installed image gets to call confirm() before it is rejected and the device
+    # falls back. 1 is v1's one-shot behaviour; the default 3 buys tolerance of a transient boot
+    # failure (a sensor that fails to initialise on a long cable is already documented in this
+    # project) at the cost of one reboot per extra attempt on an image that is genuinely bad.
+    max_attempts: int = 3
     overrides: dict[str, dict] = field(default_factory=dict)
 
 
@@ -54,6 +71,24 @@ def load_config(path: Path) -> OtaConfig:
     return parse_config(text, path.parent.name)
 
 
+def _max_attempts(ota: dict) -> int:
+    """``[ota].max_attempts``, validated. Must be at least 1 -- zero would reject every image on
+    its first boot, i.e. make the device permanently un-updatable, and it is the kind of typo
+    (or clever-looking "disable trials" guess) worth catching at build time rather than in the
+    field. Capped at the attempt region's size, which is what the flash can actually record."""
+    value = ota.get("max_attempts", 3)
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise ProjectError("[ota].max_attempts must be an integer, got %r" % (value,)) from None
+    if not 1 <= value <= 64:
+        raise ProjectError(
+            "[ota].max_attempts must be between 1 and 64, got %d. 1 gives a new image a single "
+            "boot to confirm itself; more tolerates a transient boot failure at the cost of one "
+            "reboot per extra attempt on an image that is genuinely bad." % value)
+    return value
+
+
 def parse_config(text: str, default_name: str) -> OtaConfig:
     """Parse config TOML text. Used by ``load_config`` and at ``new`` time, so the
     object the digest/resolve see is exactly what was rendered to disk."""
@@ -76,6 +111,10 @@ def parse_config(text: str, default_name: str) -> OtaConfig:
         ota=bool(ota.get("enabled", False)),
         signing_key_id=int(signing_key_id) if signing_key_id is not None else None,
         account_id=str(product.get("account_id") or ""),
+        server_url=str(ota.get("server_url") or ""),
+        ca=str(ota.get("ca") or ""),
+        single_image=bool(ota.get("single_image", False)),
+        max_attempts=_max_attempts(ota),
         overrides=overrides,
     )
 
@@ -142,9 +181,28 @@ def render_config(
     if ota:
         ota_section = (
             "[ota]\n"
-            "enabled = true            # each partition holds a regular + golden image\n"
+            "enabled = true            # each partition holds two updatable images (A/B)\n"
             "signing_key_id = %d       # current OTA signing key (in keys/trusted_keys.json)\n"
-            "#                           (the app version lives in app/settings.json)\n\n"
+            "#                           (the app version lives in app/settings.json)\n"
+            "\n"
+            "# Where devices fetch updates, and what they trust. BAKED INTO THE FIRMWARE, not the\n"
+            "# romfs -- a device whose image is gone still needs both to reach the server, which is\n"
+            "# exactly the case recovery exists for.\n"
+            "# server_url = \"https://updates.example.com\"\n"
+            "# ca = \"certs/root.pem\"   # relative to the project; unset = the bundled public CAs\n"
+            "\n"
+            "# single_image = true     # OPT OUT of A/B: run one slot and buy back a full image of\n"
+            "#                           flash. The trade, which is invisible until it bites:\n"
+            "#                           a failed update then recovers by re-downloading, so a\n"
+            "#                           device that cannot reach the network needs a physical reflash.\n"
+            "#                           Otherwise this is derived -- A/B wherever two slots fit.\n"
+            "\n"
+            "# max_attempts = 3        # boots a newly-installed image gets to call confirm()\n"
+            "#                           before it is rejected and the device falls back. 1 gives\n"
+            "#                           it a single try; higher tolerates a transient boot failure\n"
+            "#                           at the cost of one reboot per extra attempt on an image\n"
+            "#                           that is genuinely bad. Retries only help a failure that\n"
+            "#                           RESETS -- a hang just hangs this many times.\n\n"
             % (signing_key_id or 0)
         )
     else:

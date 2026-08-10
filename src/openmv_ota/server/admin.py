@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from . import live as live_mod
@@ -377,7 +377,17 @@ def pin_cohort(body: CohortPin, request: Request,
 @admin.get("/fleet")
 def fleet(request: Request, product_id: int | None = None,
           principal: Principal = Depends(require_scope("observe"))):
-    return request.app.state.metastore.fleet_summary(product_id, account_id=principal.account_id)
+    from openmv_ota.ota.version import decode_app_version
+
+    summary = request.app.state.metastore.fleet_summary(product_id,
+                                                        account_id=principal.account_id)
+    # by_fallback is keyed by the packed uint32 the device reports; render it the way
+    # by_version already reads. "unknown" is the device that did not say -- a single-image
+    # board, or one on a payload from before the slots field existed.
+    summary["by_fallback"] = {
+        (decode_app_version(k) if k else "unknown"): n
+        for k, n in summary["by_fallback"].items()}
+    return summary
 
 
 @admin.get("/releases")
@@ -387,12 +397,105 @@ def releases(request: Request, product_id: int | None = None, limit: int | None 
         product_id, account_id=principal.account_id, limit=limit, offset=offset)}
 
 
+def _with_fallback_version(rows: list[dict]) -> list[dict]:
+    """Add a human-readable ``fallback_version`` beside the stored uint32.
+
+    The store keeps the packed number because that is what the device reports and what
+    comparisons need; a reader should not have to decode `16711680` in their head to answer
+    "what would this device fall back to". Absent when the device did not tell us, which is
+    deliberately distinct from a device that reported no fallback."""
+    from openmv_ota.ota.version import decode_app_version
+
+    for row in rows:
+        packed = row.get("fallback_payload_version")
+        row["fallback_version"] = decode_app_version(packed) if packed else None
+    return rows
+
+
+@admin.get("/releases/{release_id}/image")
+def release_image(release_id: str, request: Request,
+                  principal: Principal = Depends(require_scope("observe"))):
+    """Download a retained release's image -- the bytes needed to build a delta FROM it.
+
+    The server keeps every published image, and this is what that retention is for. A delta
+    must be named in the SIGNED manifest, and the server never holds signing keys, so it can
+    never generate one itself: the maker builds deltas locally and therefore needs the older
+    images. Serving them back means a build machine does not have to hoard artifacts for every
+    version still in the field -- lose the directory, re-clone the repo, or hand the release
+    to a colleague, and the bases are still there.
+
+    Account-scoped like every other release read: another account's release is a 404, not a
+    403, so this cannot be used to probe for release ids."""
+    from .errors import ServerError
+
+    st = request.app.state
+    rel = _owned(st.metastore.get_release(release_id), principal)
+    try:
+        data = st.storage.get(rel["image_key"])
+    except ServerError:
+        # The row survives its bytes: a storage lifecycle rule, a bucket migration, or a
+        # retention tier that has expired. Say so plainly -- "the release exists but its image
+        # is gone" is a different problem for the caller than "no such release".
+        raise HTTPException(status_code=404,
+                            detail="image is no longer retained") from None
+    return Response(content=data, media_type="application/gzip")
+
+
+@admin.delete("/releases/{release_id}/artifacts")
+def delete_release_artifacts(release_id: str, request: Request, force: bool = False,
+                             principal: Principal = Depends(require_scope("publish"))):
+    """Delete a release's stored objects, keeping the release ROW.
+
+    Retention has no depth limit -- images are small and cheap to keep, and a delta base is
+    only useful for as long as devices are still running that version, which only the operator
+    knows. So reclaiming space is a deliberate act, and this is it.
+
+    The row survives on purpose. It is the audit trail and the anti-rollback history, and
+    `GET /releases/{id}/image` already answers "image is no longer retained" for exactly this
+    state -- a release that existed, whose bytes are gone -- which a caller must be able to
+    tell apart from a release that never existed.
+
+    REFUSED while a rollout still points at the release, because those are the devices being
+    offered it right now: deleting the image mid-rollout turns every in-flight download into a
+    404. ``force`` is there for the case the operator means it (a rolled-back release nobody
+    should install), and it says so rather than silently allowing it."""
+    st = request.app.state
+    ms = st.metastore
+    rel = _owned(ms.get_release(release_id), principal)
+    live = [r for r in ms.rollouts_for_release(release_id, account_id=principal.account_id)
+            if r["state"] == "active"]
+    if live and not force:
+        raise HTTPException(
+            status_code=409,
+            detail="release %s is still being offered by rollout(s) %s -- pause or roll them "
+                   "back first, or pass force=true"
+                   % (release_id, ", ".join(r["rollout_id"] for r in live)))
+
+    keys = [rel["manifest_key"], rel["image_key"]]
+    keys += ["artifacts/%s/%s" % (release_id, rep["url"].rsplit("/", 1)[-1])
+             for rep in rel["representations"] if rep["format"] != "full"]
+    # Report what was actually REMOVED, not what was attempted: `delete` is idempotent on both
+    # backends (missing_ok / delete_object), so a second call would otherwise claim to have
+    # deleted the same objects again and an operator could not tell whether anything was there.
+    deleted = []
+    for key in keys:
+        if not st.storage.exists(key):
+            continue
+        st.storage.delete(key)
+        deleted.append(key)
+    ms.append_audit(actor=principal.name, action="release.artifacts.delete",
+                    entity_type="release", entity_id=release_id,
+                    data={"deleted": len(deleted), "forced": bool(force)},
+                    account_id=principal.account_id)
+    return {"release_id": release_id, "deleted": deleted}
+
+
 @admin.get("/devices")
 def devices(request: Request, product_id: int | None = None, limit: int = 100,
             cohort: str | None = None, offset: int = 0,
             principal: Principal = Depends(require_scope("observe"))):
-    return {"devices": request.app.state.metastore.list_devices(
-        product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset)}
+    return {"devices": _with_fallback_version(request.app.state.metastore.list_devices(
+        product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset))}
 
 
 @admin.post("/devices/{device_id}/viewer-grant")

@@ -1,6 +1,6 @@
 # Threat model
 
-> Stub. See [../openmv-romfs-ota-concept-plan.md](../openmv-romfs-ota-concept-plan.md)
+> Stub. See [architecture.md](architecture.md) and [v2-plan.md](v2-plan.md)
 > ("Threat model", "Out of scope", "Concept scope: explicit non-goals").
 
 **In scope:** OTA-borne threats — signed-or-unsigned artefacts pushed over a
@@ -33,8 +33,8 @@ time), a separate mechanism from image signing.
 product is namespaced by its maker's account, and the OTA server enforces that
 scope on every admin path (§ `docs/server.md`). The device's authoritative account
 is a **sticky binding**: *learned* from the first check-in that reports a non-empty
-account, then never downgraded by a later report (so a golden fallback reporting the
-golden's baked account — often `''` — can't strand a device that was healthy under a
+account, then never downgraded by a later report (so a fallback boot reporting the older
+image's baked account — often `''` — can't strand a device that was healthy under a
 real account), or set by an *admin* override.
 
 Trust assumptions, explicit because check-ins are **unauthenticated** (the device

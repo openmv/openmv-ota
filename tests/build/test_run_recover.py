@@ -160,18 +160,19 @@ def test_run_accepts_the_hook_and_defaults_to_the_old_behaviour():
 
 
 def test_generated_app_wires_its_own_bring_up_as_the_hook():
-    """The example main.py must actually pass the hook -- the library default is None, so
-    an unwired app silently keeps retrying a wedged stack forever. Re-using the SAME
-    bring-up it booted with is what makes re-creating the NIC object (the thing that
-    clears a WINC wedge) happen on the recovery path too."""
-    from pathlib import Path
+    """The SCAFFOLDED main.py must pass the hook -- the library default is None, so an
+    unwired app silently keeps retrying a wedged stack forever. Re-using the SAME bring-up
+    it booted with is what makes re-creating the NIC object (the thing that clears a WINC
+    wedge) happen on the recovery path too.
 
-    import openmv_ota
+    This used to assert against a standalone example file that `project new` did not ship,
+    so it guaranteed nothing about the app a user actually receives -- and the generated
+    one did NOT wire the hook. Pin the template itself."""
+    from openmv_ota.project.project import _APP_MAIN_OTA
 
-    main_py = (Path(openmv_ota.__file__).parent / "romfs" / "sdk" / "examples" / "main.py").read_text()
-    assert "recover=bring_up_network" in main_py
+    assert "recover=bring_up_network" in _APP_MAIN_OTA
     # And the hook must be the bring-up that CONSTRUCTS the NIC, not one that reuses a handle.
-    assert "network.WLAN(network.STA_IF)" in main_py
+    assert "network.WLAN(network.STA_IF)" in _APP_MAIN_OTA
 
 
 # --- the escalation must fire on TRANSPORT faults only ---------------------------------

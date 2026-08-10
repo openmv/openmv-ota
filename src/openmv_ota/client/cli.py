@@ -71,6 +71,24 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_coa)
     p_coa.set_defaults(func=cmd_cohort, _command="client cohort assign", action="assign")
 
+    p_bases = sub.add_parser("bases", help="download recent release images to build deltas from")
+    p_bases.add_argument("-b", "--board", required=True,
+                         help="board these bases are for (names the files)")
+    p_bases.add_argument("--product-id", type=int, help="only this product's releases")
+    p_bases.add_argument("--last", type=int, default=3,
+                         help="how many recent releases to fetch (default: 3)")
+    p_bases.add_argument("-o", "--output", default="build/bases",
+                         help="directory to write into (default: build/bases)")
+    _creds(p_bases)
+    p_bases.set_defaults(func=cmd_bases, _command="client bases")
+
+    p_prune = sub.add_parser("prune", help="delete a release's stored artifacts (keeps history)")
+    p_prune.add_argument("--release", required=True, help="release id whose objects to delete")
+    p_prune.add_argument("--force", action="store_true",
+                         help="delete even while a rollout still offers this release")
+    _creds(p_prune)
+    p_prune.set_defaults(func=cmd_prune, _command="client prune")
+
     p_bind = sub.add_parser("bind", help="bind a device to your account (re-account / recover)")
     p_bind.add_argument("--id", required=True)
     _creds(p_bind)
@@ -192,20 +210,85 @@ def _parse_rollout(spec: str):
         raise ClientError("bad --rollout %r (want cohort:percent, e.g. beta:5)" % spec) from None
 
 
+def _declared_deltas(manifest: Path, out: Path) -> dict:
+    """The delta files this manifest declares, as ``{filename: bytes}``.
+
+    Read from the SIGNED manifest rather than guessed from a filename pattern: a release now
+    ships one delta per base version, so there is no single name to look for, and the manifest
+    is the only authority on which artifacts belong to it. A declared file that is missing is
+    an error here rather than a 400 from the server, because the fix is local."""
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.manifest import DELTA_FORMAT, parse_manifest
+
+    try:
+        body = parse_manifest(manifest.read_bytes()).body
+    except OtaError as e:
+        raise ClientError("unreadable manifest %s: %s" % (manifest, e)) from None
+    deltas = {}
+    for rep in body.get("representations", []):
+        if rep.get("format") != DELTA_FORMAT:
+            continue
+        name = rep["url"].rsplit("/", 1)[-1]
+        path = out / name
+        if not path.exists():
+            raise ClientError("%s declares delta %s but %s is missing -- rebuild with "
+                              "`build ota-romfs`" % (manifest.name, name, path))
+        deltas[name] = path.read_bytes()
+    return deltas
+
+
+BASE_PREFIX = "-base-"       # <board>-base-<version>.img.gz, what `build --delta-from <dir>` picks up
+
+
+def cmd_bases(args: argparse.Namespace) -> int:
+    """Download recent release images to build deltas FROM.
+
+    A device patches against the release it is running, so a fleet mid-rollout needs one delta
+    base per version still out there. Those bases are the published images, and the server
+    keeps them -- so a build machine does not have to. This pulls the most recent N back into
+    a directory that `build ota-romfs --delta-from <dir>` reads directly."""
+    try:
+        cfg = config.resolve(args.server, args.token)
+        api = _make_api(cfg)
+        out = Path(args.output)
+        out.mkdir(parents=True, exist_ok=True)
+        releases = api.releases(args.product_id, limit=args.last)["releases"]
+        if not releases:
+            raise ClientError("no retained releases to use as delta bases")
+        for rel in releases:
+            path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, rel["version"]))
+            path.write_bytes(api.release_image(rel["release_id"]))
+            print("%s  (%s, %d bytes)" % (path, rel["version"], path.stat().st_size))
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return 0
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    """Delete a release's stored objects. The release row (audit + version history) stays."""
+    try:
+        cfg = config.resolve(args.server, args.token)
+        res = _make_api(cfg).delete_release_artifacts(args.release, force=args.force)
+        print("deleted %d object(s) for %s" % (len(res["deleted"]), res["release_id"]))
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return 0
+
+
 def cmd_publish(args: argparse.Namespace) -> int:
     try:
         cfg = config.resolve(args.server, args.token)
         out = Path(args.output) if args.output else Path(args.project) / "build"
         manifest = out / ("%s-manifest.bin" % args.board)
         image = out / ("%s-ota.img.gz" % args.board)
-        delta = out / ("%s-ota.delta.gz" % args.board)
         if not manifest.exists() or not image.exists():
             raise ClientError("no built release for %s in %s -- run `build ota-romfs` first"
                               % (args.board, out))
         api = _make_api(cfg)
         res = api.publish_release(manifest.read_bytes(), image.read_bytes(),
-                                  delta.read_bytes() if delta.exists() else None,
-                                  args.allow_republish)
+                                  _declared_deltas(manifest, out), args.allow_republish)
         print("published %s  version %s  (%s)" % (res["release_id"], res.get("version"),
                                                   ", ".join(res["representations"])))
         if args.rollout:

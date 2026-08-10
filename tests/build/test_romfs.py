@@ -497,18 +497,42 @@ def test_factory_build_composes_dual_slot(make_project):
                                       compile_py=False, convert_models=False)[0]
     assert r.output.name == "OPENMV_N6-factory-romfs.img" and r.bound == "factory slot"
     img = r.output.read_bytes()
-    assert len(img) == target.partition_size  # the whole partition
+    slot = target.front_size
+    assert len(img) == 2 * slot            # two EQUAL slots (one image must fit either)
 
     block = geometry.ota_block(target.erase_size)
-    front, part = target.front_size, target.partition_size
-    # both slots carry the same golden body, factory-signed
-    assert parse_trailer(img[front - block:]).product_id == 7        # FRONT trailer
-    assert parse_trailer(img[part - block:]).product_id == 7         # BACK trailer
+    # both slots carry the same body, factory-signed
+    assert parse_trailer(img[slot - block:]).product_id == 7           # slot A trailer
+    assert parse_trailer(img[2 * slot - block:]).product_id == 7       # slot B trailer
 
-    fs = img[front - 2 * block: front - block]                     # FRONT status sector
-    bs = img[part - 2 * block: part - block]                       # BACK status sector
-    assert (fs[0:16], fs[16:32], fs[32:48]) == (status.PENDING, status.TRIED, status.CONFIRMED)
-    assert (bs[0:16], bs[16:32], bs[32:48]) == (b"\xff" * 16, b"\xff" * 16, status.CONFIRMED)
+    a = img[slot - 2 * block: slot - block]                           # slot A status sector
+    b = img[2 * slot - 2 * block: 2 * slot - block]                   # slot B status sector
+    # v2: no golden shape. BOTH slots ship CONFIRMED and are told apart by ONE number, the
+    # install counter -- A higher, so A boots and B is what the first update overwrites.
+    for sector in (a, b):
+        assert (sector[0:16], sector[16:32], sector[32:48]) == (
+            b"\xff" * 16, b"\xff" * 16, status.CONFIRMED)
+    co, cn = status.COUNTER_OFFSET, status.COUNTER_SIZE
+    assert a[co:co + cn] == status.encode_counter(2)
+    assert b[co:co + cn] == status.encode_counter(1)
+
+
+def test_provision_slots_by_mode():
+    """A/B lays down the SAME image twice with different counters, so a device has a fallback
+    from its first boot; the counters (not the position) decide which one runs and which one the
+    first update overwrites. SINGLE lays down one slot spanning the partition."""
+    from openmv_ota.ota import geometry
+
+    assert build_mod.provision_slots(12 * 1024 * 1024, 4096) == [(6 * 1024 * 1024, 2),
+                                                                 (6 * 1024 * 1024, 1)]
+    # one-sector board -> one slot, the whole partition
+    assert build_mod.provision_slots(128 * 1024, 128 * 1024) == [(128 * 1024, 1)]
+    # ...and the explicit opt-out gets the same shape on a board that COULD do A/B
+    assert build_mod.provision_slots(12 * 1024 * 1024, 4096, single_image=True) == [
+        (12 * 1024 * 1024, 1)]
+    with pytest.raises(ValueError, match="cannot host OTA"):
+        build_mod.provision_slots(4096, 4096)
+    assert geometry.derive_mode(4096, 4096) is None
 
 
 def test_factory_signed_by_factory_key(make_project):
@@ -523,7 +547,7 @@ def test_factory_signed_by_factory_key(make_project):
     r = build_mod.build_factory_romfs(root, app=app, firmware=repo,
                                       compile_py=False, convert_models=False)[0]
     block = geometry.ota_block(target.erase_size)
-    sector = r.output.read_bytes()[target.partition_size - block:]  # BACK trailer
+    sector = r.output.read_bytes()[2 * target.front_size - block:]  # slot B trailer
     t = parse_trailer(sector)
     entry = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
                  if k.key_id == t.key_id)
@@ -611,19 +635,22 @@ def test_signer_pubkey_must_match_trusted(make_project):
                                       compile_py=False, convert_models=False)
 
 
-def test_factory_refuses_unset_account(make_project):
-    # the golden is permanent, so refuse to burn an accountless one unless it's on purpose
+def test_factory_warns_on_unset_account(make_project, capsys):
+    """v1 REFUSED this: the golden slot was permanent, so an accountless golden was baked for
+    the life of the device and would strand it on fallback. Under A/B both slots are updatable
+    and an account can be introduced by a later release, so the honest gate is a warning."""
     root, repo, app = _build_ota(make_project, account="")
-    with pytest.raises(BuildError, match="no account_id set"):
-        build_mod.build_factory_romfs(root, app=app, firmware=repo,
-                                      compile_py=False, convert_models=False)
+    r = build_mod.build_factory_romfs(root, app=app, firmware=repo,
+                                      compile_py=False, convert_models=False)[0]
+    assert r.output.exists()
+    assert "no account_id set" in capsys.readouterr().err
 
 
 def test_factory_no_account_flag_allows_unset(make_project):
     root, repo, app = _build_ota(make_project, account="")
     r = build_mod.build_factory_romfs(root, app=app, firmware=repo, no_account=True,
                                       compile_py=False, convert_models=False)[0]
-    assert r.output.name == "OPENMV_N6-factory-romfs.img"   # explicit self-host golden is fine
+    assert r.output.name == "OPENMV_N6-factory-romfs.img"   # explicit self-host build is fine
 
 
 def test_factory_coprocessor_is_plain(make_project):
@@ -670,7 +697,7 @@ def test_factory_body_too_big(monkeypatch, make_project):
     target = load_project(root, firmware=repo).board("OPENMV_N6")
     front_cap = target.front_size - geometry.slot_overhead(target.erase_size)
     monkeypatch.setattr(build_mod, "build_image", lambda *a, **k: b"\x00" * (front_cap + 1))
-    with pytest.raises(BuildError, match="factory slot holds"):
+    with pytest.raises(BuildError, match="a slot holds"):
         build_mod.build_factory_romfs(root, app=app, firmware=repo,
                                       compile_py=False, convert_models=False)
 
@@ -960,7 +987,7 @@ def test_build_ota_romfs_relative_default(make_project):
     from openmv_ota.ota.manifest import parse_manifest
     root, repo = _build_n6_ota_bundle(make_project)
     [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
-    assert r.image.name == "OPENMV_N6-ota.img.gz" and r.delta is None
+    assert r.image.name == "OPENMV_N6-ota.img.gz" and r.deltas == []
     body = parse_manifest(r.manifest.read_bytes()).body
     assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"   # relative filename
 
@@ -972,20 +999,82 @@ def test_build_ota_romfs_with_delta_from_file(make_project):
     root, repo = _ota_project_with_factory(make_project)
     factory = root / "build" / "OPENMV_N6-factory-romfs.img"
     [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=factory, compile_py=False, convert_models=False)
-    assert r.delta is not None and r.delta.name == "OPENMV_N6-ota.delta.gz"
+    # named for the base it patches FROM, because a release may now ship several
+    assert [d.name for d in r.deltas] == ["OPENMV_N6-ota.delta-1.0.0.gz"]
 
     body = parse_manifest(r.manifest.read_bytes()).body
     assert {rep["format"] for rep in body["representations"]} == {"full", "ocdl"}
-    # the delta reconstructs the new image from the factory BACK slot (what the device reads)
+    # THE BASE IS THE BODY REGION, not the whole slot: the control sectors hold per-device
+    # state (install counter, rollback entries, attempts, CONFIRMED), so a delta that could
+    # copy from them would reconstruct differently on every device.
     import gzip
+
+    from openmv_ota.ota import geometry
     t = load_project(root, firmware=repo).board("OPENMV_N6")
-    back = factory.read_bytes()[t.front_size:]
+    slot = t.front_size
+    base_body = factory.read_bytes()[slot:slot + geometry.delta_base_len(slot, t.erase_size)]
     new_img = gzip.decompress((root / "build" / "OPENMV_N6-ota.img.gz").read_bytes())
-    assert apply_delta(back, gzip.decompress(r.delta.read_bytes())) == new_img
-    # the delta rep's base matches the factory golden's version, so a device on it picks delta
+    assert apply_delta(base_body, gzip.decompress(r.deltas[0].read_bytes())) == new_img
+    # the delta rep's base matches the provisioned version, so a device on it picks delta
     ocdl = next(rep for rep in body["representations"] if rep["format"] == "ocdl")
     assert select_representation(body, delta_capable=True,
                                golden_payload_version=ocdl["base_payload_version"])["format"] == "ocdl"
+
+
+def test_build_ota_romfs_publishes_one_delta_per_base(make_project):
+    """Under A/B a device's delta base is the release it is RUNNING, so a fleet mid-rollout is
+    spread across versions and a single base reaches only the devices still on it. Measured
+    before this: running 1.0.0 took the 5 KB delta, running anything else took the 900 KB full
+    image. So --delta-from is repeatable and the manifest carries one ocdl rep per base."""
+    from openmv_ota.ota.manifest import parse_manifest, select_representation
+    from openmv_ota.ota.version import encode_app_version
+
+    root, repo = _ota_project_with_factory(make_project)
+    factory = root / "build" / "OPENMV_N6-factory-romfs.img"
+    # publish 1.1.0 with a delta from the provisioned 1.0.0, keeping its image as a base
+    [r1] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=factory,
+                                     compile_py=False, convert_models=False)
+    prev = root / "build" / "prev-1.1.0-ota.img.gz"
+    prev.write_bytes(r1.image.read_bytes())
+
+    # ...then 1.2.0 with BOTH bases: the provisioned image and the release before it
+    (root / "app" / "settings.json").write_text(
+        '{"app_version": "1.2.0", "vendor": "", "rollback_floor": "1.0.0"}\n')
+    [r2] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=[factory, prev],
+                                     compile_py=False, convert_models=False)
+    assert sorted(d.name for d in r2.deltas) == [
+        "OPENMV_N6-ota.delta-1.0.0.gz", "OPENMV_N6-ota.delta-1.1.0.gz"]
+
+    body = parse_manifest(r2.manifest.read_bytes()).body
+    bases = {rep["base_payload_version"] for rep in body["representations"]
+             if rep["format"] == "ocdl"}
+    assert bases == {encode_app_version("1.0.0"), encode_app_version("1.1.0")}
+    # and a device on EITHER version now picks a delta rather than the full image
+    for v in ("1.0.0", "1.1.0"):
+        rep = select_representation(body, delta_capable=True,
+                                    golden_payload_version=encode_app_version(v))
+        assert rep["format"] == "ocdl"
+    # a device on a version nobody published a base for still gets the full image
+    assert select_representation(body, delta_capable=True,
+                                 golden_payload_version=encode_app_version("0.9.0"))[
+        "format"] == "full"
+
+
+def test_build_ota_romfs_dedupes_bases_of_the_same_version(make_project):
+    """Two files can name the same version -- e.g. the provisioning image and a copy of the
+    release built from it. One rep per base version, or the device would see two deltas it
+    cannot choose between."""
+    from openmv_ota.ota.manifest import parse_manifest
+
+    root, repo = _ota_project_with_factory(make_project)
+    factory = root / "build" / "OPENMV_N6-factory-romfs.img"
+    copy = root / "build" / "same-version-copy.img"
+    copy.write_bytes(factory.read_bytes())
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=[factory, copy],
+                                    compile_py=False, convert_models=False)
+    assert len(r.deltas) == 1
+    body = parse_manifest(r.manifest.read_bytes()).body
+    assert len([x for x in body["representations"] if x["format"] == "ocdl"]) == 1
 
 
 def test_build_ota_romfs_delta_from_dir(make_project):
@@ -1003,8 +1092,8 @@ def test_build_ota_romfs_delta_dir_missing_golden_warns(make_project, tmp_path, 
     empty = tmp_path / "no-goldens"
     empty.mkdir()
     [r] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=empty, compile_py=False, convert_models=False)
-    assert r.delta is None                                  # no golden -> full image only
-    assert "no factory golden" in capsys.readouterr().err
+    assert r.deltas == []                                   # no base -> full image only
+    assert "no delta base" in capsys.readouterr().err
     body = parse_manifest(r.manifest.read_bytes()).body
     assert {rep["format"] for rep in body["representations"]} == {"full"}
 
@@ -1021,7 +1110,7 @@ def test_build_ota_romfs_delta_from_bad_factory(make_project):
     root, repo = _build_n6_ota_bundle(make_project)
     bad = root / "build" / "OPENMV_N6-factory-romfs.img"
     bad.write_bytes(b"not a factory image" * 100)
-    with pytest.raises(BuildError, match="not a usable factory image"):
+    with pytest.raises(BuildError, match="not a usable delta base"):
         build_mod.build_ota_romfs(root, firmware=repo, delta_from=root / "build", compile_py=False, convert_models=False)
 
 
@@ -1045,7 +1134,7 @@ def test_build_ota_romfs_auto_resolves_golden_from_ledger(make_project):
     root, repo = _ota_project_with_factory(make_project)
     assert ledger.golden_for(root, "OPENMV_N6") is not None
     [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
-    assert r.delta is not None                              # auto-resolved -> delta built
+    assert len(r.deltas) == 1                               # auto-resolved -> delta built
     body = parse_manifest(r.manifest.read_bytes()).body
     assert {rep["format"] for rep in body["representations"]} == {"full", "ocdl"}
 
@@ -1089,8 +1178,8 @@ def test_build_ota_romfs_warns_when_recorded_golden_missing(make_project, capsys
     root, repo = _ota_project_with_factory(make_project)
     (root / "build" / "OPENMV_N6-factory-romfs.img").unlink()   # golden recorded but gone
     [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
-    assert r.delta is None                                  # full image only
-    assert "recorded golden is missing" in capsys.readouterr().err
+    assert r.deltas == []                                   # full image only
+    assert "recorded provisioning image is missing" in capsys.readouterr().err
 
 
 def test_build_factory_romfs_golden_path_outside_root(make_project, tmp_path):

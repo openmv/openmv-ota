@@ -59,7 +59,7 @@ _MIGRATIONS: list[list[str]] = [
             version TEXT NOT NULL, payload_version INTEGER NOT NULL,
             min_platform_version INTEGER NOT NULL DEFAULT 0,
             image_sha256 TEXT NOT NULL, image_size INTEGER NOT NULL, representations TEXT NOT NULL,
-            manifest_key TEXT NOT NULL, image_key TEXT NOT NULL, delta_key TEXT,
+            manifest_key TEXT NOT NULL, image_key TEXT NOT NULL, delta_key TEXT,  -- delta_key: unused since a release carries N deltas, keyed by name
             key_id INTEGER, uploaded_by TEXT, uploaded_at TEXT NOT NULL)""",
         """CREATE TABLE rollouts (
             rollout_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, product_id INTEGER NOT NULL,
@@ -152,6 +152,14 @@ _MIGRATIONS: list[list[str]] = [
         # The camera grant already uses them; persisting lets a *viewer* grant enumerate a device's
         # panes without waiting for the device to be online, which is what a dashboard needs.
         "ALTER TABLE devices ADD COLUMN streams TEXT NOT NULL DEFAULT ''",
+    ],
+    [   # v11 -- what the device would fall back to (A/B). The columns above describe the image
+        # that is RUNNING; an operator watching a rollout needs the other half: a fleet where every
+        # device's fallback is the previous release is in a very different position from one where
+        # half the devices have no second image at all. NULL means the device did not say --
+        # a single-image board, or a payload from before the slots field existed -- which is
+        # deliberately distinct from "reported no fallback".
+        "ALTER TABLE devices ADD COLUMN fallback_payload_version INTEGER",
     ],
 ]
 
@@ -274,6 +282,16 @@ class SqlMetadataStore:
             params = (*params, limit, offset)
         return [_d(r) for r in self.query_all(sql, params)]
 
+    def rollouts_for_release(self, release_id: str, account_id=None) -> list[dict]:
+        """Every rollout pointing at a release. The guard on deleting its artifacts: a rollout
+        that is still offering a release has devices mid-download of it."""
+        sql = "SELECT * FROM rollouts WHERE release_id = ?"
+        params: tuple = (release_id,)
+        if account_id is not None:
+            sql += " AND account_id = ?"
+            params = (*params, account_id)
+        return [_d(r) for r in self.query_all(sql, params)]
+
     def update_rollout(self, rollout_id: str, **fields) -> None:
         fields = {**fields, "updated_at": _now_iso()}       # column names are code-controlled
         assigns = ", ".join(k + " = ?" for k in fields)
@@ -292,27 +310,34 @@ class SqlMetadataStore:
                       current_version=None, current_payload_version=None, slot=None,
                       representation=None, fallback_reason=None, confirmed=None,
                       last_offered_release_id=None, registrar_ref=None, account_id="",
-                      streams=None) -> None:
+                      streams=None, fallback_payload_version=None) -> None:
         now = _now_iso()
         if self.query_one("SELECT 1 FROM devices WHERE device_id = ?", (device_id,)) is None:
             self.execute(
                 "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
                 "current_payload_version, slot, representation, fallback_reason, confirmed, "
-                "last_offered_release_id, registrar_ref, account_id, streams, first_seen, "
-                "last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "last_offered_release_id, registrar_ref, account_id, streams, "
+                "fallback_payload_version, first_seen, last_seen) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (device_id, product_id, board, cohort, current_version, current_payload_version,
                  slot, representation, fallback_reason, confirmed, last_offered_release_id,
-                 registrar_ref, account_id, ",".join(streams or ()), now, now))
+                 registrar_ref, account_id, ",".join(streams or ()), fallback_payload_version,
+                 now, now))
         else:                                               # cohort is admin-controlled, not by check-in
             self.execute(
                 "UPDATE devices SET product_id = ?, board = ?, current_version = ?, "
                 "current_payload_version = ?, slot = ?, representation = ?, fallback_reason = ?, "
                 "confirmed = ?, last_offered_release_id = COALESCE(?, last_offered_release_id), "
                 "registrar_ref = COALESCE(?, registrar_ref), account_id = ?, "
-                "streams = COALESCE(?, streams), last_seen = ? WHERE device_id = ?",
+                "streams = COALESCE(?, streams), "
+                # COALESCE: a device that stops reporting slots (or never did) keeps whatever it
+                # last told us, rather than having its fallback silently blanked.
+                "fallback_payload_version = COALESCE(?, fallback_payload_version), "
+                "last_seen = ? WHERE device_id = ?",
                 (product_id, board, current_version, current_payload_version, slot, representation,
                  fallback_reason, confirmed, last_offered_release_id, registrar_ref, account_id,
-                 ",".join(streams) if streams else None, now, device_id))
+                 ",".join(streams) if streams else None, fallback_payload_version,
+                 now, device_id))
 
     def get_device(self, device_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
@@ -356,14 +381,36 @@ class SqlMetadataStore:
         return [_d(r) for r in rows]
 
     def fleet_summary(self, product_id: int | None = None, account_id=None) -> dict:
+        """What an operator wants to know about a fleet mid-rollout.
+
+        v1 reported `by_slot`, which answered "how many devices are on golden" -- i.e. how many
+        updates had failed -- because FRONT and BACK meant something. Under A/B a slot name is
+        just which half of flash a device happens to be running from, and counting it says
+        nothing at all. The same question now has better answers:
+
+          fell_back    -- devices whose last boot REJECTED a slot. The direct rollout alarm.
+          unconfirmed  -- devices running an image that has not confirmed itself yet. They are
+                          mid-trial, so they are also the devices deferring further updates.
+          by_fallback  -- what the fleet would fall back TO. A rollout where every device has
+                          the previous release behind it is in a very different position from
+                          one where half of them report nothing, and that is invisible in
+                          by_version."""
         where, params = _scope(account_id, product_id)
+        and_ = (where + " AND ") if where else "WHERE "
         by_version = {r["current_version"]: r["n"] for r in self.query_all(
             "SELECT current_version, COUNT(*) AS n FROM devices " + where
             + " GROUP BY current_version", params)}
-        by_slot = {r["slot"]: r["n"] for r in self.query_all(
-            "SELECT slot, COUNT(*) AS n FROM devices " + where + " GROUP BY slot", params)}
+        by_fallback = {r["fallback_payload_version"]: r["n"] for r in self.query_all(
+            "SELECT fallback_payload_version, COUNT(*) AS n FROM devices " + where
+            + " GROUP BY fallback_payload_version", params)}
         total = self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
-        return {"total": total, "by_version": by_version, "by_slot": by_slot}
+        fell_back = self.query_one(
+            "SELECT COUNT(*) AS n FROM devices " + and_ + "fallback_reason IS NOT NULL",
+            params)["n"]
+        unconfirmed = self.query_one(
+            "SELECT COUNT(*) AS n FROM devices " + and_ + "confirmed = 0", params)["n"]
+        return {"total": total, "by_version": by_version, "by_fallback": by_fallback,
+                "fell_back": fell_back, "unconfirmed": unconfirmed}
 
     def list_cohorts(self, product_id: int | None = None, account_id=None) -> list[dict]:
         """The cohorts in use (per board), with a device count each."""

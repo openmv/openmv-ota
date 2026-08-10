@@ -46,6 +46,8 @@ DEVICE_FILES = [
     os.path.join(DEVICE, "openmv_ota/data/installer.py"),
     os.path.join(DEVICE, "openmv_rtc.py"),
     os.path.join(DEVICE, "openmv_log.py"),
+    os.path.join(DEVICE, "openmv_netcfg.py"),
+    os.path.join(DEVICE, "openmv_recovery.py"),
 ]
 _LOGCALL = re.compile(r"\.(?:info|debug|warning|error)\(")
 
@@ -62,7 +64,7 @@ def _import_coverage_map():
 
 def _prefixes(s):
     """Progressively shorter word-boundary prefixes of a marker, longest first -- so a runtime
-    marker ('boot: mounted FRONT') falls back to the literal head of its format string
+    marker ('boot: mounted A') falls back to the literal head of its format string
     ('boot: mounted %s' -> matches on 'boot: mounted')."""
     words = s.split(" ")
     for i in range(len(words), 0, -1):
@@ -113,7 +115,7 @@ def build(trace_dir):
     loc = {}
     for sub, mid in cov.items():
         rel, ln = find_source(sub)
-        # keep the first (a marker_id can have >1 substring; boot.mount.front/back share a line)
+        # keep the first (a marker_id can have >1 substring; the XIP/block-device pairs do)
         loc.setdefault(mid, (sub, rel, ln))
     # marker_id -> {scenarios that hit it}
     hit = {}

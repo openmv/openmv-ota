@@ -2,7 +2,7 @@
 
 ``build romfs`` emits a single trailer (in a ``.zip`` bundle, or as a loose
 ``trailer.bin``); ``build factory-romfs`` emits a full dual-slot partition image --
-FRONT then BACK, each ``body || 0xFF pad || status || trailer`` with the trailer in
+slot A then slot B, each ``body || 0xFF pad || status || trailer`` with the trailer in
 the last erase block of its slot. These helpers find each slot's trailer by
 scanning block-aligned offsets for the magic and CRC-validating it, so ``inspect``
 and ``verify`` can work on a factory image with no project context.
@@ -36,9 +36,13 @@ def find_trailers(image: bytes, step: int = SCAN_STEP) -> list[tuple[int, Traile
 
 
 def slot_labels(n: int) -> list[str]:
-    """Human labels for ``n`` trailers found in an image: ``FRONT``/``BACK`` for a
-    two-slot factory image, ``image`` for each trailer otherwise."""
-    return ["FRONT", "BACK"] if n == 2 else ["image"] * n
+    """Human labels for ``n`` trailers found in an image: ``A``/``B`` for a two-slot
+    provisioning image, ``image`` for each trailer otherwise.
+
+    A and B, not FRONT and BACK: under v2 neither slot is privileged -- both are real,
+    updatable images, and which one boots is decided by the install counter rather than by
+    the slot's position. The old names described a role that no longer exists."""
+    return ["A", "B"] if n == 2 else ["image"] * n
 
 
 def slots(image: bytes, step: int = SCAN_STEP) -> list[tuple[str, bytes, bytes]]:
