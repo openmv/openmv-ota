@@ -193,9 +193,16 @@ def test_create_ota_scaffolds_runtime_lib_with_coprocessor_data(tmp_path, make_f
     root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, ota_keys=2, factory_keys=1)
     lib = proj.ProjectPaths(root).app_dir / "lib" / "openmv_ota"
     assert (lib / "__init__.py").exists()
-    # the installer + CA bundle are scaffolded for every OTA board
+    # the installer is scaffolded for every OTA board; the CA bundle is NOT (it is frozen)
     assert "def run(" in (lib / "data" / "installer.py").read_text()
-    assert (lib / "data" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()
+    # THE TRUST STORE IS NOT IN THE ROMFS. It is frozen into the firmware as device/openmv_ca.py
+    # -- it was 58% of the app image, and the romfs is duplicated under A/B so the slot paid for
+    # it twice (and a single-image board could not fit it at all).
+    assert not (lib / "data" / "ca.pem").exists()
+    ca_mod = root / "device" / proj.CA_MODULE
+    ns = {}
+    exec(compile(ca_mod.read_text(), "openmv_ca.py", "exec"), ns)
+    assert ns["PEM"] == proj._fetch_ca_bundle()
     res = json.loads((lib / "data" / "resources.json").read_text())
     assert res[0]["handler"] == "partition" and res[0]["partition"] == 1
     read_image((lib / "data" / "coprocessor.romfs").read_bytes())   # valid romfs, no raise
@@ -203,7 +210,7 @@ def test_create_ota_scaffolds_runtime_lib_with_coprocessor_data(tmp_path, make_f
 
 def test_create_ota_runtime_lib_no_coprocessor_data_without_coprocessor(
         tmp_path, make_firmware, make_sdk):
-    # A plain OTA board still gets data/ for the installer + CA bundle, but no
+    # A plain OTA board still gets data/ for the installer, but no
     # coprocessor resource (nothing to sync).
     root, _ = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV_N6"],
                       ota=True, ota_keys=2, factory_keys=1)
@@ -214,7 +221,10 @@ def test_create_ota_runtime_lib_no_coprocessor_data_without_coprocessor(
     assert "class CSI" in (lib.parent / "openmv_cloud" / "csi.py").read_text()
     assert (lib.parent / "openmv_cloud" / "__init__.py").exists()
     assert "def run(" in (data / "installer.py").read_text()
-    assert (data / "ca.pem").read_bytes() == proj._fetch_ca_bundle()  # the stubbed bundle
+    assert not (data / "ca.pem").exists()          # frozen into the firmware instead
+    ns = {}
+    exec(compile((root / "device" / proj.CA_MODULE).read_text(), "openmv_ca.py", "exec"), ns)
+    assert ns["PEM"] == proj._fetch_ca_bundle()   # the stubbed bundle
     assert not (data / "coprocessor.romfs").exists()
     assert not (data / "resources.json").exists()
 

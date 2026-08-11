@@ -6,6 +6,7 @@ import shutil
 import types
 
 from openmv_ota.build import romfs as build_mod
+from openmv_ota.ota import geometry
 from openmv_ota.build.errors import BuildError
 from openmv_ota.ota import geometry
 from openmv_ota.romfs.builder import read_image
@@ -244,7 +245,9 @@ def test_build_keeps_installer_strips_coprocessor_data_for_plain_board(make_proj
     paths = {p for p, _ in read_image(body).walk()}
     assert "lib/openmv_ota/__init__.py" in paths
     assert "lib/openmv_ota/data/installer.py" in paths
-    assert "lib/openmv_ota/data/ca.pem" in paths
+    # The trust store moved into the firmware (frozen openmv_ca), so the romfs must NOT carry
+    # it -- that is the whole ~186 KB saving, and under A/B it is saved in both slots.
+    assert "lib/openmv_ota/data/ca.pem" not in paths
     assert "lib/openmv_ota/data/coprocessor.romfs" not in paths
     assert "lib/openmv_ota/data/resources.json" not in paths
 
