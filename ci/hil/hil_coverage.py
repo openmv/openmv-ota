@@ -48,6 +48,10 @@ DEVICE_FILES = [
     os.path.join(DEVICE, "openmv_log.py"),
     os.path.join(DEVICE, "openmv_netcfg.py"),
     os.path.join(DEVICE, "openmv_recovery.py"),
+    # openmv_wdt emits one marker -- "wdt: armed <window>", the witness that a watchdog is
+    # REALLY running. The watchdog scenario requires it, because "the install survived" only
+    # implies the watchdog behaved IF one was armed at all.
+    os.path.join(DEVICE, "openmv_wdt.py"),
 ]
 _LOGCALL = re.compile(r"\.(?:info|debug|warning|error)\(")
 

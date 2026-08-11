@@ -42,3 +42,36 @@ apt-get install -y git python3 python3-venv curl tar openssl build-essential
 ```
 
 Then the OTA workflow self-provisions the rest on its next run.
+
+## Adding a board to the bench
+
+Three things have to line up, and a board is invisible to the gate until all three do.
+
+1. **A `BOARDS` entry** in `ci/hil/ota_cycle.py`. Per-board facts, none of which can be guessed
+   from the board name:
+   - `cov_uart` — which UART the coverage markers come out of, wired to the node's
+     `/dev/ttyUSB*` bridge. **This is the one that silently costs a day**: with no bridge (or the
+     wrong UART) every leg dies in 2s on `could not open port /dev/ttyUSB0` and the board is not
+     exercised at all, which reads as a failure rather than an absence.
+   - `cov_write` — `install.xip` (stm32/alif/samd, memory-mapped romfs) or `install.blockdev`
+     (mimxrt). This picks the write model, so getting it wrong fails everything.
+   - `network` — the board's PRIMARY interface; a secondary one runs `delta` only.
+   - `flash` — how golden is flashed: `dfu_cli` (OpenMV DFU), `blhost_imx` (mimxrt SBL), etc.
+   - `jlink_device` — only for boards where SWD is used to reset a wedged DFU. Never to flash.
+2. **A leg in `.github/workflows/hil-ota.yml`** (`plan.legs`) with the runner `label`, plus a
+   self-hosted runner registered with that label.
+3. **`regression_scenarios()`** — what that board+network runs. Boards differ: `no_slot` is
+   block-device only, `coproc*` is AE3 only, and a **single-image board has no fallback slot**,
+   so any scenario whose expectation is "falls back to the other slot" does not apply to it.
+
+### Single-image boards specifically (M4 / M7 / H7 classic)
+
+Their partition holds one image and its control sectors, so `derive_mode` returns `SINGLE` and
+`boot.OtaBoot._slots()` yields one slot spanning the partition. The consequence that shapes the
+scenario list: **a rejected image is terminal, not a fallback.** `boot.run()` raises
+`OtaReject('no-slot:...')` and the device hands to firmware-resident recovery, which re-downloads
+until something works. So `rollback` and anything else asserting `boot.fallback` is meaningless
+there, while the negative paths that must still hold are the ones that refuse *before* erasing
+(`bad_sig`, `bad_key`, `bad_version`) — on one slot, verify-before-flash is the entire safety
+story. Both halves are emulated in `ci/qemu_boot_test.py` ("SINGLE mode: ..."), so the mode is
+covered before any of these boards is on a bench.

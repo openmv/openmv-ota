@@ -14,12 +14,17 @@
 #                              verify the OTA bundle (bundle and loose
 #                              body+trailer); a corrupted body must FAIL verify;
 #                              the factory image is the full partition.
-#   classic  (romfs, small):   project new; build firmware + single-image romfs;
-#                              `build factory-romfs` must fail cleanly (needs an
-#                              OTA project). Under v2 these boards ARE OTA-capable
+#   classic  (romfs, small):   BOTH paths, because under v2 these boards are OTA-capable
 #                              -- a partition with room for only one slot builds in
-#                              single-image mode instead of being refused -- so
-#                              `project new --ota --dev` must now SUCCEED.
+#                              SINGLE-IMAGE mode instead of being refused. So:
+#                              `project new --ota --dev` must SUCCEED, and `build romfs`
+#                              must budget against the SINGLE-image slot (the A/B
+#                              arithmetic yields a negative budget on a one-erase-sector
+#                              board). The scaffolded app does not fit these partitions,
+#                              so that build is asserted to refuse CLEANLY quoting the
+#                              real single-image budget. AND the non-OTA path still works
+#                              (project new; build firmware + single-image romfs;
+#                              `build factory-romfs` fails cleanly without an OTA project).
 #   noromfs  (no partition):   `project new` must fail cleanly (no partition size).
 #
 # Every expected failure is asserted to be a clean tool error (no Python
@@ -235,14 +240,49 @@ do_full() {  # board  work
 }
 
 do_classic() {  # board  work
-  local board="$1" work="$2" proj="$2/plain"
+  local board="$1" work="$2" proj="$2/plain" ota="$2/ota" keys zip fimg fbad
   # v2 FLIPPED THIS. Under v1 a partition with room for only one slot was refused as "not
   # OTA-capable"; v2 builds it in SINGLE-IMAGE mode instead (one slot, no fallback -- see
   # geometry.derive_mode), which is the whole point of the mode. So the assertion is now that
   # these boards are ACCEPTED. What is still refused is a partition with no room for an image
   # even in single mode, which is pure arithmetic -- and that is the `noromfs` class below.
   expect_success "project new --ota (single-image mode on a one-slot partition)" \
-    $OTA project new "$work/ota_attempt" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
+    $OTA project new "$ota" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
+  # ...and then actually BUILD it. Asserting only that the project can be created proves the
+  # capability check flipped, not that the mode produces a usable image -- and single-image is
+  # the whole reason these boards are OTA-capable at all. The artifacts are the same shape as
+  # the A/B ones (a signed bundle + a factory image that fills the partition); what differs is
+  # that there is one slot inside, which `build inspect` reports.
+  if [ "$LAST_RC" -eq 0 ]; then
+    # THE OTA FIRMWARE DOES NOT LINK ON THE H7 CLASSIC YET. Its FLASH_TEXT region is 1664 KB and
+    # the OTA firmware -- frozen boot.py + the recovery installer + mbedtls PEM parsing +
+    # ecdsa_verify -- comes to 1,736,128 bytes: 101.89%, over by 32,192. That is a firmware-size
+    # problem (being solved by trimming imlib features), not an OTA-tool one, so this ONE board
+    # skips the OTA firmware build rather than blocking every PR on it. The M4 and M7 do link it
+    # and keep asserting so -- skipping all three would quietly drop that coverage.
+    case "$board" in
+      OPENMV4)
+        echo "  [skip] build firmware (OTA) -- FLASH_TEXT overflows by ~32 KB on this board" ;;
+      *)
+        build_firmware "$ota" "$board" ;;
+    esac
+    # THE SLOT BUDGET MUST BE THE SINGLE-MODE ONE. `front_size` is an A/B concept and is 0 in
+    # SINGLE mode, so the A/B arithmetic used to report a NEGATIVE budget here ("the OTA slot
+    # holds -16384") and every image was over budget by construction -- `build romfs` could not
+    # produce an image for ANY one-erase-sector board, which is precisely the class SINGLE is for.
+    #
+    # The scaffolded app does not fit these partitions either (it carries the ~200 KB CA bundle,
+    # and an M4/H7-classic ROMFS slot holds 114688 bytes), so the honest assertion is that the
+    # refusal is CLEAN and quotes the real single-image budget -- which is also what proves the
+    # mode-aware capacity is in use, since the A/B path cannot produce that wording.
+    # --no-compile-py because the board above may have SKIPPED the firmware build, and mpy-cross
+    # is a by-product of it: without that, `build romfs` stops at "mpy-cross is not available"
+    # and never reaches the budget check this asserts. Compiling is irrelevant here anyway --
+    # what is under test is which slot size the budget is computed against.
+    expect_clean_fail "build romfs quotes the SINGLE-image slot budget (not a negative A/B one)" \
+      1 "OTA slot (single image)" \
+      $OTA build romfs "$ota" -b "$board" --allow-dev-key --no-compile-py
+  fi
 
   expect_success "project new (non-OTA)" \
     $OTA project new "$proj" -f "$FW" -b "$board" $SDK_FLAG

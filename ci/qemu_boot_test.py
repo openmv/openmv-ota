@@ -168,6 +168,21 @@ def _partition(part: int, front: int, corrupt_a=False, a_status=None) -> bytes:
     return bytes(img)
 
 
+def _single_partition(part: int, corrupt=False) -> bytes:
+    """A SINGLE-mode partition: ONE slot spanning all of it, no fallback behind it.
+
+    This is the layout the small boards get (M4/M7/H7 classic), where the partition has room
+    for one image and its control sectors and no more -- so it is also the layout where a bad
+    image is TERMINAL rather than a fall-back-and-retry. Worth emulating rather than reasoning
+    about, because the interesting half is the failure: on A/B a rejected slot is a log line,
+    here it is the whole boot."""
+    body = _vfsrom("SLOT=A")
+    img = bytearray(_slot(body, _confirmed_status(1), _trailer(body, board=0), part))
+    if corrupt:
+        img[0] ^= 0xFF                       # break the body SHA -- and there is nothing behind it
+    return bytes(img)
+
+
 # --- device-side runner scripts (pasted into the REPL via mpremote run) ------
 
 def _paths_script() -> str:
@@ -209,6 +224,36 @@ slot, tr, reason = OtaBoot(_read, (lambda a, p, s, m: True), _mnt, (lambda o, m:
 mk = open("/rom/slot_marker.txt").read().strip()
 print("SLOT", slot, "REASON", reason, "MARKER", mk)
 ''' % (part, front, BLOCK)
+    return BOOT_PY.read_text() + "\n" + runner
+
+
+def _single_script(part: int, expect_fail: bool) -> str:
+    """SINGLE mode on the emulator: ``front_size == partition_size`` is what selects it, so the
+    same OtaBoot runs with one slot spanning everything (see boot.OtaBoot._slots).
+
+    With ``expect_fail`` the only slot is corrupt, and the assertion is that boot REFUSES --
+    raising ``OtaReject('no-slot:...')`` -- rather than mounting a broken image because there is
+    nothing else to pick. That is the branch the incoming M4/M7/H7 boards depend on: under A/B a
+    rejected slot means fall back, here it means hand to firmware-resident recovery."""
+    runner = '''
+import vfs, binascii, uctypes
+_base = uctypes.addressof(vfs.rom_ioctl(2, 0))
+def _read(off, size): return uctypes.bytearray_at(_base + off, size)
+def _mnt(body):
+    try: vfs.umount("/rom")
+    except Exception: pass
+    vfs.mount(vfs.VfsRom(body), "/rom")
+_T = {0x100: binascii.unhexlify("04" + "00" * 64)}
+_b = OtaBoot(_read, (lambda a, p, s, m: True), _mnt, (lambda o, m: None),
+             %d, %d, %d, 0, _T, 0x7fffffff)
+print("SLOTS", [s[0] for s in _b._slots()], "SIZES", [s[2] for s in _b._slots()])
+try:
+    slot, tr, reason = _b.run()
+    mk = open("/rom/slot_marker.txt").read().strip()
+    print("SINGLE SLOT", slot, "REASON", reason, "MARKER", mk)
+except Exception as e:
+    print("SINGLE NOSLOT", e)
+''' % (part, part, BLOCK)                    # front == part -> SINGLE
     return BOOT_PY.read_text() + "\n" + runner
 
 
@@ -668,6 +713,20 @@ def main(argv=None) -> int:
                               _partition(part, front, a_status=_status(1, 0, 0, counter=3)),
                               _arm_fail_script(part, front)),
                 lambda o: "SLOT B REASON A:trial-arm" in o)
+        # SINGLE mode -- the shape the small boards (M4/M7/H7 classic) run, where the partition
+        # holds one image and there is no fallback behind it. Both halves matter: that the one
+        # slot mounts, and that a broken one is REFUSED rather than mounted for want of anything
+        # better. Emulated because it is otherwise only unit-tested, and the boards that will
+        # exercise it for real are not on the bench yet.
+        section("%s SINGLE mode: the only slot mounts" % board,
+                _run_scenario(fw, mpremote, board, _single_partition(part),
+                              _single_script(part, expect_fail=False)),
+                lambda o: ("SLOTS ['A']" in o
+                           and "SINGLE SLOT A REASON None MARKER SLOT=A" in o))
+        section("%s SINGLE mode: a corrupt slot has NO fallback" % board,
+                _run_scenario(fw, mpremote, board, _single_partition(part, corrupt=True),
+                              _single_script(part, expect_fail=True)),
+                lambda o: "SINGLE NOSLOT no-slot:A:body-sha" in o)
         section("%s openmv_ota runtime (status/confirm/sync)" % board,
                 _run_scenario(fw, mpremote, board, _runtime_partition(part, front),
                               _runtime_script()),

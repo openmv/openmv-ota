@@ -344,7 +344,15 @@ _FW_FEATURES = (
             "003ba9b58fb5753cd382ab739b6c5f85467ef34a",  # extmod/machine: machine.mem_backup (the core)
             "bbd0d481283e221c4ce4af277927e733d876ef4a",  # alif: enable mem_backup via backup SRAM
         ),
-        "sentinel_path": "py/mpconfig.h",
+        # SENTINEL ON THE HALF WE ACTUALLY DEPEND ON -- the ALIF one. This used to check
+        # py/mpconfig.h, the generic core define, and upstream has since merged that: the sentinel
+        # went true while `ports/alif/mpconfigport.h` still had nothing, so the prerequisite was
+        # judged carried, was never applied, and #19399 below then failed to cherry-pick and was
+        # skipped (opt-in features skip quietly). Net effect: the AE3 silently lost machine.WDT,
+        # and it surfaced only when the board's armed-watchdog app crashed on the missing
+        # attribute. A sentinel that a DIFFERENT change can satisfy is not a sentinel for this
+        # feature; check the port-specific file the dependent PR needs.
+        "sentinel_path": "ports/alif/mpconfigport.h",
         "sentinel": "MICROPY_PY_MACHINE_MEM_BACKUP",
         "required": False,
     },
@@ -404,6 +412,18 @@ def _apply_fork_fixup(mpy: Path, path: str, anchor: str, added: str) -> bool:
     raise ProjectError("fork-compat fixup anchor %r not found in %s" % (anchor, path), exit_code=1)
 
 
+def _cherry_pick_was_empty(mpy: Path) -> bool:
+    """True if the in-progress cherry-pick stopped because its change is ALREADY in the tree.
+
+    Distinguishes "upstream merged this commit" (skip it, carry on) from a real conflict (a
+    prerequisite is genuinely missing). git reports the first as a clean tree mid-cherry-pick:
+    nothing staged, nothing unmerged."""
+    out = gitrepo.run_git(mpy, "status", "--porcelain", check=False)
+    if out is None:
+        return False                              # cannot tell -> treat it as a real failure
+    return not any(line[:2].strip() and line[:2] != "??" for line in out.splitlines())
+
+
 def _carry_feature(repo: Path, mpy: Path, feat: dict) -> None:
     """Cherry-pick ``feat``'s pinned commits into lib/micropython, apply any fork-compat fixups, and
     commit the submodule bump so the checkout stays clean (the lock/verify guard refuses a dirty tree).
@@ -416,7 +436,22 @@ def _carry_feature(repo: Path, mpy: Path, feat: dict) -> None:
     if gitrepo.run_git(mpy, "cat-file", "-e", feat["commits"][-1] + "^{commit}", check=False) is None:
         gitrepo.run_git(mpy, "fetch", "--quiet", _MP_REMOTE, "pull/%s/head" % pr)
     try:
-        gitrepo.run_git(mpy, *ident, "cherry-pick", *feat["commits"])
+        # ONE COMMIT AT A TIME, TOLERATING THE ONES UPSTREAM HAS SINCE MERGED. A carry is a list of
+        # pinned SHAs, and upstream merges them one by one -- when it does, cherry-picking that SHA
+        # produces an EMPTY commit, git errors, and the whole feature aborts. Silently, for an
+        # opt-in one. That is not hypothetical: micropython merged #19084's core commit, so the
+        # alif watchdog prerequisite stopped carrying, #19399 then conflicted, and the AE3 lost
+        # machine.WDT -- which only surfaced when the board's own app crashed on it. A commit that
+        # is already in the tree is the carry SUCCEEDING early, not failing, so skip it and go on.
+        for commit in feat["commits"]:
+            try:
+                gitrepo.run_git(mpy, *ident, "cherry-pick", commit)
+            except ProjectError:
+                if not _cherry_pick_was_empty(mpy):
+                    raise
+                gitrepo.run_git(mpy, "cherry-pick", "--skip", check=False)
+                print("note: micropython#%s's %s is already upstream -- skipping that commit."
+                      % (pr, commit[:12]))
     except ProjectError as e:
         gitrepo.run_git(mpy, "cherry-pick", "--abort", check=False)   # leave the tree unwound
         if not feat["required"]:

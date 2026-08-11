@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import shutil
+import types
 
 from openmv_ota.build import romfs as build_mod
 from openmv_ota.build.errors import BuildError
+from openmv_ota.ota import geometry
 from openmv_ota.romfs.builder import read_image
 
 import pytest
@@ -1205,3 +1207,40 @@ def test_reject_unsupported_board():
     with pytest.raises(BuildError, match="no longer supported"):
         build_mod._reject_unsupported("ARDUINO_NANO_RP2040_CONNECT")
     build_mod._reject_unsupported("OPENMV4")           # supported -> no raise
+
+
+# --- _capacity: the image budget, per mode ----------------------------------
+
+class _Tgt:
+    def __init__(self, partition_size, erase_size, front_size, role="main"):
+        self.partition_size, self.erase_size = partition_size, erase_size
+        self.front_size, self.role = front_size, role
+
+
+class _Proj:
+    def __init__(self, ota=True):
+        self.config = types.SimpleNamespace(ota=ota)
+
+
+def test_capacity_uses_the_single_image_budget_on_a_one_sector_partition():
+    """A one-erase-sector partition (M4/M7/H7 classic) budgets against the WHOLE partition.
+
+    ``front_size`` is an A/B concept and is 0 in SINGLE mode, so the A/B arithmetic returned a
+    NEGATIVE budget -- OPENMV2 reported "the OTA slot holds -16384" and every image was over by
+    construction, i.e. `build romfs` could not produce an image for any of the boards SINGLE
+    exists for."""
+    cap, bound = build_mod._capacity(_Proj(), _Tgt(131072, 131072, front_size=0))
+    assert cap == 131072 - geometry.SINGLE_CONTROL_BYTES == 114688
+    assert bound == "OTA slot (single image)"
+
+
+def test_capacity_uses_the_ab_slot_budget_when_two_slots_fit():
+    front = geometry.front_size(8 << 20, 4096)
+    cap, bound = build_mod._capacity(_Proj(), _Tgt(8 << 20, 4096, front_size=front))
+    assert cap == front - geometry.slot_overhead(4096) > 0
+    assert bound == "OTA slot"
+
+
+def test_capacity_of_a_non_ota_project_is_the_whole_partition():
+    cap, bound = build_mod._capacity(_Proj(ota=False), _Tgt(131072, 131072, front_size=0))
+    assert (cap, bound) == (131072, "ROMFS partition")

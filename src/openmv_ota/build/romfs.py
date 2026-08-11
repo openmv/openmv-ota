@@ -201,9 +201,19 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_si
 
 def _capacity(project, target) -> tuple[int, str]:
     """The usable image budget for a target and the name of what bounds it. A *main*
-    OTA partition gets a slot (half the partition) less its status + trailer sectors;
-    a coprocessor partition is always a plain romfs that fills the whole partition."""
+    OTA partition gets a slot less its status + trailer sectors -- half the partition under
+    A/B, all of it under SINGLE; a coprocessor partition is always a plain romfs that fills
+    the whole partition.
+
+    MODE-AWARE, because ``front_size`` is an A/B concept. In SINGLE mode there is no
+    front/back split and ``front_size`` is 0, so the A/B arithmetic returned a NEGATIVE
+    capacity -- OPENMV2 reported "the OTA slot holds -16384" and every image was over budget
+    by construction, which is to say `build romfs` could not produce an image for any
+    one-erase-sector board. Those are exactly the boards SINGLE exists for."""
     if project.config.ota and target.role == "main":
+        if geometry.derive_mode(target.partition_size, target.erase_size) == geometry.SINGLE:
+            return (geometry.single_body_capacity(target.partition_size, target.erase_size),
+                    "OTA slot (single image)")
         return target.front_size - geometry.slot_overhead(target.erase_size), "OTA slot"
     return target.partition_size, "ROMFS partition"
 

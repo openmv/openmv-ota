@@ -724,12 +724,19 @@ def _fw_repo(tmp_path, *, name="fw", version="5.0.0", vfs=None, wdt=False):
         if wdt:
             body += "static machine_wdt_obj_t machine_wwdt = {0};\n"   # sentinel: already carried
         stm.write_text(body)
-        mpc = mpy / "py" / "mpconfig.h"                     # #19084 sentinel path (machine.mem_backup)
+        # #19084's sentinel is the ALIF half, deliberately: upstream merged the generic
+        # py/mpconfig.h define, and sentinelling on that made the prerequisite look carried while
+        # ports/alif had nothing -- which silently cost the AE3 machine.WDT. Keep the generic file
+        # present-but-unmarked so a regression back to it would fail this suite.
+        mpc = mpy / "py" / "mpconfig.h"
         mpc.parent.mkdir(parents=True)
-        mpc.write_text("#define MICROPY_PY_MACHINE_MEM_BACKUP (0)\n" if wdt else "// mpconfig\n")
+        mpc.write_text("#define MICROPY_PY_MACHINE_MEM_BACKUP (0)\n")   # upstream: always there
+        alif = mpy / "ports" / "alif" / "mpconfigport.h"    # #19084 sentinel path (the alif half)
+        alif.parent.mkdir(parents=True, exist_ok=True)
+        alif.write_text("#define MICROPY_PY_MACHINE_MEM_BACKUP (1)\n" if wdt else "// alif\n")
     if wdt:
         alif = mpy / "ports" / "alif" / "machine_wdt.c"     # #19399 sentinel: this file exists
-        alif.parent.mkdir(parents=True)
+        alif.parent.mkdir(parents=True, exist_ok=True)
         alif.write_text("// alif machine.WDT\n")
     return repo
 
@@ -745,6 +752,11 @@ def _fake_run_git(*, present=True, fail=None, fail_sha=None):
 
     def run(repo, *args, check=True):
         calls.append(list(args))
+        if "status" in args:
+            # A CONFLICTED cherry-pick leaves the tree DIRTY -- that is what tells a real
+            # conflict apart from a commit upstream already merged (which leaves it clean).
+            # Model it, or every conflict here would read as "already merged" and be skipped.
+            return "UU lib/micropython/ports/alif/mpconfigport.h\n"
         sub = next((a for a in args if a in ("cat-file", "fetch", "cherry-pick", "commit")), None)
         if sub == "cat-file":
             return "" if present else None           # run_git returns None on non-zero + check=False
@@ -824,13 +836,13 @@ def test_ota_fw_features_cherry_picks_when_absent(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(proj.gitrepo, "run_git", run)
     repo = _fw_repo(tmp_path, vfs=_NO_SENTINEL)
     proj._ensure_ota_firmware_features(repo, apply=True)
-    # every feature absent -> each: cat-file (miss) -> fetch -> cherry-pick, in order
-    n = len(proj._FW_FEATURES)
-    picks = [c for c in run.calls if "cherry-pick" in c and "--abort" not in c]
-    assert len(picks) == n
-    for feat, pick in zip(proj._FW_FEATURES, picks):   # each pick carries exactly that feature's SHAs
-        for sha in feat["commits"]:
-            assert sha in pick
+    # every feature absent -> each: cat-file (miss) -> fetch -> cherry-pick PER COMMIT, in order.
+    # Per-commit (rather than one pick carrying all of a feature's SHAs) is what lets a commit
+    # upstream has merged be skipped instead of aborting the feature -- see _carry_feature.
+    picks = [c for c in run.calls if "cherry-pick" in c and "--abort" not in c and "--skip" not in c]
+    assert len(picks) == sum(len(f["commits"]) for f in proj._FW_FEATURES)
+    expected = [sha for f in proj._FW_FEATURES for sha in f["commits"]]
+    assert [p[-1] for p in picks] == expected          # exactly those SHAs, in order
     assert "user.email=build@openmv.io" in picks[0]
     # #19350's fork-compat fixup added the H7 LL include to machine_wdt.c + made an extra commit
     assert '#include "stm32h7xx_ll_bus.h"' in (
@@ -846,7 +858,64 @@ def test_ota_fw_features_skips_fetch_when_objects_present(tmp_path, monkeypatch)
     monkeypatch.setattr(proj.gitrepo, "run_git", run)
     proj._ensure_ota_firmware_features(_fw_repo(tmp_path, vfs=_NO_SENTINEL), apply=True)
     assert "fetch" not in _subs(run.calls)             # objects already local -> no fetch
-    assert _subs(run.calls).count("cherry-pick") == len(proj._FW_FEATURES)
+    # ONE cherry-pick per COMMIT, not per feature: a carry applies its pinned SHAs one at a
+    # time so that a commit upstream has since merged (an EMPTY cherry-pick) can be skipped
+    # instead of aborting the whole feature -- which is how the alif watchdog silently stopped
+    # being carried once micropython merged its prerequisite's core commit.
+    assert (_subs(run.calls).count("cherry-pick")
+            == sum(len(f["commits"]) for f in proj._FW_FEATURES))
+
+
+def _empty_pick_run(fail_sha, status="", git_dir=True):
+    """A run_git where cherry-picking ``fail_sha`` fails and `status --porcelain` reports
+    ``status`` -- i.e. the commit is ALREADY in the tree (clean status = an empty cherry-pick)."""
+    base = _fake_run_git(fail_sha=fail_sha)
+
+    def run(repo, *args, check=True):
+        if "status" in args:
+            base.calls.append(list(args))
+            return status
+        return base(repo, *args, check=check)
+
+    run.calls = base.calls
+    return run
+
+
+def test_ota_fw_features_skips_a_commit_upstream_has_merged(tmp_path, monkeypatch, capsys):
+    """A pinned SHA upstream has since MERGED cherry-picks EMPTY. Skip that commit and carry on.
+
+    This is precisely how the alif watchdog stopped being carried without anyone noticing:
+    micropython merged the core commit of its prerequisite (#19084), the cherry-pick of that SHA
+    went empty, the whole feature aborted, #19399 then had nothing to apply onto -- and because
+    opt-in features skip quietly, the AE3 simply lost machine.WDT until its own app crashed on it."""
+    first = proj._FW_FEATURES[0]["commits"][0]
+    run = _empty_pick_run(first)
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    repo = _fw_repo(tmp_path, vfs=_NO_SENTINEL)
+
+    proj._ensure_ota_firmware_features(repo, apply=True)
+
+    subs = _subs(run.calls)
+    assert "--skip" in [a for c in run.calls for a in c]     # the empty one was skipped...
+    assert subs.count("cherry-pick") > len(proj._FW_FEATURES)  # ...and the rest still applied
+    assert "is already upstream" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", [
+    " M ports/alif/mpconfigport.h",               # a genuine conflict: the tree is dirty
+    None,                                         # cannot tell (git itself failed)
+])
+def test_ota_fw_features_still_aborts_when_not_merely_empty(tmp_path, monkeypatch, status):
+    """Only an EMPTY cherry-pick may be skipped. A real conflict -- or an unreadable status --
+    must still abort, or the carry would march past a change that never applied and leave a
+    firmware that looks patched and is not."""
+    required = proj._FW_FEATURES[0]
+    run = _empty_pick_run(required["commits"][0], status=status)
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    repo = _fw_repo(tmp_path, vfs=_NO_SENTINEL)
+
+    with pytest.raises(ProjectError, match="could not carry"):
+        proj._ensure_ota_firmware_features(repo, apply=True)
 
 
 def test_ota_fw_features_raises_and_aborts_on_conflict(tmp_path, monkeypatch):
