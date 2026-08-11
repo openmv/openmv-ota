@@ -164,10 +164,16 @@ jobs:
     # Use it ONLY for a board that has not yet earned its place (newly wired, hardware in flux);
     # a board that has passed should block, because that is the entire point of the fleet.
     continue-on-error: ${{ matrix.advisory == true }}
-    # One board at a time; never cancel a running flash/cycle.
-    concurrency:
-      group: hil-ota-${{ matrix.label }}
-      cancel-in-progress: false
+    # NO CONCURRENCY GROUP HERE, DELIBERATELY. Each board label maps to exactly ONE persistent
+    # self-hosted runner, so the runner IS the mutex: a second job for that label waits for the
+    # runner to free up. The group added nothing to that -- and it actively hurt, because GitHub
+    # keeps only ONE pending job per group and CANCELS the previous one. With two PRs open, each
+    # cancelled the other's queued legs, which reads as flaky hardware.
+    #
+    # Worse, a cancellation lands wherever the job happens to be. One landed mid-flash on the N6:
+    # the firmware was left invalid, the board dropped off USB, SWD would not connect (with VTref
+    # at 3.35V, so it was powered, not dead), and no remote lever brought it back -- it took a
+    # physical power cycle. Queuing costs a wait; cancelling costs a bench trip.
     steps:
       - uses: actions/checkout@v4
 
