@@ -1057,7 +1057,21 @@ def _resolve_ca(ca, base):  # pragma: no cover
     ``data/ca.pem``, a ``str`` -> a path to read, ``bytes`` -> used as-is. Shared so both
     entry points normalise identically (and so the read is witnessed in one place)."""
     if ca is None:
-        ca = _read_file(base + "/data/ca.pem", "rb")  # hil-residual: bundled-ca branch; the self-signed bench server can't be verified by the Mozilla bundle so it always passes an explicit CA path (str) or bytes -- _read_file itself is witnessed by asset:read on the str branch
+        # THE TRUST STORE LIVES IN THE FIRMWARE, not the romfs. Frozen, it is read straight out
+        # of flash -- no RAM copy of a ~186 KB bundle -- and it costs the slot nothing. That last
+        # part is what makes it matter: the romfs image is duplicated under A/B, so a bundle
+        # shipped there is paid for TWICE, and on a single-image board (M4/M7/H7 classic, whose
+        # whole slot is 114688 bytes) it did not fit at all. It is also the same reasoning that
+        # puts boot.py and openmv_log in the firmware: a device must be able to reach its update
+        # server even when the filesystem holding the app is the thing that is broken.
+        try:  # hil-residual: the import guard itself; both arms are witnessed (ca: frozen / the legacy read), the `try` cannot carry its own marker
+            import openmv_ca  # hil-residual: dominated by `ca: frozen` on the next line but one
+            ca = openmv_ca.PEM  # hil-residual: dominated by `ca: frozen` on the next line
+            log.debug("ca: frozen")  # hil-residual: the bench server is self-signed, so every leg passes an EXPLICIT ca (path or bytes) and none reaches the default frozen store
+        except ImportError:  # hil-residual: only a project scaffolded BEFORE the store moved reaches this; current firmware freezes openmv_ca
+            # A project scaffolded before the store moved still ships it in the romfs. Keep
+            # reading that, so an existing project keeps updating across the change.
+            ca = _read_file(base + "/data/ca.pem", "rb")  # hil-residual: legacy romfs-ca branch; the bench passes an explicit CA (self-signed server) and current firmware freezes openmv_ca, so no leg reaches it
     elif isinstance(ca, str):
         ca = _read_file(ca, "rb")
         log.debug("ca: from path")                    # HIL path witness (run() passes a CA path)
