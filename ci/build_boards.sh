@@ -275,9 +275,13 @@ do_classic() {  # board  work
     # and an M4/H7-classic ROMFS slot holds 114688 bytes), so the honest assertion is that the
     # refusal is CLEAN and quotes the real single-image budget -- which is also what proves the
     # mode-aware capacity is in use, since the A/B path cannot produce that wording.
+    # --no-compile-py because the board above may have SKIPPED the firmware build, and mpy-cross
+    # is a by-product of it: without that, `build romfs` stops at "mpy-cross is not available"
+    # and never reaches the budget check this asserts. Compiling is irrelevant here anyway --
+    # what is under test is which slot size the budget is computed against.
     expect_clean_fail "build romfs quotes the SINGLE-image slot budget (not a negative A/B one)" \
       1 "OTA slot (single image)" \
-      $OTA build romfs "$ota" -b "$board" --allow-dev-key
+      $OTA build romfs "$ota" -b "$board" --allow-dev-key --no-compile-py
   fi
 
   expect_success "project new (non-OTA)" \
