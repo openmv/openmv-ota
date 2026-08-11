@@ -17,7 +17,9 @@
 #   classic  (romfs, small):   BOTH paths, because under v2 these boards are OTA-capable
 #                              -- a partition with room for only one slot builds in
 #                              SINGLE-IMAGE mode instead of being refused. So:
-#                              `project new --ota --dev` must SUCCEED, and `build romfs`
+#                              `project new --ota` must REFUSE without a CA (the public
+#                              bundle is ~186 KB against a 114,688-byte slot) and SUCCEED with
+#                              `--ca <your root>`, which is how these boards do OTA; `build romfs`
 #                              must budget against the SINGLE-image slot (the A/B
 #                              arithmetic yields a negative budget on a one-erase-sector
 #                              board). The scaffolded app does not fit these partitions,
@@ -246,8 +248,17 @@ do_classic() {  # board  work
   # geometry.derive_mode), which is the whole point of the mode. So the assertion is now that
   # these boards are ACCEPTED. What is still refused is a partition with no room for an image
   # even in single mode, which is pure arithmetic -- and that is the `noromfs` class below.
-  expect_success "project new --ota (single-image mode on a one-slot partition)" \
-    $OTA project new "$ota" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
+  # THE PUBLIC CA BUNDLE DOES NOT FIT THESE BOARDS, so `project new --ota` refuses without one
+  # rather than scaffolding ~186 KB into a 114,688-byte slot and failing later at a linker.
+  expect_clean_fail "project new --ota refuses without a CA (the public bundle does not fit)" \
+    1 "cannot hold the public CA bundle" \
+    $OTA project new "$work/ota_noca" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
+  # ...and accepts your own server's root, which is ~1 KB and is how these boards do OTA.
+  openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=openmv-ota-ci" \
+    -keyout "$work/root.key" -out "$work/root.pem" >/dev/null 2>&1
+  expect_file "test root generated" "$work/root.pem"
+  expect_success "project new --ota --ca (single-image mode on a one-slot partition)" \
+    $OTA project new "$ota" -f "$FW" -b "$board" --ota --dev --ca "$work/root.pem" $SDK_FLAG
   # ...and then actually BUILD it. Asserting only that the project can be created proves the
   # capability check flipped, not that the mode produces a usable image -- and single-image is
   # the whole reason these boards are OTA-capable at all. The artifacts are the same shape as
@@ -266,6 +277,13 @@ do_classic() {  # board  work
       *)
         build_firmware "$ota" "$board" ;;
     esac
+    # The supplied root -- not the public bundle -- is what gets frozen into the firmware.
+    if grep -q "BEGIN CERTIFICATE" "$ota/device/openmv_ca.py" 2>/dev/null \
+       && [ "$(wc -c < "$ota/device/openmv_ca.py")" -lt 8192 ]; then
+      pass "the supplied root is the frozen trust store (not the ~186 KB bundle)"
+    else
+      fail "the supplied root is the frozen trust store" "device/openmv_ca.py missing or too big"
+    fi
     # THE SLOT BUDGET MUST BE THE SINGLE-MODE ONE. `front_size` is an A/B concept and is 0 in
     # SINGLE mode, so the A/B arithmetic used to report a NEGATIVE budget here ("the OTA slot
     # holds -16384") and every image was over budget by construction -- `build romfs` could not
