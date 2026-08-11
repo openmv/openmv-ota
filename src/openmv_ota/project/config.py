@@ -175,6 +175,7 @@ def render_config(
     boards: list[str],
     ota: bool = False,
     signing_key_id: int | None = None,
+    ca: str | None = None,
 ) -> str:
     board_list = ", ".join('"%s"' % b for b in boards)
     vendor_line = ('vendor = "%s"\n' % vendor) if vendor else '# vendor = "Acme Robotics"\n'
@@ -189,8 +190,11 @@ def render_config(
             "# romfs -- a device whose image is gone still needs both to reach the server, which is\n"
             "# exactly the case recovery exists for.\n"
             "# server_url = \"https://updates.example.com\"\n"
-            "# ca = \"certs/root.pem\"   # relative to the project; unset = the bundled public CAs\n"
-            "\n"
+            % (signing_key_id or 0)                 # binds to the literal chain above, not below
+            + (('ca = "%s"   # TLS roots for OTA downloads (relative to the project)\n' % ca)
+               if ca else
+               "# ca = \"certs/root.pem\"   # relative to the project; unset = the bundled public CAs\n")
+            + "\n"
             "# single_image = true     # OPT OUT of A/B: run one slot and buy back a full image of\n"
             "#                           flash. The trade, which is invisible until it bites:\n"
             "#                           a failed update then recovers by re-downloading, so a\n"
@@ -203,7 +207,6 @@ def render_config(
             "#                           at the cost of one reboot per extra attempt on an image\n"
             "#                           that is genuinely bad. Retries only help a failure that\n"
             "#                           RESETS -- a hang just hangs this many times.\n\n"
-            % (signing_key_id or 0)
         )
     else:
         ota_section = (

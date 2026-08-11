@@ -539,6 +539,7 @@ def create_project(
     force: bool,
     now: str,
     ota: bool = False,
+    ca: str | None = None,
     sig_alg: int = ES256,
     ota_keys: int = 32,
     factory_keys: int = 8,
@@ -570,8 +571,9 @@ def create_project(
     warnings: list[str] = []
     provisioned = None
 
+    ca_rel = _install_ca(paths, ca) if (ota and ca) else None
     config_text = config_mod.render_config(
-        name, vendor, boards, ota=ota, signing_key_id=None,
+        name, vendor, boards, ota=ota, signing_key_id=None, ca=ca_rel,
     )
     # Parse the rendered text so the digest/resolve see exactly what lands on disk
     # (incl. the scaffolded per-board sections) — otherwise `verify` would see drift.
@@ -604,7 +606,7 @@ def create_project(
         # updates it in place via set_signing_key_id without invalidating the lock), so the
         # digest/lock resolved above still match the final on-disk config.
         config_text = config_mod.render_config(
-            name, vendor, boards, ota=ota, signing_key_id=provisioned.signing_key_id,
+            name, vendor, boards, ota=ota, signing_key_id=provisioned.signing_key_id, ca=ca_rel,
         )
         config = config_mod.parse_config(config_text, name)
     if lock.firmware["dirty"] and not allow_dirty:
@@ -624,7 +626,7 @@ def create_project(
         _scaffold_coprocessor(paths, app_version)
     if config.ota:  # the device OTA runtime lib (status/confirm/sync) for the app to use
         _scaffold_runtime_lib(paths, boards)
-        _scaffold_device_files(paths)  # editable logger + watchdog, frozen into firmware
+        _scaffold_device_files(paths, _trust_store(paths, config, lock))
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
@@ -958,6 +960,63 @@ def _empty_romfs() -> bytes:
 CA_MODULE = "openmv_ca.py"
 
 
+def _install_ca(paths: ProjectPaths, src: str) -> str:
+    """Copy ``--ca``'s PEM into the project and return its project-relative path.
+
+    Copied rather than referenced so the project stays self-contained: the lock pins a firmware
+    tree, and a trust store living outside the project would make two checkouts of the same
+    commit build devices that trust different roots."""
+    path = Path(src).expanduser()
+    try:
+        pem = path.read_bytes()
+    except OSError as e:
+        raise ProjectError("--ca %r is not readable: %s" % (src, e), exit_code=1) from None
+    if b"-----BEGIN CERTIFICATE-----" not in pem:
+        raise ProjectError("--ca %r does not look like a PEM certificate bundle" % src, exit_code=1)
+    out = paths.root / "certs" / path.name
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(pem)
+    return out.relative_to(paths.root).as_posix()
+
+
+def _trust_store(paths: ProjectPaths, config: OtaConfig, lock: lock_mod.Lock) -> bytes:
+    """The TLS roots to freeze into the firmware: ``[ota].ca`` if the project names one, else
+    the public bundle -- and REFUSE rather than fetch the public bundle onto a board that
+    cannot hold it.
+
+    The public set is ~186 KB. That is affordable on a board with a spare megabyte of firmware
+    flash and absurd on one whose whole ROMFS slot is 114,688 bytes; the small boards were
+    already over budget before it, so silently scaffolding it just moves the failure to a link
+    error nobody connects to a certificate. A device talks to ONE update server, so its own
+    root -- around a kilobyte -- is what it actually needs, and on these boards that is not a
+    tuning knob but the only shape that fits. Refusing here says so once, in the place that can
+    explain it, instead of at a linker."""
+    rel = (config.ca or "").strip()
+    if rel:
+        path = paths.root / rel
+        try:
+            return path.read_bytes()
+        except OSError as e:
+            raise ProjectError("[ota] ca %r is not readable: %s" % (rel, e), exit_code=1) from None
+    small = sorted({rb["name"] for rb in lock.targets.get("resolved", [])
+                    if rb.get("role", "main") == "main"
+                    and geometry.derive_mode(rb["partition_size"], rb["erase_size"])
+                    == geometry.SINGLE})
+    if small:
+        raise ProjectError(
+            "%s cannot hold the public CA bundle (~%d KB): its ROMFS slot is %d bytes, and the "
+            "firmware has no room for it either.\nThese boards do OTA against your OWN server, "
+            "so give them your server's root instead -- it is about a kilobyte:\n"
+            "    openmv-ota project new ... --ca certs/root.pem\n"
+            "(or set `ca = \"certs/root.pem\"` under [ota] in openmv-ota.toml)."
+            % (", ".join(small), len(_fetch_ca_bundle()) // 1024,
+               geometry.single_body_capacity(
+                   min(rb["partition_size"] for rb in lock.targets.get("resolved", [])
+                       if rb.get("role", "main") == "main"), 0)),
+            exit_code=1)
+    return _fetch_ca_bundle()
+
+
 def render_ca_module(pem: bytes) -> str:
     """``device/openmv_ca.py``: the trust store as a frozen module.
 
@@ -1035,7 +1094,7 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str]) -> None:
             manifest.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
 
 
-def _scaffold_device_files(paths: ProjectPaths) -> None:
+def _scaffold_device_files(paths: ProjectPaths, pem: bytes) -> None:
     """Scaffold the editable device modules frozen into the firmware -- the logger
     (``openmv_log``) and the watchdog helper (``openmv_wdt``), both shared by the
     installer and your app and both off until you edit + rebuild. Left alone if present."""
@@ -1053,7 +1112,7 @@ def _scaffold_device_files(paths: ProjectPaths) -> None:
     # user who pinned their own server's root keeps it across `new --force`.
     ca = d / CA_MODULE
     if not ca.exists():
-        ca.write_text(render_ca_module(_fetch_ca_bundle()), encoding="utf-8")
+        ca.write_text(render_ca_module(pem), encoding="utf-8")
 
 
 def _write_local(paths: ProjectPaths, repo: Path, sdk_home_override: Path | None) -> None:
