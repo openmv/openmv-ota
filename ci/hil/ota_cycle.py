@@ -249,6 +249,12 @@ def artifact_sizes(board):
     return out
 
 
+# How long the CDC (machine.bootloader) flash route gets before we stop waiting and use the
+# reset-catch instead. A real flash is ~1-2 minutes on these boards; the old 1500s was not a
+# budget but an absence of one, and a reset-looping board spent all of it.
+CDC_FLASH_TIMEOUT = 420
+
+
 def sh(cmd, timeout=180, check=True, quiet=False):
     """Run a command, returning (rc, stdout+stderr). Never raises on non-zero OR timeout unless
     check -- a timeout degrades to (124, partial-output) so a check=False caller (e.g. a liveness
@@ -1210,8 +1216,27 @@ def _flash_dfu_cli(board, bad_romfs=False):
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
     if _cdc_responsive():
+        # BOUNDED, AND WITH A FALLBACK. `_cdc_responsive()` answers "did the port reply once", which
+        # a board RESET-LOOPING at ~1 Hz does -- it is alive for most of every second. So this route
+        # gets chosen for a board that cannot hold a REPL long enough to run machine.bootloader(),
+        # and at 1500s that is a 25-minute hang that fails the leg and leaves the board no better.
+        # Measured on the AE3 four times: the loop is its own cause (an armed watchdog bites, the
+        # board reboots into the same armed app), so waiting longer never helps.
+        #
+        # A real flash on these boards takes ~1-2 minutes, so bound it and fall back to the
+        # reset-catch, which does not need a REPL at all: it is the same DFU window, caught by
+        # pulsing nRST while dfu-util is already waiting on -w. Entering DFU cannot be done as a
+        # SEQUENCE against a looping board -- the two have to overlap.
         log("flash factory -> %s (openmv-ota, DFU -w)" % board)
-        sh(argv, timeout=1500)
+        rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False)
+        if rc != 0:
+            log("flash: %s CDC route failed (rc=%d) -- retrying through the bootloader DFU window"
+                % (board, rc))
+            rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
+            if rc != 0 and _partial_download(out) and recover_firmware(board):
+                rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
+            if rc != 0:
+                raise RuntimeError("flash factory failed on both routes rc=%d: %s" % (rc, out[-400:]))
     else:
         # No CDC, so machine.bootloader() cannot be used to enter DFU -- and this is exactly the
         # state _ensure_cdc leaves behind when it has to erase the romfs (a board with no bootable
