@@ -213,10 +213,12 @@ def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
         src = p.root / "device" / mod
         shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, tmp / mod)
         freezes.append('freeze("%s", "%s")\n' % (tmp.as_posix(), mod))
-    # The public TLS trust store, frozen as `openmv_ca`. PROJECT-ONLY: it is generated at
-    # `project new` from the fetched bundle, so there is no bundled default to fall back to --
-    # a project created before the store moved simply doesn't have one, and openmv_ota falls
-    # back to the romfs copy it still ships.
+    # The project's OWN TLS roots, frozen as `openmv_ca` -- present only when `project new --ca`
+    # supplied them. There is deliberately no default here: the PUBLIC bundle is ~186 KB and
+    # freezing that overflows FLASH_TEXT on every 1792 KB board (H7 Plus 106.85%, PureThermal
+    # 104.57%, Nicla 101.56%), so it ships in the romfs instead. What makes freezing work is the
+    # store being about a kilobyte, not where it lives. Without one, openmv_ota reads the romfs
+    # copy, which is also what a project created before `--ca` existed keeps doing.
     ca_mod = p.root / "device" / _CA_MODULE
     if ca_mod.exists():
         shutil.copy2(ca_mod, tmp / _CA_MODULE)

@@ -625,8 +625,9 @@ def create_project(
     if _boards_have_coprocessor(boards):  # a slaved second core (e.g. AE3's M55_HE)
         _scaffold_coprocessor(paths, app_version)
     if config.ota:  # the device OTA runtime lib (status/confirm/sync) for the app to use
-        _scaffold_runtime_lib(paths, boards)
-        _scaffold_device_files(paths, _trust_store(paths, config, lock))
+        trust = _trust_store(paths, config, lock)   # supplied roots, or None -> public bundle
+        _scaffold_runtime_lib(paths, boards, trust)
+        _scaffold_device_files(paths, trust)
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
@@ -980,17 +981,18 @@ def _install_ca(paths: ProjectPaths, src: str) -> str:
 
 
 def _trust_store(paths: ProjectPaths, config: OtaConfig, lock: lock_mod.Lock) -> bytes:
-    """The TLS roots to freeze into the firmware: ``[ota].ca`` if the project names one, else
-    the public bundle -- and REFUSE rather than fetch the public bundle onto a board that
-    cannot hold it.
+    """The project's own TLS roots (``[ota].ca``) to FREEZE into the firmware, or ``None``
+    meaning "no supplied store" -- then the public bundle ships in the romfs as before.
 
-    The public set is ~186 KB. That is affordable on a board with a spare megabyte of firmware
-    flash and absurd on one whose whole ROMFS slot is 114,688 bytes; the small boards were
-    already over budget before it, so silently scaffolding it just moves the failure to a link
-    error nobody connects to a certificate. A device talks to ONE update server, so its own
-    root -- around a kilobyte -- is what it actually needs, and on these boards that is not a
-    tuning knob but the only shape that fits. Refusing here says so once, in the place that can
-    explain it, instead of at a linker."""
+    Only a supplied store gets frozen, and the reason is measured: the public set is ~186 KB and
+    freezing it overflows FLASH_TEXT on every 1792 KB board (H7 Plus 106.85%, PureThermal
+    104.57%, Nicla 101.56%). The firmware is not a free place to put a trust store, it is a
+    tighter one -- what makes freezing work is the store being ~1 KB, not where it lives.
+
+    A device talks to ONE update server, so its own root is what it actually needs. On a
+    single-image board that is not a preference: the bundle does not fit the 114,688-byte slot
+    and the firmware has no room either, so REFUSE and say what to pass, instead of scaffolding
+    something that can only fail later at a linker."""
     rel = (config.ca or "").strip()
     if rel:
         path = paths.root / rel
@@ -1014,7 +1016,7 @@ def _trust_store(paths: ProjectPaths, config: OtaConfig, lock: lock_mod.Lock) ->
                    min(rb["partition_size"] for rb in lock.targets.get("resolved", [])
                        if rb.get("role", "main") == "main"), 0)),
             exit_code=1)
-    return _fetch_ca_bundle()
+    return None
 
 
 def render_ca_module(pem: bytes) -> str:
@@ -1048,7 +1050,7 @@ def _fetch_ca_bundle(url: str = CA_BUNDLE_URL) -> bytes:
     return data
 
 
-def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str]) -> None:
+def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str], pem: bytes | None) -> None:
     """Scaffold ``app/lib/openmv_ota/`` -- the device OTA runtime helpers
     (status/confirm/sync/install) -- into an OTA project. ``data/`` always gets the
     installer source (shipped uncompiled so ``install()`` can ``exec`` it into RAM) and
@@ -1076,6 +1078,15 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str]) -> None:
 
     data = dst / "data"
     data.mkdir(exist_ok=True)
+    # The PUBLIC bundle stays in the romfs. Freezing it was tried and is not affordable: at
+    # ~186 KB it overflows FLASH_TEXT on every 1792 KB board -- H7 Plus 106.85%, PureThermal
+    # 104.57%, Nicla 101.56% -- so the firmware is not a free place to put it, it is a tighter
+    # one. Only a project-supplied store (a server's own root, ~1 KB) is small enough to freeze,
+    # and that is what `--ca` does.
+    if pem is None:
+        ca = data / "ca.pem"
+        if not ca.exists():
+            ca.write_bytes(_fetch_ca_bundle())
     installer = data / "installer.py"
     if not installer.exists():
         installer.write_text(
@@ -1094,7 +1105,7 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str]) -> None:
             manifest.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
 
 
-def _scaffold_device_files(paths: ProjectPaths, pem: bytes) -> None:
+def _scaffold_device_files(paths: ProjectPaths, pem: bytes | None) -> None:
     """Scaffold the editable device modules frozen into the firmware -- the logger
     (``openmv_log``) and the watchdog helper (``openmv_wdt``), both shared by the
     installer and your app and both off until you edit + rebuild. Left alone if present."""
@@ -1110,9 +1121,10 @@ def _scaffold_device_files(paths: ProjectPaths, pem: bytes) -> None:
     # duplicated under A/B, and it did not fit a single-image board at all). Generated, not
     # copied: there is no bundled default, the bundle is fetched. Left alone if present, so a
     # user who pinned their own server's root keeps it across `new --force`.
-    ca = d / CA_MODULE
-    if not ca.exists():
-        ca.write_text(render_ca_module(pem), encoding="utf-8")
+    if pem is not None:                               # only a SUPPLIED store is small enough
+        ca = d / CA_MODULE
+        if not ca.exists():
+            ca.write_text(render_ca_module(pem), encoding="utf-8")
 
 
 def _write_local(paths: ProjectPaths, repo: Path, sdk_home_override: Path | None) -> None:
