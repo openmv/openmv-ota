@@ -1451,17 +1451,33 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 # disabled nothing can feed until it returns. The feed has to precede it.
                 feed()                            # full window before relax()'s allocating entry
                 end = start + total
+                nb = (total + bs - 1) // bs       # blocks in this slot, for the progress line
+                i = worst = 0
                 with relax():
                     while o < end:
                         n = bs if end - o > bs else end - o
                         feed()
+                        _t0 = ticks_ms()
                         rc = vfs.rom_ioctl(3, 0, o, n)
+                        _dt = ticks_diff(ticks_ms(), _t0)
+                        if _dt > worst:
+                            worst = _dt  # hil-residual: witnessed transitively -- a non-zero worst= in the progress line proves this ran (it is the only writer)
                         if rc < 0:
                             raise OSError(-rc)  # hil-residual: bare raise on a negative errno (erase-fault, inject-only)
                         o += n
-                        if log and "e" not in _seen:  # witness the in-loop erase op once
-                            _seen.add("e")
-                            log.debug("install: erasing block XIP")
+                        i += 1
+                        if log and (i & 0x3F) == 1:   # the first block, then every 64th
+                            _seen.add("e")            # witness the in-loop erase op AND report
+                            #                           progress. The block-device path has done
+                            #                           this since the RT reset mid-erase; this one
+                            #                           never got it. A 12 MiB N6 slot is ~73 s of
+                            #                           silence, so a one-shot witness cannot tell
+                            #                           a first-call hang from a death 1900 blocks
+                            #                           in -- exactly the question the N6's
+                            #                           `reinstall` failure is stuck on. Bounded:
+                            #                           48 lines for a 12 MiB slot. Same marker
+                            #                           text, so the coverage point is unchanged.
+                            log.debug("install: erasing block XIP %d/%d worst=%dms" % (i, nb, worst))
                 log.debug("install: erased slot XIP")
                 return  # hil-residual: bare return (ranged erase done)
             # Legacy single-shot fallback for firmware WITHOUT #19348 (no ranged prepare). The
