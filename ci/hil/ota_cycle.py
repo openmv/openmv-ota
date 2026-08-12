@@ -2402,9 +2402,21 @@ def main():
             log("device_id: " + devid)
             if args.scenario == "coproc":        # dirty partition 1 so sync() APPLIES (not skips)
                 phase("dirty_coproc", dirty_coproc_partition)
+            # DEFERRED UNTIL AFTER THE WINDOW'S RESET -- see the after_reset note in run_cycle.
+            # Publishing here, eagerly, leaves the update offerable while the board is still running,
+            # and the device (polling every ~5 s) can start installing in the seconds before the
+            # reset lands. The reset then kills that install MID-ERASE. Phase 2 was fixed first and
+            # phase 1 was left alone on the argument that it is self-healing -- the device is on
+            # golden, so it falls back and retries. That is true of the DEVICE and false of the
+            # SCORING: `delta` FORBIDS boot.fallback, so the leg fails on a board that behaved
+            # perfectly. Measured on RT1060 lan: erase at :19, the UART severed mid-line, reboot at
+            # :22, `boot: rejected B:body-sha -> mounted A`, missing=- forbidden=[boot.fallback].
+            publish = None
             if spec["publish"] != "none" and not args.skip_publish:
-                phase("publish", lambda: publish_update(args.board, pub_version, spec["publish"]))
-                trace["metrics"] = artifact_sizes(args.board)   # download sizes -> ota_metrics report
+                def publish():                   # noqa: E306  (runs inside run_cycle, post-reset)
+                    phase("publish", lambda: publish_update(args.board, pub_version,
+                                                            spec["publish"]))
+                    trace["metrics"] = artifact_sizes(args.board)  # sizes -> ota_metrics report
             # THE MARKER UART MUST BE ALIVE BEFORE THE SCORED WINDOW OPENS. Every scenario is scored
             # on lines from this stream; if it is dead, the run takes its full timeout and then
             # reports a pile of missing markers -- which reads as a broken device and is not.
@@ -2422,7 +2434,8 @@ def main():
             # "install" phase = the whole autonomous OTA (check-in -> download -> write -> trial ->
             # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.
             result = phase("install", lambda: run_cycle(
-                devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout))
+                devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout,
+                after_reset=publish))
         time.sleep(2)                            # let the last UART lines land
         marks = set(cap.points())
         missing = sorted(expect - marks)

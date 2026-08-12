@@ -34,7 +34,7 @@ This is the first sweep where **every board was reachable**, the AE3 included.
 
 ### Every failure this sweep found was in the HARNESS, not the device
 
-Worth stating plainly, because it is the opposite of what the red legs looked like. Four bugs, all
+Worth stating plainly, because it is the opposite of what the red legs looked like. Five bugs, all
 of them the test rig making a timing or observability assumption the device had outgrown:
 
 1. **A faster install outran a polled observation.** The blank-skip erase cut the RT1062's slot
@@ -57,7 +57,15 @@ of them the test rig making a timing or observability assumption the device had 
    reset that produced 0 bytes in 38 s — so the brick now seeds `/flash/.hilcov_uart` first, which
    the erase spares. 1030 s FAIL -> 136 s PASS.
 
-4. **A finished run thrown away by a missing directory.** The trace is written last, so a
+4. **The same publish-before-reset race in phase 1 -- and "self-healing" did not save it.**
+   Phase 2 was fixed first and phase 1 deliberately left eager, on the argument that a device on
+   golden simply falls back and retries. That is true of the DEVICE and false of the SCORING:
+   `delta` FORBIDS `boot.fallback`, so a board that behaved perfectly still failed the leg.
+   Measured on RT1060 lan: erase at :19, the UART severed mid-line, reboot at :22,
+   `boot: rejected B:body-sha -> mounted A`, scored `missing=- forbidden=[boot.fallback]`. Both
+   phases now publish from inside the window, after the reset. Verified 3/3 on the bench.
+
+5. **A finished run thrown away by a missing directory.** The trace is written last, so a
    non-existent parent turned a completed, correct OTA into a non-zero exit with no RESULT line —
    indistinguishable from a scenario failure. The write now creates its directory.
 
