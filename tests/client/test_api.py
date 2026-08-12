@@ -220,3 +220,13 @@ def test_empty_body_returns_empty_dict():
 def test_make_api_seam_builds_real_api():
     from openmv_ota.client import cli as client_cli
     assert isinstance(client_cli._make_api(_cfg()), Api)       # the real (unmocked) seam
+
+
+def test_single_resource_reads():
+    """The detail reads a UI's device/release pages need -- listing and filtering client-side is
+    the only alternative, and it does not scale past the first page of a real fleet."""
+    api, c = _api(_Resp(200, {}))
+    api.device("d1")
+    api.release("rel1")
+    assert c.calls[0][:2] == ("GET", "/api/v1/admin/devices/d1")
+    assert c.calls[1][:2] == ("GET", "/api/v1/admin/releases/rel1")

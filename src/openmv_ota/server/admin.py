@@ -412,6 +412,25 @@ def _with_fallback_version(rows: list[dict]) -> list[dict]:
     return rows
 
 
+@admin.get("/releases/{release_id}")
+def release(release_id: str, request: Request,
+            principal: Principal = Depends(require_scope("observe"))):
+    """One release. A UI's release page had no way to ask for a single release -- only to LIST and
+    filter client-side, which means paging until the row turns up on any fleet with real history.
+    Ownership is checked the same way as everywhere else, so another account's release is a 404 and
+    not a probe."""
+    return _owned(request.app.state.metastore.get_release(release_id), principal)
+
+
+@admin.get("/devices/{device_id}")
+def device(device_id: str, request: Request,
+           principal: Principal = Depends(require_scope("observe"))):
+    """One device, shaped exactly like a row of ``GET /devices`` (same ``fallback_version``
+    decoding) so a UI can render a list row and a detail page from one model."""
+    row = _owned(request.app.state.metastore.get_device(device_id), principal)
+    return _with_fallback_version([row])[0]
+
+
 @admin.get("/releases/{release_id}/image")
 def release_image(release_id: str, request: Request,
                   principal: Principal = Depends(require_scope("observe"))):

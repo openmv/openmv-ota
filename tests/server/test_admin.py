@@ -686,3 +686,57 @@ def test_viewer_grant_503s_when_live_is_not_configured(tmp_path):
     store.bind_device_account("dev1", "", source="learned")
     r = TestClient(app).post("/api/v1/admin/devices/dev1/viewer-grant", headers=AUTH)
     assert r.status_code == 503
+
+
+# --- single-resource reads (a UI's detail pages) ------------------------------------------------
+# A UI can render a list from GET /devices and GET /releases, but a detail page had nothing to ask:
+# it would have to page the list until the row appeared, which on a fleet with real history is a
+# lot of requests to answer "show me this device".
+
+def test_device_detail_matches_the_list_row(tmp_path):
+    """Same shape as a list row -- including the decoded fallback_version -- so a UI can drive a
+    list item and a detail page off ONE model instead of two that drift."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="d1", product_id=BID, board="OPENMV_N6", current_version="1.0.0",
+                        slot="A", confirmed=1, fallback_payload_version=0x01000000)
+    c = TestClient(app)
+    one = c.get("/api/v1/admin/devices/d1", headers=AUTH).json()
+    listed = c.get("/api/v1/admin/devices", headers=AUTH).json()["devices"][0]
+    assert one == listed
+    assert one["fallback_version"] == "1.0.0"
+
+
+def test_release_detail_returns_the_release(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    r = TestClient(app).get("/api/v1/admin/releases/rel1", headers=AUTH).json()
+    assert r["release_id"] == "rel1" and r["version"] == "2.0.0"
+    assert r["representations"][0]["format"] == "full"   # parsed, not the stored JSON string
+
+
+def test_detail_reads_need_observe_scope(tmp_path):
+    app, store = _app(tmp_path, scopes=("manage",))
+    store.upsert_device(device_id="d1", product_id=BID)
+    _seed_release(store)
+    c = TestClient(app)
+    assert c.get("/api/v1/admin/devices/d1", headers=AUTH).status_code == 403
+    assert c.get("/api/v1/admin/releases/rel1", headers=AUTH).status_code == 403
+
+
+def test_detail_reads_hide_other_accounts_behind_404(tmp_path):
+    """A missing row and another account's row must be indistinguishable, or the endpoint becomes
+    a probe for which device ids exist."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="d1", product_id=BID)
+    # what an admin rebind does: the authoritative binding AND the fleet-view column
+    store.bind_device_account("d1", "someone-else", source="admin")
+    store.set_device_account("d1", "someone-else")
+    _seed_release(store, rid="theirs")
+    store.execute("UPDATE releases SET account_id = ? WHERE release_id = ?",
+                  ("someone-else", "theirs"))
+    c = TestClient(app)
+    assert c.get("/api/v1/admin/devices/d1", headers=AUTH).status_code == 404
+    assert c.get("/api/v1/admin/releases/theirs", headers=AUTH).status_code == 404
+    # ...and indistinguishable from a row that simply is not there
+    assert c.get("/api/v1/admin/devices/nope", headers=AUTH).status_code == 404
+    assert c.get("/api/v1/admin/releases/nope", headers=AUTH).status_code == 404
