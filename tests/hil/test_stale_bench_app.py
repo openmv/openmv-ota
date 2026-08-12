@@ -117,3 +117,80 @@ def test_run_cycle_lets_a_caller_force_marker_scoring():
     sig = inspect.signature(ota_cycle.run_cycle)
     assert "by_marker" in sig.parameters
     assert sig.parameters["by_marker"].default is False, "opt-in only; boards keep their behaviour"
+
+
+def test_promoted_scoring_survives_an_install_faster_than_the_poll():
+    """A promoted leg must not need to CATCH the device on golden.
+
+    `saw_golden` was a polled observation of a transient state: the harness reads the server's
+    device record every 15 s and had to see the device report golden before the install flipped it
+    to target. That is a race against install speed, and the blank-skip erase lost it -- the
+    RT1060's slot erase went 54 s -> 4 s, so a delta install fits inside one poll gap. Measured:
+    RT1060 lan `delta` and `watchdog` went 362 s/PASS -> 606 s/FAIL on the run that made installs
+    faster, both with every expected marker present and nothing forbidden.
+
+    The markers are the stronger witness and are not racy: the capture is reset when the window
+    opens, so a promoted scenario's install.start -> install.committed -> confirm.promoted can only
+    have been produced inside it. A device already sitting on target cannot fake them.
+    """
+    import inspect
+    body = inspect.getsource(ota_cycle.run_cycle)
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    reached = code.split("reached = ")[1].split("return")[0]
+    promoted = reached.split('end == "promoted"')[1].split("or (")[0]
+    assert "saw_golden" not in promoted, "a fast install must not fail for being fast"
+    assert "have" in promoted, "...but the in-window install markers must still be required"
+    # the negative legs never install, so nothing shrinks their golden state -- they keep the check
+    golden = reached.split('end == "golden"')[1]
+    assert "saw_golden" in golden, "end=golden legs still assert the device settled back"
+
+
+def test_phase2_publishes_only_after_the_window_reset_has_landed():
+    """The bad update must not be offerable while the board is still running the promoted image.
+
+    `run_cycle` opens every window with a hard reset. Publishing BEFORE that call leaves the update
+    live during the seconds before the reset lands, and the device polls every ~5 s -- so it can
+    start installing and then be reset MID-ERASE. Measured on RT1060 lan `reinstall` phase 2:
+    offered at :38, erasing at :39, UART severed mid-word, board back 66 s later on
+    `boot: rejected A:magic -> mounted B`. The phase then cannot pass -- the install never reached
+    the sha check that `install.reject_sha` asserts, and the half-written slot leaves the device
+    unsettled, so the server correctly refuses to offer again and the leg deadlocks.
+
+    It is a RACE, so it must be closed by ORDERING, not by a delay: the identical code passed on
+    the bench (reset :31, offer :31) and failed in CI (offer :38, reset :39).
+    """
+    import inspect
+    src = inspect.getsource(ota_cycle.main)
+    seg = src.split('then = spec.get("then")')[1]
+    assert "after_reset=publish2" in seg, "phase 2 must hand its publish to run_cycle"
+    # ...and must NOT publish eagerly at the call site
+    call = seg.split("result2 = phase(")[0]
+    assert "phase(\"publish2\"" in call and "publish2 = lambda" in call, "deferred, not removed"
+    assert call.index("publish2 = lambda") < call.index("cap.reset"), "bound before the window opens"
+
+    body = inspect.getsource(ota_cycle.run_cycle)
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    assert code.index("after_reset()") > code.index("machine.reset()"), \
+        "the hook must fire after the whole reset cascade, not before it"
+    assert code.index("after_reset()") < code.index("deadline = "), "...and before the watch loop"
+
+
+def test_no_slot_seeds_the_marker_uart_where_the_brick_cannot_erase_it():
+    """`no_slot` destroys its own instrumentation unless the UART config is moved out of harm's way.
+
+    `.hilcov_uart` is baked into the ROMFS (the one volume that survives an armed watchdog), and
+    this scenario's brick erases the WHOLE romfs region -- so the erase that creates the condition
+    under test also removes the file naming the marker UART. openmv_log falls back to its USB
+    branch, and boot.py prints its markers BEFORE the CDC enumerates, i.e. into nothing. Measured on
+    the RT1060: zero bytes on the UART *and* the console for 900 s from a healthy, REPL-answering
+    board, failing on `boot.no_slot` -- a marker it certainly printed.
+
+    Reading the console instead does not work (same enumeration reason) and actively harms: it
+    holds the port the nudge-reset needs. /flash survives a romfs erase and openmv_log searches it,
+    so the brick seeds it there first.
+    """
+    import inspect
+    body = inspect.getsource(ota_cycle._flash_blhost_imx)
+    seed = body.split("if bad_romfs:")[1].split("flash erase --romfs")[0]
+    assert "/flash/.hilcov_uart" in seed, "the marker UART must be seeded somewhere the erase spares"
+    assert "cov_uart" in seed, "...and it must name THIS board's UART"

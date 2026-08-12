@@ -1791,6 +1791,26 @@ def _flash_blhost_imx(board, bad_romfs=False):
     _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
     build = CFG["project"] + "/build"
     if bad_romfs:
+        # KEEP THE BOARD OBSERVABLE ACROSS THE BRICK. `.hilcov_uart` is baked into the ROMFS (see
+        # _bench_files: /rom is the one volume that survives an armed watchdog), and the erase below
+        # destroys that whole region -- so the very act that creates the condition under test also
+        # removes the file telling the device which UART to log to. openmv_log then falls back to
+        # its USB branch, and boot.py's markers are printed BEFORE the CDC has enumerated, i.e. into
+        # nothing. Measured on the RT1060: a healthy, enumerated, REPL-answering board that produced
+        # ZERO bytes on the marker UART *and* the console for 900 s, failing on `boot.no_slot` --
+        # a marker it certainly printed. (Reading the console instead does NOT work, for that same
+        # enumeration reason; it only steals the port the nudge-reset needs.)
+        #
+        # /flash survives a romfs erase and openmv_log searches it, so seed it there first. Taking
+        # the REPL is safe HERE and only here: this board's app is about to lose its filesystem.
+        try:
+            device_exec("f=open('/flash/.hilcov_uart','w');f.write('%d');f.close()"
+                        % BOARDS[board]["cov_uart"], timeout=30)
+            log("brick: seeded /flash/.hilcov_uart=%d -- /rom (which normally carries it) is about "
+                "to be erased" % BOARDS[board]["cov_uart"])
+        except Exception as e:                   # hil-residual: no REPL to seed through
+            log("brick: could NOT seed /flash/.hilcov_uart (%r) -- the bricked boot will log to USB "
+                "before the CDC enumerates, so its markers will be invisible" % (e,))
         log("brick: erase the OTA romfs region (both slots) -> openmv-ota flash erase --romfs")
         sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--romfs",
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
@@ -2133,7 +2153,8 @@ def run_cycle_no_slot(cap, expect, timeout_s):
             "reached_end": expect <= set(cap.points())}
 
 
-def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=False):
+def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=False,
+              after_reset=None):
     """Hard-reset the device and watch the server record + UART until the scenario's end
     state is reached (early exit) or the timeout elapses. Returns the observed state; the
     caller decides PASS/FAIL against the scenario's expect/forbid sets.
@@ -2190,6 +2211,25 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=Fals
     # the install goes. Waiting on that record means never concluding -- the run watches until its
     # timeout while the device, left running, re-installs over and over. Score their UART markers
     # instead; they are the same evidence the scenario's expect/forbid sets are written against.
+    # PUBLISH HERE, NOT BEFORE THE RESET, when the caller asks for it. An update that is already
+    # offerable when this function is entered can be picked up by the device in the seconds between
+    # the publish and the reset above -- the device polls every ~5 s -- and then the reset lands
+    # MID-INSTALL. Measured on RT1060 lan `reinstall` phase 2: offered at :38, erasing at :39, the
+    # UART severed mid-word, the board back 66 s later with `boot: rejected A:magic -> mounted B`.
+    # The scenario then cannot pass: it wants install.reject_sha, but the install never reached the
+    # sha check, and the half-erased slot leaves the device unsettled so the server (correctly)
+    # refuses to offer again -- the leg deadlocks for its whole window.
+    #
+    # This is a RACE, not a certainty: the same scenario passes whenever the reset wins. It passed
+    # on the bench (reset :31, offer :31) and failed in CI (offer :38, reset :39) on identical code,
+    # which is exactly why it must be closed by ORDERING rather than by a delay.
+    #
+    # Phase 1 has the same shape and is left alone deliberately: there the device is on golden, so
+    # an install the reset interrupts is simply retried inside the window -- self-healing. Only a
+    # phase starting from a PROMOTED board deadlocks, because there the interrupted install costs
+    # the slot it was writing.
+    if after_reset is not None:
+        after_reset()
     by_marker = by_marker or (bool(_BOARD) and not BOARDS[_BOARD].get("server_record", True))
     if by_marker:
         log("cycle: %s is not recorded server-side -- scoring the UART markers" % _BOARD)
@@ -2229,7 +2269,7 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=Fals
                 break                        # no server record to corroborate: the device's own
                 #                              markers ARE the evidence, and they are complete
         elif end == "promoted":
-            if saw_golden and v == target and slot and have:
+            if v == target and slot and have:
                 break                        # real pre-update -> target transition, all paths hit
         elif saw_golden and v == golden and have:
             break                            # settled back on golden, all negative paths hit
@@ -2238,8 +2278,27 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=Fals
     # pinning the name here would fail every happy path on a board that happens to be running
     # from B. What the assertion actually needs is that a slot was selected and the VERSION
     # moved, which is what the two clauses below check.
+    # DO NOT require `saw_golden` on the promoted path. It is a POLLED observation of a TRANSIENT
+    # state: the harness reads the server's device record every 15 s and has to catch the device
+    # reporting golden before the install flips it to target. That is a race against install speed,
+    # and it is now lost -- the blank-skip erase took the RT1060's slot erase from 54 s to 4 s, so a
+    # delta install can start and finish inside a single poll gap. The record then only ever reads
+    # target, `saw_golden` never latches, the break above can never fire, and the leg burns its whole
+    # window and scores a FAILURE for an install that was flawless. Measured: RT1060 lan `delta` and
+    # `watchdog` both went 362 s/PASS -> 606 s/FAIL on exactly the run that made installs faster,
+    # with every expected marker present and nothing forbidden.
+    #
+    # `have` is the stronger witness anyway, and it is not racy. The capture is reset when the window
+    # opens (see cap.reset below the publish), so every marker scored here was produced INSIDE this
+    # window -- and a promoted scenario's expect set runs install.start -> install.committed ->
+    # confirm.promoted. A device that was already on target and did nothing cannot produce those, so
+    # dropping the polled check does not weaken the "it really transitioned here" assertion that
+    # saw_golden existed to make; it just stops asserting it with a stopwatch.
+    #
+    # Polling faster would only move the race (a 2 s install would still be missed). end="golden"
+    # keeps saw_golden: those legs never install, so nothing shrinks that state.
     reached = (have if by_marker else
-               ((end == "promoted" and saw_golden and v == target and bool(slot))
+               ((end == "promoted" and v == target and bool(slot) and have)
                 or (end == "golden" and saw_golden and v == golden)))
     return {"saw_golden": saw_golden, "saw_target": saw_target,
             "version": v, "slot": slot, "reached_end": reached}
@@ -2392,8 +2451,13 @@ def main():
         then = spec.get("then")
         if then and trace["passed"]:
             log("phase 2: %s" % then["desc"])
-            phase("publish2",
-                  lambda: publish_update(args.board, then["version"], then["publish"]))
+            # PUBLISHED INSIDE run_cycle, AFTER its reset -- see the after_reset note there. Doing it
+            # here instead leaves the bad update offerable while the board is still running, and the
+            # device (polling every ~5 s) can start installing it in the gap before the window's
+            # reset lands, which then kills the install mid-erase and deadlocks the phase.
+            publish2 = lambda: phase("publish2",                                       # noqa: E731
+                                     lambda: publish_update(args.board, then["version"],
+                                                            then["publish"]))
             cap.reset(time.time())               # score phase 2 on its own window
             expect2, forbid2 = set(then["expect"]), set(then.get("forbid", ()))
             # SCORE PHASE 2 ON ITS MARKERS, not on a version transition. The assertion is that
@@ -2415,7 +2479,7 @@ def main():
             # rather than picking a bigger constant, so the window tracks the work.
             result2 = phase("reinstall", lambda: run_cycle(
                 devid, "1.0.0", then["version"], then["end"], expect2, cap,
-                args.timeout * _RETRIES,
+                args.timeout * _RETRIES, after_reset=publish2,
                 by_marker=then.get("by_marker", False)))
             time.sleep(2)
             marks2 = set(cap.points())
