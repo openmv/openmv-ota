@@ -533,6 +533,15 @@ def test_cors_allows_only_the_configured_origins(tmp_path):
     assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
 
 
+def test_cors_refuses_a_wildcard_origin(tmp_path):
+    """`*` must not boot. Starlette reads a "*" in allow_origins as allow-all, so a setting
+    documented as "name your origins" would otherwise hand a wildcard to anyone who typed the
+    obvious thing -- and that is a silent hole, not a visible one."""
+    with pytest.raises(ServerError) as e:
+        _app(tmp_path, cors="https://cloud.openmv.io, *")
+    assert "does not accept '*'" in str(e.value)
+
+
 def test_cors_preflight_permits_the_admin_verbs_and_bearer_header(tmp_path):
     """The UI sends `Authorization: Bearer ...` on PATCH/DELETE, so the preflight must allow both,
     and must NOT allow credentials -- this API is token-authenticated, never cookie-authenticated."""

@@ -645,6 +645,17 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.secret = secret
     app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min)
     origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+    if "*" in origins:
+        # REFUSE, rather than quietly honour it. Starlette reads a "*" in this list as
+        # allow-all-origins, so without this check the setting documented as "name your origins"
+        # would hand a wildcard to anyone who typed the obvious thing -- and a wildcard lets any
+        # page on the internet read admin responses using a token obtained some other way. Failing
+        # to boot is the right loudness: a silent wildcard is a security hole nobody would notice,
+        # whereas a silent refusal would look like a UI bug.
+        raise ServerError(
+            "OPENMV_OTA_CORS_ALLOW_ORIGINS does not accept '*' -- list the UI origins explicitly, "
+            "e.g. 'https://cloud.openmv.io'. A wildcard would let any page on the internet read "
+            "admin responses with a token it obtained some other way.", exit_code=2)
     if origins:
         # Only when a deployment names its UI origins -- see `cors_allow_origins`. Credentials stay
         # OFF: this API authenticates with a bearer token the UI attaches itself, so it never needs
