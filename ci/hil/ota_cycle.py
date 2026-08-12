@@ -372,6 +372,10 @@ COVERAGE = {
     "install: erased slot XIP": "write.erased",
     "install: erasing block block-device": "write.erased",    # in-loop erase op (loop body witness)
     "install: erasing block XIP": "write.erased",
+    "install: blank probe XIP": "write.erased",
+    "install: skipping blank XIP": "write.erased",
+    "install: blank probe block-device": "write.erased",
+    "install: skipping blank block-device": "write.erased",
     "install: back reading block-device": "write.backread",   # in-loop BACK read (delta loop body)
     "install: wrote block block-device": "write.wrote",       # a data block written to FRONT
     "install: wrote block XIP": "write.wrote",
