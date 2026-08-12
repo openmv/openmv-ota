@@ -2516,6 +2516,14 @@ def main():
             trace["log"] = cap.raw                # the full device log for this run
         bench_server.stop(srv)                    # tear the per-run server + store down
         trace["elapsed_s"] = round(time.time() - t0, 1)
+        # CREATE THE TRACE DIRECTORY. A whole scenario -- provision, flash, install, confirm, the
+        # lot -- is thrown away here if the parent directory happens not to exist, and it fails
+        # AFTER the work, so the run looks like a scenario failure rather than a missing mkdir.
+        # It cost a full Portenta cycle exactly that way: the board did the entire OTA correctly
+        # and the run still exited non-zero, with no RESULT line and no trace to explain it.
+        d = os.path.dirname(os.path.abspath(args.trace))
+        if d:
+            os.makedirs(d, exist_ok=True)
         json.dump(trace, open(args.trace, "w"), indent=2)
 
     log("=" * 60)

@@ -194,3 +194,18 @@ def test_no_slot_seeds_the_marker_uart_where_the_brick_cannot_erase_it():
     seed = body.split("if bad_romfs:")[1].split("flash erase --romfs")[0]
     assert "/flash/.hilcov_uart" in seed, "the marker UART must be seeded somewhere the erase spares"
     assert "cov_uart" in seed, "...and it must name THIS board's UART"
+
+
+def test_trace_write_creates_its_directory():
+    """A finished scenario must not be lost to a missing directory.
+
+    The trace is written at the very END, after provision + flash + install + confirm, so a
+    non-existent parent turns a PASSING run into a non-zero exit with no RESULT line and no trace
+    to explain it -- indistinguishable from a scenario failure. Measured on the Portenta: the board
+    completed the entire OTA correctly and the run still failed, on a node that simply had no
+    ~/hil-traces yet.
+    """
+    import inspect
+    src = inspect.getsource(ota_cycle.main)
+    tail = src.split('trace["elapsed_s"]')[1]
+    assert "makedirs" in tail.split("json.dump")[0], "create the directory before writing the trace"
