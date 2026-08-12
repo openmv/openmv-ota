@@ -254,6 +254,11 @@ def artifact_sizes(board):
 # budget but an absence of one, and a reset-looping board spent all of it.
 CDC_FLASH_TIMEOUT = 420
 
+# The device's install-retry budget (installer.py: `getattr(cfg, "INSTALL_RETRIES", 3)`, and no
+# project here overrides it). The reinstall scenario's second phase exhausts this budget on
+# purpose, and each attempt writes a full slot, so it is the multiplier on that phase's window.
+_RETRIES = 3
+
 
 def sh(cmd, timeout=180, check=True, quiet=False):
     """Run a command, returning (rc, stdout+stderr). Never raises on non-zero OR timeout unless
@@ -2396,8 +2401,17 @@ def main():
             # it only because its device never leaves golden, making end="golden" true for free.
             # Measured: N6 lan phase 2 came back missing=- forbidden=- reached=False -- every marker
             # hit, nothing promoted, just not settled in time. RT1060 (4 MiB slot) passed.
+            # PHASE 2 IS SLOT-SIZED WORK, AND PHASE 1 IS NOT. The retry-exhaust path writes the
+            # WHOLE image once per attempt, up to _RETRIES of them, where phase 1 installs once --
+            # so giving both the same window makes the scenario pass or fail on how big the board's
+            # slot is. It did: the N6 (12 MiB slot) lands at ~1040 s against a 600 s per-phase
+            # default and has been failing on the ~150 s of headroom it had left, while the RT
+            # (4 MiB) passes comfortably. Measured directly: with room, the same leg PASSES in
+            # 1040 s -- nothing hangs, it was only ever short of budget. Scale by the retry count
+            # rather than picking a bigger constant, so the window tracks the work.
             result2 = phase("reinstall", lambda: run_cycle(
-                devid, "1.0.0", then["version"], then["end"], expect2, cap, args.timeout,
+                devid, "1.0.0", then["version"], then["end"], expect2, cap,
+                args.timeout * _RETRIES,
                 by_marker=then.get("by_marker", False)))
             time.sleep(2)
             marks2 = set(cap.points())
