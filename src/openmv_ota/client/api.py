@@ -153,5 +153,14 @@ class Api:
             params["offset"] = offset
         return self._req("GET", "/api/v1/admin/releases", params=params)
 
+    def device(self, device_id: str):
+        """One device. The detail read behind a UI's device page -- `devices()` can only page a
+        list, which is a lot of requests to answer "show me this one"."""
+        return self._req("GET", "/api/v1/admin/devices/%s" % device_id)
+
+    def release(self, release_id: str):
+        """One release, same reasoning as `device()`."""
+        return self._req("GET", "/api/v1/admin/releases/%s" % release_id)
+
     def audit(self, since: int = 0):
         return self._req("GET", "/api/v1/admin/audit", params={"since": since})

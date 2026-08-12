@@ -644,6 +644,16 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.admin_auth = admin_auth if admin_auth is not None else TokenAuth(metastore)
     app.state.secret = secret
     app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min)
+    origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+    if origins:
+        # Only when a deployment names its UI origins -- see `cors_allow_origins`. Credentials stay
+        # OFF: this API authenticates with a bearer token the UI attaches itself, so it never needs
+        # the browser to send cookies, and leaving them off keeps a stolen session cookie from ever
+        # being a way in. Methods/headers are explicit for the same reason.
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
+                           allow_methods=["GET", "POST", "PATCH", "DELETE"],
+                           allow_headers=["Authorization", "Content-Type"])
     app.include_router(router)
     from .admin import admin
     from .publish import publish

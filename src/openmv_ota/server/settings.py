@@ -74,6 +74,16 @@ class ServerSettings(BaseSettings):
     datalake_url: str = Field(             # public origin, e.g. https://data.cloud.openmv.io
         default="",
         validation_alias=AliasChoices("OPENMV_OTA_DATALAKE_URL", "OPENMV_DATALAKE_URL"))
+    # Browser origins allowed to call this API cross-origin, comma-separated, e.g.
+    # OPENMV_OTA_CORS_ALLOW_ORIGINS="https://cloud.openmv.io,https://staging.openmv.io".
+    # EMPTY BY DEFAULT, which means no CORS headers at all -- a browser on another origin simply
+    # cannot read a response, which is the correct default for an API whose credential is a bearer
+    # token. Only a deployment that actually serves a UI from a DIFFERENT origin needs this; a UI
+    # served by this same app, or one that proxies through its own backend, must leave it unset.
+    # There is deliberately no "*": with `allow_credentials` off a wildcard would still let any
+    # page on the internet read admin responses using a token it somehow obtained, and an explicit
+    # allowlist costs one env var.
+    cors_allow_origins: str = ""
     # uvicorn forwarded-allow-ips: which upstream peers may set X-Forwarded-For. Behind a PaaS proxy
     # (Render/Fly) set "*" so the rate limiter sees the real client IP, not the proxy's single IP.
     trusted_proxy_ips: str = "127.0.0.1"

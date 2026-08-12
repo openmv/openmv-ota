@@ -29,7 +29,7 @@ class _Verifier:
 
 
 def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0, unverified=(),
-         downgrades=False):
+         downgrades=False, cors=""):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("cohort_salt", SECRET)
@@ -37,7 +37,8 @@ def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0, unve
     settings = ServerSettings(base_url=base_url, checkin_rate_per_min=rate,
                               swd_ids_verify_url="u", swd_ids_verify_token="t",
                               unverified_boards=set(unverified),
-                              test_offer_downgrades=downgrades)
+                              test_offer_downgrades=downgrades,
+                              cors_allow_origins=cors)
     verifier = _Verifier(registered)
     app = create_app(settings, storage=storage, metastore=store, verifier=verifier)
     return app, store, storage, verifier
@@ -507,3 +508,42 @@ def test_create_app_builds_defaults(tmp_path):
                               swd_ids_verify_url="u", swd_ids_verify_token="t")
     app = create_app(settings)                               # builds storage/metastore/verifier
     assert TestClient(app).get("/healthz").json() == {"ok": True}
+
+
+# --- CORS -------------------------------------------------------------------------------------
+# A browser UI on another origin cannot read this API without it, and a wrong default here is a
+# security bug in both directions: too open and any page can read admin responses, too closed and
+# the UI silently fails. So both states are pinned.
+
+def test_cors_is_off_by_default(tmp_path):
+    """No allowlist configured -> no CORS headers at all, so a cross-origin page cannot read us."""
+    app, _, _, _ = _app(tmp_path)
+    r = TestClient(app).get("/healthz", headers={"Origin": "https://evil.test"})
+    assert r.status_code == 200
+    assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
+
+
+def test_cors_allows_only_the_configured_origins(tmp_path):
+    """A named origin is echoed back; anything else gets nothing -- no wildcard fallback."""
+    app, _, _, _ = _app(tmp_path, cors="https://cloud.openmv.io, https://staging.openmv.io")
+    c = TestClient(app)
+    r = c.get("/healthz", headers={"Origin": "https://cloud.openmv.io"})
+    assert r.headers["access-control-allow-origin"] == "https://cloud.openmv.io"
+    r = c.get("/healthz", headers={"Origin": "https://evil.test"})
+    assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
+
+
+def test_cors_preflight_permits_the_admin_verbs_and_bearer_header(tmp_path):
+    """The UI sends `Authorization: Bearer ...` on PATCH/DELETE, so the preflight must allow both,
+    and must NOT allow credentials -- this API is token-authenticated, never cookie-authenticated."""
+    app, _, _, _ = _app(tmp_path, cors="https://cloud.openmv.io")
+    r = TestClient(app).options("/api/v1/admin/rollouts", headers={
+        "Origin": "https://cloud.openmv.io",
+        "Access-Control-Request-Method": "PATCH",
+        "Access-Control-Request-Headers": "authorization",
+    })
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "https://cloud.openmv.io"
+    assert "PATCH" in r.headers["access-control-allow-methods"]
+    assert "authorization" in r.headers["access-control-allow-headers"].lower()
+    assert "access-control-allow-credentials" not in {k.lower() for k in r.headers}
