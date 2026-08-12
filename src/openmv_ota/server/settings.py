@@ -80,9 +80,10 @@ class ServerSettings(BaseSettings):
     # cannot read a response, which is the correct default for an API whose credential is a bearer
     # token. Only a deployment that actually serves a UI from a DIFFERENT origin needs this; a UI
     # served by this same app, or one that proxies through its own backend, must leave it unset.
-    # There is deliberately no "*": with `allow_credentials` off a wildcard would still let any
-    # page on the internet read admin responses using a token it somehow obtained, and an explicit
-    # allowlist costs one env var.
+    # "*" is REFUSED at startup (see create_app): with `allow_credentials` off a wildcard would
+    # still let any page on the internet read admin responses using a token it somehow obtained,
+    # and an explicit allowlist costs one env var. Starlette would honour a "*" here, so refusing
+    # it has to be done by us -- otherwise the obvious thing to type silently opens the API up.
     cors_allow_origins: str = ""
     # uvicorn forwarded-allow-ips: which upstream peers may set X-Forwarded-For. Behind a PaaS proxy
     # (Render/Fly) set "*" so the rate limiter sees the real client IP, not the proxy's single IP.
