@@ -55,6 +55,14 @@ _FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py",
                           # installer -- which normally ships in the romfs and is exec'd into
                           # RAM, but cannot be when the romfs is the thing that is gone.
                           "openmv_netcfg.py", "openmv_recovery.py")
+# The public TLS trust store, frozen into the firmware rather than shipped in the romfs. It is
+# ~186 KB -- 58% of a scaffolded app image -- and the romfs image is duplicated under A/B, so in
+# the slot it was paid for twice; on a one-erase-sector board (M4/M7/H7 classic) it did not fit at
+# all. In the firmware it is paid for once, is read straight out of flash (no RAM copy), and is
+# there even when the filesystem holding the app is what broke -- the same argument that puts
+# boot.py and openmv_log there. Generated per project (from the fetched bundle), so unlike the
+# modules above it has no bundled default.
+_CA_MODULE = "openmv_ca.py"
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 
@@ -205,6 +213,16 @@ def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
         src = p.root / "device" / mod
         shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, tmp / mod)
         freezes.append('freeze("%s", "%s")\n' % (tmp.as_posix(), mod))
+    # The project's OWN TLS roots, frozen as `openmv_ca` -- present only when `project new --ca`
+    # supplied them. There is deliberately no default here: the PUBLIC bundle is ~186 KB and
+    # freezing that overflows FLASH_TEXT on every 1792 KB board (H7 Plus 106.85%, PureThermal
+    # 104.57%, Nicla 101.56%), so it ships in the romfs instead. What makes freezing work is the
+    # store being about a kilobyte, not where it lives. Without one, openmv_ota reads the romfs
+    # copy, which is also what a project created before `--ca` existed keeps doing.
+    ca_mod = p.root / "device" / _CA_MODULE
+    if ca_mod.exists():
+        shutil.copy2(ca_mod, tmp / _CA_MODULE)
+        freezes.append('freeze("%s", "%s")\n' % (tmp.as_posix(), _CA_MODULE))
     # The installer, frozen as `openmv_installer`. It is the SAME source the romfs ships and
     # openmv_ota.install() exec's into RAM -- one implementation, so a fix cannot land on the
     # normal path and miss the recovery one. The romfs copy stays: on a healthy device it is

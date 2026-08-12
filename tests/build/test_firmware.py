@@ -222,6 +222,9 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     shipped = (Path(fw.__file__).parent / "device" / "openmv_ota" / "data" / "installer.py")
     assert (r.build_dir / "openmv_installer.py").read_bytes() == shipped.read_bytes()
     assert "openmv_log.py" in manifest and "openmv_wdt.py" in manifest  # logger + watchdog frozen
+    # No --ca -> no frozen trust store: the public bundle is ~186 KB and freezing it overflows
+    # FLASH_TEXT on every 1792 KB board, so it ships in the romfs instead.
+    assert "openmv_ca.py" not in manifest
     # the real boot.py (not a placeholder) + the generated config + device modules are present
     assert "OtaBoot" in (r.build_dir / "boot.py").read_text()
     cfg = (r.build_dir / "_ota_config.py").read_text()
@@ -513,3 +516,20 @@ def test_an_unreadable_ca_fails_the_build_loudly(tmp_path):
 
     with pytest.raises(BuildError, match="not readable"):
         _recovery_ca(_FakeProj(tmp_path, ca="certs/missing.pem"))
+
+
+def test_build_firmware_freezes_a_supplied_trust_store(make_project, monkeypatch):
+    """`--ca` roots ARE frozen: about a kilobyte, so the firmware can hold them -- and there they
+    are readable with no RAM copy and survive the filesystem being gone, which is what recovery
+    needs. The public bundle is what cannot be frozen, not the idea."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    root, repo, _app = make_project(ota=True)
+    ca = root / "device" / "openmv_ca.py"
+    ca.write_text('PEM = b"-----BEGIN CERTIFICATE-----\\nAAA\\n-----END CERTIFICATE-----\\n"\n')
+
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+
+    manifest = (r.build_dir / "manifest.py").read_text()
+    assert "openmv_ca.py" in manifest
+    assert (r.build_dir / "openmv_ca.py").read_text() == ca.read_text()

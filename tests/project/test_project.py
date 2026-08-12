@@ -193,9 +193,14 @@ def test_create_ota_scaffolds_runtime_lib_with_coprocessor_data(tmp_path, make_f
     root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, ota_keys=2, factory_keys=1)
     lib = proj.ProjectPaths(root).app_dir / "lib" / "openmv_ota"
     assert (lib / "__init__.py").exists()
-    # the installer + CA bundle are scaffolded for every OTA board
+    # the installer + the public CA bundle are scaffolded for every OTA board
     assert "def run(" in (lib / "data" / "installer.py").read_text()
+    # WITHOUT --ca the PUBLIC bundle stays in the romfs and nothing is frozen. Freezing it was
+    # measured and is not affordable: ~186 KB overflows FLASH_TEXT on every 1792 KB board (H7
+    # Plus 106.85%, PureThermal 104.57%, Nicla 101.56%). Only a supplied ~1 KB root is small
+    # enough to freeze -- see the single-image test for that path.
     assert (lib / "data" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()
+    assert not (root / "device" / proj.CA_MODULE).exists()
     res = json.loads((lib / "data" / "resources.json").read_text())
     assert res[0]["handler"] == "partition" and res[0]["partition"] == 1
     read_image((lib / "data" / "coprocessor.romfs").read_bytes())   # valid romfs, no raise
@@ -214,7 +219,8 @@ def test_create_ota_runtime_lib_no_coprocessor_data_without_coprocessor(
     assert "class CSI" in (lib.parent / "openmv_cloud" / "csi.py").read_text()
     assert (lib.parent / "openmv_cloud" / "__init__.py").exists()
     assert "def run(" in (data / "installer.py").read_text()
-    assert (data / "ca.pem").read_bytes() == proj._fetch_ca_bundle()  # the stubbed bundle
+    assert (data / "ca.pem").read_bytes() == proj._fetch_ca_bundle()   # the stubbed bundle
+    assert not (root / "device" / proj.CA_MODULE).exists()   # nothing frozen without --ca
     assert not (data / "coprocessor.romfs").exists()
     assert not (data / "resources.json").exists()
 
@@ -359,18 +365,67 @@ def test_ensure_ota_capable_rejects_a_partition_with_no_room_for_control():
         proj._ensure_ota_capable(lock)
 
 
+def _root_pem(tmp_path):
+    """A stand-in for "your own server's root" -- the ~1 KB a single-image board can afford."""
+    pem = tmp_path / "root.pem"
+    pem.write_bytes(b"-----BEGIN CERTIFICATE-----\nMIIBkTCB+w==\n-----END CERTIFICATE-----\n")
+    return str(pem)
+
+
 def test_create_ota_accepts_a_one_sector_board_in_single_mode(tmp_path, make_firmware, make_sdk):
     """OpenMV4's romfs is a single 128K internal-flash sector, so it cannot hold two slots --
     which used to disqualify it from OTA entirely. Under v2 it builds in single-image mode
-    instead: one slot, no fallback, recovery living in the firmware."""
+    instead: one slot, no fallback, recovery living in the firmware.
+
+    It must be given its own trust store: the public bundle is ~186 KB against a 114,688-byte
+    slot, so these boards do OTA against your own server."""
     from openmv_ota.ota import geometry
 
     root, (lock, _) = _create(tmp_path, make_firmware, make_sdk, ota=True, boards=["OPENMV4"],
-                              factory_keys=1, ota_keys=2)
+                              factory_keys=1, ota_keys=2, ca=_root_pem(tmp_path))
     assert lock.ota is True
     rb = next(t for t in lock.targets["resolved"] if t.get("role", "main") == "main")
     assert geometry.derive_mode(rb["partition_size"], rb["erase_size"]) == geometry.SINGLE
     assert root.exists()
+    # the supplied roots are what gets frozen -- NOT the public bundle
+    ns = {}
+    exec(compile((root / "device" / proj.CA_MODULE).read_text(), "openmv_ca.py", "exec"), ns)
+    assert b"BEGIN CERTIFICATE" in ns["PEM"] and len(ns["PEM"]) < 4096
+    assert (root / "certs" / "root.pem").exists()    # copied in, so the project is self-contained
+
+
+def test_create_ota_ca_must_exist(tmp_path, make_firmware, make_sdk):
+    with pytest.raises(ProjectError, match="not readable"):
+        _create(tmp_path, make_firmware, make_sdk, ota=True, boards=["OPENMV4"],
+                factory_keys=1, ota_keys=2, ca=str(tmp_path / "nope.pem"))
+
+
+def test_create_ota_ca_must_look_like_a_pem(tmp_path, make_firmware, make_sdk):
+    """A DER file or a stray binary would fail much later, on the device, as a TLS error."""
+    bad = tmp_path / "root.der"
+    bad.write_bytes(b"\x30\x82\x01\x0a not pem")
+    with pytest.raises(ProjectError, match="does not look like a PEM"):
+        _create(tmp_path, make_firmware, make_sdk, ota=True, boards=["OPENMV4"],
+                factory_keys=1, ota_keys=2, ca=str(bad))
+
+
+def test_trust_store_reports_an_unreadable_configured_ca(tmp_path):
+    """`[ota] ca` pointing at a path that isn't there -- e.g. hand-edited, or not committed."""
+    import types as _t
+    paths = proj.ProjectPaths(tmp_path)
+    cfg = _t.SimpleNamespace(ca="certs/gone.pem")
+    lock = _t.SimpleNamespace(targets={"resolved": []})
+    with pytest.raises(ProjectError, match=r"\[ota\] ca .* is not readable"):
+        proj._trust_store(paths, cfg, lock)
+
+
+def test_create_ota_refuses_a_one_sector_board_without_its_own_ca(tmp_path, make_firmware, make_sdk):
+    """The public bundle does not fit these boards, so scaffolding it would only move the
+    failure to a linker error nobody connects to a certificate. Refuse where it can be
+    explained, and say what to pass."""
+    with pytest.raises(ProjectError, match="cannot hold the public CA bundle"):
+        _create(tmp_path, make_firmware, make_sdk, ota=True, boards=["OPENMV4"],
+                factory_keys=1, ota_keys=2)
 
 
 def test_create_non_ota_allows_non_capable_board(tmp_path, make_firmware, make_sdk):

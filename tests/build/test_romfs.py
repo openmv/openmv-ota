@@ -6,6 +6,7 @@ import shutil
 import types
 
 from openmv_ota.build import romfs as build_mod
+from openmv_ota.ota import geometry
 from openmv_ota.build.errors import BuildError
 from openmv_ota.ota import geometry
 from openmv_ota.romfs.builder import read_image
@@ -244,6 +245,8 @@ def test_build_keeps_installer_strips_coprocessor_data_for_plain_board(make_proj
     paths = {p for p, _ in read_image(body).walk()}
     assert "lib/openmv_ota/__init__.py" in paths
     assert "lib/openmv_ota/data/installer.py" in paths
+    # The PUBLIC bundle ships in the romfs (freezing ~186 KB overflows FLASH_TEXT on every
+    # 1792 KB board). A project that supplies its own ~1 KB root gets that frozen instead.
     assert "lib/openmv_ota/data/ca.pem" in paths
     assert "lib/openmv_ota/data/coprocessor.romfs" not in paths
     assert "lib/openmv_ota/data/resources.json" not in paths

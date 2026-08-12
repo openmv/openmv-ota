@@ -49,6 +49,11 @@ def register(project_parser: argparse.ArgumentParser):
     p_new.add_argument("--no-firmware-patches", dest="firmware_patches", action="store_false",
                        help="don't auto-apply the OTA-required firmware patches (ranged romfs erase); "
                             "`project new` then fails if the firmware is missing them")
+    p_new.add_argument("--ca", metavar="PEM",
+                       help="TLS roots the device trusts for OTA downloads (a PEM file, copied "
+                            "into the project as certs/ and frozen into the firmware). Unset "
+                            "fetches the public bundle -- which is ~186 KB and does NOT fit a "
+                            "single-image board, so those boards require this")
     p_new.add_argument("--sig-alg", choices=("ES256", "ES384", "ES512"), default="ES256",
                        help="OTA signature algorithm (default ES256 / P-256)")
     p_new.add_argument("--ota-keys", type=int, default=32, metavar="N",
@@ -347,6 +352,7 @@ def cmd_new(args: argparse.Namespace) -> int:
             force=args.force,
             ota=args.ota,
             sig_alg=sig_alg,
+            ca=args.ca,
             ota_keys=args.ota_keys,
             factory_keys=args.factory_keys,
             now=_now(),
