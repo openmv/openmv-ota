@@ -194,3 +194,40 @@ def test_no_slot_seeds_the_marker_uart_where_the_brick_cannot_erase_it():
     seed = body.split("if bad_romfs:")[1].split("flash erase --romfs")[0]
     assert "/flash/.hilcov_uart" in seed, "the marker UART must be seeded somewhere the erase spares"
     assert "cov_uart" in seed, "...and it must name THIS board's UART"
+
+
+def test_trace_write_creates_its_directory():
+    """A finished scenario must not be lost to a missing directory.
+
+    The trace is written at the very END, after provision + flash + install + confirm, so a
+    non-existent parent turns a PASSING run into a non-zero exit with no RESULT line and no trace
+    to explain it -- indistinguishable from a scenario failure. Measured on the Portenta: the board
+    completed the entire OTA correctly and the run still failed, on a node that simply had no
+    ~/hil-traces yet.
+    """
+    import inspect
+    src = inspect.getsource(ota_cycle.main)
+    tail = src.split('trace["elapsed_s"]')[1]
+    assert "makedirs" in tail.split("json.dump")[0], "create the directory before writing the trace"
+
+
+def test_phase1_also_publishes_after_the_window_reset():
+    """Phase 1 has the same race as phase 2, and "self-healing" does not save the leg.
+
+    Publishing before run_cycle leaves the update offerable while the board is still running, so
+    the device (polling every ~5 s) can start installing in the gap and be reset MID-ERASE. Phase 1
+    was left eager on the argument that the device recovers -- it does: it falls back to golden and
+    retries. But `delta` FORBIDS boot.fallback, so a board that behaved perfectly still fails the
+    leg. Measured on RT1060 lan: erase at :19, UART severed mid-line, reboot at :22,
+    `boot: rejected B:body-sha -> mounted A`, scored missing=- forbidden=[boot.fallback].
+    """
+    import inspect
+    src = inspect.getsource(ota_cycle.main)
+    seg = src.split('result = phase("install"')[0]
+    assert "def publish():" in seg, "phase 1's publish must be deferred into a callable"
+    call = src.split('result = phase("install"')[1].split(")")[0] + ")"
+    assert "after_reset=publish" in src.split('result = phase("install"')[1][:400], \
+        "...and handed to run_cycle so it fires after the reset"
+    # the eager call must be gone: no bare phase("publish", ...) outside that callable
+    body = seg.split("def publish():")[1] if "def publish():" in seg else ""
+    assert "artifact_sizes" in body, "metrics must move with the publish, not run before it"

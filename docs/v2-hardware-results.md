@@ -15,6 +15,66 @@ someone else and were not touched). Every leg ran the board's own regression set
 | **Arduino Portenta H7** | lan | **PASS** (`delta`) |
 | **OpenMV H7 Plus** | wifi | `full` **PASS**; every delta-based scenario timed out — **root-caused and fixed**, see [h7plus-xip-tail-wedge.md](h7plus-xip-tail-wedge.md) |
 
+## The 2026-08-12 sweep — the whole fleet, in CI, on the merge gate
+
+Three consecutive full-fleet runs on the PR gate (nine legs, every board's own regression set).
+This is the first sweep where **every board was reachable**, the AE3 included.
+
+| board | interface | scenarios | result |
+|---|---|---|---|
+| **OpenMV N6** | lan | 11 | **PASS** — incl. `watchdog`, `watchdog_bite`, `reinstall` |
+| **OpenMV N6** | wifi | 1 | **PASS** |
+| **OpenMV RT1062** | lan | 11 | **PASS** — incl. `reinstall`, `watchdog`, `no_slot` |
+| **OpenMV RT1062** | wifi | 1 | **PASS** |
+| **OpenMV H7 Plus** | wifi | 9 | **PASS** |
+| **Arduino Nicla Vision** | wifi | 9 | **PASS** |
+| **Arduino Portenta H7** | lan | 1 | **PASS** |
+| **Arduino Portenta H7** | wifi | 9 | **PASS** on runs 1-2; run 3 failed `delta` in CI and **passes on the bench** (359 s) — intermittent, see below |
+| **OpenMV AE3** | wifi | 2 | **PASS** |
+
+### Every failure this sweep found was in the HARNESS, not the device
+
+Worth stating plainly, because it is the opposite of what the red legs looked like. Five bugs, all
+of them the test rig making a timing or observability assumption the device had outgrown:
+
+1. **A faster install outran a polled observation.** The blank-skip erase cut the RT1062's slot
+   erase from 54 s to 4 s, and `saw_golden` — which had to *catch* the device reporting the old
+   version on a 15 s poll — stopped latching. The leg then burned its whole window and failed an
+   install that was flawless (`delta`, `watchdog`: 362 s PASS -> 606 s FAIL). Fixed by scoring the
+   promoted path on the in-window markers, which are emitted evidence rather than sampled state.
+
+2. **The update went live before the board was reset.** `run_cycle` opens each window with a hard
+   reset; `reinstall` phase 2 published *before* that call, so the device (polling every ~5 s) could
+   start installing in the gap and be reset MID-ERASE — leaving a half-written slot, an unsettled
+   device the server rightly refuses to offer to, and a deadlocked phase. A pure race: it passed on
+   the bench and failed in CI on identical code, so it is closed by ordering, not by a delay.
+
+3. **`no_slot` erased its own instrumentation.** `.hilcov_uart` is baked into the ROMFS (the one
+   volume that survives an armed watchdog) and that scenario's brick erases the whole romfs region,
+   so the act creating the condition under test also removed the file naming the marker UART. The
+   device printed `boot: no bootable slot` correctly into a channel nobody was listening to. Reading
+   the console instead does *not* work — boot.py prints before the CDC enumerates, proven by an SWD
+   reset that produced 0 bytes in 38 s — so the brick now seeds `/flash/.hilcov_uart` first, which
+   the erase spares. 1030 s FAIL -> 136 s PASS.
+
+4. **The same publish-before-reset race in phase 1 -- and "self-healing" did not save it.**
+   Phase 2 was fixed first and phase 1 deliberately left eager, on the argument that a device on
+   golden simply falls back and retries. That is true of the DEVICE and false of the SCORING:
+   `delta` FORBIDS `boot.fallback`, so a board that behaved perfectly still failed the leg.
+   Measured on RT1060 lan: erase at :19, the UART severed mid-line, reboot at :22,
+   `boot: rejected B:body-sha -> mounted A`, scored `missing=- forbidden=[boot.fallback]`. Both
+   phases now publish from inside the window, after the reset. Verified 3/3 on the bench.
+
+5. **A finished run thrown away by a missing directory.** The trace is written last, so a
+   non-existent parent turned a completed, correct OTA into a non-zero exit with no RESULT line —
+   indistinguishable from a scenario failure. The write now creates its directory.
+
+The general lesson, and the one worth carrying: **any assertion that must *catch* a transient state
+is a latent race against the device getting faster.** Prefer evidence the device emits — markers,
+logged once, captured in a reset window — over state the harness has to sample at the right moment.
+And when a leg's failure *signature* changes, that is information: the old cause is fixed and a new
+one has taken its place.
+
 ## The re-sweep, after the XIP tail guard
 
 Bug 3 below is in the *shared* XIP read path, not an H7-Plus-only patch, so the whole fleet was
