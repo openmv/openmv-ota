@@ -1328,7 +1328,10 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # was left of the window -- and hands the FIRST erase whatever survived the manifest
             # parse and TLS, which is how the HIL `watchdog` scenario reset before even the first
             # block witness and rebooted.
-            worst = 0                                 # longest single erase seen, ms
+            worst = skipped = erased = 0              # longest erase (ms); blocks skipped / erased.
+            #                                           COUNT the erases rather than deriving them
+            #                                           from `nb`: that is an absolute end-block
+            #                                           INDEX (nb += b above), not a block count.
             feed()                                    # relax().__enter__ below imports machine and
             #                                           ALLOCATES a Timer (~7 ms measured, and any
             #                                           allocation can trigger a collect) -- all of
@@ -1351,11 +1354,20 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                     log.debug("install: erase relax armed t=%d" % ticks_ms())  # hil-residual: bounded one-shot; it sits between the relax entry and the first flash op, so no marker dominates it
                 while b < nb:                         # one block per call -> returns to the
                     feed()                            # VM between blocks (no dead-time erase);
+                    if blank_at(b * _bs, _bs):        # already 0xFF -- erasing it buys nothing
+                        skipped += 1
+                        b += 1
+                        if log and "sk" not in _seen:
+                            _seen.add("sk")           # one-shot; per-slot totals land in the
+                            #                           `erased slot` line at the end
+                            log.debug("install: skipping blank block-device")
+                        continue  # hil-residual: bare continue (nothing to erase here)
                     _t0 = ticks_ms()                  # this port is already chunk-granular
                     part.ioctl(6, b)
                     _dt = ticks_diff(ticks_ms(), _t0)
                     if _dt > worst:
                         worst = _dt  # hil-residual: witnessed transitively -- a non-zero worst= in the erase progress marker is proof this ran (it is the only writer)
+                    erased += 1
                     b += 1
                     if log and (b & 0x3F) == 1:       # the first block, then every 64th:
                         _seen.add("e")                # witness the in-loop erase op AND report
@@ -1366,8 +1378,10 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                         #                               from a death 40 blocks in. Bounded: 4 lines
                         #                               per slot. Same marker text, so it still
                         #                               witnesses the same coverage point.
-                        log.debug("install: erasing block block-device %d/%d worst=%dms" % (b, nb, worst))
-            log.debug("install: erased slot block-device")
+                        log.debug("install: erasing block block-device %d/%d worst=%dms skipped=%d"
+                                  % (b, nb, worst, skipped))
+            log.debug("install: erased slot block-device %d/%d blocks (skipped %d already blank)"
+                      % (erased, erased + skipped, skipped))
 
         # Reused block-device scratch (n <= _CHUNK): a readback and a base-read buffer, so neither
         # closure allocates per chunk -- the same zero-alloc discipline as the XIP path, needed so
@@ -1375,6 +1389,30 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         # (compared / added) before the next call reuses its buffer.
         _rb = memoryview(bytearray(_CHUNK))
         _br = memoryview(bytearray(_CHUNK))
+
+        def blank_at(off, n):
+            """True only if ``[off, off+n)`` ALREADY reads as 0xFF -- an erased block `erase()`
+            above can skip. (Defined here, below `erase`, because it borrows `_rb`; the call is
+            resolved when `erase` RUNS, which is long after this line.)
+
+            Same reasoning as the XIP path: a slot is mostly 0xFF, because the write loop programs
+            only the non-blank chunks of the image and the padding past it was never written. So
+            most of a whole-slot erase puts 0xFF where 0xFF already is, at ~24 ms a block. Reading
+            to find that out is not a new cost either -- _install_stream's erase-verify already
+            walks the entire slot this way, and it is the check that fails loudly if this is ever
+            wrong."""
+            while n:
+                k = _CHUNK if n >= _CHUNK else n
+                v = _rb if k == _CHUNK else _rb[:k]   # no slice on the common path (see _is_blank)
+                part.readblocks(off // _bs, v, off % _bs)
+                if not _is_blank(v):
+                    return False  # hil-residual: bare return (dirty block -- must be erased)
+                off += k
+                n -= k
+                if log and "bp" not in _seen:         # one-shot in-loop witness (cf. base_read_at)
+                    _seen.add("bp")
+                    log.debug("install: blank probe block-device")
+            return True  # hil-residual: bare return (block already blank -- skip the erase)
 
         def write_at(off, data):                      # extended writeblocks: byte-granular,
             part.writeblocks(off // _bs, data, off % _bs)    # so sub-block markers work too
@@ -1435,6 +1473,39 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 log.debug("install: back read XIP")
             return r  # hil-residual: bare return of the XIP base-read alias
 
+        def blank_at(off, n):
+            """True only if ``[off, off+n)`` ALREADY reads as 0xFF -- i.e. an erased sector the
+            erase loop can skip.
+
+            A slot is mostly 0xFF: the write loop programs only the non-blank chunks of the image
+            (see `_is_blank` at the write), so the padding beyond it was never written and is still
+            erased from last time. Erasing it again is pure cost, and on flash that cost is the
+            whole story -- an XSPI sector erase is ~24 ms, so a 12 MiB N6 slot is ~73 s spent
+            putting 0xFF where 0xFF already is. (The `worst=` in the progress line reads ~2 ms and
+            is an ARTIFACT: the erase runs with interrupts disabled, so SysTick does not advance
+            and ticks_ms() cannot see its own duration. The wall clock can, and does.)
+
+            Skipping reaches exactly the same post-condition -- a fully blank slot -- which is what
+            makes it safe at all; and _install_stream's erase-verify then walks the whole slot and
+            fails loudly if it ever is not.
+
+            A SHORT read is not evidence: inside the tail guard we cannot look, so answer False and
+            let the block be erased."""
+            while n:
+                k = _CHUNK if n >= _CHUNK else n
+                if off + k > readable_end:            # tail guard -- unreadable, so never assume
+                    return False  # hil-residual: bare return (tail-guard block is always erased)
+                if not _is_blank(uctypes.bytearray_at(base + off, k)):
+                    return False  # hil-residual: bare return (dirty block -- must be erased)
+                off += k
+                n -= k
+                if log and "bp" not in _seen:         # one-shot in-loop witness (cf. base_read_at).
+                    _seen.add("bp")                   # LAST in the body on purpose: everything
+                    #                                   above it then dominates it, so the probe
+                    #                                   loop is witnessed rather than annotated.
+                    log.debug("install: blank probe XIP")
+            return True  # hil-residual: bare return (block already blank -- skip the erase)
+
         def erase(start, total):
             # Erase INCREMENTALLY where the port supports the ranged prepare
             # (rom_ioctl 6 = min-prepare size, and the 4-arg rom_ioctl 3 with an
@@ -1451,18 +1522,46 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 # disabled nothing can feed until it returns. The feed has to precede it.
                 feed()                            # full window before relax()'s allocating entry
                 end = start + total
+                nb = (total + bs - 1) // bs       # blocks in this slot, for the progress line
+                i = worst = skipped = erased = 0
                 with relax():
                     while o < end:
                         n = bs if end - o > bs else end - o
                         feed()
+                        if blank_at(o, n):            # already 0xFF -- erasing it buys nothing
+                            skipped += 1
+                            o += n
+                            i += 1
+                            if log and "sk" not in _seen:
+                                _seen.add("sk")       # one-shot; the per-slot totals land in the
+                                #                       `erased slot` line at the end
+                                log.debug("install: skipping blank XIP")
+                            continue  # hil-residual: bare continue (nothing to erase here)
+                        _t0 = ticks_ms()
                         rc = vfs.rom_ioctl(3, 0, o, n)
+                        _dt = ticks_diff(ticks_ms(), _t0)
+                        if _dt > worst:
+                            worst = _dt  # hil-residual: witnessed transitively -- a non-zero worst= in the progress line proves this ran (it is the only writer)
                         if rc < 0:
                             raise OSError(-rc)  # hil-residual: bare raise on a negative errno (erase-fault, inject-only)
                         o += n
-                        if log and "e" not in _seen:  # witness the in-loop erase op once
-                            _seen.add("e")
-                            log.debug("install: erasing block XIP")
-                log.debug("install: erased slot XIP")
+                        i += 1
+                        erased += 1
+                        if log and (i & 0x3F) == 1:   # the first block, then every 64th
+                            _seen.add("e")            # witness the in-loop erase op AND report
+                            #                           progress. The block-device path has done
+                            #                           this since the RT reset mid-erase; this one
+                            #                           never got it. A 12 MiB N6 slot is ~73 s of
+                            #                           silence, so a one-shot witness cannot tell
+                            #                           a first-call hang from a death 1900 blocks
+                            #                           in -- exactly the question the N6's
+                            #                           `reinstall` failure is stuck on. Bounded:
+                            #                           48 lines for a 12 MiB slot. Same marker
+                            #                           text, so the coverage point is unchanged.
+                            log.debug("install: erasing block XIP %d/%d worst=%dms skipped=%d"
+                                      % (i, nb, worst, skipped))
+                log.debug("install: erased slot XIP %d/%d blocks (skipped %d already blank)"
+                          % (erased, nb, skipped))
                 return  # hil-residual: bare return (ranged erase done)
             # Legacy single-shot fallback for firmware WITHOUT #19348 (no ranged prepare). The
             # bench always applies #19348, so rom_ioctl(6) returns a size and the ranged branch
