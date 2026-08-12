@@ -221,10 +221,13 @@ jobs:
   hil:
     name: hil ${{ matrix.board }}
     needs: build
-    if: >-
-      github.event_name == 'workflow_dispatch'
-      || github.ref == 'refs/heads/main'
-      || github.ref == 'refs/heads/master'
+    # MANUAL ONLY. This used to also run on every push to main, which meant every MERGE
+    # grabbed the AE3, the N6 and the RT1060 to rebuild firmware they had already proven --
+    # the real gate is hil-ota.yml, which runs the full regression on the PR, i.e. BEFORE the
+    # merge. Re-running a build on the bench afterwards proves nothing new and takes the
+    # boards away from the next PR's gate (and from anyone at the bench). Dispatch it by hand
+    # when you actually want a firmware build on the board's own runner.
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
