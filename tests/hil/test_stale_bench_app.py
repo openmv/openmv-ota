@@ -117,3 +117,29 @@ def test_run_cycle_lets_a_caller_force_marker_scoring():
     sig = inspect.signature(ota_cycle.run_cycle)
     assert "by_marker" in sig.parameters
     assert sig.parameters["by_marker"].default is False, "opt-in only; boards keep their behaviour"
+
+
+def test_promoted_scoring_survives_an_install_faster_than_the_poll():
+    """A promoted leg must not need to CATCH the device on golden.
+
+    `saw_golden` was a polled observation of a transient state: the harness reads the server's
+    device record every 15 s and had to see the device report golden before the install flipped it
+    to target. That is a race against install speed, and the blank-skip erase lost it -- the
+    RT1060's slot erase went 54 s -> 4 s, so a delta install fits inside one poll gap. Measured:
+    RT1060 lan `delta` and `watchdog` went 362 s/PASS -> 606 s/FAIL on the run that made installs
+    faster, both with every expected marker present and nothing forbidden.
+
+    The markers are the stronger witness and are not racy: the capture is reset when the window
+    opens, so a promoted scenario's install.start -> install.committed -> confirm.promoted can only
+    have been produced inside it. A device already sitting on target cannot fake them.
+    """
+    import inspect
+    body = inspect.getsource(ota_cycle.run_cycle)
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    reached = code.split("reached = ")[1].split("return")[0]
+    promoted = reached.split('end == "promoted"')[1].split("or (")[0]
+    assert "saw_golden" not in promoted, "a fast install must not fail for being fast"
+    assert "have" in promoted, "...but the in-window install markers must still be required"
+    # the negative legs never install, so nothing shrinks their golden state -- they keep the check
+    golden = reached.split('end == "golden"')[1]
+    assert "saw_golden" in golden, "end=golden legs still assert the device settled back"

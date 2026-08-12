@@ -2229,7 +2229,7 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=Fals
                 break                        # no server record to corroborate: the device's own
                 #                              markers ARE the evidence, and they are complete
         elif end == "promoted":
-            if saw_golden and v == target and slot and have:
+            if v == target and slot and have:
                 break                        # real pre-update -> target transition, all paths hit
         elif saw_golden and v == golden and have:
             break                            # settled back on golden, all negative paths hit
@@ -2238,8 +2238,27 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=Fals
     # pinning the name here would fail every happy path on a board that happens to be running
     # from B. What the assertion actually needs is that a slot was selected and the VERSION
     # moved, which is what the two clauses below check.
+    # DO NOT require `saw_golden` on the promoted path. It is a POLLED observation of a TRANSIENT
+    # state: the harness reads the server's device record every 15 s and has to catch the device
+    # reporting golden before the install flips it to target. That is a race against install speed,
+    # and it is now lost -- the blank-skip erase took the RT1060's slot erase from 54 s to 4 s, so a
+    # delta install can start and finish inside a single poll gap. The record then only ever reads
+    # target, `saw_golden` never latches, the break above can never fire, and the leg burns its whole
+    # window and scores a FAILURE for an install that was flawless. Measured: RT1060 lan `delta` and
+    # `watchdog` both went 362 s/PASS -> 606 s/FAIL on exactly the run that made installs faster,
+    # with every expected marker present and nothing forbidden.
+    #
+    # `have` is the stronger witness anyway, and it is not racy. The capture is reset when the window
+    # opens (see cap.reset below the publish), so every marker scored here was produced INSIDE this
+    # window -- and a promoted scenario's expect set runs install.start -> install.committed ->
+    # confirm.promoted. A device that was already on target and did nothing cannot produce those, so
+    # dropping the polled check does not weaken the "it really transitioned here" assertion that
+    # saw_golden existed to make; it just stops asserting it with a stopwatch.
+    #
+    # Polling faster would only move the race (a 2 s install would still be missed). end="golden"
+    # keeps saw_golden: those legs never install, so nothing shrinks that state.
     reached = (have if by_marker else
-               ((end == "promoted" and saw_golden and v == target and bool(slot))
+               ((end == "promoted" and v == target and bool(slot) and have)
                 or (end == "golden" and saw_golden and v == golden)))
     return {"saw_golden": saw_golden, "saw_target": saw_target,
             "version": v, "slot": slot, "reached_end": reached}
