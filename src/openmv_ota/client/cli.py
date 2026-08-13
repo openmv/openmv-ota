@@ -26,6 +26,26 @@ from .errors import ClientError
 def _creds(p: argparse.ArgumentParser) -> None:
     p.add_argument("--server", help="server URL (else OPENMV_OTA_SERVER / saved profile)")
     p.add_argument("--token", help="admin token (else OPENMV_OTA_TOKEN / saved profile)")
+    # THE READS HAVE ALWAYS PRINTED JSON (see `_read`); the writes printed prose only, so
+    # publishing a release or issuing a token could not be scripted without parsing English.
+    # `_creds` is on every verb that talks to the server, which makes it exactly the right
+    # place for this -- the flag lands on the whole remote surface and nowhere else.
+    p.add_argument("--json", action="store_true",
+                   help="print the server's response as JSON instead of a summary")
+
+
+def _emit(args: argparse.Namespace, payload, *lines: str) -> int:
+    """The server's response as JSON under ``--json``, else the human summary.
+
+    Prints the response VERBATIM rather than a re-rendering of it, so a field the summary does
+    not bother to mention is still there for a caller that needs it -- the same reason the API's
+    own schemas document without filtering."""
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+    else:
+        for line in lines:
+            print(line)
+    return 0
 
 
 def register(parser: argparse.ArgumentParser) -> None:
@@ -34,9 +54,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_login = sub.add_parser("login", help="save the server URL + admin token")
     p_login.add_argument("--server", required=True, help="server base URL (https://...)")
     p_login.add_argument("--token", help="admin API token (else OPENMV_OTA_TOKEN, else stdin)")
+    p_login.add_argument("--json", action="store_true",
+                         help="print the saved profile as JSON instead of a summary")
     p_login.set_defaults(func=cmd_login, _command="client login")
 
     p_logout = sub.add_parser("logout", help="remove the saved server URL + token")
+    p_logout.add_argument("--json", action="store_true",
+                          help="print what was removed as JSON instead of a summary")
     p_logout.set_defaults(func=cmd_logout, _command="client logout")
 
     p_pub = sub.add_parser("publish", help="upload a built release (+ optional rollout)")
@@ -192,16 +216,19 @@ def cmd_login(args: argparse.Namespace) -> int:
         print("error: no token (pass --token, set OPENMV_OTA_TOKEN, or pipe it on stdin)",
               file=sys.stderr)
         return 2
-    print("saved %s" % config.save(args.server.rstrip("/"), token))
-    return 0
+    # login/logout are LOCAL (they write the saved profile, they do not call the API), but they
+    # take --json anyway: a group where one verb speaks JSON and its neighbour does not is the
+    # inconsistency this change exists to remove, and a setup script wants the path it wrote.
+    path = config.save(args.server.rstrip("/"), token)
+    return _emit(args, {"saved": str(path), "server": args.server.rstrip("/")},
+                 "saved %s" % path)
 
 
 def cmd_logout(args: argparse.Namespace) -> int:
     if config.remove():
-        print("removed %s" % config.config_path())
-    else:
-        print("no saved profile")
-    return 0
+        return _emit(args, {"removed": str(config.config_path())},
+                     "removed %s" % config.config_path())
+    return _emit(args, {"removed": None}, "no saved profile")
 
 
 def _make_api(cfg):
@@ -262,10 +289,17 @@ def cmd_bases(args: argparse.Namespace) -> int:
         releases = api.releases(args.product_id, limit=args.last)["releases"]
         if not releases:
             raise ClientError("no retained releases to use as delta bases")
+        # `bases` has no single API response to echo -- it WRITES files -- so the JSON is what
+        # a caller actually needs from it: where each base landed and which release it is. A
+        # build script chaining `bases` into `build ota-romfs --delta-from` reads exactly this.
+        got, lines = [], []
         for rel in releases:
             path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, rel["version"]))
             path.write_bytes(api.release_image(rel["release_id"]))
-            print("%s  (%s, %d bytes)" % (path, rel["version"], path.stat().st_size))
+            got.append({"path": str(path), "release_id": rel["release_id"],
+                        "version": rel["version"], "bytes": path.stat().st_size})
+            lines.append("%s  (%s, %d bytes)" % (path, rel["version"], path.stat().st_size))
+        return _emit(args, {"bases": got}, *lines)
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -277,7 +311,8 @@ def cmd_prune(args: argparse.Namespace) -> int:
     try:
         cfg = config.resolve(args.server, args.token)
         res = _make_api(cfg).delete_release_artifacts(args.release, force=args.force)
-        print("deleted %d object(s) for %s" % (len(res["deleted"]), res["release_id"]))
+        return _emit(args, res,
+                     "deleted %d object(s) for %s" % (len(res["deleted"]), res["release_id"]))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -296,12 +331,18 @@ def cmd_publish(args: argparse.Namespace) -> int:
         api = _make_api(cfg)
         res = api.publish_release(manifest.read_bytes(), image.read_bytes(),
                                   _declared_deltas(manifest, out), args.allow_republish)
-        print("published %s  version %s  (%s)" % (res["release_id"], res.get("version"),
-                                                  ", ".join(res["representations"])))
+        lines = ["published %s  version %s  (%s)" % (res["release_id"], res.get("version"),
+                                                     ", ".join(res["representations"]))]
+        payload = dict(res)
         if args.rollout:
             cohort, pct = _parse_rollout(args.rollout)
             ro = api.create_rollout(res["release_id"], cohort, pct)
-            print("rollout %s  %s%%  cohort=%s" % (ro["rollout_id"], ro["percent"], cohort))
+            lines.append("rollout %s  %s%%  cohort=%s" % (ro["rollout_id"], ro["percent"], cohort))
+            # ONE object for one command: `publish --rollout` is two API calls, and a caller
+            # scripting it needs both ids. Nesting the rollout keeps the release fields where a
+            # plain `publish` leaves them, so parsers do not need a special case.
+            payload["rollout"] = ro
+        return _emit(args, payload, *lines)
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -319,7 +360,7 @@ def cmd_rollout(args: argparse.Namespace) -> int:
             ro = api.patch_rollout(args.id, state="active")
         else:
             ro = api.rollback_rollout(args.id)
-        print("rollout %s -> %s" % (args.id, ro.get("state", "")))
+        return _emit(args, ro, "rollout %s -> %s" % (args.id, ro.get("state", "")))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -333,7 +374,7 @@ def cmd_cohort(args: argparse.Namespace) -> int:
             print(json.dumps(api.list_cohorts(args.product_id), indent=2))
         else:
             res = api.assign_cohort(args.cohort, args.devices)
-            print("assigned %d/%d device(s) to cohort %s"
+            return _emit(args, res, "assigned %d/%d device(s) to cohort %s"
                   % (res["assigned"], len(args.devices), res["cohort"]))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -347,10 +388,12 @@ def cmd_pin(args: argparse.Namespace) -> int:
         release = None if args.clear else args.release
         if args.target == "device":
             res = api.pin_device(args.id, release)
-            print("device %s pinned to %s" % (args.id, res["pinned_release_id"] or "(unpinned)"))
+            return _emit(args, res, "device %s pinned to %s"
+                         % (args.id, res["pinned_release_id"] or "(unpinned)"))
         else:
             res = api.pin_cohort(args.product_id, args.cohort, release)
-            print("cohort %s pinned to %s" % (args.cohort, res["release_id"] or "(unpinned)"))
+            return _emit(args, res, "cohort %s pinned to %s"
+                         % (args.cohort, res["release_id"] or "(unpinned)"))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -360,7 +403,8 @@ def cmd_pin(args: argparse.Namespace) -> int:
 def cmd_bind(args: argparse.Namespace) -> int:
     try:
         res = _make_api(config.resolve(args.server, args.token)).bind_device(args.id)
-        print("device %s bound to %s" % (args.id, _account_label(res["account_id"])))
+        return _emit(args, res,
+                     "device %s bound to %s" % (args.id, _account_label(res["account_id"])))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -372,17 +416,20 @@ def cmd_account(args: argparse.Namespace) -> int:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "create":
             res = api.create_account(args.name)
-            print("account %s created" % res["account_id"])
-            print("admin token (store it now -- not recoverable): %s" % res["token"])
+            # The secret is IN the JSON under --json, which is the point: this is the one moment
+            # it exists, and a script that cannot capture it has to mint another account.
+            return _emit(args, res, "account %s created" % res["account_id"],
+                         "admin token (store it now -- not recoverable): %s" % res["token"])
         elif args.action == "rename":
-            api.rename_account(args.id, args.name)
-            print("account %s renamed to %s" % (args.id, args.name))
+            res = api.rename_account(args.id, args.name)
+            return _emit(args, res, "account %s renamed to %s" % (args.id, args.name))
         elif args.action == "deactivate":
             res = api.deactivate_account(args.id)
-            print("account %s deactivated (%d token(s) revoked)" % (args.id, res["tokens_revoked"]))
+            return _emit(args, res, "account %s deactivated (%d token(s) revoked)"
+                         % (args.id, res["tokens_revoked"]))
         elif args.action == "activate":
-            api.activate_account(args.id)
-            print("account %s activated" % args.id)
+            res = api.activate_account(args.id)
+            return _emit(args, res, "account %s activated" % args.id)
         else:
             print(json.dumps(api.list_accounts(), indent=2))
     except ClientError as e:
@@ -396,15 +443,16 @@ def cmd_token(args: argparse.Namespace) -> int:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "issue":
             res = api.issue_token(args.account, args.name, args.scope or None)
-            print("token %s issued for %s" % (res["token_hash"][:16], res["account_id"]))
-            print("token (store it now -- not recoverable): %s" % res["token"])
+            return _emit(args, res,
+                         "token %s issued for %s" % (res["token_hash"][:16], res["account_id"]),
+                         "token (store it now -- not recoverable): %s" % res["token"])
         elif args.action == "rotate":
             res = api.rotate_token(args.token_hash)
-            print("rotated -> %s (old revoked)" % res["token_hash"][:16])
-            print("token (store it now -- not recoverable): %s" % res["token"])
+            return _emit(args, res, "rotated -> %s (old revoked)" % res["token_hash"][:16],
+                         "token (store it now -- not recoverable): %s" % res["token"])
         elif args.action == "revoke":
-            api.revoke_token(args.token_hash)
-            print("revoked %s" % args.token_hash[:16])
+            res = api.revoke_token(args.token_hash)
+            return _emit(args, res, "revoked %s" % args.token_hash[:16])
         else:
             print(json.dumps(api.list_account_tokens(args.account), indent=2))
     except ClientError as e:

@@ -262,6 +262,20 @@ use the profile saved by `login`.
 | `client account create\|list\|rename\|deactivate\|activate` | tenant accounts (needs the `accounts` scope) |
 | `client token issue\|list\|revoke\|rotate` | an account's API tokens (`issue`/`rotate` return the secret **once**) |
 
+Every verb takes **`--json`**, which prints the server's response verbatim instead of the
+summary line — so publishing, issuing a token or assigning a cohort can be scripted without
+parsing English:
+
+```bash
+rel=$(openmv-ota client publish ./p -b OPENMV_N6 --json | jq -r .release_id)
+tok=$(openmv-ota client token issue --account "$acct" --name ci --json | jq -r .token)
+```
+
+Verbatim matters for the one-time secrets: `account create`, `token issue` and `token rotate`
+return a token that exists for exactly that one response, and a script that cannot capture it
+has to mint another. `publish --rollout` is two API calls, so its JSON nests the rollout under
+`rollout` and leaves the release fields where a plain `publish` puts them.
+
 `--scope` on `client token issue` accepts the same set the API validates against
 (`publish`, `manage`, `observe`, `accounts`), so a typo fails at the prompt rather than as a
 server 400. The default is the worker set: `publish, manage, observe`.

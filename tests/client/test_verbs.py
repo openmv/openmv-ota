@@ -394,3 +394,78 @@ def test_missing_creds(tmp_path, monkeypatch, capsys):
 
 def test_client_no_subcommand(capsys):
     assert main(["client"]) == 1
+
+
+# --- --json on the write verbs ------------------------------------------------------------------
+
+def _ns(argv):
+    from openmv_ota.cli import build_parser
+    return build_parser().parse_args(argv)
+
+
+def test_every_client_verb_accepts_json(capsys):
+    """Reads have always printed JSON; the writes printed prose, so publishing a release or
+    issuing a token could not be scripted without parsing English. A group where one verb speaks
+    JSON and its neighbour does not is the inconsistency this removes, so `--json` is on ALL of
+    them -- including the local `login`/`logout`, which write the saved profile rather than call
+    the API."""
+    import re
+    import subprocess
+    import sys
+
+    def h(a):
+        r = subprocess.run([sys.executable, "-m", "openmv_ota.cli"] + a + ["--help"],
+                           capture_output=True, text=True)
+        return (r.stdout or "") + (r.stderr or "")
+
+    def subs(t):
+        m = re.search(r"\{([a-z,_]+)\}", t)
+        return m.group(1).split(",") if m else []
+
+    cmds = []
+    for s in subs(h(["client"])):
+        third = subs(h(["client", s]))
+        cmds += [["client", s, t] for t in third] if third else [["client", s]]
+    assert cmds, "no client verbs discovered"
+    assert [" ".join(c) for c in cmds if "--json" not in h(c)] == []
+
+
+def test_write_verbs_emit_the_servers_own_response(monkeypatch, capsys):
+    """`--json` prints the response VERBATIM, not a re-rendering -- so a field the prose summary
+    does not mention is still there for a caller that needs it. The account secret is the case
+    that matters: it exists for exactly one response, and a script that cannot capture it has to
+    mint another account."""
+    import json
+    import types
+
+    from openmv_ota.client import cli as ccli
+
+    class FakeApi:
+        def create_account(self, name):
+            return {"account_id": "acct_1", "name": name, "token": "SECRET", "extra": 1}
+
+    monkeypatch.setattr(ccli, "_make_api", lambda cfg: FakeApi())
+    monkeypatch.setattr(ccli.config, "resolve",
+                        lambda s, t: types.SimpleNamespace(server_url="x", token="y"))
+    ns = _ns(["client", "account", "create", "--name", "DroneCo", "--json"])
+    assert ns.func(ns) == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["token"] == "SECRET", "the one-time secret must survive into the JSON"
+    assert body["extra"] == 1, "verbatim: a field the summary ignores is still delivered"
+
+
+def test_write_verbs_still_print_prose_without_json(monkeypatch, capsys):
+    import types
+
+    from openmv_ota.client import cli as ccli
+
+    class FakeApi:
+        def assign_cohort(self, cohort, devices):
+            return {"cohort": cohort, "assigned": len(devices)}
+
+    monkeypatch.setattr(ccli, "_make_api", lambda cfg: FakeApi())
+    monkeypatch.setattr(ccli.config, "resolve",
+                        lambda s, t: types.SimpleNamespace(server_url="x", token="y"))
+    ns = _ns(["client", "cohort", "assign", "--cohort", "beta", "--device", "d1"])
+    assert ns.func(ns) == 0
+    assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
