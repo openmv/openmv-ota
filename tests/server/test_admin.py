@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from openmv_ota.server.app import create_app
@@ -740,3 +741,48 @@ def test_detail_reads_hide_other_accounts_behind_404(tmp_path):
     # ...and indistinguishable from a row that simply is not there
     assert c.get("/api/v1/admin/devices/nope", headers=AUTH).status_code == 404
     assert c.get("/api/v1/admin/releases/nope", headers=AUTH).status_code == 404
+
+
+# --- pagination: uniform, bounded, and never silently truncating -------------------------------
+
+def test_list_endpoints_are_bounded_by_default_and_report_the_total(tmp_path):
+    """`/releases` and `/rollouts` used to default to NO limit while `/devices` capped at 100.
+
+    Two problems in one: a caller had to remember which collection happened to be unbounded, and
+    a fleet with thousands of releases returned all of them in a single response. Now every
+    paginated list defaults to the same page size AND carries `total`, so a full page can be told
+    apart from a truncated list -- without it, `limit=100` on 400 releases looks exactly like a
+    fleet that has 100.
+    """
+    app, store = _app(tmp_path)
+    for i in range(7):
+        _seed_release(store, rid="rel%d" % i, pv=0x02000000 + i)
+    c = TestClient(app)
+    body = c.get("/api/v1/admin/releases?limit=3", headers=AUTH).json()
+    assert len(body["releases"]) == 3, "the page is honoured"
+    assert body["total"] == 7, "...and the caller can see what it is a page OF"
+    # the default is a bound, not unlimited
+    import inspect
+
+    from openmv_ota.server import admin
+    assert inspect.signature(admin.releases).parameters["limit"].default == admin._PAGE
+    assert inspect.signature(admin.list_rollouts).parameters["limit"].default == admin._PAGE
+    assert inspect.signature(admin.devices).parameters["limit"].default == admin._PAGE
+
+
+def test_total_is_account_scoped_like_the_rows_it_counts(tmp_path):
+    """A `total` that ignored the account scope would leak the size of other tenants' fleets."""
+    app, store = _app(tmp_path)
+    _seed_release(store, rid="mine")
+    _seed_release(store, rid="theirs")
+    store.execute("UPDATE releases SET account_id = ? WHERE release_id = ?", ("other", "theirs"))
+    body = TestClient(app).get("/api/v1/admin/releases", headers=AUTH).json()
+    assert [r["release_id"] for r in body["releases"]] == ["mine"]
+    assert body["total"] == 1, "counts what this caller may see, not the table"
+
+
+def test_count_scoped_refuses_a_table_it_does_not_paginate(tmp_path):
+    """The table name is interpolated, so it is restricted to the literals the endpoints pass."""
+    _, store = _app(tmp_path)
+    with pytest.raises(ValueError, match="unsupported table"):
+        store.count_scoped("admin_tokens; DROP TABLE devices--")

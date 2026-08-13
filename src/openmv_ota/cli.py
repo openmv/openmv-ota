@@ -16,7 +16,11 @@ import argparse
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="openmv-ota", description=__doc__)
+    # RawDescriptionHelpFormatter: the module docstring above is an aligned LIST of subsystems,
+    # and argparse's default formatter re-wraps it into one run-on paragraph -- which is how
+    # `openmv-ota --help` came to open with an unreadable wall of text.
+    parser = argparse.ArgumentParser(prog="openmv-ota", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="store_true", help="print version and exit")
     sub = parser.add_subparsers(dest="_command")
 

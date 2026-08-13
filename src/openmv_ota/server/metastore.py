@@ -484,6 +484,21 @@ class SqlMetadataStore:
     def get_account(self, account_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM accounts WHERE account_id = ?", (account_id,)))
 
+    def count_scoped(self, table: str, product_id=None, account_id=None) -> int:
+        """How many rows a scoped list would return WITHOUT its page limit.
+
+        Exists so a paginated response can carry a `total`. Without one a caller cannot tell a
+        page that happens to be full from a list that was truncated, which is the silent-cap
+        trap: `limit=100` on a fleet with 400 releases looks exactly like a fleet with 100.
+        A UI also needs it to render "page 2 of N" at all.
+
+        ``table`` is never caller-supplied -- the endpoints pass a literal -- so the f-string
+        cannot be an injection point; the filters go through `_scope`'s placeholders as usual."""
+        if table not in ("releases", "rollouts", "devices"):    # belt: only the paginated ones
+            raise ValueError("count_scoped: unsupported table %r" % table)
+        where, params = _scope(account_id, product_id)
+        return self.query_one("SELECT COUNT(*) AS n FROM %s %s" % (table, where), params)["n"]
+
     def list_accounts(self) -> list[dict]:
         return [_d(r) for r in self.query_all("SELECT * FROM accounts ORDER BY created_at")]
 

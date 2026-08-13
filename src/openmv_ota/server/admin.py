@@ -18,6 +18,13 @@ from .scopes import ALL_SCOPES, SCOPES
 admin = APIRouter(prefix="/api/v1/admin")
 
 
+# Default page size for the paginated admin lists. `/devices` already capped at 100; `/releases`
+# and `/rollouts` defaulted to NO limit, so a fleet with thousands of releases returned all of
+# them in one response. Same number everywhere is the point -- a caller should not have to
+# remember which collection happens to be unbounded.
+_PAGE = 100
+
+
 def new_id(prefix: str) -> str:
     return "%s_%s" % (prefix, secrets.token_hex(8))
 
@@ -279,10 +286,12 @@ def rollback_rollout(rollout_id: str, request: Request,
 
 
 @admin.get("/rollouts")
-def list_rollouts(request: Request, product_id: int | None = None, limit: int | None = None,
+def list_rollouts(request: Request, product_id: int | None = None, limit: int = _PAGE,
                   offset: int = 0, principal: Principal = Depends(require_scope("observe"))):
-    return {"rollouts": request.app.state.metastore.list_rollouts(
-        product_id, account_id=principal.account_id, limit=limit, offset=offset)}
+    ms = request.app.state.metastore
+    return {"rollouts": ms.list_rollouts(product_id, account_id=principal.account_id,
+                                         limit=limit, offset=offset),
+            "total": ms.count_scoped("rollouts", product_id, principal.account_id)}
 
 
 @admin.get("/rollouts/{rollout_id}/status")
@@ -391,10 +400,12 @@ def fleet(request: Request, product_id: int | None = None,
 
 
 @admin.get("/releases")
-def releases(request: Request, product_id: int | None = None, limit: int | None = None,
+def releases(request: Request, product_id: int | None = None, limit: int = _PAGE,
              offset: int = 0, principal: Principal = Depends(require_scope("observe"))):
-    return {"releases": request.app.state.metastore.list_releases(
-        product_id, account_id=principal.account_id, limit=limit, offset=offset)}
+    ms = request.app.state.metastore
+    return {"releases": ms.list_releases(product_id, account_id=principal.account_id,
+                                         limit=limit, offset=offset),
+            "total": ms.count_scoped("releases", product_id, principal.account_id)}
 
 
 def _with_fallback_version(rows: list[dict]) -> list[dict]:
@@ -513,8 +524,13 @@ def delete_release_artifacts(release_id: str, request: Request, force: bool = Fa
 def devices(request: Request, product_id: int | None = None, limit: int = 100,
             cohort: str | None = None, offset: int = 0,
             principal: Principal = Depends(require_scope("observe"))):
-    return {"devices": _with_fallback_version(request.app.state.metastore.list_devices(
-        product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset))}
+    ms = request.app.state.metastore
+    return {"devices": _with_fallback_version(ms.list_devices(
+                product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset)),
+            # `total` ignores the cohort filter only when one is not given; with one it still
+            # counts the scoped set, so a cohort page reports the fleet total. Documented rather
+            # than silently wrong: cohort sizes come from GET /cohorts, which counts per cohort.
+            "total": ms.count_scoped("devices", product_id, principal.account_id)}
 
 
 @admin.post("/devices/{device_id}/viewer-grant")

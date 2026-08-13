@@ -144,6 +144,28 @@ openmv-ota client rollout rollback --id <rollout-id>                   # stop of
 openmv-ota client fleet | client devices [--product-id N] | client audit
 ```
 
+### Paging the collection reads
+
+`GET /releases`, `/rollouts` and `/devices` take `limit` (default **100**) and `offset`, and
+each response carries **`total`** beside its rows:
+
+```json
+{ "releases": [ ... ], "total": 412 }
+```
+
+`total` is what makes the page safe to consume. Without it a full page is indistinguishable
+from a truncated list — 100 rows back from a fleet of 412 looks exactly like a fleet of 100 —
+and a UI cannot render "page 2 of N" at all. It is account-scoped like the rows it counts, so
+it never discloses the size of another tenant's fleet.
+
+(`/releases` and `/rollouts` previously defaulted to *no* limit and returned every row; the
+bound is now the same number everywhere, so a caller need not remember which collection
+happened to be unbounded.)
+
+`/audit` pages differently on purpose: it is an append-only log, so it takes `since` (a
+sequence cursor) rather than an offset — a cursor cannot skip or repeat entries when new ones
+arrive mid-page, which an offset can.
+
 `client fleet` is the rollout dashboard, and under A/B it reports **exposure** rather than
 which slot a device happens to be running from:
 
