@@ -1,6 +1,13 @@
-# v2 on hardware — the first full sweep
+# v2 on hardware
 
-Run 2026-08-08/09 across the four boards available on the bench (RT1060 and AE3 were in use by
+Three sweeps, oldest first. The **most recent and most complete is the 2026-08-12 fleet run**
+below -- nine legs, every board reachable including the AE3, run on the merge gate rather than by
+hand. The two earlier sections are kept because they are where the XIP tail wedge was found and
+fixed, which is the reason the later sweeps pass.
+
+## The first sweep (2026-08-08/09)
+
+Run across the four boards available on the bench (RT1060 and AE3 were in use by
 someone else and were not touched). Every leg ran the board's own regression set from
 `ci/hil/regression_scenarios`, one scenario at a time, from a fresh provision.
 

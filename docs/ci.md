@@ -1,7 +1,13 @@
 # CI
 
-`.github/workflows/ci.yml` runs on every push / PR (and `workflow_dispatch`),
-on **Linux and macOS**, in two jobs.
+`.github/workflows/ci.yml` runs on every push / PR (and `workflow_dispatch`) in five
+jobs: `test` (Linux **and** macOS), `cshim`, `qemu`, `build`, and `hil`.
+
+`hil` is **manual-only** (`workflow_dispatch`). It builds firmware on a board's own
+runner, and it used to fire on every push to `main` -- i.e. on every merge, taking the
+AE3, N6 and RT1060 to rebuild what they had already proven. The gate that matters is
+`hil-ota.yml`, which runs each board's full OTA regression on the **pull request**,
+before the merge -- it is documented in [../ci/hil/README.md](../ci/hil/README.md).
 
 ## `test` — unit tests + coverage
 
