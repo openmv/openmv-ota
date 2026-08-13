@@ -1,5 +1,9 @@
 # project
 
+*[← 1 · Getting started](01-getting-started.md) · [Index](00-introduction.md) · [3 · Building →](03-building.md)*
+
+---
+
 `openmv-ota project` pegs an OTA project to a specific OpenMV firmware checkout
 and records the toolchain versions and per-board geometry that firmware implies.
 Model compilers (mpy-cross, Ethos-U Vela, ST Edge AI) must match the libraries
@@ -109,7 +113,7 @@ It is packed into the ROMFS image, so the app can read it on-device (e.g.
 version or carrying configuration. Bump `app_version` (a `major.minor.patch`
 semver) for each release. For an **OTA project**, the build also reads
 `app_version` from here to stamp the image's anti-rollback version (see
-[build.md](build.md)), making this file the one place a version is defined.
+[build.md](03-building.md)), making this file the one place a version is defined.
 
 `rollback_floor` is the **oldest app version you will ever allow back onto a
 device**. The build records it in the OTA image, and the updater refuses to install
@@ -155,7 +159,7 @@ This gives the app **one consistent read path for system state, the same in a
 non-OTA and an OTA build** — `json.load(open("/rom/system.json"))`. It is composed
 from the lock (firmware / MicroPython / toolchain provenance) and the config
 (per-board `product_id` / `board_name`); for an OTA image the signed
-[trailer](trailer.md) also carries a verbatim copy, so host tools can read it
+[trailer](../reference/trailer.md) also carries a verbatim copy, so host tools can read it
 without mounting the ROMFS. `system.json` is generated into the built image only —
 never into your `app/` source — so there is nothing to edit or accidentally commit.
 (The name is reserved; a `system.json` in your `app/` is overwritten.)
@@ -324,7 +328,7 @@ copies the unchanged bulk from the slot it is running and downloads only the cha
 `--delta-from` is repeatable: publish one base per version still in the field, or those
 devices take the full image. It's opportunistic (picked only when the device's running
 version matches and it's smaller) and still
-sha256/signature-verified (see [the runtime docs](runtime.md)).
+sha256/signature-verified (see [the runtime docs](05-device-runtime.md)).
 
 For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in
 logger built on the standard `logging` module (frozen as `openmv_log`, off by default)
@@ -337,12 +341,12 @@ It also scaffolds **`device/openmv_wdt.py`** — an opt-in watchdog helper (froz
 `with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds the watchdog
 through them). `install()` uses it automatically — `relax()` around the erase, `feed()`
 per chunk. See
-**[the on-device runtime](runtime.md#watchdog)**.
+**[the on-device runtime](05-device-runtime.md#watchdog)**.
 
 The runtime lib is plain Python you own and can extend. For the full picture — the
 trial/rollback lifecycle, the API semantics, `install()`/TLS/cert handling, the
 bundled-resource (`sync()`) mechanism, debug logging, and the on-device safety
-properties — see **[the on-device runtime](runtime.md)**.
+properties — see **[the on-device runtime](05-device-runtime.md)**.
 
 ### Keys
 
@@ -359,8 +363,8 @@ The current signer is the first OTA key (`0x0100`), recorded as `signing_key_id`
 `build romfs` signs with that key, and a trailer records *which* key signed
 (`key_id`) so the device picks the matching public key. Both roles' private keys
 stay on your signing machine — a manufacturer receives the signed
-`<board>-factory-romfs.img`, never a key (see [build.md](build.md#signed-with-a-factory-key)
-and [threat-model.md](threat-model.md)).
+`<board>-factory-romfs.img`, never a key (see [build.md](03-building.md#signed-with-a-factory-key)
+and [threat-model.md](../reference/threat-model.md)).
 
 `keys/trusted_keys.json` is the committed public set the firmware build will bake
 into its `TRUSTED_KEYS` table. Each entry is a key id, its COSE algorithm, its
@@ -378,7 +382,7 @@ role, and the public key as an uncompressed EC point in hex:
 
 Provision generously: because keys can't be added without re-flashing firmware,
 the rotation pool is your entire future supply of OTA keys. `--ota-keys` below 4
-warns. See [trailer.md](trailer.md) for the signature algorithms and the
+warns. See [trailer.md](../reference/trailer.md) for the signature algorithms and the
 `key_id` / `sig_alg` fields.
 
 ### Managing keys (`project keys`)
@@ -584,3 +588,7 @@ p.board("OPENMV_AE3", 1).npu_config   # HE-core NPU type, args, and file refs
 
 Pass `load_project("./my-product", verify=False)` to skip the check (reserved for
 the firmware-update path, which does not yet exist).
+
+---
+
+*[← 1 · Getting started](01-getting-started.md) · [Index](00-introduction.md) · [3 · Building →](03-building.md)*

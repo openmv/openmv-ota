@@ -1,5 +1,9 @@
 # The update server
 
+*[← 5 · The device runtime](05-device-runtime.md) · [Index](00-introduction.md) · [7 · The romfs tool →](07-romfs.md)*
+
+---
+
 `openmv-ota` can build and sign OTA images, deltas, and manifests, and a device can
 `install(manifest_url)` — but nothing decides *which* URL a device fetches, hosts the artifacts,
 or drives a fleet rollout. The **update server** is that missing piece: a central service that
@@ -10,7 +14,7 @@ Two deployment shapes run the **same software**:
 
 - **Self-hosted (the default):** you run your own server — your own Render/Postgres/R2. The
   Dockerfile, `render.yaml`, and `docker-compose.yml` under
-  [src/openmv_ota/server/deploy/](../src/openmv_ota/server/deploy/) make it turnkey.
+  [src/openmv_ota/server/deploy/](../../src/openmv_ota/server/deploy/) make it turnkey.
 - **OpenMV-hosted:** OpenMV runs a server + website so you don't have to. That website embeds this
   package via `create_app()` and supplies the database, bucket, and registration credentials.
 
@@ -114,7 +118,7 @@ pip install "openmv-ota[server,server-s3,server-postgres]"  # + R2/S3 + Postgres
 
 ## Deploying
 
-The [deploy/](../src/openmv_ota/server/deploy/) directory ships turnkey artifacts:
+The [deploy/](../../src/openmv_ota/server/deploy/) directory ships turnkey artifacts:
 
 - **`Dockerfile`** — multi-stage build; the entrypoint runs `server init` (idempotent) then
   `server run`.
@@ -305,5 +309,9 @@ registered devices.
 
 ## See also
 
-- [Building OTA images](romfs.md) — what `build ota-romfs` produces and how it's signed.
-- [Threat model](threat-model.md) — the trust root and why the server never holds a key.
+- [Building OTA images](07-romfs.md) — what `build ota-romfs` produces and how it's signed.
+- [Threat model](../reference/threat-model.md) — the trust root and why the server never holds a key.
+
+---
+
+*[← 5 · The device runtime](05-device-runtime.md) · [Index](00-introduction.md) · [7 · The romfs tool →](07-romfs.md)*

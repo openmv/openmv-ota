@@ -1,5 +1,9 @@
 # Getting started
 
+*[← Index](00-introduction.md) · [Index](00-introduction.md) · [2 · Projects →](02-projects.md)*
+
+---
+
 Install the tools:
 
 ```bash
@@ -16,7 +20,7 @@ openmv-ota romfs pack ./app -o app.romfs --board OPENMV_N6
 openmv-ota romfs ls app.romfs -l
 ```
 
-Files are packed as-is. See [romfs.md](romfs.md).
+Files are packed as-is. See [romfs.md](07-romfs.md).
 
 ## Build from a project
 
@@ -30,7 +34,7 @@ openmv-ota build romfs ./my-product
 
 `project new` records the firmware commit and the exact toolchain versions it
 implies; `build romfs` compiles `./my-product/app` and writes a ROMFS image to
-`./my-product/build`. See [project.md](project.md) and [build.md](build.md).
+`./my-product/build`. See [project.md](02-projects.md) and [build.md](03-building.md).
 
 Compiling needs mpy-cross. `openmv-ota project setup` installs the matching
 version; if you skip setup, install it yourself with `pip install
@@ -52,5 +56,9 @@ openmv-ota project new ./my-product -f ~/openmv -b OPENMV_N6 --ota
 openmv-ota build romfs ./my-product
 ```
 
-See [project.md](project.md) for the keys and identity an OTA project provisions,
-and [trailer.md](trailer.md) for the signed image format.
+See [project.md](02-projects.md) for the keys and identity an OTA project provisions,
+and [trailer.md](../reference/trailer.md) for the signed image format.
+
+---
+
+*[← Index](00-introduction.md) · [Index](00-introduction.md) · [2 · Projects →](02-projects.md)*

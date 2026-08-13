@@ -21,7 +21,7 @@ the trust path. The host signer (`build romfs`) and `boot.py` agree on exactly t
 format described here.
 
 This page is that on-flash format; the codec —
-[src/openmv_ota/ota/trailer.py](../src/openmv_ota/ota/trailer.py) — is its source
+[src/openmv_ota/ota/trailer.py](../../src/openmv_ota/ota/trailer.py) — is its source
 of truth. (`boot.py`, the slot layout, and the on-device verifier are the higher
 layers that consume this format; the [architecture](architecture.md) page sketches
 the whole picture.)
@@ -32,7 +32,7 @@ The trailer occupies one flash erase block — 4 KiB on every OTA-capable board
 (external NOR / OSPI; AE3's byte-writable MRAM is floored to 4 KiB so growing the
 metadata can't reshape the layout). Boards whose ROMFS is a single large
 internal-flash sector can't host OTA at all (see
-[project.md](project.md#ota-projects)). Laid out little-endian:
+[project.md](../tutorial/02-projects.md#ota-projects)). Laid out little-endian:
 
 ```
 [ header (80) ][ json_meta (meta_size) ][ signature (sig_size) ][ crc32 (4) ]
@@ -82,7 +82,7 @@ trust path stays a tiny parser-free path.
 
 This blob is a **verbatim copy of the image's `/rom/system.json`** — the same
 board identity + provenance the build packs into the ROMFS body (see
-[project.md](project.md#systemjson-generated-read-only)). The on-device app reads
+[project.md](../tutorial/02-projects.md#systemjson-generated-read-only)). The on-device app reads
 its identity from `/rom/system.json` (one read path, OTA or not); the trailer
 carries the copy so **host tools** — the update server, an `inspect` command — and
 the bootloader can read it straight from the signed trailer without mounting the
@@ -154,6 +154,6 @@ above; this page documents the format they consume.)
 
 ## See also
 
-- [build.md](build.md) — `build romfs` produces the trailer from a project.
-- [project.md](project.md) — `project new --ota` provisions the keys and identity
+- [build.md](../tutorial/03-building.md) — `build romfs` produces the trailer from a project.
+- [project.md](../tutorial/02-projects.md) — `project new --ota` provisions the keys and identity
   the trailer records.

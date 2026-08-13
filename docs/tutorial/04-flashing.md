@@ -1,5 +1,9 @@
 # Flashing a board
 
+*[← 3 · Building](03-building.md) · [Index](00-introduction.md) · [5 · The device runtime →](05-device-runtime.md)*
+
+---
+
 `openmv-ota flash` pushes the artifacts `build` produced onto a connected board over its
 programming interface. Most boards use **`dfu-util`**: the OpenMV STM32 boards
 (OPENMV2/3/4/4P/PT and N6) **and the AE3** — the AE3 flashes its two cores, its coprocessor
@@ -308,3 +312,7 @@ On a multi-core board (the AE3) the same commands flash every partition the imag
 `build` produces the per-core firmware and the coprocessor romfs in lockstep with the main
 image, and `flash` writes them together. Flashing always resolves every artifact first, so a
 missing file fails fast instead of half-programming the board.
+
+---
+
+*[← 3 · Building](03-building.md) · [Index](00-introduction.md) · [5 · The device runtime →](05-device-runtime.md)*

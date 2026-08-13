@@ -1,5 +1,9 @@
 # The on-device OTA runtime
 
+*[← 4 · Flashing](04-flashing.md) · [Index](00-introduction.md) · [6 · The update server →](06-update-server.md)*
+
+---
+
 OTA has two pieces that run **on the camera** (everything else — `project`, `build`,
 signing — runs on your host):
 
@@ -13,7 +17,7 @@ signing — runs on your host):
 `boot.py` decides *what runs*; `openmv_ota` lets the running app *commit the update*
 and *write helper resources*. Both are self-contained (they can't import the host
 `openmv_ota.ota.*` packages under MicroPython), and the pure logic of each is
-host-tested while the device I/O is exercised under QEMU — see [ci.md](ci.md).
+host-tested while the device I/O is exercised under QEMU — see [ci.md](../reference/ci.md).
 
 ## `boot.py` — slot selection at boot
 
@@ -21,7 +25,7 @@ An OTA partition holds **two slots of equal size, A and B**. Neither is special:
 real, signed, updatable images, and the one that boots is simply the newest valid one. On
 every boot `boot.py` runs after the board's stock `_boot.py` and, **for each slot**:
 
-1. Reads the slot's signed [trailer](trailer.md) and **verifies the ECDSA signature**
+1. Reads the slot's signed [trailer](../reference/trailer.md) and **verifies the ECDSA signature**
    (via the on-device mbedtls shim) *before trusting any header field*.
 2. Checks the authenticated header: **integrity** (body SHA-256), **cross-flash guard**
    (`product_id`), **compatibility** (`min_platform_version`), and **anti-rollback**
@@ -302,7 +306,7 @@ Today there is one handler, **`partition`**, used for the multi-core case: the h
 core's romfs is nested into the main image at `data/coprocessor.romfs` with the manifest
 `{"file": "coprocessor.romfs", "handler": "partition", "partition": 1, …}`, and `sync()`
 writes it into partition 1 when it differs (see
-[Multi-core boards](project.md#multi-core-boards-a-coprocessor-partition)). A future
+[Multi-core boards](02-projects.md#multi-core-boards-a-coprocessor-partition)). A future
 kind — say writing keys or blowing fuses — is just another `(matches, apply)` pair
 registered under a new `handler` name, plus its data file and manifest entry; `sync()`
 itself doesn't change.
@@ -440,3 +444,7 @@ haven't enabled a watchdog.
 | A proven fallback is never traded for an unproven one | an offered update is deferred while the running image is still an un-confirmed trial — enforced on the device, and mirrored on the server so the offer isn't wasted |
 | The rollback floor can't regress | it is the max across both slots, and every install copies the current floor into the slot it writes |
 | Safe install | `install()` writes the slot you are **not** running, downloads over verified HTTPS, read-back-verifies every write, and arms `pending` only after the whole image checks out; the image signature (not TLS) is the integrity boundary |
+
+---
+
+*[← 4 · Flashing](04-flashing.md) · [Index](00-introduction.md) · [6 · The update server →](06-update-server.md)*

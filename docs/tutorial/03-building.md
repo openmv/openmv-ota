@@ -1,5 +1,9 @@
 # build
 
+*[← 2 · Projects](02-projects.md) · [Index](00-introduction.md) · [4 · Flashing →](04-flashing.md)*
+
+---
+
 `openmv-ota build` compiles a project's app and produces deployable images.
 `build romfs` (an OTA payload), `build factory-romfs` (the full dual-slot
 partition image flashed at the factory), and `build firmware` (the device
@@ -24,16 +28,16 @@ board also builds its coprocessor partition as a plain
 `<board>-coprocessor-romfs.img` (always, from `app-coprocessor/`), and for an OTA
 project **nests** that image inside the main one (at
 `/rom/lib/openmv_ota/data/coprocessor.romfs`) so the on-device
-[`openmv_ota.sync()`](project.md#the-device-runtime-library-openmv_ota) can write it
+[`openmv_ota.sync()`](02-projects.md#the-device-runtime-library-openmv_ota) can write it
 into the helper partition — see
-[Multi-core boards](project.md#multi-core-boards-a-coprocessor-partition).
+[Multi-core boards](02-projects.md#multi-core-boards-a-coprocessor-partition).
 
 Every image also gets a generated, read-only `system.json` at `/rom/system.json` —
 board identity (`board`, `product_id`, `board_name`, `product`), the app version, and
 build provenance (firmware / MicroPython / toolchain versions) — composed from the
 lock and the per-board config. It gives the app one consistent way to read its own
 identity and provenance, the same in a non-OTA and an OTA build. See
-[project.md](project.md#systemjson-generated-read-only).
+[project.md](02-projects.md#systemjson-generated-read-only).
 
 The capacity is the whole partition for a single-image project, or half the
 partition less two flash erase blocks (a status sector + a trailer; 8 KiB on
@@ -88,7 +92,7 @@ hold the body in RAM to unzip): a server unbundles and streams the body + traile
 separately, exactly as they're placed on-flash. Every trailer field is final and
 signed, including `pad_size` (the `0xFF` gap to the status sector, computed from the
 slot geometry) and the crc32. The build summary reports the body size against the
-OTA-slot budget. See [trailer.md](trailer.md) for the on-flash format.
+OTA-slot budget. See [trailer.md](../reference/trailer.md) for the on-flash format.
 
 `build romfs` fails the build (exit 1) if the OTA signing context is incomplete:
 a missing or unreadable `app/settings.json`, a missing or non-semver
@@ -321,3 +325,7 @@ It deliberately does **not** check the device-relative fields — `product_id` a
 a device, `payload_version` anti-rollback against the installed image,
 `min_platform_version` against the running firmware — because those need a device,
 not a host. Those remain `boot.py`'s job.
+
+---
+
+*[← 2 · Projects](02-projects.md) · [Index](00-introduction.md) · [4 · Flashing →](04-flashing.md)*

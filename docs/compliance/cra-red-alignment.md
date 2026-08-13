@@ -9,7 +9,7 @@ Corrected for **v2** where the original described the retired v1 model: there is
 immutable "golden" image any more. The two slots are equal and both updatable,
 ordered by an install counter, so the image behind the running one is *the last
 release that worked* rather than the factory build. See
-[../v2-plan.md](../v2-plan.md) and [../architecture.md](../architecture.md).
+[../v2-plan.md](../reference/v2-plan.md) and [../architecture.md](../reference/architecture.md).
 
 The Cyber Resilience Act ([Regulation (EU) 2024/2847](https://eur-lex.europa.eu/eli/reg/2024/2847)) is in force; full compliance deadline 11 December 2027. The Radio Equipment Directive Article 3.3(d)(e)(f) ([Delegated Regulation 2022/30](https://eur-lex.europa.eu/eli/reg_del/2022/30)) is mandatory for radio equipment from 1 August 2025. EN 18031-1/2/3 are the harmonised standards.
 

@@ -1,5 +1,9 @@
 # romfs
 
+*[← 6 · The update server](06-update-server.md) · [Index](00-introduction.md)*
+
+---
+
 `openmv-ota romfs` packs a directory into an OpenMV ROMFS image and unpacks one
 back. A ROMFS image is the read-only filesystem the camera mounts at `/rom`.
 
@@ -88,3 +92,7 @@ output:
 ```bash
 openmv-ota romfs pack ./app -o - --board OPENMV_N6 | openmv-ota romfs verify -
 ```
+
+---
+
+*[← 6 · The update server](06-update-server.md) · [Index](00-introduction.md)*

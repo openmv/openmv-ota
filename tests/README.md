@@ -2,7 +2,7 @@
 
 Grouped by the subsystem under test, mirroring `src/openmv_ota/`. CI enforces **100%
 coverage** (`--cov-fail-under=100`), so every line here is reachable by design — see
-[../docs/ci.md](../docs/ci.md) for what runs where.
+[../docs/reference/ci.md](../docs/reference/ci.md) for what runs where.
 
 - `ota/` — the signed-artifact core: trailer codec, ECDSA algorithms + key handling,
   manifest codec + policy, the copy-with-difference delta codec, slot geometry, the
