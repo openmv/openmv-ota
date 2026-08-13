@@ -69,29 +69,35 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_pub.add_argument("-o", "--output", help="artifact dir (default: <project>/build)")
     p_pub.add_argument("--rollout", metavar="COHORT:PCT",
                        help="create a rollout after publishing, e.g. beta:5 or 5")
-    p_pub.add_argument("--allow-republish", action="store_true")
+    p_pub.add_argument("--allow-republish", action="store_true",
+                       help="re-upload a version the server already has (dev loop)")
     _creds(p_pub)
     p_pub.set_defaults(func=cmd_publish, _command="client publish")
 
     p_ro = sub.add_parser("rollout", help="raise/pause/resume/rollback a rollout")
     rsub = p_ro.add_subparsers(dest="_ro")
-    for action, needs_pct in (("raise", True), ("pause", False), ("resume", False),
-                              ("rollback", False)):
-        pr = rsub.add_parser(action)
-        pr.add_argument("--id", required=True)
+    for action, needs_pct, blurb in (
+            ("raise", True, "widen the rollout to --percent of the cohort"),
+            ("pause", False, "stop offering it (it auto-pauses on failures too)"),
+            ("resume", False, "start offering it again after a pause"),
+            ("rollback", False, "stop offering it for good; devices that took it keep it")):
+        pr = rsub.add_parser(action, help=blurb)
+        pr.add_argument("--id", required=True, metavar="ROLLOUT_ID",
+                        help="the rollout to act on (`client rollout` ids come from publish)")
         if needs_pct:
-            pr.add_argument("--percent", type=float, required=True)
+            pr.add_argument("--percent", type=float, required=True,
+                            help="share of the cohort to offer it to, 0-100")
         _creds(pr)
         pr.set_defaults(func=cmd_rollout, _command="client rollout " + action, action=action)
 
     p_co = sub.add_parser("cohort", help="list cohorts / assign devices to one")
     cosub = p_co.add_subparsers(dest="_co")
-    p_col = cosub.add_parser("list")
-    p_col.add_argument("--product-id", type=int)
+    p_col = cosub.add_parser("list", help="list cohorts in use, with a device count each")
+    p_col.add_argument("--product-id", type=int, help="only this product's cohorts")
     _creds(p_col)
     p_col.set_defaults(func=cmd_cohort, _command="client cohort list", action="list")
-    p_coa = cosub.add_parser("assign")
-    p_coa.add_argument("--cohort", required=True)
+    p_coa = cosub.add_parser("assign", help="move devices into a cohort")
+    p_coa.add_argument("--cohort", required=True, help="cohort to move the devices into")
     p_coa.add_argument("--device", action="append", dest="devices", required=True, metavar="DEVICE_ID",
                        help="device id to assign (repeatable)")
     _creds(p_coa)
@@ -116,38 +122,42 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_prune.set_defaults(func=cmd_prune, _command="client prune")
 
     p_bind = sub.add_parser("bind", help="bind a device to your account (re-account / recover)")
-    p_bind.add_argument("--id", required=True)
+    p_bind.add_argument("--id", required=True, metavar="DEVICE_ID",
+                        help="device to bind to the caller's account")
     _creds(p_bind)
     p_bind.set_defaults(func=cmd_bind, _command="client bind")
 
     p_acct = sub.add_parser("account", help="create/list tenant accounts (needs accounts)")
     acsub = p_acct.add_subparsers(dest="_acct")
     p_acc = acsub.add_parser("create", help="create an account + get its first admin token")
-    p_acc.add_argument("--name", required=True)
+    p_acc.add_argument("--name", required=True, help="human-readable account name")
     _creds(p_acc)
     p_acc.set_defaults(func=cmd_account, _command="client account create", action="create")
     p_acl = acsub.add_parser("list", help="list accounts")
     _creds(p_acl)
     p_acl.set_defaults(func=cmd_account, _command="client account list", action="list")
     p_acr = acsub.add_parser("rename", help="rename an account")
-    p_acr.add_argument("--id", required=True)
-    p_acr.add_argument("--name", required=True)
+    p_acr.add_argument("--id", required=True, metavar="ACCOUNT_ID", help="account to rename")
+    p_acr.add_argument("--name", required=True, help="the new name")
     _creds(p_acr)
     p_acr.set_defaults(func=cmd_account, _command="client account rename", action="rename")
     p_acd = acsub.add_parser("deactivate", help="revoke all tokens + disable an account")
-    p_acd.add_argument("--id", required=True)
+    p_acd.add_argument("--id", required=True, metavar="ACCOUNT_ID",
+                       help="account to deactivate (revokes all of its tokens)")
     _creds(p_acd)
     p_acd.set_defaults(func=cmd_account, _command="client account deactivate", action="deactivate")
     p_aca = acsub.add_parser("activate", help="re-enable an account (issue fresh tokens after)")
-    p_aca.add_argument("--id", required=True)
+    p_aca.add_argument("--id", required=True, metavar="ACCOUNT_ID",
+                       help="account to re-enable (issue fresh tokens afterwards)")
     _creds(p_aca)
     p_aca.set_defaults(func=cmd_account, _command="client account activate", action="activate")
 
     p_tok = sub.add_parser("token", help="manage account API tokens (needs accounts scope)")
     tksub = p_tok.add_subparsers(dest="_tok")
     p_tki = tksub.add_parser("issue", help="issue a token for an account")
-    p_tki.add_argument("--account", required=True)
-    p_tki.add_argument("--name", required=True)
+    p_tki.add_argument("--account", required=True, metavar="ACCOUNT_ID",
+                       help="account the token acts for")
+    p_tki.add_argument("--name", required=True, help="label for the token, e.g. ci")
     # SAME `choices` AS `server token issue`. The API validates scopes against ALL_SCOPES and
     # 400s on an unknown one, so without this a typo ("observer") costs a round trip and comes
     # back as a server error, while the identical mistake on the server CLI is caught at the
@@ -158,30 +168,32 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_tki)
     p_tki.set_defaults(func=cmd_token, _command="client token issue", action="issue")
     p_tkl = tksub.add_parser("list", help="list an account's tokens (metadata only, no secrets)")
-    p_tkl.add_argument("--account", required=True)
+    p_tkl.add_argument("--account", required=True, metavar="ACCOUNT_ID",
+                       help="account whose tokens to list")
     _creds(p_tkl)
     p_tkl.set_defaults(func=cmd_token, _command="client token list", action="list")
     p_tkr = tksub.add_parser("revoke", help="revoke a token by its hash")
-    p_tkr.add_argument("token_hash")
+    p_tkr.add_argument("token_hash", help="hash from `token list` (never the secret)")
     _creds(p_tkr)
     p_tkr.set_defaults(func=cmd_token, _command="client token revoke", action="revoke")
     p_tkrot = tksub.add_parser("rotate", help="issue a replacement + revoke the old (by hash)")
-    p_tkrot.add_argument("token_hash")
+    p_tkrot.add_argument("token_hash", help="hash of the token to replace")
     _creds(p_tkrot)
     p_tkrot.set_defaults(func=cmd_token, _command="client token rotate", action="rotate")
 
     p_pin = sub.add_parser("pin", help="pin a device/cohort to a release (overrides rollouts)")
     pinsub = p_pin.add_subparsers(dest="_pin")
-    p_pd = pinsub.add_parser("device")
-    p_pd.add_argument("--id", required=True)
+    p_pd = pinsub.add_parser("device", help="pin ONE device to a release (or --clear to unpin)")
+    p_pd.add_argument("--id", required=True, metavar="DEVICE_ID", help="device to pin")
     gd = p_pd.add_mutually_exclusive_group(required=True)
     gd.add_argument("--release", help="release id to pin to")
     gd.add_argument("--clear", action="store_true", help="unpin")
     _creds(p_pd)
     p_pd.set_defaults(func=cmd_pin, _command="client pin device", target="device")
-    p_pc = pinsub.add_parser("cohort")
-    p_pc.add_argument("--product-id", type=int, required=True)
-    p_pc.add_argument("--cohort", required=True)
+    p_pc = pinsub.add_parser("cohort", help="pin a whole cohort to a release (or --clear)")
+    p_pc.add_argument("--product-id", type=int, required=True,
+                      help="product the cohort belongs to")
+    p_pc.add_argument("--cohort", required=True, help="cohort to pin")
     gc = p_pc.add_mutually_exclusive_group(required=True)
     gc.add_argument("--release", help="release id to pin to")
     gc.add_argument("--clear", action="store_true", help="unpin")
@@ -192,9 +204,10 @@ def register(parser: argparse.ArgumentParser) -> None:
                           ("releases", cmd_releases), ("audit", cmd_audit)):
         p = sub.add_parser(name, help="read %s status" % name)
         if name in ("fleet", "devices", "releases"):
-            p.add_argument("--product-id", type=int)
+            p.add_argument("--product-id", type=int, help="only this product")
         else:
-            p.add_argument("--since", type=int, default=0)
+            p.add_argument("--since", type=int, default=0, metavar="SEQ",
+                           help="only events after this sequence number (a cursor, not an offset)")
         if name in ("devices", "releases"):
             p.add_argument("--limit", type=int, help="page size")
             p.add_argument("--offset", type=int, help="page offset")
