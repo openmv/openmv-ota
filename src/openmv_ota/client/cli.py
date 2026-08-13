@@ -17,6 +17,8 @@ import os
 import sys
 from pathlib import Path
 
+from openmv_ota.server.scopes import ALL_SCOPES, SCOPES
+
 from . import config
 from .errors import ClientError
 
@@ -122,8 +124,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_tki = tksub.add_parser("issue", help="issue a token for an account")
     p_tki.add_argument("--account", required=True)
     p_tki.add_argument("--name", required=True)
-    p_tki.add_argument("--scope", action="append", default=[],
-                       help="repeatable; default: the worker scopes")
+    # SAME `choices` AS `server token issue`. The API validates scopes against ALL_SCOPES and
+    # 400s on an unknown one, so without this a typo ("observer") costs a round trip and comes
+    # back as a server error, while the identical mistake on the server CLI is caught at the
+    # prompt. scopes.py is dependency-free precisely so the client can import it on a base
+    # install -- it just was not doing so.
+    p_tki.add_argument("--scope", action="append", default=[], choices=ALL_SCOPES,
+                       help="repeatable; default: the worker scopes (%s)" % ", ".join(SCOPES))
     _creds(p_tki)
     p_tki.set_defaults(func=cmd_token, _command="client token issue", action="issue")
     p_tkl = tksub.add_parser("list", help="list an account's tokens (metadata only, no secrets)")
@@ -131,11 +138,11 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_tkl)
     p_tkl.set_defaults(func=cmd_token, _command="client token list", action="list")
     p_tkr = tksub.add_parser("revoke", help="revoke a token by its hash")
-    p_tkr.add_argument("hash")
+    p_tkr.add_argument("token_hash")
     _creds(p_tkr)
     p_tkr.set_defaults(func=cmd_token, _command="client token revoke", action="revoke")
     p_tkrot = tksub.add_parser("rotate", help="issue a replacement + revoke the old (by hash)")
-    p_tkrot.add_argument("hash")
+    p_tkrot.add_argument("token_hash")
     _creds(p_tkrot)
     p_tkrot.set_defaults(func=cmd_token, _command="client token rotate", action="rotate")
 
@@ -392,12 +399,12 @@ def cmd_token(args: argparse.Namespace) -> int:
             print("token %s issued for %s" % (res["token_hash"][:16], res["account_id"]))
             print("token (store it now -- not recoverable): %s" % res["token"])
         elif args.action == "rotate":
-            res = api.rotate_token(args.hash)
+            res = api.rotate_token(args.token_hash)
             print("rotated -> %s (old revoked)" % res["token_hash"][:16])
             print("token (store it now -- not recoverable): %s" % res["token"])
         elif args.action == "revoke":
-            api.revoke_token(args.hash)
-            print("revoked %s" % args.hash[:16])
+            api.revoke_token(args.token_hash)
+            print("revoked %s" % args.token_hash[:16])
         else:
             print(json.dumps(api.list_account_tokens(args.account), indent=2))
     except ClientError as e:

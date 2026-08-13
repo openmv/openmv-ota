@@ -50,3 +50,47 @@ def test_logout(tmp_path, monkeypatch, capsys):
     assert "removed" in capsys.readouterr().out
     assert main(["client", "logout"]) == 0
     assert "no saved profile" in capsys.readouterr().out
+
+
+def test_scope_is_validated_locally_against_the_same_set_the_api_uses():
+    """A typo'd scope should fail at the prompt, not after a round trip.
+
+    The API validates `scopes` against ALL_SCOPES and 400s on an unknown one. `server token
+    issue` has always caught that locally via `choices`; `client token issue` did not, so the
+    identical mistake cost a request and came back as a server error instead of a usage message.
+    """
+    import pytest
+
+    from openmv_ota.cli import build_parser
+    from openmv_ota.server.scopes import ALL_SCOPES
+
+    p = build_parser()
+    with pytest.raises(SystemExit):                      # near-miss for "observe"
+        p.parse_args(["client", "token", "issue", "--account", "a", "--name", "n",
+                      "--scope", "observer"])
+    ns = p.parse_args(["client", "token", "issue", "--account", "a", "--name", "n",
+                       "--scope", "observe"])
+    assert ns.scope == ["observe"] and set(ALL_SCOPES) >= set(ns.scope)
+
+
+def test_client_cli_imports_without_the_server_extra():
+    """`client` must work on a base install. It now imports `server.scopes` for `--scope`
+    choices, which is safe ONLY because that module (and `server/__init__`) pull in nothing --
+    a stray FastAPI import there would break every client command on a plain `pip install`."""
+    import builtins
+    import importlib
+
+    blocked = ("fastapi", "starlette", "pydantic", "uvicorn")
+    real = builtins.__import__
+
+    def guard(name, *a, **k):
+        if name.split(".")[0] in blocked:
+            raise ImportError("simulated base install: no %s" % name)
+        return real(name, *a, **k)
+
+    builtins.__import__ = guard
+    try:
+        for m in ("openmv_ota.server.scopes", "openmv_ota.client.cli"):
+            importlib.reload(importlib.import_module(m))
+    finally:
+        builtins.__import__ = real
