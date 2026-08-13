@@ -13,6 +13,33 @@ from pydantic import BaseModel
 
 from . import live as live_mod
 from .auth import Principal, hash_token, require_scope
+from .schemas import (
+    AccountActive,
+    AccountCreated,
+    AccountList,
+    AccountNamed,
+    ArtifactsDeleted,
+    AuditList,
+    CohortAssigned,
+    CohortList,
+    CohortPinned,
+    Device,
+    DeviceBound,
+    DeviceList,
+    DevicePinned,
+    FleetSummary,
+    Release,
+    ReleaseList,
+    Rollout,
+    RolloutCreated,
+    RolloutList,
+    RolloutState,
+    RolloutStatus,
+    TokenIssued,
+    TokenList,
+    TokenRevoked,
+    ViewerGrant,
+)
 from .scopes import ALL_SCOPES, SCOPES
 
 admin = APIRouter(prefix="/api/v1/admin")
@@ -79,7 +106,7 @@ def _clean_name(ms, name, except_id=None):
     return name
 
 
-@admin.post("/accounts")
+@admin.post("/accounts", responses={200: {"model": AccountCreated}})
 def create_account(body: AccountCreate, request: Request,
                    principal: Principal = Depends(require_scope("accounts"))):
     """Operator-only (``accounts``): create a tenant account + issue its first admin token.
@@ -97,7 +124,7 @@ def create_account(body: AccountCreate, request: Request,
     return {"account_id": account_id, "name": name, "token": token}
 
 
-@admin.get("/accounts")
+@admin.get("/accounts", responses={200: {"model": AccountList}})
 def list_accounts(request: Request,
                   principal: Principal = Depends(require_scope("accounts"))):
     return {"accounts": request.app.state.metastore.list_accounts()}
@@ -107,7 +134,7 @@ class AccountPatch(BaseModel):
     name: str
 
 
-@admin.patch("/accounts/{account_id}")
+@admin.patch("/accounts/{account_id}", responses={200: {"model": AccountNamed}})
 def patch_account(account_id: str, body: AccountPatch, request: Request,
                   principal: Principal = Depends(require_scope("accounts"))):
     ms = request.app.state.metastore
@@ -120,7 +147,7 @@ def patch_account(account_id: str, body: AccountPatch, request: Request,
     return {"account_id": account_id, "name": name}
 
 
-@admin.post("/accounts/{account_id}/deactivate")
+@admin.post("/accounts/{account_id}/deactivate", responses={200: {"model": AccountActive}})
 def deactivate_account(account_id: str, request: Request,
                        principal: Principal = Depends(require_scope("accounts"))):
     """Soft off-switch: revoke every token + set active=0. Admin access dies; fielded devices keep
@@ -136,7 +163,7 @@ def deactivate_account(account_id: str, request: Request,
     return {"account_id": account_id, "active": False, "tokens_revoked": n}
 
 
-@admin.post("/accounts/{account_id}/activate")
+@admin.post("/accounts/{account_id}/activate", responses={200: {"model": AccountActive}})
 def activate_account(account_id: str, request: Request,
                      principal: Principal = Depends(require_scope("accounts"))):
     """Re-enable an account (active=1). Does NOT un-revoke old tokens -- issue fresh ones."""
@@ -180,7 +207,7 @@ def _active_account(ms, account_id):
     return acc
 
 
-@admin.post("/accounts/{account_id}/tokens")
+@admin.post("/accounts/{account_id}/tokens", responses={200: {"model": TokenIssued}})
 def issue_token(account_id: str, body: TokenIssue, request: Request,
                 principal: Principal = Depends(require_scope("accounts"))):
     ms = request.app.state.metastore
@@ -192,7 +219,7 @@ def issue_token(account_id: str, body: TokenIssue, request: Request,
     return _mint(ms, principal, body.name, scopes, account_id, "token.issue")
 
 
-@admin.get("/accounts/{account_id}/tokens")
+@admin.get("/accounts/{account_id}/tokens", responses={200: {"model": TokenList}})
 def list_account_tokens(account_id: str, request: Request,
                         principal: Principal = Depends(require_scope("accounts"))):
     ms = request.app.state.metastore
@@ -201,7 +228,7 @@ def list_account_tokens(account_id: str, request: Request,
     return {"tokens": ms.list_tokens(account_id=account_id)}   # metadata only -- never the secret
 
 
-@admin.post("/tokens/{token_hash}/revoke")
+@admin.post("/tokens/{token_hash}/revoke", responses={200: {"model": TokenRevoked}})
 def revoke_token(token_hash: str, request: Request,
                  principal: Principal = Depends(require_scope("accounts"))):
     ms = request.app.state.metastore
@@ -213,7 +240,7 @@ def revoke_token(token_hash: str, request: Request,
     return {"token_hash": token_hash, "revoked": True}
 
 
-@admin.post("/tokens/{token_hash}/rotate")
+@admin.post("/tokens/{token_hash}/rotate", responses={200: {"model": TokenIssued}})
 def rotate_token(token_hash: str, request: Request,
                  principal: Principal = Depends(require_scope("accounts"))):
     """Issue a replacement (same name/scopes/account) and revoke the old one -- the recovery path
@@ -229,7 +256,7 @@ def rotate_token(token_hash: str, request: Request,
     return fresh
 
 
-@admin.post("/rollouts")
+@admin.post("/rollouts", responses={200: {"model": RolloutCreated}})
 def create_rollout(body: RolloutCreate, request: Request,
                    principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
@@ -252,7 +279,7 @@ def create_rollout(body: RolloutCreate, request: Request,
             "percent": body.percent, "state": "active"}
 
 
-@admin.patch("/rollouts/{rollout_id}")
+@admin.patch("/rollouts/{rollout_id}", responses={200: {"model": Rollout}})
 def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
                   principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
@@ -274,7 +301,7 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
     return ms.get_rollout(rollout_id)
 
 
-@admin.post("/rollouts/{rollout_id}/rollback")
+@admin.post("/rollouts/{rollout_id}/rollback", responses={200: {"model": RolloutState}})
 def rollback_rollout(rollout_id: str, request: Request,
                      principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
@@ -285,7 +312,7 @@ def rollback_rollout(rollout_id: str, request: Request,
     return {"rollout_id": rollout_id, "state": "rolled_back"}
 
 
-@admin.get("/rollouts")
+@admin.get("/rollouts", responses={200: {"model": RolloutList}})
 def list_rollouts(request: Request, product_id: int | None = None, limit: int = _PAGE,
                   offset: int = 0, principal: Principal = Depends(require_scope("observe"))):
     ms = request.app.state.metastore
@@ -294,7 +321,7 @@ def list_rollouts(request: Request, product_id: int | None = None, limit: int = 
             "total": ms.count_scoped("rollouts", product_id, principal.account_id)}
 
 
-@admin.get("/rollouts/{rollout_id}/status")
+@admin.get("/rollouts/{rollout_id}/status", responses={200: {"model": RolloutStatus}})
 def rollout_status(rollout_id: str, request: Request,
                    principal: Principal = Depends(require_scope("observe"))):
     ro = _owned(request.app.state.metastore.get_rollout(rollout_id), principal)
@@ -306,14 +333,14 @@ def rollout_status(rollout_id: str, request: Request,
             "reported": request.app.state.metastore.deployment_counts(ro["release_id"])}
 
 
-@admin.get("/cohorts")
+@admin.get("/cohorts", responses={200: {"model": CohortList}})
 def list_cohorts(request: Request, product_id: int | None = None,
                  principal: Principal = Depends(require_scope("observe"))):
     return {"cohorts": request.app.state.metastore.list_cohorts(
         product_id, account_id=principal.account_id)}
 
 
-@admin.post("/cohorts/assign")
+@admin.post("/cohorts/assign", responses={200: {"model": CohortAssigned}})
 def assign_cohort(body: CohortAssign, request: Request,
                   principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
@@ -336,7 +363,7 @@ def _check_pin_release(ms, release_id, principal):
             raise HTTPException(status_code=404)
 
 
-@admin.patch("/devices/{device_id}/pin")
+@admin.patch("/devices/{device_id}/pin", responses={200: {"model": DevicePinned}})
 def pin_device(device_id: str, body: DevicePin, request: Request,
                principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
@@ -349,7 +376,7 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
     return {"device_id": device_id, "pinned_release_id": body.release_id}
 
 
-@admin.post("/devices/{device_id}/account")
+@admin.post("/devices/{device_id}/account", responses={200: {"model": DeviceBound}})
 def bind_device(device_id: str, request: Request,
                 principal: Principal = Depends(require_scope("manage"))):
     """Operator override: (re)bind a device to the caller's account -- the authority for
@@ -369,7 +396,7 @@ def bind_device(device_id: str, request: Request,
     return {"device_id": device_id, "account_id": principal.account_id}
 
 
-@admin.post("/cohorts/pin")
+@admin.post("/cohorts/pin", responses={200: {"model": CohortPinned}})
 def pin_cohort(body: CohortPin, request: Request,
                principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
@@ -383,7 +410,7 @@ def pin_cohort(body: CohortPin, request: Request,
     return {"product_id": body.product_id, "cohort": body.cohort, "release_id": body.release_id}
 
 
-@admin.get("/fleet")
+@admin.get("/fleet", responses={200: {"model": FleetSummary}})
 def fleet(request: Request, product_id: int | None = None,
           principal: Principal = Depends(require_scope("observe"))):
     from openmv_ota.ota.version import decode_app_version
@@ -399,7 +426,7 @@ def fleet(request: Request, product_id: int | None = None,
     return summary
 
 
-@admin.get("/releases")
+@admin.get("/releases", responses={200: {"model": ReleaseList}})
 def releases(request: Request, product_id: int | None = None, limit: int = _PAGE,
              offset: int = 0, principal: Principal = Depends(require_scope("observe"))):
     ms = request.app.state.metastore
@@ -423,7 +450,7 @@ def _with_fallback_version(rows: list[dict]) -> list[dict]:
     return rows
 
 
-@admin.get("/releases/{release_id}")
+@admin.get("/releases/{release_id}", responses={200: {"model": Release}})
 def release(release_id: str, request: Request,
             principal: Principal = Depends(require_scope("observe"))):
     """One release. A UI's release page had no way to ask for a single release -- only to LIST and
@@ -433,7 +460,7 @@ def release(release_id: str, request: Request,
     return _owned(request.app.state.metastore.get_release(release_id), principal)
 
 
-@admin.get("/devices/{device_id}")
+@admin.get("/devices/{device_id}", responses={200: {"model": Device}})
 def device(device_id: str, request: Request,
            principal: Principal = Depends(require_scope("observe"))):
     """One device, shaped exactly like a row of ``GET /devices`` (same ``fallback_version``
@@ -442,7 +469,7 @@ def device(device_id: str, request: Request,
     return _with_fallback_version([row])[0]
 
 
-@admin.get("/releases/{release_id}/image")
+@admin.get("/releases/{release_id}/image", responses={200: {"content": {"application/gzip": {}}, "description": "the artifact bytes"}})
 def release_image(release_id: str, request: Request,
                   principal: Principal = Depends(require_scope("observe"))):
     """Download a retained release's image -- the bytes needed to build a delta FROM it.
@@ -471,7 +498,7 @@ def release_image(release_id: str, request: Request,
     return Response(content=data, media_type="application/gzip")
 
 
-@admin.delete("/releases/{release_id}/artifacts")
+@admin.delete("/releases/{release_id}/artifacts", responses={200: {"model": ArtifactsDeleted}})
 def delete_release_artifacts(release_id: str, request: Request, force: bool = False,
                              principal: Principal = Depends(require_scope("publish"))):
     """Delete a release's stored objects, keeping the release ROW.
@@ -520,7 +547,7 @@ def delete_release_artifacts(release_id: str, request: Request, force: bool = Fa
     return {"release_id": release_id, "deleted": deleted}
 
 
-@admin.get("/devices")
+@admin.get("/devices", responses={200: {"model": DeviceList}})
 def devices(request: Request, product_id: int | None = None, limit: int = 100,
             cohort: str | None = None, offset: int = 0,
             principal: Principal = Depends(require_scope("observe"))):
@@ -533,7 +560,7 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
             "total": ms.count_scoped("devices", product_id, principal.account_id)}
 
 
-@admin.post("/devices/{device_id}/viewer-grant")
+@admin.post("/devices/{device_id}/viewer-grant", responses={200: {"model": ViewerGrant}})
 def viewer_grant(device_id: str, request: Request,
                  principal: Principal = Depends(require_scope("observe"))):
     """Mint a short-lived, single-device ``viewer`` credential for a dashboard.
@@ -563,7 +590,7 @@ def viewer_grant(device_id: str, request: Request,
     return grant
 
 
-@admin.get("/audit")
+@admin.get("/audit", responses={200: {"model": AuditList}})
 def audit(request: Request, since: int = 0, limit: int = 100,
           principal: Principal = Depends(require_scope("observe"))):
     return {"events": request.app.state.metastore.read_audit(

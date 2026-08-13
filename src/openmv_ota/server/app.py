@@ -36,6 +36,7 @@ from .boardmap import swd_ids_board_code
 from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter
+from .schemas import CheckIn, Health, Ok
 from .rollout import fallback_payload_version, offers_update, settled, should_autopause
 from .storage import build_storage
 from .verify import build_verifier
@@ -487,12 +488,12 @@ def _effective_account(ms, checkin):
     return ""
 
 
-@router.get("/healthz", tags=["Health"])
+@router.get("/healthz", tags=["Health"], responses={200: {"model": Health}})
 def healthz():
     return {"ok": True}
 
 
-@router.post("/api/v1/check", tags=["Device API"])
+@router.post("/api/v1/check", tags=["Device API"], responses={200: {"model": CheckIn}})
 def check(checkin: CheckIn, request: Request):
     st = request.app.state
     nothing = {"update": False, "poll_after_s": st.settings.poll_after_s}
@@ -547,7 +548,7 @@ def check(checkin: CheckIn, request: Request):
     return resp
 
 
-@router.post("/api/v1/feedback", tags=["Device API"])
+@router.post("/api/v1/feedback", tags=["Device API"], responses={200: {"model": Ok}})
 def feedback(report: Feedback, request: Request):
     """Explicit terminal outcome of an offered update (precise success/failure vs. inferring it
     from the next check-in). Recorded ONLY for a registered device -- an unregistered or bypassed
@@ -567,7 +568,7 @@ def feedback(report: Feedback, request: Request):
     return {"ok": True}
 
 
-@router.get("/d/{token}/{filename}", tags=["Device API"])
+@router.get("/d/{token}/{filename}", tags=["Device API"], responses={200: {"content": {"application/gzip": {}}, "description": "the artifact bytes"}})
 def artifact(token: str, filename: str, request: Request):
     st = request.app.state
     release_id = capability.verify(st.secret, token)

@@ -20,6 +20,8 @@ from openmv_ota.ota.manifest import DELTA_FORMAT, parse_manifest
 from .admin import new_id
 from .auth import Principal, require_scope
 
+from .schemas import Published
+
 publish = APIRouter(prefix="/api/v1/admin")
 
 
@@ -77,7 +79,7 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
             raise HTTPException(status_code=400, detail="%s is malformed" % filename) from None
 
 
-@publish.post("/releases")
+@publish.post("/releases", responses={200: {"model": Published}})
 async def publish_release(request: Request, manifest: UploadFile = File(...),
                           image: UploadFile = File(...),
                           delta: list[UploadFile] | None = File(None),

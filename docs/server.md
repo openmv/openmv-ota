@@ -144,6 +144,23 @@ openmv-ota client rollout rollback --id <rollout-id>                   # stop of
 openmv-ota client fleet | client devices [--product-id N] | client audit
 ```
 
+### The OpenAPI contract
+
+Every operation documents its 200 — 31 typed JSON schemas plus the two binary downloads as
+`application/gzip` — so `/docs` shows response shapes and a client can be generated from
+`/openapi.json` instead of hand-written against guesses.
+
+The schemas are attached as **documentation, not enforcement** (`responses={200: ...}`, never
+`response_model`), and that distinction is deliberate. `response_model` *filters*: FastAPI drops
+any field the model does not declare. Rows here come from `SELECT *`, so a schema one migration
+behind would make a real column **silently vanish from the API** — measured, not hypothetical:
+`Device` declares 17 fields while the store delivers 19, and one of the two undeclared ones
+(`streams`) is what the viewer-grant endpoint reads. Documentation-only means a schema this
+repo forgets to update costs an incomplete doc, never lost data.
+
+Tightening to enforced `response_model` is a deliberate follow-up, once the shapes have settled
+and a test proves model-vs-store parity.
+
 ### Paging the collection reads
 
 `GET /releases`, `/rollouts` and `/devices` take `limit` (default **100**) and `offset`, and

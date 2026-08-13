@@ -556,3 +556,40 @@ def test_cors_preflight_permits_the_admin_verbs_and_bearer_header(tmp_path):
     assert "PATCH" in r.headers["access-control-allow-methods"]
     assert "authorization" in r.headers["access-control-allow-headers"].lower()
     assert "access-control-allow-credentials" not in {k.lower() for k in r.headers}
+
+
+# --- the API describes its responses, without filtering them -----------------------------------
+
+def test_every_operation_documents_its_200(tmp_path):
+    """`/openapi.json` used to describe zero of the 33 operations' responses, so `/docs` showed
+    blank responses and a generated client got `Any` back from every call."""
+    app, _, _, _ = _app(tmp_path)
+    sch = TestClient(app).get("/openapi.json").json()
+    missing = [f"{v.upper()} {p}" for p, ops in sch["paths"].items() for v, op in ops.items()
+               if not op.get("responses", {}).get("200", {}).get("content")]
+    assert missing == [], "undocumented 200s: %s" % missing
+
+
+def test_response_schemas_document_but_do_not_filter(tmp_path):
+    """THE property that makes this safe, and the reason `response_model` was not used.
+
+    Rows come from `SELECT *`, so a schema that lags a migration by one column would, under
+    `response_model`, make that column silently disappear from the API — the same silent-loss
+    class as an unbounded list quietly truncating. Attached via `responses={200: ...}` the models
+    are documentation only, so a field they omit is still delivered.
+
+    Demonstrated on real undeclared columns rather than a synthetic one, so this keeps testing
+    something true as the schema grows.
+    """
+    from openmv_ota.server.auth import hash_token
+    from openmv_ota.server.schemas import Device
+    app, store, _, _ = _app(tmp_path)
+    store.add_token(hash_token("admintok"), "ci", ["observe"])
+    store.upsert_device(device_id="d1", product_id=BID, board="OPENMV_N6",
+                        current_version="1.0.0")
+    row = TestClient(app).get("/api/v1/admin/devices",
+                              headers={"Authorization": "Bearer admintok"}).json()["devices"][0]
+    undeclared = set(row) - set(Device.model_fields)
+    assert undeclared, "pick a column the model does not declare, or this proves nothing"
+    for f in undeclared:
+        assert f in row, "%s is delivered by the store but was dropped in transit" % f
