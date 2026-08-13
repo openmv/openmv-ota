@@ -4,8 +4,8 @@
 > what this stack provides and what {{VENDOR_NAME}} must add. The customer
 > includes a completed copy in their technical documentation when self-certifying.
 >
-> The authoritative mapping table lives in the concept plan ("EU CRA / RED 3.3
-> alignment"); this template is the customer-facing fill-in version.
+> The authoritative mapping table lives in `docs/compliance/cra-red-alignment.md`;
+> this template is the customer-facing fill-in version.
 
 ## Annex I — essential cybersecurity requirements
 

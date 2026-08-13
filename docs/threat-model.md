@@ -1,7 +1,7 @@
 # Threat model
 
-> Stub. See [architecture.md](architecture.md) and [v2-plan.md](v2-plan.md)
-> ("Threat model", "Out of scope", "Concept scope: explicit non-goals").
+> Not a stub -- this is the threat model. [architecture.md](architecture.md) and
+> [v2-plan.md](v2-plan.md) give the design it defends.
 
 **In scope:** OTA-borne threats — signed-or-unsigned artefacts pushed over a
 possibly-controlled network. Defended with ECDSA signatures (COSE algorithm ids,
@@ -13,9 +13,19 @@ injection, side channels, network transport attacks (app-layer TLS/cert-pinning)
 and compromise of the signing infrastructure. Anyone with bus access on these
 boards can do anything — that's accepted.
 
-**Explicit non-goals:** image confidentiality (no encryption), delta updates,
-multi-signature per image, in-field OTA-only key revocation, resumable downloads,
-persistent counters outside the partition.
+**Explicit non-goals:** image confidentiality (no encryption), multi-signature per
+image, in-field OTA-only key revocation, persistent counters outside the partition.
+
+**No longer non-goals.** *Resumable downloads* were listed here too, and are now built:
+`_ResumingBody` restarts a dropped transfer at the compressed offset already consumed
+instead of re-running the whole install. It changes nothing below — a resumed stream is
+verified exactly like an uninterrupted one.
+
+*Delta updates*, also once on this list, are built
+and are the default representation on the fleet. They change nothing here: a delta is
+pure transport. The reconstructed image is verified by the manifest's sha256 and then
+by the trailer signature on boot, so a patch is never trusted -- a corrupted or hostile
+one fails those checks exactly as a corrupted full image does.
 
 **Key custody (operational, assumed not enforced by tooling):** private signing
 keys (`keys/private/*.pem`, both `ota` and `factory` roles) never leave the party

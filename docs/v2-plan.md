@@ -1,8 +1,9 @@
 # v2 — true A/B, single-image mode, and firmware-resident recovery
 
-Status: **all six steps built** on `kwabena/v2-step1-mode` (1836 tests, 100% coverage).
-**Nothing has run on hardware yet** -- that is the next thing, and the only thing between this and
-a working v2.
+Status: **SHIPPED.** Merged to `main` (the `kwabena/v2-step1-mode` branch is long gone), and
+proven on hardware: every board in the fleet runs its full regression set against v2 -- see
+[v2-hardware-results.md](v2-hardware-results.md). This page is kept for the DESIGN and its
+reasoning, which is still what the code implements; it is not a status page.
 
 Progress: mode derivation, the control-block fix, project config, `_ota_config` stamping, the
 symmetric A/B `boot.py`, the install path retargeted to the non-running slot, the provisioning

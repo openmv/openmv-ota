@@ -24,19 +24,12 @@ parked is recorded so the next person does not re-derive it.
   was briefly frozen). Measure the saving from dropping those two defines before building
   anything: if it is ~3 KB it does not dent 32 KB, if it is ~10 KB it is worth having.
 
-- **`reinstall` fails on the N6 (lan).** 10/11 of that leg passes. The device logs
-  `install: erasing block XIP` and goes silent for nine minutes; a 12 MiB erase normally
-  takes **73 s**. Every *passing* install starts at ~6.4 s uptime (right after a boot); this
-  one starts at 22.8 s, from a steady-state app — which is the field case. It also passed
-  once at 1049 s against a 1200 s timeout, so "merely slow" is not excluded. The XIP erase
-  path now reports progress every 64 blocks (like the block-device path), which distinguishes
-  hang-at-block-N from slow in a single run — that is the next step, on one board.
-
-- **The AE3 reset-loops after a watchdog leg.** It can arm a watchdog for the first time
-  (the alif carry works again), and the armed app then bites, reboots into itself, and loops.
-  100 ms is the N6's WWDG ceiling; `openmv_wdt`'s own notes say the alif WDT has far more
-  headroom, so a per-port window is the likely answer. Safety-relevant — measure, do not
-  guess. The loop is no longer fatal to a run (the flash recovers through the DFU window).
+- **The H7 Plus (OPENMV4P) cannot run an armed watchdog.** It is the one board in
+  `WATCHDOG_BROKEN`: an armed WWDG reset-loops it off USB, so its leg skips `watchdog`
+  while its other eight scenarios pass. 100 ms is the WWDG ceiling and boot + app startup
+  does not fit inside it, so one bite becomes a bite loop. A per-port window is the likely
+  answer. Safety-relevant — measure, do not guess. (The AE3, which used to be listed here,
+  now runs `watchdog` in its regression and passes.)
 
 - **Firmware updates via the ROMFS.** Design discussed, not built: the bootloader copies a
   verified `firmware.bin` out of a slot into the firmware area, so firmware ships only when
@@ -47,9 +40,12 @@ parked is recorded so the next person does not re-derive it.
   downgrade, gate apps with `min_platform_version`, put the image at a fixed offset so the
   bootloader needs no romfs parser, keep the bootloader itself out of OTA scope.
 
-- **The harness scores before the device settles.** A happy-path leg can flake when the
-  reset that opens the scored window lands mid-erase: the half-written slot legitimately
-  falls back and `boot.fallback` is forbidden. Seen ~1 in 14 runs, on the RT and the N6.
+- **Multi-signature per image (N-of-M).** Carried over from the concept plan when it was
+  retired — the only idea in it that is neither built nor superseded. The trailer carries a
+  single `signature`, so high-security setups wanting N-of-M signing are not served. The
+  design note worth keeping: it fits the existing trailer **without a schema bump**, because
+  the metadata blob is additive and signed. Nobody has asked for it; it is recorded so the
+  extension point is not rediscovered from scratch.
 
 ## Remaining / optional (pre-v2, still true)
 
