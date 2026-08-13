@@ -470,6 +470,15 @@ to move to a new firmware commit.
 `status`, `verify`, and `sync` find the checkout from `openmv-ota.local.toml`, or
 from `-f/--firmware`.
 
+```bash
+openmv-ota project history ./my-product       # every recorded change to this project
+openmv-ota project history ./my-product -n 20 # just the most recent 20
+```
+
+`history` replays the project's own event log — what was resolved, rotated, revoked and
+re-synced, in order. It answers "when did this lock last move, and to what" without reading
+`git log` of the checkout it points at.
+
 ## Freezing the firmware
 
 Once you build or release ROMFS images for a pegged firmware, the firmware must

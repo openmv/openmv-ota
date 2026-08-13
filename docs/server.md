@@ -240,6 +240,32 @@ is **inert** until a rollout activates it.
 
 CI happy path: `openmv-ota client publish --project . --rollout beta:5`.
 
+## Every `client` command
+
+The full remote surface, so nothing has to be discovered by guessing at `--help`. Read verbs
+print JSON on stdout; write verbs print a one-line summary. All take `--server` / `--token`, or
+use the profile saved by `login`.
+
+| Command | What it does |
+|---|---|
+| `client login --server URL --token T` | save the server URL + admin token (also reads the token from stdin or `OPENMV_OTA_TOKEN`) |
+| `client logout` | remove the saved profile |
+| `client publish DIR -b BOARD [--rollout c:N]` | upload a built release, optionally staging it |
+| `client bases DIR -b BOARD` | download recent release images to build deltas against |
+| `client prune --release ID [--force]` | delete a release's stored artifacts, keeping its history row |
+| `client rollout raise\|pause\|resume\|rollback --id ID` | drive a rollout (`raise` takes `--percent`) |
+| `client cohort list` / `client cohort assign --cohort C --device ID` | see cohorts / put devices in one |
+| `client pin device --id ID (--release R \| --clear)` | pin one device to a release, overriding rollouts |
+| `client pin cohort --product-id N --cohort C --release R` | pin a whole cohort |
+| `client bind --id ID` | (re)bind a device to the caller's account |
+| `client fleet` / `client devices` / `client releases` / `client audit` | the read side (JSON) |
+| `client account create\|list\|rename\|deactivate\|activate` | tenant accounts (needs the `accounts` scope) |
+| `client token issue\|list\|revoke\|rotate` | an account's API tokens (`issue`/`rotate` return the secret **once**) |
+
+`--scope` on `client token issue` accepts the same set the API validates against
+(`publish`, `manage`, `observe`, `accounts`), so a typo fails at the prompt rather than as a
+server 400. The default is the worker set: `publish, manage, observe`.
+
 ## How a rollout is staged
 
 A rollout offers a release to a growing slice of a cohort. Membership is **stable** across a
