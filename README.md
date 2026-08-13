@@ -36,8 +36,15 @@ images, firmware builds, inspect/verify) are implemented and tested. That includ
 the frozen `boot.py` slot selection — exercised on real MicroPython under QEMU — the
 on-device ECDSA verify module, checked against the firmware's own mbedtls, and the
 `openmv_ota` device runtime library (`status`/`confirm`/`sync`) an OTA project
-scaffolds into the app. The remaining over-the-air pieces — the on-device updater that
-*downloads and stages* an image, and the update server it talks to — are not yet built.
+scaffolds into the app.
+
+The over-the-air pieces are built too: the **on-device installer** downloads, verifies and
+stages an image (full or delta, resumable across a dropped connection), and the **update
+server** (`openmv-ota server`) hosts releases and drives fleet rollouts, with
+`openmv-ota client` as its admin CLI. The whole path runs on real hardware — every board in
+the HIL fleet exercises its own regression set on each pull request, negative paths included
+(corrupt image, bad signature, untrusted key, anti-rollback, no bootable slot). See
+[docs/v2-hardware-results.md](docs/v2-hardware-results.md).
 
 ## Installation
 

@@ -71,3 +71,14 @@ This stack is a *component*. The customer placing the final product on the marke
 
 The conformity assessment checklist we ship makes these explicit so nothing is missed.
 
+## The templates we ship
+
+Filling these in is the customer's job — openmv-ota is a *component*, and CRA conformity is
+assessed per **product**. They live in [`compliance-templates/`](../../compliance-templates/):
+
+| Template | Who issues it | Covers |
+|---|---|---|
+| [`conformity-assessment-checklist.md.template`](../../compliance-templates/conformity-assessment-checklist.md.template) | the customer, in their technical documentation | the Annex I table above, as a fill-in checklist with a "customer must add" column |
+| [`eu-doc.md.template`](../../compliance-templates/eu-doc.md.template) | the customer, placing the product on the market | the EU Declaration of Conformity behind the CE marking (CRA Art. 32) |
+| [`vuln-disclosure-policy.md.template`](../../compliance-templates/vuln-disclosure-policy.md.template) | the vendor, published | coordinated disclosure — CRA Annex I 2(4)(5)(6) |
+| [`security.txt.template`](../../compliance-templates/security.txt.template) | the vendor, served at `/.well-known/security.txt` | RFC 9116 contact + a pointer to the disclosure policy |
