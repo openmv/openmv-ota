@@ -5,7 +5,8 @@
 ---
 
 `openmv-ota project` pegs an OTA project to a specific OpenMV firmware checkout
-and records the toolchain versions and per-board geometry that firmware implies.
+and records the toolchain versions and per-board geometry (partition sizes, erase
+sizes, alignment rules) that firmware implies.
 Model compilers (mpy-cross, Ethos-U Vela, ST Edge AI) must match the libraries
 built into the firmware, so a project captures the exact versions to use.
 

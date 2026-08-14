@@ -20,7 +20,7 @@ over-the-air update tools deliver signed, anti-rollback updates that fall back t
 the last release that worked.
 
 **Start with the [tutorial](docs/tutorial/00-introduction.md)** — the complete,
-navigable reference for every command and the API, in the order you use them:
+navigable reference for every command and the update server's HTTP API, in the order you use them:
 install → project → build → flash → device runtime → update server. The command
 documentation lives there and only there, so it has one place to be right.
 Design and engineering notes are in [docs/reference/](docs/reference/)

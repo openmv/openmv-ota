@@ -4,13 +4,50 @@
 
 ---
 
-This tutorial is the reference for the CLI and the API, in the order you actually use
-them: install the tools, peg a project to a firmware, build signed images, flash a
-board, wire the device runtime into your app, and run the update server that stages
-releases across a fleet. Each page is complete for its verb — every command and flag on
-these pages exists, and the test suite holds the CLI to that.
+**openmv-ota** is OpenMV's tooling for updating cameras in the field. You build your
+MicroPython application into a signed image on your computer; a camera downloads that
+image over the network and installs it; and if the new image misbehaves, the camera
+falls back to the version that last worked.
 
-Read it front to back the first time; after that each page stands alone.
+Everything on these pages is driven by one command-line program, `openmv-ota`,
+installed with pip — "the CLI" from here on. Its commands are grouped by **verb**:
+`openmv-ota project …`, `openmv-ota build …`, and so on, and each page of this
+tutorial covers one verb. Two pieces run somewhere other than your computer:
+
+- the **device runtime** — a small library that runs on the camera itself
+  ([page 5](05-device-runtime.md)), and
+- the **update server** — a web service that hosts what you publish and decides
+  which camera is offered what ([page 6](06-update-server.md)). You drive it with
+  the `client` verb; other software (such as OpenMV's cloud) drives the same
+  **HTTP API** the server exposes.
+
+## The words every page uses
+
+- **ROMFS** — the read-only filesystem a camera mounts at `/rom`. Your application
+  ships as a ROMFS **image**: one file containing that whole filesystem.
+  ([Page 7](07-romfs.md) covers the low-level tool for these.)
+- **firmware checkout** — a local git clone of the OpenMV firmware. A **project**
+  ([page 2](02-projects.md)) is *pegged* to one: it records exactly which firmware
+  commit and which tool versions your images are built against, so a build is
+  reproducible anywhere.
+- **signing** — an update image carries a cryptographic signature in a footer
+  called the **trailer**. A camera refuses an image that is unsigned, tampered
+  with, or older than what it already ran (**anti-rollback**).
+- **slots** — on an update-capable camera the ROMFS partition holds **two images
+  side by side, A and B**. An update writes into the slot that is not running; at
+  boot the newest valid image wins, so a bad update falls back to the other slot.
+  A freshly installed image boots as a **trial**: your application must **confirm**
+  it works, or the next boot falls back. Boards too small for two slots run in
+  **single-image mode** instead.
+- **release / rollout / fleet** — a published image is a **release**; the update
+  server offers it to a chosen share of your **fleet** of cameras — a **rollout**
+  — which you widen, pause, or roll back as confidence grows. Rollouts target a
+  **cohort**, a named group of your devices. Cameras periodically **check in**
+  with the server: each check-in reports what the camera is running and is the
+  moment it can be offered an update.
+
+Read the pages front to back the first time; after that each page stands alone.
+Every command and flag on these pages exists — the test suite holds the CLI to it.
 
 | Page | Covers |
 |---|---|

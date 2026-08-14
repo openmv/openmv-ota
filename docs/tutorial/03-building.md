@@ -7,7 +7,8 @@
 `openmv-ota build` compiles a project's app and produces deployable images.
 `build romfs` (an OTA payload), `build factory-romfs` (the full dual-slot
 partition image flashed at the factory), and `build firmware` (the device
-firmware, with an OTA boot script frozen in for OTA projects) are available now.
+firmware, with an OTA boot script *frozen* in — compiled into the firmware binary
+itself — for OTA projects) are available now.
 
 ## build romfs
 
@@ -162,16 +163,18 @@ openmv-ota build factory-romfs ./my-product
 ```
 
 The output is `<project>/build/<board>-factory-romfs.img`, sized to the exact partition
-and ready to write at the partition's offset. It composes the same compiled body
-into the partition's two slots:
+and ready to write at the partition's offset. Each slot ends in a few reserved
+**control sectors**: small blocks holding the slot's update **status** and its
+**install counter**, the number boot uses to decide which slot is newest. The image
+composes the same compiled body into the partition's two slots:
 
 | Slot | Contents | Status sector | Role |
 |---|---|---|---|
 | **A** | body + pad + control sectors | `confirmed`, install counter **2** | boots first (higher counter) |
 | **B** | body + pad + control sectors | `confirmed`, install counter **1** | the fallback, and the target of the first update |
 
-Both slots hold the **same signed image** and the **same shape**. There is no golden slot
-and no golden state: the only thing telling them apart is the install counter, so which one
+Both slots hold the **same signed image** and the **same shape**. Neither is a protected
+factory copy: the only thing telling them apart is the install counter, so which one
 boots is decided by exactly the rule that decides it after every later update, rather than
 by a factory-only special case. Writing both means a device has a real fallback from its
 very first boot instead of after its first successful update.
@@ -253,7 +256,8 @@ option:
   untouched). It selects the newest valid ROMFS slot,
   verifies the chosen slot's signed trailer (ECDSA + SHA-256, over the firmware's own
   mbedtls), enforces the integrity / cross-flash / compatibility / anti-rollback
-  checks, runs the trial-boot status state machine, and mounts the slot it picks.
+  checks, runs the trial-boot state machine ([page 5](05-device-runtime.md)), and mounts the
+  slot it picks.
   Its `_ota_config.py` — the trusted keys, slot geometry, and board/product ids — is
   generated from the project and frozen alongside it.
 
