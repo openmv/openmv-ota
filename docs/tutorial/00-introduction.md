@@ -1,6 +1,6 @@
 # The openmv-ota tutorial
 
-*[Index](00-introduction.md) · [1 · Getting started →](01-getting-started.md)*
+*[Index](00-introduction.md) · [1 · The ROMFS →](01-romfs.md)*
 
 ---
 
@@ -25,7 +25,7 @@ tutorial covers one verb. Two pieces run somewhere other than your computer:
 
 - **ROMFS** — the read-only filesystem a camera mounts at `/rom`. Your application
   ships as a ROMFS **image**: one file containing that whole filesystem.
-  ([Page 7](07-romfs.md) covers the low-level tool for these.)
+  ([Page 1](01-romfs.md) explains the format and the tool that makes them.)
 - **firmware checkout** — a local git clone of the OpenMV firmware. A **project**
   ([page 2](02-projects.md)) is *pegged* to one: it records exactly which firmware
   commit and which tool versions your images are built against, so a build is
@@ -51,13 +51,12 @@ Every command and flag on these pages exists — the test suite holds the CLI to
 
 | Page | Covers |
 |---|---|
-| [1 · Getting started](01-getting-started.md) | installing the tools and the SDK |
+| [1 · The ROMFS](01-romfs.md) | installing the tools; what `/rom` is, the image format on flash, and `openmv-ota romfs` |
 | [2 · Projects](02-projects.md) | `openmv-ota project` — pegging to a firmware, keys, the lock |
 | [3 · Building](03-building.md) | `openmv-ota build` — romfs / factory-romfs / firmware / ota-romfs |
 | [4 · Flashing](04-flashing.md) | `openmv-ota flash` — every board's programming path |
 | [5 · The device runtime](05-device-runtime.md) | what runs on the camera — `status` / `confirm` / `sync` / `install` |
 | [6 · The update server](06-update-server.md) | `openmv-ota server` + `client` — hosting releases, rollouts, the admin API |
-| [7 · The romfs tool](07-romfs.md) | `openmv-ota romfs` — the low-level image packer underneath it all |
 
 Not part of the walkthrough, but referenced from it:
 
@@ -71,4 +70,4 @@ Not part of the walkthrough, but referenced from it:
 
 ---
 
-*[Index](00-introduction.md) · [1 · Getting started →](01-getting-started.md)*
+*[Index](00-introduction.md) · [1 · The ROMFS →](01-romfs.md)*

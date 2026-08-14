@@ -1,6 +1,6 @@
 # The update server
 
-*[← 5 · The device runtime](05-device-runtime.md) · [Index](00-introduction.md) · [7 · The romfs tool →](07-romfs.md)*
+*[← 5 · The device runtime](05-device-runtime.md) · [Index](00-introduction.md)*
 
 ---
 
@@ -309,9 +309,9 @@ registered devices.
 
 ## See also
 
-- [Building OTA images](07-romfs.md) — what `build ota-romfs` produces and how it's signed.
+- [Building OTA images](03-building.md) — what `build ota-romfs` produces and how it's signed.
 - [Threat model](../reference/threat-model.md) — the trust root and why the server never holds a key.
 
 ---
 
-*[← 5 · The device runtime](05-device-runtime.md) · [Index](00-introduction.md) · [7 · The romfs tool →](07-romfs.md)*
+*[← 5 · The device runtime](05-device-runtime.md) · [Index](00-introduction.md)*

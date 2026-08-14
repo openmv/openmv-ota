@@ -1,6 +1,6 @@
 # project
 
-*[← 1 · Getting started](01-getting-started.md) · [Index](00-introduction.md) · [3 · Building →](03-building.md)*
+*[← 1 · The ROMFS](01-romfs.md) · [Index](00-introduction.md) · [3 · Building →](03-building.md)*
 
 ---
 
@@ -592,4 +592,4 @@ the firmware-update path, which does not yet exist).
 
 ---
 
-*[← 1 · Getting started](01-getting-started.md) · [Index](00-introduction.md) · [3 · Building →](03-building.md)*
+*[← 1 · The ROMFS](01-romfs.md) · [Index](00-introduction.md) · [3 · Building →](03-building.md)*

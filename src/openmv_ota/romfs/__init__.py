@@ -4,7 +4,7 @@ Two clearly separated layers live under this package.
 
 **Layer 1 — the generic ROMFS image tool (implemented).** Builds and inspects
 OpenMV ROMFS images with board-aware alignment. It has no knowledge of OTA,
-signing, or updates. See :doc:`docs/tutorial/07-romfs.md`.
+signing, or updates. See :doc:`docs/tutorial/01-romfs.md`.
 
 * :mod:`~openmv_ota.romfs.container` — the ROMFS format: ``VfsRomWriter`` /
   ``VfsRomReader`` (a faithful port of the OpenMV IDE's reference implementation).
