@@ -9,16 +9,22 @@ MicroPython application into a signed image on your computer; a camera downloads
 image over the network and installs it; and if the new image misbehaves, the camera
 falls back to the version that last worked.
 
-Everything on these pages is driven by one command-line program, `openmv-ota`,
-installed with pip — "the CLI" from here on. Its commands are grouped by **verb**:
+Everything on these pages is driven by one command-line program — "the CLI" from
+here on:
+
+```bash
+pip install openmv-ota
+```
+
+Its commands are grouped by **verb**:
 `openmv-ota project …`, `openmv-ota build …`, and so on, and each page of this
 tutorial covers one verb. Two pieces run somewhere other than your computer:
 
-- the **device runtime** — a small library that runs on the camera itself
-  ([page 5](05-device-runtime.md)), and
+- the **device runtime** — `boot.py` and a small library that run on the camera
+  itself ([pages 8–9](08-boot-and-rollback.md)), and
 - the **update server** — a web service that hosts what you publish and decides
-  which camera is offered what ([page 6](06-update-server.md)). You drive it with
-  the `client` verb; other software (such as OpenMV's cloud) drives the same
+  which camera is offered what ([pages 10–11](10-update-server.md)). You drive it
+  with the `client` verb; other software (such as OpenMV's cloud) drives the same
   **HTTP API** the server exposes.
 
 ## The words every page uses
@@ -51,12 +57,17 @@ Every command and flag on these pages exists — the test suite holds the CLI to
 
 | Page | Covers |
 |---|---|
-| [1 · The ROMFS](01-romfs.md) | installing the tools; what `/rom` is, the image format on flash, and `openmv-ota romfs` |
-| [2 · Projects](02-projects.md) | `openmv-ota project` — pegging to a firmware, keys, the lock |
-| [3 · Building](03-building.md) | `openmv-ota build` — romfs / factory-romfs / firmware / ota-romfs |
-| [4 · Flashing](04-flashing.md) | `openmv-ota flash` — every board's programming path |
-| [5 · The device runtime](05-device-runtime.md) | what runs on the camera — `status` / `confirm` / `sync` / `install` |
-| [6 · The update server](06-update-server.md) | `openmv-ota server` + `client` — hosting releases, rollouts, the admin API |
+| [1 · The ROMFS](01-romfs.md) | what `/rom` is, the image format on flash, and `openmv-ota romfs` |
+| [2 · Projects](02-projects.md) | `openmv-ota project new` — pegging to a firmware, and the app folder |
+| [3 · The lock](03-the-lock.md) | `setup` / `show` / `status` / `verify` / `sync` / `history` — keeping the peg honest |
+| [4 · OTA projects](04-ota-projects.md) | what `--ota` changes: slots, the scaffolded device library, board identity |
+| [5 · Signing keys](05-signing-keys.md) | `project keys` — the provisioned key set, rotation, revocation |
+| [6 · Building](06-building.md) | `openmv-ota build` — romfs / factory-romfs / firmware / ota-romfs |
+| [7 · Flashing](07-flashing.md) | `openmv-ota flash` — every board's programming path |
+| [8 · Boot and rollback](08-boot-and-rollback.md) | `boot.py` — slot selection, the trial, falling back |
+| [9 · The device library](09-device-library.md) | `openmv_ota` on the camera — `status` / `confirm` / `sync` / `install` |
+| [10 · The update server](10-update-server.md) | `openmv-ota server` — hosting releases, accounts, deploying |
+| [11 · The fleet](11-fleet.md) | `openmv-ota client` + the admin API — publishing, rollouts, watching devices |
 
 Not part of the walkthrough, but referenced from it:
 

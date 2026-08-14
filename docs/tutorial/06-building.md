@@ -1,14 +1,16 @@
-# build
+# Building
 
-*[← 2 · Projects](02-projects.md) · [Index](00-introduction.md) · [4 · Flashing →](04-flashing.md)*
+*[← 5 · Signing keys](05-signing-keys.md) · [Index](00-introduction.md) · [7 · Flashing →](07-flashing.md)*
 
 ---
 
-`openmv-ota build` compiles a project's app and produces deployable images.
-`build romfs` (an OTA payload), `build factory-romfs` (the full dual-slot
-partition image flashed at the factory), and `build firmware` (the device
-firmware, with an OTA boot script *frozen* in — compiled into the firmware binary
-itself — for OTA projects) are available now.
+`openmv-ota build` compiles a project's app and produces every deployable artifact:
+`build romfs` (the image itself — plain for a regular project, a signed bundle for an
+OTA one), `build factory-romfs` (the full two-slot partition image flashed at the
+factory), `build firmware` (the device firmware — for an OTA project the boot script
+is *frozen* in, compiled into the firmware binary itself), `build ota-romfs` (the
+publishable set a camera downloads), and `build inspect` / `build verify` (decode and
+check what the others produced).
 
 ## build romfs
 
@@ -29,9 +31,9 @@ board also builds its coprocessor partition as a plain
 `<board>-coprocessor-romfs.img` (always, from `app-coprocessor/`), and for an OTA
 project **nests** that image inside the main one (at
 `/rom/lib/openmv_ota/data/coprocessor.romfs`) so the on-device
-[`openmv_ota.sync()`](02-projects.md#the-device-runtime-library-openmv_ota) can write it
+[`openmv_ota.sync()`](04-ota-projects.md#the-device-runtime-library-openmv_ota) can write it
 into the helper partition — see
-[Multi-core boards](02-projects.md#multi-core-boards-a-coprocessor-partition).
+[Multi-core boards](04-ota-projects.md#multi-core-boards-a-coprocessor-partition).
 
 Every image also gets a generated, read-only `system.json` at `/rom/system.json` —
 board identity (`board`, `product_id`, `board_name`, `product`), the app version, and
@@ -256,7 +258,7 @@ option:
   untouched). It selects the newest valid ROMFS slot,
   verifies the chosen slot's signed trailer (ECDSA + SHA-256, over the firmware's own
   mbedtls), enforces the integrity / cross-flash / compatibility / anti-rollback
-  checks, runs the trial-boot state machine ([page 5](05-device-runtime.md)), and mounts the
+  checks, runs the trial-boot state machine ([page 5](09-device-library.md)), and mounts the
   slot it picks.
   Its `_ota_config.py` — the trusted keys, slot geometry, and board/product ids — is
   generated from the project and frozen alongside it.
@@ -279,6 +281,47 @@ missing or the build fails.
 | `--incremental` | Skip the clean rebuild (only when the tree is known good). |
 | `-f, --firmware PATH` | Firmware checkout override. |
 | `--keep-build-dir` | Keep the generated wrapper manifest dir (OTA builds) for inspection. |
+
+## build ota-romfs
+
+`build ota-romfs` produces the complete publishable set for an over-the-air release,
+straight from app source — it runs the same compile-and-sign as `build romfs`
+internally (same flags: `--app`, `--no-compile-py`, `--mpy-arg`, the model-compiler
+options), then renders what a camera actually downloads:
+
+```bash
+openmv-ota build ota-romfs ./my-product
+# -> build/<board>-ota.img.gz       the gzipped slot-sized image
+#    build/<board>-manifest.bin     the signed manifest install() fetches first
+```
+
+The **manifest** is the descriptor the device downloads before anything else: it names
+the image's size and sha256 and the available representations, and binds
+`product_id` / version / anti-rollback under the same ECDSA key as the image. The
+trailer *is* the manifest's source of truth, so there is no separate metadata file to
+keep in sync. Representation URLs inside it are **relative filenames**, resolved
+on-device against the manifest's own URL — host the artifacts beside each other and
+the signed manifest moves between hosts (a new bucket, a mirror) without re-signing.
+
+### Deltas (`--delta-from`)
+
+```bash
+openmv-ota build ota-romfs ./my-product --delta-from build/bases
+# -> additionally: build/<board>-ota.delta-<base-version>.gz
+```
+
+`--delta-from` takes a base to diff against — a provisioning image
+(`<board>-factory-romfs.img`), a previous release's `-ota.img.gz`, or a directory of
+either — and emits a compressed patch a camera applies against the release it is
+already running, downloading only the changes. It is **repeatable, and that matters**:
+a device patches against the release it is *running*, so a fleet spread over several
+versions needs one delta per base version still in the field — devices with no
+matching base simply take the full image. The delta is pure transport: the
+reconstructed slot is still sha256- and signature-verified on the device
+([The device library](09-device-library.md)).
+
+`--allow-republish` permits re-signing a version at or below the last published one —
+a dev-loop convenience the server mirrors with its own flag of the same name.
 
 ## Inspecting and verifying an OTA image
 
@@ -332,4 +375,4 @@ not a host. Those remain `boot.py`'s job.
 
 ---
 
-*[← 2 · Projects](02-projects.md) · [Index](00-introduction.md) · [4 · Flashing →](04-flashing.md)*
+*[← 5 · Signing keys](05-signing-keys.md) · [Index](00-introduction.md) · [7 · Flashing →](07-flashing.md)*

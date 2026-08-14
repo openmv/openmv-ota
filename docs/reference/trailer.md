@@ -32,7 +32,7 @@ The trailer occupies one flash erase block — 4 KiB on every OTA-capable board
 (external NOR / OSPI; AE3's byte-writable MRAM is floored to 4 KiB so growing the
 metadata can't reshape the layout). Boards whose ROMFS is a single large
 internal-flash sector can't host OTA at all (see
-[project.md](../tutorial/02-projects.md#ota-projects)). Laid out little-endian:
+[project.md](../tutorial/04-ota-projects.md)). Laid out little-endian:
 
 ```
 [ header (80) ][ json_meta (meta_size) ][ signature (sig_size) ][ crc32 (4) ]
@@ -154,6 +154,6 @@ above; this page documents the format they consume.)
 
 ## See also
 
-- [build.md](../tutorial/03-building.md) — `build romfs` produces the trailer from a project.
+- [build.md](../tutorial/06-building.md) — `build romfs` produces the trailer from a project.
 - [project.md](../tutorial/02-projects.md) — `project new --ota` provisions the keys and identity
   the trailer records.

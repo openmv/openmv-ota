@@ -4,12 +4,6 @@
 
 ---
 
-Install the tools first:
-
-```bash
-pip install openmv-ota
-```
-
 Everything a camera runs — your scripts, settings, NPU models — ships inside a
 **ROMFS image**: one file holding a read-only filesystem that the camera mounts at
 `/rom`. This page explains what that image is, how it is laid out on flash, and how to
@@ -132,7 +126,7 @@ openmv-ota romfs pack ./app -o app.romfs --board OPENMV_N6
 
 The directory's contents become the root of the image. Files are packed
 unchanged. To compile `.py` files and convert NPU models automatically while
-packing, use `openmv-ota build romfs` ([page 3](03-building.md)), which works
+packing, use `openmv-ota build romfs` ([page 6](06-building.md)), which works
 from a pegged project.
 
 `--board` sets the alignment rules and partition capacity for a camera. Run
@@ -212,7 +206,7 @@ openmv-ota romfs pack ./app -o - --board OPENMV_N6 | openmv-ota romfs verify -
 ## Where this goes next
 
 Packing verbatim is the floor. A [project](02-projects.md) pegs your app to a
-firmware so [`build romfs`](03-building.md) can compile it the way that firmware
+firmware so [`build romfs`](06-building.md) can compile it the way that firmware
 expects — and for an over-the-air project, wrap this same image format in a signed
 trailer that a camera will verify before it ever mounts it.
 

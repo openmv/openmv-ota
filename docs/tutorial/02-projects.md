@@ -1,51 +1,15 @@
-# project
+# Projects
 
-*[← 1 · The ROMFS](01-romfs.md) · [Index](00-introduction.md) · [3 · Building →](03-building.md)*
+*[← 1 · The ROMFS](01-romfs.md) · [Index](00-introduction.md) · [3 · The lock →](03-the-lock.md)*
 
 ---
 
-`openmv-ota project` pegs an OTA project to a specific OpenMV firmware checkout
-and records the toolchain versions and per-board geometry (partition sizes, erase
-sizes, alignment rules) that firmware implies.
-Model compilers (mpy-cross, Ethos-U Vela, ST Edge AI) must match the libraries
-built into the firmware, so a project captures the exact versions to use.
-
-A project is a directory you commit to git. It holds three files:
-
-- `openmv-ota.toml` — the config you edit: product metadata and target boards.
-- `openmv-ota.lock.json` — the resolved snapshot: the firmware's git remote and
-  commit, submodule commits, firmware / MicroPython / SDK / tool versions, and
-  per-board geometry. Committed, and contains no machine paths.
-- `openmv-ota.local.toml` — this machine's firmware checkout path. Gitignored.
-
-The firmware checkout itself is referenced by path, not copied into the project.
-
-## Layout
-
-The project directory holds the settings alongside your MicroPython app:
-
-```
-my-product/
-├── openmv-ota.toml          # committed: product metadata + target boards
-├── openmv-ota.lock.json     # committed: the pegged snapshot
-├── openmv-ota.local.toml    # gitignored: this machine's firmware checkout path
-├── .gitignore
-├── README.md
-├── app/                     # your MicroPython app: main.py, settings.json, lib/, models, …
-├── app-coprocessor/         # multi-core boards only: the slaved helper core's app
-├── keys/                    # OTA only: trusted_keys.json (committed) + private/ (gitignored)
-└── build/                   # gitignored: build output (one .romfs per target)
-```
-
-`new` writes the settings files, `.gitignore`, `README.md`, and a starter `app/`
-— a placeholder `main.py` and a `settings.json` carrying your app version (see
-[The app folder](#the-app-folder)). Replace `main.py` with your code; an OTA
-project (`--ota`) additionally provisions `keys/` (see
-[OTA projects](#ota-projects)). `openmv-ota build romfs` compiles the app and
-writes images to `build/`. Commit everything except `openmv-ota.local.toml`,
-`keys/private/`, and `build/`, which the generated `.gitignore` already excludes.
-(`app/` and `build/` are the defaults; `build romfs` takes `--app` and `--output`
-to use other directories.)
+`openmv-ota project` ties a directory — your app plus a few settings files — to a
+specific OpenMV firmware checkout, so every build uses exactly the tool versions
+(mpy-cross, Ethos-U Vela, ST Edge AI) that firmware was built with. This page covers
+creating a project and the app folder; [the next](03-the-lock.md) covers keeping that
+peg honest over time. [OTA projects](04-ota-projects.md) and their
+[signing keys](05-signing-keys.md) build on top.
 
 ## Creating a project
 
@@ -55,9 +19,11 @@ to use other directories.)
 openmv-ota project new ./my-product -f ~/openmv -b OPENMV_N6 -b OPENMV_AE3
 ```
 
-It reads the checkout and the installed SDK, writes the three files, and a
-`.gitignore`. Commit `openmv-ota.toml` and `openmv-ota.lock.json`; the
-`.gitignore` keeps `openmv-ota.local.toml` out of the repository.
+It reads the checkout and the installed SDK, then writes `openmv-ota.toml` (the
+config you edit), `openmv-ota.lock.json` (the resolved snapshot of the firmware —
+[the next page](03-the-lock.md) is all about it), `openmv-ota.local.toml` (this
+machine's checkout path), and a `.gitignore`. Commit the first two; the
+`.gitignore` keeps the machine-local file out of the repository.
 
 `new` expects the OpenMV SDK to be installed already. Pass `--install-sdk` to
 download and install it (a pure-Python download + verify + extract of the
@@ -81,6 +47,38 @@ SDK in a non-default location.
 | `--ota-keys N` | OTA rotation-pool size to provision (default 32). |
 | `--factory-keys N` | Factory-key reserve to provision, one per manufacturing site (default 8). |
 | `--force` | Overwrite an existing project. |
+| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle — which does not fit the single-image classics (OpenMV2/3/4), so **they require this flag**. |
+| `--key-passphrase-file FILE` | Passphrase (read from a file) encrypting the signing keys at rest; keys are never stored plaintext. |
+| `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
+| `--backup-passphrase-file FILE` | Auto-write an encrypted key backup using this passphrase (else a reminder is printed). |
+| `--no-firmware-patches` | Don't auto-apply the OTA-required firmware patches; fail instead if the firmware lacks them. |
+
+## Layout
+
+The project directory holds the settings alongside your MicroPython app:
+
+```
+my-product/
+├── openmv-ota.toml          # committed: product metadata + target boards
+├── openmv-ota.lock.json     # committed: the pegged snapshot
+├── openmv-ota.local.toml    # gitignored: this machine's firmware checkout path
+├── .gitignore
+├── README.md
+├── app/                     # your MicroPython app: main.py, settings.json, lib/, models, …
+├── app-coprocessor/         # multi-core boards only: the slaved helper core's app
+├── keys/                    # OTA only: trusted_keys.json (committed) + private/ (gitignored)
+└── build/                   # gitignored: build output (one .romfs per target)
+```
+
+`new` writes the settings files, `.gitignore`, `README.md`, and a starter `app/`
+— a placeholder `main.py` and a `settings.json` carrying your app version (see
+[The app folder](#the-app-folder)). Replace `main.py` with your code; an OTA
+project (`--ota`) additionally provisions `keys/` (see
+[OTA projects](04-ota-projects.md)). `openmv-ota build romfs` compiles the app and
+writes images to `build/`. Commit everything except `openmv-ota.local.toml`,
+`keys/private/`, and `build/`, which the generated `.gitignore` already excludes.
+(`app/` and `build/` are the defaults; `build romfs` takes `--app` and `--output`
+to use other directories.)
 
 ## The app folder
 
@@ -114,7 +112,7 @@ It is packed into the ROMFS image, so the app can read it on-device (e.g.
 version or carrying configuration. Bump `app_version` (a `major.minor.patch`
 semver) for each release. For an **OTA project**, the build also reads
 `app_version` from here to stamp the image's anti-rollback version (see
-[build.md](03-building.md)), making this file the one place a version is defined.
+[build.md](06-building.md)), making this file the one place a version is defined.
 
 `rollback_floor` is the **oldest app version you will ever allow back onto a
 device**. The build records it in the OTA image, and the updater refuses to install
@@ -132,7 +130,7 @@ your own rollbacks** — so move it deliberately. It must stay `<= app_version`
 For a **multi-core board** (e.g. AE3), `new` also scaffolds a second folder,
 `app-coprocessor/`, holding the slaved helper core's app. It has the same shape
 (`main.py`, `settings.json`, `lib/`) but is always built as a *plain* romfs, never
-OTA — see [Multi-core boards](#multi-core-boards-a-coprocessor-partition).
+OTA — see [Multi-core boards](04-ota-projects.md#multi-core-boards-a-coprocessor-partition).
 
 ### `system.json` (generated, read-only)
 
@@ -203,393 +201,6 @@ board_name = "My Product Pro"
 Set `board_name` only when you ship the one product on multiple boards and want
 them named apart; otherwise leave it and `product` carries the name.
 
-## OTA projects
-
-By default a project builds a single image that fills the whole ROMFS partition.
-Pass `--ota` to declare an over-the-air project instead. `--ota` does three things
-beyond a plain project — it splits the partition and provisions the signing keys —
-so that, with the app version already in [the app folder](#the-app-folder), an OTA
-project is ready to build a signed image with one command.
-
-### What `--ota` changes
-
-- **Partition split.** Each partition is split into two halves — a regular image
-  and a fallback — so each image gets half the partition, less a status
-  sector and a trailer (one flash erase block each — 8 KiB on OTA-capable boards).
-  `build romfs` enforces that halved budget for an OTA project and the full
-  partition otherwise; `show` reports which mode a project is in. The mode is
-  recorded as `[ota] enabled` in `openmv-ota.toml` and mirrored into the lock;
-  changing it re-resolves the project, so set it at `new` time.
-
-  Not every board can do this. A board whose ROMFS lives in a single large
-  internal-flash sector — OpenMV2/3/4, where the erase block *is* the whole
-  partition — has no room to split into two updatable slots, so `new --ota` errors
-  with *"not OTA-capable"*. These boards still build a single (non-OTA) image that
-  fills the partition. OTA-capable boards keep their ROMFS in external NOR/OSPI
-  flash (4 KiB erase blocks) or MRAM.
-
-- **Keys provisioned.** A device trusts exactly the public keys baked into its
-  firmware, and you cannot add a trusted key later without re-flashing. So `new
-  --ota` provisions the *whole* key set up front (see [Keys](#keys) below) and
-  writes it under `keys/`.
-
-- **Per-board identity.** Each target board gets a `[targets.<BOARD>]` table for
-  its `product_id` / `board_name` (see [Board identity](#board-identity)).
-
-(The starter `app/` — including the `app_version` the build stamps into the image
-— is scaffolded for every project, not just OTA; see
-[The app folder](#the-app-folder).)
-
-### Files an OTA project adds
-
-On top of the files a plain project writes (settings, `.gitignore`, `README.md`,
-and the starter `app/`), `new --ota` creates the keys and extends the config:
-
-```
-my-product/
-├── openmv-ota.toml          # gains an [ota] section + per-board [targets.*] tables
-├── app/lib/openmv_ota/      # the device OTA runtime library (status/confirm/sync/install)
-│   └── data/
-│       ├── installer.py     # the installer, shipped as source (exec'd into RAM)
-│       └── ca.pem           # TLS root bundle for downloads (fetched fresh at `new`)
-├── device/
-│   ├── openmv_log.py               # OTA debug logger, frozen as openmv_log (off by default)
-│   └── openmv_wdt.py               # watchdog helper, frozen as openmv_wdt (off by default)
-└── keys/
-    ├── trusted_keys.json    # committed: the public key set baked into firmware
-    └── private/             # GITIGNORED: the private signing keys (PKCS#8 PEM)
-        ├── factory-0001.pem … factory-0008.pem
-        └── ota-0100.pem     … ota-011f.pem
-```
-
-The generated `.gitignore` already excludes `keys/private/` (and `keys/*.pem`,
-`keys/*.key`). **Commit `keys/trusted_keys.json`; never commit `keys/private/`** —
-only the signing machine holds the private keys, and there is no recovery if they
-leak (an attacker could sign images your devices would trust) or are lost (you can
-rotate to another provisioned key, but a key never provisioned can't be added).
-Back the private keys up out-of-band.
-
-The `[ota]` section records the mode and the current signing key:
-
-```toml
-[ota]
-enabled = true            # each partition holds two updatable slots (A/B)
-signing_key_id = 256      # current OTA signing key (in keys/trusted_keys.json)
-```
-
-and each target board gets an active table for its identity (see
-[Board identity](#board-identity)):
-
-```toml
-[targets.OPENMV_N6]
-product_id   = 3064072142  # stable product id (auto-assigned; keep it once devices ship)
-board_name = "my-product"  # human label; defaults to the product name, rename freely
-```
-
-### The device runtime library (`openmv_ota`)
-
-`new --ota` also scaffolds `app/lib/openmv_ota/` — the device-side OTA helpers your app
-imports on the camera (`build romfs` compiles + packs them to `/rom/lib`). The short
-version: call **`confirm()`** once your app is healthy (so a new update is kept rather
-than rolled back on the next boot), **`sync()`** early (to apply bundled resources like
-a helper core's romfs), and **`status()`** to inspect the trial state:
-
-```python
-import openmv_ota
-openmv_ota.sync()        # bring bundled resources up to date with this image
-# ... once your app has validated itself healthy:
-openmv_ota.confirm()     # keep the update (no-op if it isn't a trial)
-```
-
-It also exposes **`install(url)`** — download a new image over HTTPS and install it.
-The installer ships as source in `data/installer.py` (so the device can `exec` it into
-RAM while it overwrites the slot it runs from), and `data/ca.pem` is the TLS trust
-store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step needs
-network, like the SDK download), and you can replace it with your provider's roots.
-
-To produce what `install()` downloads, run **`openmv-ota build ota-romfs`** — one command,
-straight from app source (like `build factory-romfs`). It compiles + signs the romfs bundle,
-renders the gzipped slot-sized image (`<board>-ota.img.gz`), and signs the **manifest**
-(`<board>-manifest.bin`) — the descriptor `install()` fetches first, which names the image's
-size/sha256 + representations and binds board/version/anti-rollback under the same key as the
-image. Host both beside each other and point `install()` at the manifest. (`build romfs`
-stays available standalone for the plain bundle / non-OTA case.)
-
-Representation URLs are **relative filenames**, resolved on-device against the manifest's
-own URL — so the signed manifest is **host-portable** (move buckets / add a mirror without
-rebuilding + re-signing). The device also accepts absolute `https://` URLs in a manifest —
-which a future dynamic update server emits when it serves blobs from a different origin than
-the manifest endpoint — but `build ota-romfs` only ever writes relative ones.
-
-To ship a smaller **delta** download, add **`--delta-from <board>-factory-romfs.img`**
-(or a directory of per-board factory images). The delta is computed against the factory
-image's **second slot, body region only** — the signed bytes every device of that release
-holds identically, excluding the control sectors that carry per-device state — so a device
-copies the unchanged bulk from the slot it is running and downloads only the changes.
-`--delta-from` is repeatable: publish one base per version still in the field, or those
-devices take the full image. It's opportunistic (picked only when the device's running
-version matches and it's smaller) and still
-sha256/signature-verified (see [the runtime docs](05-device-runtime.md)).
-
-For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in
-logger built on the standard `logging` module (frozen as `openmv_log`, off by default)
-shared by `boot.py`, the installer, and this lib, and exposed as `openmv_ota.log` (the
-`logging.getLogger("openmv_ota")` logger) for your app. Edit it to enable + pick your
-board's UART, then rebuild firmware.
-
-It also scaffolds **`device/openmv_wdt.py`** — an opt-in watchdog helper (frozen as
-`openmv_wdt`, off by default): `openmv_wdt.feed()` from your main loop, and
-`with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds the watchdog
-through them). `install()` uses it automatically — `relax()` around the erase, `feed()`
-per chunk. See
-**[the on-device runtime](05-device-runtime.md#watchdog)**.
-
-The runtime lib is plain Python you own and can extend. For the full picture — the
-trial/rollback lifecycle, the API semantics, `install()`/TLS/cert handling, the
-bundled-resource (`sync()`) mechanism, debug logging, and the on-device safety
-properties — see **[the on-device runtime](05-device-runtime.md)**.
-
-### Keys
-
-The key set has two roles, generated on the curve `--sig-alg` selects (ES256 →
-P-256 by default; ES384/ES512 raise the curve and signature size):
-
-| Role | id range | Default count | Purpose |
-|---|---|---|---|
-| `factory` | `0x0001`+ | 8 (`--factory-keys`) | One per manufacturing run; *you* sign the factory image with it and ship the manufacturer the finished binary. A distinct id per run is for **attribution** (telling which run cut an image) and `revoke`, not key isolation. |
-| `ota` | `0x0100`+ | 32 (`--ota-keys`) | The rotation pool; over-the-air updates are signed with one of these, rotated over the product's life. |
-
-The two ranges are well-separated so the pools never collide at realistic counts.
-The current signer is the first OTA key (`0x0100`), recorded as `signing_key_id`.
-`build romfs` signs with that key, and a trailer records *which* key signed
-(`key_id`) so the device picks the matching public key. Both roles' private keys
-stay on your signing machine — a manufacturer receives the signed
-`<board>-factory-romfs.img`, never a key (see [build.md](03-building.md#signed-with-a-factory-key)
-and [threat-model.md](../reference/threat-model.md)).
-
-`keys/trusted_keys.json` is the committed public set the firmware build will bake
-into its `TRUSTED_KEYS` table. Each entry is a key id, its COSE algorithm, its
-role, and the public key as an uncompressed EC point in hex:
-
-```json
-{
-  "schema": 1,
-  "keys": [
-    {"key_id": 1,   "alg": -7, "role": "factory", "pubkey": "04…"},
-    {"key_id": 256, "alg": -7, "role": "ota",      "pubkey": "04…"}
-  ]
-}
-```
-
-Provision generously: because keys can't be added without re-flashing firmware,
-the rotation pool is your entire future supply of OTA keys. `--ota-keys` below 4
-warns. See [trailer.md](../reference/trailer.md) for the signature algorithms and the
-`key_id` / `sig_alg` fields.
-
-### Managing keys (`project keys`)
-
-```bash
-openmv-ota project keys status   # current signer, pool usage, revoked count
-openmv-ota project keys rotate   # advance to the next OTA key
-openmv-ota project keys revoke 0x0100     # mark a compromised key (reversible)
-openmv-ota project keys unrevoke 0x0100
-```
-
-- **`status`** reports the current signing key + algorithm, how far through the
-  pool you are (`#3 of 32`), how many keys are retired / remaining / revoked, the
-  factory-key count, and how many private PEMs are on this machine (so you know if
-  you're on the signing machine).
-
-- **`rotate`** advances `[ota].signing_key_id` to the next key in the
-  pre-provisioned pool — it doesn't mint a key. Old releases keep verifying (their
-  key stays trusted); rotation just limits how much any one key signs. It errors
-  when the pool is exhausted (you'd need a firmware reflash with a new set). Commit
-  `openmv-ota.toml` — git is your rotation log.
-
-- **`revoke`** is the rare exception, for a **compromised** private key (HSM
-  breach, leaked CI secret). For normal hygiene you just rotate; revoke is for "an
-  attacker has this key and could forge images." It sets `revoked` on the key in
-  `keys/trusted_keys.json` (kept, never deleted), so `build romfs` refuses to sign
-  with it and `rotate` skips it. It's deliberately **not** auto-applied to fielded
-  devices: the device-side reject-list is baked by a firmware build, so a revoked
-  key only stops being trusted once a device updates. It's reversible with
-  `unrevoke` (for a fat-fingered id or false alarm). Revoking the current signer
-  doesn't move it — `build romfs` will refuse until you `rotate`.
-
-### Board identity
-
-`product_id` is a `uint32` that names a product (the cross-flash guard), and
-`board_name` is a human label for it. They live only in `openmv-ota.toml` (per
-`[targets.<BOARD>]`) and are pure identity — **excluded from the lock and its
-`config_digest`** — so setting a product id or renaming a board never trips drift
-(unlike geometry overrides, which are firmware-relevant and *are* digested).
-`build romfs` reads them and stamps them into `system.json` and the trailer: the
-device's `product_id` guards against cross-flashing the wrong product; `board_name`
-is metadata only.
-
-**You never have to invent the number.** `project new --ota` auto-assigns each
-board a stable `product_id`, derived deterministically from the product + board name
-(distinct per board, reproducible). It's written into the config so it's frozen —
-**keep it once devices ship**, because a device bakes its `product_id` in and rejects
-any image whose id doesn't match; a later change would reject updates on fielded
-devices. You can still override it (e.g. to match an existing product numbering),
-and `build romfs` warns if you set it to `0` (guard off) or if two boards collide
-on the same id.
-
-A **non-OTA** project doesn't pin a `product_id` in its config (the guard only
-applies to OTA), but `build romfs` still derives the same stable id and records it
-in `system.json`, so a non-OTA app reads the same product identity — and nothing
-changes when you later move to OTA. One app folder can target several boards or
-products at once — each gets its own identity but shares the app and toolchain.
-
-## Reconstructing a checkout
-
-When someone clones a committed project, they have the config and lock but not
-the firmware. `setup` clones the pinned firmware and installs its SDK, then
-writes their `openmv-ota.local.toml`:
-
-```bash
-openmv-ota project setup ./my-product
-```
-
-It clones the remote at the locked commit into a local cache (override with
-`--cache PATH` or `$OPENMV_OTA_CACHE`), checks out the submodules, runs `make
-sdk`, and pip-installs the matching mpy-cross (the firmware's MicroPython version)
-so the machine is ready to build. Pass `--no-install-sdk` to skip the toolchain
-steps and only clone.
-
-## Inspecting and updating
-
-```bash
-openmv-ota project show ./my-product          # the resolved snapshot
-openmv-ota project show ./my-product --json   # the raw lock
-openmv-ota project status ./my-product        # drift between lock and checkout
-openmv-ota project verify ./my-product        # fail if anything has changed
-openmv-ota project sync ./my-product          # re-resolve and rewrite the lock
-```
-
-`status` re-reads the current checkout and compares it to the lock, naming each
-changed field. `sync` rewrites the lock from the current checkout when you intend
-to move to a new firmware commit.
-
-`status`, `verify`, and `sync` find the checkout from `openmv-ota.local.toml`, or
-from `-f/--firmware`.
-
-```bash
-openmv-ota project history ./my-product       # every recorded change to this project
-openmv-ota project history ./my-product -n 20 # just the most recent 20
-```
-
-`history` replays the project's own event log — what was resolved, rotated, revoked and
-re-synced, in order. It answers "when did this lock last move, and to what" without reading
-`git log` of the checkout it points at.
-
-## Freezing the firmware
-
-Once you build or release ROMFS images for a pegged firmware, the firmware must
-not change — the images depend on the exact toolchain versions and board geometry
-the project recorded. `verify` is the gate that enforces this:
-
-```bash
-openmv-ota project verify ./my-product
-```
-
-It exits 0 only when the checkout matches the lock in every recorded field **and**
-the working tree is clean; otherwise it exits non-zero and lists what changed.
-Uncommitted changes always fail, because the pinned commit does not capture them.
-Run it in CI and before each image build.
-
-Reading a project from Python verifies by default for the same reason — see below.
-
-## What the lock records
-
-`openmv-ota.toml` carries only what you choose (product metadata, target boards,
-and whether the project is OTA). Everything else is resolved into
-`openmv-ota.lock.json`:
-
-- whether the project is OTA (which halves each partition's usable image budget);
-- the firmware version, git remote, commit, branch, `git describe`, and whether
-  the checkout was dirty;
-- the MicroPython version, its commit, and the `.mpy` ABI version;
-- the SDK version, and the resolved mpy-cross, Vela, and ST Edge AI versions;
-- every submodule commit;
-- per target (each board, and each of its targeted partitions): the arch and
-  mpy-cross flags, the NPU type and its full compiler config (Vela / ST Edge AI
-  arguments and config-file references), the alignment rules, and the partition
-  size, flash erase block, and per-slot size.
-
-Partition sizes come from the firmware's `boards/<BOARD>/board_config.h`. When a
-board's size is build-variant conditional, the bundled default is used instead
-and the source is recorded in `geometry_source`; set `partition_size` under a
-`[targets.<BOARD>]` table in `openmv-ota.toml` to override it.
-
-The lock's `config_digest` covers only the *firmware-relevant* config — boards,
-geometry overrides like `partition_size`, and the OTA mode — so changing any of
-those is drift you must `sync`. Pure-identity fields (`product_id`, `board_name`)
-and metadata (product / vendor name, app version) are deliberately **excluded**,
-so editing a product id or bumping your app version never invalidates the lock.
-
-## Multi-core boards (a coprocessor partition)
-
-Some boards have a second core with its own ROMFS partition. The AE3 is dual-core:
-the **main** high-performance core (partition 0, OSPI, 24 MiB) runs OTA, and a
-**coprocessor** high-efficiency core (partition 1, MRAM, 1 MiB) is *slaved* to it —
-it's booted by the main core, and its romfs is written by the main core. Each
-partition carries a **role** (`main` or `coprocessor`).
-
-There is nothing to configure: the coprocessor is slaved, so the tool **always
-builds every partition automatically**. You don't list partitions and there's no
-`--partition` flag. The main partition is built from `app/` (OTA-wrapped in an OTA
-project); the coprocessor partition is built from a second folder, **`app-coprocessor/`**,
-as a *plain* romfs (never OTA — the helper core has no mbedtls and can't verify
-signatures). `project new` scaffolds `app-coprocessor/` automatically when a selected
-board has a coprocessor partition.
-
-Outputs are named by role: the main partition keeps the bare board name
-(`OPENMV_AE3-romfs.img` / `-factory-romfs.img`), and the coprocessor partition is
-suffixed (`OPENMV_AE3-coprocessor-romfs.img`). The coprocessor image is the same
-plain romfs from both `build romfs` and `build factory-romfs` — it's the image the
-main core writes into the helper's slot.
-
-Each partition is resolved independently — its own size, alignment rules, NPU config,
-and role — and appears as a separate entry under `targets.resolved`. From Python,
-select one with `board(name, partition)`, or iterate `targets`.
-
-> A `partition_size` override (under `[targets.<board>]`) applies only to the main
-> partition; the coprocessor always keeps its firmware geometry.
-
-**Writing the helper partition at runtime.** For an OTA project, `build romfs` also
-**nests** the coprocessor image inside the main one, at
-`/rom/lib/openmv_ota/data/coprocessor.romfs`, with a `resources.json` manifest. So an
-OTA update to the main carries the matching helper image, and your app calls
-[`openmv_ota.sync()`](#the-device-runtime-library-openmv_ota) early in `main.py` to
-write it into the helper partition (only when it differs). Because the nested image
-travels *with* the main, `sync()` always writes the helper image that matches the main
-that's actually running — so it stays consistent even across a rollback to the previous
-image. (The standalone `-coprocessor-romfs.img` is for flashing the helper partition
-directly at the factory; the nested copy is byte-identical.)
-
-## Reading a project from Python
-
-`load_project` returns the lock plus this machine's resolved firmware path, SDK
-home, and tool binary paths. It verifies that the checkout still matches the lock
-(and is clean) first, raising if it does not, so a build never runs against a
-changed firmware:
-
-```python
-from openmv_ota.project import load_project
-
-p = load_project("./my-product")  # raises if the firmware has drifted
-p.vela_path                       # path to the vela binary on this machine
-p.targets                         # every (board, partition) target to build for
-p.board("OPENMV_N6").front_size   # firmware-resolved per-slot size
-p.board("OPENMV_N6").alignment_rules
-p.board("OPENMV_AE3", 1).npu_config   # HE-core NPU type, args, and file refs
-```
-
-Pass `load_project("./my-product", verify=False)` to skip the check (reserved for
-the firmware-update path, which does not yet exist).
-
 ---
 
-*[← 1 · The ROMFS](01-romfs.md) · [Index](00-introduction.md) · [3 · Building →](03-building.md)*
+*[← 1 · The ROMFS](01-romfs.md) · [Index](00-introduction.md) · [3 · The lock →](03-the-lock.md)*

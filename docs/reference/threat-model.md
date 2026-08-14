@@ -41,7 +41,7 @@ time), a separate mechanism from image signing.
 
 **Account scoping + the sticky device→account binding (multi-tenancy).** A
 product is namespaced by its maker's account, and the OTA server enforces that
-scope on every admin path (§ [the update server](../tutorial/06-update-server.md)). The device's authoritative account
+scope on every admin path (§ [the update server](../tutorial/10-update-server.md)). The device's authoritative account
 is a **sticky binding**: *learned* from the first check-in that reports a non-empty
 account, then never downgraded by a later report (so a fallback boot reporting the older
 image's baked account — often `''` — can't strand a device that was healthy under a

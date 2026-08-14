@@ -1,6 +1,6 @@
-# Flashing a board
+# Flashing
 
-*[← 3 · Building](03-building.md) · [Index](00-introduction.md) · [5 · The device runtime →](05-device-runtime.md)*
+*[← 6 · Building](06-building.md) · [Index](00-introduction.md) · [8 · Boot and rollback →](08-boot-and-rollback.md)*
 
 ---
 
@@ -315,4 +315,4 @@ missing file fails fast instead of half-programming the board.
 
 ---
 
-*[← 3 · Building](03-building.md) · [Index](00-introduction.md) · [5 · The device runtime →](05-device-runtime.md)*
+*[← 6 · Building](06-building.md) · [Index](00-introduction.md) · [8 · Boot and rollback →](08-boot-and-rollback.md)*

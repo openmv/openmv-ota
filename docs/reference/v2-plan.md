@@ -191,7 +191,7 @@ image shipped to every device — it cannot hold per-device data). They go on `/
 
 **The MBR spare-bytes idea does not work**, and there is direct evidence: our own `/flash` recovery
 erases exactly that sector — `flash/imx.py` *"wipe the user disk's first sector (its MBR)"*, documented
-in [the flashing page](../tutorial/04-flashing.md). Add host OSes that "repair" MBRs on a USB-MSC device, and any reformat, and it is
+in [the flashing page](../tutorial/07-flashing.md). Add host OSes that "repair" MBRs on a USB-MSC device, and any reformat, and it is
 a trap rather than a trick.
 
 **`/flash` being user-visible is a feature.** A device stranded because the user changed their WiFi
