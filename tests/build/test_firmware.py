@@ -198,6 +198,19 @@ def test_build_firmware_alif_per_core(make_project, monkeypatch):
     assert sorted(o.name for o in r.outputs) == ["OPENMV_AE3-firmware-M55_HE.bin", "OPENMV_AE3-firmware-M55_HP.bin"]
 
 
+def test_build_firmware_ae3_freezes_ota_only_on_main_core(make_project, monkeypatch):
+    fake = _fake_make(["bin/firmware_M55_HP.bin", "bin/firmware_M55_HE.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    root, repo, _app = make_project(boards=("OPENMV_AE3",), ota=True)
+
+    result = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+
+    wrapper = (result.build_dir / "manifest.py").read_text()
+    assert 'include("%s/ota_$(MCU_CORE).py")' % result.build_dir.as_posix() in wrapper
+    assert "boot.py" in (result.build_dir / "ota_hp.py").read_text()
+    assert "boot.py" not in (result.build_dir / "ota_he.py").read_text()
+
+
 def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)

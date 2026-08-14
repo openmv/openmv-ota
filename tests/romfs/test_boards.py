@@ -30,6 +30,8 @@ def test_ae3_has_two_partitions():
     assert b.partition(1).size == 1048576  # 1 MiB MRAM (HE core)
     assert b.partition(0).erase_size == 4096  # OSPI NOR
     assert b.partition(1).erase_size == 16    # MRAM (byte-writable)
+    assert b.partition(0).manifest_core == "hp"
+    assert b.partition(1).manifest_core == "he"
 
 
 def test_internal_flash_boards_have_large_erase():

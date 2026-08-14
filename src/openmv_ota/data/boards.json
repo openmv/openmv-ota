@@ -200,6 +200,7 @@
           "name": "High Performance Core",
           "index": 0,
           "role": "main",
+          "manifest_core": "hp",
           "size": 25165824,
           "erase_size": 4096,
           "alignment_rules": [
@@ -231,6 +232,7 @@
           "name": "High Efficiency Core",
           "index": 1,
           "role": "coprocessor",
+          "manifest_core": "he",
           "size": 1048576,
           "erase_size": 16,
           "alignment_rules": [

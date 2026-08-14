@@ -24,6 +24,7 @@ class Partition:
     role: str = "main"   # "main" (the OTA app partition) or "coprocessor" (a slaved
                          # secondary core's partition, e.g. AE3's M55_HE: never OTA,
                          # always a plain romfs the main core writes)
+    manifest_core: str | None = None  # $(MCU_CORE) value for a multi-core firmware build
     alignment_rules: list[dict[str, Any]] = field(default_factory=list)
     npu: dict[str, Any] | None = None
 
@@ -73,6 +74,7 @@ def load_boards() -> dict[str, BoardConfig]:
                 size=int(p.get("size", 0)),
                 erase_size=int(p.get("erase_size", 0)),
                 role=p.get("role", "main"),
+                manifest_core=p.get("manifest_core"),
                 alignment_rules=list(p.get("alignment_rules", [])),
                 npu=p.get("npu"),
             )

@@ -230,8 +230,20 @@ def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
     shutil.copy2(_DEVICE_DIR / "openmv_ota" / "data" / "installer.py", tmp / "openmv_installer.py")
     freezes.append('freeze("%s", "openmv_installer.py")\n' % tmp.as_posix())
     board_manifest = repo / "boards" / name / "manifest.py"
+    from openmv_ota.romfs import boards as boards_mod
+    board = boards_mod.get_board(name)
+    core_parts = [part for part in board.partitions if part.manifest_core]
+    if core_parts:
+        if len(core_parts) != len(board.partitions):
+            raise BuildError("%s has incomplete manifest_core metadata" % name)
+        for part in core_parts:
+            content = "".join(freezes) if part.role == "main" else "# no OTA runtime on this core\n"
+            (tmp / ("ota_%s.py" % part.manifest_core)).write_text(content, encoding="utf-8")
+        ota_manifest = 'include("%s/ota_$(MCU_CORE).py")\n' % tmp.as_posix()
+    else:
+        ota_manifest = "".join(freezes)
     (tmp / "manifest.py").write_text(
-        'include("%s")\n' % board_manifest.as_posix() + "".join(freezes),
+        'include("%s")\n' % board_manifest.as_posix() + ota_manifest,
         encoding="utf-8")
     return tmp
 
