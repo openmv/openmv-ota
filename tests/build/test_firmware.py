@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -209,6 +210,32 @@ def test_build_firmware_ae3_freezes_ota_only_on_main_core(make_project, monkeypa
     assert 'include("%s/ota_$(MCU_CORE).py")' % result.build_dir.as_posix() in wrapper
     assert "boot.py" in (result.build_dir / "ota_hp.py").read_text()
     assert "boot.py" not in (result.build_dir / "ota_he.py").read_text()
+
+
+def test_build_firmware_rejects_partial_core_manifest_metadata(
+    make_project, monkeypatch, tmp_path
+):
+    from openmv_ota.project import load_project
+    from openmv_ota.romfs import boards as boards_mod
+
+    root, repo, _app = make_project(boards=("OPENMV_AE3",), ota=True)
+    project = load_project(root, firmware=repo)
+    wrapper = tmp_path / "wrapper"
+    wrapper.mkdir()
+    monkeypatch.setattr(fw.tempfile, "mkdtemp", lambda prefix: str(wrapper))
+    monkeypatch.setattr(
+        boards_mod,
+        "get_board",
+        lambda name: SimpleNamespace(
+            partitions=[
+                SimpleNamespace(manifest_core="hp", role="main"),
+                SimpleNamespace(manifest_core=None, role="coprocessor"),
+            ]
+        ),
+    )
+
+    with pytest.raises(BuildError, match="incomplete manifest_core metadata"):
+        fw._write_wrapper_manifest(project, repo, "OPENMV_AE3")
 
 
 def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
