@@ -88,7 +88,10 @@ def _dfu_steps(cfg: FlashConfig, board: str, spec: list[tuple[str, str]], tool: 
         # picks WHICH board to reset, up in _prepare/device.select; it just can't pin the DFU device.)
         argv = dfu.download_argv(tool, cfg.usb, alt, f, reset=reset and i == last)
         if not dry_run:
-            runner.run(argv)
+            if "--reset" in argv:
+                runner.run(argv, accept_dfu_reset_disconnect=True)
+            else:
+                runner.run(argv)
         steps.append(FlashStep(artifact, f, alt, argv))
     return steps
 

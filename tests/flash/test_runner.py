@@ -70,3 +70,41 @@ def test_tolerate_fail_warns_and_continues(monkeypatch, capsys):
     monkeypatch.setattr(runner.subprocess, "run", fake)
     runner.run(["dfu-util"], tolerate_fail=True)      # no raise -- the bootloader-write quirk
     assert "exited 74" in capsys.readouterr().err
+
+
+DFU_RESET_SUCCESS = """Download done.
+Done!
+Resetting USB to switch back to Run-Time mode
+"""
+
+
+def test_accepts_verified_dfu_reset_disconnect(monkeypatch, capsys):
+    monkeypatch.setattr(runner.subprocess, "run", lambda argv, **kwargs:
+                        subprocess.CompletedProcess(argv, 251, "", DFU_RESET_SUCCESS))
+
+    runner.run(["dfu-util", "--reset"], accept_dfu_reset_disconnect=True)
+
+    captured = capsys.readouterr()
+    assert DFU_RESET_SUCCESS in captured.err
+    assert "verified DFU transfer" in captured.err
+
+
+def test_accepts_normal_dfu_reset_success(monkeypatch, capsys):
+    monkeypatch.setattr(runner.subprocess, "run", lambda argv, **kwargs:
+                        subprocess.CompletedProcess(argv, 0, "complete\n", ""))
+
+    runner.run(["dfu-util", "--reset"], accept_dfu_reset_disconnect=True)
+
+    assert capsys.readouterr().out == "complete\n"
+
+
+@pytest.mark.parametrize("returncode, transcript", [
+    (251, "Download done.\nDone!\n"),
+    (1, DFU_RESET_SUCCESS),
+])
+def test_rejects_unverified_dfu_reset_failure(monkeypatch, returncode, transcript):
+    monkeypatch.setattr(runner.subprocess, "run", lambda argv, **kwargs:
+                        subprocess.CompletedProcess(argv, returncode, "", transcript))
+
+    with pytest.raises(FlashError, match="exit %d" % returncode):
+        runner.run(["dfu-util", "--reset"], accept_dfu_reset_disconnect=True)

@@ -24,12 +24,33 @@ def output(argv: list[str]) -> str:
         raise FlashError("%s failed: exit %d" % (argv[0], e.returncode), exit_code=1) from None
 
 
-def run(argv: list[str], *, tolerate_fail: bool = False) -> None:
+_DFU_RESET_SUCCESS_MARKERS = (
+    "Download done.",
+    "Done!",
+    "Resetting USB to switch back to Run-Time mode",
+)
+
+
+def run(argv: list[str], *, tolerate_fail: bool = False,
+        accept_dfu_reset_disconnect: bool = False) -> None:
     """Run ``argv`` (streaming its output), raising ``FlashError`` on failure. With
     ``tolerate_fail`` a non-zero exit is warned about and ignored -- for the system-DFU
     bootloader write, whose ST ROM doesn't ACK the final status (so dfu-util exits non-zero
     even when the write succeeded)."""
     try:
+        if accept_dfu_reset_disconnect:
+            result = subprocess.run(argv, check=False, capture_output=True, text=True)
+            sys.stdout.write(result.stdout)
+            sys.stderr.write(result.stderr)
+            if result.returncode == 0:
+                return
+            transcript = result.stdout + result.stderr
+            if (result.returncode == 251
+                    and all(marker in transcript for marker in _DFU_RESET_SUCCESS_MARKERS)):
+                print("warning: %s exited 251 after a verified DFU transfer and USB reset"
+                      % argv[0], file=sys.stderr)
+                return
+            raise subprocess.CalledProcessError(result.returncode, argv)
         subprocess.run(argv, check=True)
     except FileNotFoundError:
         raise FlashError("%s not found -- is it installed?" % argv[0], exit_code=1) from None

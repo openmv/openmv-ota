@@ -50,6 +50,19 @@ def test_flash_factory_is_multistep_and_resets_only_last(project):
     assert "--reset" in ran[1]                       # only the final write reboots
 
 
+def test_dfu_reset_disconnect_exception_is_final_step_only(project, monkeypatch):
+    root, _ran, _rec, artifact = project
+    artifact("OPENMV4-firmware.bin")
+    artifact("OPENMV4-factory-romfs.img")
+    calls = []
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
+
+    fl.flash_factory(str(root), board="OPENMV4")
+
+    assert calls[0][1] == {}
+    assert calls[1][1] == {"accept_dfu_reset_disconnect": True}
+
+
 def test_flash_romfs(project):
     root, ran, _rec, artifact = project
     artifact("OPENMV4-romfs.img")

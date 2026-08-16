@@ -12,7 +12,7 @@ from openmv_ota.flash import flash as fl
 def proj(tmp_path, monkeypatch):
     (tmp_path / "build").mkdir()
     ran: list[list[str]] = []
-    monkeypatch.setattr(fl.runner, "run", lambda argv: ran.append(argv))
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **kwargs: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
     monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: None)   # imx hardware step; stub
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
