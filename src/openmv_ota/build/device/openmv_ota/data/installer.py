@@ -180,10 +180,11 @@ _SOCK_TIMEOUT = 30
 # feeding the watchdog each slice, so it must stay WELL under the watchdog window (~100 ms) -> a few
 # feeds per window. Only matters when a watchdog is armed; a fast recv returns the moment data arrives.
 _RECV_POLL_MS = 20
-# "Operation would block" errnos a non-blocking recv may raise (EAGAIN/EWOULDBLOCK) even right after
-# poll reports readable -- a TLS socket can be TCP-readable with no whole record decrypted yet. Both
-# the positive (11) and MicroPython's negated (-11) form; treated as "no data yet", keep polling.
-_EAGAIN = (11, -11)
+# "Operation would block" errnos a non-blocking recv may raise even right after poll reports
+# readable -- a TLS socket can be TCP-readable with no whole record decrypted yet. MicroPython's
+# mbedTLS stream reports SSL_ERROR_WANT_READ as +/-2; raw sockets use EAGAIN/EWOULDBLOCK as +/-11.
+# All four mean "no data yet", so keep feeding and polling instead of aborting the install.
+_EAGAIN = (2, -2, 11, -11)
 _ETIMEDOUT = 110       # errno for a dead-link recv timeout. A NUMERIC errno is what marks a pre-erase
 #                        failure as TRANSPORT (transient -> retry) vs an update REJECTION (raised with
 #                        a descriptive string) -- see _is_transport_error + the run() manifest-fetch except.

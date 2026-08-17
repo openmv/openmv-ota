@@ -338,6 +338,21 @@ def test_reader_recv_eagain_then_data():
     assert r.read_exact(2) == b"ok"
 
 
+@pytest.mark.parametrize("errno_value", (2, -2, 11, -11))
+def test_reader_recv_tls_want_read_then_data(errno_value):
+    """MicroPython TLS reports WANT_READ as +/-2, not socket EAGAIN."""
+    state = {"n": 0}
+
+    def recv(_n):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise OSError(errno_value)
+        return b"ok"
+
+    r = inst("_Reader")(recv, feed=lambda: None)
+    assert r.read_exact(2) == b"ok"
+
+
 def test_reader_recv_oserror_propagates():
     # a non-would-block OSError (e.g. ECONNRESET) is a real failure -> propagate (install -> golden)
     def recv(_n):
