@@ -353,6 +353,31 @@ def test_reader_recv_tls_want_read_then_data(errno_value):
     assert r.read_exact(2) == b"ok"
 
 
+def test_reader_treats_mbedtls_connection_eof_as_eof():
+    def recv(_n):
+        raise OSError(-29312, "MBEDTLS_ERR_SSL_CONN_EOF")
+
+    r = inst("_Reader")(recv, feed=lambda: None)
+    assert r.read_some(1) == b""
+
+
+def test_content_length_still_rejects_early_mbedtls_connection_eof():
+    calls = 0
+
+    def recv(_n):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return b"ab"
+        raise OSError(-29312, "MBEDTLS_ERR_SSL_CONN_EOF")
+
+    body = inst("_Body")(inst("_Reader")(recv, feed=lambda: None), 3, False)
+    buf = bytearray(3)
+    assert body.readinto(buf) == 2
+    with pytest.raises(ValueError, match="unexpected EOF"):
+        body.readinto(buf)
+
+
 def test_reader_recv_oserror_propagates():
     # a non-would-block OSError (e.g. ECONNRESET) is a real failure -> propagate (install -> golden)
     def recv(_n):

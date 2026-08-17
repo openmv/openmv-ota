@@ -185,6 +185,7 @@ _RECV_POLL_MS = 20
 # mbedTLS stream reports SSL_ERROR_WANT_READ as +/-2; raw sockets use EAGAIN/EWOULDBLOCK as +/-11.
 # All four mean "no data yet", so keep feeding and polling instead of aborting the install.
 _EAGAIN = (2, -2, 11, -11)
+_TLS_EOF = (-29312,)   # MBEDTLS_ERR_SSL_CONN_EOF: peer closed without TLS close_notify
 _ETIMEDOUT = 110       # errno for a dead-link recv timeout. A NUMERIC errno is what marks a pre-erase
 #                        failure as TRANSPORT (transient -> retry) vs an update REJECTION (raised with
 #                        a descriptive string) -- see _is_transport_error + the run() manifest-fetch except.
@@ -313,9 +314,13 @@ class _Reader:
             try:
                 d = self._recv(_CHUNK)               # non-blocking: available bytes / None / b'' (EOF)
             except OSError as e:                      # would-block -> treat as "no data yet"
-                if not (e.args and e.args[0] in _EAGAIN):
+                code = e.args[0] if e.args else None
+                if code in _EAGAIN:
+                    d = None
+                elif code in _TLS_EOF:
+                    d = b""                          # clean HTTP close; Content-Length still guards truncation
+                else:
                     raise                             # a real error (ECONNRESET, ...) -> install fails
-                d = None
             if d:
                 self._buf += d
                 return True
