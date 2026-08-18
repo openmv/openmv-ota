@@ -145,11 +145,16 @@ the same alignment options as `pack`, since checking is the mirror of packing:
 
 ## Standard input and output
 
-Pass `-` as the image path to read from standard input or write to standard
-output:
+Every command accepts `-` as the image path — read from standard input, or (for
+`pack -o -`) write to standard output. That lets the tool compose with anything
+else in a pipeline, with no temporary image file to create and clean up:
 
 ```bash
+# gate a build in CI without leaving an artifact behind
 openmv-ota romfs pack ./app -o - --board OPENMV_N6 | openmv-ota romfs verify -
+
+# look inside an image you are fetching, without saving it first
+curl -s https://builds.example.com/app.romfs | openmv-ota romfs ls - -l
 ```
 
 ## Where this goes next
