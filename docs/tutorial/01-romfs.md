@@ -23,14 +23,16 @@ The format below is designed so alignment costs almost nothing.
 
 Three ideas, and the whole format falls out of them.
 
-**1 — Variable-length integers.** Every number is base-128, big-endian: seven bits
-per byte, and the high bit says "another byte follows". Small numbers cost one byte,
-sizes are never fixed-width:
+**1 — Variable-length integers.** Every number (a record's kind, a payload's size) is
+an ordinary binary number stored in as few bytes as it needs. Split the number into
+7-bit chunks, most-significant chunk first, one chunk per byte; each byte's eighth
+bit is a flag — **1 = another byte follows, 0 = this is the last one**. A value up to
+127 is one byte, and each further 7 bits of magnitude costs one more:
 
 ```
-300 = 0b0000010_0101100  →  0x82 0x2C
-          │        └─ low 7 bits, high bit clear (last byte)
-          └─ next 7 bits, high bit set (continue)
+300 = 0b0000010_0101100   →   0x82 0x2C
+          │        └── low 7 bits + flag 0 (last byte)      0x2C = 0_0101100
+          └── upper 7 bits + flag 1 (more follows)          0x82 = 1_0000010
 ```
 
 **2 — Records.** The image is made of one shape only:
@@ -51,10 +53,10 @@ sizes are never fixed-width:
 | 5 | file |
 
 **3 — The padding trick.** The `padding` run between `kind` and `size` is the
-alignment mechanism, and it is free. Each `0x80` byte is a valid continuation byte
-carrying seven **zero** bits — so the decoder just reads them as leading zeros of
-`size`, no special case at all, while the writer inserts exactly enough of them that
-the payload starts on the boundary it needs. Padding is parsing.
+alignment mechanism, and it is free. `0x80` is a byte whose flag says "more follows"
+and whose seven value bits are all **zero** — so the decoder just reads each one as
+leading zeros of `size`, no special case at all, while the writer inserts exactly
+enough of them that the payload starts on the boundary it needs. Padding is parsing.
 
 **Putting it together.** The whole image is a single header record whose `kind` is
 the three magic bytes `D2 CD 31` — which are themselves `'R'|0x80, 'M'|0x80, '1'`, so
@@ -103,7 +105,7 @@ at once:
 
 ```
 00000000  d2 cd 31 80 80 80 80 80 80 80 80 80 80 80 98 4f
-          └─magic─┘ └──padding: zero continuation bytes──┘ └size─┘
+          └─magic─┘ └──padding: "more follows" + zeros──┘ └size─┘
           "RM1"      absorbed as leading zeros of size…    = 3151
 00000010  05 80 80 80 80 80 80 2f 07 6d 61 69 6e 2e 70 79
           │  └────padding─────┘ │  │  m  a  i  n  .  p  y
