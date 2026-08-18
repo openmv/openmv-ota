@@ -23,8 +23,8 @@ every boot `boot.py` runs after the board's stock `_boot.py` and, **for each slo
    (via the on-device mbedtls shim) *before trusting any header field*.
 2. Checks the authenticated header: **integrity** (body SHA-256), **cross-flash guard**
    (`product_id`), **compatibility** (`min_platform_version`), and **anti-rollback**
-   (`payload_version` vs the **rollback floor** — see below).
-3. Applies the **trial rules** (below).
+   (`payload_version` vs the **rollback floor**).
+3. Applies the **trial rules**.
 
 Then it mounts the surviving slot with the **highest install counter** at `/rom`. It
 records the outcome in module globals (`last_slot`, `last_payload_version`,

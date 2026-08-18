@@ -12,7 +12,7 @@ romfs, and its main romfs all over DFU (the Alif tools are only for its bootload
 **RT1060** uses its own `sdphost`/`blhost` backend. Beyond the firmware/romfs/factory images
 `flash` also writes the **bootloader** and **erases** the onboard filesystem — every supported
 board is covered by every verb that applies to it (the retired Nano boards are refused
-everywhere). Each backend has its own section below.
+everywhere).
 
 Flash one board at a time — the device you have plugged in, named with `-b`:
 
@@ -40,9 +40,9 @@ is invoked (default `python -m mpremote`).
 | `flash firmware` | the firmware image | `<board>-firmware.bin` |
 | `flash romfs` | the app romfs image | `<board>-romfs.img` |
 | `flash factory` | firmware **+** the dual-slot factory image (the manufacturing program) | `<board>-firmware.bin`, `<board>-factory-romfs.img` |
-| `flash bootloader` | the bootloader (see below) | `<board>-bootloader.bin` |
-| `flash erase` | the onboard filesystem / user disk (see below) | — (no artifact) |
-| `flash list` | *(query)* connected boards + the state each is in (see below) | — |
+| `flash bootloader` | the bootloader | `<board>-bootloader.bin` |
+| `flash erase` | the onboard filesystem / user disk | — (no artifact) |
+| `flash list` | *(query)* connected boards + the state each is in | — |
 
 `flash factory` writes firmware and the factory image in one pass, resetting the board only
 after the final write so it stays in the bootloader between steps.
@@ -70,7 +70,7 @@ lands on:
 | ARDUINO_PORTENTA_H7 | dfu (addr) | 2341:035b | 0x08040000 | 0x90B00000 | + CYW4343 wifi blobs; touch-to-reset |
 | ARDUINO_GIGA | dfu (addr) | 2341:0366 | 0x08040000 | 0x90B00000 | + CYW4343 wifi blobs; touch-to-reset |
 | ARDUINO_NICLA_VISION | dfu (addr) | 2341:035f | 0x08040000 | 0x90B00000 | + CYW4343 wifi blobs; touch-to-reset |
-| OPENMV_RT1060 | imx | sdphost/blhost | 0x60040000 | 0x60800000 | full sequence (below) |
+| OPENMV_RT1060 | imx | sdphost/blhost | 0x60040000 | 0x60800000 | full sequence |
 
 The OpenMV boards address partitions by **alt-setting**; the Arduino boards by **address**
 (`-a <alt> -s 0xADDR`); the RT1060 has its own `sdphost`/`blhost` backend. A single-partition
@@ -185,7 +185,7 @@ in the tool — `flash bootloader` stages them with the freshly-built `bootloade
 flash-config block + the bundled secure bootloader, no build artifact). The recovery entry is
 the board's recovery pin held to 3.3V on a programmed camera, automatic on a virgin one — BOOT0
 on the STM32/N6, **SBL** on the RT1060 (keep that jumper on until flashing finishes); and on
-the **AE3** via the Alif SE tools (see below). **Arduino** boards have no OpenMV bootloader to
+the **AE3** via the Alif SE tools. **Arduino** boards have no OpenMV bootloader to
 flash.
 
 ## Erasing the filesystem

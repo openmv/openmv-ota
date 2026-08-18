@@ -20,8 +20,8 @@ openmv-ota project new ./my-product -f ~/openmv -b OPENMV_N6 -b OPENMV_AE3
 ```
 
 It reads the checkout and the installed SDK, then writes `openmv-ota.toml` (the
-config you edit), `openmv-ota.lock.json` (the resolved snapshot of the firmware —
-[the next page](03-the-lock.md) is all about it), `openmv-ota.local.toml` (this
+config you edit), `openmv-ota.lock.json` (the resolved snapshot of the firmware),
+`openmv-ota.local.toml` (this
 machine's checkout path), and a `.gitignore`. Commit the first two; the
 `.gitignore` keeps the machine-local file out of the repository.
 
@@ -73,8 +73,7 @@ my-product/
 `new` writes the settings files, `.gitignore`, `README.md`, and a starter `app/`
 — a placeholder `main.py` and a `settings.json` carrying your app version (see
 [The app folder](#the-app-folder)). Replace `main.py` with your code; an OTA
-project (`--ota`) additionally provisions `keys/` (see
-[OTA projects](04-ota-projects.md)). `openmv-ota build romfs` compiles the app and
+project (`--ota`) additionally provisions `keys/`. `openmv-ota build romfs` compiles the app and
 writes images to `build/`. Commit everything except `openmv-ota.local.toml`,
 `keys/private/`, and `build/`, which the generated `.gitignore` already excludes.
 (`app/` and `build/` are the defaults; `build romfs` takes `--app` and `--output`
@@ -111,8 +110,8 @@ It is packed into the ROMFS image, so the app can read it on-device (e.g.
 `json.load(open("/rom/settings.json"))`) — useful in any project for reporting a
 version or carrying configuration. Bump `app_version` (a `major.minor.patch`
 semver) for each release. For an **OTA project**, the build also reads
-`app_version` from here to stamp the image's anti-rollback version (see
-[build.md](06-building.md)), making this file the one place a version is defined.
+`app_version` from here to stamp the image's anti-rollback version,
+making this file the one place a version is defined.
 
 `rollback_floor` is the **oldest app version you will ever allow back onto a
 device**. The build records it in the OTA image, and the updater refuses to install
@@ -130,7 +129,7 @@ your own rollbacks** — so move it deliberately. It must stay `<= app_version`
 For a **multi-core board** (e.g. AE3), `new` also scaffolds a second folder,
 `app-coprocessor/`, holding the slaved helper core's app. It has the same shape
 (`main.py`, `settings.json`, `lib/`) but is always built as a *plain* romfs, never
-OTA — see [Multi-core boards](04-ota-projects.md#multi-core-boards-a-coprocessor-partition).
+OTA.
 
 ### `system.json` (generated, read-only)
 

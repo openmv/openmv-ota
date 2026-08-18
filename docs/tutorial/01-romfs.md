@@ -16,7 +16,7 @@ file from `/rom` in place, without copying it into RAM first. That is what lets 
 multi-megabyte NPU model run on a board with a few hundred KB of heap — the NPU reads
 the model blob straight out of flash. It is also why **byte alignment** matters: a
 blob that is mapped, not copied, must start on the boundary its consumer requires.
-The tool handles that for you — see [Alignment](#alignment) below.
+The tool handles that for you.
 
 ## Packing a directory
 
@@ -25,17 +25,15 @@ The tool handles that for you — see [Alignment](#alignment) below.
 
 ```bash
 $ openmv-ota romfs pack ./app -o app.romfs --board OPENMV_N6
-  size:       3.09 KiB (3167 bytes)
+  size:       3.00 MiB (3145895 bytes)
   board:      OPENMV_N6 (OpenMV N6 (STM32N657))
   partition:  [0] ROMFS - capacity 24.00 MiB
-  usage:      0.0%  (24.00 MiB free)
+  usage:      12.5%  (21.00 MiB free)
   alignment:  tflite=32, lite=32, onnx=32, bin=32
 ```
 
-The directory's contents become the root of the image. Files are packed
-unchanged. To compile `.py` files and convert NPU models automatically while
-packing, use `openmv-ota build romfs` ([page 6](06-building.md)), which works
-from a pegged project.
+The directory's contents become the root of the image, packed exactly as they
+are — `pack` never compiles a `.py` or converts a model.
 
 `--board` sets the alignment rules and partition capacity for a camera. Run
 `openmv-ota romfs boards` for the list of board names, or pass one to see its
@@ -90,25 +88,60 @@ with no rule use `--default-alignment`, which is 4 bytes.
 openmv-ota romfs unpack app.romfs -o ./out
 ```
 
+It refuses a destination that is not empty; pass `--force` to unpack into one
+anyway.
+
 ## Inspecting an image
 
+### ls — list the contents
+
 ```bash
-$ openmv-ota romfs ls app.romfs -l       # contents, with sizes and offsets
+$ openmv-ota romfs ls app.romfs -l
           35  off=36        sfx=py     main.py
 <dir>        models/
-        3000  off=128       sfx=tflite models/detector.tflite
-          15  off=3152      sfx=py     settings.py
-
-$ openmv-ota romfs cat app.romfs main.py   # write one file to stdout
-$ openmv-ota romfs inspect app.romfs       # summary
-$ openmv-ota romfs verify app.romfs --board OPENMV_N6
+     3145728  off=128       sfx=tflite models/detector.tflite
+          15  off=3145880   sfx=py     settings.py
 ```
 
-Note the offsets: the model sits at **128** — the N6's rule says `tflite` aligns to
-32 bytes, and the packer spent padding to make it so.
+`-l, --long` adds each file's size and offset. Note the offsets: the model sits at
+**128** — the N6's rule says `tflite` aligns to 32 bytes, and the packer spent
+padding to make it so.
+
+### cat — read one file
+
+```bash
+$ openmv-ota romfs cat app.romfs main.py
+import sensor
+while True:
+    pass
+```
+
+Takes the image and the path of the file inside it, and writes the file to stdout.
+
+### inspect — summarise
+
+```bash
+$ openmv-ota romfs inspect app.romfs
+  image size:   3.00 MiB (3145895 bytes)
+  files:        3  (payload 3.00 MiB)
+  directories:  1
+  magic:        OK (D2 CD 31)
+```
+
+No options — one image in, one summary out.
+
+### verify — check integrity and alignment
+
+```bash
+$ openmv-ota romfs verify app.romfs --board OPENMV_N6
+OK: 3 files, 1 directory, all payloads aligned
+```
 
 `verify` confirms the image parses and every file sits on its required boundary,
-and exits non-zero on a malformed image or a misaligned file.
+and exits non-zero on a malformed image or a misaligned file — a CI gate. It takes
+the same alignment options as `pack`, since checking is the mirror of packing:
+`-b, --board` (whose rules to check against), `-p, --partition`, `--align EXT=N`
+(override a rule, repeatable), `--default-alignment N`, and `--no-board-rules`.
 
 ## Standard input and output
 

@@ -25,8 +25,7 @@ in `openmv-ota.toml`'s `[ota]` section ([page 4](04-ota-projects.md#files-an-ota
 `build romfs` signs with that key, and a trailer records *which* key signed
 (`key_id`) so the device picks the matching public key. Both roles' private keys
 stay on your signing machine — a manufacturer receives the signed
-`<board>-factory-romfs.img`, never a key (see [build.md](06-building.md#signed-with-a-factory-key)
-and [threat-model.md](../reference/threat-model.md)).
+`<board>-factory-romfs.img`, never a key (see [threat-model.md](../reference/threat-model.md)).
 
 `keys/trusted_keys.json` is the committed public set the firmware build will bake
 into its `TRUSTED_KEYS` table. Each entry is a key id, its COSE algorithm, its

@@ -26,7 +26,7 @@ converts NPU models with the project's Vela (AE3) or ST Edge AI (N6), packs the
 result into a ROMFS image with the board's alignment rules, and checks it against
 the available capacity. For a **non-OTA** project the output is the ROMFS body,
 `<project>/build/<board>-romfs.img`. An **OTA** project instead writes a signed
-bundle, `<board>-romfs.zip` (see [OTA signing](#ota-signing) below). A multi-core
+bundle, `<board>-romfs.zip`. A multi-core
 board also builds its coprocessor partition as a plain
 `<board>-coprocessor-romfs.img` (always, from `app-coprocessor/`), and for an OTA
 project **nests** that image inside the main one (at
@@ -258,7 +258,7 @@ option:
   untouched). It selects the newest valid ROMFS slot,
   verifies the chosen slot's signed trailer (ECDSA + SHA-256, over the firmware's own
   mbedtls), enforces the integrity / cross-flash / compatibility / anti-rollback
-  checks, runs the trial-boot state machine ([page 5](09-device-library.md)), and mounts the
+  checks, runs the trial-boot state machine, and mounts the
   slot it picks.
   Its `_ota_config.py` — the trusted keys, slot geometry, and board/product ids — is
   generated from the project and frozen alongside it.
@@ -317,8 +317,7 @@ already running, downloading only the changes. It is **repeatable, and that matt
 a device patches against the release it is *running*, so a fleet spread over several
 versions needs one delta per base version still in the field — devices with no
 matching base simply take the full image. The delta is pure transport: the
-reconstructed slot is still sha256- and signature-verified on the device
-([The device library](09-device-library.md)).
+reconstructed slot is still sha256- and signature-verified on the device.
 
 `--allow-republish` permits re-signing a version at or below the last published one —
 a dev-loop convenience the server mirrors with its own flag of the same name.

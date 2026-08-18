@@ -22,8 +22,7 @@ images a camera can download, verify, and fall back from.
   internal-flash sector — OpenMV2/3/4, where the erase block *is* the whole
   partition — builds in **single-image mode** instead: one slot spanning the
   partition, no on-flash fallback (a failed update there is re-downloaded by
-  firmware-resident recovery — see
-  [Boot and rollback](08-boot-and-rollback.md#single-image-mode)). One practical
+  firmware-resident recovery). One practical
   consequence: the public TLS bundle does not fit their small slot, so on these
   boards `new --ota` requires an explicit `--ca` root and refuses without one.
   Two-slot boards keep their ROMFS in external NOR/OSPI flash (4 KiB erase
@@ -31,7 +30,7 @@ images a camera can download, verify, and fall back from.
 
 - **Keys provisioned.** A device trusts exactly the public keys baked into its
   firmware, and you cannot add a trusted key later without re-flashing. So `new
-  --ota` provisions the *whole* key set up front (see [Signing keys](05-signing-keys.md)) and
+  --ota` provisions the *whole* key set up front and
   writes it under `keys/`.
 
 - **Per-board identity.** Each target board gets a `[targets.<BOARD>]` table for

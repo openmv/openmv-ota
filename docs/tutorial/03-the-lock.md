@@ -48,7 +48,7 @@ openmv-ota project history ./my-product -n 20 # just the most recent 20
 ```
 
 `history` replays the project's own event log — every resolve and re-sync, plus (for an
-OTA project) its signing-key events ([page 5](05-signing-keys.md)) — in order. It answers "when did this lock last move, and to what" without reading
+OTA project) its signing-key events — in order. It answers "when did this lock last move, and to what" without reading
 `git log` of the checkout it points at.
 
 ## Freezing the firmware
@@ -66,7 +66,7 @@ the working tree is clean; otherwise it exits non-zero and lists what changed.
 Uncommitted changes always fail, because the pinned commit does not capture them.
 Run it in CI and before each image build.
 
-Reading a project from Python verifies by default for the same reason — see below.
+Reading a project from Python verifies by default for the same reason.
 
 ## What the lock records
 
@@ -95,46 +95,6 @@ geometry overrides like `partition_size`, and the OTA mode — so changing any o
 those is drift you must `sync`. Pure-identity fields (`product_id`, `board_name`)
 and metadata (product / vendor name, app version) are deliberately **excluded**,
 so editing a product id or bumping your app version never invalidates the lock.
-
-## Multi-core boards (a coprocessor partition)
-
-Some boards have a second core with its own ROMFS partition. The AE3 is dual-core:
-the **main** high-performance core (partition 0, OSPI, 24 MiB) runs OTA, and a
-**coprocessor** high-efficiency core (partition 1, MRAM, 1 MiB) is *slaved* to it —
-it's booted by the main core, and its romfs is written by the main core. Each
-partition carries a **role** (`main` or `coprocessor`).
-
-There is nothing to configure: the coprocessor is slaved, so the tool **always
-builds every partition automatically**. You don't list partitions and there's no
-`--partition` flag. The main partition is built from `app/` (OTA-wrapped in an OTA
-project); the coprocessor partition is built from a second folder, **`app-coprocessor/`**,
-as a *plain* romfs (never OTA — the helper core has no mbedtls and can't verify
-signatures). `project new` scaffolds `app-coprocessor/` automatically when a selected
-board has a coprocessor partition.
-
-Outputs are named by role: the main partition keeps the bare board name
-(`OPENMV_AE3-romfs.img` / `-factory-romfs.img`), and the coprocessor partition is
-suffixed (`OPENMV_AE3-coprocessor-romfs.img`). The coprocessor image is the same
-plain romfs from both `build romfs` and `build factory-romfs` — it's the image the
-main core writes into the helper's slot.
-
-Each partition is resolved independently — its own size, alignment rules, NPU config,
-and role — and appears as a separate entry under `targets.resolved`. From Python,
-select one with `board(name, partition)`, or iterate `targets`.
-
-> A `partition_size` override (under `[targets.<board>]`) applies only to the main
-> partition; the coprocessor always keeps its firmware geometry.
-
-**Writing the helper partition at runtime.** For an OTA project, `build romfs` also
-**nests** the coprocessor image inside the main one, at
-`/rom/lib/openmv_ota/data/coprocessor.romfs`, with a `resources.json` manifest. So an
-OTA update to the main carries the matching helper image, and your app calls
-[`openmv_ota.sync()`](04-ota-projects.md#the-device-runtime-library-openmv_ota) early in `main.py` to
-write it into the helper partition (only when it differs). Because the nested image
-travels *with* the main, `sync()` always writes the helper image that matches the main
-that's actually running — so it stays consistent even across a rollback to the previous
-image. (The standalone `-coprocessor-romfs.img` is for flashing the helper partition
-directly at the factory; the nested copy is byte-identical.)
 
 ## Reading a project from Python
 

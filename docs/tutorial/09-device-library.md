@@ -36,14 +36,14 @@ packs it to `/rom/lib/openmv_ota/`. It exposes:
   is no way to confirm a trial you fell back *from* — the guard is structural rather than a
   slot-name check. Confirming also **ends the deferral**: an update offered while the trial
   was unproven is taken on the next poll.
-- **`sync()`** — apply any **bundled resources** (see below) whose on-device target
+- **`sync()`** — apply any **bundled resources** whose on-device target
   differs from the bundled copy. A flash erase + chunked write of a whole partition, so
   **not quick** — it feeds the watchdog (`openmv_wdt`) the same minimal way `install()`
   does (`relax()` around the erase, `feed()` per chunk, including the already-applied
   re-read). Idempotent, returns the names applied; a no-op when nothing is bundled. Call
   it **early**, before a resource's consumer is used (e.g. before the helper core runs).
 - **`install(url, ca=None)`** — download a gzipped slot image over HTTPS and install
-  it (see [Installing an update](#installing-an-update-install) below). Does **not** return
+  it. Does **not** return
   on success — it reboots into the new image's trial.
 
 Both report their progress, **logged at every 10% step** (`install: 40% (…)`,
@@ -257,7 +257,7 @@ Like the logger, there's an opt-in helper — `device/openmv_wdt.py`, frozen as
 ENABLED    = True   # master switch (off by default — every openmv_wdt call is then a no-op)
 WDT_ID     = None   # None = auto-select the DEEP-SLEEP-SAFE watchdog for this port
 TIMEOUT_MS = 100    # reset if not fed within this long — MUST be ≤ the board's WDT max
-TIMER_ID   = -1     # the soft timer (only id machine.Timer accepts; see relax() below)
+TIMER_ID   = -1     # machine.Timer id; on OpenMV ports only the soft timer (-1) exists
 FEED_HZ    = 50     # relax() ISR feed rate; keep well above 1000 / TIMEOUT_MS
 ```
 
@@ -286,7 +286,7 @@ watchdog, proven on N6 + RT1060 hardware:
    under the window. A coarse `sleep(2)` loop *will* reset you.
 4. **Split long ops, or `relax()` them.** One loop iteration must fit the window. If a step can't
    (a big model load), subdivide it and feed per step; only as a last resort wrap a truly
-   unsplittable op in `with openmv_wdt.relax():` (see below).
+   unsplittable op in `with openmv_wdt.relax():`.
 5. **Boot needs no feeding.** `machine.reset()` — including the OTA trial reboot — clears the WWDG,
    so every boot runs unwatched until your app calls `start()` again. You never thread a feed
    through boot.py.
