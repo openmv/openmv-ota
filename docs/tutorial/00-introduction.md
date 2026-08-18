@@ -57,7 +57,7 @@ Every command and flag on these pages exists — the test suite holds the CLI to
 
 | Page | Covers |
 |---|---|
-| [1 · The ROMFS](01-romfs.md) | what `/rom` is, the image format on flash, and `openmv-ota romfs` |
+| [1 · The ROMFS](01-romfs.md) | what `/rom` is, and `openmv-ota romfs` — pack, unpack, inspect, verify |
 | [2 · Projects](02-projects.md) | `openmv-ota project new` — pegging to a firmware, and the app folder |
 | [3 · The lock](03-the-lock.md) | `setup` / `show` / `status` / `verify` / `sync` / `history` — keeping the peg honest |
 | [4 · OTA projects](04-ota-projects.md) | what `--ota` changes: slots, the scaffolded device library, board identity |
@@ -73,7 +73,8 @@ Not part of the walkthrough, but referenced from it:
 
 - [`docs/reference/`](../reference/) — the design and engineering notes: the
   [architecture](../reference/architecture.md), the [signed trailer
-  format](../reference/trailer.md), the [threat model](../reference/threat-model.md),
+  format](../reference/trailer.md), the [ROMFS image
+  anatomy](../reference/romfs-format.md), the [threat model](../reference/threat-model.md),
   [CI](../reference/ci.md), the [v2 design](../reference/v2-plan.md) and its
   [hardware results](../reference/v2-hardware-results.md).
 - [`docs/compliance/`](../compliance/) — the [CRA / RED
