@@ -7,9 +7,7 @@
 `openmv-ota project` ties a directory — your app plus a few settings files — to a
 specific OpenMV firmware checkout, so every build uses exactly the tool versions
 (mpy-cross, Ethos-U Vela, ST Edge AI) that firmware was built with. This page covers
-creating a project and the app folder; [the next](03-the-lock.md) covers keeping that
-peg honest over time. [OTA projects](04-ota-projects.md) and their
-[signing keys](05-signing-keys.md) build on top.
+creating a project and the app folder.
 
 ## Creating a project
 
@@ -26,10 +24,10 @@ machine's checkout path), and a `.gitignore`. Commit the first two; the
 `.gitignore` keeps the machine-local file out of the repository.
 
 `new` expects the OpenMV SDK to be installed already. Pass `--install-sdk` to
-download and install it (a pure-Python download + verify + extract of the
-pinned bundle to `~/openmv-sdk-<version>` — no `make` required, which is what
-lets the firmware build work on Windows), or `--sdk-home PATH` to point at an
-SDK in a non-default location.
+download and install it — a pure-Python download + verify + extract of the
+pinned bundle to `~/openmv-sdk-<version>`. It needs no `make`, on purpose: the
+SDK is what *provides* `make` for the firmware build, so installing it cannot
+require it. `--sdk-home PATH` points at an SDK in a non-default location.
 
 ### Options
 

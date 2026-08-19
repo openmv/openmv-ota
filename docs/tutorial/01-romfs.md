@@ -6,8 +6,8 @@
 
 Everything a camera runs — your scripts, settings, NPU models — ships inside a
 **ROMFS image**: one file holding a read-only filesystem that the camera mounts at
-`/rom`. This page is the tool for those images — `openmv-ota romfs`, the simplest verb
-and the one underneath everything the later pages build.
+`/rom`. This page is the tool for those images — `openmv-ota romfs`, the simplest verb,
+and the one everything else is built on.
 
 ## Why a read-only image
 
@@ -157,14 +157,9 @@ openmv-ota romfs pack ./app -o - --board OPENMV_N6 | openmv-ota romfs verify -
 curl -s https://builds.example.com/app.romfs | openmv-ota romfs ls - -l
 ```
 
-## Where this goes next
+## Digging deeper
 
-Packing verbatim is the floor. A [project](02-projects.md) pegs your app to a
-firmware so [`build romfs`](06-building.md) can compile it the way that firmware
-expects — and for an over-the-air project, wrap this same image format in a signed
-trailer that a camera will verify before it ever mounts it.
-
-And if you want to know how the image is laid out on flash, byte by byte — say, to
+If you want to know how the image is laid out on flash, byte by byte — say, to
 write your own reader — that lives in
 [the format anatomy reference](../reference/romfs-format.md).
 

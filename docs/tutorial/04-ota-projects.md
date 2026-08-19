@@ -106,9 +106,7 @@ The installer ships as source in `data/installer.py` (so the device can `exec` i
 RAM while it overwrites the slot it runs from), and `data/ca.pem` is the TLS trust
 store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step needs
 network, like the SDK download), and you can replace it with your provider's roots.
-What `install()` downloads is produced by `build ota-romfs`
-([Building](06-building.md)); the full library — the trial lifecycle, `install()`
-semantics, TLS, deltas — is [The device library](09-device-library.md).
+What `install()` downloads is produced by `build ota-romfs`.
 
 For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in
 logger built on the standard `logging` module (frozen as `openmv_log`, off by default)
@@ -119,8 +117,7 @@ board's UART, then rebuild firmware.
 It also scaffolds **`device/openmv_wdt.py`** — an opt-in watchdog helper (frozen as
 `openmv_wdt`, off by default): `openmv_wdt.feed()` from your main loop, and
 `with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds the watchdog
-through them). `install()` uses it automatically. See
-[the watchdog section](09-device-library.md#watchdog).
+through them). `install()` uses it automatically.
 
 ## Board identity
 

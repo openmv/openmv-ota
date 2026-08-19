@@ -7,9 +7,8 @@
 OTA has two pieces that run **on the camera** (everything else — `project`, `build`,
 signing — runs on your host): **`boot.py`**, frozen into the firmware by
 `build firmware`, which picks and verifies the image to run at every boot; and the
-**`openmv_ota`** library your app imports, covered on
-[the next page](09-device-library.md). This page is the boot half — slot selection,
-the trial, and rollback. Both pieces are self-contained (they can't import the host
+**`openmv_ota`** library your app imports. This page is the boot half — slot
+selection, the trial, and rollback. Both pieces are self-contained (they can't import the host
 `openmv_ota.ota.*` packages under MicroPython); their pure logic is host-tested and
 the device I/O is exercised under QEMU — see [ci.md](../reference/ci.md).
 

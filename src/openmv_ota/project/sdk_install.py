@@ -5,8 +5,9 @@
 verifies its sha256, and extracts it to ``~/openmv-sdk-<version>``. Doing the same
 here means the toolchain -- which itself *contains* ``make`` -- installs with
 nothing but a Python interpreter. That breaks the bootstrap chicken-and-egg (you
-needed ``make`` to install the ``make`` the firmware build uses), so a native
-Windows build needs only this install plus the bundled tools on ``PATH``.
+needed ``make`` to install the ``make`` the firmware build uses). The firmware
+build itself still runs the SDK's ``make`` -- on Windows that means WSL; this
+installer just works from any host with a Python.
 
 It also fixes the platform string on Windows: the firmware's shell installer uses
 raw ``uname -s`` (``mingw64_nt-...`` under Git Bash), which never matches the

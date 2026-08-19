@@ -7,8 +7,7 @@
 `openmv-ota` can build and sign OTA images, deltas, and manifests, and a device can
 `install(manifest_url)` — but nothing decides *which* URL a device fetches, hosts the artifacts,
 or drives a fleet rollout. The **update server** is that missing piece: a central service that
-hosts releases and stages them across a fleet. The **`client`** verb publishes to it
-([the next page](11-fleet.md)), so you and CI never hand-write a URL.
+hosts releases and stages them across a fleet. The **`client`** verb publishes to it, so you and CI never hand-write a URL.
 
 Two deployment shapes run the **same software**:
 
