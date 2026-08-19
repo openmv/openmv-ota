@@ -85,10 +85,10 @@ and whether the project is OTA). Everything else is resolved into
   arguments and config-file references), the alignment rules, and the partition
   size, flash erase block, and per-slot size.
 
-Partition sizes come from the firmware's `boards/<BOARD>/board_config.h`. When a
-board's size is build-variant conditional, the bundled default is used instead
-and the source is recorded in `geometry_source`; set `partition_size` under a
-`[targets.<BOARD>]` table in `openmv-ota.toml` to override it.
+Partition sizes come from the firmware's `boards/<BOARD>/board_config.h`. When
+the size there depends on the build variant, the tool falls back to a bundled
+default for the board. If either is wrong for your build, set `partition_size`
+under a `[targets.<BOARD>]` table in `openmv-ota.toml` to override it.
 
 The lock's `config_digest` covers only the *firmware-relevant* config — boards,
 geometry overrides like `partition_size`, and the OTA mode — so changing any of
