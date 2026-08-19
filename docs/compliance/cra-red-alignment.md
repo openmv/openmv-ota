@@ -1,9 +1,10 @@
 # EU CRA / RED 3.3 alignment
 
 How this stack maps onto the Cyber Resilience Act, RED Article 3.3(d)(e)(f) and
-EN 18031. Preserved from the original concept plan when that document was retired;
-the mapping is the part with lasting value, and the tables below are the
-**authoritative** version (the checklist template points here).
+EN 18031. Preserved from the original concept plan when that document was retired, and
+**audited against the codebase 2026-08-19** — every "shipped" claim below was
+verified to exist. The tables are the **authoritative** version (the checklist
+template points here).
 
 Corrected for **v2** where the original described the retired v1 model: there is no
 immutable "golden" image any more. The two slots are equal and both updatable,
@@ -11,15 +12,19 @@ ordered by an install counter, so the image behind the running one is *the last
 release that worked* rather than the factory build. See
 [../v2-plan.md](../reference/v2-plan.md) and [../architecture.md](../reference/architecture.md).
 
-The Cyber Resilience Act ([Regulation (EU) 2024/2847](https://eur-lex.europa.eu/eli/reg/2024/2847)) is in force; full compliance deadline 11 December 2027. The Radio Equipment Directive Article 3.3(d)(e)(f) ([Delegated Regulation 2022/30](https://eur-lex.europa.eu/eli/reg_del/2022/30)) is mandatory for radio equipment from 1 August 2025. EN 18031-1/2/3 are the harmonised standards.
+The Cyber Resilience Act ([Regulation (EU) 2024/2847](https://eur-lex.europa.eu/eli/reg/2024/2847)) is in force; full compliance deadline 11 December 2027, and the **Article 14 reporting obligations — actively exploited vulnerabilities and severe incidents reported to ENISA within 24 hours — apply from 11 September 2026**. The Radio Equipment Directive Article 3.3(d)(e)(f) ([Delegated Regulation 2022/30](https://eur-lex.europa.eu/eli/reg_del/2022/30)) is mandatory for radio equipment from 1 August 2025. EN 18031-1/2/3 are the harmonised standards.
 
-This stack supports each relevant requirement as follows:
+The tables say what is **shipped** and what is **planned** — an auditor reading this
+must never find a claimed control that does not exist. Shipped rows describe code in
+this repository, tested at enforced 100% coverage and, for the update path, exercised
+on a nine-board hardware fleet including the negative cases (corrupt image, bad
+signature, untrusted key, version rollback, no bootable slot).
 
 ### CRA Annex I — essential cybersecurity requirements
 
 | Requirement | How this stack supports it |
 |---|---|
-| 1(2)(a) Free of known exploitable vulnerabilities at placing on market | Build pipeline scans SBOM against NVD/OSV, fails on critical CVEs |
+| 1(2)(a) Free of known exploitable vulnerabilities at placing on market | **Planned:** SBOM export + CVE scan (see 2(1)). Today the lock pins every dependency exactly (firmware commit, every submodule commit, toolchain versions), which is the input such a scan needs |
 | 1(2)(b) Secure by default configuration | Documented in the conformity assessment template; customer applies |
 | 1(2)(c) Security updates throughout support period | OTA mechanism in this plan; vendor commits to a support period |
 | 1(2)(d) Protection against unauthorised access | ECDSA (P-256) signatures + anti-rollback + fallback to the other slot |
@@ -29,18 +34,18 @@ This stack supports each relevant requirement as follows:
 | 1(2)(h) Availability of essential functions | Trial-boot + A/B slots guarantee one bootable image always exists |
 | 1(2)(i) Minimise attack surface | Customer (app design); we provide guidance |
 | 1(2)(j) Mitigate impact of incidents | Automatic fallback to the other slot on a bad update |
-| 1(2)(k) Security event recording | `audit_log` pattern provided for the app to implement |
+| 1(2)(k) Security event recording | **Server side shipped:** every admin action lands in a hash-chained, tamper-evident audit log (`prev_hash`/`entry_hash`). On-device security-event recording is the customer's app (the shipped `openmv_log` is debug logging, not an event record) |
 | 1(2)(l) Secure deletion of data | Customer (app design) |
-| 1(2)(m) Vulnerability handling throughout support period | OTA delivery + SBOM + transparency log + disclosure template |
+| 1(2)(m) Vulnerability handling throughout support period | **Shipped:** OTA delivery + the disclosure/`security.txt` templates. **Planned:** SBOM export |
 
 ### CRA Annex I — vulnerability handling requirements
 
 | Requirement | How this stack supports it |
 |---|---|
-| 2(1) Identify components in product → SBOM | SBOM generated per build |
-| 2(2) Address vulnerabilities promptly | OTA delivery; transparency log enables verification |
-| 2(3) Effective testing | Test corpus (RFC 8032, Wycheproof, boot.py adversarial set) |
-| 2(4) Public disclosure of fixed vulnerabilities | Disclosure policy template + advisory format |
+| 2(1) Identify components in product → SBOM | **Planned.** The data already exists: `openmv-ota.lock.json` records the firmware commit, every submodule commit, and all toolchain versions per build — an SBOM export (CycloneDX) from the lock is the missing renderer, not new data collection |
+| 2(2) Address vulnerabilities promptly | **Shipped:** OTA delivery with staged rollouts and per-device/cohort pins. (A public transparency log is not built) |
+| 2(3) Effective testing | **Shipped:** ~1,950 host tests at *enforced* 100% coverage; `boot.py` slot logic run on real MicroPython under QEMU; the on-device ECDSA shim checked against the firmware's own mbedtls; and the update path exercised on a nine-board hardware fleet including the adversarial cases (corrupt image, tampered manifest, untrusted key, rollback, no bootable slot) |
+| 2(4) Public disclosure of fixed vulnerabilities | Disclosure policy template (shipped). A fixed advisory format is not defined — the vendor's policy names its own channel |
 | 2(5) Coordinated disclosure policy | `security.txt` template |
 | 2(6) Mechanism to share vulnerability info | Disclosure policy template defines contact and timeline |
 | 2(7) Provide updates without delay, free of charge | OTA delivery, no per-device fee |
@@ -50,7 +55,7 @@ This stack supports each relevant requirement as follows:
 | Requirement | Coverage |
 |---|---|
 | 3.3(d) Network protection | TLS + cert pinning (app); signatures defend against TLS-layer failure |
-| 3.3(e) Personal data protection | Customer (app design); SBOM enables CRA-aligned data-handling audits |
+| 3.3(e) Personal data protection | Customer (app design); the lock's exact dependency pin-set supports data-handling audits (SBOM export planned) |
 | 3.3(f) Fraud prevention | Signature on every image; anti-rollback prevents downgrade attacks |
 
 ### EN 18031 test alignment
