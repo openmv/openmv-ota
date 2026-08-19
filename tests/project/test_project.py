@@ -165,6 +165,14 @@ def test_create_scaffolds_app_even_without_ota(tmp_path, make_firmware, make_sdk
     # so a vendor that only reached the toml would leave the device-visible vendor "".
     # (this create passes no vendor, so the scaffold's default is empty)
     assert settings["vendor"] == ""
+    # rollback_floor is an OTA knob (the build reads a missing key as "no floor"),
+    # so a plain project's settings.json must not carry it.
+    assert "rollback_floor" not in settings
+    # A lib/ dir for the app's own modules, kept in git by a .gitkeep.
+    assert (paths.app_dir / "lib").is_dir()
+    assert (paths.app_dir / "lib" / ".gitkeep").exists()
+    # No keys are provisioned for a non-OTA project.
+    assert not paths.private_keys_dir.exists()
 
 
 def test_vendor_flag_reaches_the_scaffolded_settings(tmp_path, make_firmware, make_sdk):
@@ -174,14 +182,6 @@ def test_vendor_flag_reaches_the_scaffolded_settings(tmp_path, make_firmware, ma
     root, _ = _create(tmp_path, make_firmware, make_sdk, vendor="Acme Robotics")
     settings = json.loads(proj.ProjectPaths(root).app_settings.read_text())
     assert settings["vendor"] == "Acme Robotics"
-    # rollback_floor is an OTA knob (the build reads a missing key as "no floor"),
-    # so a plain project's settings.json must not carry it.
-    assert "rollback_floor" not in settings
-    # A lib/ dir for the app's own modules, kept in git by a .gitkeep.
-    assert (paths.app_dir / "lib").is_dir()
-    assert (paths.app_dir / "lib" / ".gitkeep").exists()
-    # No keys are provisioned for a non-OTA project.
-    assert not paths.private_keys_dir.exists()
 
 
 def test_create_scaffolds_coprocessor_for_multicore_board(tmp_path, make_firmware, make_sdk):
