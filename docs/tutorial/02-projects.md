@@ -39,7 +39,7 @@ in a non-default location.
 | `--sdk-home PATH` | SDK install directory (default `~/openmv-sdk-<version>`). |
 | `--install-sdk` | Download + install the SDK if it is missing. |
 | `--allow-dirty` | Don't warn when the checkout has uncommitted changes. |
-| `--force` | Overwrite an existing project. |
+| `--force` | Re-run `new` over an existing project (refused otherwise). |
 
 ## Layout
 
@@ -71,7 +71,7 @@ Every project is scaffolded with a starter `app/`:
 app/
 ├── main.py        # placeholder; replace with your code
 ├── settings.json  # your app's version and settings
-└── lib/           # your own importable modules (kept in git by a .gitkeep)
+└── lib/           # your own importable modules
 ```
 
 `lib/` is the place for the app's own library modules — the code `main.py`
@@ -94,8 +94,10 @@ It is packed into the ROMFS image, so the app can read it on-device (e.g.
 version or carrying configuration. Bump `app_version` (a `major.minor.patch`
 semver) for each release.
 
-`new` only writes `main.py` and `settings.json` if they are absent, so re-running
-`new --force` never clobbers your app.
+Without `--force`, `new` refuses to run where a project already exists. With it,
+`new` runs again over the existing directory — useful to re-scaffold after
+changing the flags, a different board list, say. Your app survives the re-run:
+`main.py` and `settings.json` are only ever written when absent.
 
 For a **multi-core board** (e.g. AE3), `new` also scaffolds a second folder,
 `app-coprocessor/`, holding the slaved helper core's app. It has the same shape

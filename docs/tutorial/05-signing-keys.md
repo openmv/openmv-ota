@@ -43,7 +43,13 @@ role, and the public key as an uncompressed EC point in hex:
 
 Provision generously: because keys can't be added without re-flashing firmware,
 the rotation pool is your entire future supply of OTA keys. `--ota-keys` below 4
-warns. See [trailer.md](../reference/trailer.md) for the signature algorithms and the
+warns.
+
+One hazard to know: re-running `new --force` over an existing OTA project
+**regenerates the whole key set**. Devices already in the field trust the *old*
+keys and will reject updates signed by the new ones — you would have to re-flash
+them. `new` warns loudly when this is about to happen; only do it for a fresh
+fleet, and back up the old keys first. See [trailer.md](../reference/trailer.md) for the signature algorithms and the
 `key_id` / `sig_alg` fields.
 
 ### Provisioning options at `new --ota`
