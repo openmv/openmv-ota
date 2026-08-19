@@ -28,10 +28,11 @@ the whole picture.)
 
 ## Layout
 
-The trailer occupies one flash erase block — 4 KiB on every OTA-capable board
-(external NOR / OSPI; AE3's byte-writable MRAM is floored to 4 KiB so growing the
-metadata can't reshape the layout). Boards whose ROMFS is a single large
-internal-flash sector can't host OTA at all (see
+The trailer occupies one 4 KiB control block on every OTA-capable board —
+deliberately sized to 4 KiB rather than the flash erase block (AE3's byte-writable
+MRAM reports a tiny sector, floored to the same 4 KiB so growing the metadata can't
+reshape the layout). Boards whose ROMFS is a single large internal-flash sector
+(OpenMV2/3/4) carry the same trailer in single-image mode (see
 [project.md](../tutorial/04-ota-projects.md)). Laid out little-endian:
 
 ```
@@ -48,7 +49,7 @@ internal-flash sector can't host OTA at all (see
   CRC is torn-write detection only (a cheap pre-reject), not authenticity.
 - `meta_size` and `sig_size` live *inside* the signed header, so the framing a
   verifier trusts comes from authenticated fields — never from the flexible blob.
-- `build romfs` pads the trailer with `0xFF` to fill one erase block.
+- `build romfs` pads the trailer with `0xFF` to fill its 4 KiB block.
 
 ## Header fields
 
@@ -100,9 +101,9 @@ first.
 {
   "product": "orchard-sentry",
   "board": "OPENMV_N6",
-  "product_id": 4097,
+  "product_id": 2937722637,
   "board_name": "OrchardSentry Pro",
-  "app_version": "2.3.0",
+  "app_version": "1.0.0",
   "vendor": "Acme Robotics",
   "ota": true,
   "firmware": {"version": "5.0.0", "commit": "9f2c1ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"},
