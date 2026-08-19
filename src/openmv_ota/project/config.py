@@ -214,24 +214,17 @@ def render_config(
             "# enabled = true          # opt in to over-the-air updates; halves the\n"
             "#                           usable image size (regular + golden image)\n\n"
         )
-    if ota:
-        # Active per-board sections with an auto-assigned product_id (the cross-flash
-        # guard); the user can rename board_name and override product_id.
-        targets = (
-            "[targets]\nboards = [%s]\n\n" % board_list
-            + "".join(_render_target(name, b) for b in boards)
-            + "# A board's table can also set partition_size = N to override the firmware\n"
-            "# partition geometry. Multi-core boards (e.g. AE3) build every partition\n"
-            "# automatically -- the coprocessor core's romfs is built from app-coprocessor/.\n"
-        )
-    else:
-        targets = (
-            "[targets]\nboards = [%s]\n\n" % board_list
-            + "# Optional per-board settings (add one table per board to configure):\n"
-            "# [targets.OPENMV_AE3]\n"
-            "# partition_size = 25165824 # override the main partition geometry\n"
-            "# product_id   = 1234         # product id in /rom/system.json (auto-set in OTA mode)\n"
-        )
+    # Active per-board sections with an auto-assigned product_id in EVERY mode -- one
+    # scaffold shape. In a plain project the id is inert (recorded in system.json,
+    # nothing enforces it; delete the line to re-derive from the product name); under
+    # OTA it is the cross-flash guard fielded devices bake in.
+    targets = (
+        "[targets]\nboards = [%s]\n\n" % board_list
+        + "".join(_render_target(name, b) for b in boards)
+        + "# A board's table can also set partition_size = N to override the firmware\n"
+        "# partition geometry. Multi-core boards (e.g. AE3) build every partition\n"
+        "# automatically -- the coprocessor core's romfs is built from app-coprocessor/.\n"
+    )
     return (
         "# openmv-ota project config (committed, shared with your team / CI).\n"
         "# No machine paths here - the firmware checkout path lives in\n"

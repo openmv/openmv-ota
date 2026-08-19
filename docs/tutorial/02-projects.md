@@ -145,10 +145,9 @@ relate depends on how many boards a project targets:
 For a **single-board project**, `product` and `board_name` are the same string by
 default — you can ignore `board_name` and read `product`. For a **multi-board
 project** (one app folder targeting several boards), `product` stays constant
-while you can give each board its own `board_name` to distinguish the variants in
-the field — by **adding a `[targets.<BOARD>]` table** (a plain project's config
-isn't scaffolded with any) — e.g. one app built for two boards sold as "My Product
-Lite" and "My Product Pro":
+while you can give each board its own `board_name` in the `[targets.<BOARD>]`
+table `new` scaffolds for it — e.g. one app built for two boards sold as "My
+Product Lite" and "My Product Pro":
 
 ```toml
 [product]
@@ -158,17 +157,20 @@ name = "my-product"          # product, shared by every board
 boards = ["OPENMV_N6", "OPENMV_AE3"]
 
 [targets.OPENMV_N6]
+product_id   = 396486252     # stable product id (auto-assigned; keep it once devices ship)
 board_name = "My Product Pro"
 
 [targets.OPENMV_AE3]
+product_id   = 646934278
 board_name = "My Product Lite"
 ```
 
 Set `board_name` only when you ship the one product on multiple boards and want
 them named apart; otherwise leave it and `product` carries the name.
 
-A plain project derives its identity fresh at every build — rename the product
-and the derived `product_id` simply follows; there is nothing to update.
+The scaffolded `product_id` is the derivation above, written down. In a plain
+project it is inert — recorded in `system.json`, checked by nothing — so you can
+ignore it; delete the line and the build re-derives it from the current name.
 
 ---
 

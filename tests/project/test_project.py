@@ -681,7 +681,11 @@ def test_load_project_partition_lookup(tmp_path, make_firmware, make_sdk):
     root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, boards=["OPENMV_AE3"])
     # Target both AE3 cores via a hand-edited config, then re-lock.
     paths = proj.ProjectPaths(root)
-    paths.config.write_text(paths.config.read_text() + "\n[targets.OPENMV_AE3]\npartitions = [0, 1]\n")
+    # The table is scaffolded now -- add the key INSIDE it (a second declaration is a TOML error).
+    text = paths.config.read_text()
+    assert text.count("[targets.OPENMV_AE3]") == 1
+    paths.config.write_text(text.replace(
+        "[targets.OPENMV_AE3]\n", "[targets.OPENMV_AE3]\npartitions = [0, 1]\n", 1))
     proj.sync_project(root, firmware=repo, sdk_home_override=make_sdk(),
                       install_sdk=False, allow_dirty=True, now=NOW)
     p = proj.load_project(root, firmware=repo)

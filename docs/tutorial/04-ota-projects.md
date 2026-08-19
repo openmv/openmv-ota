@@ -34,11 +34,6 @@ images a camera can download, verify, and fall back from.
   --ota` provisions the *whole* key set up front and
   writes it under `keys/`.
 
-- **Identity pinned.** The per-board `product_id` / `board_name` (from the
-  [projects page](02-projects.md#product-name-vs-board-name)) are now *written into
-  the config* as active `[targets.<BOARD>]` tables, so the derived id is frozen —
-  fielded devices bake it in.
-
 (The starter `app/` — including the `app_version` the build stamps into the image
 — is scaffolded for every project, not just OTA; see
 [The app folder](02-projects.md#the-app-folder).)
@@ -90,7 +85,7 @@ and the starter `app/`), `new --ota` creates the keys and extends the config:
 
 ```
 my-product/
-├── openmv-ota.toml          # gains an [ota] section + per-board [targets.*] tables
+├── openmv-ota.toml          # gains an [ota] section
 ├── app/lib/openmv_ota/      # the device OTA runtime library (status/confirm/sync/install)
 │   └── data/
 │       ├── installer.py     # the installer, shipped as source (exec'd into RAM)
@@ -118,14 +113,6 @@ The `[ota]` section records the mode and the current signing key:
 [ota]
 enabled = true            # each partition holds two updatable slots (A/B)
 signing_key_id = 256      # current OTA signing key (in keys/trusted_keys.json)
-```
-
-and each target board gets an active table for its identity:
-
-```toml
-[targets.OPENMV_N6]
-product_id   = 396486252   # stable product id (auto-assigned; keep it once devices ship)
-board_name = "my-product"  # human label; defaults to the product name, rename freely
 ```
 
 ## The device runtime library (`openmv_ota`)
@@ -172,18 +159,17 @@ through them). `install()` uses it automatically.
 device's `product_id` guards against cross-flashing the wrong product; `board_name`
 is metadata only.
 
-The number is the same derivation the
-[projects page](02-projects.md#product-name-vs-board-name) describes — `new --ota`
-just writes it into the config so it's *frozen*. **Keep it once devices ship**: a
+The number is the one `new` scaffolded into `[targets.<BOARD>]`
+(the [projects page](02-projects.md#product-name-vs-board-name) derivation). What
+changes under OTA is that it is *enforced*. **Keep it once devices ship**: a
 device bakes its `product_id` in and rejects any image whose id doesn't match, so a
 later change would reject updates on fielded devices. You can still override it (e.g. to match an existing product numbering),
 and `build romfs` warns if you set it to `0` (guard off) or if two boards collide
 on the same id.
 
-A **non-OTA** project doesn't pin a `product_id` in its config (the guard only
-applies to OTA), but `build romfs` still derives the same stable id and records it
-in `system.json`, so a non-OTA app reads the same product identity — and nothing
-changes when you later move to OTA. One app folder can target several boards or
+A **non-OTA** project carries the same scaffolded id, recorded in `system.json`
+but enforced by nothing — so an app reads one product identity in every mode, and
+nothing changes when you later move to OTA. One app folder can target several boards or
 products at once — each gets its own identity but shares the app and toolchain.
 
 ## Multi-core boards (a coprocessor partition)

@@ -120,8 +120,10 @@ def test_non_ota_config_has_no_signing_key(tmp_path):
     text = cfg.render_config("prod", None, ["OPENMV_N6"])
     c = cfg.load_config(_write(tmp_path / cfg.CONFIG_NAME, text))
     assert c.signing_key_id is None
-    # A non-OTA project has no active per-board table (product_id is the OTA guard).
-    assert "OPENMV_N6" not in c.overrides
+    # The identity table is scaffolded in every mode (one shape); in a plain
+    # project the id is inert until the project moves to OTA.
+    assert c.overrides["OPENMV_N6"]["product_id"] == cfg.derive_product_id("prod", "OPENMV_N6")
+    assert c.overrides["OPENMV_N6"]["board_name"] == "prod"
 
 
 def test_derive_product_id_distinct_and_stable():

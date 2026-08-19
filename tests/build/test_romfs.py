@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import types
 
@@ -40,8 +41,14 @@ def test_system_json_packed_for_non_ota(make_project):
     root, repo, app = make_project(
         app_files={"main.py": "print(1)\n",
                    "settings.json": '{"app_version": "2.0.0", "vendor": "Acme"}\n'},
-        extra_config='\n[targets.OPENMV_N6]\nproduct_id = 7\nboard_name = "Widget"\n',
     )
+    # Override the SCAFFOLDED identity table in place (new writes one per board).
+    from openmv_ota.project.project import ProjectPaths
+    cfg_path = ProjectPaths(root).config
+    text, n1 = re.subn(r"product_id   = \d+[^\n]*", "product_id = 7", cfg_path.read_text(), count=1)
+    text, n2 = re.subn(r'board_name = "[^"]*"[^\n]*', 'board_name = "Widget"', text, count=1)
+    assert n1 == n2 == 1
+    cfg_path.write_text(text)
     out = build_mod.build_romfs(root, app=app, firmware=repo,
                                 compile_py=False, convert_models=False)[0].output
     info = json.loads(_read_file(out.read_bytes(), "system.json"))
@@ -53,12 +60,17 @@ def test_system_json_packed_for_non_ota(make_project):
 
 
 def test_system_json_product_id_derived_for_non_ota(make_project):
-    # With no product_id pinned in config, a non-OTA image still gets a stable,
-    # auto-derived product_id in system.json.
+    # The scaffolded pin is optional: DELETE the product_id line and the build
+    # re-derives the same stable id into system.json (the documented escape hatch).
     import json
 
     from openmv_ota.project.config import derive_product_id
+    from openmv_ota.project.project import ProjectPaths
     root, repo, app = make_project()
+    cfg_path = ProjectPaths(root).config
+    text, n = re.subn(r"product_id   = \d+[^\n]*\n", "", cfg_path.read_text(), count=1)
+    assert n == 1
+    cfg_path.write_text(text)
     info = json.loads(_read_file(
         build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0].output.read_bytes(),
@@ -67,9 +79,15 @@ def test_system_json_product_id_derived_for_non_ota(make_project):
 
 
 def test_board_name_defaults_to_product(make_project):
-    # With no board_name set, system.json's board_name is the product name.
+    # With the scaffolded board_name line deleted, system.json's board_name
+    # falls back to the product name.
     import json
+    from openmv_ota.project.project import ProjectPaths
     root, repo, app = make_project(product="Gadget")
+    cfg_path = ProjectPaths(root).config
+    text, n = re.subn(r'board_name = "[^"]*"[^\n]*\n', "", cfg_path.read_text(), count=1)
+    assert n == 1
+    cfg_path.write_text(text)
     info = json.loads(_read_file(
         build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0].output.read_bytes(),
