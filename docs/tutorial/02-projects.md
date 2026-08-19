@@ -99,7 +99,7 @@ semver) for each release.
 
 For a **multi-core board** (e.g. AE3), `new` also scaffolds a second folder,
 `app-coprocessor/`, holding the slaved helper core's app. It has the same shape
-(`main.py`, `settings.json`, `lib/`) but is always built as a *plain* romfs.
+(`main.py`, `settings.json`, `lib/`) and is built into an image of its own.
 
 ### `system.json` (generated, read-only)
 
@@ -116,7 +116,7 @@ separate, read-only **`system.json`** into every image at
   "board_name": "OrchardSentry Pro",
   "app_version": "2.3.0",
   "vendor": "Acme Robotics",
-  "ota": true,
+  "ota": false,
   "firmware": {"version": "5.0.0", "commit": "9f2c1ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"},
   "micropython": "1.28.0",
   "toolchain": {"mpy_cross": "1.28.0", "vela": "3.12.0", "stedgeai": "2.1.0", "sdk": "1.6.0"}
@@ -157,11 +157,9 @@ name = "my-product"          # product, shared by every board
 boards = ["OPENMV_N6", "OPENMV_AE3"]
 
 [targets.OPENMV_N6]
-product_id   = 1001
 board_name = "My Product Lite"
 
 [targets.OPENMV_AE3]
-product_id   = 1002
 board_name = "My Product Pro"
 ```
 
