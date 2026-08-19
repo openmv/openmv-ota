@@ -111,7 +111,7 @@ separate, read-only **`system.json`** into every image at
   "board": "OPENMV_N6",
   "product_id": 2937722637,
   "board_name": "OrchardSentry Pro",
-  "app_version": "2.3.0",
+  "app_version": "1.0.0",
   "vendor": "Acme Robotics",
   "ota": false,
   "firmware": {"version": "5.0.0", "commit": "9f2c1ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"},
@@ -129,13 +129,16 @@ never into your `app/` source — so there is nothing to edit or accidentally co
 
 ### Product name vs board name
 
-`system.json` carries three identity fields, and how `product` and `board_name`
+`system.json` carries four identity fields, and how `product` and `board_name`
 relate depends on how many boards a project targets:
 
 - **`board`** is always the canonical board key (`OPENMV_N6`) — the technical
   target, never renamed.
 - **`product`** is your project/product name (`[product].name`, defaulting to the
   directory name). It is the same for every board the project builds.
+- **`product_id`** is a number derived *for* you — the CRC32 of
+  `"product:board"` — so it is stable, distinct per board, and reproducible: two
+  machines (or a rebuilt config) derive the same value. You never invent it.
 - **`board_name`** is a human label, set per board under `[targets.<BOARD>]`. If
   you don't set it, it **defaults to `product`**.
 
