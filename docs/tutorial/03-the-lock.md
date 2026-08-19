@@ -4,7 +4,7 @@
 
 ---
 
-A project is only useful while its pin holds. This page is the lifecycle around
+A project is only useful while its peg holds. This page is the lifecycle around
 `openmv-ota.lock.json`: rebuilding a working machine from a committed project, watching
 for drift, freezing the firmware once images ship, what the lock actually records, and
 reading it all from Python.
@@ -20,9 +20,10 @@ openmv-ota project setup ./my-product
 ```
 
 It clones the remote at the locked commit into a local cache (override with
-`--cache PATH` or `$OPENMV_OTA_CACHE`), checks out the submodules, runs `make
-sdk`, and pip-installs the matching mpy-cross (the firmware's MicroPython version)
-so the machine is ready to build. Pass `--no-install-sdk` to skip the toolchain
+`--cache PATH` or `$OPENMV_OTA_CACHE`), checks out the submodules, installs the
+pinned SDK (the same pure-Python download + verify + extract as `--install-sdk`),
+and pip-installs the matching mpy-cross (the firmware's MicroPython version) so
+the machine is ready to build. Pass `--no-install-sdk` to skip the toolchain
 steps and only clone.
 
 ## Inspecting and updating
@@ -111,7 +112,7 @@ p.vela_path                       # path to the vela binary on this machine
 p.targets                         # every (board, partition) target to build for
 p.board("OPENMV_N6").front_size   # firmware-resolved per-slot size
 p.board("OPENMV_N6").alignment_rules
-p.board("OPENMV_AE3", 1).npu_config   # HE-core NPU type, args, and file refs
+p.board("OPENMV_AE3", 1).npu_config   # the second core's NPU type, args, and file refs
 ```
 
 Pass `load_project("./my-product", verify=False)` to skip the check (reserved for
