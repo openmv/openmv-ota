@@ -109,7 +109,7 @@ separate, read-only **`system.json`** into every image at
 {
   "product": "orchard-sentry",
   "board": "OPENMV_N6",
-  "product_id": 4097,
+  "product_id": 2937722637,
   "board_name": "OrchardSentry Pro",
   "app_version": "2.3.0",
   "vendor": "Acme Robotics",
