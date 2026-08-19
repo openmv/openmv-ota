@@ -153,7 +153,7 @@ behaviour), and the driver asserts the CLI's outcome:
 | Class | Boards (examples) | What is asserted |
 |---|---|---|
 | **full** (OTA-capable) | N6, AE3, 4P, PT, RT1060, Portenta, Giga, Nicla | `project new --ota`; build firmware + romfs + factory-romfs; `inspect` + `verify` the OTA bundle (as a `.zip` and as loose `romfs.img`/`trailer.bin`) **and the provisioning image** (both slots, A + B); a corrupted body **and** a corrupted slot must **fail** verify. A multi-core board (AE3) also builds + checks its plain `coprocessor-romfs.img`. |
-| **classic** (romfs, not OTA-capable) | OPENMV2 / 3 / 4 | `project new`; build firmware + single-image romfs; `project new --ota` must fail cleanly (*not OTA-capable*); `factory-romfs` must fail cleanly (*needs an OTA project*). |
+| **classic** (one-slot partition → single-image OTA) | OPENMV2 / 3 / 4 | `project new --ota` must refuse **without** `--ca` (the public bundle doesn't fit the slot) and **succeed with** your own root (single-image mode); the supplied root — not the ~186 KB bundle — must be the frozen trust store; `build romfs` must quote the *single-image* slot budget in its clean over-budget refusal (proving mode-aware capacity). The plain path still holds: `project new`; build firmware + single-image romfs; `factory-romfs` must fail cleanly (*needs an OTA project*). OPENMV4 skips the OTA firmware *compile* (a known FLASH_TEXT overflow, being trimmed); the M4/M7 build it. |
 | **noromfs** (no ROMFS partition) | Arduino Nano 33 BLE / RP2040 | `project new` must fail cleanly (*no partition size*). |
 
 Every expected failure is asserted to be a clean tool error — non-zero exit, an
