@@ -161,6 +161,19 @@ def test_create_scaffolds_app_even_without_ota(tmp_path, make_firmware, make_sdk
     assert (paths.app_dir / "main.py").exists()
     settings = json.loads(paths.app_settings.read_text())
     assert settings["app_version"] == "3.4.5" and "vendor" in settings
+    # --vendor must land HERE: settings.json is what the build reads into system.json,
+    # so a vendor that only reached the toml would leave the device-visible vendor "".
+    # (this create passes no vendor, so the scaffold's default is empty)
+    assert settings["vendor"] == ""
+
+
+def test_vendor_flag_reaches_the_scaffolded_settings(tmp_path, make_firmware, make_sdk):
+    """`--vendor` used to land only in openmv-ota.toml, but system.json's vendor is read from
+    settings.json -- so the flag's value never reached the device. It seeds settings.json now."""
+    import json
+    root, _ = _create(tmp_path, make_firmware, make_sdk, vendor="Acme Robotics")
+    settings = json.loads(proj.ProjectPaths(root).app_settings.read_text())
+    assert settings["vendor"] == "Acme Robotics"
     # rollback_floor is an OTA knob (the build reads a missing key as "no floor"),
     # so a plain project's settings.json must not carry it.
     assert "rollback_floor" not in settings

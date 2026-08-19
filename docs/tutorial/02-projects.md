@@ -35,7 +35,7 @@ in a non-default location.
 | `-f, --firmware PATH` | The local OpenMV checkout to peg to (required). |
 | `-b, --board NAME` | A target board (repeatable, at least one). |
 | `--product NAME` | Product name (defaults to the directory name). |
-| `--vendor NAME` | Vendor name. |
+| `--vendor NAME` | Vendor name, written into the scaffolded `settings.json`. |
 | `--sdk-home PATH` | SDK install directory (default `~/openmv-sdk-<version>`). |
 | `--install-sdk` | Download + install the SDK if it is missing. |
 | `--allow-dirty` | Don't warn when the checkout has uncommitted changes. |
@@ -85,7 +85,7 @@ settings you want to read at runtime:
 ```json
 {
   "app_version": "1.0.0",
-  "vendor": ""
+  "vendor": "Acme Robotics"
 }
 ```
 

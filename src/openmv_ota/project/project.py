@@ -621,7 +621,7 @@ def create_project(
             dp = passphrase_mod.dev_passphrase_path(root)
             dp.write_text(key_passphrase, encoding="utf-8")
             dp.chmod(0o600)
-    _scaffold_app(paths, app_version, config.ota)  # starter app/ (cloud-wired for OTA)
+    _scaffold_app(paths, app_version, config.ota, vendor)  # starter app/ (cloud-wired for OTA)
     if _boards_have_coprocessor(boards):  # a slaved second core (e.g. AE3's M55_HE)
         _scaffold_coprocessor(paths, app_version)
     if config.ota:  # the device OTA runtime lib (status/confirm/sync) for the app to use
@@ -856,7 +856,8 @@ asyncio.run(main())
 '''
 
 
-def _scaffold_app(paths: ProjectPaths, app_version: str, ota: bool = False) -> None:
+def _scaffold_app(paths: ProjectPaths, app_version: str, ota: bool = False,
+                  vendor: str | None = None) -> None:
     """Scaffold a starter ``app/`` for any project: the user-editable settings file
     (version + vendor), a placeholder ``main.py``, and a ``lib/`` directory for the
     app's own importable modules. Useful for every project — the app reads its own
@@ -866,7 +867,9 @@ def _scaffold_app(paths: ProjectPaths, app_version: str, ota: bool = False) -> N
     ``new --force`` never clobbers the user's app."""
     paths.app_dir.mkdir(parents=True, exist_ok=True)
     if not paths.app_settings.exists():
-        settings = {"app_version": app_version, "vendor": ""}
+        # --vendor seeds settings.json because settings.json is what the build reads into
+        # system.json -- the flag landing only in the toml left the device-visible vendor "".
+        settings = {"app_version": app_version, "vendor": vendor or ""}
         if ota:
             # rollback_floor starts equal to the version (no real constraint yet); raise it
             # only to forbid downgrades past a critical fix, never per release. OTA-only:
