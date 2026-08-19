@@ -42,10 +42,10 @@ lock and the per-board config. It gives the app one consistent way to read its o
 identity and provenance, the same in a non-OTA and an OTA build. See
 [project.md](02-projects.md#systemjson-generated-read-only).
 
-The capacity is the whole partition for a single-image project, or half the
-partition less two flash erase blocks (a status sector + a trailer; 8 KiB on
-OTA-capable boards) for an OTA project (`project new
---ota`) — each OTA partition holds two updatable slots. The build
+The capacity is the whole partition for a plain (non-OTA) project. An OTA project
+(`project new --ota`) budgets a **slot** — half the partition under A/B (each OTA
+partition holds two updatable slots), or the whole partition in single-image mode —
+less, in both modes, the slot's four 4 KiB control sectors (16 KiB). The build
 summary reports the percentage of whichever bound applies.
 
 The app source defaults to `<project>/app`; pass `--app` to use another directory.

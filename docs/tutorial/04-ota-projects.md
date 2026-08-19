@@ -11,8 +11,9 @@ images a camera can download, verify, and fall back from.
 ## What `--ota` changes
 
 - **Partition split.** Each partition is split into the two **slots** from the
-  introduction — A and B — so each image gets half the partition, less a status
-  sector and a trailer (one flash erase block each — 8 KiB on OTA-capable boards).
+  introduction — A and B — so each image gets half the partition, less the slot's
+  four 4 KiB control sectors (a spare, the rollback log, the trial status, and the
+  signed trailer — 16 KiB).
   `build romfs` enforces that halved budget for an OTA project and the full
   partition otherwise; `show` reports which mode a project is in. The mode is
   recorded as `[ota] enabled` in `openmv-ota.toml` and mirrored into the lock;

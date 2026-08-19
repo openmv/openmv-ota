@@ -201,7 +201,7 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_si
 
 def _capacity(project, target) -> tuple[int, str]:
     """The usable image budget for a target and the name of what bounds it. A *main*
-    OTA partition gets a slot less its status + trailer sectors -- half the partition under
+    OTA partition gets a slot less its four control sectors -- half the partition under
     A/B, all of it under SINGLE; a coprocessor partition is always a plain romfs that fills
     the whole partition.
 
