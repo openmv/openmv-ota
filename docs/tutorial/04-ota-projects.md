@@ -34,8 +34,10 @@ images a camera can download, verify, and fall back from.
   --ota` provisions the *whole* key set up front and
   writes it under `keys/`.
 
-- **Per-board identity.** Each target board gets a `[targets.<BOARD>]` table for
-  its `product_id` / `board_name`.
+- **Identity pinned.** The per-board `product_id` / `board_name` (from the
+  [projects page](02-projects.md#product-name-vs-board-name)) are now *written into
+  the config* as active `[targets.<BOARD>]` tables, so the derived id is frozen —
+  fielded devices bake it in.
 
 (The starter `app/` — including the `app_version` the build stamps into the image
 — is scaffolded for every project, not just OTA; see
@@ -162,12 +164,11 @@ through them). `install()` uses it automatically.
 device's `product_id` guards against cross-flashing the wrong product; `board_name`
 is metadata only.
 
-**You never have to invent the number.** `project new --ota` auto-assigns each
-board a stable `product_id`, derived deterministically from the product + board name
-(distinct per board, reproducible). It's written into the config so it's frozen —
-**keep it once devices ship**, because a device bakes its `product_id` in and rejects
-any image whose id doesn't match; a later change would reject updates on fielded
-devices. You can still override it (e.g. to match an existing product numbering),
+The number is the same derivation the
+[projects page](02-projects.md#product-name-vs-board-name) describes — `new --ota`
+just writes it into the config so it's *frozen*. **Keep it once devices ship**: a
+device bakes its `product_id` in and rejects any image whose id doesn't match, so a
+later change would reject updates on fielded devices. You can still override it (e.g. to match an existing product numbering),
 and `build romfs` warns if you set it to `0` (guard off) or if two boards collide
 on the same id.
 
