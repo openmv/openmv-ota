@@ -74,7 +74,8 @@ openmv-ota server token list | revoke <hash>
 
 `server init` seeds one admin token: from `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` if set, otherwise a
 fresh one printed **once** (only the hash is stored — it is not recoverable). Tokens carry scopes:
-`publish` (publish), `manage` (promote/pause/rollback), `observe` (observe), and
+`publish` (publish releases), `manage` (all fleet changes — rollouts, cohorts, pins, device
+binds), `observe` (read everything — fleet, releases, rollouts, devices, audit), and
 the privileged operator scope `accounts` (create/list accounts — held by the bootstrap/root
 token, not by a regular account's tokens).
 
