@@ -46,26 +46,34 @@ images a camera can download, verify, and fall back from.
 ### The version and the rollback floor
 
 The build reads `app_version` from `app/settings.json` and stamps it into the
-image as its anti-rollback version, making that file the one place a version is
-defined. `new --ota` also scaffolds a `rollback_floor` field beside it:
+image, making that file the one place a version is defined:
 
 ```json
 {
   "app_version": "1.0.0",
-  "vendor": "Acme Robotics",
-  "rollback_floor": "1.0.0"
+  "vendor": "Acme Robotics"
 }
 ```
 
-`rollback_floor` is the **oldest app version you will ever allow back onto a
-device**. The build records it in the OTA image, and the updater refuses to install
-anything below it. It starts equal to your first `app_version`, so it constrains
-nothing yet (nothing is older than your first release). **It is not a per-release
-version — leave it alone for normal releases.** Raise it *only* when a release
-fixes something that must never be bypassed by a downgrade (a security patch, say);
-once raised, devices permanently refuse any image below that floor — **including
-your own rollbacks** — so move it deliberately. It must stay `<= app_version`
-(an image can't violate its own floor), and the build fails if it doesn't.
+Anti-rollback needs no configuration. Every device keeps a **rollback floor** —
+the highest version it has ever *kept* — and refuses anything older than it: the
+installer rejects an offered update below the floor before erasing anything, and
+at boot an *unproven* image below the floor is rejected too. The floor starts at
+the factory image's version and rises by itself each time your app calls
+`confirm()`, so a replayed old release — even a validly signed one — cannot come
+back.
+
+How the floor survives is the one place the two modes differ:
+
+- **A/B.** Either slot can be erased by the next install, so the floor is
+  recorded in *both* slots and the device takes the highest; the installer
+  copies the current floor into every slot it writes. Your own fallback is never
+  locked out: a slot this device already ran and kept stays bootable after the
+  floor rises past it — the floor gates what may be *installed* and what may run
+  *unproven*, not the proven release behind you.
+- **Single-image.** Same records, one slot: the installer carries the floor into
+  the slot it rewrites, which is what lets the floor survive the erase of the
+  only slot that held it.
 
 ### OTA options at `new`
 

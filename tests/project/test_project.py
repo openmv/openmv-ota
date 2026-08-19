@@ -165,8 +165,8 @@ def test_create_scaffolds_app_even_without_ota(tmp_path, make_firmware, make_sdk
     # so a vendor that only reached the toml would leave the device-visible vendor "".
     # (this create passes no vendor, so the scaffold's default is empty)
     assert settings["vendor"] == ""
-    # rollback_floor is an OTA knob (the build reads a missing key as "no floor"),
-    # so a plain project's settings.json must not carry it.
+    # rollback_floor is a legacy knob no scaffold writes any more -- v2's automatic
+    # floor replaced it (the build still reads it from old projects; missing = no floor).
     assert "rollback_floor" not in settings
     # A lib/ dir for the app's own modules, kept in git by a .gitkeep.
     assert (paths.app_dir / "lib").is_dir()
@@ -338,7 +338,7 @@ def test_create_ota_project(tmp_path, make_firmware, make_sdk):
     import json
     settings = json.loads(paths.app_settings.read_text())
     assert settings["app_version"] == "2.1.0" and "vendor" in settings
-    assert settings["rollback_floor"] == "2.1.0"  # starts equal to the version
+    assert "rollback_floor" not in settings  # legacy knob; the automatic floor replaced it
     assert (paths.app_dir / "main.py").exists()
 
     # Public set is committed; private PEMs are written for every key, gitignored.

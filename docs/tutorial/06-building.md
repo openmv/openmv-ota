@@ -343,7 +343,7 @@ openmv-ota build inspect build/OPENMV_N6-factory-romfs.img   # prints slots A + 
 ```
 
 Decodes the signed trailer and prints it: product / board / `product_id` /
-`board_name`, the app version (and the `payload_version` / `rollback_floor` /
+`board_name`, the app version (and the `payload_version` /
 `min_platform_version` it encodes, shown as semver), the signing key and
 algorithm, the body size + SHA-256, and a provenance line (firmware / MicroPython
 / toolchain). `--json` dumps the full structure, including the complete metadata

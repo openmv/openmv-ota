@@ -870,12 +870,6 @@ def _scaffold_app(paths: ProjectPaths, app_version: str, ota: bool = False,
         # --vendor seeds settings.json because settings.json is what the build reads into
         # system.json -- the flag landing only in the toml left the device-visible vendor "".
         settings = {"app_version": app_version, "vendor": vendor or ""}
-        if ota:
-            # rollback_floor starts equal to the version (no real constraint yet); raise it
-            # only to forbid downgrades past a critical fix, never per release. OTA-only:
-            # the build reads a missing key as "no floor", which is exactly what a plain
-            # project means -- scaffolding it there put an OTA knob in every settings.json.
-            settings["rollback_floor"] = app_version
         paths.app_settings.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     main_py = paths.app_dir / "main.py"
     if not main_py.exists():

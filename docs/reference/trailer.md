@@ -66,7 +66,7 @@ The fixed header is 80 bytes, all scalar fields 4-byte aligned. In order:
 | `product_id` | `uint32` | Target product id; the cross-flash guard. The build auto-assigns a nonzero id, so this is `0` (check skipped) only if you override it to `0`. |
 | `min_platform_version` | `uint32` | Minimum platform version the payload needs, encoded `(major<<24)\|(minor<<16)\|(patch<<8)\|build`. For a ROMFS app the platform is the OpenMV base firmware. `0` = no constraint. |
 | `payload_version` | `uint32` | The monotonic anti-rollback counter / OTA epoch. `boot.py` rejects any slot below the recorded rollback floor. Distinct from any human version string. Note this does **not** order the slots — the install counter does. |
-| `payload_version_floor` | `uint32` | A forward rollback floor this image asserts: every later update must be `>=` it. Set from `settings.json`'s `rollback_floor` (encoded like `payload_version`); `0` = no extra floor. |
+| `payload_version_floor` | `uint32` | Reserved. Stamped from a legacy `rollback_floor` in `settings.json` when present (must be `<= payload_version`; `0` = unset); current devices don't consume it — the device's own floor, risen by `confirm()`, already refuses anything older. |
 | `key_id` | `uint32` | Which trusted key signed; a selector into the device's baked-in key table, not trust itself. |
 | `sig_alg` | `int32` | COSE algorithm id (negative — hence signed); authenticated, so the algorithm can't be downgraded. |
 | `body_sha256` | `32s` | SHA-256 of the `body_size` body bytes. Verifying the signature + recomputing this hash transitively authenticates the body. |
