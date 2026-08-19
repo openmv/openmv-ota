@@ -25,7 +25,7 @@ in `openmv-ota.toml`'s `[ota]` section ([page 4](04-ota-projects.md#files-an-ota
 `build romfs` signs with that key, and a trailer records *which* key signed
 (`key_id`) so the device picks the matching public key. Both roles' private keys
 stay on your signing machine — a manufacturer receives the signed
-`<board>-factory-romfs.img`, never a key (see [threat-model.md](../reference/threat-model.md)).
+`<board>-factory-romfs.img`, never a key.
 
 `keys/trusted_keys.json` is the committed public set the firmware build will bake
 into its `TRUSTED_KEYS` table. Each entry is a key id, its COSE algorithm, its
@@ -49,8 +49,7 @@ One hazard to know: re-running `new --force` over an existing OTA project
 **regenerates the whole key set**. Devices already in the field trust the *old*
 keys and will reject updates signed by the new ones — you would have to re-flash
 them. `new` warns loudly when this is about to happen; only do it for a fresh
-fleet, and back up the old keys first. See [trailer.md](../reference/trailer.md) for the signature algorithms and the
-`key_id` / `sig_alg` fields.
+fleet, and back up the old keys first.
 
 ### Provisioning options at `new --ota`
 
@@ -117,6 +116,11 @@ openmv-ota project keys backend show | configure | provision
   signing backend; `configure` points a trusted key at an **external** signer
   (PKCS#11 / cloud KMS — bring your own key); `provision` generates a fresh key set
   *inside* such a backend, so the private half never exists on this machine.
+
+## See also
+
+- [Trailer format](../reference/trailer.md) — the signature algorithms and the `key_id` / `sig_alg` fields the trailer records.
+- [Threat model](../reference/threat-model.md) — the trust root, and why a manufacturer or the update server never holds a key.
 
 ---
 

@@ -95,7 +95,7 @@ hold the body in RAM to unzip): a server unbundles and streams the body + traile
 separately, exactly as they're placed on-flash. Every trailer field is final and
 signed, including `pad_size` (the `0xFF` gap to the status sector, computed from the
 slot geometry) and the crc32. The build summary reports the body size against the
-OTA-slot budget. See [trailer.md](../reference/trailer.md) for the on-flash format.
+OTA-slot budget.
 
 `build romfs` fails the build (exit 1) if the OTA signing context is incomplete:
 a missing or unreadable `app/settings.json`, a missing or non-semver
@@ -371,6 +371,10 @@ It deliberately does **not** check the device-relative fields — `product_id` a
 a device, `payload_version` anti-rollback against the installed image,
 `min_platform_version` against the running firmware — because those need a device,
 not a host. Those remain `boot.py`'s job.
+
+## See also
+
+- [Trailer format](../reference/trailer.md) — the on-flash layout of the signed trailer.
 
 ---
 
