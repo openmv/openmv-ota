@@ -39,7 +39,7 @@ in a non-default location.
 | `--sdk-home PATH` | SDK install directory (default `~/openmv-sdk-<version>`). |
 | `--install-sdk` | Download + install the SDK if it is missing. |
 | `--allow-dirty` | Don't warn when the checkout has uncommitted changes. |
-| `--force` | Re-run `new` over an existing project (refused otherwise). |
+| `--force` | Re-run `new` over an existing project (refused otherwise). An existing `app/` is never overwritten. |
 
 ## Layout
 
@@ -93,11 +93,6 @@ It is packed into the ROMFS image, so the app can read it on-device (e.g.
 `json.load(open("/rom/settings.json"))`) — useful in any project for reporting a
 version or carrying configuration. Bump `app_version` (a `major.minor.patch`
 semver) for each release.
-
-Without `--force`, `new` refuses to run where a project already exists. With it,
-`new` runs again over the existing directory — useful to re-scaffold after
-changing the flags, a different board list, say. Your app survives the re-run:
-`main.py` and `settings.json` are only ever written when absent.
 
 For a **multi-core board** (e.g. AE3), `new` also scaffolds a second folder,
 `app-coprocessor/`, holding the slaved helper core's app. It has the same shape
@@ -159,10 +154,10 @@ name = "my-product"          # product, shared by every board
 boards = ["OPENMV_N6", "OPENMV_AE3"]
 
 [targets.OPENMV_N6]
-board_name = "My Product Lite"
+board_name = "My Product Pro"
 
 [targets.OPENMV_AE3]
-board_name = "My Product Pro"
+board_name = "My Product Lite"
 ```
 
 Set `board_name` only when you ship the one product on multiple boards and want
