@@ -593,3 +593,85 @@ def test_response_schemas_document_but_do_not_filter(tmp_path):
     assert undeclared, "pick a column the model does not declare, or this proves nothing"
     for f in undeclared:
         assert f in row, "%s is delivered by the store but was dropped in transit" % f
+
+
+# --- the reseller lifecycle primitives (Roboflow-class integrations) ----------------------------
+# One partner account, a custom PRODUCT per end customer, stock hardware manufactured before any
+# customer exists. Claim, transfer and factory-reset are all the SAME primitive: a device pin to a
+# release of another product in the same account. These tests make that behavior contract rather
+# than an accident of which checks _decide happens to apply.
+
+STOCK, CUST_A, CUST_B = 900, 901, 902          # product ids: the stock SKU + two end customers
+
+
+def _rel(store, rid, product_id, pv):
+    store.add_release(release_id=rid, product_id=product_id, product="P%d" % product_id,
+                      version="0.0.0", payload_version=pv, min_platform_version=0,
+                      image_sha256="ab" * 32, image_size=3,
+                      representations=[{"format": "full", "url": "x.img.gz", "size": 3}],
+                      manifest_key="m/" + rid, image_key="i/" + rid)
+
+
+def test_device_pin_crosses_products_within_the_account(tmp_path):
+    """THE claim primitive: stock hardware reports the stock product, and the claim pins it to a
+    release of the customer's product. The pin checks the release's ACCOUNT and that it is an
+    upgrade -- deliberately not its product -- so one manufactured SKU can become any customer's
+    product after unboxing."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+    # the stock device has checked in at least once (that is what creates its fleet row --
+    # a pin on a never-seen device is a no-op by design)
+    c.post("/api/v1/check", json=_checkin(product_id=STOCK, pv=1))
+    _rel(store, "cust_a_r1", CUST_A, pv=2)
+    store.set_device_pin("dev1", "cust_a_r1")
+    r = c.post("/api/v1/check", json=_checkin(product_id=STOCK, pv=1)).json()
+    assert r["update"] is True and r["release_id"] == "cust_a_r1"
+
+
+def test_lifecycle_claim_update_reset_reclaim(tmp_path):
+    """Stock -> claim -> customer updates -> forward-reset to stock -> re-claim by ANOTHER
+    customer. Every hop is an upgrade under one global build counter, which is why that counter is
+    the integration's one hard requirement: the device's rollback floor is product-agnostic, so
+    only globally monotonic versions keep every future assignment installable."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+
+    # the stock device checks in from unboxing (creates its fleet row)
+    c.post("/api/v1/check", json=_checkin(product_id=STOCK, pv=1))
+
+    # claim: stock device (counter=1) pinned to customer A's product (counter=2)
+    _rel(store, "a1", CUST_A, pv=2)
+    store.set_device_pin("dev1", "a1")
+    assert c.post("/api/v1/check", json=_checkin(product_id=STOCK, pv=1)).json()["release_id"] == "a1"
+
+    # installed; A ships an update through a normal rollout in THEIR product (counter=3)
+    store.set_device_pin("dev1", None)
+    _rel(store, "a2", CUST_A, pv=3)
+    store.add_rollout(rollout_id="roA", release_id="a2", product_id=CUST_A, cohort="__default__",
+                      percent=100)
+    assert c.post("/api/v1/check", json=_checkin(product_id=CUST_A, pv=2)).json()["release_id"] == "a2"
+
+    # forward-reset: pin back to the CURRENT stock release (counter=4) -- de-association is OTA,
+    # not a factory reflash; the floor keeps rising and nothing ever needs to go backwards
+    _rel(store, "stock_now", STOCK, pv=4)
+    store.set_device_pin("dev1", "stock_now")
+    assert c.post("/api/v1/check", json=_checkin(product_id=CUST_A, pv=3)).json()["release_id"] == "stock_now"
+
+    # re-claim by customer B (counter=5): same primitive again
+    _rel(store, "b1", CUST_B, pv=5)
+    store.set_device_pin("dev1", "b1")
+    assert c.post("/api/v1/check", json=_checkin(product_id=STOCK, pv=4)).json()["release_id"] == "b1"
+
+
+def test_transfer_to_a_numerically_older_stream_is_refused(tmp_path):
+    """WHY the global counter is a requirement and not advice: a pin to a release below the
+    device's current version holds (the offer is upgrade-only), and the on-device floor would
+    refuse it anyway. A partner who versions per-product independently will wedge every transfer
+    to a customer whose stream happens to be numerically behind."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+    c.post("/api/v1/check", json=_checkin(product_id=CUST_A, pv=7))
+    _rel(store, "b_old", CUST_B, pv=3)
+    store.set_device_pin("dev1", "b_old")
+    r = c.post("/api/v1/check", json=_checkin(product_id=CUST_A, pv=7)).json()
+    assert r == {"update": False, "poll_after_s": 3600}
