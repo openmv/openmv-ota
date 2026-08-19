@@ -161,6 +161,9 @@ def test_create_scaffolds_app_even_without_ota(tmp_path, make_firmware, make_sdk
     assert (paths.app_dir / "main.py").exists()
     settings = json.loads(paths.app_settings.read_text())
     assert settings["app_version"] == "3.4.5" and "vendor" in settings
+    # rollback_floor is an OTA knob (the build reads a missing key as "no floor"),
+    # so a plain project's settings.json must not carry it.
+    assert "rollback_floor" not in settings
     # A lib/ dir for the app's own modules, kept in git by a .gitkeep.
     assert (paths.app_dir / "lib").is_dir()
     assert (paths.app_dir / "lib" / ".gitkeep").exists()

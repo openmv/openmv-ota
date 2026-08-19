@@ -40,6 +40,30 @@ images a camera can download, verify, and fall back from.
 — is scaffolded for every project, not just OTA; see
 [The app folder](02-projects.md#the-app-folder).)
 
+### The version and the rollback floor
+
+The build reads `app_version` from `app/settings.json` and stamps it into the
+image as its anti-rollback version, making that file the one place a version is
+defined. `new --ota` also scaffolds a `rollback_floor` field beside it:
+
+```json
+{
+  "app_version": "1.0.0",
+  "vendor": "",
+  "rollback_floor": "1.0.0"
+}
+```
+
+`rollback_floor` is the **oldest app version you will ever allow back onto a
+device**. The build records it in the OTA image, and the updater refuses to install
+anything below it. It starts equal to your first `app_version`, so it constrains
+nothing yet (nothing is older than your first release). **It is not a per-release
+version — leave it alone for normal releases.** Raise it *only* when a release
+fixes something that must never be bypassed by a downgrade (a security patch, say);
+once raised, devices permanently refuse any image below that floor — **including
+your own rollbacks** — so move it deliberately. It must stay `<= app_version`
+(an image can't violate its own floor), and the build fails if it doesn't.
+
 ### OTA options at `new`
 
 | Flag | Effect |

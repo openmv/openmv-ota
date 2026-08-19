@@ -866,9 +866,13 @@ def _scaffold_app(paths: ProjectPaths, app_version: str, ota: bool = False) -> N
     ``new --force`` never clobbers the user's app."""
     paths.app_dir.mkdir(parents=True, exist_ok=True)
     if not paths.app_settings.exists():
-        # rollback_floor starts equal to the version (no real constraint yet); see the
-        # docs - raise it only to forbid downgrades past a critical fix, never per release.
-        settings = {"app_version": app_version, "vendor": "", "rollback_floor": app_version}
+        settings = {"app_version": app_version, "vendor": ""}
+        if ota:
+            # rollback_floor starts equal to the version (no real constraint yet); raise it
+            # only to forbid downgrades past a critical fix, never per release. OTA-only:
+            # the build reads a missing key as "no floor", which is exactly what a plain
+            # project means -- scaffolding it there put an OTA knob in every settings.json.
+            settings["rollback_floor"] = app_version
         paths.app_settings.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     main_py = paths.app_dir / "main.py"
     if not main_py.exists():

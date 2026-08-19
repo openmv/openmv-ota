@@ -25,9 +25,8 @@ machine's checkout path), and a `.gitignore`. Commit the first two; the
 
 `new` expects the OpenMV SDK to be installed already. Pass `--install-sdk` to
 download and install it — a pure-Python download + verify + extract of the
-pinned bundle to `~/openmv-sdk-<version>`. It needs no `make`, on purpose: the
-SDK is what *provides* `make` for the firmware build, so installing it cannot
-require it. `--sdk-home PATH` points at an SDK in a non-default location.
+pinned bundle to `~/openmv-sdk-<version>`. `--sdk-home PATH` points at an SDK
+in a non-default location.
 
 ### Options
 
@@ -54,23 +53,19 @@ my-product/
 ├── .gitignore
 ├── README.md
 ├── app/                     # your MicroPython app: main.py, settings.json, lib/, models, …
-├── app-coprocessor/         # multi-core boards only: the slaved helper core's app
-├── keys/                    # OTA only: trusted_keys.json (committed) + private/ (gitignored)
-└── build/                   # gitignored: build output (one .romfs per target)
+├── app-coprocessor/         # multi-core boards only: the second core's app
+└── build/                   # gitignored: build output (one image per target)
 ```
 
 `new` writes the settings files, `.gitignore`, `README.md`, and a starter `app/`
-— a placeholder `main.py` and a `settings.json` carrying your app version (see
-[The app folder](#the-app-folder)). Replace `main.py` with your code; an OTA
-project additionally provisions `keys/`. `openmv-ota build romfs` compiles the app and
-writes images to `build/`. Commit everything except `openmv-ota.local.toml`,
-`keys/private/`, and `build/`, which the generated `.gitignore` already excludes.
-(`app/` and `build/` are the defaults; `build romfs` takes `--app` and `--output`
-to use other directories.)
+— a placeholder `main.py` and a `settings.json` carrying your app version.
+Replace `main.py` with your code. Commit everything except
+`openmv-ota.local.toml` and `build/`; the generated `.gitignore` already
+excludes them.
 
 ## The app folder
 
-Every project — OTA or not — is scaffolded with a starter `app/`:
+Every project is scaffolded with a starter `app/`:
 
 ```
 app/
@@ -90,41 +85,27 @@ settings you want to read at runtime:
 ```json
 {
   "app_version": "1.0.0",
-  "vendor": "",
-  "rollback_floor": "1.0.0"
+  "vendor": ""
 }
 ```
 
 It is packed into the ROMFS image, so the app can read it on-device (e.g.
 `json.load(open("/rom/settings.json"))`) — useful in any project for reporting a
 version or carrying configuration. Bump `app_version` (a `major.minor.patch`
-semver) for each release. For an **OTA project**, the build also reads
-`app_version` from here to stamp the image's anti-rollback version,
-making this file the one place a version is defined.
-
-`rollback_floor` is the **oldest app version you will ever allow back onto a
-device**. The build records it in the OTA image, and the updater refuses to install
-anything below it. It starts equal to your first `app_version`, so it constrains
-nothing yet (nothing is older than your first release). **It is not a per-release
-version — leave it alone for normal releases.** Raise it *only* when a release
-fixes something that must never be bypassed by a downgrade (a security patch, say);
-once raised, devices permanently refuse any image below that floor — **including
-your own rollbacks** — so move it deliberately. It must stay `<= app_version`
-(an image can't violate its own floor), and the build fails if it doesn't.
+semver) for each release.
 
 `new` only writes `main.py` and `settings.json` if they are absent, so re-running
 `new --force` never clobbers your app.
 
 For a **multi-core board** (e.g. AE3), `new` also scaffolds a second folder,
 `app-coprocessor/`, holding the slaved helper core's app. It has the same shape
-(`main.py`, `settings.json`, `lib/`) but is always built as a *plain* romfs, never
-OTA.
+(`main.py`, `settings.json`, `lib/`) but is always built as a *plain* romfs.
 
 ### `system.json` (generated, read-only)
 
 Keep *user-editable* settings in `settings.json`. *Derived* values — board
 identity and build provenance — must not be hand-edited, so the build generates a
-separate, read-only **`system.json`** into every image (OTA or not) at
+separate, read-only **`system.json`** into every image at
 `/rom/system.json`:
 
 ```json
@@ -142,12 +123,10 @@ separate, read-only **`system.json`** into every image (OTA or not) at
 }
 ```
 
-This gives the app **one consistent read path for system state, the same in a
-non-OTA and an OTA build** — `json.load(open("/rom/system.json"))`. It is composed
+This gives the app **one consistent read path for system state in every build**
+— `json.load(open("/rom/system.json"))`. It is composed
 from the lock (firmware / MicroPython / toolchain provenance) and the config
-(per-board `product_id` / `board_name`); for an OTA image the signed
-[trailer](../reference/trailer.md) also carries a verbatim copy, so host tools can read it
-without mounting the ROMFS. `system.json` is generated into the built image only —
+(per-board `product_id` / `board_name`). `system.json` is generated into the built image only —
 never into your `app/` source — so there is nothing to edit or accidentally commit.
 (The name is reserved; a `system.json` in your `app/` is overwritten.)
 
