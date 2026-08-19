@@ -146,8 +146,9 @@ For a **single-board project**, `product` and `board_name` are the same string b
 default — you can ignore `board_name` and read `product`. For a **multi-board
 project** (one app folder targeting several boards), `product` stays constant
 while you can give each board its own `board_name` to distinguish the variants in
-the field — e.g. one app built for two boards sold as "My Product Lite" and "My
-Product Pro":
+the field — by **adding a `[targets.<BOARD>]` table** (a plain project's config
+isn't scaffolded with any) — e.g. one app built for two boards sold as "My Product
+Lite" and "My Product Pro":
 
 ```toml
 [product]
@@ -165,6 +166,9 @@ board_name = "My Product Lite"
 
 Set `board_name` only when you ship the one product on multiple boards and want
 them named apart; otherwise leave it and `product` carries the name.
+
+A plain project derives its identity fresh at every build — rename the product
+and the derived `product_id` simply follows; there is nothing to update.
 
 ---
 
