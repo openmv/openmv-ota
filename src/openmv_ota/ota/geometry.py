@@ -1,9 +1,12 @@
 """OTA slot geometry, derived from a partition's flash erase block.
 
-A ROMFS partition is split 50/50 into a **FRONT** (mutable runtime) slot and a
-**BACK** (immutable golden) slot. Each slot holds the ROMFS body plus four
-control sectors at the **end** of the slot, each one flash erase block so they can
-be erased/rewritten independently of the body. The three used sectors are contiguous
+A ROMFS partition is split 50/50 into two slots of equal size. The code names
+the halves FRONT and BACK (v1 names that survived the A/B redesign), but neither
+is privileged: both are real, signed, updatable images, the newest valid one
+boots, and an install writes whichever slot is not running. Each slot holds the
+ROMFS body plus four control sectors at the **end** of the slot, each one 4 KiB
+``control_block`` -- deliberately *not* the erase block; they are never erased
+independently of their slot (see ``control_block`` below). The three used sectors are contiguous
 at the very end; ``spare`` is the lone buffer between them and the body. Counting back
 from the last block::
 
@@ -16,8 +19,9 @@ The ``rollback`` sector holds a fixed-size append-only log of confirmed versions
 4 KiB block = 512 entries); ``confirm()`` appends the running version (a 1->0 program, no erase)
 and boot.py takes the max as the anti-rollback floor, so a device can't be downgraded to
 an older *signed* release. When the log fills the floor freezes at its max -- still
-protective. The **BACK** slot's rollback sector is the authoritative one (FRONT is erased
-on every install); the FRONT copy is reserved for symmetry. ``spare`` is held back so the
+protective. No single slot's sector is authoritative: under A/B every
+slot is erased in turn, so boot.py reads the floor as the max across both slots and
+the installer carries the current floor into each slot it writes. ``spare`` is held back so the
 next metadata need doesn't force a layout change that would re-base every fielded device.
 
 Everything keys off the erase block, but floored to ``MIN_OTA_BLOCK``: a
