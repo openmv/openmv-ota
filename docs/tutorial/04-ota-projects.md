@@ -34,7 +34,7 @@ images a camera can download, verify, and fall back from.
   writes it under `keys/`.
 
 - **Per-board identity.** Each target board gets a `[targets.<BOARD>]` table for
-  its `product_id` / `board_name` (see [Board identity](#board-identity)).
+  its `product_id` / `board_name`.
 
 (The starter `app/` — including the `app_version` the build stamps into the image
 — is scaffolded for every project, not just OTA; see
@@ -49,7 +49,7 @@ defined. `new --ota` also scaffolds a `rollback_floor` field beside it:
 ```json
 {
   "app_version": "1.0.0",
-  "vendor": "",
+  "vendor": "Acme Robotics",
   "rollback_floor": "1.0.0"
 }
 ```
@@ -109,12 +109,11 @@ enabled = true            # each partition holds two updatable slots (A/B)
 signing_key_id = 256      # current OTA signing key (in keys/trusted_keys.json)
 ```
 
-and each target board gets an active table for its identity (see
-[Board identity](#board-identity)):
+and each target board gets an active table for its identity:
 
 ```toml
 [targets.OPENMV_N6]
-product_id   = 3064072142  # stable product id (auto-assigned; keep it once devices ship)
+product_id   = 396486252   # stable product id (auto-assigned; keep it once devices ship)
 board_name = "my-product"  # human label; defaults to the product name, rename freely
 ```
 
@@ -200,7 +199,7 @@ plain romfs from both `build romfs` and `build factory-romfs` — it's the image
 main core writes into the helper's slot.
 
 Each partition is resolved independently — its own size, alignment rules, NPU config,
-and role — and appears as a separate entry under `targets.resolved`. From Python,
+and role — and appears as its own resolved target in the lock. From Python,
 select one with `board(name, partition)`, or iterate `targets`.
 
 > A `partition_size` override (under `[targets.<board>]`) applies only to the main
