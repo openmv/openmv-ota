@@ -46,6 +46,17 @@ the rotation pool is your entire future supply of OTA keys. `--ota-keys` below 4
 warns. See [trailer.md](../reference/trailer.md) for the signature algorithms and the
 `key_id` / `sig_alg` fields.
 
+### Provisioning options at `new --ota`
+
+| Flag | Effect |
+|---|---|
+| `--sig-alg {ES256,ES384,ES512}` | Signature algorithm for the whole set (default `ES256` / P-256). |
+| `--ota-keys N` | Rotation-pool size to provision (default 32). |
+| `--factory-keys N` | Factory-key reserve, one per manufacturing site (default 8). |
+| `--key-passphrase-file FILE` | Passphrase (read from a file) encrypting the private keys at rest; keys are never stored plaintext. |
+| `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
+| `--backup-passphrase-file FILE` | Auto-write an encrypted key backup under this passphrase (else a reminder is printed). |
+
 ## Managing keys (`project keys`)
 
 ```bash

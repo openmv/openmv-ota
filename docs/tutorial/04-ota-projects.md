@@ -40,6 +40,14 @@ images a camera can download, verify, and fall back from.
 — is scaffolded for every project, not just OTA; see
 [The app folder](02-projects.md#the-app-folder).)
 
+### OTA options at `new`
+
+| Flag | Effect |
+|---|---|
+| `--ota` | Declare the project over-the-air: split each partition into slots and provision the signing keys. |
+| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle. |
+| `--no-firmware-patches` | Don't auto-apply the OTA-required firmware patches; fail instead if the firmware lacks them. |
+
 ## Files an OTA project adds
 
 On top of the files a plain project writes (settings, `.gitignore`, `README.md`,

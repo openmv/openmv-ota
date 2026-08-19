@@ -40,16 +40,7 @@ require it. `--sdk-home PATH` points at an SDK in a non-default location.
 | `--sdk-home PATH` | SDK install directory (default `~/openmv-sdk-<version>`). |
 | `--install-sdk` | Download + install the SDK if it is missing. |
 | `--allow-dirty` | Don't warn when the checkout has uncommitted changes. |
-| `--ota` | Over-the-air project: split each partition and provision signing keys. |
-| `--sig-alg {ES256,ES384,ES512}` | OTA signature algorithm (default `ES256` / P-256). |
-| `--ota-keys N` | OTA rotation-pool size to provision (default 32). |
-| `--factory-keys N` | Factory-key reserve to provision, one per manufacturing site (default 8). |
 | `--force` | Overwrite an existing project. |
-| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle — which does not fit the single-image classics (OpenMV2/3/4), so **they require this flag**. |
-| `--key-passphrase-file FILE` | Passphrase (read from a file) encrypting the signing keys at rest; keys are never stored plaintext. |
-| `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
-| `--backup-passphrase-file FILE` | Auto-write an encrypted key backup using this passphrase (else a reminder is printed). |
-| `--no-firmware-patches` | Don't auto-apply the OTA-required firmware patches; fail instead if the firmware lacks them. |
 
 ## Layout
 
@@ -71,7 +62,7 @@ my-product/
 `new` writes the settings files, `.gitignore`, `README.md`, and a starter `app/`
 — a placeholder `main.py` and a `settings.json` carrying your app version (see
 [The app folder](#the-app-folder)). Replace `main.py` with your code; an OTA
-project (`--ota`) additionally provisions `keys/`. `openmv-ota build romfs` compiles the app and
+project additionally provisions `keys/`. `openmv-ota build romfs` compiles the app and
 writes images to `build/`. Commit everything except `openmv-ota.local.toml`,
 `keys/private/`, and `build/`, which the generated `.gitignore` already excludes.
 (`app/` and `build/` are the defaults; `build romfs` takes `--app` and `--output`
