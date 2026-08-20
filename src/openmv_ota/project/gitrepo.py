@@ -68,6 +68,25 @@ def remote_url(repo: Path) -> str | None:
     return run_git(repo, "remote", "get-url", "origin", check=False)
 
 
+def submodule_remotes(repo: Path) -> dict[str, str]:
+    """``{path: url}`` from ``.gitmodules`` (empty when there are none). The remote is a
+    submodule's upstream identity -- what the SBOM needs to give it a purl."""
+    out = run_git(repo, "config", "--file", ".gitmodules",
+                  "--get-regexp", r"submodule\..*\.(path|url)", check=False) or ""
+    paths: dict[str, str] = {}
+    urls: dict[str, str] = {}
+    for line in out.splitlines():
+        key, _, value = line.partition(" ")
+        name, _, attr = key.rpartition(".")
+        if not value:
+            continue
+        if attr == "path":
+            paths[name] = value
+        elif attr == "url":
+            urls[name] = value
+    return {path: urls[name] for name, path in paths.items() if name in urls}
+
+
 def submodule_status(repo: Path) -> list[dict]:
     """Parse ``git submodule status``.
 

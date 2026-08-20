@@ -92,11 +92,17 @@ def generate_sbom(project: str | Path) -> dict:
     for sub in lock.submodules:
         ref = "%s@%s" % (sub.get("path", ""), sub.get("commit", ""))
         sub_refs.append(ref)
-        components.append({
+        component = {
             "type": "library", "bom-ref": ref, "name": sub.get("path", ""),
             "version": sub.get("commit", ""),
             "properties": _props(describe=sub.get("describe")),
-        })
+        }
+        purl = _github_purl(sub.get("remote", ""), sub.get("commit", ""))
+        if purl:
+            component["purl"] = purl
+        if sub.get("remote"):
+            component["externalReferences"] = [{"type": "vcs", "url": sub["remote"]}]
+        components.append(component)
     tool_refs = []
     if lock.sdk.get("version"):
         tool_refs.append("openmv-sdk@%s" % lock.sdk["version"])

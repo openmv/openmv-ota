@@ -80,7 +80,7 @@ and whether the project is OTA). Everything else is resolved into
   the checkout was dirty;
 - the MicroPython version, its commit, and the `.mpy` ABI version;
 - the SDK version, and the resolved mpy-cross, Vela, and ST Edge AI versions;
-- every submodule commit;
+- every submodule commit, and each submodule’s remote (its upstream identity);
 - per target (each board, and each of its targeted partitions): the arch and
   mpy-cross flags, the NPU type and its full compiler config (Vela / ST Edge AI
   arguments and config-file references), the alignment rules, and the partition

@@ -11,7 +11,7 @@
 
 | Req | Provided by openmv-ota | Customer must add | Status |
 |---|---|---|---|
-| 1(2)(a) No known exploitable vulns at market | `build sbom` CycloneDX export + osv-scanner in CI (purl-identified components) | Track and act on findings; cover non-purl components until submodule purls land | ☐ |
+| 1(2)(a) No known exploitable vulns at market | `build sbom` CycloneDX export + osv-scanner in CI (firmware, submodules, and tools at exact pins) | Track and act on findings | ☐ |
 | 1(2)(c) Updates throughout support period | ROMFS OTA mechanism | Commit to a support period | ☐ |
 | 1(2)(d) Protection against unauthorised access | ECDSA (ES256/P-256) image signatures + anti-rollback + A/B fallback | — | ☐ |
 | 1(2)(e) Confidentiality of stored data | **Out of scope** (no image encryption) | Add encryption if applicable | ☐ |

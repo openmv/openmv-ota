@@ -24,7 +24,7 @@ signature, untrusted key, version rollback, no bootable slot).
 
 | Requirement | How this stack supports it |
 |---|---|
-| 1(2)(a) Free of known exploitable vulnerabilities at placing on market | **Shipped:** `build sbom` exports the CycloneDX SBOM from the lock's exact pin-set, and CI runs osv-scanner over it (purl-identified components; submodule purls are the known gap — their remotes aren't in the lock yet) |
+| 1(2)(a) Free of known exploitable vulnerabilities at placing on market | **Shipped:** `build sbom` exports the CycloneDX SBOM from the lock's exact pin-set — including every submodule at its exact commit with its remote-derived purl — and CI runs osv-scanner over it |
 | 1(2)(b) Secure by default configuration | Documented in the conformity assessment template; customer applies |
 | 1(2)(c) Security updates throughout support period | OTA mechanism in this plan; vendor commits to a support period |
 | 1(2)(d) Protection against unauthorised access | ECDSA (P-256) signatures + anti-rollback + fallback to the other slot |

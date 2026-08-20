@@ -75,6 +75,42 @@ def test_submodule_status_parsing(monkeypatch, tmp_path):
     assert by_path["modules/ulab"]["initialized"] is True
 
 
+def test_submodule_remotes_parsing(tmp_path, git_cmd):
+    # a REAL .gitmodules read through git config --file (no submodule checkout needed)
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git_cmd(repo, "init", "-q")
+    (repo / ".gitmodules").write_text(
+        '[submodule "lib/lwip"]\n\tpath = lib/lwip\n\turl = https://github.com/lwip-tcpip/lwip.git\n'
+        '[submodule "weird"]\n\turl = https://example.com/only-url.git\n')
+    assert gitrepo.submodule_remotes(repo) == {
+        "lib/lwip": "https://github.com/lwip-tcpip/lwip.git"}   # path+url joined; url-only skipped
+    (repo / ".gitmodules").unlink()
+    assert gitrepo.submodule_remotes(repo) == {}                 # no .gitmodules -> empty
+
+
+def test_submodule_remotes_skips_bare_keys(monkeypatch, tmp_path):
+    # an EMPTY config value prints as a key-only line -- skipped, not crashed on
+    monkeypatch.setattr(gitrepo, "run_git", lambda *a, **k:
+                        "submodule.empty.path\n"
+                        "submodule.lib/x.path lib/x\nsubmodule.lib/x.url https://e.com/x.git")
+    assert gitrepo.submodule_remotes(tmp_path) == {"lib/x": "https://e.com/x.git"}
+
+
+def test_resolve_submodules_carries_remotes(monkeypatch, tmp_path):
+    from openmv_ota.project.resolve.submodules import resolve_submodules
+    monkeypatch.setattr(gitrepo, "submodule_status",
+                        lambda repo: [{"path": "lib/lwip", "commit": "c1", "describe": None,
+                                       "initialized": True},
+                                      {"path": "lib/other", "commit": "c2", "describe": None,
+                                       "initialized": True}])
+    monkeypatch.setattr(gitrepo, "submodule_remotes",
+                        lambda repo: {"lib/lwip": "https://github.com/lwip-tcpip/lwip.git"})
+    subs = {e["path"]: e for e in resolve_submodules(tmp_path)}
+    assert subs["lib/lwip"]["remote"] == "https://github.com/lwip-tcpip/lwip.git"
+    assert subs["lib/other"]["remote"] == ""                     # unmapped -> explicit empty
+
+
 def test_submodule_status_empty(monkeypatch, tmp_path):
     monkeypatch.setattr(gitrepo, "run_git", lambda *a, **k: None)
     assert gitrepo.submodule_status(tmp_path) == []

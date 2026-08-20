@@ -27,8 +27,9 @@ def _project(tmp_path, *, remote="https://github.com/openmv/openmv.git",
         toolchain={"mpy_cross": {"version": "1.28.0"},
                    "vela": {"version": vela, "found": bool(vela)},
                    "stedgeai": {"version": None, "found": False}},
-        submodules=[{"path": "lib/micropython", "commit": "aa" * 20, "describe": "v1.28.0"},
-                    {"path": "lib/lwip", "commit": "bb" * 20, "describe": ""}],
+        submodules=[{"path": "lib/micropython", "commit": "aa" * 20, "describe": "v1.28.0",
+                     "remote": "https://github.com/openmv/micropython.git"},
+                    {"path": "lib/lwip", "commit": "bb" * 20, "describe": "", "remote": ""}],
         targets={"boards": ["OPENMV_N6"], "resolved": []},
     ))
     return root
@@ -51,7 +52,9 @@ def test_sbom_shape_and_determinism(tmp_path):
     assert fw["externalReferences"] == [{"type": "vcs",
                                          "url": "https://github.com/openmv/openmv.git"}]
     assert by_name["micropython"]["version"] == "1.28.0"
+    assert by_name["lib/micropython"]["purl"] == "pkg:github/openmv/micropython@" + "aa" * 20
     assert by_name["lib/lwip"]["version"] == "bb" * 20
+    assert "purl" not in by_name["lib/lwip"]                     # no remote -> never guessed
     assert by_name["mpy-cross"]["purl"] == "pkg:pypi/mpy-cross@1.28.0"
     assert by_name["vela"]["version"] == "3.12.0"
     assert "stedgeai" not in by_name                                # no version -> no component
