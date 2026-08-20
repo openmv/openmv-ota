@@ -1019,29 +1019,36 @@ def install(url, ca=None):  # pragma: no cover
     """Fetch the signed update **manifest** at ``url`` and install the image it points to:
     verify the manifest's signature (same trusted keys as the image trailer), check the
     device-relative fields (board / platform / anti-rollback) and pick a representation,
-    then download that image into the FRONT slot, arm the one-shot trial, and reboot.
+    then stream that image into the slot the device is not running, arm the trial, and
+    reboot.
 
-    ``url`` is the **manifest** URL (produced by ``build ota-romfs``), not a raw image --
-    the device resolves the actual image URL from the signed manifest internally. Does
+    ``url`` is the **manifest** (produced by ``build ota-romfs``), not a raw image -- the
+    device resolves the actual image location from the signed manifest internally. It is
+    either an ``https://`` URL, or a **file path** (``"/sd/fw/OPENMV_N6-manifest.bin"``)
+    with the published artifacts beside it on a mounted filesystem. The
+    verification is identical either way -- signature, vetting, anti-rollback -- because
+    the medium is untrusted in both cases and the signature is the boundary. Does
     **not** return on success -- it reboots. A failure *after* the write commits reboots
-    into the golden BACK image instead (boot.py rejects the half-written FRONT); a
-    pre-flight failure (bad URL, DNS, TLS, a bad/forbidden/rolled-back manifest) raises
-    before anything is erased, so the app can catch it and retry without a reboot. Call
-    once the network is up (WiFi/Ethernet/HaLow) and after any app teardown -- the install
-    erases ``/rom``, so the running app cannot continue past this call.
+    into the previous working image instead (boot.py rejects the half-written slot); a
+    pre-flight failure (bad URL or path, DNS, TLS, a bad/forbidden/rolled-back manifest)
+    raises before anything is erased, so the app can catch it and retry without a reboot.
+    Call after any app teardown -- the install erases ``/rom``, so the running app cannot
+    continue past this call -- and, for a URL, once the network is up (WiFi/Ethernet/
+    HaLow); a file install needs no network at all.
 
     The heavy lifting lives in ``data/installer.py``, shipped as source and ``exec``'d
-    into RAM here: the app's code is in the FRONT slot we're about to erase, so the
+    into RAM here: in single-image mode the slot being erased is the one the app runs from, so the
     installer must run from RAM, not XIP from that slot. For that same reason install
     progress is *logged* by the installer (RAM + the frozen logger), not delivered to a
     caller callback -- any callback here (this lib, the app) lives in the slot being
     erased, so calling it post-erase would XIP from erased flash. (``sync()`` *does* take
     an ``on_progress`` -- it erases a different partition, leaving this one intact.) ``ca``
     are the TLS trust anchors (PEM): ``None`` uses the bundled ``data/ca.pem`` (the Mozilla
-    root bundle), ``bytes`` are used as-is, and a ``str`` is a path to read."""
+    root bundle), ``bytes`` are used as-is, and a ``str`` is a path to read. Ignored for
+    a file install -- there is no connection to authenticate."""
     import _ota_config as cfg
     here = __file__.rsplit("/", 1)[0]
-    ca = _resolve_ca(ca, here)
+    ca = _resolve_ca(ca, here) if "://" in url else None  # a file install has no TLS peer
     ns = {}
     # exec()'ing the ~1000-line installer source is one unsplittable compile+exec that can exceed a
     # short watchdog window; relax() ISR-feeds across it (no-op unless the app armed a watchdog). This

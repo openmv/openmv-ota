@@ -210,15 +210,25 @@ def _is_transport_error(e):
 # --- pure: URL + HTTP (host-testable) ---------------------------------------
 
 def _resolve_url(manifest_url, rep_url):
-    """Resolve a manifest representation URL. An ``https://`` URL is used as-is (an
-    off-host CDN); otherwise it's relative to the manifest's own URL (the common case --
-    artifacts published beside the manifest), so a signed manifest stays valid wherever
-    it's hosted."""
+    """Resolve a manifest representation reference. An ``https://`` URL is used as-is (an
+    off-host CDN); otherwise it's relative to the manifest's own location (the common case --
+    artifacts published beside the manifest), so a signed manifest stays valid wherever it
+    lives: an ``https://`` base resolves to a sibling URL, an on-disk base (an SD card) to
+    a sibling file path."""
     if rep_url.startswith("https://"):
         return rep_url
     if rep_url.startswith("./"):
         rep_url = rep_url[2:]
+    if "/" not in manifest_url:
+        return rep_url                                # bare relative base: siblings live in cwd
     return manifest_url.rsplit("/", 1)[0] + "/" + rep_url
+
+
+def _is_path(target):
+    """True when ``target`` names a file on a mounted filesystem (``/sd/...``,
+    ``/flash/...``) rather than a URL. Anything carrying a scheme is not a path, so
+    ``http://`` still reaches ``_parse_url`` and keeps its explicit plaintext refusal."""
+    return "://" not in target
 
 
 def _parse_url(url):
@@ -451,6 +461,16 @@ def _read_all(body, limit):
         if total > limit:
             raise ValueError("manifest larger than %d bytes" % limit)
         parts.append(bytes(buf[:n]))                 # collect + join once, not o(n^2) +=
+
+
+def _read_manifest_file(path):
+    """Read a manifest file into RAM, capped at ``_MANIFEST_MAX`` exactly like the HTTPS
+    fetch -- the cap is what keeps the read RAM-safe (never sized by the file)."""
+    f = open(path, "rb")
+    try:
+        return _read_all(f, _MANIFEST_MAX)
+    finally:
+        f.close()
 
 
 # --- pure: signed manifest (kept in sync with openmv_ota.ota.manifest) ------------
@@ -1172,6 +1192,17 @@ class _ResumingBody(io.IOBase):
             pass
 
 
+def _open_body(image_url, ca_pem, socket, ssl, feed):
+    """The image byte stream ``DeflateIO`` will decompress: for an on-disk image a plain
+    file object (already a C-level stream, and file reads don't drop -- no resume
+    wrapper), else the HTTPS body wrapped so a dropped connection resumes at the
+    compressed offset already consumed (see _ResumingBody)."""
+    if _is_path(image_url):
+        return open(image_url, "rb")
+    sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)  # pragma: no cover  # hil-residual: HTTPS body open, relocated verbatim from run(); witnessed by install.download on every bench install leg
+    return _ResumingBody(image_url, ca_pem, socket, ssl, feed, sock, raw_body)  # pragma: no cover  # hil-residual: the resume wrapper, relocated verbatim from run(); its resume path is exercised by the bench drop/resume scenario
+
+
 def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop,
                     floor=0, base_version=0, delta_capable=True):  # pragma: no cover
     """Pre-erase: fetch the signed manifest, verify its signature against the frozen
@@ -1193,48 +1224,67 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop,
     # a cold-booted board whose clock has not yet NTP-synced fails the handshake with "certificate
     # validity starts in the future" -- a state it RECOVERS from a poll later, never a bad update.
     # Wrapping by PHASE (not by exception type) is what makes that distinction reliable.
-    try:
-        sock, body = _open(manifest_url, ca_pem, socket, ssl, feed)
-        try:
-            raw = _read_all(body, _MANIFEST_MAX)      # progress-fed reader (poll+feed)
+    try:  # hil-residual: transport wrapper; the happy arm is witnessed by `install: manifest accepted` (now emitted in _vet_manifest, one call downstream)
+        sock, body = _open(manifest_url, ca_pem, socket, ssl, feed)  # hil-residual: witnessed by `install: manifest accepted` downstream (every bench install leg fetches over HTTPS)
+        try:  # hil-residual: close guard around the bounded read (both arms dominated by the accepted/reject markers downstream)
+            raw = _read_all(body, _MANIFEST_MAX)      # progress-fed reader (poll+feed)  # hil-residual: bounded manifest read; witnessed by `install: manifest accepted` downstream
         finally:
-            sock.close()
+            sock.close()  # hil-residual: socket close on both arms; marker-less by nature (nothing observable), dominated by the accepted/reject markers downstream
     except Exception as e:  # hil-residual: connection-phase failure wrapper (needs a dropped link / bad cert to reach; the happy path fetches cleanly)
         raise _TransportError("manifest fetch failed: %r" % (e,))  # hil-residual: bare raise (cause kept in the message; run() logs it as deferred + retries)
-    # The manifest is now in RAM; everything below -- CRC parse, the ECDSA signature verify,
-    # and the flash-vetting -- is pure CPU: single unsplittable C/Python calls with no seam to
-    # feed through, and the P-256 verify alone can outrun the ~100 ms watchdog window (this is
-    # the op that bit on the N6 watchdog HIL run). So if the app armed a watchdog, ONE relax()
-    # ISR-feeds across the whole bounded block (last resort, exactly like the TLS handshake and
-    # the exec compile). There is no network in here, so relax() cannot mask a stalled recv --
-    # only the leaf reads above are progress-fed. No-op unless a watchdog is armed.
+    return _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_capable)  # hil-residual: bare delegation into the host-tested vet (its markers witness the outcome)
+
+
+def _fetch_manifest_file(manifest_path, cfg, verify, floor=0, base_version=0,
+                         delta_capable=True):
+    """The on-disk twin of ``_fetch_manifest``: read the signed manifest from a mounted
+    filesystem (an SD card holding the published artifacts) and hand it to the same
+    verify + vetting. An unreadable path raises OSError straight to the app -- unlike a
+    dropped link it is not transient, so it is a rejection, never a deferred retry."""
+    return _vet_manifest(manifest_path, _read_manifest_file(manifest_path), cfg, verify,
+                         floor, base_version, delta_capable)
+
+
+def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_capable):
+    """Verify + vet a signed manifest already in RAM and pick a representation -- the
+    pure-CPU half of the manifest phase, shared by the HTTPS fetch and the on-disk
+    path. Returns ``(image_url, fmt, expect_sha)``; raises OSError (to the app,
+    nothing erased) on any rejection.
+
+    Everything here -- CRC parse, the ECDSA signature verify, and the flash-vetting --
+    is single unsplittable C/Python calls with no seam to feed through, and the P-256
+    verify alone can outrun the ~100 ms watchdog window (this is the op that bit on the
+    N6 watchdog HIL run). So if the app armed a watchdog, ONE relax() ISR-feeds across
+    the whole bounded block (last resort, exactly like the TLS handshake and the exec
+    compile). There is no I/O in here, so relax() cannot mask a stalled recv -- only
+    the callers' leaf reads are progress-fed. No-op unless a watchdog is armed."""
     with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
         m = _manifest_parse(raw)                          # structure + crc (raises on bad)
         pubkey = cfg.TRUSTED_KEYS.get(m["key_id"])
         if pubkey is None:
             log.warning("install: reject untrusted key")
-            raise OSError("manifest signed by an untrusted key")  # hil-residual: bare raise (reject witnessed by install.reject_key)
+            raise OSError("manifest signed by an untrusted key")
         if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
             log.warning("install: reject bad signature")
-            raise OSError("manifest signature does not verify")  # hil-residual: bare raise (reject witnessed by install.reject_sig)
+            raise OSError("manifest signature does not verify")
 
         body_dict = m["body"]
         reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
                                 getattr(cfg, "ACCOUNT_ID", ""))
         if reason is not None:
             log.warning("install: reject vetting")   # rejected: witness the boundary
-            raise OSError("manifest rejected (%s)" % reason)  # hil-residual: bare raise (reject witnessed by install.reject_vet)
+            raise OSError("manifest rejected (%s)" % reason)
         # The delta applier is pure Python (no ulab/C), so every board is delta-capable in the
         # A/B sense; ``delta_capable`` is False only in SINGLE mode, where the base is the very
         # slot about to be erased.
         rep = _select_rep(body_dict, delta_capable, base_version)
     if rep is None:
-        raise OSError("manifest has no usable representation")  # hil-residual: bare raise (no-rep guard, inject-only)
+        raise OSError("manifest has no usable representation")
     image_url = _resolve_url(manifest_url, rep["url"])
     fmt = rep.get("format")
     expect_sha = body_dict.get("sha256")
     log.debug("install: manifest accepted")
-    return image_url, fmt, expect_sha  # hil-residual: bare return of the (url, fmt, sha) tuple
+    return image_url, fmt, expect_sha
 
 
 def _reset():  # pragma: no cover
@@ -1252,8 +1302,9 @@ def _reset():  # pragma: no cover
 
 
 def run(manifest_url, ca_pem, cfg):  # pragma: no cover
-    """Fetch the signed manifest at ``manifest_url``, verify + vet it, then download and
-    install the chosen image. Never returns: reboots into the new image's trial on
+    """Fetch the signed manifest at ``manifest_url`` -- an ``https://`` URL, or a file
+    path (a manifest on a mounted filesystem, e.g. an SD card) with the artifacts
+    beside it -- verify + vet it, then stream in and install the chosen image. Never returns: reboots into the new image's trial on
     success, or into whatever slot still verifies if anything fails after the erase commits.
     A pre-flight failure (bad URL/DNS/TLS, bad/forbidden manifest) raises to the app with
     ``/rom`` intact. Progress is logged from here (RAM + the frozen logger) at every 10%
@@ -1649,9 +1700,14 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # PROGRESS-fed per block/piece, so a hung flash/reconstruct loop is still caught. All no-op off.
     log.info("install: fetching manifest %s" % manifest_url)
     try:
-        image_url, fmt, expect_sha = _fetch_manifest(
-            manifest_url, ca_pem, cfg, verify, socket, ssl, feed,
-            floor=floor, base_version=base_version, delta_capable=delta_capable)
+        if _is_path(manifest_url):                # a manifest file path (mounted FS, e.g. SD)
+            image_url, fmt, expect_sha = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
+                manifest_url, cfg, verify,
+                floor=floor, base_version=base_version, delta_capable=delta_capable)
+        else:
+            image_url, fmt, expect_sha = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
+                manifest_url, ca_pem, cfg, verify, socket, ssl, feed,
+                floor=floor, base_version=base_version, delta_capable=delta_capable)
     except Exception as e:
         # Two very different failures land here and only ONE is a rejected update. A REJECTION -- bad
         # signature/key, failed vetting, or a corrupt/unparseable manifest -- must read as install.reject
@@ -1713,13 +1769,10 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             log.info("install: erasing %s (%d bytes) t=%d" % (target, slot_size, ticks_ms()))
             erase(target_off, slot_size)
             log.info("install: downloading %s (%s)" % (image_url, fmt))
-            sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)
-            # Wrap the body so a dropped connection RESUMES at the compressed offset already
-            # consumed instead of restarting the whole install (see _ResumingBody). The decoder
-            # below keeps its state across the reconnect, so the stream it sees is continuous.
-            # Cleanup below closes the BODY, not `sock`: after a resume the body owns a NEWER
-            # socket and the original is already closed, so closing `sock` would leak the live one.
-            body = _ResumingBody(image_url, ca_pem, socket, ssl, feed, sock, raw_body)
+            # The retry cleanup below closes the BODY: for HTTPS the body owns whichever
+            # socket is live after a resume (closing the original would leak the newer
+            # one -- see _ResumingBody); for an on-disk image it is simply the open file.
+            body = _open_body(image_url, ca_pem, socket, ssl, feed)
             dio = deflate.DeflateIO(body, deflate.GZIP)
             if fmt == _DELTA_FORMAT:
                 # Delta: stream-decompress the patch and reconstruct the image against the
