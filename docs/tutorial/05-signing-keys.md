@@ -62,6 +62,21 @@ fleet, and back up the old keys first.
 | `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
 | `--backup-passphrase-file FILE` | Auto-write an encrypted key backup under this passphrase (else a reminder is printed). |
 
+### Passphrases
+
+The private keys are **always encrypted at rest** — there is no plaintext mode. So
+`new --ota` needs a passphrase to encrypt under, and accepts exactly two sources:
+`--key-passphrase-file` (a real passphrase you manage) or `--dev` (a random
+throwaway cached in `keys/.dev-passphrase`, so there is nothing to manage — and the
+production build rail refuses images signed with dev keys).
+
+Every later operation that *uses* the keys — signing a build, the `keys` verbs —
+resolves the passphrase in priority order: the project's cached dev passphrase when
+present, then `--key-passphrase-file`, then the `OPENMV_OTA_KEY_PASSPHRASE`
+environment variable (what CI uses), and finally an **interactive prompt** when
+running in a terminal. Day to day you can simply type it; the file flag exists for
+scripts, not because a file is required.
+
 ## Managing keys (`project keys`)
 
 ```bash
