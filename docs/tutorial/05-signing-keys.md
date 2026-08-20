@@ -48,17 +48,16 @@ role, and the public key as an uncompressed EC point in hex:
 | `--factory-keys N` | Factory-key reserve, one per manufacturing site (default 8). |
 | `--key-passphrase-file FILE` | Passphrase (read from FILE) that encrypts the private keys at rest. |
 | `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
-| `--backup-passphrase-file FILE` | Passphrase (read from FILE) for the off-machine key backup `new` writes (`keys-backup.enc`). |
 
 **Provision generously.** Because keys can't be added without re-flashing firmware,
 the rotation pool is your entire future supply of OTA keys — `--ota-keys` below 4
 warns.
 
-**Back up at birth.** With `--backup-passphrase-file`, `new` writes the encrypted
-off-machine backup (`keys-backup.enc`, the same artifact as `project keys backup`)
-in the very step that creates the keys, so there is never a moment where the only
-copy lives on this machine. Without it, `new` prints a reminder to back up
-manually.
+**Backed up at birth.** `new` always writes the one-file key backup
+(`keys-backup.bin`, the same artifact as `project keys backup`) in the very step
+that creates the keys, so there is never a moment where the only copy lives on
+this machine — **move it off this machine** (a vault, an offline drive). A `--dev`
+project skips it: its keys are disposable.
 
 **One hazard to know:** re-running `new --force` over an existing OTA project
 **regenerates the whole key set**. Devices already in the field trust the *old*
@@ -66,24 +65,16 @@ keys and will reject updates signed by the new ones — you would have to re-fla
 them. `new` warns loudly when this is about to happen; only do it for a fresh
 fleet, and back up the old keys first.
 
-### Passphrases
+### The passphrase
 
 The private keys are **always encrypted at rest** — there is no plaintext mode. So
 `new --ota` needs a passphrase to encrypt under, and accepts exactly two sources:
 `--key-passphrase-file` (a real passphrase you manage) or `--dev` (a random
 throwaway cached in `keys/.dev-passphrase`, so there is nothing to manage — and the
-production build rail refuses images signed with dev keys).
-
-**Signing a build** (`build romfs` / `ota-romfs` / `factory-romfs`) resolves the
-passphrase in priority order: the project's cached dev passphrase when present,
-then `--key-passphrase-file`, then the `OPENMV_OTA_KEY_PASSPHRASE` environment
-variable (what CI uses), and finally an **interactive prompt** when running in a
-terminal — so day to day you can simply type it; the file flag exists for scripts.
-The backup verbs take `--backup-passphrase-file` instead — the *backup's*
-passphrase, which may differ from the signing one — and `rotate` / `revoke` /
-`status` need no passphrase at all. (Passphrases travel in files or the environment
-rather than on the command line itself, where they would land in shell history and
-`ps` output.)
+production build rail refuses images signed with dev keys). Provisioning reads
+**no environment variable and never prompts**: the file or `--dev`, nothing else.
+(Passphrases travel in files rather than on the command line itself, where they
+would land in shell history and `ps` output.)
 
 ## Day to day: `status` and `rotate`
 
@@ -128,15 +119,18 @@ Unless an external backend holds them (below), the private keys exist in exactly
 one place — your signing machine — so custody has its own verbs:
 
 ```bash
-openmv-ota project keys backup  --backup-passphrase-file pass.txt    # -> keys-backup.enc
-openmv-ota project keys restore keys-backup.enc --backup-passphrase-file pass.txt
+openmv-ota project keys backup                        # -> keys-backup.bin
+openmv-ota project keys restore keys-backup.bin
 openmv-ota project keys backend show | configure | provision
 ```
 
-- **`backup` / `restore`** — an encrypted archive of the private keys
-  (`keys-backup.enc`), for the out-of-band copy the [OTA projects
-  page](04-ota-projects.md#files-an-ota-project-adds) tells you to keep. `restore`
-  rebuilds `keys/private/` on a replacement machine from that one file.
+- **`backup` / `restore`** — a one-file, integrity-checked archive of the private
+  keys (`keys-backup.bin`) for the off-machine copy; `restore` rebuilds
+  `keys/private/` on a replacement machine from that one file. No passphrase on
+  either side: the PEMs are archived exactly as they sit on disk, already
+  encrypted at rest, so the archive adds nothing to decrypt — and a `--dev`
+  project is refused a backup (its cached throwaway passphrase sits beside the
+  keys, making any copy effectively plaintext).
 - **`backend`** — keys don't have to live on disk at all. `show` lists each key's
   signing backend. `configure KEY_ID --backend {encrypted-pem,pkcs11,aws-kms,gcp-kms,azure-kms,custom}
   --set KEY=VALUE …` points a trusted key at an **external** signer (bring your own

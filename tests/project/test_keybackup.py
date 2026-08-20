@@ -1,45 +1,46 @@
-"""Tests for the encrypted private-key backup codec (openmv_ota.project.keybackup)."""
+"""Tests for the private-key backup codec (openmv_ota.project.keybackup).
 
-from __future__ import annotations
+The archive carries the PEMs exactly as they sit on disk (already encrypted at rest), so
+there is no passphrase here -- what the codec owes us is a loud failure on any damage.
+"""
 
 import pytest
 
 from openmv_ota.project import keybackup
 from openmv_ota.project.errors import ProjectError
 
-_PEMS = {"ota-0100.pem": b"-----BEGIN PRIVATE KEY-----\nAAA\n-----END PRIVATE KEY-----\n",
-         "factory-0001.pem": b"-----BEGIN PRIVATE KEY-----\nBBB\n-----END PRIVATE KEY-----\n"}
+_PEMS = {"ota-0100.pem": b"PEM-A", "factory-0001.pem": b"PEM-B"}
 
 
-def test_encrypt_decrypt_roundtrip():
-    blob = keybackup.encrypt_keys(_PEMS, "correct horse battery staple")
+def test_roundtrip():
+    blob = keybackup.pack_keys(_PEMS)
     assert blob[:len(keybackup.MAGIC)] == keybackup.MAGIC
-    assert keybackup.decrypt_keys(blob, "correct horse battery staple") == _PEMS
+    assert keybackup.unpack_keys(blob) == _PEMS
 
 
-def test_fixed_salt_is_used():
-    salt = b"\x01" * keybackup._SALT_LEN
-    blob = keybackup.encrypt_keys(_PEMS, "pw", salt=salt)
-    assert blob[len(keybackup.MAGIC):len(keybackup.MAGIC) + keybackup._SALT_LEN] == salt
-    assert keybackup.decrypt_keys(blob, "pw") == _PEMS
+def test_pack_is_deterministic():
+    assert keybackup.pack_keys(_PEMS) == keybackup.pack_keys(_PEMS)
 
 
-def test_wrong_passphrase_fails_loudly():
-    blob = keybackup.encrypt_keys(_PEMS, "right")
-    with pytest.raises(ProjectError, match="wrong passphrase"):
-        keybackup.decrypt_keys(blob, "wrong")
-
-
-def test_encrypt_empty_rejected():
+def test_empty_refused():
     with pytest.raises(ProjectError, match="no private keys"):
-        keybackup.encrypt_keys({}, "pw")
+        keybackup.pack_keys({})
 
 
-def test_decrypt_bad_magic():
+def test_bad_magic_and_truncation():
+    blob = keybackup.pack_keys(_PEMS)
     with pytest.raises(ProjectError, match="not an openmv-ota key backup"):
-        keybackup.decrypt_keys(b"XXXX" + b"\x00" * 40, "pw")
-
-
-def test_decrypt_too_short():
+        keybackup.unpack_keys(b"XXXXXX" + blob[len(keybackup.MAGIC):])
     with pytest.raises(ProjectError, match="not an openmv-ota key backup"):
-        keybackup.decrypt_keys(keybackup.MAGIC + b"\x00", "pw")
+        keybackup.unpack_keys(blob[:4])                       # shorter than the header
+
+
+def test_corruption_fails_loudly():
+    blob = bytearray(keybackup.pack_keys(_PEMS))
+    blob[-1] ^= 0xFF                                          # damage the payload
+    with pytest.raises(ProjectError, match="integrity check failed"):
+        keybackup.unpack_keys(bytes(blob))
+    blob = bytearray(keybackup.pack_keys(_PEMS))
+    blob[len(keybackup.MAGIC)] ^= 0xFF                        # damage the stored digest
+    with pytest.raises(ProjectError, match="integrity check failed"):
+        keybackup.unpack_keys(bytes(blob))

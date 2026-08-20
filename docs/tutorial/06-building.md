@@ -79,6 +79,17 @@ verifiable, anti-rollback OTA image rather than a bare ROMFS body. No extra flag
   `system.json`** so host tools can read the image's identity without mounting the
   ROMFS. `min_platform_version` is the pegged firmware's version code.
 
+**The key's passphrase.** The private keys are encrypted at rest, so a signing
+build needs their passphrase, resolved in priority order: the project's cached dev
+passphrase when present, then `--key-passphrase-file`, then the
+`OPENMV_OTA_KEY_PASSPHRASE` environment variable (what CI uses), and finally an
+**interactive prompt** when running in a terminal — day to day you can simply type
+it; the file flag exists for scripts. (Passphrases travel in files or the
+environment rather than on the command line itself, where they would land in shell
+history and `ps` output.) A **dev-keyed** project signs without any of this — its
+throwaway passphrase is cached in the project — but the build then refuses to
+produce a production image unless you pass `--allow-dev-key`.
+
 An OTA build writes a single **bundle**, `<board>-romfs.zip`, containing two entries:
 
 | Entry | What |

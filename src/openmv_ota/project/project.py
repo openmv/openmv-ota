@@ -44,7 +44,7 @@ keys/*.pem
 keys/*.key
 keys/private/
 keys/.dev-passphrase
-keys-backup.enc
+keys-backup.bin
 
 # build artefacts
 build/
@@ -670,33 +670,40 @@ def _write_keys(paths: ProjectPaths, provisioned) -> None:
         pem_path.write_bytes(pem)
 
 
-KEY_BACKUP_NAME = "keys-backup.enc"
+KEY_BACKUP_NAME = "keys-backup.bin"
 
 
-def backup_private_keys(root: str | Path, passphrase: str) -> Path:
-    """Write an encrypted backup of every private signing PEM to ``<root>/keys-backup.enc``
-    (the operator then moves it off-machine). Raises ``ProjectError`` if no private keys are
-    present (nothing to back up)."""
-    from . import keybackup
+def backup_private_keys(root: str | Path) -> Path:
+    """Archive every private signing PEM (already encrypted at rest) to
+    ``<root>/keys-backup.bin`` -- the operator then moves it off-machine. Raises
+    ``ProjectError`` if there are no private keys, or for a ``--dev`` project (its cached
+    throwaway passphrase sits beside the keys, so a copy is effectively plaintext -- and dev
+    keys are disposable anyway)."""
+    from . import keybackup, passphrase
 
+    if passphrase.dev_passphrase_path(root).exists():
+        raise ProjectError(
+            "refusing to back up a --dev project's keys: the cached dev passphrase lives "
+            "beside them, so a copy is effectively plaintext -- dev keys are disposable, "
+            "re-provision instead", exit_code=1)
     pem_dir = ProjectPaths(Path(root)).private_keys_dir
     pems = ({p.name: p.read_bytes() for p in sorted(pem_dir.glob("*.pem"))}
             if pem_dir.exists() else {})
     if not pems:
         raise ProjectError("no private keys in %s to back up" % pem_dir, exit_code=1)
     out = Path(root) / KEY_BACKUP_NAME
-    out.write_bytes(keybackup.encrypt_keys(pems, passphrase))
+    out.write_bytes(keybackup.pack_keys(pems))
     return out
 
 
-def restore_private_keys(root: str | Path, blob: bytes, passphrase: str) -> list[str]:
-    """Decrypt a backup ``blob`` and write its PEMs into the project's private-key dir,
-    returning the restored filenames. Raises ``ProjectError`` on a wrong passphrase / corrupt
-    backup (recovery fails loudly)."""
+def restore_private_keys(root: str | Path, blob: bytes) -> list[str]:
+    """Unpack a backup ``blob`` and write its PEMs (still encrypted at rest, exactly as
+    archived) into the project's private-key dir, returning the restored filenames. Raises
+    ``ProjectError`` on a corrupt backup (recovery fails loudly)."""
     from . import keybackup
 
     pem_dir = ProjectPaths(Path(root)).private_keys_dir
-    pems = keybackup.decrypt_keys(blob, passphrase)
+    pems = keybackup.unpack_keys(blob)
     pem_dir.mkdir(parents=True, exist_ok=True)
     for name, pem in pems.items():
         (pem_dir / name).write_bytes(pem)
