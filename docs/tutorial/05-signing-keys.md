@@ -36,7 +36,7 @@ role, and the public key as an uncompressed EC point in hex:
   "schema": 1,
   "keys": [
     {"key_id": 1,   "alg": -7, "role": "factory", "pubkey": "04…"},
-    {"key_id": 256, "alg": -7, "role": "ota",      "pubkey": "04…"}
+    {"key_id": 256, "alg": -7, "role": "ota",     "pubkey": "04…"}
   ]
 }
 ```
