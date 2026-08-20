@@ -98,8 +98,8 @@ my-product/
 │       ├── installer.py     # the installer, shipped as source (exec'd into RAM)
 │       └── ca.pem           # TLS root bundle for downloads (fetched fresh at `new`)
 ├── device/
-│   ├── openmv_log.py               # OTA debug logger, frozen as openmv_log (off by default)
-│   └── openmv_wdt.py               # watchdog helper, frozen as openmv_wdt (off by default)
+│   ├── openmv_log.py               # the OTA debug logger
+│   └── openmv_wdt.py               # the watchdog helper
 └── keys/
     ├── trusted_keys.json    # committed: the public key set baked into firmware
     └── private/             # GITIGNORED: the private signing keys (PKCS#8 PEM)
@@ -145,16 +145,14 @@ store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step 
 network, like the SDK download), and you can replace it with your provider's roots.
 What `install()` downloads is produced by `build ota-romfs`.
 
-For debugging on hardware, `new --ota` also scaffolds **`device/openmv_log.py`** — an opt-in
-logger built on the standard `logging` module (frozen as `openmv_log`, off by default)
-shared by `boot.py`, the installer, and this lib, and exposed as `openmv_ota.log` (the
-`logging.getLogger("openmv_ota")` logger) for your app. Edit it to enable + pick your
-board's UART, then rebuild firmware.
-
-It also scaffolds **`device/openmv_wdt.py`** — an opt-in watchdog helper (frozen as
-`openmv_wdt`, off by default): `openmv_wdt.feed()` from your main loop, and
-`with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds the watchdog
-through them). `install()` uses it automatically.
+`new --ota` also scaffolds two **opt-in** helpers under `device/`, each frozen into
+the firmware by `build firmware` (as `openmv_log` / `openmv_wdt`) and off by
+default. **`openmv_log.py`** is a debug logger built on the standard `logging`
+module, shared by `boot.py`, the installer, and this lib, and exposed to your app
+as `openmv_ota.log`; edit it to enable + pick your board's UART, then rebuild
+firmware. **`openmv_wdt.py`** is a watchdog helper — `openmv_wdt.feed()` from your
+main loop, `with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds
+through them) — and `install()` uses it automatically.
 
 ## Multi-core boards (a coprocessor partition)
 
