@@ -123,23 +123,59 @@ one place — your signing machine — so custody has its own verbs:
 ```bash
 openmv-ota project keys backup                        # -> keys-backup.bin
 openmv-ota project keys restore keys-backup.bin
-openmv-ota project keys backend show | configure | provision
 ```
 
-- **`backup` / `restore`** — the off-machine copy, and the way back. `backup`
-  writes every private PEM into one integrity-checked file, `keys-backup.bin` —
-  the same file `new` already wrote, since the key set never changes. `restore`
-  rebuilds `keys/private/` from it on a replacement machine. Neither takes a
-  passphrase: the PEMs are archived exactly as they sit on disk, already
-  encrypted. A `--dev` project is refused — its passphrase is cached beside the
-  keys, so a copy would be plaintext in effect.
-- **`backend`** — keys don't have to live on disk at all. `show` lists each key's
-  signing backend. `configure KEY_ID --backend {encrypted-pem,pkcs11,aws-kms,gcp-kms,azure-kms,custom}
-  --set KEY=VALUE …` points a trusted key at an **external** signer (bring your own
-  key — e.g. `--set uri=arn:aws:…`). `provision --backend {pkcs11,aws-kms,gcp-kms,azure-kms}
-  --set … --ota-keys N --factory-keys N` generates a fresh key set *inside* such a
-  backend, so the private half never exists on this machine (it defaults to 4 + 1 —
-  external keys are often billable).
+**`backup` / `restore`** — the off-machine copy, and the way back. `backup`
+writes every private PEM into one integrity-checked file, `keys-backup.bin` —
+the same file `new` already wrote, since the key set never changes. `restore`
+rebuilds `keys/private/` from it on a replacement machine. Neither takes a
+passphrase: the PEMs are archived exactly as they sit on disk, already
+encrypted. A `--dev` project is refused — its passphrase is cached beside the
+keys, so a copy would be plaintext in effect.
+
+### External backends (HSM / cloud KMS)
+
+The keys don't have to live on disk at all. `keys/backends.json` (committed) maps a
+trusted `key_id` to how *this project* reaches that key's private material; a key
+with no record uses its local encrypted PEM, so external and local keys mix freely
+in one set. The records hold only **non-secret** references — ARNs, token and
+object labels, module paths. Secrets (a PKCS#11 PIN, cloud credentials) come from
+`openmv-ota.local.toml` or the ambient cloud environment, never the repo — which is
+what lets teammates and CI commit-and-sign without reconfiguring.
+
+```bash
+openmv-ota project keys backend show                  # each key's backend
+openmv-ota project keys backend configure 0x0100 --backend aws-kms \
+    --set uri=arn:aws:kms:us-east-1:111122223333:key/example
+openmv-ota project keys backend provision --backend pkcs11 \
+    --set pkcs11_module=/usr/lib/softhsm/libsofthsm2.so --set token_label=openmv
+```
+
+**`configure`** is bring-your-own-key: it points one **existing** trusted key at
+external material you already hold. **`provision`** goes further — it mints a whole
+fresh key set *inside* the backend (`C_GenerateKeyPair` on a token, the provider's
+create-key API in a KMS) and rewrites `keys/trusted_keys.json` +
+`keys/backends.json` from the returned public halves, so the private half **never
+exists on this machine**. It defaults to `--ota-keys 4 --factory-keys 1` because
+external keys are often billable. Note what provisioning means: **it re-keys the
+fleet** — fielded devices trust the new set only after a firmware update carries
+it, exactly like the `--force` hazard above. Commit both files.
+
+Each backend's record, and the pip extra that enables it:
+
+| `--backend` | Record fields (`--set k=v`) | Extra |
+|---|---|---|
+| `pkcs11` | `pkcs11_module` (the token's `.so`), `token_label`, `object_label` (defaults to `<role>-<keyid>`); the PIN is machine-local, never committed | `openmv-ota[hsm]` |
+| `aws-kms` | `uri` — the key ARN | `openmv-ota[aws-kms]` |
+| `gcp-kms` | `uri` — the crypto-key **version** resource name | `openmv-ota[gcp-kms]` |
+| `azure-kms` | `uri` — the vault key URL (`provision` takes `vault_url`) | `openmv-ota[azure-kms]` |
+| `custom` | `factory` — `pkg.module:callable` returning a `Signer`; bring anything | — |
+
+At build time nothing changes on the surface: `build romfs` looks up the signing
+key's record and signs through it — a token signs the digest on-token, a KMS signs
+in the cloud (the raw `R||S` length is checked either way) — and `backup` /
+`restore` simply don't apply to external keys, because there is nothing on disk to
+lose.
 
 ---
 
