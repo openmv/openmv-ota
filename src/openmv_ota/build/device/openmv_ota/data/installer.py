@@ -119,6 +119,23 @@ def _noop():  # pragma: no cover  (fallback feed() when no watchdog is frozen)
 
 MARKER_SIZE = 16
 _REPR_OFF = 48                                    # status-sector offset of the repr marker
+_STRIDE = 16                                      # control-record spacing (see _set_stride)
+
+
+def _set_stride(stride):
+    """Space control records ``stride`` apart and pad each write to it -- on ECC-word
+    flash (H7-classic internal: 32) every record owns one one-shot flash word.
+    Mirrors boot._set_stride; contents never change, only spacing + write width."""
+    global _STRIDE, _REPR_OFF, _COUNTER_OFF, _ROLLBACK_STRIDE
+    _STRIDE = stride
+    _REPR_OFF = 3 * stride
+    _COUNTER_OFF = 4 * stride
+    _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
+
+
+def _pad(record):
+    """``record`` padded with 0xFF to the stride (a no-op at the default)."""
+    return record + b"\xff" * (_STRIDE - len(record) % _STRIDE if len(record) % _STRIDE else 0)
 
 
 def _marker(label):
@@ -572,6 +589,7 @@ def _trailer_version(trailer):
 # --- pure: A/B slot arithmetic (mirror of boot.py; pinned by a test) ---------
 
 _ROLLBACK_ENTRY = 8                               # u32 version || u32 ~version
+_ROLLBACK_STRIDE = 8                              # entry spacing; stride-sized on ECC flash
 _COUNTER_OFF = 64                                 # within the status sector
 _COUNTER_LEN = 8
 _MASK32 = 0xFFFFFFFF
@@ -606,7 +624,7 @@ def _rollback_floor_of(sector):
         version, check = struct.unpack_from("<II", sector, i)
         if (version ^ _MASK32) == check and version > floor:
             floor = version
-        i += _ROLLBACK_ENTRY
+        i += _ROLLBACK_STRIDE
     return floor
 
 
@@ -1021,7 +1039,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     # it simply is not a candidate, and one that dies after it carries everything boot.py reads.
     status_off = slot_size - 2 * block               # the status sector
     if repr_marker is not None:                      # record which rep was applied (1->0 only)
-        write(status_off + _REPR_OFF, repr_marker)
+        write(status_off + _REPR_OFF, _pad(repr_marker))
         if readback(status_off + _REPR_OFF, len(repr_marker)) != repr_marker:
             raise OSError("repr marker verify failed")
     if floor:
@@ -1033,7 +1051,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         # the one being erased, so nothing survives unless it is written back here.
         entry = struct.pack("<II", floor & _MASK32, (floor & _MASK32) ^ _MASK32)
         rollback_off = slot_size - 3 * block
-        write(rollback_off, entry)
+        write(rollback_off, _pad(entry))
         if readback(rollback_off, len(entry)) != entry:
             raise OSError("rollback floor verify failed")
     if counter is not None:
@@ -1041,10 +1059,10 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         # carry a valid counter, because the counter is written only once the whole slot has been
         # streamed, read-back verified and sha256-checked.
         field = _encode_counter(counter)
-        write(status_off + _COUNTER_OFF, field)
+        write(status_off + _COUNTER_OFF, _pad(field))
         if readback(status_off + _COUNTER_OFF, len(field)) != field:
             raise OSError("install counter verify failed")
-    write(status_off, PENDING)                        # arm the trial, LAST
+    write(status_off, _pad(PENDING))                  # arm the trial, LAST
     if readback(status_off, len(PENDING)) != PENDING:
         raise OSError("arm verify failed")
 
@@ -1329,6 +1347,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # Watchdog (if the app enabled one): relax() feeds it from a timer ISR ONLY around the
     # single multi-second erase the main loop can't reach; feed() keeps it alive per chunk
     # through the loops -- so a hung loop (or a stalled recv) still trips it -> reboot.
+    _set_stride(getattr(cfg, "CONTROL_STRIDE", 16))
     relax = openmv_wdt.relax if openmv_wdt is not None else _NoWdt
     feed = openmv_wdt.feed if openmv_wdt is not None else _noop
     # Proactive GC hook (only when a watchdog is armed): the write loop calls this on a byte

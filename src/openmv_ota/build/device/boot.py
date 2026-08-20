@@ -70,6 +70,11 @@ MARKER_SIZE = 16
 _PENDING_OFF = 0
 _TRIED_OFF = 16
 _CONFIRMED_OFF = 32
+# The offsets above (and the attempt/rollback strides below) describe the DEFAULT
+# 16-byte control stride. A board whose flash programs in bigger one-shot ECC words
+# (H7-classic internal flash: 32) spaces every record one word apart instead --
+# _set_stride() rewrites the module geometry once, from _ota_config.CONTROL_STRIDE,
+# before any sector is parsed. Record CONTENTS never change; only their spacing.
 # --- v2 status fields -------------------------------------------------------
 # Both live in the same status sector, past the four 16-byte markers (offset 64 on), and both are
 # written WITHOUT erasing: the sector is blank (0xFF) after the slot erase and every write from
@@ -104,6 +109,20 @@ _BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
 
 # --- Anti-rollback floor (mirror of openmv_ota.ota.rollback) ----------------
 _ROLLBACK_ENTRY = 8                     # u32 version || u32 ~version, in a slot's rollback sector
+_ROLLBACK_STRIDE = 8                    # entry spacing; stride-sized on ECC-word flash
+
+
+def _set_stride(stride):
+    """Re-derive the module geometry for ``stride`` (no-op at the default 16)."""
+    global _TRIED_OFF, _CONFIRMED_OFF, _COUNTER_OFF, _ATTEMPT_UNIT, _ATTEMPTS_OFF
+    global _BLANK_ATTEMPT, _ROLLBACK_STRIDE
+    _TRIED_OFF = stride
+    _CONFIRMED_OFF = 2 * stride
+    _COUNTER_OFF = 4 * stride
+    _ATTEMPT_UNIT = max(16, stride)
+    _ATTEMPTS_OFF = 5 * stride
+    _BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
+    _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
 
 
 def _rollback_floor_of(sector):
@@ -111,11 +130,11 @@ def _rollback_floor_of(sector):
     floor = 0
     i = 0
     n = len(sector)
-    while i + _ROLLBACK_ENTRY <= n:
+    while i + _ROLLBACK_ENTRY <= n:  # entries sit _ROLLBACK_STRIDE apart
         version, check = struct.unpack_from("<II", sector, i)
         if (version ^ 0xFFFFFFFF) == check and version > floor:
             floor = version
-        i += _ROLLBACK_ENTRY
+        i += _ROLLBACK_STRIDE
     return floor
 
 
@@ -452,7 +471,8 @@ class OtaBoot:
             if off is None:
                 raise OtaReject("trial-attempts-full")
             try:
-                self.write_marker(offset + size - 2 * self.block + off, ATTEMPT)
+                self.write_marker(offset + size - 2 * self.block + off,
+                                  ATTEMPT + b"\xff" * (_ATTEMPT_UNIT - len(ATTEMPT)))
             except OSError:
                 # Cannot record the attempt, so cannot bound the trial. Running it anyway would
                 # be an untracked trial: if it hung, the next boot could not tell to move on.
@@ -534,6 +554,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     except OSError:
         log.debug("boot: no prior mount")   # mp_init didn't auto-mount /rom (blank/invalid romfs)
 
+    _set_stride(getattr(cfg, "CONTROL_STRIDE", 16))
     try:
         slot, trailer, reject_reason = OtaBoot(
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,

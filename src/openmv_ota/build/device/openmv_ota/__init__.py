@@ -97,6 +97,26 @@ _REPR_OFF = 48
 _STATUS_READ = 4 * MARKER_SIZE                   # pending/tried/confirmed + repr
 
 
+def _set_stride(stride):
+    """Space the control records ``stride`` apart (default 16; 32 on ECC-word flash
+    like the H7-classic's internal romfs, where each record owns one one-shot flash
+    word). Mirrors boot._set_stride; record contents never change."""
+    global _TRIED_OFF, _CONFIRMED_OFF, _REPR_OFF, _STATUS_READ, _COUNTER_OFF
+    global _SLOT_READ, _ROLLBACK_STRIDE
+    _TRIED_OFF = stride
+    _CONFIRMED_OFF = 2 * stride
+    _REPR_OFF = 3 * stride
+    _STATUS_READ = 3 * stride + MARKER_SIZE
+    _COUNTER_OFF = 4 * stride
+    _SLOT_READ = _COUNTER_OFF + _COUNTER_LEN
+    _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
+
+
+def _use_cfg_stride(cfg):
+    """Apply the board's stride once (idempotent; every public entry calls it)."""
+    _set_stride(getattr(cfg, "CONTROL_STRIDE", 16))
+
+
 def _marker(label):
     return hashlib.sha256(b"openmv-ota.status." + label).digest()[:MARKER_SIZE]
 
@@ -155,7 +175,8 @@ def _representation_of(status):
 
 # --- Anti-rollback floor (mirror of openmv_ota.ota.rollback) -----------------
 
-_ROLLBACK_ENTRY = 8                              # u32 version || u32 ~version
+_ROLLBACK_ENTRY = 8
+_ROLLBACK_STRIDE = 8                              # u32 version || u32 ~version
 
 
 def _rollback_entry(version):
@@ -170,7 +191,7 @@ def _rollback_floor_of(sector):
         version, check = struct.unpack_from("<II", sector, i)
         if (version ^ 0xFFFFFFFF) == check and version > floor:
             floor = version
-        i += _ROLLBACK_ENTRY
+        i += _ROLLBACK_STRIDE
     return floor
 
 
@@ -182,7 +203,7 @@ def _rollback_append_offset(sector):
     while i + _ROLLBACK_ENTRY <= n:
         if bytes(sector[i:i + _ROLLBACK_ENTRY]) == blank:
             return i
-        i += _ROLLBACK_ENTRY
+        i += _ROLLBACK_STRIDE
     return None
 
 
@@ -397,6 +418,7 @@ def status():  # pragma: no cover
     previous image -- worth reporting upstream. Under A/B that previous image is the last
     update that worked, not a years-old factory build."""
     import _ota_config
+    _use_cfg_stride(_ota_config)
     slot, version, reason = _boot_result()
     sector = _read_at(0, _status_offset(_ota_config, slot), _STATUS_READ)
     s = _status_of(sector)
@@ -440,6 +462,7 @@ def slots():  # pragma: no cover
     blank. Bounded by construction -- at most two slots, six small fields each -- and the flash
     reads are ``uctypes`` aliases over the XIP mapping, so nothing here copies a sector."""
     import _ota_config
+    _use_cfg_stride(_ota_config)
     import uctypes
     import vfs
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))
@@ -881,7 +904,8 @@ def _advance_rollback(cfg, slot, version):  # pragma: no cover (device)
     pos = _rollback_append_offset(sector)
     if pos is None:
         return  # hil-residual: bare early return (floor already current)
-    _write_verified(0, off + pos, _rollback_entry(version))
+    pad = _ROLLBACK_STRIDE - _ROLLBACK_ENTRY
+    _write_verified(0, off + pos, _rollback_entry(version) + b"\xff" * pad)
     log.debug("confirm: floor advanced")             # HIL path witness (the confirm write path)
 
 
@@ -895,12 +919,14 @@ def confirm():  # pragma: no cover
     Returns True iff it just confirmed; raises OSError if a write fails. Idempotent -- safe to
     call every boot once healthy."""
     import _ota_config
+    _use_cfg_stride(_ota_config)
     slot, version, _r = _boot_result()
     off = _status_offset(_ota_config, slot)
     if not _should_confirm(slot, _read_at(0, off, 3 * MARKER_SIZE)):
         return False  # hil-residual: bare const return (not confirmable this boot)
     _advance_rollback(_ota_config, slot, version)
-    _write_verified(0, off + _CONFIRMED_OFF, CONFIRMED)
+    _write_verified(0, off + _CONFIRMED_OFF,
+                    CONFIRMED + b"\xff" * (_TRIED_OFF - MARKER_SIZE))  # pad to the stride
     log.info("confirm: kept the running image (slot %s)" % slot)
     return True  # hil-residual: bare const return (confirmed)
 
@@ -1047,6 +1073,7 @@ def install(url, ca=None):  # pragma: no cover
     root bundle), ``bytes`` are used as-is, and a ``str`` is a path to read. Ignored for
     a file install -- there is no connection to authenticate."""
     import _ota_config as cfg
+    _use_cfg_stride(cfg)
     here = __file__.rsplit("/", 1)[0]
     ca = _resolve_ca(ca, here) if "://" in url else None  # a file install has no TLS peer
     ns = {}

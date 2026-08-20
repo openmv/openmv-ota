@@ -635,7 +635,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
             image += _compose_slot(
                 body, pad, floor,
                 status.build_status_sector(block, pending=False, tried=False, confirmed=True,
-                                           counter=counter),
+                                           counter=counter, stride=t.control_stride),
                 _build_trailer(signer, p, body, system_info, pad), block, size)
 
         name = _target_name(t)
