@@ -126,15 +126,15 @@ def register(project_parser: argparse.ArgumentParser):
     p_kun.set_defaults(func=cmd_keys_unrevoke, _command="project keys unrevoke")
 
     p_kb = keys_sub.add_parser("backup", help="write an encrypted backup of the private keys")
-    p_kb.add_argument("--passphrase-file", required=True, metavar="FILE",
-                      help="file whose contents are the backup passphrase")
+    p_kb.add_argument("--backup-passphrase-file", required=True, metavar="FILE",
+                      help="passphrase (read from a file) that encrypts the backup archive")
     p_kb.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_kb.set_defaults(func=cmd_keys_backup, _command="project keys backup")
 
     p_krs = keys_sub.add_parser("restore", help="restore private keys from an encrypted backup")
     p_krs.add_argument("backup", help="the keys-backup.enc file")
-    p_krs.add_argument("--passphrase-file", required=True, metavar="FILE",
-                       help="file whose contents are the backup passphrase")
+    p_krs.add_argument("--backup-passphrase-file", required=True, metavar="FILE",
+                       help="passphrase (read from a file) that decrypts the backup archive")
     p_krs.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_krs.set_defaults(func=cmd_keys_restore, _command="project keys restore")
 
@@ -197,7 +197,7 @@ def _read_passphrase(path: str) -> str:
 
 def cmd_keys_backup(args: argparse.Namespace) -> int:
     try:
-        out = proj.backup_private_keys(args.dir, _read_passphrase(args.passphrase_file))
+        out = proj.backup_private_keys(args.dir, _read_passphrase(args.backup_passphrase_file))
     except ProjectError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -210,7 +210,7 @@ def cmd_keys_backup(args: argparse.Namespace) -> int:
 
 def cmd_keys_restore(args: argparse.Namespace) -> int:
     try:
-        pw = _read_passphrase(args.passphrase_file)
+        pw = _read_passphrase(args.backup_passphrase_file)
         try:
             blob = Path(args.backup).read_bytes()
         except OSError as e:
@@ -347,8 +347,8 @@ def cmd_new(args: argparse.Namespace) -> int:
                       "backup` manually" % e, file=sys.stderr)
         else:
             print("IMPORTANT: back up your signing keys off-machine now — "
-                  "`openmv-ota project keys backup --passphrase-file <file>`. Without them you "
-                  "can never update this fleet again.")
+                  "`openmv-ota project keys backup --backup-passphrase-file <file>`. Without them "
+                  "you can never update this fleet again.")
         print("Next: review [targets.*] in openmv-ota.toml (board_name, the "
               "auto-assigned product_id), and set your app version in app/settings.json.")
     _print_summary(lock)

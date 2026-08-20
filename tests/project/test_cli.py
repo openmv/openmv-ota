@@ -120,7 +120,7 @@ def test_keys_backup_and_restore_roundtrip(tmp_path, make_firmware, make_sdk, ca
     pw = tmp_path / "pw.txt"
     pw.write_text("vault passphrase")
     capsys.readouterr()
-    assert main(["project", "keys", "backup", str(root), "--passphrase-file", str(pw)]) == 0
+    assert main(["project", "keys", "backup", str(root), "--backup-passphrase-file", str(pw)]) == 0
     assert "MOVE IT OFF THIS MACHINE" in capsys.readouterr().out
     backup = root / "keys-backup.enc"
     assert backup.exists()
@@ -131,7 +131,7 @@ def test_keys_backup_and_restore_roundtrip(tmp_path, make_firmware, make_sdk, ca
     for p in private.glob("*.pem"):
         p.unlink()
     rc = main(["project", "keys", "restore", str(backup), str(root),
-               "--passphrase-file", str(pw)])
+               "--backup-passphrase-file", str(pw)])
     assert rc == 0 and "Restored" in capsys.readouterr().out
     assert {p.name: p.read_bytes() for p in private.glob("*.pem")} == saved
 
@@ -140,7 +140,7 @@ def test_keys_backup_no_keys_errors(tmp_path, make_firmware, make_sdk, capsys):
     _rc, root, _ = _new(tmp_path, make_firmware, make_sdk)   # non-OTA -> no private keys
     pw = tmp_path / "pw.txt"
     pw.write_text("x")
-    rc = main(["project", "keys", "backup", str(root), "--passphrase-file", str(pw)])
+    rc = main(["project", "keys", "backup", str(root), "--backup-passphrase-file", str(pw)])
     assert rc == 1 and "no private keys" in capsys.readouterr().err
 
 
@@ -148,7 +148,7 @@ def test_keys_backup_empty_passphrase_file(tmp_path, make_firmware, make_sdk, ca
     _rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota")
     pw = tmp_path / "pw.txt"
     pw.write_text("   \n")
-    rc = main(["project", "keys", "backup", str(root), "--passphrase-file", str(pw)])
+    rc = main(["project", "keys", "backup", str(root), "--backup-passphrase-file", str(pw)])
     assert rc == 2 and "is empty" in capsys.readouterr().err
 
 
@@ -156,12 +156,12 @@ def test_keys_restore_wrong_passphrase(tmp_path, make_firmware, make_sdk, capsys
     _rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota")
     pw = tmp_path / "pw.txt"
     pw.write_text("right")
-    main(["project", "keys", "backup", str(root), "--passphrase-file", str(pw)])
+    main(["project", "keys", "backup", str(root), "--backup-passphrase-file", str(pw)])
     bad = tmp_path / "bad.txt"
     bad.write_text("wrong")
     capsys.readouterr()
     rc = main(["project", "keys", "restore", str(root / "keys-backup.enc"), str(root),
-               "--passphrase-file", str(bad)])
+               "--backup-passphrase-file", str(bad)])
     assert rc == 2 and "wrong passphrase" in capsys.readouterr().err
 
 
@@ -170,14 +170,14 @@ def test_keys_restore_missing_backup(tmp_path, make_firmware, make_sdk, capsys):
     pw = tmp_path / "pw.txt"
     pw.write_text("x")
     rc = main(["project", "keys", "restore", str(tmp_path / "nope.enc"), str(root),
-               "--passphrase-file", str(pw)])
+               "--backup-passphrase-file", str(pw)])
     assert rc == 2 and "can't read backup" in capsys.readouterr().err
 
 
 def test_keys_backup_missing_passphrase_file(tmp_path, make_firmware, make_sdk, capsys):
     _rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota")
     rc = main(["project", "keys", "backup", str(root),
-               "--passphrase-file", str(tmp_path / "nope.txt")])
+               "--backup-passphrase-file", str(tmp_path / "nope.txt")])
     assert rc == 2 and "can't read passphrase file" in capsys.readouterr().err
 
 
