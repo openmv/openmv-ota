@@ -1034,6 +1034,90 @@ def test_trailer_version_mirrors_trailer():
     assert inst("_trailer_version")(b"XXXX" + trailer[4:]) == 0  # bad magic -> 0
 
 
+# --- installing from a file on a mounted filesystem (SD card) ----------------
+
+def test_is_path():
+    assert inst("_is_path")("/sd/fw/m.bin")
+    assert inst("_is_path")("fw/m.bin")
+    assert not inst("_is_path")("https://host/m.bin")
+    assert not inst("_is_path")("http://host/m.bin")     # scheme -> _parse_url's plaintext refusal
+
+
+def test_resolve_url_for_paths():
+    r = inst("_resolve_url")
+    assert r("/sd/fw/m.bin", "img.gz") == "/sd/fw/img.gz"
+    assert r("/sd/fw/m.bin", "./img.gz") == "/sd/fw/img.gz"
+    assert r("m.bin", "img.gz") == "img.gz"              # bare relative base: sibling in cwd
+    assert r("/sd/m.bin", "https://cdn/x.gz") == "https://cdn/x.gz"  # absolute rep: as-is
+
+
+def test_read_manifest_file(tmp_path):
+    p = tmp_path / "m.bin"
+    p.write_bytes(b"M" * 100)
+    assert inst("_read_manifest_file")(str(p)) == b"M" * 100
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * (inst("_MANIFEST_MAX") + 1))
+    with pytest.raises(ValueError):                      # the HTTPS manifest cap applies to files too
+        inst("_read_manifest_file")(str(big))
+    with pytest.raises(OSError):                         # unreadable path raises straight to the app
+        inst("_read_manifest_file")(str(tmp_path / "absent.bin"))
+
+
+def _vet_cfg(product_id=7, keys=None):
+    import types
+    keys = {0x0100: b"\x04pub"} if keys is None else keys
+    return types.SimpleNamespace(TRUSTED_KEYS=keys, PRODUCT_ID=product_id, PLATFORM_VERSION=0)
+
+
+def _sd_body(rep_url="img.gz", fmt="full", base=None):
+    rep = {"format": fmt, "url": rep_url, "size": 9}
+    if base is not None:
+        rep["base_payload_version"] = base
+    return {"schema": 1, "product_id": 7, "payload_version": 33685760,
+            "min_platform_version": 0, "sha256": "ab" * 32, "representations": [rep]}
+
+
+def test_vet_manifest_happy_path_resolves_beside_the_manifest():
+    url, fmt, sha = inst("_vet_manifest")(
+        "/sd/fw/m.bin", _host_manifest(body=_sd_body()), _vet_cfg(), lambda *a: True, 0, 0, True)
+    assert (url, fmt, sha) == ("/sd/fw/img.gz", "full", "ab" * 32)
+
+
+def test_vet_manifest_rejections():
+    raw = _host_manifest(body=_sd_body())
+    ok = lambda *a: True                                              # noqa: E731
+    with pytest.raises(OSError, match="untrusted key"):
+        inst("_vet_manifest")("/sd/m.bin", raw, _vet_cfg(keys={}), ok, 0, 0, True)
+    with pytest.raises(OSError, match="does not verify"):
+        inst("_vet_manifest")("/sd/m.bin", raw, _vet_cfg(), lambda *a: False, 0, 0, True)
+    with pytest.raises(OSError, match="rejected \\(board\\)"):
+        inst("_vet_manifest")("/sd/m.bin", raw, _vet_cfg(product_id=9), ok, 0, 0, True)
+    with pytest.raises(OSError, match="rejected \\(rollback\\)"):  # the floor holds on-disk too
+        inst("_vet_manifest")("/sd/m.bin", raw, _vet_cfg(), ok, 99999999, 0, True)
+    delta_only = _host_manifest(body=_sd_body(fmt=inst("_DELTA_FORMAT"), base=1))
+    with pytest.raises(OSError, match="no usable representation"):    # SINGLE mode: no delta base
+        inst("_vet_manifest")("/sd/m.bin", delta_only, _vet_cfg(), ok, 0, 0, False)
+
+
+def test_fetch_manifest_file_end_to_end(tmp_path):
+    p = tmp_path / "OPENMV_N6-manifest.bin"
+    p.write_bytes(_host_manifest(body=_sd_body(rep_url="OPENMV_N6-ota.img.gz")))
+    url, fmt, sha = inst("_fetch_manifest_file")(str(p), _vet_cfg(), lambda *a: True)
+    assert url == str(tmp_path / "OPENMV_N6-ota.img.gz")  # resolved beside the manifest
+    assert (fmt, sha) == ("full", "ab" * 32)
+
+
+def test_open_body_returns_the_file_stream(tmp_path):
+    p = tmp_path / "i.gz"
+    p.write_bytes(b"GZDATA")
+    body = inst("_open_body")(str(p), None, None, None, inst("_noop"))
+    try:
+        buf = bytearray(8)
+        assert body.readinto(buf) == 6 and bytes(buf[:6]) == b"GZDATA"  # what DeflateIO consumes
+    finally:
+        body.close()
+
+
 # --- delta apply: device streaming mirror of ota.delta.apply_delta -----------
 
 def _old_read_of(base):
