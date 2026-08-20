@@ -66,8 +66,7 @@ variable (what CI uses), and finally an **interactive prompt** when running in a
 terminal — so day to day you can simply type it; the file flag exists for scripts.
 The `keys` verbs are explicit instead: `backup` / `restore` require their own
 `--passphrase-file` (the backup's passphrase, which may differ from the signing
-one), `encrypt` takes `--key-passphrase-file` or `--dev`, and `rotate` / `revoke` /
-`status` need no passphrase at all. (Passphrases travel in files or the environment
+one), while `rotate` / `revoke` / `status` need no passphrase at all. (Passphrases travel in files or the environment
 rather than on the command line itself, where they would land in shell history and
 `ps` output.)
 
