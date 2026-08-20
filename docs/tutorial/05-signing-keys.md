@@ -133,8 +133,9 @@ openmv-ota project keys backend show | configure | provision
   encrypted at rest, so the archive adds nothing to decrypt — and a `--dev`
   project is refused a backup (its cached throwaway passphrase sits beside the
   keys, making any copy effectively plaintext). The key set never changes after
-  `new`, so `backup` isn't periodic — it regenerates the byte-identical artifact
-  if the local copy was deleted before it reached the vault.
+  `new`, so `backup` isn't something you run periodically — it just writes the
+  same file `new` already gave you, in case you lost that copy before stashing
+  it somewhere safe.
 - **`backend`** — keys don't have to live on disk at all. `show` lists each key's
   signing backend. `configure KEY_ID --backend {encrypted-pem,pkcs11,aws-kms,gcp-kms,azure-kms,custom}
   --set KEY=VALUE …` points a trusted key at an **external** signer (bring your own
