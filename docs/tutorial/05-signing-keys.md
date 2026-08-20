@@ -107,8 +107,10 @@ openmv-ota project keys unrevoke 0x0100
   attacker has this key and could forge images." It sets `revoked` on the key in
   `keys/trusted_keys.json` (kept, never deleted), so `build romfs` refuses to sign
   with it and `rotate` skips it. It's deliberately **not** auto-applied to fielded
-  devices: the device-side reject-list is baked by a firmware build, so a revoked
-  key only stops being trusted once a device updates. It's reversible with
+  devices: the trusted/revoked set is baked into the **firmware** by `build
+  firmware` — a romfs OTA update never changes it — so a revoked key only stops
+  being trusted once a device's firmware is re-flashed (today a physical reflash;
+  there is no firmware-over-OTA). It's reversible with
   `unrevoke` (for a fat-fingered id or false alarm). Revoking the current signer
   doesn't move it — `build romfs` will refuse until you `rotate`.
 
