@@ -34,6 +34,13 @@ images a camera can download, verify, and fall back from.
   --ota` provisions the *whole* key set up front and
   writes it under `keys/`.
 
+- **The product id is enforced.** Every build stamps the scaffolded `product_id`
+  ([page 2](02-projects.md#product-name-vs-board-name)) into the image; an OTA
+  device bakes its own copy in and rejects any image whose id doesn't match — the
+  **cross-flash guard**. Keep the id once devices ship (a later change would
+  reject updates on fielded devices); `build romfs` warns if it is `0` (guard
+  off) or if two boards collide on one id.
+
 (The starter `app/` — including the `app_version` the build stamps into the image
 — is scaffolded for every project, not just OTA; see
 [The app folder](02-projects.md#the-app-folder).)
@@ -147,30 +154,6 @@ It also scaffolds **`device/openmv_wdt.py`** — an opt-in watchdog helper (froz
 `openmv_wdt`, off by default): `openmv_wdt.feed()` from your main loop, and
 `with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds the watchdog
 through them). `install()` uses it automatically.
-
-## Board identity
-
-`product_id` is a `uint32` that names a product (the cross-flash guard), and
-`board_name` is a human label for it. They live only in `openmv-ota.toml` (per
-`[targets.<BOARD>]`) and are pure identity — **excluded from the lock and its
-[`config_digest`](03-the-lock.md#what-the-lock-records)** — so setting a product id or renaming a board never trips drift
-(unlike geometry overrides, which are firmware-relevant and *are* digested).
-`build romfs` reads them and stamps them into `system.json` and the trailer: the
-device's `product_id` guards against cross-flashing the wrong product; `board_name`
-is metadata only.
-
-The number is the one `new` scaffolded into `[targets.<BOARD>]`
-(the [projects page](02-projects.md#product-name-vs-board-name) derivation). What
-changes under OTA is that it is *enforced*. **Keep it once devices ship**: a
-device bakes its `product_id` in and rejects any image whose id doesn't match, so a
-later change would reject updates on fielded devices. You can still override it (e.g. to match an existing product numbering),
-and `build romfs` warns if you set it to `0` (guard off) or if two boards collide
-on the same id.
-
-A **non-OTA** project carries the same scaffolded id, recorded in `system.json`
-but enforced by nothing — so an app reads one product identity in every mode, and
-nothing changes when you later move to OTA. One app folder can target several boards or
-products at once — each gets its own identity but shares the app and toolchain.
 
 ## Multi-core boards (a coprocessor partition)
 
