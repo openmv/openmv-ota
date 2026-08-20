@@ -1078,9 +1078,17 @@ def _sd_body(rep_url="img.gz", fmt="full", base=None):
 
 
 def test_vet_manifest_happy_path_resolves_beside_the_manifest():
-    url, fmt, sha = inst("_vet_manifest")(
+    url, fmt, sha, wbits = inst("_vet_manifest")(
         "/sd/fw/m.bin", _host_manifest(body=_sd_body()), _vet_cfg(), lambda *a: True, 0, 0, True)
-    assert (url, fmt, sha) == ("/sd/fw/img.gz", "full", "ab" * 32)
+    assert (url, fmt, sha, wbits) == ("/sd/fw/img.gz", "full", "ab" * 32, 0)
+
+
+def test_vet_manifest_carries_wbits():
+    body = _sd_body()
+    body["representations"][0]["wbits"] = 13
+    out = inst("_vet_manifest")("/sd/m.bin", _host_manifest(body=body), _vet_cfg(),
+                                lambda *a: True, 0, 0, True)
+    assert out[3] == 13                                 # the small-window hint, signed
 
 
 def test_vet_manifest_rejections():
@@ -1102,9 +1110,9 @@ def test_vet_manifest_rejections():
 def test_fetch_manifest_file_end_to_end(tmp_path):
     p = tmp_path / "OPENMV_N6-manifest.bin"
     p.write_bytes(_host_manifest(body=_sd_body(rep_url="OPENMV_N6-ota.img.gz")))
-    url, fmt, sha = inst("_fetch_manifest_file")(str(p), _vet_cfg(), lambda *a: True)
+    url, fmt, sha, wbits = inst("_fetch_manifest_file")(str(p), _vet_cfg(), lambda *a: True)
     assert url == str(tmp_path / "OPENMV_N6-ota.img.gz")  # resolved beside the manifest
-    assert (fmt, sha) == ("full", "ab" * 32)
+    assert (fmt, sha, wbits) == ("full", "ab" * 32, 0)
 
 
 def test_open_body_returns_the_file_stream(tmp_path):

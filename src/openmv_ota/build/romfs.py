@@ -258,6 +258,8 @@ def build_romfs(
     app_dir = Path(app) if app else project / "app"
     copro_dir = project / COPROCESSOR_APP
     out_dir = Path(output) if output else project / "build"
+    if p.config.ota:
+        _warn_stale_device_lib(p)
     _warn_product_id_collisions(p.config)
 
     targets = _select_targets(p.targets, boards)
@@ -320,6 +322,30 @@ def _target_name(t) -> str:
     """Output basename. The main partition keeps the bare board name; a coprocessor
     partition is suffixed with its role (e.g. ``OPENMV_AE3-coprocessor``)."""
     return t.name if t.role == "main" else "%s-%s" % (t.name, t.role)
+
+
+_DEVICE_LIB = Path(__file__).parent / "device" / "openmv_ota"
+
+
+def _warn_stale_device_lib(p) -> None:
+    """Warn when the project's scaffolded ``app/lib/openmv_ota`` differs from this
+    tool's bundled device lib. The lib is the user's to edit -- but when the
+    difference is a STALE SCAFFOLD (the tool moved; the copy did not), the device
+    runs old code while everything else is new. On the bench that mismatch cost
+    three debugging cycles before anyone thought to compare the copies."""
+    lib = Path(p.root) / "app" / "lib" / "openmv_ota"
+    if not lib.is_dir():
+        return
+    stale = [str(src.relative_to(_DEVICE_LIB))
+             for src in sorted(_DEVICE_LIB.rglob("*.py"))
+             if (lib / src.relative_to(_DEVICE_LIB)).exists()
+             and (lib / src.relative_to(_DEVICE_LIB)).read_bytes() != src.read_bytes()]
+    if stale:
+        print("warning: app/lib/openmv_ota differs from this tool's bundled device lib "
+              "(%s). Yours to edit on purpose -- but if this is a stale scaffold, copy "
+              "the bundled files over from the installed package "
+              "(openmv_ota/build/device/openmv_ota/)." % ", ".join(stale),
+              file=sys.stderr)
 
 
 def _warn_unset_product_id(t, system_info: dict) -> None:
@@ -388,6 +414,14 @@ def _runtime_inject(out_dir, board, copro_targets):
         if not lib.is_dir():
             return                                   # not an OTA project
         data = lib / "data"
+        installer = data / "installer.py"
+        if installer.exists():
+            # The installer ships as SOURCE (exec'd into RAM on-device), so its repo
+            # comments would otherwise ship too -- ~70% of the file. Strip at pack
+            # time: same code, a third of the flash and install-time RAM.
+            from .pystrip import strip_python_source
+            installer.write_text(strip_python_source(installer.read_text(encoding="utf-8")),
+                                 encoding="utf-8")
         if not copro_targets:
             # Plain board: drop only the coprocessor resource (nothing to sync) -- keep
             # installer.py + ca.pem, which every OTA image needs.
@@ -599,7 +633,11 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
                                          convert_models=convert_models, mpy_extra=mpy_extra,
                                          inject=inject, dev=signer.backend.is_dev_key)
     try:
-        block = geometry.ota_block(t.erase_size)
+        # CONTROL sectors are always control_block()-sized (4 KiB), never the erase
+        # block: on a one-big-sector board (an F427's 128 KiB internal sectors) sizing
+        # them to the erase block composed 4x128 KiB of "control" into a 128 KiB slot.
+        # Invisible on external-NOR boards, whose erase block IS 4 KiB.
+        block = geometry.control_block()
         overhead = geometry.slot_overhead(t.erase_size)
         slots = provision_slots(t.partition_size, t.erase_size, p.config.single_image)
         smallest = min(size for size, _counter in slots) - overhead
@@ -623,7 +661,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
             image += _compose_slot(
                 body, pad, floor,
                 status.build_status_sector(block, pending=False, tried=False, confirmed=True,
-                                           counter=counter),
+                                           counter=counter, stride=t.control_stride),
                 _build_trailer(signer, p, body, system_info, pad), block, size)
 
         name = _target_name(t)
@@ -637,7 +675,26 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _gzip_small(data: bytes, wbits: int) -> bytes:
+    """A gzip container holding a deflate stream with a SMALL window (2**wbits), for
+    small-heap devices: DeflateIO's inflate window is 2**wbits bytes of RAM, and the
+    default 32 KiB (wbits 15) does not fit a classic's ~40 KB heap. The gzip header
+    does not carry the window size, so the manifest records ``wbits`` and the
+    installer passes it through. Any host gzip reads this fine (a smaller window is
+    always valid); ``mtime=0`` for reproducibility, like gzip.compress."""
+    import struct
+    import zlib
+    co = zlib.compressobj(9, zlib.DEFLATED, -wbits)
+    deflated = co.compress(data) + co.flush()
+    return (b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff" + deflated
+            + struct.pack("<II", zlib.crc32(data) & 0xFFFFFFFF, len(data) & 0xFFFFFFFF))
+
+
 # --- OTA download image (the gzipped slot-sized image a server hosts) --------
+
+SINGLE_WBITS = 12     # 4 KiB inflate window: measured on the bench -- a classic's heap after
+#                        the app + runtime lib cannot give DeflateIO 8 KiB contiguous
+
 
 @dataclass
 class OtaImageResult:
@@ -646,6 +703,7 @@ class OtaImageResult:
     output: Path        # <board>-ota.img.gz
     image_size: int     # the full slot-sized image (uncompressed)
     gz_size: int        # the gzipped artifact actually written
+    wbits: int | None = None   # small inflate window used (SINGLE mode); None = default 32 KiB
 
 
 def build_ota_image(
@@ -696,25 +754,39 @@ def build_ota_image(
         except OtaError as e:
             raise BuildError(str(e), exit_code=1) from None
 
-        block = geometry.ota_block(t.erase_size)
-        front_size = t.front_size
-        front_cap = front_size - geometry.slot_overhead(t.erase_size)
-        if len(body) > front_cap:
+        # MODE-AWARE, like _capacity(): front_size is an A/B concept and is 0 in
+        # SINGLE mode, where the one slot spans the partition. The control block is
+        # always 4 KiB (see the factory composer).
+        block = geometry.control_block()
+        if geometry.resolve_mode(t.partition_size, t.erase_size,
+                                 p.config.single_image) == geometry.SINGLE:
+            slot_size = t.partition_size
+        else:
+            slot_size = t.front_size
+        slot_cap = slot_size - geometry.slot_overhead(t.erase_size)
+        if len(body) > slot_cap:
             raise BuildError(
                 "%s body is %d bytes but a slot holds %d (rebuild within capacity)"
-                % (t.name, len(body), front_cap), exit_code=1)
+                % (t.name, len(body), slot_cap), exit_code=1)
 
         # A full slot, all control sectors blank (0xFF): the installer writes this 1:1, then
         # stamps the install counter and arms PENDING. The rollback sector stays blank here --
         # the floor is device state, carried forward by the installer from what the device
         # already had, and an image cannot know it.
-        image = _compose_slot(body, front_cap - len(body), b"", b"\xff" * block,
-                              trailer_bytes, block, front_size)
-        gz = gzip.compress(image, mtime=0)            # mtime=0: reproducible artifact
+        image = _compose_slot(body, slot_cap - len(body), b"", b"\xff" * block,
+                              trailer_bytes, block, slot_size)
+        single = slot_size == t.partition_size
+        if single:
+            # Small-heap boards: an 8 KiB inflate window (wbits 13) instead of the
+            # default 32 KiB, recorded in the manifest so the device allocates the same.
+            gz = _gzip_small(image, SINGLE_WBITS)
+        else:
+            gz = gzip.compress(image, mtime=0)        # mtime=0: reproducible artifact
         out_path = out_dir / (_target_name(t) + "-ota.img.gz")
         out_path.write_bytes(gz)
         results.append(OtaImageResult(t.name, t.partition_index, out_path,
-                                      len(image), len(gz)))
+                                      len(image), len(gz),
+                                      wbits=SINGLE_WBITS if single else None))
     return results
 
 
@@ -864,6 +936,13 @@ def build_manifest(
 
         reps = [{"format": "full", "url": _rep_url(img_path.name),
                  "size": img_path.stat().st_size}]
+        if geometry.resolve_mode(t.partition_size, t.erase_size,
+                                 p.config.single_image) == geometry.SINGLE:
+            # A single-image device inflates with a SMALL window (the renderer
+            # compressed with the same 2**SINGLE_WBITS one -- see _gzip_small); the
+            # signed manifest is how the device learns the size, since a gzip header
+            # does not carry it.
+            reps[0]["wbits"] = SINGLE_WBITS
         for entry in delta_list:
             delta_path, base_version = Path(entry[0]), entry[1]
             patch = _read_maybe_gz(delta_path)

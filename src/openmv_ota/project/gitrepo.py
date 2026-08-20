@@ -68,6 +68,16 @@ def remote_url(repo: Path) -> str | None:
     return run_git(repo, "remote", "get-url", "origin", check=False)
 
 
+def dirty_paths(repo: Path, limit: int = 5) -> list[str]:
+    """The first few paths `git status --porcelain` reports (nested __pycache__ junk
+    in a submodule counts too) -- so a dirty-checkout refusal can NAME the offenders
+    instead of sending the user spelunking."""
+    out = run_git(repo, "status", "--porcelain", check=False) or ""
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    return lines[:limit] + (["... and %d more" % (len(lines) - limit)]
+                            if len(lines) > limit else [])
+
+
 def submodule_remotes(repo: Path) -> dict[str, str]:
     """``{path: url}`` from ``.gitmodules`` (empty when there are none). The remote is a
     submodule's upstream identity -- what the SBOM needs to give it a purl."""

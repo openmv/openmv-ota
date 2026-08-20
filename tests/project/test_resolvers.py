@@ -269,7 +269,7 @@ def test_board_bad_partition_index(make_firmware):
 def test_board_no_firmware_header_uses_bundled(make_firmware):
     repo = make_firmware()
     # A board with no board_config.h in the firmware tree falls back to bundled.
-    rb, _ = board_res.resolve_board(repo, "OPENMV4")
+    rb, _ = board_res.resolve_board(repo, "OPENMV2")  # absent from the fixture (OPENMV4 now ships a header)
     assert rb.geometry_source == "bundled"
     assert rb.board_type is None
     assert rb.npu is None and rb.npu_config is None  # board without an NPU

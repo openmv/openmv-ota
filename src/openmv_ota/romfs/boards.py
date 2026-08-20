@@ -21,6 +21,10 @@ class Partition:
     index: int
     size: int
     erase_size: int = 0  # flash erase block of the backing store (0 = unknown)
+    control_stride: int = 16  # spacing of independently-programmed control records:
+                              # 16 (the portable flash write unit) everywhere except
+                              # ECC-word flash (H7-classic internal: 32, one record
+                              # per one-shot 32-byte flash word)
     role: str = "main"   # "main" (the OTA app partition) or "coprocessor" (a slaved
                          # secondary core's partition, e.g. AE3's M55_HE: never OTA,
                          # always a plain romfs the main core writes)
@@ -72,6 +76,7 @@ def load_boards() -> dict[str, BoardConfig]:
                 index=int(p.get("index", 0)),
                 size=int(p.get("size", 0)),
                 erase_size=int(p.get("erase_size", 0)),
+                control_stride=int(p.get("control_stride", 16)),
                 role=p.get("role", "main"),
                 alignment_rules=list(p.get("alignment_rules", [])),
                 npu=p.get("npu"),

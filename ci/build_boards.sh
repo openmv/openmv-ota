@@ -291,20 +291,29 @@ do_classic() {  # board  work
     fi
     # THE SLOT BUDGET MUST BE THE SINGLE-MODE ONE. `front_size` is an A/B concept and is 0 in
     # SINGLE mode, so the A/B arithmetic used to report a NEGATIVE budget here ("the OTA slot
-    # holds -16384") and every image was over budget by construction -- `build romfs` could not
-    # produce an image for ANY one-erase-sector board, which is precisely the class SINGLE is for.
-    #
-    # The scaffolded app does not fit these partitions either (it carries the ~200 KB CA bundle,
-    # and an M4/H7-classic ROMFS slot holds 114688 bytes), so the honest assertion is that the
-    # refusal is CLEAN and quotes the real single-image budget -- which is also what proves the
-    # mode-aware capacity is in use, since the A/B path cannot produce that wording.
-    # --no-compile-py because the board above may have SKIPPED the firmware build, and mpy-cross
-    # is a by-product of it: without that, `build romfs` stops at "mpy-cross is not available"
-    # and never reaches the budget check this asserts. Compiling is irrelevant here anyway --
-    # what is under test is which slot size the budget is computed against.
-    expect_clean_fail "build romfs quotes the SINGLE-image slot budget (not a negative A/B one)" \
-      1 "OTA slot (single image)" \
-      $OTA build romfs "$ota" -b "$board" --allow-dev-key --no-compile-py
+    # holds -16384") and every image was over budget by construction. Whether the scaffolded
+    # app FITS depends on the board: since the installer is stripped at pack time it fits an
+    # M7-classic's 240K slot (a successful build whose summary names the single-image bound)
+    # but still exceeds an M4/H7-classic's 112K one (a clean refusal quoting the same bound).
+    # Either way the budget wording is the proof -- the A/B path cannot produce it.
+    # --no-compile-py because the board above may have SKIPPED the firmware build, and
+    # mpy-cross is a by-product of it; compiling is irrelevant to which slot size the
+    # budget is computed against.
+    runcmd $OTA build romfs "$ota" -b "$board" --allow-dev-key --no-compile-py
+    case "$LAST_OUT" in
+      *"Traceback (most recent call last)"*)
+        fail "build romfs budget is the SINGLE-image one" "Python traceback:
+$LAST_OUT";;
+      *"OTA slot (single image)"*)
+        if [ "$LAST_RC" -eq 0 ]; then
+          pass "build romfs fits and names the SINGLE-image bound"
+        else
+          pass "build romfs over-budget refusal quotes the SINGLE-image bound"
+        fi;;
+      *)
+        fail "build romfs budget is the SINGLE-image one" "no single-image bound in:
+$LAST_OUT";;
+    esac
   fi
 
   expect_success "project new (non-OTA)" \

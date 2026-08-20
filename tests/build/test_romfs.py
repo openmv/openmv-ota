@@ -1264,3 +1264,77 @@ def test_capacity_uses_the_ab_slot_budget_when_two_slots_fit():
 def test_capacity_of_a_non_ota_project_is_the_whole_partition():
     cap, bound = build_mod._capacity(_Proj(ota=False), _Tgt(131072, 131072, front_size=0))
     assert (cap, bound) == (131072, "ROMFS partition")
+
+
+# --- single-image mode: the composers, end to end on the host ----------------
+
+def test_single_image_build_set(make_project):
+    """The classic (one-big-sector) path: factory composes one partition-spanning
+    slot with 4 KiB control sectors, the ota image renders partition-sized with a
+    SMALL inflate window, and the manifest records that window -- everything the
+    bench bring-up caught, pinned on the host."""
+    import gzip as _gzip
+    import zlib
+
+    from openmv_ota.build.romfs import (
+        SINGLE_WBITS, build_factory_romfs, build_manifest, build_ota_image,
+    )
+    from openmv_ota.ota import geometry, parse_trailer
+    from openmv_ota.ota.manifest import parse_manifest
+
+    root, repo, app = make_project(boards=("OPENMV4",), ota=True, dev=True, ca="tiny",
+                                   app_files={"main.py": "print(1)\n",
+                                              "settings.json": '{"app_version": "1.0.0"}\n'})
+    build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False,
+                          convert_models=False, allow_dev_key=True)
+
+    # factory: one slot spanning the partition, trailer in the LAST 4 KiB block
+    [fres] = build_factory_romfs(root, app=app, firmware=repo, compile_py=False,
+                                 convert_models=False, allow_dev_key=True, no_account=True)
+    img = fres.output.read_bytes()
+    assert len(img) == 131072                       # partition-sized exactly
+    t = parse_trailer(img[-geometry.control_block():])
+    assert t.payload_version == (1 << 24)           # 1.0.0, trailer where boot.py looks
+
+    # ota image: partition-sized, compressed with the SMALL window, decodable both ways
+    [ores] = build_ota_image(root, firmware=repo)
+    assert ores.wbits == SINGLE_WBITS
+    gz = ores.output.read_bytes()
+    image = _gzip.decompress(gz)                    # any host gzip reads it
+    assert len(image) == 131072
+    d = zlib.decompressobj(-SINGLE_WBITS)           # and a 2**SINGLE_WBITS window suffices
+    assert d.decompress(gz[10:-8]) + d.flush() == image
+
+    # manifest: the signed rep carries the window for the device's DeflateIO
+    [mres] = build_manifest(root, firmware=repo, allow_dev_key=True)
+    body = parse_manifest(mres.output.read_bytes()).body
+    assert body["representations"][0]["wbits"] == SINGLE_WBITS
+
+
+def test_stale_device_lib_warns(make_project, capsys):
+    root, repo, app = make_project(ota=True, dev=True)
+    lib = root / "app" / "lib" / "openmv_ota" / "__init__.py"
+    lib.write_text(lib.read_text() + "\n# my local edit\n")
+    build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False,
+                          convert_models=False, allow_dev_key=True)
+    err = capsys.readouterr().err
+    assert "differs from this tool's bundled device lib" in err
+    assert "__init__.py" in err
+
+
+def test_missing_device_lib_is_silent(make_project, capsys):
+    # a non-OTA-shaped app (lib removed) is simply not checked
+    import shutil
+    root, repo, app = make_project(ota=True, dev=True)
+    shutil.rmtree(root / "app" / "lib" / "openmv_ota")
+    from openmv_ota.build.romfs import _warn_stale_device_lib
+    from openmv_ota.project import load_project
+    _warn_stale_device_lib(load_project(root, firmware=repo, verify=False))
+    assert "differs from" not in capsys.readouterr().err
+
+
+def test_current_device_lib_is_silent(make_project, capsys):
+    root, repo, app = make_project(ota=True, dev=True)
+    build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False,
+                          convert_models=False, allow_dev_key=True)
+    assert "differs from this tool's bundled" not in capsys.readouterr().err

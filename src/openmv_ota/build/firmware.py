@@ -277,6 +277,7 @@ def _render_ota_config(p, name: str) -> str:
         "# Build-time constants the frozen boot.py reads.\n"
         "PARTITION_SIZE = %d\n" % t.partition_size
         + "FRONT_SIZE = %d\n" % t.front_size
+        + "CONTROL_STRIDE = %d\n" % t.control_stride
         + "CONTROL_BLOCK = %d\n" % geometry.control_block(t.erase_size)  # NOT the erase block:
         #   the device only ever uses this for control-sector OFFSETS, and it gets the real
         #   erase size from the runtime (rom_ioctl(6)). Stamping the erase block here is what

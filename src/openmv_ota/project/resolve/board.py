@@ -34,6 +34,7 @@ class ResolvedBoard:
     partition_size: int
     erase_size: int                       # flash erase block of the partition's backing store
     front_size: int                       # FRONT slot size (half the partition, block-aligned)
+    control_stride: int = 16              # control-record spacing (32 on ECC-word flash)
     alignment_rules: list[dict] = field(default_factory=list)
     geometry_source: str = "bundled"
     npu_config: dict | None = None        # full compiler config (args + file refs)
@@ -140,6 +141,7 @@ def resolve_board(
         partition_index=part.index,
         partition_size=size,
         erase_size=part.erase_size,
+        control_stride=part.control_stride,
         front_size=geometry.front_size(size, part.erase_size),
         alignment_rules=list(part.alignment_rules),
         geometry_source=source,

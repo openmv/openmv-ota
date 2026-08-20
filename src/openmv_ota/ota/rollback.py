@@ -21,6 +21,9 @@ import struct
 
 ENTRY_SIZE = 8                       # u32 version || u32 ~version (validity check)
 _BLANK = b"\xff" * ENTRY_SIZE
+# Entries are read AND appended at the control stride (16 default; 32 on H7-classic
+# internal flash, where each append must own a whole ECC word). The 8 payload bytes
+# stay identical; the stride only spaces them.
 _MASK = 0xFFFFFFFF
 
 
@@ -35,21 +38,21 @@ def _entry_version(entry) -> int | None:
     return version if (version ^ _MASK) == check else None
 
 
-def floor_of(sector) -> int:
+def floor_of(sector, stride: int = ENTRY_SIZE) -> int:
     """The anti-rollback floor recorded in a sector: the highest valid entry version (0 if
     none — a blank/factory sector imposes no floor)."""
     floor = 0
-    for i in range(0, len(sector) - ENTRY_SIZE + 1, ENTRY_SIZE):
+    for i in range(0, len(sector) - ENTRY_SIZE + 1, stride):
         version = _entry_version(bytes(sector[i:i + ENTRY_SIZE]))
         if version is not None and version > floor:
             floor = version
     return floor
 
 
-def append_offset(sector) -> int | None:
+def append_offset(sector, stride: int = ENTRY_SIZE) -> int | None:
     """Offset of the first blank entry slot to append into, or None if the sector is full
     (every slot written); the caller then leaves the floor frozen at its max."""
-    for i in range(0, len(sector) - ENTRY_SIZE + 1, ENTRY_SIZE):
+    for i in range(0, len(sector) - ENTRY_SIZE + 1, stride):
         if bytes(sector[i:i + ENTRY_SIZE]) == _BLANK:
             return i
     return None

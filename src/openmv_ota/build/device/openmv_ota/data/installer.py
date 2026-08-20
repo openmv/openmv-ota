@@ -119,6 +119,23 @@ def _noop():  # pragma: no cover  (fallback feed() when no watchdog is frozen)
 
 MARKER_SIZE = 16
 _REPR_OFF = 48                                    # status-sector offset of the repr marker
+_STRIDE = 16                                      # control-record spacing (see _set_stride)
+
+
+def _set_stride(stride):
+    """Space control records ``stride`` apart and pad each write to it -- on ECC-word
+    flash (H7-classic internal: 32) every record owns one one-shot flash word.
+    Mirrors boot._set_stride; contents never change, only spacing + write width."""
+    global _STRIDE, _REPR_OFF, _COUNTER_OFF, _ROLLBACK_STRIDE
+    _STRIDE = stride
+    _REPR_OFF = 3 * stride
+    _COUNTER_OFF = 4 * stride
+    _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
+
+
+def _pad(record):
+    """``record`` padded with 0xFF to the stride (a no-op at the default)."""
+    return record + b"\xff" * (_STRIDE - len(record) % _STRIDE if len(record) % _STRIDE else 0)
 
 
 def _marker(label):
@@ -572,6 +589,7 @@ def _trailer_version(trailer):
 # --- pure: A/B slot arithmetic (mirror of boot.py; pinned by a test) ---------
 
 _ROLLBACK_ENTRY = 8                               # u32 version || u32 ~version
+_ROLLBACK_STRIDE = 8                              # entry spacing; stride-sized on ECC flash
 _COUNTER_OFF = 64                                 # within the status sector
 _COUNTER_LEN = 8
 _MASK32 = 0xFFFFFFFF
@@ -606,7 +624,7 @@ def _rollback_floor_of(sector):
         version, check = struct.unpack_from("<II", sector, i)
         if (version ^ _MASK32) == check and version > floor:
             floor = version
-        i += _ROLLBACK_ENTRY
+        i += _ROLLBACK_STRIDE
     return floor
 
 
@@ -1021,7 +1039,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     # it simply is not a candidate, and one that dies after it carries everything boot.py reads.
     status_off = slot_size - 2 * block               # the status sector
     if repr_marker is not None:                      # record which rep was applied (1->0 only)
-        write(status_off + _REPR_OFF, repr_marker)
+        write(status_off + _REPR_OFF, _pad(repr_marker))
         if readback(status_off + _REPR_OFF, len(repr_marker)) != repr_marker:
             raise OSError("repr marker verify failed")
     if floor:
@@ -1033,7 +1051,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         # the one being erased, so nothing survives unless it is written back here.
         entry = struct.pack("<II", floor & _MASK32, (floor & _MASK32) ^ _MASK32)
         rollback_off = slot_size - 3 * block
-        write(rollback_off, entry)
+        write(rollback_off, _pad(entry))
         if readback(rollback_off, len(entry)) != entry:
             raise OSError("rollback floor verify failed")
     if counter is not None:
@@ -1041,10 +1059,10 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         # carry a valid counter, because the counter is written only once the whole slot has been
         # streamed, read-back verified and sha256-checked.
         field = _encode_counter(counter)
-        write(status_off + _COUNTER_OFF, field)
+        write(status_off + _COUNTER_OFF, _pad(field))
         if readback(status_off + _COUNTER_OFF, len(field)) != field:
             raise OSError("install counter verify failed")
-    write(status_off, PENDING)                        # arm the trial, LAST
+    write(status_off, _pad(PENDING))                  # arm the trial, LAST
     if readback(status_off, len(PENDING)) != PENDING:
         raise OSError("arm verify failed")
 
@@ -1284,7 +1302,9 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
     fmt = rep.get("format")
     expect_sha = body_dict.get("sha256")
     log.debug("install: manifest accepted")
-    return image_url, fmt, expect_sha
+    # wbits: the deflate window the artifact was compressed with (small-heap boards
+    # get small-window images; 0 = the format default). Signed like everything else.
+    return image_url, fmt, expect_sha, rep.get("wbits") or 0
 
 
 def _reset():  # pragma: no cover
@@ -1310,16 +1330,24 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     ``/rom`` intact. Progress is logged from here (RAM + the frozen logger) at every 10%
     step -- it can't be a caller callback, whose code is being erased."""
     import deflate
-    import socket
-    import ssl
 
     import uctypes
     import vfs
     from ecdsa_verify import verify                  # the frozen C module (as in boot.py)
 
+    if _is_path(manifest_url):
+        # A file install needs no network stack -- and must not demand one: a
+        # small-heap classic's firmware may not build the `ssl` module at all,
+        # yet installs fine from a mounted filesystem.
+        socket = ssl = None  # hil-residual: file-transport arm; witnessed by the classic bench bring-up, no fleet marker yet
+    else:
+        import socket  # hil-residual: URL-transport arm; witnessed by install.download on every bench install leg
+        import ssl  # hil-residual: URL-transport arm (same witness)
+
     # Watchdog (if the app enabled one): relax() feeds it from a timer ISR ONLY around the
     # single multi-second erase the main loop can't reach; feed() keeps it alive per chunk
     # through the loops -- so a hung loop (or a stalled recv) still trips it -> reboot.
+    _set_stride(getattr(cfg, "CONTROL_STRIDE", 16))
     relax = openmv_wdt.relax if openmv_wdt is not None else _NoWdt
     feed = openmv_wdt.feed if openmv_wdt is not None else _noop
     # Proactive GC hook (only when a watchdog is armed): the write loop calls this on a byte
@@ -1701,11 +1729,11 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     log.info("install: fetching manifest %s" % manifest_url)
     try:
         if _is_path(manifest_url):                # a manifest file path (mounted FS, e.g. SD)
-            image_url, fmt, expect_sha = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
+            image_url, fmt, expect_sha, wbits = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
                 manifest_url, cfg, verify,
                 floor=floor, base_version=base_version, delta_capable=delta_capable)
         else:
-            image_url, fmt, expect_sha = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
+            image_url, fmt, expect_sha, wbits = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
                 manifest_url, ca_pem, cfg, verify, socket, ssl, feed,
                 floor=floor, base_version=base_version, delta_capable=delta_capable)
     except Exception as e:
@@ -1773,7 +1801,15 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # socket is live after a resume (closing the original would leak the newer
             # one -- see _ResumingBody); for an on-disk image it is simply the open file.
             body = _open_body(image_url, ca_pem, socket, ssl, feed)
-            dio = deflate.DeflateIO(body, deflate.GZIP)
+            # Collect BEFORE building the decompress chain, unconditionally: DeflateIO
+            # allocates its whole inflate window in one piece (8 KiB on small-window
+            # images, 32 KiB default), and on a ~40 KB-heap classic the previous
+            # attempt's -- or the failed exec's -- garbage is the difference between
+            # fitting and MemoryError x3. The armed-watchdog gc_collect hook exists for
+            # pause control; this one is for the allocation itself.
+            import gc
+            gc.collect()  # hil-residual: pre-DeflateIO collect; effect only visible on small-heap classics (no fleet marker)
+            dio = deflate.DeflateIO(body, deflate.GZIP, wbits)  # wbits 0 = format default
             if fmt == _DELTA_FORMAT:
                 # Delta: stream-decompress the patch and reconstruct the image against the
                 # RUNNING slot (copy-with-diff, ulab add) -- both the patch and the output are

@@ -35,20 +35,56 @@ import hashlib
 import struct
 
 MARKER_SIZE = 16
-PENDING_OFFSET = 0
-TRIED_OFFSET = 16
-CONFIRMED_OFFSET = 32
-REPR_OFFSET = 48
+
+# CONTROL STRIDE: the spacing between independently-programmed records. 16 is the
+# portable flash write unit (one AE3 MRAM unit; a single-byte program hard-faults
+# the N6's octal-DTR XSPI) and the layout every external-flash board ships. An
+# H7-classic's INTERNAL flash programs 32-byte ECC words one-shot, so records that
+# share a word can never be written at different times -- its boards carry
+# control_stride 32 (boards.json -> _ota_config) and every record sits on its own
+# word. Offsets derive from the stride; DEFAULT_STRIDE keeps the fielded layout
+# byte-identical.
+DEFAULT_STRIDE = 16
+
+
+def pending_offset(stride: int = DEFAULT_STRIDE) -> int:
+    return 0
+
+
+def tried_offset(stride: int = DEFAULT_STRIDE) -> int:
+    return stride
+
+
+def confirmed_offset(stride: int = DEFAULT_STRIDE) -> int:
+    return 2 * stride
+
+
+def repr_offset(stride: int = DEFAULT_STRIDE) -> int:
+    return 3 * stride
+
+
+def counter_offset(stride: int = DEFAULT_STRIDE) -> int:
+    return 4 * stride
+
+
+def attempts_offset(stride: int = DEFAULT_STRIDE) -> int:
+    return 5 * stride
+
+
+PENDING_OFFSET = pending_offset()
+TRIED_OFFSET = tried_offset()
+CONFIRMED_OFFSET = confirmed_offset()
+REPR_OFFSET = repr_offset()
 
 # --- v2 fields (mirror of boot.py's _COUNTER_OFF / _ATTEMPTS_OFF) ------------
-COUNTER_OFFSET = 64
+COUNTER_OFFSET = counter_offset()
 COUNTER_SIZE = 8                     # u32 value || u32 ~value
 # ONE 16-BYTE MARKER PER ATTEMPT. 16 is the portable flash write unit here -- exactly one AE3
 # MRAM write unit, and what every marker above already uses. A one-byte write is NOT portable:
 # the N6's XSPI runs octal DTR (two bytes per clock) and a single-byte program hard faults in
 # the driver -- silently, on the first boot of every trial. Found on hardware.
-ATTEMPT_UNIT = 16
-ATTEMPTS_OFFSET = 80                 # 16-byte aligned, clear of the counter at 64..71
+ATTEMPT_UNIT = 16                    # stride-sized on stride-32 boards (one ECC word each)
+ATTEMPTS_OFFSET = attempts_offset()  # stride-aligned, clear of the counter record
 ATTEMPTS_MAX = 64                    # a slot needing 64 boots to come up is not coming back
 _MASK = 0xFFFFFFFF
 
@@ -82,7 +118,7 @@ def encode_counter(value: int) -> bytes:
 
 
 def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bool,
-                        counter: int | None = None) -> bytes:
+                        counter: int | None = None, stride: int = DEFAULT_STRIDE) -> bytes:
     """A ``block``-sized status sector with the requested markers set (rest ``0xFF``).
 
     Under v2 both slots are real, updatable images and share one shape: an installed slot is
@@ -92,11 +128,15 @@ def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bo
     update rather than by a factory-only special case."""
     sector = bytearray(b"\xff" * block)
     if pending:
-        sector[PENDING_OFFSET:PENDING_OFFSET + MARKER_SIZE] = PENDING
+        off = pending_offset(stride)
+        sector[off:off + MARKER_SIZE] = PENDING
     if tried:
-        sector[TRIED_OFFSET:TRIED_OFFSET + MARKER_SIZE] = TRIED
+        off = tried_offset(stride)
+        sector[off:off + MARKER_SIZE] = TRIED
     if confirmed:
-        sector[CONFIRMED_OFFSET:CONFIRMED_OFFSET + MARKER_SIZE] = CONFIRMED
+        off = confirmed_offset(stride)
+        sector[off:off + MARKER_SIZE] = CONFIRMED
     if counter is not None:
-        sector[COUNTER_OFFSET:COUNTER_OFFSET + COUNTER_SIZE] = encode_counter(counter)
+        off = counter_offset(stride)
+        sector[off:off + COUNTER_SIZE] = encode_counter(counter)
     return bytes(sector)
