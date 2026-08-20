@@ -59,14 +59,17 @@ The private keys are **always encrypted at rest** — there is no plaintext mode
 throwaway cached in `keys/.dev-passphrase`, so there is nothing to manage — and the
 production build rail refuses images signed with dev keys).
 
-Every later operation that *uses* the keys — signing a build, the `keys` verbs —
-resolves the passphrase in priority order: the project's cached dev passphrase when
-present, then `--key-passphrase-file`, then the `OPENMV_OTA_KEY_PASSPHRASE`
-environment variable (what CI uses), and finally an **interactive prompt** when
-running in a terminal. Day to day you can simply type it; the file flag exists for
-scripts, not because a file is required. (Passphrases travel in files or the
-environment rather than on the command line itself, where they would land in shell
-history and `ps` output.)
+**Signing a build** (`build romfs` / `ota-romfs` / `factory-romfs`) resolves the
+passphrase in priority order: the project's cached dev passphrase when present,
+then `--key-passphrase-file`, then the `OPENMV_OTA_KEY_PASSPHRASE` environment
+variable (what CI uses), and finally an **interactive prompt** when running in a
+terminal — so day to day you can simply type it; the file flag exists for scripts.
+The `keys` verbs are explicit instead: `backup` / `restore` require their own
+`--passphrase-file` (the backup's passphrase, which may differ from the signing
+one), `encrypt` takes `--key-passphrase-file` or `--dev`, and `rotate` / `revoke` /
+`status` need no passphrase at all. (Passphrases travel in files or the environment
+rather than on the command line itself, where they would land in shell history and
+`ps` output.)
 
 ### Provisioning options at `new --ota`
 
