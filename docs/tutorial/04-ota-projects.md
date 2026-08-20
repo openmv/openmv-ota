@@ -158,32 +158,10 @@ through them). `install()` uses it automatically.
 
 ## Multi-core boards (a coprocessor partition)
 
-Some boards have a second core with its own ROMFS partition. The AE3 is dual-core:
-the **main** high-performance core (partition 0, OSPI, 24 MiB) runs OTA, and a
-**coprocessor** high-efficiency core (partition 1, MRAM, 1 MiB) is *slaved* to it —
-it's booted by the main core, and its romfs is written by the main core. Each
-partition carries a **role** (`main` or `coprocessor`).
-
-There is nothing to configure: the coprocessor is slaved, so the tool **always
-builds every partition automatically**. You don't list partitions and there's no
-`--partition` flag. The main partition is built from `app/` (OTA-wrapped in an OTA
-project); the coprocessor partition is built from a second folder, **`app-coprocessor/`**,
-as a *plain* romfs (never OTA — the helper core has no mbedtls and can't verify
-signatures). `project new` scaffolds `app-coprocessor/` automatically when a selected
-board has a coprocessor partition.
-
-Outputs are named by role: the main partition keeps the bare board name
-(`OPENMV_AE3-romfs.img` / `-factory-romfs.img`), and the coprocessor partition is
-suffixed (`OPENMV_AE3-coprocessor-romfs.img`). The coprocessor image is the same
-plain romfs from both `build romfs` and `build factory-romfs` — it's the image the
-main core writes into the helper's slot.
-
-Each partition is resolved independently — its own size, alignment rules, NPU config,
-and role — and appears as its own resolved target in the lock. From Python,
-select one with `board(name, partition)`, or iterate `targets`.
-
-> A `partition_size` override (under `[targets.<board>]`) applies only to the main
-> partition; the coprocessor always keeps its firmware geometry.
+On a multi-core board ([page 2](02-projects.md#multi-core-boards)) only the
+**main** partition is OTA. It is built from `app/`, OTA-wrapped like any other;
+the coprocessor partition stays a *plain* romfs — the helper core has no mbedtls
+and can't verify signatures, so it is never updated on its own.
 
 **Writing the helper partition at runtime.** For an OTA project, `build romfs` also
 **nests** the coprocessor image inside the main one, at

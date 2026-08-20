@@ -89,7 +89,9 @@ and whether the project is OTA). Everything else is resolved into
 Partition sizes come from the firmware's `boards/<BOARD>/board_config.h`. When
 the size there depends on the build variant, the tool falls back to a bundled
 default for the board. If either is wrong for your build, set `partition_size`
-under a `[targets.<BOARD>]` table in `openmv-ota.toml` to override it.
+under a `[targets.<BOARD>]` table in `openmv-ota.toml` to override it. (On a
+multi-core board the override applies only to the **main** partition; a
+coprocessor partition always keeps its firmware geometry.)
 
 The lock's `config_digest` covers only the *firmware-relevant* config — boards,
 geometry overrides like `partition_size`, and the OTA mode — so changing any of

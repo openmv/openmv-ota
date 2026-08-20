@@ -172,6 +172,22 @@ The scaffolded `product_id` is the derivation above, written down. In a plain
 project it is inert — recorded in `system.json`, checked by nothing — so you can
 ignore it; delete the line and the build re-derives it from the current name.
 
+## Multi-core boards
+
+Some boards have a second core with its own ROMFS partition. The AE3 is dual-core:
+the **main** high-performance core (partition 0, OSPI, 24 MiB) runs your app, and a
+**coprocessor** high-efficiency core (partition 1, MRAM, 1 MiB) is *slaved* to it —
+booted by the main core, and its romfs is written by the main core. Each partition
+carries a **role** (`main` or `coprocessor`).
+
+There is nothing to configure: the coprocessor is slaved, so the tool **always
+builds every partition automatically** — you don't list partitions and there's no
+`--partition` flag. The main partition is built from `app/`; the coprocessor
+partition is built from a second folder, **`app-coprocessor/`**, which `new`
+scaffolds whenever a selected board has a coprocessor partition. Outputs are named
+by role: the main partition keeps the bare board name (`OPENMV_AE3-romfs.img`), and
+the coprocessor partition is suffixed (`OPENMV_AE3-coprocessor-romfs.img`).
+
 ---
 
 *[← 1 · The ROMFS](01-romfs.md) · [Index](00-introduction.md) · [3 · The lock →](03-the-lock.md)*
