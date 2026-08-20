@@ -1,6 +1,6 @@
 # Flashing
 
-*[← 6 · Building](06-building.md) · [Index](00-introduction.md) · [8 · Boot and rollback →](08-boot-and-rollback.md)*
+*[← 8 · Release artifacts](08-release-artifacts.md) · [Index](00-introduction.md) · [10 · Boot and rollback →](10-boot-and-rollback.md)*
 
 ---
 
@@ -315,4 +315,4 @@ missing file fails fast instead of half-programming the board.
 
 ---
 
-*[← 6 · Building](06-building.md) · [Index](00-introduction.md) · [8 · Boot and rollback →](08-boot-and-rollback.md)*
+*[← 8 · Release artifacts](08-release-artifacts.md) · [Index](00-introduction.md) · [10 · Boot and rollback →](10-boot-and-rollback.md)*

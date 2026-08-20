@@ -1,6 +1,6 @@
 # Boot and rollback
 
-*[← 7 · Flashing](07-flashing.md) · [Index](00-introduction.md) · [9 · The device library →](09-device-library.md)*
+*[← 9 · Flashing](09-flashing.md) · [Index](00-introduction.md) · [11 · The device library →](11-device-library.md)*
 
 ---
 
@@ -116,4 +116,4 @@ devices are exempt: there is no fallback to protect, and waiting would strand th
 
 ---
 
-*[← 7 · Flashing](07-flashing.md) · [Index](00-introduction.md) · [9 · The device library →](09-device-library.md)*
+*[← 9 · Flashing](09-flashing.md) · [Index](00-introduction.md) · [11 · The device library →](11-device-library.md)*

@@ -1,10 +1,10 @@
 # The device library
 
-*[← 8 · Boot and rollback](08-boot-and-rollback.md) · [Index](00-introduction.md) · [10 · The update server →](10-update-server.md)*
+*[← 10 · Boot and rollback](10-boot-and-rollback.md) · [Index](00-introduction.md) · [12 · The update server →](12-update-server.md)*
 
 ---
 
-[Boot and rollback](08-boot-and-rollback.md) covered the half that chooses what runs;
+[Boot and rollback](10-boot-and-rollback.md) covered the half that chooses what runs;
 **`openmv_ota`** is the half your app calls. `project new --ota` scaffolds it into
 `app/lib/openmv_ota/` (plain Python you own and can extend); `build romfs` compiles +
 packs it to `/rom/lib/openmv_ota/`. It exposes:
@@ -339,4 +339,4 @@ haven't enabled a watchdog.
 
 ---
 
-*[← 8 · Boot and rollback](08-boot-and-rollback.md) · [Index](00-introduction.md) · [10 · The update server →](10-update-server.md)*
+*[← 10 · Boot and rollback](10-boot-and-rollback.md) · [Index](00-introduction.md) · [12 · The update server →](12-update-server.md)*

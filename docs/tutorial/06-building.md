@@ -1,16 +1,11 @@
 # Building
 
-*[← 5 · Signing keys](05-signing-keys.md) · [Index](00-introduction.md) · [7 · Flashing →](07-flashing.md)*
+*[← 5 · Signing keys](05-signing-keys.md) · [Index](00-introduction.md) · [7 · Factory & firmware →](07-factory-and-firmware.md)*
 
 ---
 
-`openmv-ota build` compiles a project's app and produces every deployable artifact:
-`build romfs` (the image itself — plain for a regular project, a signed bundle for an
-OTA one), `build factory-romfs` (the full two-slot partition image flashed at the
-factory), `build firmware` (the device firmware — for an OTA project the boot script
-is *frozen* in, compiled into the firmware binary itself), `build ota-romfs` (the
-publishable set a camera downloads), and `build inspect` / `build verify` (decode and
-check what the others produced).
+This page is `build romfs` — how a project's app becomes the image a camera runs —
+and the compilation machinery the rest of `openmv-ota build` reuses.
 
 ## build romfs
 
@@ -21,134 +16,105 @@ expects, and packs a ROMFS image for each target board:
 openmv-ota build romfs ./my-product
 ```
 
-For each target it compiles every `.py` to `.mpy` with the project's mpy-cross,
-converts NPU models with the project's Vela (AE3) or ST Edge AI (N6), packs the
-result into a ROMFS image with the board's alignment rules, and checks it against
-the available capacity. For a **non-OTA** project the output is the ROMFS body,
-`<project>/build/<board>-romfs.img`. An **OTA** project instead writes a signed
-bundle, `<board>-romfs.zip`. A multi-core
-board also builds its coprocessor partition as a plain
-`<board>-coprocessor-romfs.img` (always, from `app-coprocessor/`), and for an OTA
-project **nests** that image inside the main one (at
-`/rom/lib/openmv_ota/data/coprocessor.romfs`) so the on-device
-[`openmv_ota.sync()`](04-ota-projects.md#the-device-runtime-library-openmv_ota) can write it
-into the helper partition — see
-[Multi-core boards](04-ota-projects.md#multi-core-boards-a-coprocessor-partition).
+For a **non-OTA** project the output is the ROMFS body,
+`<project>/build/<board>-romfs.img`. An **OTA** project writes a signed bundle,
+`<board>-romfs.zip`, instead. A multi-core board also builds its coprocessor
+partition as a plain `<board>-coprocessor-romfs.img`, and an OTA build nests that
+image inside the main one for
+[`openmv_ota.sync()`](04-ota-projects.md#multi-core-boards-a-coprocessor-partition)
+to apply on-device.
 
-Every image also gets a generated, read-only `system.json` at `/rom/system.json` —
-board identity (`board`, `product_id`, `board_name`, `product`), the app version, and
-build provenance (firmware / MicroPython / toolchain versions) — composed from the
-lock and the per-board config. It gives the app one consistent way to read its own
-identity and provenance, the same in a non-OTA and an OTA build. See
-[project.md](02-projects.md#systemjson-generated-read-only).
+Every image carries the generated, read-only
+[`/rom/system.json`](02-projects.md#systemjson-generated-read-only) — identity and
+provenance, composed from the config and the lock. Capacity is the whole partition
+for a plain project and the [OTA slot budget](04-ota-projects.md#what---ota-changes)
+otherwise; the build summary reports usage against whichever bound applies.
 
-The capacity is the whole partition for a plain (non-OTA) project. An OTA project
-(`project new --ota`) budgets a **slot** — half the partition under A/B (each OTA
-partition holds two updatable slots), or the whole partition in single-image mode —
-less, in both modes, the slot's four 4 KiB control sectors (16 KiB). The build
-summary reports the percentage of whichever bound applies.
-
-The app source defaults to `<project>/app`; pass `--app` to use another directory.
-The project must match its lock and be clean — `build romfs` refuses to run
-against a firmware checkout that has drifted (run `openmv-ota project status` to
-see the difference, or `openmv-ota project sync` to re-peg).
-
+The app source defaults to `<project>/app`; pass `--app` for another directory.
+The project must match its lock and be clean — `build romfs` refuses a drifted
+firmware checkout (`project status` shows the difference, `project sync` re-pegs).
 This is distinct from `openmv-ota romfs pack`, which packs a directory verbatim
 with no compilation.
 
 ### OTA signing
 
-For an OTA project (`project new --ota`), `build romfs` does more than pack the
-body: it stamps and signs a **trailer** onto each image, so the output is a
-verifiable, anti-rollback OTA image rather than a bare ROMFS body. No extra flags
-— the signing context comes from the project:
+For an OTA project, `build romfs` stamps and signs a **trailer** onto each image,
+turning a bare ROMFS body into a verifiable, anti-rollback OTA image. No extra
+flags — the signing context comes from the project:
 
-- **App version → payload version.** The app version is read from
-  `app/settings.json` (`{"app_version": "1.0.0", …}`) — the single source of truth
-  both the on-device app and the build read. The semver is encoded into the
-  trailer's `payload_version` as `(major<<24)|(minor<<16)|(patch<<8)`, the
-  monotonic anti-rollback counter. Bump it in `settings.json` for each release.
-- **Signed with the project's current OTA key.** The signer is
-  `[ota].signing_key_id` from `openmv-ota.toml`; its private key is loaded from
-  `keys/private/ota-<id>.pem`, and the trailer records `key_id` + the COSE
-  algorithm so the device selects the matching trusted public key.
-- **Per-board identity + provenance stamped in.** `product_id` / `board_name` come
-  from each `[targets.<BOARD>]` table; the firmware / MicroPython / toolchain / SDK
-  versions and commit come from the lock. These are exactly the `system.json`
-  fields, and the trailer's JSON metadata carries a **verbatim copy of
-  `system.json`** so host tools can read the image's identity without mounting the
+- **App version → payload version.** `app_version` from `app/settings.json` is
+  encoded into the trailer's `payload_version` as
+  `(major<<24)|(minor<<16)|(patch<<8)`, the monotonic anti-rollback counter. Bump
+  it there for each release.
+- **Signed with the current OTA key.** The signer is `[ota].signing_key_id` from
+  `openmv-ota.toml`; the trailer records `key_id` + the COSE algorithm so the
+  device selects the matching trusted public key.
+- **Identity + provenance stamped in.** `product_id` / `board_name` come from the
+  `[targets.<BOARD>]` tables, versions and commits from the lock — exactly the
+  `system.json` fields, and the trailer's metadata carries a **verbatim copy of
+  `system.json`**, so host tools read an image's identity without mounting the
   ROMFS. `min_platform_version` is the pegged firmware's version code.
 
 **The key's passphrase.** The private keys are encrypted at rest, so a signing
-build needs their passphrase, resolved in priority order: the project's cached dev
+build resolves their passphrase in priority order: the project's cached dev
 passphrase when present, then `--key-passphrase-file`, then the
 `OPENMV_OTA_KEY_PASSPHRASE` environment variable (what CI uses), and finally an
-**interactive prompt** when running in a terminal — day to day you can simply type
-it; the file flag exists for scripts. (Signing accepts the environment where
-provisioning refuses it, deliberately: a wrong value here fails loudly and signs
-nothing, while a wrong value at provisioning would silently seal the key supply.) (Passphrases travel in files or the
-environment rather than on the command line itself, where they would land in shell
-history and `ps` output.) A **dev-keyed** project signs without any of this — its
-throwaway passphrase is cached in the project — but the build then refuses to
-produce a production image unless you pass `--allow-dev-key`.
+**interactive prompt** on a terminal — day to day you simply type it; the file
+flag exists for scripts. (Passphrases travel in files or the environment, never
+on the command line where they would land in shell history and `ps` — and signing
+accepts the environment where provisioning refuses it, deliberately: a wrong
+value here fails loudly and signs nothing, while a wrong value at provisioning
+would silently seal the key supply.) A **dev-keyed** project signs without any of
+this, but the build refuses to produce a production image unless you pass
+`--allow-dev-key`.
 
-An OTA build writes a single **bundle**, `<board>-romfs.zip`, containing two entries:
+The bundle keeps its two pieces as separate zip *entries*:
 
 | Entry | What |
 |---|---|
 | `romfs.img` | the ROMFS body (mounted at `/rom`, written to the slot start) |
 | `trailer.bin` | the signed trailer (written to the slot's last erase block) |
 
-One file is easier to flash / upload / track, but the pieces stay separate
-*entries* — a zip is random-access, so the update server reads `trailer.bin`
-(version / `product_id` / signature, including its verbatim copy of `system.json`)
-without touching the multi-MB body. The trailer *is* the manifest, so there is no
-separate `manifest.json` to keep in sync. The device never gets the zip (it can't
-hold the body in RAM to unzip): a server unbundles and streams the body + trailer
-separately, exactly as they're placed on-flash. Every trailer field is final and
-signed, including `pad_size` (the `0xFF` gap to the status sector, computed from the
-slot geometry) and the crc32. The build summary reports the body size against the
-OTA-slot budget.
+One file is easier to flash, upload, and track — and because a zip is
+random-access, the update server reads `trailer.bin` (version / `product_id` /
+signature / the `system.json` copy) without touching the multi-MB body. The device
+never gets the zip (it can't hold the body in RAM to unzip): a server streams body
+and trailer separately, exactly as they're placed on-flash. Every trailer field is
+final and signed, including `pad_size` and the crc32.
 
-`build romfs` fails the build (exit 1) if the OTA signing context is incomplete:
-a missing or unreadable `app/settings.json`, a missing or non-semver
-`app_version`, a `signing_key_id` that isn't in `keys/trusted_keys.json`, or a
-missing private key (only the signing machine has `keys/private/`). It *warns*
-(but still builds) if a target's `product_id` is `0` — which only happens if you
-override the auto-assigned id to `0`, turning the cross-flash guard off — or if two
-boards share the same `product_id` (the guard can't tell them apart).
+`build romfs` fails (exit 1) on an incomplete signing context — a missing or
+unreadable `app/settings.json`, a missing or non-semver `app_version`, a
+`signing_key_id` not in `keys/trusted_keys.json`, or a missing private key (only
+the signing machine has `keys/private/`). It *warns* but builds if a target's
+`product_id` is `0` (you overrode the auto-assigned id, turning the cross-flash
+guard off) or if two boards collide on one id (the guard can't tell them apart).
 
 ### Compiling
 
-`.py` files are compiled to `.mpy`. Models (`.tflite`, `.lite`, `.onnx`) are
-converted for the board's NPU; a model that is already converted is packed
-unchanged. Pass `--no-compile-py` to pack `.py` as source, or
-`--no-convert-models` to pack models as-is.
+`.py` files are compiled to `.mpy` with the project's mpy-cross; models
+(`.tflite`, `.lite`, `.onnx`) are converted for the board's NPU with the
+project's Vela (AE3) or ST Edge AI (N6). A model that is already converted is
+packed unchanged.
 
-`build romfs` runs mpy-cross. It uses the binary the firmware build produced if
-present; otherwise it uses a pip-installed `mpy_cross` (`python -m mpy_cross`, as
-the IDE does), so no C compiler is needed. `openmv-ota project setup` installs the
-matching version; you can also install it yourself — the version matches the
-firmware's MicroPython version, which `openmv-ota project show` reports:
+mpy-cross is the binary the firmware build produced when present, else a
+pip-installed `mpy_cross` (as the IDE uses — no C compiler needed).
+`project setup` installs the matching version; to install it yourself, match the
+firmware's MicroPython version (`project show` reports it):
 
 ```bash
-pip install mpy-cross==1.28.0    # use your firmware's MicroPython version
+pip install mpy-cross==1.28.0
 ```
 
-If neither is available, `build romfs` prints the command to run. Pass
-`--no-compile-py` to skip compilation entirely.
+If neither is available, `build romfs` prints that command.
 
 ### Tool arguments
 
-The compilers are run with the board's pegged arguments. To add your own, use the
-per-tool flags (repeatable). For a value that begins with `-`, use the `=` form so
-it is not mistaken for an option:
+The compilers run with the board's pegged arguments; add your own with the
+per-tool flags (repeatable — use the `=` form for a value that begins with `-`):
 
 ```bash
 openmv-ota build romfs ./my-product --vela-arg=--verbose-all --mpy-arg=-O2
 ```
-
-Optimisation differs per tool: Vela takes a mode, ST Edge AI takes a level.
 
 | Flag | Effect |
 |---|---|
@@ -160,266 +126,12 @@ Optimisation differs per tool: Vela takes a mode, ST Edge AI takes a level.
 | `--mpy-arg ARG` | Extra mpy-cross argument (repeatable). |
 | `--vela-arg ARG` | Extra Vela argument (repeatable). |
 | `--stedgeai-arg ARG` | Extra ST Edge AI argument (repeatable). |
-| `--vela-optimise {Performance,Size}` | Vela optimisation (default: Performance). |
+| `--vela-optimise {Performance,Size}` | Vela optimisation mode (default: Performance). |
 | `--stedgeai-optimization {0,1,2,3}` | ST Edge AI level (default: 3 = max). |
 | `-f, --firmware PATH` | Firmware checkout override. |
-| `--allow-oversize` | Warn instead of failing when an image exceeds the partition. |
+| `--allow-oversize` | Warn instead of failing when an image exceeds the budget. |
 | `--keep-build-dir` | Keep the staging directory for inspection. |
-
-## build factory-romfs
-
-`build romfs` produces an OTA *payload* — the body + trailer a server streams to a
-device that is already running. `build factory-romfs` produces the **whole ROMFS
-partition image flashed at the factory**: the complete on-flash layout a board
-needs before it has ever taken an update.
-
-```bash
-openmv-ota build factory-romfs ./my-product
-```
-
-The output is `<project>/build/<board>-factory-romfs.img`, sized to the exact partition
-and ready to write at the partition's offset. Each slot ends in a few reserved
-**control sectors**: small blocks holding the slot's update **status** and its
-**install counter**, the number boot uses to decide which slot is newest. The image
-composes the same compiled body into the partition's two slots:
-
-| Slot | Contents | Status sector | Role |
-|---|---|---|---|
-| **A** | body + pad + control sectors | `confirmed`, install counter **2** | boots first (higher counter) |
-| **B** | body + pad + control sectors | `confirmed`, install counter **1** | the fallback, and the target of the first update |
-
-Both slots hold the **same signed image** and the **same shape**. Neither is a protected
-factory copy: the only thing telling them apart is the install counter, so which one
-boots is decided by exactly the rule that decides it after every later update, rather than
-by a factory-only special case. Writing both means a device has a real fallback from its
-very first boot instead of after its first successful update.
-
-The two slots are the **same size** — an OTA image must be installable into either, and the
-image is slot-sized with its trailer in the last block — so a partition whose half does not
-divide evenly leaves a sub-block remainder unused rather than handing it to B. Each slot
-ends with four 4 KiB control sectors (`spare`, `rollback`, `status`, `trailer`), with `0xFF`
-padding filling the gap between the body and them. Both slots carry the same body but their
-own trailer, each signed independently with the recorded `pad_size`.
-
-On a board too small for two slots the same command writes **one** slot spanning the
-partition (single-image mode); everything above still holds, minus the fallback.
-
-### Signed with a factory key
-
-A factory image is signed with a **factory** key, not an OTA key. The signer
-defaults to factory key `0x0001`; pass `--factory-key` to select another
-(`--factory-key 0x0002`). The key must be a `factory`-role entry in
-`keys/trusted_keys.json` and have its private key in
-`keys/private/factory-<id>.pem`; signing with an `ota`-role key is refused.
-
-**A factory key is *yours*, not the factory's.** You hold it, you sign with it, and
-you ship the manufacturer the finished `<board>-factory-romfs.img` — a flat binary they
-write to flash. They never receive a private key, the project, or this tool; a
-contract manufacturer is a flashing station, not a build host. **Never hand a
-private key (`keys/private/*.pem`) to anyone.** If a third party genuinely must
-sign on their own hardware, sign through a service or HSM where the key never
-leaves your control rather than copying a `.pem` to their machine.
-
-Given that, the per-site `factory_key` id is for **attribution, not key
-isolation** — distinct ids let you tell which production run cut a given image, and
-let you `revoke` one run's key without touching the others. It is *not* an
-anti-overproduction control: a manufacturer holding a signed image can reflash it
-onto any number of boards, and a per-site key does nothing to stop that. Metering
-how many devices are built is the job of per-device registration (each unit gets a
-unique id-bound credential at flash time), which is separate from image signing.
-Factory keys, like OTA keys, are assigned and `revoke`-able but **not rotated** —
-you retire a compromised run's id, you don't roll a live one.
-
-Everything else — compilation, model conversion, per-board identity and
-provenance, the `system.json` copy in each trailer, the drift check — is identical
-to `build romfs`. The capacity check is against a single factory slot (half the
-partition less the two erase blocks); an app that doesn't fit a slot fails the
-build. `build factory-romfs` requires an OTA project (`project new --ota`); on a
-non-OTA project it errors. It takes the same compilation / board / output flags as
-`build romfs`, plus `--factory-key`.
-
-## build firmware
-
-`build firmware` builds the device firmware for each board by running the firmware
-repo's own `make` in the pegged checkout, so the result is byte-for-byte what the
-firmware build produces:
-
-```bash
-openmv-ota build firmware ./my-product
-```
-
-For each board it runs `make TARGET=<board>` and copies the result into
-`<project>/build/`. Both ports name their images `firmware*.bin`: an stm32 board
-emits a single `firmware.bin`, collected as `<board>-firmware.bin`; an Alif board
-emits a per-core `firmware_M55_HP.bin` / `firmware_M55_HE.bin`, collected as
-`<board>-firmware-M55_HP.bin` / `<board>-firmware-M55_HE.bin`. When the port also
-builds a bootloader, `bootloader.bin` is collected as `<board>-bootloader.bin` — and
-on the AE3 the padded `firmware_pad.toc` as `<board>-firmware_pad.toc` — for `flash
-bootloader`. The bootloader-combined `openmv.bin` and the unpadded `firmware.toc` are
-deliberately not collected. Firmware is built per board, not per partition, so a board
-with multiple ROMFS partitions still builds one firmware.
-
-The behavior follows the project's OTA flag automatically — there is no separate
-option:
-
-- **Non-OTA project:** just builds the firmware.
-- **OTA project:** additionally freezes an OTA **`boot.py`** into the image. It does
-  this without copying anything into or editing the firmware tree: it generates a
-  temporary *wrapper manifest* that `include`s the board's own manifest and adds the
-  boot script, and points the build at it with `make FROZEN_MANIFEST=<wrapper>`. The
-  frozen `boot.py` runs after the board's stock `_boot.py` (the stock boot is left
-  untouched). It selects the newest valid ROMFS slot,
-  verifies the chosen slot's signed trailer (ECDSA + SHA-256, over the firmware's own
-  mbedtls), enforces the integrity / cross-flash / compatibility / anti-rollback
-  checks, runs the trial-boot state machine, and mounts the
-  slot it picks.
-  Its `_ota_config.py` — the trusted keys, slot geometry, and board/product ids — is
-  generated from the project and frozen alongside it.
-
-The build is **clean by default** (`make clean` then build). A stale `build/<board>`
-tree fails at link with a misleading `__cyg_profile_func_enter` error — imlib is
-compiled with `-finstrument-functions` — that has nothing to do with anything we
-inject, so a clean build avoids it. Pass `--incremental` to skip the clean for fast
-iteration when the tree is known good.
-
-Building firmware needs a firmware toolchain (`make` plus the board's cross
-compiler); `build firmware` shells out to it and reports a non-zero exit if it is
-missing or the build fails.
-
-| Flag | Effect |
-|---|---|
-| `-b, --board NAME` | Build only this board (repeatable; default: all boards). |
-| `-o, --output DIR` | Output directory (default: `<project>/build`). |
-| `-j, --jobs N` | Parallel make jobs (default: CPU count). |
-| `--incremental` | Skip the clean rebuild (only when the tree is known good). |
-| `-f, --firmware PATH` | Firmware checkout override. |
-| `--keep-build-dir` | Keep the generated wrapper manifest dir (OTA builds) for inspection. |
-
-## build ota-romfs
-
-`build ota-romfs` produces the complete publishable set for an over-the-air release,
-straight from app source — it runs the same compile-and-sign as `build romfs`
-internally (same flags: `--app`, `--no-compile-py`, `--mpy-arg`, the model-compiler
-options), then renders what a camera actually downloads:
-
-```bash
-openmv-ota build ota-romfs ./my-product
-# -> build/<board>-ota.img.gz       the gzipped slot-sized image
-#    build/<board>-manifest.bin     the signed manifest install() fetches first
-```
-
-The **manifest** is the descriptor the device downloads before anything else: it names
-the image's size and sha256 and the available representations, and binds
-`product_id` / version / anti-rollback under the same ECDSA key as the image. The
-trailer *is* the manifest's source of truth, so there is no separate metadata file to
-keep in sync. Representation URLs inside it are **relative filenames**, resolved
-on-device against the manifest's own URL — host the artifacts beside each other and
-the signed manifest moves between hosts (a new bucket, a mirror) without re-signing.
-
-### Deltas (`--delta-from`)
-
-```bash
-openmv-ota build ota-romfs ./my-product --delta-from build/bases
-# -> additionally: build/<board>-ota.delta-<base-version>.gz
-```
-
-`--delta-from` takes a base to diff against — a provisioning image
-(`<board>-factory-romfs.img`), a previous release's `-ota.img.gz`, or a directory of
-either — and emits a compressed patch a camera applies against the release it is
-already running, downloading only the changes. It is **repeatable, and that matters**:
-a device patches against the release it is *running*, so a fleet spread over several
-versions needs one delta per base version still in the field — devices with no
-matching base simply take the full image. The delta is pure transport: the
-reconstructed slot is still sha256- and signature-verified on the device.
-
-`--allow-republish` permits re-signing a version at or below the last published one —
-a dev-loop convenience the server mirrors with its own flag of the same name.
-
-## build sbom
-
-```
-openmv-ota build sbom .            # -> build/sbom.cdx.json
-openmv-ota build sbom . -o -       # print to stdout
-```
-
-Exports the project's dependency **SBOM** as CycloneDX 1.5 JSON, rendered entirely
-from the committed lock — the firmware commit, every submodule commit, the
-MicroPython version, and the resolved toolchain versions are already the lock's
-job, so this is a renderer, not new data collection. It needs only the committed
-project (config + lock + `app/settings.json`): no firmware checkout, so CI can
-export it from a bare clone.
-
-```
-$ openmv-ota build sbom ./orchard-sentry
-wrote orchard-sentry/build/sbom.cdx.json (10 components)
-```
-
-The root component is your product at its `app_version`; the openmv firmware
-carries a `pkg:github` purl pinned to the exact commit (plus branch / describe /
-dirty as properties), each submodule is a component pinned to its commit, and the
-toolchain (SDK, mpy-cross, vela, ST Edge AI) appears at its resolved version.
-Output is **deterministic**: the BOM's timestamp is the lock's `generated_at` and
-there is no serial number, so the same lock renders byte-identical JSON — an SBOM
-that changes only when a dependency changes is diffable evidence.
-
-| Flag | Effect |
-|---|---|
-| `-o, --output FILE` | Where to write (default `<project>/build/sbom.cdx.json`; `-` prints to stdout). |
-
-## Inspecting and verifying an OTA image
-
-Two read-only commands operate on a built image. They accept the `<board>-romfs.zip`
-bundle directly, the loose `romfs.img` / `trailer.bin` (e.g. if you've unzipped),
-**or the `<board>-factory-romfs.img`** — the factory image is a dual-slot partition,
-so both commands locate each slot's trailer (by scanning block-aligned offsets and
-CRC-validating) and report/verify **each slot** independently. A plain,
-**unsigned** romfs (a non-OTA `<board>-romfs.img` or a `<board>-coprocessor-romfs.img`)
-has no trailer: `inspect` reports it as such (and exits 0), while `verify` says there
-is nothing to verify (and exits non-zero, so it's never mistaken for "verified").
-They live under `build` because they validate build outputs.
-
-### build inspect
-
-```bash
-openmv-ota build inspect build/OPENMV_N6-romfs.zip
-openmv-ota build inspect build/OPENMV_N6-romfs.zip --json
-openmv-ota build inspect build/OPENMV_N6-factory-romfs.img   # prints slots A + B
-```
-
-Decodes the signed trailer and prints it: product / board / `product_id` /
-`board_name`, the app version (and the `payload_version` /
-`min_platform_version` it encodes, shown as semver), the signing key and
-algorithm, the body size + SHA-256, and a provenance line (firmware / MicroPython
-/ toolchain). `--json` dumps the full structure, including the complete metadata
-blob, for scripting. It does no crypto — it just reads the trailer.
-
-### build verify
-
-```bash
-openmv-ota build verify build/OPENMV_N6-romfs.zip
-```
-
-The host-side **authenticity + integrity** gate — the mirror of what the device's
-`boot.py` checks, for use in CI or before publishing. It confirms the trailer
-parses, the signing `key_id` is in the trusted set **and not revoked**, the
-algorithm matches, the **signature verifies** over the signed region, and the body
-matches the signed size + SHA-256. Exit 0 on success, 1 on a verification failure
-(with the reason), 2 on a bad argument. Pass the `.zip` (one argument), the loose
-`romfs.img trailer.bin` (two), or a `<board>-factory-romfs.img` — for a factory
-image every slot is verified and the command fails if **any** slot fails (each
-slot's verdict is printed with an `A:` / `B:` prefix). Trusted keys come from
-`--trusted-keys` (default `keys/trusted_keys.json`), so running it from a project
-root just works.
-
-It deliberately does **not** check the device-relative fields — `product_id` against
-a device, `payload_version` anti-rollback against the installed image,
-`min_platform_version` against the running firmware — because those need a device,
-not a host. Those remain `boot.py`'s job.
-
-## See also
-
-- [Trailer format](../reference/trailer.md) — the on-flash layout of the signed trailer.
 
 ---
 
-*[← 5 · Signing keys](05-signing-keys.md) · [Index](00-introduction.md) · [7 · Flashing →](07-flashing.md)*
+*[← 5 · Signing keys](05-signing-keys.md) · [Index](00-introduction.md) · [7 · Factory & firmware →](07-factory-and-firmware.md)*

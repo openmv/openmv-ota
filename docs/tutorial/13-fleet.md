@@ -1,6 +1,6 @@
 # The fleet
 
-*[← 10 · The update server](10-update-server.md) · [Index](00-introduction.md)*
+*[← 12 · The update server](12-update-server.md) · [Index](00-introduction.md)*
 
 ---
 
@@ -185,9 +185,9 @@ registered devices.
 
 ## See also
 
-- [Building OTA images](06-building.md) — what `build ota-romfs` produces and how it's signed.
+- [Release artifacts](08-release-artifacts.md) — what `build ota-romfs` produces and how it's signed.
 - [Threat model](../reference/threat-model.md) — the trust root and why the server never holds a key.
 
 ---
 
-*[← 10 · The update server](10-update-server.md) · [Index](00-introduction.md)*
+*[← 12 · The update server](12-update-server.md) · [Index](00-introduction.md)*
