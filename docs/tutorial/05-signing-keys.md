@@ -51,17 +51,6 @@ keys and will reject updates signed by the new ones — you would have to re-fla
 them. `new` warns loudly when this is about to happen; only do it for a fresh
 fleet, and back up the old keys first.
 
-### Provisioning options at `new --ota`
-
-| Flag | Effect |
-|---|---|
-| `--sig-alg {ES256,ES384,ES512}` | Signature algorithm for the whole set (default `ES256` / P-256). |
-| `--ota-keys N` | Rotation-pool size to provision (default 32). |
-| `--factory-keys N` | Factory-key reserve, one per manufacturing site (default 8). |
-| `--key-passphrase-file FILE` | Passphrase (read from a file) encrypting the private keys at rest; keys are never stored plaintext. |
-| `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
-| `--backup-passphrase-file FILE` | Auto-write an encrypted key backup under this passphrase (else a reminder is printed). |
-
 ### Passphrases
 
 The private keys are **always encrypted at rest** — there is no plaintext mode. So
@@ -76,6 +65,17 @@ present, then `--key-passphrase-file`, then the `OPENMV_OTA_KEY_PASSPHRASE`
 environment variable (what CI uses), and finally an **interactive prompt** when
 running in a terminal. Day to day you can simply type it; the file flag exists for
 scripts, not because a file is required.
+
+### Provisioning options at `new --ota`
+
+| Flag | Effect |
+|---|---|
+| `--sig-alg {ES256,ES384,ES512}` | Signature algorithm for the whole set (default `ES256` / P-256). |
+| `--ota-keys N` | Rotation-pool size to provision (default 32). |
+| `--factory-keys N` | Factory-key reserve, one per manufacturing site (default 8). |
+| `--key-passphrase-file FILE` | Passphrase (read from a file) encrypting the private keys at rest; keys are never stored plaintext. |
+| `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
+| `--backup-passphrase-file FILE` | Auto-write an encrypted key backup under this passphrase (else a reminder is printed). |
 
 ## Managing keys (`project keys`)
 
