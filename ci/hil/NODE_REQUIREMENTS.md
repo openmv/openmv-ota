@@ -30,6 +30,12 @@ Everything OTA-specific, under `$HIL_CACHE` (default `~/.cache/openmv-ota-hil`) 
   (the tool installs the **SDK** into `$HOME`; an AE3 project auto-scaffolds `app-coprocessor`);
 - **J-Link** userspace (J-Link boards only; the SDK carries dfu-util + blhost for the rest).
 
+## Per-board hardware notes
+
+- **Classic nodes** (`board-openmv-{m4,m7,h7}`): the board must have an **SD card inserted** —
+  the file-transport legs stage the update artifacts on `/sdcard` over the USB-CDC. No marker
+  UART and no J-Link are required on these nodes (their legs score the CDC probe).
+
 ## Applying to already-running nodes without a reimage
 
 The above image-level bits can be applied to a live node to *match* the image (never a custom

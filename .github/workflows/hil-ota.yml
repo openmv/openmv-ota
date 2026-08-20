@@ -136,6 +136,28 @@ jobs:
               # DHCP 192.168.0.38. A SECONDARY interface runs delta only (see regression_scenarios):
               # it proves the network path, and the rest of the OTA logic is interface-agnostic.
               {"board": "ARDUINO_PORTENTA_H7", "network": "lan", "label": "board-arduino-portenta"},
+              # Classic boards (single-image mode): no TLS in these builds (the F427 has no `ssl`
+              # module at all), so their real-world update path IS install() from the SD card --
+              # and that is what the "file" legs exercise: artifacts staged over the USB-CDC, no
+              # server, no marker UART (none is wired on these nodes; the CDC probe scores the
+              # run). ADVISORY until each has passed once in the fleet (the house rule below).
+              #
+              # openmv_url/openmv_ref pin the EXACT proven bring-up firmware commit. The classic
+              # board changes (OPENMV4 zbar trim to fit the OTA firmware in FLASH_TEXT, the
+              # classics' WINC sockbuf cap) are DELIBERATELY fork-maintained -- they are not
+              # going to openmv master -- so the pin is permanent policy, not a stopgap: these
+              # legs build a known tree, and moving them is an explicit SHA bump here, reviewed
+              # like any other change. (How fork-carried board changes are maintained long-term
+              # is an open workstream -- the pin is the mechanism until that lands.)
+              {"board": "OPENMV2", "network": "file", "label": "board-openmv-m4", "advisory": True,
+               "openmv_url": "https://github.com/kwagyeman/openmv.git",
+               "openmv_ref": "db5f5af74d57ba3d4e28dc52d13dd4e5663432dd"},
+              {"board": "OPENMV3", "network": "file", "label": "board-openmv-m7", "advisory": True,
+               "openmv_url": "https://github.com/kwagyeman/openmv.git",
+               "openmv_ref": "db5f5af74d57ba3d4e28dc52d13dd4e5663432dd"},
+              {"board": "OPENMV4", "network": "file", "label": "board-openmv-h7", "advisory": True,
+               "openmv_url": "https://github.com/kwagyeman/openmv.git",
+               "openmv_ref": "db5f5af74d57ba3d4e28dc52d13dd4e5663432dd"},
           ]
           board = os.environ.get("BOARD") or "all"
           # PR gate runs EVERY board including the AE3 (wifi): its USB/DFU flashing and its watchdog are
@@ -184,6 +206,10 @@ jobs:
           # self-contained, so no shared-server address or admin token is a repo secret anymore.
           WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
           WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
+          # Per-leg firmware pin (see the classic legs in the matrix). Empty for every other leg,
+          # and provision.sh's ${VAR:-default} treats empty as unset -> openmv/openmv master.
+          OPENMV_URL: ${{ matrix.openmv_url || '' }}
+          OPENMV_REF: ${{ matrix.openmv_ref || '' }}
         run: |
           # Provision the RUNNER-OWNED OTA tooling (venv, firmware, project, SDK, J-Link), cached
           # under $HOME. Disposable nodes carry no bench state -- they self-provision here; a

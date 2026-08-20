@@ -68,6 +68,29 @@ Two scenarios need a bench-only assist:
   board must be bootable — its firmware carries the bench logger and `/flash/.hilcov_uart` is
   set) and **reflash golden afterwards**. Block-device (RT1062) only for now.
 
+## Classic boards (OPENMV2/3/4): the file-transport legs
+
+The classic builds carry no TLS stack (the F427 has no `ssl` module at all), so their
+real-world update path is `install("/sdcard/<board>-manifest.bin")` — and that is exactly what
+their legs exercise, end to end: build golden 1.0.0, flash it over DFU, build the signed update
+artifacts, stage them on the SD card over the USB-CDC (`mpremote cp`), run `install()`, and
+probe the outcome after the reboot.
+
+No server and no marker UART (none is wired on these nodes): the evidence is the CDC. The
+install's own log lines land in the exec output (the harness flips `openmv_log` `ENABLED` on,
+which with no bench UART file streams to the USB REPL), and the post-boot status probe is the
+verdict — the version moved and the trial confirmed. The F4's CDC **drops buffered output at
+reset**, so the log lines are corroborating evidence only, never a requirement.
+
+| scenario | how it's driven | asserts |
+|---|---|---|
+| `file_full` | full image + manifest staged on the SD card | install → reboot → trial **confirmed** on the target |
+| `file_bad_sig` | flip a signature byte in the staged manifest | **refused pre-erase** (`install()` raises), version unchanged |
+
+Their firmware is pinned to the exact proven bring-up commit (see the classic legs in
+`hil-ota.yml`): the classic board changes are deliberately fork-maintained, so the pin is
+policy — these legs build a known tree, and moving them is an explicit SHA bump.
+
 ## Bench topology note
 
 Each run spins up its **own** ephemeral update server (`ci/hil/bench_server`) on the node, so
