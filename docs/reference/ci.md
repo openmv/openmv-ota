@@ -161,6 +161,12 @@ Every expected failure is asserted to be a clean tool error — non-zero exit, a
 so structurally instead of exploding. Boards in the **noromfs** class never invoke
 `make`: the tool refuses to create a project for them.
 
+Every **full** board also renders `build sbom` against the project's real lock, and
+the `OPENMV_N6` leg then runs **osv-scanner** over the exported CycloneDX file — a
+CVE scan of the purl-identified components (the pinned firmware commit, the pypi
+tools). Submodules carry no purl yet (their remotes aren't recorded in the lock),
+so the scanner skips them with a warning rather than silently.
+
 The factory image is crypto-verified too: `build inspect`/`build verify` understand
 the dual-slot partition layout (they locate each slot's trailer by scanning
 block-aligned offsets), so CI verifies **both** slots through the

@@ -190,6 +190,11 @@ do_full() {  # board  work
   [ "$LAST_RC" -eq 0 ] || return 0
   keys="$proj/keys/trusted_keys.json"
 
+  # The SBOM renders from the committed lock alone -- prove that against the REAL
+  # lock this project just resolved (the CI CVE-scan step consumes this file).
+  expect_success "build sbom (CycloneDX from the lock)" $OTA build sbom "$proj"
+  expect_file "SBOM written (build/sbom.cdx.json)" "$proj/build/sbom.cdx.json"
+
   build_firmware "$proj" "$board"
 
   expect_success "build romfs (OTA bundle)" \
