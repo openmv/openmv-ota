@@ -122,7 +122,6 @@ has its own verbs:
 ```bash
 openmv-ota project keys backup  --passphrase-file pass.txt          # -> keys-backup.enc
 openmv-ota project keys restore keys-backup.enc --passphrase-file pass.txt
-openmv-ota project keys encrypt --key-passphrase-file pass.txt      # encrypt any plaintext keys
 openmv-ota project keys backend show | configure | provision
 ```
 
@@ -130,12 +129,6 @@ openmv-ota project keys backend show | configure | provision
   (`keys-backup.enc`), for the out-of-band copy the [OTA projects
   page](04-ota-projects.md#files-an-ota-project-adds) tells you to keep. `restore`
   rebuilds `keys/private/` on a replacement machine from that one file.
-- **`encrypt`** — a migration verb for keys that predate encryption-at-rest (or were
-  imported as plaintext PEMs): it re-writes each **plaintext** private key as an
-  encrypted PEM under the passphrase, and leaves already-encrypted keys untouched —
-  it can't decrypt them, so it is **not** a passphrase change. `--dev` swaps in a
-  random cached dev passphrase (`keys/.dev-passphrase`) — nothing to manage, and the
-  production build rail refuses dev-encrypted keys.
 - **`backend`** — keys don't have to live on disk at all. `show` lists each key's
   signing backend; `configure` points a trusted key at an **external** signer
   (PKCS#11 / cloud KMS — bring your own key); `provision` generates a fresh key set
