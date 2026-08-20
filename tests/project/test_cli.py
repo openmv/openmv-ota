@@ -111,6 +111,20 @@ def test_new_ota_backup_failure_warns_but_succeeds(tmp_path, make_firmware, make
     assert "key backup skipped" in capsys.readouterr().err
 
 
+def test_new_ota_missing_passphrase_file(tmp_path, make_firmware, make_sdk, capsys):
+    rc, _root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota",
+                        "--key-passphrase-file", str(tmp_path / "nope.txt"))
+    assert rc == 2 and "can't read passphrase file" in capsys.readouterr().err
+
+
+def test_new_ota_empty_passphrase_file(tmp_path, make_firmware, make_sdk, capsys):
+    pw = tmp_path / "pw.txt"
+    pw.write_text("   \n")
+    rc, _root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota",
+                        "--key-passphrase-file", str(pw))
+    assert rc == 2 and "is empty" in capsys.readouterr().err
+
+
 def test_new_force_warns_key_regeneration(tmp_path, make_firmware, make_sdk, capsys):
     repo = make_firmware()
     _new(tmp_path, make_firmware, make_sdk, "--ota", repo=repo)
