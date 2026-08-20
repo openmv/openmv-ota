@@ -113,6 +113,13 @@ def register(build_parser: argparse.ArgumentParser):
     _add_signing_flags(p_otr)
     p_otr.set_defaults(func=cmd_ota_romfs, _command="build ota-romfs")
 
+    p_sb = sub.add_parser("sbom", help="export the project's dependency SBOM "
+                                       "(CycloneDX JSON, rendered from the lock)")
+    p_sb.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
+    p_sb.add_argument("-o", "--output", metavar="FILE",
+                      help="output file (default: <project>/build/sbom.cdx.json; '-' = stdout)")
+    p_sb.set_defaults(func=cmd_sbom, _command="build sbom")
+
     p_ins = sub.add_parser("inspect", help="decode + print an OTA artifact "
                                            "(image trailer, manifest, or delta)")
     p_ins.add_argument("image", help="a romfs.zip bundle, trailer.bin, factory/partition "
@@ -163,6 +170,24 @@ def register(build_parser: argparse.ArgumentParser):
     _add_signing_flags(p_fac)
     p_fac.set_defaults(func=cmd_factory_romfs, _command="build factory-romfs")
     return sub
+
+
+def cmd_sbom(args: argparse.Namespace) -> int:
+    from .sbom import SBOM_NAME, render_sbom
+    try:
+        text = render_sbom(args.project)
+    except BuildError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if args.output == "-":
+        sys.stdout.write(text)
+        return 0
+    out = Path(args.output) if args.output else Path(args.project) / "build" / SBOM_NAME
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    n = text.count('"bom-ref"')
+    print("wrote %s (%d components)" % (out, n))
+    return 0
 
 
 def cmd_romfs(args: argparse.Namespace) -> int:

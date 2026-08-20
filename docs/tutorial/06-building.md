@@ -335,6 +335,37 @@ reconstructed slot is still sha256- and signature-verified on the device.
 `--allow-republish` permits re-signing a version at or below the last published one —
 a dev-loop convenience the server mirrors with its own flag of the same name.
 
+## build sbom
+
+```
+openmv-ota build sbom .            # -> build/sbom.cdx.json
+openmv-ota build sbom . -o -       # print to stdout
+```
+
+Exports the project's dependency **SBOM** as CycloneDX 1.5 JSON, rendered entirely
+from the committed lock — the firmware commit, every submodule commit, the
+MicroPython version, and the resolved toolchain versions are already the lock's
+job, so this is a renderer, not new data collection. It needs only the committed
+project (config + lock + `app/settings.json`): no firmware checkout, so CI can
+export it from a bare clone.
+
+```
+$ openmv-ota build sbom ./orchard-sentry
+wrote orchard-sentry/build/sbom.cdx.json (10 components)
+```
+
+The root component is your product at its `app_version`; the openmv firmware
+carries a `pkg:github` purl pinned to the exact commit (plus branch / describe /
+dirty as properties), each submodule is a component pinned to its commit, and the
+toolchain (SDK, mpy-cross, vela, ST Edge AI) appears at its resolved version.
+Output is **deterministic**: the BOM's timestamp is the lock's `generated_at` and
+there is no serial number, so the same lock renders byte-identical JSON — an SBOM
+that changes only when a dependency changes is diffable evidence.
+
+| Flag | Effect |
+|---|---|
+| `-o, --output FILE` | Where to write (default `<project>/build/sbom.cdx.json`; `-` prints to stdout). |
+
 ## Inspecting and verifying an OTA image
 
 Two read-only commands operate on a built image. They accept the `<board>-romfs.zip`

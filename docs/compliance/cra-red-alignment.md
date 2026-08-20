@@ -24,7 +24,7 @@ signature, untrusted key, version rollback, no bootable slot).
 
 | Requirement | How this stack supports it |
 |---|---|
-| 1(2)(a) Free of known exploitable vulnerabilities at placing on market | **Planned:** SBOM export + CVE scan (see 2(1)). Today the lock pins every dependency exactly (firmware commit, every submodule commit, toolchain versions), which is the input such a scan needs |
+| 1(2)(a) Free of known exploitable vulnerabilities at placing on market | **Shipped:** `build sbom` exports the CycloneDX SBOM from the lock's exact pin-set. **Planned:** automated CVE scanning over it in CI |
 | 1(2)(b) Secure by default configuration | Documented in the conformity assessment template; customer applies |
 | 1(2)(c) Security updates throughout support period | OTA mechanism in this plan; vendor commits to a support period |
 | 1(2)(d) Protection against unauthorised access | ECDSA (P-256) signatures + anti-rollback + fallback to the other slot |
@@ -36,13 +36,13 @@ signature, untrusted key, version rollback, no bootable slot).
 | 1(2)(j) Mitigate impact of incidents | Automatic fallback to the other slot on a bad update |
 | 1(2)(k) Security event recording | **Server side shipped:** every admin action lands in a hash-chained, tamper-evident audit log (`prev_hash`/`entry_hash`). On-device security-event recording is the customer's app (the shipped `openmv_log` is debug logging, not an event record) |
 | 1(2)(l) Secure deletion of data | Customer (app design) |
-| 1(2)(m) Vulnerability handling throughout support period | **Shipped:** OTA delivery + the disclosure/`security.txt` templates. **Planned:** SBOM export |
+| 1(2)(m) Vulnerability handling throughout support period | **Shipped:** OTA delivery + SBOM export (`build sbom`) + the disclosure/`security.txt` templates |
 
 ### CRA Annex I — vulnerability handling requirements
 
 | Requirement | How this stack supports it |
 |---|---|
-| 2(1) Identify components in product → SBOM | **Planned.** The data already exists: `openmv-ota.lock.json` records the firmware commit, every submodule commit, and all toolchain versions per build — an SBOM export (CycloneDX) from the lock is the missing renderer, not new data collection |
+| 2(1) Identify components in product → SBOM | **Shipped:** `build sbom` renders CycloneDX 1.5 from the lock (firmware commit, every submodule commit, toolchain versions) — deterministic per lock, exportable in CI from a bare clone |
 | 2(2) Address vulnerabilities promptly | **Shipped:** OTA delivery with staged rollouts and per-device/cohort pins. (A public transparency log is not built) |
 | 2(3) Effective testing | **Shipped:** ~1,950 host tests at *enforced* 100% coverage; `boot.py` slot logic run on real MicroPython under QEMU; the on-device ECDSA shim checked against the firmware's own mbedtls; and the update path exercised on a nine-board hardware fleet including the adversarial cases (corrupt image, tampered manifest, untrusted key, rollback, no bootable slot) |
 | 2(4) Public disclosure of fixed vulnerabilities | Disclosure policy template (shipped). A fixed advisory format is not defined — the vendor's policy names its own channel |
@@ -55,7 +55,7 @@ signature, untrusted key, version rollback, no bootable slot).
 | Requirement | Coverage |
 |---|---|
 | 3.3(d) Network protection | TLS + cert pinning (app); signatures defend against TLS-layer failure |
-| 3.3(e) Personal data protection | Customer (app design); the lock's exact dependency pin-set supports data-handling audits (SBOM export planned) |
+| 3.3(e) Personal data protection | Customer (app design); `build sbom` exports the exact dependency pin-set for data-handling audits |
 | 3.3(f) Fraud prevention | Signature on every image; anti-rollback prevents downgrade attacks |
 
 ### EN 18031 test alignment

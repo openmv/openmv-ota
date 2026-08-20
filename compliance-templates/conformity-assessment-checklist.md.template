@@ -11,7 +11,7 @@
 
 | Req | Provided by openmv-ota | Customer must add | Status |
 |---|---|---|---|
-| 1(2)(a) No known exploitable vulns at market | Exact dependency pin-set in the lock (SBOM export + CVE scan planned) | Track and act on known CVEs in the pinned set | ☐ |
+| 1(2)(a) No known exploitable vulns at market | `build sbom` CycloneDX export of the exact pin-set (CVE scan planned) | Track and act on known CVEs in the pinned set | ☐ |
 | 1(2)(c) Updates throughout support period | ROMFS OTA mechanism | Commit to a support period | ☐ |
 | 1(2)(d) Protection against unauthorised access | ECDSA (ES256/P-256) image signatures + anti-rollback + A/B fallback | — | ☐ |
 | 1(2)(e) Confidentiality of stored data | **Out of scope** (no image encryption) | Add encryption if applicable | ☐ |
@@ -19,13 +19,13 @@
 | 1(2)(h) Availability of essential functions | Trial-boot + A/B fallback (single-image boards: firmware-resident recovery) | — | ☐ |
 | 1(2)(j) Mitigate impact of incidents | Auto-rollback to the previous working release | — | ☐ |
 | 1(2)(k) Security event recording | Hash-chained server audit log (all admin actions) | Device-side event recording in the app | ☐ |
-| 1(2)(m) Vulnerability handling | OTA delivery + disclosure/`security.txt` templates (SBOM export planned) | Run the process | ☐ |
+| 1(2)(m) Vulnerability handling | OTA delivery + `build sbom` + disclosure/`security.txt` templates | Run the process | ☐ |
 
 ## Annex I — vulnerability handling
 
 | Req | Provided | Customer must add | Status |
 |---|---|---|---|
-| 2(1) SBOM | Planned (the lock already records every dependency pin per build) | Attach + maintain once exported | ☐ |
+| 2(1) SBOM | `build sbom` — CycloneDX 1.5 rendered from the lock, deterministic per build | Attach to technical documentation | ☐ |
 | 2(3) Effective testing | ~1,950 host tests at enforced 100% coverage + QEMU boot runs + hardware-fleet adversarial catalog | App-level tests | ☐ |
 | 2(5) Coordinated disclosure | `security.txt` template | Publish + staff it | ☐ |
 | 2(7) Free, timely updates | OTA delivery | Operate the server | ☐ |
