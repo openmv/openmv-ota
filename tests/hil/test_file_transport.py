@@ -77,8 +77,22 @@ def test_tamper_manifest_key_flips_only_the_key_id():
 # --- the probe parser ------------------------------------------------------------------------
 def test_file_probe_parses_the_last_probe_line(monkeypatch):
     monkeypatch.setattr(ota_cycle, "device_exec", lambda *a, **k: (
-        0, "BENCH boot 1.0.0\nPROBE|1.1.0|True|False\n"))
-    assert ota_cycle.file_probe() == ("1.1.0", True, False)
+        0, "BENCH boot 16777216\nPROBE|16777472|True|False\n"))
+    assert ota_cycle.file_probe() == (16777472, True, False)
+
+
+def test_file_probe_reads_the_payload_version_not_a_version_key(monkeypatch):
+    """status() has NO "version" key -- the encoded int lives in payload_version (the string is
+    in identity()). Probing .get('version') would compare None forever and fail every healthy
+    board, so pin both the probe's device code and the harness-side encoding."""
+    sent = {}
+    monkeypatch.setattr(ota_cycle, "device_exec", lambda code, **k: (
+        sent.update(code=code), (0, "PROBE|16777216|True|False"))[1])
+    ota_cycle.file_probe()
+    assert "payload_version" in sent["code"]
+    assert "get('version')" not in sent["code"]
+    from openmv_ota.ota.version import encode_app_version
+    assert ota_cycle._payload_version("1.1.0") == encode_app_version("1.1.0")
 
 
 def test_file_probe_raises_after_retries_without_an_answer(monkeypatch):

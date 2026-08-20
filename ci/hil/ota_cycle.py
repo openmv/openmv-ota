@@ -2207,7 +2207,7 @@ def file_bench_main_py():
         "import openmv_ota\n"
         "try:\n"
         "    st = openmv_ota.status()\n"
-        "    print('BENCH boot', st.get('version'), st)\n"
+        "    print('BENCH boot', st.get('payload_version'), st)\n"
         "    if st.get('trial'):\n"
         "        openmv_ota.confirm()\n"
         "        print('BENCH confirmed')\n"
@@ -2284,18 +2284,31 @@ def _wait_cdc(budget=120):
     return False
 
 
+def _payload_version(vstr):
+    """The encoded payload_version int for an app-version string -- what status() reports and
+    what the manifest/trailer carry. Imported from the installed tool so the harness can never
+    drift from the real encoding."""
+    from openmv_ota.ota.version import encode_app_version
+    return encode_app_version(vstr)
+
+
 def file_probe(retries=3):
-    """(version, confirmed, trial) off the board's own status(), over the CDC. Retries transport
-    errors only -- the parsed answer, whatever it says, is the verdict."""
+    """(payload_version, confirmed, trial) off the board's own status(), over the CDC. Retries
+    transport errors only -- the parsed answer, whatever it says, is the verdict.
+
+    payload_version, NOT a version string: status() carries the ENCODED int (there is no
+    "version" key in it -- the app-version string lives in identity()). Callers compare against
+    encode_app_version(target), the same encoding the manifest and trailer carry."""
     code = ("import openmv_ota\n"
             "s = openmv_ota.status()\n"
-            "print('PROBE|%s|%s|%s' % (s.get('version'), s.get('confirmed'), s.get('trial')))\n")
+            "print('PROBE|%s|%s|%s' % (s.get('payload_version'), s.get('confirmed'), "
+            "s.get('trial')))\n")
     for attempt in range(retries):
         rc, out = device_exec(code, timeout=90, check=False)
         for line in reversed(out.splitlines()):
             if line.startswith("PROBE|"):
                 _, v, confirmed, trial = line.strip().split("|")
-                return v, confirmed == "True", trial == "True"
+                return int(v), confirmed == "True", trial == "True"
         log("  (probe attempt %d/%d got no PROBE line, retrying)" % (attempt + 1, retries))
         time.sleep(5)
     raise RuntimeError("status probe never answered over the CDC:\n%s" % out[-1500:])
@@ -2311,11 +2324,12 @@ def run_file_scenario(args, spec, trace, phase):
         phase("flash_golden", lambda: flash_golden(board))
     if not _wait_cdc():
         raise RuntimeError("no CDC after the golden flash -- board never enumerated")
+    golden_v = _payload_version("1.0.0")
     pre_v, _, _ = file_probe()
-    log("golden up: version %s" % pre_v)
-    if pre_v != "1.0.0":
-        raise RuntimeError("golden probe says version %r, expected 1.0.0 -- the flash "
-                           "did not take" % pre_v)
+    log("golden up: payload_version %d" % pre_v)
+    if pre_v != golden_v:
+        raise RuntimeError("golden probe says payload_version %r, expected %d (1.0.0) -- the "
+                           "flash did not take" % (pre_v, golden_v))
     tamper = "manifest" if args.scenario == "file_bad_sig" else None
     if not args.skip_publish:
         phase("publish", lambda: file_publish(board, args.target))
@@ -2349,6 +2363,7 @@ def run_file_scenario(args, spec, trace, phase):
         if not _wait_cdc():
             return {"saw_golden": True, "saw_target": False, "version": None, "slot": None,
                     "reached_end": False, "why": "no CDC after the install's reboot"}
+        target_v = _payload_version(args.target)
         v, confirmed, trial = file_probe()
         if trial and not confirmed:
             # The probe's Ctrl-C may have beaten the app's confirm() on this boot. One clean
@@ -2358,22 +2373,24 @@ def run_file_scenario(args, spec, trace, phase):
             time.sleep(12)
             _wait_cdc()
             v, confirmed, trial = file_probe()
-        ok = (v == args.target) and confirmed
+        ok = (v == target_v) and confirmed
         # slot stays None: single-image mode has ONE slot, and the probe doesn't read a slot
         # name -- inventing "A" here would be data the device never said.
-        return {"saw_golden": True, "saw_target": v == args.target, "version": v, "slot": None,
+        return {"saw_golden": True, "saw_target": v == target_v, "version": v, "slot": None,
                 "reached_end": ok,
-                "why": "-" if ok else "post-boot probe: version=%s confirmed=%s" % (v, confirmed)}
+                "why": "-" if ok else "post-boot probe: payload_version=%s confirmed=%s"
+                                      % (v, confirmed)}
     # end == "golden": the tampered manifest must be REFUSED pre-erase -- install() raises to
     # the caller (the exec completes; no reboot), the device logs the reject, and the version
     # must not move. "signature does not verify" is the raise; "reject bad signature" the log.
     refused = ("signature does not verify" in out) or ("reject bad signature" in out)
     erased = ("install: staged" in out) or ("installed + armed" in out)
     v, confirmed, _ = file_probe()
-    ok = refused and not erased and v == "1.0.0"
+    ok = refused and not erased and v == golden_v
     return {"saw_golden": True, "saw_target": False, "version": v, "slot": None,
             "reached_end": ok,
-            "why": "-" if ok else ("refused=%s erased=%s version=%s" % (refused, erased, v))}
+            "why": "-" if ok else ("refused=%s erased=%s payload_version=%s"
+                                   % (refused, erased, v))}
 
 
 def run_cycle_no_slot(cap, expect, timeout_s):
