@@ -92,9 +92,29 @@ if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
   # `project new` below carries micropython#19348 (ranged romfs erase) into lib/micropython for
   # a v5.0 OTA firmware -- the tool guarantees it, so this script (and any real user) needs no
   # custom step; the lock captures the patched, committed-clean tree.
-  log "openmv-ota project new -b $BOARD --ota --dev --install-sdk"
+  # The classic boards cannot hold the ~184 KB public CA bundle (their ROMFS slot is 112-240 K),
+  # so `project new --ota` refuses them without a root of your own -- the same refusal a real
+  # user hits, resolved the same way. Their legs never do TLS (file transport; these builds have
+  # no ssl module), so the root is trust-store ballast the build requires: generate a throwaway
+  # ~1 KB bench root once and cache it. Kept OUT of the wifi/lan boards' projects -- they freeze
+  # the real public bundle, exactly like a production build.
+  CA_ARGS=()
+  case "$BOARD" in
+    OPENMV2|OPENMV3|OPENMV4)
+      CA="$CACHE/bench-root.pem"
+      if [ ! -f "$CA" ]; then
+        log "generate bench root CA (the classic boards need --ca)"
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+          -keyout "$CACHE/bench-root-key.pem" -out "$CA" -days 3650 -nodes \
+          -subj "/CN=OpenMV HIL bench root" >&2 2>&1
+      fi
+      CA_ARGS=(--ca "$CA")
+      ;;
+  esac
+  log "openmv-ota project new -b $BOARD --ota --dev --install-sdk ${CA_ARGS[*]-}"
   rm -rf "$PROJ"
-  "$VENV/bin/openmv-ota" project new "$PROJ" -f "$FW" -b "$BOARD" --ota --dev --install-sdk >&2
+  "$VENV/bin/openmv-ota" project new "$PROJ" -f "$FW" -b "$BOARD" --ota --dev --install-sdk \
+    ${CA_ARGS+"${CA_ARGS[@]}"} >&2
   echo "$SHA" > "$PROJ/.provision-sha"      # stamp the commit this project+lock was built with
 fi
 SDK="$HOME/openmv-sdk-$(cat "$FW/SDK_VERSION")"
