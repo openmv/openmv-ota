@@ -2314,6 +2314,16 @@ def file_probe(retries=3):
     raise RuntimeError("status probe never answered over the CDC:\n%s" % out[-1500:])
 
 
+def _device_raised(out):
+    """True when the exec output shows the DEVICE raising out of install() -- a MicroPython
+    traceback, whose frames are `<stdin>`. NOT mpremote's own: a successful install() reboots
+    the board mid-exec, the CDC dies under mpremote, and its teardown prints a HOST traceback
+    (serialposix RTS/ioctl EIO frames). Measured on the M4's first fleet leg: a flawless install
+    scored as "install raised: OSError: EIO" because the two were not distinguished. A host
+    traceback never contains a `<stdin>` frame; a device one always does."""
+    return "Traceback" in out and "<stdin>" in out
+
+
 def run_file_scenario(args, spec, trace, phase):
     """Drive one file-transport scenario end to end. Returns a run_cycle-shaped result dict;
     the caller's shared scoring (empty expect/forbid) reduces to result["reached_end"]."""
@@ -2341,7 +2351,11 @@ def run_file_scenario(args, spec, trace, phase):
     log("install: exec openmv_ota.install(%r)" % dev_man)
     code = "import openmv_ota\nopenmv_ota.install(%r)\n" % dev_man
     s = time.time()
-    _, out = device_exec(code, timeout=args.timeout, check=False)
+    # ONE mpremote call, deliberately not device_exec: its retry loop re-runs the exec on
+    # transient port errors, and a SUCCESSFUL install() reboots the board mid-exec -- which IS a
+    # transient port error. A retry would then re-run install() on the freshly-armed trial.
+    _, out = sh([ota("mpremote"), "connect", CFG["acm"], "exec", code],
+                timeout=args.timeout, check=False, quiet=True)
     trace["phases"]["install"] = round(time.time() - s, 1)
     trace["log"] = out.splitlines()
     for ln in out.splitlines()[-25:]:
@@ -2352,10 +2366,11 @@ def run_file_scenario(args, spec, trace, phase):
         # probe is the verdict. The install's own "installed + armed" line is CORROBORATING
         # evidence only, never a requirement: the F4's CDC DROPS buffered output at reset
         # (measured on the M4 -- a flawless install can end with an empty exec capture). What a
-        # capture CAN prove is the opposite: a traceback with no armed line means install()
-        # raised and the board never rebooted, so fail on the device's own words instead of
-        # waiting out a probe of the unchanged golden.
-        if "Traceback" in out and "installed + armed" not in out:
+        # capture CAN prove is the opposite: a DEVICE traceback (see _device_raised -- NOT
+        # mpremote's own teardown traceback when the reboot kills the port) with no armed line
+        # means install() raised and the board never rebooted, so fail on the device's own
+        # words instead of waiting out a probe of the unchanged golden.
+        if _device_raised(out) and "installed + armed" not in out:
             why = [ln for ln in out.splitlines() if ln.strip()][-1].strip()
             return {"saw_golden": True, "saw_target": False, "version": pre_v, "slot": None,
                     "reached_end": False, "why": "install raised: " + why}

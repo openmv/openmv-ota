@@ -128,3 +128,30 @@ def test_list_regression_for_a_classic_board_is_the_file_list():
         env={**os.environ, "WIFI_SSID": "s", "WIFI_PASSWORD": "p"}, timeout=60)
     assert p.returncode == 0
     assert p.stdout.split() == ["file_full", "file_bad_sig"]
+
+
+# --- device-vs-host traceback discrimination -------------------------------------------------
+_HOST_TRACEBACK = """Traceback (most recent call last):
+  File "/home/runner/.cache/openmv-ota-hil/venv/bin/mpremote", line 6, in <module>
+    sys.exit(main())
+  File ".../mpremote/commands.py", line 89, in do_disconnect
+    state.transport.close()
+  File ".../serial/serialposix.py", line 708, in _update_rts_state
+    fcntl.ioctl(self.fd, TIOCMBIC, TIOCM_RTS_str)
+OSError: [Errno 5] Input/output error
+"""
+
+_DEVICE_TRACEBACK = """Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+OSError: manifest signature does not verify
+"""
+
+
+def test_host_teardown_traceback_is_not_a_device_raise():
+    """A SUCCESSFUL install() reboots the board mid-exec; the CDC dies under mpremote and its
+    teardown prints a HOST traceback (serialposix EIO). The M4's first fleet leg scored that
+    flawless install as "install raised: OSError: EIO" -- the discrimination is the fix: device
+    tracebacks carry <stdin> frames, host ones never do."""
+    assert not ota_cycle._device_raised(_HOST_TRACEBACK)
+    assert ota_cycle._device_raised(_DEVICE_TRACEBACK)
+    assert not ota_cycle._device_raised("")
