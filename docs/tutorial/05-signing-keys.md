@@ -64,7 +64,9 @@ resolves the passphrase in priority order: the project's cached dev passphrase w
 present, then `--key-passphrase-file`, then the `OPENMV_OTA_KEY_PASSPHRASE`
 environment variable (what CI uses), and finally an **interactive prompt** when
 running in a terminal. Day to day you can simply type it; the file flag exists for
-scripts, not because a file is required.
+scripts, not because a file is required. (Passphrases travel in files or the
+environment rather than on the command line itself, where they would land in shell
+history and `ps` output.)
 
 ### Provisioning options at `new --ota`
 
@@ -75,7 +77,7 @@ scripts, not because a file is required.
 | `--factory-keys N` | Factory-key reserve, one per manufacturing site (default 8). |
 | `--key-passphrase-file FILE` | Passphrase (read from a file) encrypting the private keys at rest; keys are never stored plaintext. |
 | `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
-| `--backup-passphrase-file FILE` | Write the encrypted off-machine key backup (`keys-backup.enc`, same artifact as `project keys backup`) in the same step that creates the keys — so there is never a moment where the only copy lives on this machine. Without it, `new` prints a reminder to back up manually. |
+| `--backup-passphrase-file FILE` | Passphrase (read from FILE) for the off-machine key backup: `new` then writes `keys-backup.enc` (the same artifact as `project keys backup`) in the very step that creates the keys, so there is never a moment where the only copy lives on this machine. Without it, `new` prints a reminder to back up manually. |
 
 ## Managing keys (`project keys`)
 
