@@ -181,8 +181,7 @@ booted by the main core, and its romfs is written by the main core. Each partiti
 carries a **role** (`main` or `coprocessor`).
 
 There is nothing to configure: the coprocessor is slaved, so the tool **always
-builds every partition automatically** — you don't list partitions and there's no
-`--partition` flag. The main partition is built from `app/`; the coprocessor
+builds every partition automatically**. The main partition is built from `app/`; the coprocessor
 partition is built from a second folder, **`app-coprocessor/`**, which `new`
 scaffolds whenever a selected board has a coprocessor partition. Outputs are named
 by role: the main partition keeps the bare board name (`OPENMV_AE3-romfs.img`), and
