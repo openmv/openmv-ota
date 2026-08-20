@@ -127,12 +127,12 @@ signing_key_id = 256      # current OTA signing key (in keys/trusted_keys.json)
 `new --ota` also scaffolds `app/lib/openmv_ota/` — the device-side OTA helpers your app
 imports on the camera (`build romfs` compiles + packs them to `/rom/lib`). The short
 version: call **`confirm()`** once your app is healthy (so a new update is kept rather
-than rolled back on the next boot), **`sync()`** early (to apply bundled resources like
-a helper core's romfs), and **`status()`** to inspect the trial state:
+than rolled back on the next boot), **`sync()`** early (to apply any resources
+bundled in the image), and **`status()`** to inspect the trial state:
 
 ```python
 import openmv_ota
-openmv_ota.sync()        # bring bundled resources up to date with this image
+openmv_ota.sync()        # apply any resources bundled in this image
 # ... once your app has validated itself healthy:
 openmv_ota.confirm()     # keep the update (no-op if it isn't a trial)
 ```
