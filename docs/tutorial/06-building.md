@@ -84,7 +84,9 @@ build needs their passphrase, resolved in priority order: the project's cached d
 passphrase when present, then `--key-passphrase-file`, then the
 `OPENMV_OTA_KEY_PASSPHRASE` environment variable (what CI uses), and finally an
 **interactive prompt** when running in a terminal — day to day you can simply type
-it; the file flag exists for scripts. (Passphrases travel in files or the
+it; the file flag exists for scripts. (Signing accepts the environment where
+provisioning refuses it, deliberately: a wrong value here fails loudly and signs
+nothing, while a wrong value at provisioning would silently seal the key supply.) (Passphrases travel in files or the
 environment rather than on the command line itself, where they would land in shell
 history and `ps` output.) A **dev-keyed** project signs without any of this — its
 throwaway passphrase is cached in the project — but the build then refuses to
