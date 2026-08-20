@@ -386,8 +386,8 @@ def cmd_new(args: argparse.Namespace) -> int:
             print("IMPORTANT: back up your signing keys off-machine now — "
                   "`openmv-ota project keys backup --passphrase-file <file>`. Without them you "
                   "can never update this fleet again.")
-        print("Next: set product_id per board in openmv-ota.toml, and your app "
-              "version in app/settings.json.")
+        print("Next: review [targets.*] in openmv-ota.toml (board_name, the "
+              "auto-assigned product_id), and set your app version in app/settings.json.")
     _print_summary(lock)
     return 0
 

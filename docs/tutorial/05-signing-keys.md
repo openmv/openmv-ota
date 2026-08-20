@@ -75,7 +75,7 @@ scripts, not because a file is required.
 | `--factory-keys N` | Factory-key reserve, one per manufacturing site (default 8). |
 | `--key-passphrase-file FILE` | Passphrase (read from a file) encrypting the private keys at rest; keys are never stored plaintext. |
 | `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
-| `--backup-passphrase-file FILE` | Auto-write an encrypted key backup under this passphrase (else a reminder is printed). |
+| `--backup-passphrase-file FILE` | Write the encrypted off-machine key backup (`keys-backup.enc`, same artifact as `project keys backup`) in the same step that creates the keys — so there is never a moment where the only copy lives on this machine. Without it, `new` prints a reminder to back up manually. |
 
 ## Managing keys (`project keys`)
 
