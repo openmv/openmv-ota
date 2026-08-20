@@ -126,14 +126,13 @@ openmv-ota project keys restore keys-backup.bin
 openmv-ota project keys backend show | configure | provision
 ```
 
-- **`backup` / `restore`** — a one-file, integrity-checked archive of the private
-  keys (`keys-backup.bin`) for the off-machine copy; `restore` rebuilds
-  `keys/private/` on a replacement machine from that one file. No passphrase on
-  either side: the PEMs are archived exactly as they sit on disk, already
-  encrypted at rest, so the archive adds nothing to decrypt — and a `--dev`
-  project is refused a backup (its cached throwaway passphrase sits beside the
-  keys, making any copy effectively plaintext). `backup` just re-writes the file `new`
-  already gave you (the key set never changes) — useful only if you lost it.
+- **`backup` / `restore`** — the off-machine copy, and the way back. `backup`
+  writes every private PEM into one integrity-checked file, `keys-backup.bin` —
+  the same file `new` already wrote, since the key set never changes. `restore`
+  rebuilds `keys/private/` from it on a replacement machine. Neither takes a
+  passphrase: the PEMs are archived exactly as they sit on disk, already
+  encrypted. A `--dev` project is refused — its passphrase is cached beside the
+  keys, so a copy would be plaintext in effect.
 - **`backend`** — keys don't have to live on disk at all. `show` lists each key's
   signing backend. `configure KEY_ID --backend {encrypted-pem,pkcs11,aws-kms,gcp-kms,azure-kms,custom}
   --set KEY=VALUE …` points a trusted key at an **external** signer (bring your own
