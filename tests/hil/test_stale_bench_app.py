@@ -225,7 +225,6 @@ def test_phase1_also_publishes_after_the_window_reset():
     src = inspect.getsource(ota_cycle.main)
     seg = src.split('result = phase("install"')[0]
     assert "def publish():" in seg, "phase 1's publish must be deferred into a callable"
-    call = src.split('result = phase("install"')[1].split(")")[0] + ")"
     assert "after_reset=publish" in src.split('result = phase("install"')[1][:400], \
         "...and handed to run_cycle so it fires after the reset"
     # the eager call must be gone: no bare phase("publish", ...) outside that callable

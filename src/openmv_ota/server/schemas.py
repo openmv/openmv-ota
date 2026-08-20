@@ -283,7 +283,7 @@ class ViewerGrant(_Row):
 
 # --- device-facing ------------------------------------------------------------------------------
 
-class CheckIn(_Row):
+class CheckAnswer(_Row):
     """The check-in answer. ``update`` false is the common case and carries nothing else."""
 
     update: bool = False

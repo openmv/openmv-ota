@@ -37,6 +37,9 @@ jobs:
         # pydantic-settings) must be importable for the 100% gate.
         run: pip install -e ".[dev,server]"
 
+      - name: Lint (ruff)
+        run: ruff check .
+
       - name: Run tests (pytest enforces --cov-fail-under=100)
         run: pytest --cov-report=xml
 

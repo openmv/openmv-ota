@@ -7,7 +7,6 @@ import shutil
 import types
 
 from openmv_ota.build import romfs as build_mod
-from openmv_ota.ota import geometry
 from openmv_ota.build.errors import BuildError
 from openmv_ota.ota import geometry
 from openmv_ota.romfs.builder import read_image

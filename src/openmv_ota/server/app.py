@@ -36,7 +36,7 @@ from .boardmap import swd_ids_board_code
 from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter
-from .schemas import CheckIn, Health, Ok
+from .schemas import CheckAnswer, Health, Ok
 from .rollout import fallback_payload_version, offers_update, settled, should_autopause
 from .storage import build_storage
 from .verify import build_verifier
@@ -493,7 +493,7 @@ def healthz():
     return {"ok": True}
 
 
-@router.post("/api/v1/check", tags=["Device API"], responses={200: {"model": CheckIn}})
+@router.post("/api/v1/check", tags=["Device API"], responses={200: {"model": CheckAnswer}})
 def check(checkin: CheckIn, request: Request):
     st = request.app.state
     nothing = {"update": False, "poll_after_s": st.settings.poll_after_s}
