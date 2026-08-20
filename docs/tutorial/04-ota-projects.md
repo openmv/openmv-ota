@@ -29,10 +29,8 @@ images a camera can download, verify, and fall back from.
   Two-slot boards keep their ROMFS in external NOR/OSPI flash (4 KiB erase
   blocks) or MRAM.
 
-- **Keys provisioned.** A device trusts exactly the public keys baked into its
-  firmware, and you cannot add a trusted key later without re-flashing. So `new
-  --ota` provisions the *whole* key set up front and
-  writes it under `keys/`.
+- **Keys provisioned.** `new --ota` generates the product's whole signing key
+  set up front and writes it under `keys/`.
 
 - **The product id is enforced.** Every build stamps the scaffolded `product_id`
   ([page 2](02-projects.md#product-name-vs-board-name)) into the image; an OTA
