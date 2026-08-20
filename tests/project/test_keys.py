@@ -224,3 +224,20 @@ def test_keys_backend_show_not_ota(tmp_path, make_firmware, make_sdk):
                         sdk_home_override=make_sdk(), install_sdk=False, allow_dirty=True,
                         force=False, now=NOW, ota=False)
     assert main(["project", "keys", "backend", "show", str(root)]) == 2
+
+
+# --- the provisioning prompt (double entry) -----------------------------------
+
+def test_prompt_new_passphrase_match_and_mismatch():
+    from openmv_ota.project.errors import ProjectError
+    from openmv_ota.project.passphrase import prompt_new_passphrase
+
+    answers = iter(["s3cret", "s3cret"])
+    assert prompt_new_passphrase(_getpass=lambda _p: next(answers)) == "s3cret"
+
+    answers = iter(["s3cret", "typo"])
+    with pytest.raises(ProjectError, match="do not match"):
+        prompt_new_passphrase(_getpass=lambda _p: next(answers))
+
+    with pytest.raises(ProjectError, match="empty passphrase"):
+        prompt_new_passphrase(_getpass=lambda _p: "  ")

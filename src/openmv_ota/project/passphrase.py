@@ -41,3 +41,19 @@ def resolve_passphrase(root: str | Path, *, passphrase_file: str | Path | None =
     raise ProjectError(
         "the signing key is encrypted -- pass --key-passphrase-file, set %s, or use a --dev "
         "project" % ENV_VAR)
+
+
+def prompt_new_passphrase(_getpass=None) -> str:
+    """Interactively read a NEW passphrase (provisioning): typed twice, must match,
+    non-empty. The caller gates on a TTY. Double entry because a mistyped new
+    passphrase would encrypt the project's entire future key supply under a string
+    nobody knows. ``_getpass`` is injectable for tests."""
+    if _getpass is None:  # pragma: no cover  (real terminal input)
+        import getpass
+        _getpass = getpass.getpass
+    first = _getpass("new signing-key passphrase: ")
+    if not first.strip():
+        raise ProjectError("empty passphrase; nothing was created")
+    if _getpass("retype to confirm: ") != first:
+        raise ProjectError("passphrases do not match; nothing was created")
+    return first

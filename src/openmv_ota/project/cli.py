@@ -62,7 +62,8 @@ def register(project_parser: argparse.ArgumentParser):
                        help="factory-key reserve to provision, one per site (default 8)")
     p_new.add_argument("--force", action="store_true", help="overwrite an existing project")
     p_new.add_argument("--key-passphrase-file", metavar="FILE",
-                       help="passphrase (from a file) to encrypt the signing keys at rest; keys "
+                       help="passphrase (from a file, else a confirmed prompt on a terminal) to "
+                            "encrypt the signing keys at rest; keys "
                             "are never stored plaintext")
     p_new.add_argument("--dev", action="store_true",
                        help="throwaway dev keys: a random cached passphrase (keys/.dev-passphrase), "
@@ -291,6 +292,20 @@ def cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def _new_key_passphrase(args: argparse.Namespace) -> str | None:
+    """The passphrase `new --ota` encrypts the fresh key set under: the file when given,
+    else a double-checked interactive prompt on a terminal. Never the environment -- an
+    invisible source has no place at the moment the future key supply is sealed. Returns
+    None when there is nothing to resolve (non-OTA, --dev, or no TTY -- the API then
+    raises its explicit file-or-dev error)."""
+    if args.key_passphrase_file:
+        return _read_passphrase(args.key_passphrase_file)
+    if args.ota and not args.dev and sys.stdin.isatty():  # pragma: no cover  (TTY-gated; the prompt itself is unit-tested)
+        from .passphrase import prompt_new_passphrase  # pragma: no cover
+        return prompt_new_passphrase()  # pragma: no cover
+    return None
+
+
 def cmd_new(args: argparse.Namespace) -> int:
     from openmv_ota.ota.algorithms import ES256, ES384, ES512
 
@@ -312,8 +327,7 @@ def cmd_new(args: argparse.Namespace) -> int:
             ota_keys=args.ota_keys,
             factory_keys=args.factory_keys,
             now=_now(),
-            key_passphrase=(_read_passphrase(args.key_passphrase_file)
-                            if args.key_passphrase_file else None),
+            key_passphrase=_new_key_passphrase(args),
             dev=args.dev,
             firmware_patches=args.firmware_patches,
         )

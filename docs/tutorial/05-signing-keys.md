@@ -71,10 +71,12 @@ The private keys are **always encrypted at rest** — there is no plaintext mode
 `new --ota` needs a passphrase to encrypt under, and accepts exactly two sources:
 `--key-passphrase-file` (a real passphrase you manage) or `--dev` (a random
 throwaway cached in `keys/.dev-passphrase`, so there is nothing to manage — and the
-production build rail refuses images signed with dev keys). Provisioning reads
-**no environment variable and never prompts**: the file or `--dev`, nothing else.
-(Passphrases travel in files rather than on the command line itself, where they
-would land in shell history and `ps` output.)
+production build rail refuses images signed with dev keys). On a terminal, omitting
+both gets you an **interactive prompt, typed twice and required to match** — a
+mistyped new passphrase would seal your future key supply under a string nobody
+knows. Provisioning reads **no environment variable**: an invisible source has no
+place at this moment. (Passphrases travel in files or a prompt rather than on the
+command line itself, where they would land in shell history and `ps` output.)
 
 ## Day to day: `status` and `rotate`
 
@@ -130,7 +132,9 @@ openmv-ota project keys backend show | configure | provision
   either side: the PEMs are archived exactly as they sit on disk, already
   encrypted at rest, so the archive adds nothing to decrypt — and a `--dev`
   project is refused a backup (its cached throwaway passphrase sits beside the
-  keys, making any copy effectively plaintext).
+  keys, making any copy effectively plaintext). The key set never changes after
+  `new`, so `backup` isn't periodic — it regenerates the byte-identical artifact
+  if the local copy was deleted before it reached the vault.
 - **`backend`** — keys don't have to live on disk at all. `show` lists each key's
   signing backend. `configure KEY_ID --backend {encrypted-pem,pkcs11,aws-kms,gcp-kms,azure-kms,custom}
   --set KEY=VALUE …` points a trusted key at an **external** signer (bring your own
