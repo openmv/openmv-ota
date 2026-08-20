@@ -161,7 +161,10 @@ external keys are often billable. Note what provisioning means: **it re-keys the
 fleet** — fielded devices trust the new set only after a firmware update carries
 it, exactly like the `--force` hazard above. Commit both files.
 
-Each backend's record, and the pip extra that enables it:
+Each backend's record, and the pip extra that enables it — extras rather than
+default dependencies because the cloud SDKs are heavy, conflict-prone, and each
+one you install is supply-chain surface you own; nearly every project uses at
+most one:
 
 | `--backend` | Record fields (`--set k=v`) | Extra |
 |---|---|---|
