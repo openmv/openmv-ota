@@ -17,7 +17,7 @@ DEFAULT_APP = {
 def make_project(tmp_path, make_firmware, make_sdk):
     """Create a real pegged project + an app dir. Returns (project_dir, repo, app_dir)."""
     def _make(boards=("OPENMV_N6",), app_files=None, with_mpy_cross=True, extra_config="",
-              ota=False, product=None, account="acct_test", dev=False):
+              ota=False, product=None, account="acct_test", dev=False, ca=None):
         import os
 
         from openmv_ota.project import project as proj
@@ -25,8 +25,12 @@ def make_project(tmp_path, make_firmware, make_sdk):
         repo = make_firmware(with_mpy_cross=with_mpy_cross)
         home = make_sdk(with_bins=True)
         root = tmp_path / "proj"
+        if ca == "tiny":                     # classics refuse --ota without a CA
+            ca_file = tmp_path / "root.pem"
+            ca_file.write_text("-----BEGIN CERTIFICATE-----\nMIGa\n-----END CERTIFICATE-----\n")
+            ca = str(ca_file)
         proj.create_project(
-            root, firmware=repo, boards=list(boards), product=product, vendor=None,
+            root, firmware=repo, boards=list(boards), product=product, vendor=None, ca=ca,
             sdk_home_override=home, install_sdk=False, allow_dirty=True, force=False, now=NOW,
             ota=ota, ota_keys=2, factory_keys=1,  # small pool: these tests don't exercise keys
             # keys are encrypted; non-dev projects sign with the suite's env passphrase, and the

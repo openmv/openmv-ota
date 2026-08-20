@@ -1054,9 +1054,27 @@ def install(url, ca=None):  # pragma: no cover
     # short watchdog window; relax() ISR-feeds across it (no-op unless the app armed a watchdog). This
     # runs synchronously in run()'s task, so the app's async feed loop can't cover it.
     with _wdt_relax():
-        exec(_read_file(here + "/data/installer.py", "r"), ns)
-    log.debug("install: staged installer")           # milestone + HIL path witness
-    ns["run"](url, ca, cfg)  # hil-residual: terminal call into the RAM installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
+        try:
+            exec(_read_file(here + "/data/installer.py", "r"), ns)
+            run = ns["run"]
+            log.debug("install: staged installer")   # milestone + HIL path witness
+        except MemoryError:  # hil-residual: small-heap fallback; measured on the bench (F427 = 39,120B free TOTAL), unreachable on the A/B fleet's boards
+            # The failed exec leaves the read source (and half-built module dict) as
+            # garbage -- on a 47 KB heap that IS the heap. Reclaim it before the
+            # frozen installer needs room for its inflate window.
+            ns = {}  # hil-residual: drops the failed exec's garbage; classic-only path, no fleet marker
+            import gc  # hil-residual: classic-only fallback arm (same witness as the frozen import below)
+            gc.collect()  # hil-residual: the collect that makes the frozen installer's window fit on a ~40 KB heap
+            # A small-heap board (an F427 has ~39 KB of heap, TOTAL) can never exec
+            # the installer source into RAM, however small it is packed. The firmware
+            # already freezes the SAME source as `openmv_installer` for recovery, and
+            # frozen bytecode runs from flash with ~zero heap -- use that copy. The
+            # exec path stays first because the romfs copy is OTA-patchable; this
+            # fallback self-selects on exactly the boards that need it.
+            import openmv_installer  # hil-residual: frozen module (firmware-resident); no bench marker until a classic joins the fleet
+            run = openmv_installer.run  # hil-residual: same-source binding (the freeze copies data/installer.py verbatim)
+            log.info("install: staged frozen installer (exec would not fit)")  # hil-residual: witnessed on classic boards only
+    run(url, ca, cfg)  # hil-residual: terminal call into the installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
 
 
 def _resolve_ca(ca, base):  # pragma: no cover

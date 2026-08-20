@@ -1284,7 +1284,9 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
     fmt = rep.get("format")
     expect_sha = body_dict.get("sha256")
     log.debug("install: manifest accepted")
-    return image_url, fmt, expect_sha
+    # wbits: the deflate window the artifact was compressed with (small-heap boards
+    # get small-window images; 0 = the format default). Signed like everything else.
+    return image_url, fmt, expect_sha, rep.get("wbits") or 0
 
 
 def _reset():  # pragma: no cover
@@ -1310,12 +1312,19 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     ``/rom`` intact. Progress is logged from here (RAM + the frozen logger) at every 10%
     step -- it can't be a caller callback, whose code is being erased."""
     import deflate
-    import socket
-    import ssl
 
     import uctypes
     import vfs
     from ecdsa_verify import verify                  # the frozen C module (as in boot.py)
+
+    if _is_path(manifest_url):
+        # A file install needs no network stack -- and must not demand one: a
+        # small-heap classic's firmware may not build the `ssl` module at all,
+        # yet installs fine from a mounted filesystem.
+        socket = ssl = None  # hil-residual: file-transport arm; witnessed by the classic bench bring-up, no fleet marker yet
+    else:
+        import socket  # hil-residual: URL-transport arm; witnessed by install.download on every bench install leg
+        import ssl  # hil-residual: URL-transport arm (same witness)
 
     # Watchdog (if the app enabled one): relax() feeds it from a timer ISR ONLY around the
     # single multi-second erase the main loop can't reach; feed() keeps it alive per chunk
@@ -1701,11 +1710,11 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     log.info("install: fetching manifest %s" % manifest_url)
     try:
         if _is_path(manifest_url):                # a manifest file path (mounted FS, e.g. SD)
-            image_url, fmt, expect_sha = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
+            image_url, fmt, expect_sha, wbits = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
                 manifest_url, cfg, verify,
                 floor=floor, base_version=base_version, delta_capable=delta_capable)
         else:
-            image_url, fmt, expect_sha = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
+            image_url, fmt, expect_sha, wbits = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
                 manifest_url, ca_pem, cfg, verify, socket, ssl, feed,
                 floor=floor, base_version=base_version, delta_capable=delta_capable)
     except Exception as e:
@@ -1773,7 +1782,15 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # socket is live after a resume (closing the original would leak the newer
             # one -- see _ResumingBody); for an on-disk image it is simply the open file.
             body = _open_body(image_url, ca_pem, socket, ssl, feed)
-            dio = deflate.DeflateIO(body, deflate.GZIP)
+            # Collect BEFORE building the decompress chain, unconditionally: DeflateIO
+            # allocates its whole inflate window in one piece (8 KiB on small-window
+            # images, 32 KiB default), and on a ~40 KB-heap classic the previous
+            # attempt's -- or the failed exec's -- garbage is the difference between
+            # fitting and MemoryError x3. The armed-watchdog gc_collect hook exists for
+            # pause control; this one is for the allocation itself.
+            import gc
+            gc.collect()  # hil-residual: pre-DeflateIO collect; effect only visible on small-heap classics (no fleet marker)
+            dio = deflate.DeflateIO(body, deflate.GZIP, wbits)  # wbits 0 = format default
             if fmt == _DELTA_FORMAT:
                 # Delta: stream-decompress the patch and reconstruct the image against the
                 # RUNNING slot (copy-with-diff, ulab add) -- both the patch and the output are

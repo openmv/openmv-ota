@@ -21,6 +21,11 @@ MPCONFIG = (
     "#define MICROPY_VERSION_PRERELEASE 0\n"
 )
 PERSISTENT = "#define MPY_VERSION 6\n#define MPY_SUB_VERSION 3\n"
+H7_BOARD = (      # a classic: ROMFS in ONE internal-flash sector (partition == erase block)
+    '#define OMV_BOARD_TYPE "H7"\n'
+    "#define OMV_ROMFS_PART0_ORIGIN 0x081E0000\n"
+    "#define OMV_ROMFS_PART0_LENGTH 0x00020000\n"
+)
 N6_BOARD = (
     '#define OMV_BOARD_TYPE "N6"\n'
     "#define OMV_ROMFS_PART0_ORIGIN 0x70800000\n"
@@ -101,7 +106,8 @@ def make_firmware(tmp_path):
             pc.mkdir(parents=True)
             (pc / "mbedtls_config_port.h").write_text(
                 '#include <time.h>\n#include "extmod/mbedtls/mbedtls_config_common.h"\n')
-        for board, content in (("OPENMV_N6", N6_BOARD), ("OPENMV_AE3", AE3_BOARD)):
+        for board, content in (("OPENMV_N6", N6_BOARD), ("OPENMV_AE3", AE3_BOARD),
+                               ("OPENMV4", H7_BOARD)):
             d = repo / "boards" / board
             d.mkdir(parents=True)
             (d / "board_config.h").write_text(content)
