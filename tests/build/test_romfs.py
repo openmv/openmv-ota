@@ -1274,7 +1274,6 @@ def test_single_image_build_set(make_project):
     SMALL inflate window, and the manifest records that window -- everything the
     bench bring-up caught, pinned on the host."""
     import gzip as _gzip
-    import json
     import zlib
 
     from openmv_ota.build.romfs import (

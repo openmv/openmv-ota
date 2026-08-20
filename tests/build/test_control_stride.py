@@ -87,17 +87,17 @@ def test_runtime_mirror_stride_32():
 
 
 def test_installer_mirror_stride_32():
-    I = _load("_stride_installer", "src/openmv_ota/build/device/openmv_ota/data/installer.py")
+    inst = _load("_stride_installer", "src/openmv_ota/build/device/openmv_ota/data/installer.py")
     try:
-        I._set_stride(32)
-        assert I._REPR_OFF == 96 and I._COUNTER_OFF == 128
-        assert I._pad(b"x" * 16) == b"x" * 16 + b"\xff" * 16   # marker fills its word
-        assert I._pad(b"y" * 32) == b"y" * 32                  # already whole words
+        inst._set_stride(32)
+        assert inst._REPR_OFF == 96 and inst._COUNTER_OFF == 128
+        assert inst._pad(b"x" * 16) == b"x" * 16 + b"\xff" * 16   # marker fills its word
+        assert inst._pad(b"y" * 32) == b"y" * 32                  # already whole words
         rb = bytearray(b"\xff" * 128)
-        rb[32:40] = I._rollback_entry(6) if hasattr(I, "_rollback_entry") else __import__("struct").pack("<II", 6, 6 ^ 0xFFFFFFFF)
-        assert I._rollback_floor_of(rb) == 6
+        rb[32:40] = inst._rollback_entry(6) if hasattr(inst, "_rollback_entry") else __import__("struct").pack("<II", 6, 6 ^ 0xFFFFFFFF)
+        assert inst._rollback_floor_of(rb) == 6
     finally:
-        I._set_stride(16)
+        inst._set_stride(16)
 
 
 def test_factory_image_for_a_stride_32_board(make_project):
