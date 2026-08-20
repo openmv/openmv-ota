@@ -145,11 +145,6 @@ openmv-ota project keys backend show | configure | provision
   backend, so the private half never exists on this machine (it defaults to 4 + 1 —
   external keys are often billable).
 
-## See also
-
-- [Trailer format](../reference/trailer.md) — the signature algorithms and the `key_id` / `sig_alg` fields the trailer records.
-- [Threat model](../reference/threat-model.md) — the trust root, and why a manufacturer or the update server never holds a key.
-
 ---
 
 *[← 4 · OTA projects](04-ota-projects.md) · [Index](00-introduction.md) · [6 · Building →](06-building.md)*
