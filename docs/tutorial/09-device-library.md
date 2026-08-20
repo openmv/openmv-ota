@@ -42,8 +42,8 @@ packs it to `/rom/lib/openmv_ota/`. It exposes:
   does (`relax()` around the erase, `feed()` per chunk, including the already-applied
   re-read). Idempotent, returns the names applied; a no-op when nothing is bundled. Call
   it **early**, before a resource's consumer is used (e.g. before the helper core runs).
-- **`install(url, ca=None)`** — download a gzipped slot image over HTTPS and install
-  it. Does **not** return
+- **`install(url, ca=None)`** — fetch a gzipped slot image over HTTPS — or from a
+  file path — and install it. Does **not** return
   on success — it reboots into the new image's trial.
 
 Both report their progress, **logged at every 10% step** (`install: 40% (…)`,
@@ -71,13 +71,18 @@ if you want to react.
 ## Installing an update (`install()`)
 
 `install(url, ca=None)` is the on-device piece that fetches and applies an update.
-`url` is the **signed manifest** URL (`build ota-romfs`), *not* a raw image — the device
-resolves the actual image from the manifest itself (representation URLs are relative to the
-manifest's URL by default). Something else decides *which* manifest URL to hand it (how
-that's obtained is out of scope here). It:
+`url` is the **signed manifest** (`build ota-romfs`), *not* a raw image — the device
+resolves the actual image from the manifest itself (representation URLs are relative to
+the manifest's location by default). It is an `https://` URL, **or a file path**: copy
+the published artifacts onto a mounted filesystem (an SD card, realistically) and
+`install("/sd/fw/OPENMV_N6-manifest.bin")` installs with no network at all — through the
+identical signature, vetting, and anti-rollback checks, because the medium is untrusted
+either way and the signature is the boundary. Something else decides *which* manifest to
+hand it (how that's obtained is out of scope here). It:
 
 1. Opens an **HTTPS** connection (plaintext HTTP is refused), verifying the server
-   against `ca` with `CERT_REQUIRED` + SNI — all **before** erasing anything.
+   against `ca` with `CERT_REQUIRED` + SNI — all **before** erasing anything. A file
+   install opens the manifest file instead: no connection, and `ca` is ignored.
 2. **Fetches + verifies the manifest** (into RAM): checks its ECDSA signature against the
    same frozen trusted keys as an image trailer, then applies the device-relative checks
    — `product_id` cross-flash guard, `min_platform_version`, and the **anti-rollback floor**
@@ -85,7 +90,7 @@ that's obtained is out of scope here). It:
    on the image, just *earlier*. Any failure here raises with `/rom` intact.
 3. **Selects a representation** from the manifest — the **full** image, or a **delta**
    when one is offered whose base matches the version this device is *running* and it's
-   smaller — and opens a second HTTPS GET for it. (Single-image devices never take a delta:
+   smaller — and opens a second HTTPS GET (or the sibling file) for it. (Single-image devices never take a delta:
    the base would be the very slot about to be erased.)
 4. **Picks its target slot — the one the device is not running** — and erases it, then
    **streams** the image straight in. For a full image: decompress a chunk → write → **read
@@ -106,7 +111,7 @@ that's obtained is out of scope here). It:
   do any teardown, *then* call `install()`. (The installer runs from RAM — `install()` reads
   `data/installer.py` and `exec`s it — which is what makes single-image mode possible at all,
   since there the erased slot *is* the one the running app executes from.)
-- **Failure is safe.** A pre-flight failure (bad URL, DNS, TLS, HTTP status) raises
+- **Failure is safe.** A pre-flight failure (bad URL or path, DNS, TLS, HTTP status) raises
   **before** the erase, with `/rom` intact, so you can catch it and retry without a reboot.
   A failure *after* the erase reboots, and boot.py rejects the half-written slot (bad
   signature/hash) and mounts the previous release; `status()` then reports the fallback so

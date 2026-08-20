@@ -130,7 +130,8 @@ openmv_ota.sync()        # bring bundled resources up to date with this image
 openmv_ota.confirm()     # keep the update (no-op if it isn't a trial)
 ```
 
-It also exposes **`install(url)`** — download a new image over HTTPS and install it.
+It also exposes **`install(url)`** — fetch a new image over HTTPS, or from a file
+path, and install it.
 The installer ships as source in `data/installer.py` (so the device can `exec` it into
 RAM while it overwrites the slot it runs from), and `data/ca.pem` is the TLS trust
 store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step needs
