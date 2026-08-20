@@ -1211,8 +1211,10 @@ def verify_locked(root: Path, *, firmware: Path | None = None) -> list[str]:
     current = _current_snapshot(paths, firmware)
     problems = lock_mod.drift(locked, current)
     if current.firmware["dirty"]:
+        offenders = gitrepo.dirty_paths(_checkout_path(paths, firmware))
         problems.insert(0, "firmware checkout is dirty; uncommitted changes are "
-                           "not captured by the pinned commit")
+                           "not captured by the pinned commit (%s)"
+                           % "; ".join(offenders))
     return problems
 
 

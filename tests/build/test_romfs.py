@@ -1310,3 +1310,32 @@ def test_single_image_build_set(make_project):
     [mres] = build_manifest(root, firmware=repo, allow_dev_key=True)
     body = parse_manifest(mres.output.read_bytes()).body
     assert body["representations"][0]["wbits"] == SINGLE_WBITS
+
+
+def test_stale_device_lib_warns(make_project, capsys):
+    root, repo, app = make_project(ota=True, dev=True)
+    lib = root / "app" / "lib" / "openmv_ota" / "__init__.py"
+    lib.write_text(lib.read_text() + "\n# my local edit\n")
+    build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False,
+                          convert_models=False, allow_dev_key=True)
+    err = capsys.readouterr().err
+    assert "differs from this tool's bundled device lib" in err
+    assert "__init__.py" in err
+
+
+def test_missing_device_lib_is_silent(make_project, capsys):
+    # a non-OTA-shaped app (lib removed) is simply not checked
+    import shutil
+    root, repo, app = make_project(ota=True, dev=True)
+    shutil.rmtree(root / "app" / "lib" / "openmv_ota")
+    from openmv_ota.build.romfs import _warn_stale_device_lib
+    from openmv_ota.project import load_project
+    _warn_stale_device_lib(load_project(root, firmware=repo, verify=False))
+    assert "differs from" not in capsys.readouterr().err
+
+
+def test_current_device_lib_is_silent(make_project, capsys):
+    root, repo, app = make_project(ota=True, dev=True)
+    build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False,
+                          convert_models=False, allow_dev_key=True)
+    assert "differs from this tool's bundled" not in capsys.readouterr().err

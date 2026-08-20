@@ -258,6 +258,8 @@ def build_romfs(
     app_dir = Path(app) if app else project / "app"
     copro_dir = project / COPROCESSOR_APP
     out_dir = Path(output) if output else project / "build"
+    if p.config.ota:
+        _warn_stale_device_lib(p)
     _warn_product_id_collisions(p.config)
 
     targets = _select_targets(p.targets, boards)
@@ -320,6 +322,30 @@ def _target_name(t) -> str:
     """Output basename. The main partition keeps the bare board name; a coprocessor
     partition is suffixed with its role (e.g. ``OPENMV_AE3-coprocessor``)."""
     return t.name if t.role == "main" else "%s-%s" % (t.name, t.role)
+
+
+_DEVICE_LIB = Path(__file__).parent / "device" / "openmv_ota"
+
+
+def _warn_stale_device_lib(p) -> None:
+    """Warn when the project's scaffolded ``app/lib/openmv_ota`` differs from this
+    tool's bundled device lib. The lib is the user's to edit -- but when the
+    difference is a STALE SCAFFOLD (the tool moved; the copy did not), the device
+    runs old code while everything else is new. On the bench that mismatch cost
+    three debugging cycles before anyone thought to compare the copies."""
+    lib = Path(p.root) / "app" / "lib" / "openmv_ota"
+    if not lib.is_dir():
+        return
+    stale = [str(src.relative_to(_DEVICE_LIB))
+             for src in sorted(_DEVICE_LIB.rglob("*.py"))
+             if (lib / src.relative_to(_DEVICE_LIB)).exists()
+             and (lib / src.relative_to(_DEVICE_LIB)).read_bytes() != src.read_bytes()]
+    if stale:
+        print("warning: app/lib/openmv_ota differs from this tool's bundled device lib "
+              "(%s). Yours to edit on purpose -- but if this is a stale scaffold, copy "
+              "the bundled files over from the installed package "
+              "(openmv_ota/build/device/openmv_ota/)." % ", ".join(stale),
+              file=sys.stderr)
 
 
 def _warn_unset_product_id(t, system_info: dict) -> None:

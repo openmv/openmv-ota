@@ -92,7 +92,10 @@ def drift(old: Lock, new: Lock) -> list[str]:
     changes: list[str] = []
     for key in _DRIFT_KEYS:
         _diff(a.get(key), b.get(key), key, changes)
-    return changes
+    # A checkout that was dirty at resolve time and is CLEAN now is an improvement,
+    # never drift -- requiring a sync to bless a cleanup punished exactly the right
+    # move (bit us on the bench: clean the tree, get refused for it).
+    return [c for c in changes if not c.startswith("firmware.dirty: True -> False")]
 
 
 def _diff(old, new, path: str, changes: list[str]) -> None:
