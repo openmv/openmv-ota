@@ -9,9 +9,9 @@ partition image written at manufacture, and the firmware that boots it.
 
 ## build factory-romfs
 
-Where [`build romfs`](06-building.md#build-romfs) produces an OTA *payload* — the
-signed body + trailer a release is composed from — `build factory-romfs` produces
-the **whole partition image flashed at the factory**. It requires an OTA project:
+Where [`build romfs`](06-building.md#build-romfs) packs the **signed bundle**
+(body + trailer), `build factory-romfs` produces the **whole partition image
+flashed at the factory**. It requires an OTA project:
 a plain project has nothing to compose — its `build romfs` image is budgeted
 against the whole partition and is flashed as-is at manufacture.
 
