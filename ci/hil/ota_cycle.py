@@ -2314,6 +2314,17 @@ def file_probe(retries=3):
     raise RuntimeError("status probe never answered over the CDC:\n%s" % out[-1500:])
 
 
+def _install_touched_flash(out):
+    """True when the exec output shows the install reached the ERASE (or beyond) -- the boundary
+    a pre-erase refusal must never cross. Keyed on the flash-touching lines ("install: erasing",
+    "install: writing", the armed line), NOT on "install: staged": that line stages the INSTALLER
+    CODE before the vet ever runs, and the classics' frozen fallback logs "install: staged frozen
+    installer (exec would not fit)" on every call -- which scored the M7's textbook pre-erase
+    refusal as erased=True on its first fleet leg."""
+    return ("install: erasing" in out) or ("install: writing" in out) \
+        or ("installed + armed" in out)
+
+
 def _device_raised(out):
     """True when the exec output shows the DEVICE raising out of install() -- a MicroPython
     traceback, whose frames are `<stdin>`. NOT mpremote's own: a successful install() reboots
@@ -2399,7 +2410,7 @@ def run_file_scenario(args, spec, trace, phase):
     # the caller (the exec completes; no reboot), the device logs the reject, and the version
     # must not move. "signature does not verify" is the raise; "reject bad signature" the log.
     refused = ("signature does not verify" in out) or ("reject bad signature" in out)
-    erased = ("install: staged" in out) or ("installed + armed" in out)
+    erased = _install_touched_flash(out)
     v, confirmed, _ = file_probe()
     ok = refused and not erased and v == golden_v
     return {"saw_golden": True, "saw_target": False, "version": v, "slot": None,

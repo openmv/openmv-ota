@@ -155,3 +155,19 @@ def test_host_teardown_traceback_is_not_a_device_raise():
     assert not ota_cycle._device_raised(_HOST_TRACEBACK)
     assert ota_cycle._device_raised(_DEVICE_TRACEBACK)
     assert not ota_cycle._device_raised("")
+
+
+def test_frozen_installer_staging_is_not_flash_touching():
+    """The M7's textbook pre-erase refusal scored erased=True because "install: staged" matched
+    the frozen fallback's "install: staged frozen installer (exec would not fit)" -- a line that
+    stages installer CODE before the vet runs. The boundary is the erase, so only the
+    flash-touching lines count."""
+    m7_refusal = (
+        "INFO openmv_ota: install: staged frozen installer (exec would not fit)\n"
+        "INFO openmv_ota: install: fetching manifest /sdcard/OPENMV3-manifest.bin\n"
+        "WARNING openmv_ota: install: reject bad signature\n"
+        "WARNING openmv_ota: install: rejected before erase (OSError('manifest signature does not verify',))\n"
+    )
+    assert not ota_cycle._install_touched_flash(m7_refusal)
+    assert ota_cycle._install_touched_flash(m7_refusal + "INFO openmv_ota: install: erasing A (262144 bytes) t=1\n")
+    assert ota_cycle._install_touched_flash("install: installed + armed; rebooting into the trial")
