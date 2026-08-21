@@ -263,14 +263,39 @@ def test_slot_report_is_the_line_a_server_reads():
 
     sector = host_status.build_status_sector(4096, pending=True, tried=False,
                                              confirmed=False, counter=9)
-    assert rt._slot_report("B", "A", sector, 0x01020000) == {
-        "slot": "B", "running": False, "payload_version": 0x01020000, "counter": 9,
+    assert rt._slot_report("B", "A", sector, 0x01020000, "ab" * 32) == {
+        "slot": "B", "running": False, "payload_version": 0x01020000,
+        "body_sha256": "ab" * 32, "counter": 9,
         "confirmed": False, "pending": True}
     # a blank slot: no counter, nothing set -- reported as-is rather than guessed at
     blank = b"\xff" * 4096
     assert rt._slot_report("B", "B", blank, 0) == {
-        "slot": "B", "running": True, "payload_version": 0, "counter": None,
-        "confirmed": False, "pending": False}
+        "slot": "B", "running": True, "payload_version": 0, "body_sha256": "",
+        "counter": None, "confirmed": False, "pending": False}
+
+
+def test_trailer_body_sha_offset_matches_the_host_trailer():
+    """The runtime reads body_sha256 at a PINNED offset (48) from a raw trailer block --
+    the same read slots() reports to the fleet, so which delta bases exist in the field is
+    named by exact bytes. Pin it against a real host-packed trailer, like the version
+    offset above it."""
+    import hashlib
+
+    from openmv_ota.ota import ES256, Trailer, algorithm_for, pack_trailer, signed_region
+    from openmv_ota.ota.keys import generate_private_key
+    from openmv_ota.ota.sign import sign_region
+    spec = algorithm_for(ES256)
+    priv = generate_private_key(spec)
+    body = b"R" * 32
+    t = Trailer(body_size=len(body), pad_size=0, meta={}, product_id=7,
+                min_platform_version=0, payload_version=0x01020000,
+                payload_version_floor=0, key_id=0x0100, sig_alg=ES256,
+                body_sha256=hashlib.sha256(body).digest())
+    t.signature = sign_region(priv, signed_region(t), spec)
+    trailer = pack_trailer(t)
+    assert rt._trailer_body_sha(trailer) == hashlib.sha256(body).hexdigest()
+    assert rt._trailer_body_sha(b"\xff" * 4096) == ""       # blank slot -> ""
+    assert rt._trailer_body_sha(trailer[:10]) == ""          # torn -> ""
 
 
 def test_counter_key_sorts_an_unreadable_counter_last():

@@ -859,8 +859,6 @@ def build_manifest(
     app: str | Path | None = None,
     boards: list[str] | None = None,
     firmware: str | Path | None = None,
-    delta: str | Path | None = None,
-    delta_base_version: str | None = None,
     deltas: list | None = None,
     key_passphrase_file: str | Path | None = None,
     allow_dev_key: bool = False,
@@ -877,8 +875,8 @@ def build_manifest(
     manifest's own URL, so the signed manifest is host-portable); pass ``url_base`` (an
     absolute ``https://`` dir) to pin absolute URLs instead. The image must be rendered
     first (``build ota-romfs`` does that, then calls here). Pass ``deltas`` (a list of
-    ``(path, base_version)``) to add delta reps; ``delta`` + ``delta_base_version`` is the
-    single-delta spelling of the same thing."""
+    ``(path, base_version, base_body_sha256)``) to add delta reps -- the base sha names the
+    exact bytes the patch applies against, and the device refuses a delta without it."""
     import gzip
 
     from openmv_ota.ota import bundle
@@ -890,9 +888,7 @@ def build_manifest(
 
     if url_base and not url_base.startswith("https://"):
         raise BuildError("manifest --url-base must be an absolute https:// URL", exit_code=1)
-    if delta and not delta_base_version:
-        raise BuildError("manifest --delta also needs --delta-base-version", exit_code=1)
-    delta_list = list(deltas or ([(Path(delta), delta_base_version)] if delta else []))
+    delta_list = list(deltas or [])
     _base = url_base.rstrip("/") if url_base else None
 
     def _rep_url(name):
@@ -944,7 +940,7 @@ def build_manifest(
             # does not carry it.
             reps[0]["wbits"] = SINGLE_WBITS
         for entry in delta_list:
-            delta_path, base_version = Path(entry[0]), entry[1]
+            delta_path, base_version, base_body_sha = Path(entry[0]), entry[1], entry[2]
             patch = _read_maybe_gz(delta_path)
             try:
                 if delta_target_size(patch) != len(image):
@@ -956,7 +952,11 @@ def build_manifest(
             reps.append({"format": DELTA_FORMAT,
                          "url": _rep_url(delta_path.name),
                          "size": delta_path.stat().st_size,
-                         "base_payload_version": encode_app_version(base_version)})
+                         "base_payload_version": encode_app_version(base_version),
+                         # the base's trailer body_sha256: the device applies this delta
+                         # only when its RUNNING slot carries these exact bytes (version
+                         # alone stopped being an identity when --allow-republish arrived)
+                         "base_body_sha256": base_body_sha})
 
         body = {
             "schema": SCHEMA,
@@ -1111,7 +1111,7 @@ def build_ota_romfs(
             patch = _delta_bytes(base_body, image)
             delta_path = out_dir / ("%s-ota.delta-%s.gz" % (name, base_version))
             delta_path.write_bytes(gzip.compress(patch, mtime=0))
-            deltas.append((delta_path, base_version))
+            deltas.append((delta_path, base_version, base_tr.body_sha256.hex()))
 
         [mres] = build_manifest(project, output=output, app=app,
                                 boards=[name], firmware=firmware,
@@ -1120,7 +1120,7 @@ def build_ota_romfs(
         ledger.record_release(project, name, version=signer.app_version, payload_version=new_pv,
                               sha256=hashlib.sha256(image).hexdigest(), key_id=mres.key_id)
         results.append(OtaRomfsResult(t.name, t.partition_index, img_path,
-                                      [d for d, _v in deltas],
+                                      [d for d, _v, _sha in deltas],
                                       mres.output, mres.key_id))
     return results
 
