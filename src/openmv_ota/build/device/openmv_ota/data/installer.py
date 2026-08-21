@@ -555,7 +555,7 @@ def _update_reject(body, product_id, platform_version, rollback_floor, account_i
     return None
 
 
-def _select_rep(body, delta_capable, base_payload_version):
+def _select_rep(body, delta_capable, base_payload_version, base_body_sha):
     """Pick the cheapest usable representation (mirror of
     openmv_ota.ota.manifest.select_representation). Returns the rep dict, or None.
 
@@ -567,7 +567,15 @@ def _select_rep(body, delta_capable, base_payload_version):
     for rep in body.get("representations", []):
         fmt = rep.get("format")
         if fmt == _DELTA_FORMAT:
-            if not delta_capable or rep.get("base_payload_version") != base_payload_version:
+            # Base identity is version AND bytes: a version's bytes are only unique while
+            # nobody republishes it (--allow-republish exists), so the rep names its base's
+            # trailer body_sha256 and the device compares against its RUNNING slot's -- a
+            # wrong or absent base sha means this delta was built against bytes we are not
+            # running, and applying it could only fail the post-write sha check.
+            if (not delta_capable
+                    or rep.get("base_payload_version") != base_payload_version
+                    or not base_body_sha
+                    or rep.get("base_body_sha256") != base_body_sha):
                 continue
         elif fmt != "full":
             continue
@@ -584,6 +592,19 @@ def _trailer_version(trailer):
     if fields[0] != _TRAILER_MAGIC:
         return 0
     return fields[8]                              # payload_version (9th header field)
+
+
+def _trailer_body_sha(trailer):
+    """A slot trailer's ``body_sha256`` as hex; "" if it doesn't parse (blank or torn).
+    The delta base-identity check compares this against a delta rep's
+    ``base_body_sha256`` -- ONE header field from a block already read, so naming the
+    running slot's exact bytes costs nothing."""
+    if len(trailer) < struct.calcsize(_TRAILER_HEADER_STRUCT):
+        return ""
+    fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
+    if fields[0] != _TRAILER_MAGIC:
+        return ""
+    return binascii.hexlify(fields[12]).decode()  # body_sha256 (13th header field)
 
 
 # --- pure: A/B slot arithmetic (mirror of boot.py; pinned by a test) ---------
@@ -1222,7 +1243,8 @@ def _open_body(image_url, ca_pem, socket, ssl, feed):
 
 
 def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop,
-                    floor=0, base_version=0, delta_capable=True):  # pragma: no cover
+                    floor=0, base_version=0, delta_capable=True,
+                    base_body_sha=""):  # pragma: no cover
     """Pre-erase: fetch the signed manifest, verify its signature against the frozen
     trusted keys (exactly as boot.py verifies an image trailer), apply the device-relative
     checks (board / platform / anti-rollback), and pick a representation. Returns
@@ -1250,20 +1272,22 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop,
             sock.close()  # hil-residual: socket close on both arms; marker-less by nature (nothing observable), dominated by the accepted/reject markers downstream
     except Exception as e:  # hil-residual: connection-phase failure wrapper (needs a dropped link / bad cert to reach; the happy path fetches cleanly)
         raise _TransportError("manifest fetch failed: %r" % (e,))  # hil-residual: bare raise (cause kept in the message; run() logs it as deferred + retries)
-    return _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_capable)  # hil-residual: bare delegation into the host-tested vet (its markers witness the outcome)
+    return _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version,  # hil-residual: bare delegation into the host-tested vet (its markers witness the outcome)
+                         delta_capable, base_body_sha)  # hil-residual: continuation of the same delegation
 
 
 def _fetch_manifest_file(manifest_path, cfg, verify, floor=0, base_version=0,
-                         delta_capable=True):
+                         delta_capable=True, base_body_sha=""):
     """The on-disk twin of ``_fetch_manifest``: read the signed manifest from a mounted
     filesystem (an SD card holding the published artifacts) and hand it to the same
     verify + vetting. An unreadable path raises OSError straight to the app -- unlike a
     dropped link it is not transient, so it is a rejection, never a deferred retry."""
     return _vet_manifest(manifest_path, _read_manifest_file(manifest_path), cfg, verify,
-                         floor, base_version, delta_capable)
+                         floor, base_version, delta_capable, base_body_sha)
 
 
-def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_capable):
+def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_capable,
+                  base_body_sha=""):
     """Verify + vet a signed manifest already in RAM and pick a representation -- the
     pure-CPU half of the manifest phase, shared by the HTTPS fetch and the on-disk
     path. Returns ``(image_url, fmt, expect_sha)``; raises OSError (to the app,
@@ -1295,16 +1319,25 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
         # The delta applier is pure Python (no ulab/C), so every board is delta-capable in the
         # A/B sense; ``delta_capable`` is False only in SINGLE mode, where the base is the very
         # slot about to be erased.
-        rep = _select_rep(body_dict, delta_capable, base_version)
+        rep = _select_rep(body_dict, delta_capable, base_version, base_body_sha)
     if rep is None:
         raise OSError("manifest has no usable representation")
     image_url = _resolve_url(manifest_url, rep["url"])
     fmt = rep.get("format")
     expect_sha = body_dict.get("sha256")
     log.debug("install: manifest accepted")
+    # The demote fallback: when a DELTA was chosen, hand back the full rep too, so a delta
+    # that fails its post-write sha check costs one attempt, not the whole install -- the
+    # retry loop switches to the full image instead of failing the same way N times.
+    alt = None
+    if fmt == _DELTA_FORMAT:
+        for r in body_dict.get("representations", []):
+            if r.get("format") == "full":
+                alt = (_resolve_url(manifest_url, r["url"]), r.get("wbits") or 0)
+                break
     # wbits: the deflate window the artifact was compressed with (small-heap boards
     # get small-window images; 0 = the format default). Signed like everything else.
-    return image_url, fmt, expect_sha, rep.get("wbits") or 0
+    return image_url, fmt, expect_sha, rep.get("wbits") or 0, alt
 
 
 def _reset():  # pragma: no cover
@@ -1681,16 +1714,19 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # depends on which slot happens to be running.
     slots = _slot_table(cfg.PARTITION_SIZE, cfg.FRONT_SIZE)
     running = getattr(cfg, "last_slot", None)         # set by boot.py when it mounted a slot
-    counters, floors, versions, offsets = {}, {}, {}, {}
+    counters, floors, versions, offsets, shas = {}, {}, {}, {}, {}
     for _name, _off, _size in slots:
         counters[_name] = _install_counter(read_at(_off + _size - 2 * block, block))
         floors[_name] = _rollback_floor_of(read_at(_off + _size - 3 * block, block))
-        versions[_name] = _trailer_version(read_at(_off + _size - block, block))
+        _tr = read_at(_off + _size - block, block)
+        versions[_name] = _trailer_version(_tr)
+        shas[_name] = _trailer_body_sha(_tr)          # names the slot's exact bytes (one field)
         offsets[_name] = _off
         log.debug("install: slot surveyed")            # bounded: once per slot (at most twice)
     floor = max(floors.values())                      # the floor is the MAX across slots...
     base_off = offsets.get(running, 0)                # ...and the delta base is the running slot
     base_version = versions.get(running, 0)
+    base_body_sha = shas.get(running, "")
     target, target_off, slot_size, counter = _install_target(slots, running, counters)
     # SINGLE mode erases the only slot there is, so there is no surviving image to patch against.
     delta_capable = len(slots) > 1 and base_version != 0
@@ -1729,13 +1765,15 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     log.info("install: fetching manifest %s" % manifest_url)
     try:
         if _is_path(manifest_url):                # a manifest file path (mounted FS, e.g. SD)
-            image_url, fmt, expect_sha, wbits = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
+            image_url, fmt, expect_sha, wbits, alt = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
                 manifest_url, cfg, verify,
-                floor=floor, base_version=base_version, delta_capable=delta_capable)
+                floor=floor, base_version=base_version, delta_capable=delta_capable,
+                base_body_sha=base_body_sha)
         else:
-            image_url, fmt, expect_sha, wbits = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
+            image_url, fmt, expect_sha, wbits, alt = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
                 manifest_url, ca_pem, cfg, verify, socket, ssl, feed,
-                floor=floor, base_version=base_version, delta_capable=delta_capable)
+                floor=floor, base_version=base_version, delta_capable=delta_capable,
+                base_body_sha=base_body_sha)
     except Exception as e:
         # Two very different failures land here and only ONE is a rejected update. A REJECTION -- bad
         # signature/key, failed vetting, or a corrupt/unparseable manifest -- must read as install.reject
@@ -1859,6 +1897,17 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 _reset()  # hil-residual: terminal reset to the surviving slot on retry exhaustion (witnessed by install.fallback + install.reboot)
             log.error("install: attempt %d/%d failed (%r); retrying"   # its message is empty (a bare
                       % (attempt + 1, attempts, e))                    # deflate OSError) -> legible in the field
+            # A delta that fails the INTEGRITY check (not transport) can only fail the same
+            # way again -- the patch does not describe the bytes we have. Demote the remaining
+            # attempts to the full image instead of burning them on a repeat: one wasted slot
+            # write instead of an install that can never succeed (and, across polls, a device
+            # that re-picks the same delta forever). Transport failures keep the delta -- a
+            # dropped link says nothing about the patch.
+            if (fmt == _DELTA_FORMAT and alt is not None  # hil-residual: demote gate; needs a wrong-base/corrupt DELTA on the bench (the fleet's corrupt scenario ships a full image) -- the vet + demote pieces are host-tested (test_vet_manifest_hands_back_the_full_fallback...)
+                    and "sha256 does not match" in str(e)):
+                image_url, wbits = alt  # hil-residual: demote to the full rep (host-tested via the vet's alt contract)
+                fmt = "full"  # hil-residual: demote to full (same host-tested path)
+                log.warning("install: delta failed integrity; demoting to the full image")  # hil-residual: witness line for the demote; no fleet scenario corrupts a delta yet
             if progress is not None:  # hil-residual: progress callback is unused on the bench (install() passes none), so this guard is False
                 progress.reset()  # hil-residual: progress reset (callback unused on the bench)
     log.info("install: installed + armed; rebooting into the trial")

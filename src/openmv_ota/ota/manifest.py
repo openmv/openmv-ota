@@ -36,6 +36,8 @@ The JSON body schema (``schema`` == ``SCHEMA``)::
         url               str     absolute https:// URL of the (gzipped) artifact
         size              int     compressed artifact size, bytes (for picking smallest)
         base_payload_version int  ("bsdiff" only) the golden this delta applies against
+        base_body_sha256   hex str ("bsdiff" only) the base trailer's body_sha256 -- the
+                                  device applies a delta only against these EXACT bytes
 
 ``size``/``sha256`` are top-level because every representation reconstructs the
 *same* image; the per-representation ``size`` is the download cost the device
@@ -184,16 +186,22 @@ def update_reject_reason(body, product_id, platform_version, rollback_floor, acc
     return None
 
 
-def select_representation(body, delta_capable, golden_payload_version):
+def select_representation(body, delta_capable, golden_payload_version, base_body_sha256=""):
     """Pick the cheapest usable representation (smallest compressed ``size``). A
-    ``full`` is always usable; a ``bsdiff`` delta is usable only if the device can apply
-    deltas *and* the delta's ``base_payload_version`` matches the device's golden (BACK)
-    version. Returns the chosen representation dict, or ``None`` if none is usable."""
+    ``full`` is always usable; a delta is usable only if the device can apply deltas
+    *and* the delta's base matches the device's running slot by BOTH
+    ``base_payload_version`` and ``base_body_sha256`` -- version alone is not an
+    identity once ``--allow-republish`` exists. Returns the chosen representation
+    dict, or ``None`` if none is usable. (Host mirror of the installer's
+    ``_select_rep``; pinned against it by a test.)"""
     best = None
     for rep in body.get("representations", []):
         fmt = rep.get("format")
         if fmt == DELTA_FORMAT:
-            if not delta_capable or rep.get("base_payload_version") != golden_payload_version:
+            if (not delta_capable
+                    or rep.get("base_payload_version") != golden_payload_version
+                    or not base_body_sha256
+                    or rep.get("base_body_sha256") != base_body_sha256):
                 continue
         elif fmt != "full":
             continue                                    # unknown transport -- skip

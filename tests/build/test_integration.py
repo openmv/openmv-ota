@@ -94,11 +94,15 @@ def test_publish_and_consume_end_to_end(make_project):
     golden_pv = parse_trailer(back_tr).payload_version
     ocdl = next(rep for rep in body["representations"] if rep["format"] == "ocdl")
     assert ocdl["base_payload_version"] == golden_pv
+    # ...and the rep names the base's exact bytes: the same body sha the provisioned
+    # slot's trailer carries, which is what a device compares its running slot against
+    assert ocdl["base_body_sha256"] == parse_trailer(back_tr).body_sha256.hex()
 
     # --- device consume: the installer's own parse + select + streaming applier ---
     inst = _load_installer()
     m = inst._manifest_parse(manifest_bytes)
-    rep = inst._select_rep(m["body"], True, golden_pv)      # delta picked (base matches golden)
+    rep = inst._select_rep(m["body"], True, golden_pv,      # delta picked: base matches the
+                           parse_trailer(back_tr).body_sha256.hex())  # golden by version AND bytes
     assert rep["format"] == "ocdl"
     # the relative URL resolves against the manifest's own URL
     assert (inst._resolve_url("https://dl.x.io/fw/OPENMV_N6-manifest.bin", rep["url"])

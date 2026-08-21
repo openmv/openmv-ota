@@ -74,8 +74,12 @@ release's `-ota.img.gz`, or a directory of either — and emits a compressed pat
 a camera applies against the release it is already running, downloading only the
 changes. It is repeatable because a fleet mid-rollout is spread over several
 versions: ship one delta per base version still in the field, and a device with
-no matching base takes the full image. The delta is pure transport — the
-reconstructed slot is still sha256- and signature-verified on the device.
+no matching base takes the full image. A base matches by version **and** exact
+bytes — each delta records its base's `body_sha256`, and a device applies it
+only when its running slot carries those bytes (so republishing a version
+invalidates deltas built against its old bytes; affected devices take the full
+image). The delta is pure transport — the reconstructed slot is still sha256-
+and signature-verified on the device.
 
 `--allow-republish` permits re-signing a version at or below the last published
 one — a dev-loop convenience the server mirrors with a flag of the same name.

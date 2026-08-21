@@ -248,8 +248,10 @@ def test_accept_product_id_zero_disables_check():
 # --- select_representation --------------------------------------------------
 
 _FULL = {"format": "full", "url": "https://x/full.gz", "size": 900000}
+_BASE_SHA = "ab" * 32
 _DELTA = {"format": "ocdl", "url": "https://x/d.gz", "size": 40000,
-          "base_payload_version": encode_app_version("1.0.0")}
+          "base_payload_version": encode_app_version("1.0.0"),
+          "base_body_sha256": _BASE_SHA}
 
 
 def test_select_full_when_only_full():
@@ -260,8 +262,41 @@ def test_select_full_when_only_full():
 def test_select_prefers_smaller_delta_when_capable_and_base_matches():
     body = {"representations": [_FULL, _DELTA]}
     got = select_representation(body, delta_capable=True,
-                               golden_payload_version=encode_app_version("1.0.0"))
+                               golden_payload_version=encode_app_version("1.0.0"),
+                               base_body_sha256=_BASE_SHA)
     assert got is _DELTA
+
+
+def test_select_skips_delta_on_base_sha_mismatch():
+    """Same version, different bytes -- the --allow-republish case. Version alone must not
+    qualify a delta: the base identity is version AND sha."""
+    body = {"representations": [_FULL, _DELTA]}
+    got = select_representation(body, delta_capable=True,
+                               golden_payload_version=encode_app_version("1.0.0"),
+                               base_body_sha256="cd" * 32)
+    assert got is _FULL
+
+
+def test_select_skips_delta_missing_its_base_sha():
+    """A rep that does not name its base's bytes is never applied -- clean break: the
+    builder always emits the field, and the device requires it."""
+    legacy = {"format": "ocdl", "url": "https://x/d.gz", "size": 40000,
+              "base_payload_version": encode_app_version("1.0.0")}
+    body = {"representations": [_FULL, legacy]}
+    got = select_representation(body, delta_capable=True,
+                               golden_payload_version=encode_app_version("1.0.0"),
+                               base_body_sha256=_BASE_SHA)
+    assert got is _FULL
+
+
+def test_select_skips_delta_when_device_has_no_base_sha():
+    """A device whose running trailer would not parse reports "" -- it takes the full
+    image rather than patching bytes it cannot name."""
+    body = {"representations": [_FULL, _DELTA]}
+    got = select_representation(body, delta_capable=True,
+                               golden_payload_version=encode_app_version("1.0.0"),
+                               base_body_sha256="")
+    assert got is _FULL
 
 
 def test_select_falls_back_to_full_when_not_delta_capable():
@@ -274,7 +309,8 @@ def test_select_falls_back_to_full_when_not_delta_capable():
 def test_select_skips_delta_on_base_mismatch():
     body = {"representations": [_FULL, _DELTA]}
     got = select_representation(body, delta_capable=True,
-                               golden_payload_version=encode_app_version("2.0.0"))
+                               golden_payload_version=encode_app_version("2.0.0"),
+                               base_body_sha256=_BASE_SHA)
     assert got is _FULL
 
 

@@ -139,13 +139,16 @@ _COUNTER_OFF = 64                                # install counter: u32 || ~u32
 _COUNTER_LEN = 8
 _SLOT_READ = _COUNTER_OFF + _COUNTER_LEN         # markers + repr + counter
 
-# Just enough of a slot trailer to read its payload_version -- the ONLY field wanted here.
-# Parsing no further is deliberate: this runs inside the app on every check-in, and the
-# authoritative parse (with the signature check that makes the fields trustworthy) already
-# happened in boot.py. What is read here is a REPORT, never a decision.
+# Just enough of a slot trailer to read its payload_version and body_sha256 -- the only
+# fields wanted here. Parsing no further is deliberate: this runs inside the app on every
+# check-in, and the authoritative parse (with the signature check that makes the fields
+# trustworthy) already happened in boot.py. What is read here is a REPORT, never a
+# decision -- the sha lets the fleet see which exact BYTES each slot holds (the operator's
+# answer to "which delta bases must this release cover?").
 _TRAILER_MAGIC = b"OMVR"
 _TRAILER_VERSION_OFF = 32                        # payload_version (pinned by a test)
-_TRAILER_READ = _TRAILER_VERSION_OFF + 4
+_TRAILER_SHA_OFF = 48                            # body_sha256, 32 raw bytes (pinned by a test)
+_TRAILER_READ = _TRAILER_SHA_OFF + 32
 
 
 def _trailer_version(trailer):
@@ -153,6 +156,14 @@ def _trailer_version(trailer):
     if len(trailer) < _TRAILER_READ or bytes(trailer[:4]) != _TRAILER_MAGIC:
         return 0
     return struct.unpack_from("<I", trailer, _TRAILER_VERSION_OFF)[0]
+
+
+def _trailer_body_sha(trailer):
+    """A slot trailer's ``body_sha256`` as hex; "" if it does not parse (blank or torn)."""
+    if len(trailer) < _TRAILER_READ or bytes(trailer[:4]) != _TRAILER_MAGIC:
+        return ""
+    import binascii
+    return binascii.hexlify(trailer[_TRAILER_SHA_OFF:_TRAILER_SHA_OFF + 32]).decode()
 
 
 def _install_counter(status):
@@ -439,13 +450,16 @@ def _slot_names(cfg):
     return ["A", "B"]
 
 
-def _slot_report(name, running, sector, version):
+def _slot_report(name, running, sector, version, body_sha=""):
     """One slot's line in the check-in payload -- pure, so it is host-testable."""
     pending, _tried, confirmed = _markers(sector)
     return {
         "slot": name,
         "running": name == running,
         "payload_version": int(version),
+        # the slot's exact bytes, named: with --allow-republish a version is not an
+        # identity, and delta bases match by sha -- so the fleet view needs the sha too
+        "body_sha256": body_sha,
         "counter": _install_counter(sector),
         "confirmed": bool(confirmed),
         "pending": bool(pending),
@@ -474,7 +488,8 @@ def slots():  # pragma: no cover
                                       _SLOT_READ)
         trailer = uctypes.bytearray_at(base + off + size - _ota_config.CONTROL_BLOCK,
                                        _TRAILER_READ)
-        out.append(_slot_report(name, running, sector, _trailer_version(trailer)))
+        out.append(_slot_report(name, running, sector, _trailer_version(trailer),
+                                _trailer_body_sha(trailer)))
         log.debug("status: slot read")                 # bounded: once per slot (at most twice)
     out.sort(key=_counter_key, reverse=True)
     log.debug("status: slots ready")                   # ...and once for the sorted result

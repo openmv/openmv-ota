@@ -937,22 +937,16 @@ def test_build_manifest_with_delta_rep(make_project):
     dr = build_mod.build_delta(base_file, new_file, delta_path)
     assert dr.gz_size < img.stat().st_size                 # delta beats the full download
 
+    base_sha = "ab" * 32
     results = build_mod.build_manifest(root, url_base=_URL, firmware=repo, boards=["OPENMV_N6"],
-                                       delta=delta_path, delta_base_version="1.0.0")
+                                       deltas=[(delta_path, "1.0.0", base_sha)])
     body = parse_manifest(results[0].output.read_bytes()).body
     fmts = {r["format"] for r in body["representations"]}
     assert fmts == {"full", "ocdl"}
     rep = select_representation(body, delta_capable=True,
-                               golden_payload_version=encode_app_version("1.0.0"))
+                               golden_payload_version=encode_app_version("1.0.0"),
+                               base_body_sha256=base_sha)
     assert rep["format"] == "ocdl" and rep["url"] == _URL + "/" + delta_path.name
-
-
-def test_build_manifest_delta_needs_base_version(make_project):
-    root, repo = _build_n6_ota_artifacts(make_project)
-    (root / "build" / "x.delta.gz").write_bytes(b"whatever")
-    with pytest.raises(BuildError, match="delta-base-version"):
-        build_mod.build_manifest(root, url_base=_URL, firmware=repo,
-                                 delta=root / "build" / "x.delta.gz")
 
 
 def test_build_manifest_delta_size_mismatch(make_project):
@@ -966,7 +960,7 @@ def test_build_manifest_delta_size_mismatch(make_project):
     bad_path.write_bytes(bad)
     with pytest.raises(BuildError, match="reconstructs"):
         build_mod.build_manifest(root, url_base=_URL, firmware=repo, boards=["OPENMV_N6"],
-                                 delta=bad_path, delta_base_version="1.0.0")
+                                 deltas=[(bad_path, "1.0.0", "ab" * 32)])
 
 
 def test_build_manifest_delta_bad_magic(make_project):
@@ -976,7 +970,7 @@ def test_build_manifest_delta_bad_magic(make_project):
     bad_path.write_bytes(gzip.compress(b"NOT-AN-OCDL-PATCH"))   # gunzips to bad magic
     with pytest.raises(BuildError, match="bad delta"):
         build_mod.build_manifest(root, url_base=_URL, firmware=repo, boards=["OPENMV_N6"],
-                                 delta=bad_path, delta_base_version="1.0.0")
+                                 deltas=[(bad_path, "1.0.0", "ab" * 32)])
 
 
 def test_build_manifest_delta_rejects_multiple_boards(make_project):
@@ -986,7 +980,7 @@ def test_build_manifest_delta_rejects_multiple_boards(make_project):
     (root / "build" / "d.delta.gz").write_bytes(b"x")
     with pytest.raises(BuildError, match="one board"):
         build_mod.build_manifest(root, url_base=_URL, firmware=repo,
-                                 delta=root / "build" / "d.delta.gz", delta_base_version="1.0.0")
+                                 deltas=[(root / "build" / "d.delta.gz", "1.0.0", "ab" * 32)])
 
 
 def test_build_manifest_bad_project_errors(make_project, tmp_path):
@@ -1037,10 +1031,17 @@ def test_build_ota_romfs_with_delta_from_file(make_project):
     base_body = factory.read_bytes()[slot:slot + geometry.delta_base_len(slot, t.erase_size)]
     new_img = gzip.decompress((root / "build" / "OPENMV_N6-ota.img.gz").read_bytes())
     assert apply_delta(base_body, gzip.decompress(r.deltas[0].read_bytes())) == new_img
-    # the delta rep's base matches the provisioned version, so a device on it picks delta
+    # the delta rep's base matches the provisioned version AND names its exact bytes --
+    # a device picks it only when running that version with that body sha
     ocdl = next(rep for rep in body["representations"] if rep["format"] == "ocdl")
-    assert select_representation(body, delta_capable=True,
-                               golden_payload_version=ocdl["base_payload_version"])["format"] == "ocdl"
+    assert len(ocdl["base_body_sha256"]) == 64          # the base trailer's body sha, hex
+    assert select_representation(
+        body, delta_capable=True, golden_payload_version=ocdl["base_payload_version"],
+        base_body_sha256=ocdl["base_body_sha256"])["format"] == "ocdl"
+    # ...and a republished base (same version, different bytes) no longer qualifies
+    assert select_representation(
+        body, delta_capable=True, golden_payload_version=ocdl["base_payload_version"],
+        base_body_sha256="00" * 32)["format"] == "full"
 
 
 def test_build_ota_romfs_publishes_one_delta_per_base(make_project):
@@ -1072,9 +1073,12 @@ def test_build_ota_romfs_publishes_one_delta_per_base(make_project):
              if rep["format"] == "ocdl"}
     assert bases == {encode_app_version("1.0.0"), encode_app_version("1.1.0")}
     # and a device on EITHER version now picks a delta rather than the full image
+    by_base = {rep["base_payload_version"]: rep for rep in body["representations"]
+               if rep["format"] == "ocdl"}
     for v in ("1.0.0", "1.1.0"):
-        rep = select_representation(body, delta_capable=True,
-                                    golden_payload_version=encode_app_version(v))
+        rep = select_representation(
+            body, delta_capable=True, golden_payload_version=encode_app_version(v),
+            base_body_sha256=by_base[encode_app_version(v)]["base_body_sha256"])
         assert rep["format"] == "ocdl"
     # a device on a version nobody published a base for still gets the full image
     assert select_representation(body, delta_capable=True,
