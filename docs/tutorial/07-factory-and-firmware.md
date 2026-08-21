@@ -87,12 +87,10 @@ The project's OTA flag steers the build automatically:
   trial-boot machinery; its generated `_ota_config.py` (trusted keys, slot
   geometry, board/product ids) is frozen alongside it.
 
-The build is **clean by default** (`make clean` first): a stale `build/<board>`
-tree fails at link with a misleading `__cyg_profile_func_enter` error — imlib is
-compiled with `-finstrument-functions` — that has nothing to do with anything we
-inject. Pass `--incremental` to skip the clean when the tree is known good.
-Building firmware needs the firmware toolchain (`make` + the board's cross
-compiler); a missing toolchain or failed build reports the non-zero exit.
+The build is **clean by default** (`make clean` first), so a stale tree can't
+turn into a confusing link-time failure; pass `--incremental` to skip the clean
+when the tree is known good. Building firmware needs the firmware toolchain
+(`make` + the board's cross compiler).
 
 | Flag | Effect |
 |---|---|
