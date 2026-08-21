@@ -36,6 +36,19 @@ def fallback_payload_version(slots: list[dict] | None) -> int | None:
     return int(other.get("payload_version") or 0) or None
 
 
+def running_body_sha256(slots: list[dict] | None) -> str | None:
+    """The RUNNING slot's exact bytes (its trailer's ``body_sha256``), or ``None`` if the
+    device did not say -- a pre-sha payload, or no slots at all. "" from the device (a
+    trailer that would not parse) is answered as ``None`` too: both are unknown-to-us, and
+    a delta base cannot be named by either."""
+    if not slots:
+        return None
+    running = next((s for s in slots if s.get("running")), None)
+    if running is None:
+        return None
+    return str(running.get("body_sha256") or "") or None
+
+
 def settled(slots: list[dict] | None) -> bool:
     """Whether the device is in a position to take an update, from its reported slots.
 

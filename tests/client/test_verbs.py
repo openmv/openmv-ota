@@ -469,3 +469,28 @@ def test_write_verbs_still_print_prose_without_json(monkeypatch, capsys):
     ns = _ns(["client", "cohort", "assign", "--cohort", "beta", "--device", "d1"])
     assert ns.func(ns) == 0
     assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
+
+
+def test_publish_attaches_a_rendered_sbom(wired, tmp_path, capsys, monkeypatch):
+    """publish renders the SBOM fresh from the committed lock and ships it with the release --
+    dependency evidence beside the bytes it describes."""
+    import openmv_ota.build.sbom as sbom_mod
+    store, _tmp = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    monkeypatch.setattr(sbom_mod, "render_sbom", lambda p: '{"bomFormat": "CycloneDX"}')
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    rel = store.list_releases(BID)[0]
+    assert rel["sbom_key"] == "sbom/%s/sbom.cdx.json" % rel["release_id"]
+
+
+def test_publish_warns_but_ships_without_an_sbom(wired, tmp_path, capsys):
+    """A project the renderer cannot read publishes WITHOUT an SBOM, with a warning --
+    evidence is worth carrying, never worth blocking a release over. (The fake project here
+    has no lock, so the real renderer fails.)"""
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    assert "no SBOM attached" in capsys.readouterr().err
+    assert store.list_releases(BID)[0]["sbom_key"] is None

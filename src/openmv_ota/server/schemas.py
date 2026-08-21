@@ -107,6 +107,23 @@ class Device(_Row):
     """Decoded from ``fallback_payload_version`` by the API, so a reader need not unpack the
     uint32 the device reports. ``null`` when the device did not say — deliberately distinct
     from a device that reported no fallback."""
+    body_sha256: str | None = None
+    """The RUNNING slot's exact bytes (its trailer's body_sha256, hex) as the device reported
+    them. A delta base matches by version AND these bytes; ``null`` = the device did not say."""
+
+
+class FleetBase(_Row):
+    payload_version: int = 0
+    version: str = ""
+    """Decoded from ``payload_version`` by the API."""
+    body_sha256: str = ""
+    """"" = devices that did not report a sha (pre-sha payloads) — they can only take full
+    images, so a delta plan need not cover them."""
+    devices: int = 0
+
+
+class FleetBases(BaseModel):
+    bases: list[FleetBase] = []
 
 
 class Cohort(_Row):

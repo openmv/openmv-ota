@@ -81,6 +81,13 @@ invalidates deltas built against its old bytes; affected devices take the full
 image). The delta is pure transport — the reconstructed slot is still sha256-
 and signature-verified on the device.
 
+`--delta-fleet` automates choosing the bases: it asks the update server which
+(version, bytes) bases the fleet is **running** — aggregated from every device's
+check-in — pulls the matching stored releases, and builds one delta per base,
+warning about any it cannot cover (a pruned release, or devices running
+republished bytes the store no longer holds). It uses the client credentials
+(environment or `client login`) and composes with explicit `--delta-from`.
+
 `--allow-republish` permits re-signing a version at or below the last published
 one — a dev-loop convenience the server mirrors with a flag of the same name.
 
@@ -110,6 +117,10 @@ version. Output is **deterministic**: the BOM's timestamp is the lock's
 `generated_at` and there is no serial number, so the same lock renders
 byte-identical JSON — an SBOM that changes only when a dependency changes is
 diffable evidence.
+
+`client publish` renders and uploads it automatically, and the server serves it
+back per release — so the dependency evidence lives beside the exact bytes it
+describes, not only on the build machine.
 
 | Flag | Effect |
 |---|---|

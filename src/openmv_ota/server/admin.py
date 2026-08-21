@@ -27,6 +27,7 @@ from .schemas import (
     DeviceBound,
     DeviceList,
     DevicePinned,
+    FleetBases,
     FleetSummary,
     Release,
     ReleaseList,
@@ -426,6 +427,23 @@ def fleet(request: Request, product_id: int | None = None,
     return summary
 
 
+@admin.get("/fleet/bases", responses={200: {"model": FleetBases}})
+def fleet_bases(request: Request, product_id: int | None = None,
+                principal: Principal = Depends(require_scope("observe"))):
+    """The distinct (version, body_sha256) bases the fleet is RUNNING, with device counts --
+    the release-planning answer to "which delta bases must this release cover?". Grouped by
+    exact bytes: two rows for one version means a republish split the fleet, and only the
+    row matching the store's bytes can take a delta (`build ota-romfs --delta-fleet` reads
+    exactly this and warns about the rest)."""
+    from openmv_ota.ota.version import decode_app_version
+
+    rows = request.app.state.metastore.fleet_bases(product_id,
+                                                   account_id=principal.account_id)
+    for r in rows:
+        r["version"] = decode_app_version(r["payload_version"])
+    return {"bases": rows}
+
+
 @admin.get("/releases", responses={200: {"model": ReleaseList}})
 def releases(request: Request, product_id: int | None = None, limit: int = _PAGE,
              offset: int = 0, principal: Principal = Depends(require_scope("observe"))):
@@ -496,6 +514,26 @@ def release_image(release_id: str, request: Request,
         raise HTTPException(status_code=404,
                             detail="image is no longer retained") from None
     return Response(content=data, media_type="application/gzip")
+
+
+@admin.get("/releases/{release_id}/sbom", responses={200: {"content": {"application/json": {}}, "description": "the release's CycloneDX SBOM"}})
+def release_sbom(release_id: str, request: Request,
+                 principal: Principal = Depends(require_scope("observe"))):
+    """The release's SBOM (CycloneDX JSON), as uploaded at publish -- the dependency evidence
+    for the exact bytes this release ships. 404 when the release was published without one
+    (an older client) or the object is no longer retained. Account-scoped like every other
+    release read."""
+    from .errors import ServerError
+
+    st = request.app.state
+    rel = _owned(st.metastore.get_release(release_id), principal)
+    if not rel.get("sbom_key"):
+        raise HTTPException(status_code=404, detail="release has no SBOM")
+    try:
+        data = st.storage.get(rel["sbom_key"])
+    except ServerError:
+        raise HTTPException(status_code=404, detail="sbom is no longer retained") from None
+    return Response(content=data, media_type="application/json")
 
 
 @admin.delete("/releases/{release_id}/artifacts", responses={200: {"model": ArtifactsDeleted}})

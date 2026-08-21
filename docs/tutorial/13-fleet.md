@@ -99,6 +99,9 @@ builds deltas locally — and needs the older *images* to diff against. The serv
 published image so a build machine does not have to:
 
 ```
+openmv-ota build ota-romfs . --delta-fleet                     # one delta per base the
+                                                               # fleet actually runs
+# or by hand:
 openmv-ota client bases -b OPENMV_N6 --last 3 -o build/bases   # pull recent images back
 openmv-ota build ota-romfs . --delta-from build/bases          # one delta per base
 openmv-ota client publish . -b OPENMV_N6                       # uploads all of them

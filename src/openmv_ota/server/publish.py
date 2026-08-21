@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
@@ -83,6 +84,7 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
 async def publish_release(request: Request, manifest: UploadFile = File(...),
                           image: UploadFile = File(...),
                           delta: list[UploadFile] | None = File(None),
+                          sbom: UploadFile | None = File(None),
                           allow_republish: bool = False,
                           principal: Principal = Depends(require_scope("publish"))):
     ms = request.app.state.metastore
@@ -112,6 +114,17 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
     deltas = {(u.filename or "").rsplit("/", 1)[-1]: await u.read() for u in uploads}
     _verify_artifacts(body, image_bytes, deltas)
 
+    # The SBOM rides beside the artifacts when the client sends one: the dependency evidence
+    # for the exact bytes this release ships, served per release instead of living only on the
+    # build machine. Validated as JSON only -- the render is the build's job, and a schema gate
+    # here would reject evidence over formatting.
+    sbom_bytes = await sbom.read() if sbom is not None else None
+    if sbom_bytes is not None:
+        try:
+            json.loads(sbom_bytes)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="sbom is not JSON") from None
+
     release_id = new_id("rel")
     reps = body["representations"]
     manifest_key = "manifests/%s/manifest.bin" % release_id
@@ -120,6 +133,10 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
     storage.put(image_key, image_bytes, "application/gzip")
     for filename, patch in deltas.items():
         storage.put("artifacts/%s/%s" % (release_id, filename), patch, "application/gzip")
+    sbom_key = None
+    if sbom_bytes is not None:
+        sbom_key = "sbom/%s/sbom.cdx.json" % release_id
+        storage.put(sbom_key, sbom_bytes, "application/json")
 
     ms.add_release(release_id=release_id, product_id=product_id, product=body.get("product"),
                    version=body.get("version"), payload_version=payload_version,
@@ -127,7 +144,8 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
                    image_sha256=body["sha256"], image_size=body["size"], representations=reps,
                    manifest_key=manifest_key, image_key=image_key,
                    uploaded_by=principal.name, account_id=account_id,
-                   dev=1 if body.get("dev") else 0)   # dev-signed provenance (visibility only)
+                   dev=1 if body.get("dev") else 0,   # dev-signed provenance (visibility only)
+                   sbom_key=sbom_key)
     ms.append_audit(actor=principal.name, action="release.publish", entity_type="release",
                     entity_id=release_id, data={"product_id": product_id, "version": body.get("version"),
                                                 "payload_version": payload_version},

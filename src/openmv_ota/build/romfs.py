@@ -1011,6 +1011,7 @@ def build_ota_romfs(
     allow_republish: bool = False,
     key_passphrase_file: str | Path | None = None,
     allow_dev_key: bool = False,
+    delta_fleet: bool = False,
 ) -> list[OtaRomfsResult]:
     """Produce the complete **cloud-published** OTA set per main board, from app source in
     one shot (like ``build factory-romfs``): compile + sign the romfs bundle, render the
@@ -1063,6 +1064,18 @@ def build_ota_romfs(
                           key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
     new_pv = signer.payload_version
 
+    fleet = {}
+    if delta_fleet:
+        # Ask the server which (version, bytes) bases the fleet is RUNNING and pull the
+        # matching stored releases -- the automated spelling of `client bases` + a curated
+        # --delta-from. Composes with any explicit --delta-from entries.
+        from openmv_ota.client.errors import ClientError
+        try:
+            fleet = _fetch_fleet_bases(p, targets, new_pv, out_dir / "bases")
+        except ClientError as e:               # missing creds / server error -> a BUILD error,
+            raise BuildError("--delta-fleet: %s" % e, exit_code=1) from None  # not a traceback
+        delta_dirs.append(out_dir / "bases")
+
     # 1) compile + sign the romfs bundle, then render the download image(s) from it.
     build_romfs(project, app=app, output=output, boards=boards, compile_py=compile_py,
                 convert_models=convert_models, mpy_extra=mpy_extra, vela_extra=vela_extra,
@@ -1112,6 +1125,9 @@ def build_ota_romfs(
             delta_path = out_dir / ("%s-ota.delta-%s.gz" % (name, base_version))
             delta_path.write_bytes(gzip.compress(patch, mtime=0))
             deltas.append((delta_path, base_version, base_tr.body_sha256.hex()))
+        if delta_fleet:
+            _warn_fleet_coverage(name, _product_id_for(p, t), fleet, new_pv,
+                                 {sha for _p, _v, sha in deltas})
 
         [mres] = build_manifest(project, output=output, app=app,
                                 boards=[name], firmware=firmware,
@@ -1125,6 +1141,59 @@ def build_ota_romfs(
     return results
 
 
+def _fetch_fleet_bases(p, targets, new_pv, out_dir):
+    """``--delta-fleet``: ask the update server which (version, bytes) bases the fleet is
+    RUNNING (``GET /fleet/bases``, fed by the check-in slots' body_sha256) and pull the
+    matching stored releases into ``out_dir`` under the ``<board>-base-<version>.img.gz``
+    names ``--delta-from <dir>`` reads. Only bases OLDER than this release are pulled (a
+    device already at/above it takes nothing). Always re-downloaded, never cached: a cached
+    file could silently be a republished version's OLD bytes -- the exact confusion the
+    base-identity sha exists to kill. Client credentials resolve exactly as `client` verbs
+    do (flag-less here: env or the saved login). Returns ``{product_id: [fleet rows]}`` for
+    the post-build coverage warning."""
+    from openmv_ota.client import config as client_config
+    from openmv_ota.client.api import Api
+
+    cfg = client_config.resolve(None, None)
+    api = Api(cfg)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fleet = {}
+    for t in targets:
+        pid = _product_id_for(p, t)
+        if pid in fleet or not pid:
+            continue
+        rows = api.fleet_bases(pid)["bases"]
+        fleet[pid] = rows
+        releases = {r["payload_version"]: r
+                    for r in api.releases(pid, limit=500)["releases"]}
+        for row in rows:
+            if not row["body_sha256"] or row["payload_version"] >= new_pv:
+                continue                       # sha-less devices take full; newer never patch
+            rel = releases.get(row["payload_version"])
+            if rel is None:
+                print("warning: %d device(s) run %s but no stored release matches (pruned?) "
+                      "-- they will take the full image"
+                      % (row["devices"], row["version"]), file=sys.stderr)
+                continue
+            path = out_dir / ("%s-base-%s.img.gz" % (_target_name(t), rel["version"]))
+            path.write_bytes(api.release_image(rel["release_id"]))
+    return fleet
+
+
+def _warn_fleet_coverage(name, pid, fleet, new_pv, built_shas):
+    """After the deltas are built: name the fleet groups this release CANNOT reach by delta.
+    A row whose sha none of the built bases carries is a republish split (the store holds
+    different bytes than those devices run) -- safe either way (they take the full image),
+    but silence here would read as covered."""
+    for row in fleet.get(pid, ()):
+        if not row["body_sha256"] or row["payload_version"] >= new_pv:
+            continue                          # sha-less -> full by design; newer never patches
+        if row["body_sha256"] not in built_shas:
+            print("warning: %s: %d device(s) run %s with bytes no delta base matches "
+                  "(republished version?) -- they will take the full image"
+                  % (name, row["devices"], row["version"]), file=sys.stderr)
+
+
 def _resolve_bases(project, name, delta_from, delta_files, delta_dirs) -> list[Path]:
     """Every image to build a delta against, or ``[]`` (-> full image only).
 
@@ -1134,8 +1203,9 @@ def _resolve_bases(project, name, delta_from, delta_files, delta_dirs) -> list[P
     Each entry is a provisioning image, a previous release's ``-ota.img.gz``, or a directory
     holding the per-board file. With none given, the ledger's recorded provisioning image is
     the one base -- which is right for a fleet that has never updated, and is why publishing
-    the previous release as a base is worth doing explicitly."""
-    if delta_from is not None:
+    the previous release as a base is worth doing explicitly. ``--delta-fleet`` contributes
+    its downloads as one more directory, so its presence also selects the explicit path."""
+    if delta_from is not None or delta_files or delta_dirs:
         out = []
         for f in delta_files:
             out.append(f)

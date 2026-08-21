@@ -161,6 +161,19 @@ _MIGRATIONS: list[list[str]] = [
         # deliberately distinct from "reported no fallback".
         "ALTER TABLE devices ADD COLUMN fallback_payload_version INTEGER",
     ],
+    [   # v12 -- the RUNNING slot's exact bytes, named: the trailer's body_sha256 as reported in
+        # the check-in slots list. A version stopped being a byte identity when --allow-republish
+        # arrived, and a delta base matches by version AND sha -- so "which delta bases must this
+        # release cover?" (GET /fleet/bases, `build ota-romfs --delta-fleet`) needs the sha, not
+        # just the version. NULL means the device did not say (a pre-sha payload).
+        "ALTER TABLE devices ADD COLUMN body_sha256 TEXT",
+    ],
+    [   # v13 -- the release's SBOM (CycloneDX JSON), uploaded at publish beside the artifacts:
+        # the dependency evidence for the exact bytes a fleet runs, served per release
+        # (GET /releases/{id}/sbom) instead of living only on the build machine. NULL = the
+        # release was published without one (an older client).
+        "ALTER TABLE releases ADD COLUMN sbom_key TEXT",
+    ],
 ]
 
 
@@ -222,15 +235,15 @@ class SqlMetadataStore:
     def add_release(self, *, release_id, product_id, product, version, payload_version,
                     min_platform_version, image_sha256, image_size, representations,
                     manifest_key, image_key, delta_key=None, key_id=None, uploaded_by=None,
-                    account_id="", dev=0) -> None:
+                    account_id="", dev=0, sbom_key=None) -> None:
         self.execute(
             "INSERT INTO releases (release_id, product_id, product, version, payload_version, "
             "min_platform_version, image_sha256, image_size, representations, manifest_key, "
-            "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id, dev) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id, dev, sbom_key) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (release_id, product_id, product, version, payload_version, min_platform_version,
              image_sha256, image_size, json.dumps(representations), manifest_key, image_key,
-             delta_key, key_id, uploaded_by, _now_iso(), account_id, dev))
+             delta_key, key_id, uploaded_by, _now_iso(), account_id, dev, sbom_key))
 
     def get_release(self, release_id: str) -> dict | None:
         r = _d(self.query_one("SELECT * FROM releases WHERE release_id = ?", (release_id,)))
@@ -310,19 +323,19 @@ class SqlMetadataStore:
                       current_version=None, current_payload_version=None, slot=None,
                       representation=None, fallback_reason=None, confirmed=None,
                       last_offered_release_id=None, registrar_ref=None, account_id="",
-                      streams=None, fallback_payload_version=None) -> None:
+                      streams=None, fallback_payload_version=None, body_sha256=None) -> None:
         now = _now_iso()
         if self.query_one("SELECT 1 FROM devices WHERE device_id = ?", (device_id,)) is None:
             self.execute(
                 "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
                 "current_payload_version, slot, representation, fallback_reason, confirmed, "
                 "last_offered_release_id, registrar_ref, account_id, streams, "
-                "fallback_payload_version, first_seen, last_seen) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "fallback_payload_version, body_sha256, first_seen, last_seen) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (device_id, product_id, board, cohort, current_version, current_payload_version,
                  slot, representation, fallback_reason, confirmed, last_offered_release_id,
                  registrar_ref, account_id, ",".join(streams or ()), fallback_payload_version,
-                 now, now))
+                 body_sha256, now, now))
         else:                                               # cohort is admin-controlled, not by check-in
             self.execute(
                 "UPDATE devices SET product_id = ?, board = ?, current_version = ?, "
@@ -333,11 +346,32 @@ class SqlMetadataStore:
                 # COALESCE: a device that stops reporting slots (or never did) keeps whatever it
                 # last told us, rather than having its fallback silently blanked.
                 "fallback_payload_version = COALESCE(?, fallback_payload_version), "
+                "body_sha256 = COALESCE(?, body_sha256), "
                 "last_seen = ? WHERE device_id = ?",
                 (product_id, board, current_version, current_payload_version, slot, representation,
                  fallback_reason, confirmed, last_offered_release_id, registrar_ref, account_id,
-                 ",".join(streams) if streams else None, fallback_payload_version,
+                 ",".join(streams) if streams else None, fallback_payload_version, body_sha256,
                  now, device_id))
+
+    def fleet_bases(self, product_id=None, account_id="") -> list[dict]:
+        """The distinct (payload_version, body_sha256) bases the fleet is RUNNING, with device
+        counts -- the answer to "which delta bases must this release cover?". Grouped by exact
+        bytes, not just version: two groups for one version means a republish split the fleet,
+        and only the group matching the store's bytes can take a delta."""
+        where, args = ["current_payload_version IS NOT NULL"], []
+        if product_id is not None:
+            where.append("product_id = ?")
+            args.append(product_id)
+        if account_id:
+            where.append("account_id = ?")
+            args.append(account_id)
+        rows = self.query_all(
+            "SELECT current_payload_version AS payload_version, "
+            "COALESCE(body_sha256, '') AS body_sha256, COUNT(*) AS devices "
+            "FROM devices WHERE " + " AND ".join(where) + " "
+            "GROUP BY current_payload_version, COALESCE(body_sha256, '') "
+            "ORDER BY devices DESC, payload_version DESC", tuple(args))
+        return [_d(r) for r in rows]
 
     def get_device(self, device_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))

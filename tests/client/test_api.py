@@ -230,3 +230,22 @@ def test_single_resource_reads():
     api.release("rel1")
     assert c.calls[0][:2] == ("GET", "/api/v1/admin/devices/d1")
     assert c.calls[1][:2] == ("GET", "/api/v1/admin/releases/rel1")
+
+
+def test_publish_attaches_the_sbom_part_when_given():
+    api, c = _api(_Resp(200, {"release_id": "r1"}))
+    api.publish_release(b"MAN", b"IMG", None, False, sbom=b'{"bomFormat": "CycloneDX"}')
+    _, _, kw = c.calls[0]
+    assert [n for n, _p in kw["files"]] == ["manifest", "image", "sbom"]
+    name, part = kw["files"][-1]
+    assert part[0] == "sbom.cdx.json" and part[2] == "application/json"
+
+
+def test_fleet_bases_query():
+    api, c = _api(_Resp(200, {"bases": [{"payload_version": 1, "version": "0.0.0",
+                                         "body_sha256": "aa", "devices": 3}]}))
+    assert api.fleet_bases(7)["bases"][0]["devices"] == 3
+    _, path, kw = c.calls[0]
+    assert path == "/api/v1/admin/fleet/bases" and kw["params"] == {"product_id": 7}
+    api.fleet_bases()                                   # unfiltered: no params
+    assert c.calls[1][2]["params"] == {}

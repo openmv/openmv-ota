@@ -37,7 +37,8 @@ from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter
 from .schemas import CheckAnswer, Health, Ok
-from .rollout import fallback_payload_version, offers_update, settled, should_autopause
+from .rollout import (fallback_payload_version, offers_update, running_body_sha256,
+                      settled, should_autopause)
 from .storage import build_storage
 from .verify import build_verifier
 
@@ -528,6 +529,7 @@ def check(checkin: CheckIn, request: Request):
         slot=checkin.slot, representation=checkin.representation,
         streams=checkin.streams,
         fallback_payload_version=fallback_payload_version(checkin.slots),
+        body_sha256=running_body_sha256(checkin.slots),
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
         account_id=account_id)

@@ -161,6 +161,19 @@ def test_fallback_version_is_recorded_and_survives_a_silent_checkin(tmp_path):
     assert store.get_device("dev1")["fallback_payload_version"] == 0x00FF0000
 
 
+def test_running_body_sha_is_recorded_and_survives_a_silent_checkin(tmp_path):
+    """The RUNNING slot's exact bytes land on the device record -- what GET /fleet/bases
+    aggregates -- and a slots-less check-in keeps the last report, like the fallback column."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+    slots = [dict(_SETTLED[0], body_sha256="aa" * 32),
+             dict(_SETTLED[1], body_sha256="bb" * 32)]
+    c.post("/api/v1/check", json=_checkin(slots=slots))
+    assert store.get_device("dev1")["body_sha256"] == "aa" * 32     # the RUNNING slot's
+    c.post("/api/v1/check", json=_checkin())
+    assert store.get_device("dev1")["body_sha256"] == "aa" * 32
+
+
 def test_a_device_that_reports_no_slots_is_still_offered_updates(tmp_path):
     """The gate protects a fallback. A single-image device has none and must not be held back."""
     app, store, storage, v = _app(tmp_path)

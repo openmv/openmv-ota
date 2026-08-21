@@ -182,3 +182,47 @@ def test_audit_tamper_detected():
     s.append_audit(actor="b", action="y")
     s.execute("UPDATE audit SET action = 'HACKED' WHERE seq = 1")
     assert s.audit_chain_ok() is False
+
+
+def test_fleet_bases_groups_by_version_and_bytes():
+    """The release-planning read: distinct (payload_version, body_sha256) with device counts.
+    Grouped by exact bytes -- two rows for one version is a republish split, and only the row
+    matching the store's bytes can take a delta."""
+    s = _store()
+    s.upsert_device(device_id="d1", product_id=1, current_payload_version=0x01000000,
+                    body_sha256="aa" * 32)
+    s.upsert_device(device_id="d2", product_id=1, current_payload_version=0x01000000,
+                    body_sha256="aa" * 32)
+    s.upsert_device(device_id="d3", product_id=1, current_payload_version=0x01000000,
+                    body_sha256="bb" * 32)              # same version, republished bytes
+    s.upsert_device(device_id="d4", product_id=1, current_payload_version=0x01000100)
+    #                                               ^ no sha reported -> grouped under ""
+    s.upsert_device(device_id="e1", product_id=2, current_payload_version=0x02000000,
+                    body_sha256="cc" * 32)              # another product -> filtered out
+    rows = s.fleet_bases(1)
+    assert [(r["payload_version"], r["body_sha256"], r["devices"]) for r in rows] == [
+        (0x01000000, "aa" * 32, 2),
+        (0x01000100, "", 1),
+        (0x01000000, "bb" * 32, 1),
+    ]
+    assert len(s.fleet_bases()) == 4                    # unfiltered sees every product
+
+
+def test_fleet_bases_scopes_by_account():
+    s = _store()
+    s.upsert_device(device_id="d1", product_id=1, current_payload_version=1,
+                    body_sha256="aa" * 32, account_id="acctA")
+    s.upsert_device(device_id="d2", product_id=1, current_payload_version=1,
+                    body_sha256="aa" * 32, account_id="acctB")
+    assert [r["devices"] for r in s.fleet_bases(1, account_id="acctA")] == [1]
+
+
+def test_upsert_device_keeps_the_last_reported_body_sha():
+    """COALESCE like the fallback column: a check-in that says nothing about slots keeps the
+    last report rather than blanking it."""
+    s = _store()
+    s.upsert_device(device_id="d1", product_id=1, body_sha256="aa" * 32)
+    s.upsert_device(device_id="d1", product_id=1)                       # says nothing
+    assert s.get_device("d1")["body_sha256"] == "aa" * 32
+    s.upsert_device(device_id="d1", product_id=1, body_sha256="bb" * 32)  # new install
+    assert s.get_device("d1")["body_sha256"] == "bb" * 32

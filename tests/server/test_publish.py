@@ -268,3 +268,35 @@ def test_publish_anti_rollback_409_and_override(tmp_path):
     assert _post(app, _manifest(_body(img, pv=0x02000000)), _gz(img),
                  query="?allow_republish=true").status_code == 200
     assert _post(app, _manifest(_body(img, pv=0x02010000)), _gz(img)).status_code == 200
+
+
+def test_publish_stores_and_records_the_sbom(tmp_path):
+    """The SBOM rides beside the artifacts and its key lands on the release row -- the
+    dependency evidence for exactly the bytes this release ships."""
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    files = _files(_manifest(_body(img)), _gz(img))
+    files["sbom"] = ("sbom.cdx.json", b'{"bomFormat": "CycloneDX"}', "application/json")
+    r = TestClient(app).post("/api/v1/admin/releases", headers=AUTH, files=files)
+    assert r.status_code == 200, r.text
+    rel = store.get_release(r.json()["release_id"])
+    assert rel["sbom_key"] == "sbom/%s/sbom.cdx.json" % r.json()["release_id"]
+    assert storage.get(rel["sbom_key"]) == b'{"bomFormat": "CycloneDX"}'
+
+
+def test_publish_rejects_a_non_json_sbom(tmp_path):
+    """Validated as JSON only -- a schema gate would reject evidence over formatting, but
+    bytes that are not even JSON are a wrong file, not evidence."""
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    files = _files(_manifest(_body(img)), _gz(img))
+    files["sbom"] = ("sbom.cdx.json", b"\x00not json", "application/json")
+    r = TestClient(app).post("/api/v1/admin/releases", headers=AUTH, files=files)
+    assert r.status_code == 400 and "sbom" in r.json()["detail"]
+
+
+def test_publish_without_sbom_records_none(tmp_path):
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    r = _post(app, _manifest(_body(img)), _gz(img))
+    assert store.get_release(r.json()["release_id"])["sbom_key"] is None

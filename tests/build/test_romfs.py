@@ -1342,3 +1342,135 @@ def test_current_device_lib_is_silent(make_project, capsys):
     build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False,
                           convert_models=False, allow_dev_key=True)
     assert "differs from this tool's bundled" not in capsys.readouterr().err
+
+
+# --- --delta-fleet: the server-planned delta set ---------------------------------------------
+
+class _FleetApi:
+    """A fake client Api serving fleet rows + stored releases for _fetch_fleet_bases."""
+
+    def __init__(self, bases, releases, images):
+        self._bases, self._releases, self._images = bases, releases, images
+        self.image_calls = []
+
+    def fleet_bases(self, product_id=None):
+        return {"bases": self._bases}
+
+    def releases(self, product_id=None, limit=None, offset=None):
+        return {"releases": self._releases}
+
+    def release_image(self, release_id):
+        self.image_calls.append(release_id)
+        return self._images[release_id]
+
+
+def _fleet_env(monkeypatch, api):
+    from openmv_ota.client import api as api_mod
+    from openmv_ota.client import config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "resolve",
+                        lambda *a, **k: types.SimpleNamespace(server_url="https://s", token="t"))
+    monkeypatch.setattr(api_mod, "Api", lambda cfg: api)
+
+
+def test_fetch_fleet_bases_pulls_only_older_matching_releases(make_project, monkeypatch, tmp_path, capsys):
+    """Only bases OLDER than the release being built are pulled (a device at/above it never
+    patches); sha-less rows are skipped (those devices take full by design); a fleet version
+    with no stored release warns instead of failing -- pruned bases cost coverage, not builds."""
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    from openmv_ota.project.project import load_project
+    p = load_project(root, firmware=repo)
+    [t] = [t for t in p.targets if t.role == "main"]
+    api = _FleetApi(
+        bases=[{"payload_version": 0x01000000, "version": "1.0.0", "body_sha256": "aa" * 32,
+                "devices": 4},
+               {"payload_version": 0x01000100, "version": "1.0.1", "body_sha256": "",
+                "devices": 2},                       # sha-less -> full-only, skipped
+               {"payload_version": 0x01010000, "version": "1.1.0", "body_sha256": "bb" * 32,
+                "devices": 1},                       # no stored release -> warn
+               {"payload_version": 0x09000000, "version": "9.0.0", "body_sha256": "cc" * 32,
+                "devices": 1}],                      # not older than the build -> skipped
+        releases=[{"payload_version": 0x01000000, "version": "1.0.0", "release_id": "rel_a"}],
+        images={"rel_a": b"BASEBYTES"})
+    _fleet_env(monkeypatch, api)
+    out = tmp_path / "bases"
+    fleet = build_mod._fetch_fleet_bases(p, [t], 0x02000000, out)
+    name = build_mod._target_name(t)
+    assert (out / ("%s-base-1.0.0.img.gz" % name)).read_bytes() == b"BASEBYTES"
+    assert api.image_calls == ["rel_a"]              # ONLY the older, sha'd, stored base
+    assert "no stored release matches" in capsys.readouterr().err
+    assert list(fleet) and fleet[build_mod._product_id_for(p, t)][0]["devices"] == 4
+
+
+def test_warn_fleet_coverage_names_the_unreachable_bytes(capsys):
+    fleet = {7: [
+        {"payload_version": 1, "version": "0.0.1", "body_sha256": "aa" * 32, "devices": 3},
+        {"payload_version": 1, "version": "0.0.1", "body_sha256": "bb" * 32, "devices": 2},
+        {"payload_version": 1, "version": "0.0.1", "body_sha256": "", "devices": 9},
+        {"payload_version": 99, "version": "9.9.9", "body_sha256": "dd" * 32, "devices": 1},
+    ]}
+    build_mod._warn_fleet_coverage("OPENMV_N6", 7, fleet, new_pv=50, built_shas={"aa" * 32})
+    err = capsys.readouterr().err
+    # covered bytes: silent; republish-split bytes: named; sha-less + newer: not warnings
+    assert err.count("no delta base matches") == 1 and "2 device(s)" in err
+
+
+def test_delta_fleet_maps_client_errors_to_build_errors(make_project, monkeypatch):
+    """No creds (or a dead server) is a BUILD refusal with the client's own message -- never
+    a traceback."""
+    from openmv_ota.client import config as cfg_mod
+    from openmv_ota.client.errors import ClientError
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+
+    def _boom(*a, **k):
+        raise ClientError("no server URL -- pass --server", exit_code=1)
+    monkeypatch.setattr(cfg_mod, "resolve", _boom)
+    with pytest.raises(BuildError, match="--delta-fleet: no server URL"):
+        build_mod.build_ota_romfs(root, firmware=repo, delta_fleet=True,
+                                  compile_py=False, convert_models=False)
+
+
+def test_build_ota_romfs_delta_fleet_end_to_end(make_project, monkeypatch, capsys):
+    """--delta-fleet, whole path: fleet rows -> pull the stored release -> one delta per live
+    base -> coverage warning for bytes the store cannot reach. The fake API serves a real
+    prior release image, so the delta build is the genuine article."""
+    from openmv_ota.ota.manifest import parse_manifest
+    root, repo = _ota_project_with_factory(make_project)
+    factory = root / "build" / "OPENMV_N6-factory-romfs.img"
+    [r1] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=factory,
+                                     compile_py=False, convert_models=False)
+    prev_bytes = r1.image.read_bytes()                    # the real 1.1.0 slot image (gz)
+
+    (root / "app" / "settings.json").write_text(
+        '{"app_version": "1.2.0", "vendor": "", "rollback_floor": "1.0.0"}\n')
+    from openmv_ota.ota.version import encode_app_version
+    api = _FleetApi(
+        bases=[{"payload_version": encode_app_version("1.1.0"), "version": "1.1.0",
+                "body_sha256": "aa" * 32, "devices": 5},
+               {"payload_version": encode_app_version("1.1.0"), "version": "1.1.0",
+                "body_sha256": "ee" * 32, "devices": 1}],   # republished bytes, unreachable
+        releases=[{"payload_version": encode_app_version("1.1.0"), "version": "1.1.0",
+                   "release_id": "rel_prev"}],
+        images={"rel_prev": prev_bytes})
+    _fleet_env(monkeypatch, api)
+    [r2] = build_mod.build_ota_romfs(root, firmware=repo, delta_fleet=True,
+                                     compile_py=False, convert_models=False)
+    assert [d.name for d in r2.deltas] == ["OPENMV_N6-ota.delta-1.1.0.gz"]
+    body = parse_manifest(r2.manifest.read_bytes()).body
+    ocdl = next(rep for rep in body["representations"] if rep["format"] == "ocdl")
+    assert len(ocdl["base_body_sha256"]) == 64            # named from the REAL base trailer
+    assert "no delta base matches" in capsys.readouterr().err   # the republished-bytes group
+
+
+def test_fetch_fleet_bases_dedupes_product_ids(make_project, monkeypatch, tmp_path):
+    """Several targets sharing a product_id query the fleet once."""
+    root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
+    from openmv_ota.project.project import load_project
+    p = load_project(root, firmware=repo)
+    [t] = [t for t in p.targets if t.role == "main"]
+    api = _FleetApi(bases=[], releases=[], images={})
+    calls = []
+    orig = api.fleet_bases
+    api.fleet_bases = lambda pid=None: (calls.append(pid), orig(pid))[1]
+    _fleet_env(monkeypatch, api)
+    build_mod._fetch_fleet_bases(p, [t, t], 0x02000000, tmp_path / "bases")
+    assert len(calls) == 1

@@ -42,17 +42,27 @@ class Api:
                               exit_code=1)
         return resp.json() if resp.content else {}
 
-    def publish_release(self, manifest: bytes, image: bytes, deltas, allow_republish: bool):
+    def publish_release(self, manifest: bytes, image: bytes, deltas, allow_republish: bool,
+                        sbom: bytes | None = None):
         """Upload a release. ``deltas`` is ``{filename: gzipped patch}`` -- a release carries
         one per base version, and each is uploaded UNDER THE NAME THE MANIFEST DECLARES,
         because that name is how the server matches an artifact to its representation and how
-        a device later asks for it."""
+        a device later asks for it. ``sbom`` (CycloneDX JSON, optional) rides beside the
+        artifacts and is served back per release."""
         files = [("manifest", ("manifest.bin", manifest, "application/octet-stream")),
                  ("image", ("image.gz", image, "application/gzip"))]
         for filename, patch in sorted((deltas or {}).items()):
             files.append(("delta", (filename, patch, "application/gzip")))
+        if sbom is not None:
+            files.append(("sbom", ("sbom.cdx.json", sbom, "application/json")))
         params = {"allow_republish": "true"} if allow_republish else {}
         return self._req("POST", "/api/v1/admin/releases", files=files, params=params)
+
+    def fleet_bases(self, product_id=None):
+        """The distinct (version, body_sha256) bases the fleet is running, with device
+        counts -- what `build ota-romfs --delta-fleet` plans deltas against."""
+        params = {} if product_id is None else {"product_id": product_id}
+        return self._req("GET", "/api/v1/admin/fleet/bases", params=params)
 
     def release_image(self, release_id: str) -> bytes:
         """The raw gzipped image of a retained release -- a delta base."""

@@ -342,8 +342,19 @@ def cmd_publish(args: argparse.Namespace) -> int:
             raise ClientError("no built release for %s in %s -- run `build ota-romfs` first"
                               % (args.board, out))
         api = _make_api(cfg)
+        # The SBOM is rendered fresh from the committed lock (deterministic, no firmware
+        # checkout needed) and rides with the release -- dependency evidence beside the bytes
+        # it describes. A project the renderer cannot read publishes without one, with a
+        # warning: evidence is worth carrying, never worth blocking a release over.
+        sbom_bytes = None
+        try:
+            from openmv_ota.build.sbom import render_sbom
+            sbom_bytes = render_sbom(args.project).encode()
+        except Exception as e:                                    # noqa: BLE001
+            print("warning: no SBOM attached (%s)" % e, file=sys.stderr)
         res = api.publish_release(manifest.read_bytes(), image.read_bytes(),
-                                  _declared_deltas(manifest, out), args.allow_republish)
+                                  _declared_deltas(manifest, out), args.allow_republish,
+                                  sbom=sbom_bytes)
         lines = ["published %s  version %s  (%s)" % (res["release_id"], res.get("version"),
                                                      ", ".join(res["representations"]))]
         payload = dict(res)

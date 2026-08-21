@@ -786,3 +786,45 @@ def test_count_scoped_refuses_a_table_it_does_not_paginate(tmp_path):
     _, store = _app(tmp_path)
     with pytest.raises(ValueError, match="unsupported table"):
         store.count_scoped("admin_tokens; DROP TABLE devices--")
+
+
+def test_fleet_bases_names_the_bytes_a_release_must_cover(tmp_path):
+    """The release-planning read behind `build ota-romfs --delta-fleet`: distinct
+    (version, body_sha256) with device counts, versions decoded for the reader."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="d1", product_id=BID, current_payload_version=0x01000000,
+                        body_sha256="aa" * 32)
+    store.upsert_device(device_id="d2", product_id=BID, current_payload_version=0x01000000,
+                        body_sha256="aa" * 32)
+    store.upsert_device(device_id="d3", product_id=BID, current_payload_version=0x01000100)
+    c = TestClient(app)
+    bases = c.get("/api/v1/admin/fleet/bases", headers=AUTH,
+                  params={"product_id": BID}).json()["bases"]
+    assert bases[0] == {"payload_version": 0x01000000, "version": "1.0.0",
+                        "body_sha256": "aa" * 32, "devices": 2}
+    # the sha-less device is its own row: it can only take full images, and a reader
+    # deserves to see that population rather than have it folded into a sha group
+    assert {"payload_version": 0x01000100, "version": "1.0.1",
+            "body_sha256": "", "devices": 1} in bases
+
+
+def test_release_sbom_served_and_404s(tmp_path):
+    app, store = _app(tmp_path)
+    storage = app.state.storage
+    store.add_release(release_id="rs", product_id=BID, product="P", version="1.0.0",
+                      payload_version=1, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[], manifest_key="m", image_key="i",
+                      sbom_key="sbom/rs/sbom.cdx.json")
+    storage.put("sbom/rs/sbom.cdx.json", b'{"bomFormat": "CycloneDX"}', "application/json")
+    store.add_release(release_id="nosbom", product_id=BID, product="P", version="1.0.1",
+                      payload_version=2, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[], manifest_key="m", image_key="i")
+    store.add_release(release_id="gone", product_id=BID, product="P", version="1.0.2",
+                      payload_version=3, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[], manifest_key="m", image_key="i",
+                      sbom_key="sbom/gone/sbom.cdx.json")   # row survives its bytes
+    c = TestClient(app)
+    r = c.get("/api/v1/admin/releases/rs/sbom", headers=AUTH)
+    assert r.status_code == 200 and r.json()["bomFormat"] == "CycloneDX"
+    assert c.get("/api/v1/admin/releases/nosbom/sbom", headers=AUTH).status_code == 404
+    assert c.get("/api/v1/admin/releases/gone/sbom", headers=AUTH).status_code == 404

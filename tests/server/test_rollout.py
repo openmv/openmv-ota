@@ -108,3 +108,16 @@ def test_should_autopause():
     assert should_autopause(6, 100, 0.05) is True
     assert should_autopause(4, 100, 0.05) is False
     assert should_autopause(0, 0, 0.05) is False         # no attempts yet
+
+
+def test_running_body_sha256_reads_the_running_slot():
+    from openmv_ota.server.rollout import running_body_sha256
+    slots = [{"slot": "B", "running": True, "body_sha256": "aa" * 32},
+             {"slot": "A", "running": False, "body_sha256": "bb" * 32}]
+    assert running_body_sha256(slots) == "aa" * 32
+    assert running_body_sha256(None) is None                      # no slots at all
+    assert running_body_sha256([]) is None
+    assert running_body_sha256([{"slot": "A", "running": False}]) is None  # nothing running
+    # "" from the device (a trailer that would not parse) is unknown-to-us, same as absent
+    assert running_body_sha256([{"slot": "A", "running": True, "body_sha256": ""}]) is None
+    assert running_body_sha256([{"slot": "A", "running": True}]) is None
