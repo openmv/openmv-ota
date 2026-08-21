@@ -12,8 +12,8 @@ partition image written at manufacture, and the firmware that boots it.
 Where [`build romfs`](06-building.md#build-romfs) produces an OTA *payload* — the
 signed body + trailer a release is composed from — `build factory-romfs` produces
 the **whole partition image flashed at the factory**. It requires an OTA project:
-a plain project's `build romfs` image already spans the partition and is itself
-the factory image.
+a plain project has nothing to compose — its `build romfs` image is budgeted
+against the whole partition and is flashed as-is at manufacture.
 
 ```bash
 openmv-ota build factory-romfs ./my-product
