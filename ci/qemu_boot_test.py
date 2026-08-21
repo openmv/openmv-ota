@@ -551,7 +551,7 @@ emit_ok = buf.getvalue() == "[2026-06-25 12:34:56] WARNING openmv_ota: qemu: liv
 # verify itself uses the ecdsa_verify C module, absent on the bare MPS port (the boot
 # scenarios inject verify too), so it's host-tested, not exercised here.
 _m = P["_manifest_parse"](__MANIFEST__)
-_rep = P["_select_rep"](_m["body"], False, 0)
+_rep = P["_select_rep"](_m["body"], False, 0, "")
 _rej = P["_update_reject"](_m["body"], 0, 0, 0)
 # representation URL resolution: relative -> against the manifest URL; absolute -> as-is
 _rel = P["_resolve_url"]("https://h.io/fw/m.bin", "n6-ota.img.gz") == "https://h.io/fw/n6-ota.img.gz"
