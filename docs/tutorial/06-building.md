@@ -31,10 +31,14 @@ for a plain project and the [OTA slot budget](04-ota-projects.md#what---ota-chan
 otherwise; the build summary reports usage against whichever bound applies.
 
 The app source defaults to `<project>/app`; pass `--app` for another directory.
-The project must match its lock and be clean — `build romfs` refuses a drifted
-firmware checkout (`project status` shows the difference, `project sync` re-pegs).
-This is distinct from `openmv-ota romfs pack`, which packs a directory verbatim
-with no compilation.
+
+The pegged firmware checkout must match the lock and be clean. The app is
+compiled with that checkout's own tools — the `.mpy` bytecode must match the
+firmware it will run on — and the image stamps the lock's provenance, so a
+drifted tree would build an image whose claims don't describe its bytes.
+`build romfs` refuses it; `project status` shows the difference and
+`project sync` re-pegs. This is distinct from `openmv-ota romfs pack`, which
+packs a directory verbatim with no compilation.
 
 ### OTA signing
 
