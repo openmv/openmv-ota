@@ -79,12 +79,15 @@ The bundle keeps its two pieces as separate zip *entries*:
 | `romfs.img` | the ROMFS body (mounted at `/rom`, written to the slot start) |
 | `trailer.bin` | the signed trailer (written to the slot's last erase block) |
 
-One file is easier to flash, upload, and track — and because a zip is
-random-access, the update server reads `trailer.bin` (version / `product_id` /
-signature / the `system.json` copy) without touching the multi-MB body. The device
-never gets the zip (it can't hold the body in RAM to unzip): a server streams body
-and trailer separately, exactly as they're placed on-flash. Every trailer field is
-final and signed, including `pad_size` and the crc32.
+The bundle is a host-side convenience: one file to upload, inspect, and track.
+Because a zip is random-access, host tools read `trailer.bin` — version /
+`product_id` / signature / the `system.json` copy — without touching the
+multi-MB body. The device never sees the zip: a release is composed from it
+with the body and trailer laid out exactly as they sit on flash, and that is
+what a device downloads, as a single stream. Every field in the trailer's
+header and metadata is signed — `pad_size` included — and a trailing crc32
+over the whole trailer catches plain corruption before the slower signature
+check runs.
 
 `build romfs` fails (exit 1) on an incomplete signing context — a missing or
 unreadable `app/settings.json`, a missing or non-semver `app_version`, a

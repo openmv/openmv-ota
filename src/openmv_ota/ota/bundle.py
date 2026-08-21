@@ -6,11 +6,12 @@ Entries (generic names; the zip itself is named per-board):
     romfs.img    the ROMFS body (mounted at /rom on the device)
     trailer.bin  the signed trailer (authenticated; the slot's last erase block)
 
-The trailer **is** the manifest — it carries the signed copy of ``system.json``, so
-host tools index a release by reading ``trailer.bin`` (via the codec / ``build
-inspect``) without mounting the body. The device never receives the zip — it can't
-hold the body in RAM to unzip — so a server unbundles and streams the body +
-trailer separately. The bundle is purely a host/server-side convenience.
+The trailer carries the signed copy of ``system.json``, so host tools index a
+release by reading ``trailer.bin`` (via the codec / ``build inspect``) without
+mounting the body. The device never receives the zip: ``build ota-romfs`` reads
+this bundle and lays the body + trailer into a slot-sized OTA image (gzipped),
+which is what a device downloads as a single stream. The bundle is purely a
+host-side convenience.
 """
 
 from __future__ import annotations
