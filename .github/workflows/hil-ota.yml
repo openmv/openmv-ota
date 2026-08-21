@@ -140,7 +140,8 @@ jobs:
               # module at all), so their real-world update path IS install() from the SD card --
               # and that is what the "file" legs exercise: artifacts staged over the USB-CDC, no
               # server, no marker UART (none is wired on these nodes; the CDC probe scores the
-              # run). ADVISORY until each has passed once in the fleet (the house rule below).
+              # run). Each board passed its first fleet run (2026-08-21), so the legs BLOCK
+              # like the rest of the fleet -- that is the entire point of having them.
               #
               # openmv_url/openmv_ref pin the EXACT proven bring-up firmware commit. The classic
               # board changes (OPENMV4 zbar trim to fit the OTA firmware in FLASH_TEXT, the
@@ -149,13 +150,13 @@ jobs:
               # legs build a known tree, and moving them is an explicit SHA bump here, reviewed
               # like any other change. (How fork-carried board changes are maintained long-term
               # is an open workstream -- the pin is the mechanism until that lands.)
-              {"board": "OPENMV2", "network": "file", "label": "board-openmv-m4", "advisory": True,
+              {"board": "OPENMV2", "network": "file", "label": "board-openmv-m4",
                "openmv_url": "https://github.com/kwagyeman/openmv.git",
                "openmv_ref": "db5f5af74d57ba3d4e28dc52d13dd4e5663432dd"},
-              {"board": "OPENMV3", "network": "file", "label": "board-openmv-m7", "advisory": True,
+              {"board": "OPENMV3", "network": "file", "label": "board-openmv-m7",
                "openmv_url": "https://github.com/kwagyeman/openmv.git",
                "openmv_ref": "db5f5af74d57ba3d4e28dc52d13dd4e5663432dd"},
-              {"board": "OPENMV4", "network": "file", "label": "board-openmv-h7", "advisory": True,
+              {"board": "OPENMV4", "network": "file", "label": "board-openmv-h7",
                "openmv_url": "https://github.com/kwagyeman/openmv.git",
                "openmv_ref": "db5f5af74d57ba3d4e28dc52d13dd4e5663432dd"},
           ]
