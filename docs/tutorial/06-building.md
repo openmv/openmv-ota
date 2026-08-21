@@ -4,8 +4,11 @@
 
 ---
 
-This page is `build romfs` — how a project's app becomes the image a camera runs —
-and the compilation machinery the rest of `openmv-ota build` reuses.
+This page is `build romfs` — the build engine every other `build` verb runs
+internally. For a **plain project it is the whole build**: the image it packs is
+what you flash. For an **OTA project** it writes the signed bundle the factory
+and release artifacts are composed from — you will usually run those commands
+instead, and meet this machinery through them.
 
 ## build romfs
 
@@ -39,62 +42,6 @@ drifted tree would build an image whose claims don't describe its bytes.
 `build romfs` refuses it; `project status` shows the difference and
 `project sync` re-pegs. This is distinct from `openmv-ota romfs pack`, which
 packs a directory verbatim with no compilation.
-
-### OTA signing
-
-For an OTA project, `build romfs` stamps and signs a **trailer** onto each image,
-turning a bare ROMFS body into a verifiable, anti-rollback OTA image. No extra
-flags — the signing context comes from the project:
-
-- **App version → payload version.** `app_version` from `app/settings.json` is
-  encoded into the trailer's `payload_version` as
-  `(major<<24)|(minor<<16)|(patch<<8)`, the monotonic anti-rollback counter. Bump
-  it there for each release.
-- **Signed with the current OTA key.** The signer is `[ota].signing_key_id` from
-  `openmv-ota.toml`; the trailer records `key_id` + the COSE algorithm so the
-  device selects the matching trusted public key.
-- **Identity + provenance stamped in.** `product_id` / `board_name` come from the
-  `[targets.<BOARD>]` tables, versions and commits from the lock — exactly the
-  `system.json` fields, and the trailer's metadata carries a **verbatim copy of
-  `system.json`**, so host tools read an image's identity without mounting the
-  ROMFS. `min_platform_version` is the pegged firmware's version code.
-
-**The key's passphrase.** The private keys are encrypted at rest, so a signing
-build resolves their passphrase in priority order: the project's cached dev
-passphrase when present, then `--key-passphrase-file`, then the
-`OPENMV_OTA_KEY_PASSPHRASE` environment variable (what CI uses), and finally an
-**interactive prompt** on a terminal — day to day you simply type it; the file
-flag exists for scripts. (Passphrases travel in files or the environment, never
-on the command line where they would land in shell history and `ps` — and signing
-accepts the environment where provisioning refuses it, deliberately: a wrong
-value here fails loudly and signs nothing, while a wrong value at provisioning
-would silently seal the key supply.) A **dev-keyed** project signs without any of
-this, but the build refuses to produce a production image unless you pass
-`--allow-dev-key`.
-
-The bundle keeps its two pieces as separate zip *entries*:
-
-| Entry | What |
-|---|---|
-| `romfs.img` | the ROMFS body (mounted at `/rom`, written to the slot start) |
-| `trailer.bin` | the signed trailer (written to the slot's last erase block) |
-
-The bundle is a host-side convenience: one file to upload, inspect, and track.
-Because a zip is random-access, host tools read `trailer.bin` — version /
-`product_id` / signature / the `system.json` copy — without touching the
-multi-MB body. The device never sees the zip: a release is composed from it
-with the body and trailer laid out exactly as they sit on flash, and that is
-what a device downloads, as a single stream. Every field in the trailer's
-header and metadata is signed — `pad_size` included — and a trailing crc32
-over the whole trailer catches plain corruption before the slower signature
-check runs.
-
-`build romfs` fails (exit 1) on an incomplete signing context — a missing or
-unreadable `app/settings.json`, a missing or non-semver `app_version`, a
-`signing_key_id` not in `keys/trusted_keys.json`, or a missing private key (only
-the signing machine has `keys/private/`). It *warns* but builds if a target's
-`product_id` is `0` (you overrode the auto-assigned id, turning the cross-flash
-guard off) or if two boards collide on one id (the guard can't tell them apart).
 
 ### Compiling
 

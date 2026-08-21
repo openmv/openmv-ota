@@ -12,15 +12,46 @@ and the read-only commands that check any built image.
 ## build ota-romfs
 
 `build ota-romfs` produces the complete publishable set for a release, straight
-from app source — it runs the same compile-and-sign as
-[`build romfs`](06-building.md#build-romfs) internally (same flags), then renders
-what a camera actually downloads:
+from app source — it runs the [`build romfs`](06-building.md#build-romfs) engine
+internally (same flags), then renders what a camera actually downloads:
 
 ```bash
 openmv-ota build ota-romfs ./my-product
 # -> build/<board>-ota.img.gz       the gzipped slot-sized image
 #    build/<board>-manifest.bin     the signed manifest install() fetches first
 ```
+
+### The signed image
+
+The build stamps and signs a **trailer** onto the image, turning a bare ROMFS
+body into a verifiable, anti-rollback OTA image. No extra flags — the signing
+context comes from the project:
+
+- **App version → payload version.** `app_version` from `app/settings.json` is
+  encoded into the trailer's `payload_version` as
+  `(major<<24)|(minor<<16)|(patch<<8)`, the monotonic anti-rollback counter. Bump
+  it there for each release.
+- **Signed with the current OTA key.** The signer is `[ota].signing_key_id` from
+  `openmv-ota.toml`; the trailer records `key_id` + the COSE algorithm so the
+  device selects the matching trusted public key.
+- **Identity + provenance stamped in.** `product_id` / `board_name` come from the
+  `[targets.<BOARD>]` tables, versions and commits from the lock — exactly the
+  `system.json` fields, and the trailer's metadata carries a **verbatim copy of
+  `system.json`**, so host tools read an image's identity without mounting the
+  ROMFS. `min_platform_version` is the pegged firmware's version code.
+
+Every field in the trailer's header and metadata is signed — `pad_size`
+included — and a trailing crc32 over the whole trailer catches plain corruption
+before the slower signature check runs.
+
+A signing build fails (exit 1) on an incomplete signing context — a missing or
+unreadable `app/settings.json`, a missing or non-semver `app_version`, a
+`signing_key_id` not in `keys/trusted_keys.json`, or a missing private key (only
+the signing machine has `keys/private/`). It *warns* but builds if a target's
+`product_id` is `0` (you overrode the auto-assigned id, turning the cross-flash
+guard off) or if two boards collide on one id (the guard can't tell them apart).
+
+### The manifest
 
 The **manifest** is the descriptor the device fetches before anything else: it
 names the image's size and sha256 and the available representations, and binds
@@ -80,6 +111,21 @@ diffable evidence.
 | `-o, --output FILE` | Where to write (default `<project>/build/sbom.cdx.json`; `-` prints to stdout). |
 
 ## Inspecting and verifying
+
+The engine underneath emits its OTA output as the `<board>-romfs.zip` **bundle** —
+the two pieces as separate zip entries:
+
+| Entry | What |
+|---|---|
+| `romfs.img` | the ROMFS body (mounted at `/rom`, written to the slot start) |
+| `trailer.bin` | the signed trailer (written to the slot's last erase block) |
+
+The bundle is a host-side convenience: one file to upload, inspect, and track.
+Because a zip is random-access, host tools read `trailer.bin` — version /
+`product_id` / signature / the `system.json` copy — without touching the
+multi-MB body. The device never sees the zip: `build ota-romfs` lays the body
+and trailer into the slot-sized image exactly as they sit on flash, and that is
+what a device downloads, as a single stream.
 
 Two read-only commands operate on any built image: the `<board>-romfs.zip` bundle,
 the loose `romfs.img` / `trailer.bin`, or a `<board>-factory-romfs.img` — the

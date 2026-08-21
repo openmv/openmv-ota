@@ -78,6 +78,17 @@ knows. Provisioning reads **no environment variable**: an invisible source has n
 place at this moment. (Passphrases travel in files or a prompt rather than on the
 command line itself, where they would land in shell history and `ps` output.)
 
+Every **signing build** needs the same passphrase back, and resolves it in
+priority order: the project's cached dev passphrase when present, then
+`--key-passphrase-file`, then the `OPENMV_OTA_KEY_PASSPHRASE` environment
+variable (what CI uses), and finally an interactive prompt on a terminal — day
+to day you simply type it; the file flag exists for scripts. Signing accepts
+the environment where provisioning refuses it, deliberately: a wrong value at
+signing fails loudly and signs nothing, while a wrong value at provisioning
+would silently seal the key supply. A `--dev` project signs without any of
+this; the production rail stays closed unless a build is passed
+`--allow-dev-key`.
+
 ## Day to day: `status` and `rotate`
 
 ```bash

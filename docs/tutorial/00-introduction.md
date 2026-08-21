@@ -62,9 +62,9 @@ Every command and flag on these pages exists — the test suite holds the CLI to
 | [3 · The lock](03-the-lock.md) | `setup` / `show` / `status` / `verify` / `sync` / `history` — keeping the peg honest |
 | [4 · OTA projects](04-ota-projects.md) | what `--ota` changes: slots, the scaffolded device library, board identity |
 | [5 · Signing keys](05-signing-keys.md) | `project keys` — the provisioned key set, rotation, revocation |
-| [6 · Building](06-building.md) | `build romfs` — compiling the app into the (signed) image |
+| [6 · Building](06-building.md) | `build romfs` — the build engine: compiling the app into the ROMFS image |
 | [7 · Factory & firmware](07-factory-and-firmware.md) | `build factory-romfs` + `build firmware` — what a device gets at manufacture |
-| [8 · Release artifacts](08-release-artifacts.md) | `build ota-romfs` / `sbom` / `inspect` / `verify` — the publishable set and its checks |
+| [8 · Release artifacts](08-release-artifacts.md) | `build ota-romfs` / `sbom` / `inspect` / `verify` — the publishable set, its signing, and its checks |
 | [9 · Flashing](09-flashing.md) | `openmv-ota flash` — every board's programming path |
 | [10 · Boot and rollback](10-boot-and-rollback.md) | `boot.py` — slot selection, the trial, falling back |
 | [11 · The device library](11-device-library.md) | `openmv_ota` on the camera — `status` / `confirm` / `sync` / `install` |
