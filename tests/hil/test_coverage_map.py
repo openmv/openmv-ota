@@ -96,6 +96,14 @@ def test_scenario_expect_and_forbid_are_disjoint():
 def test_regression_scenarios_are_valid_and_board_gated():
     for board in ota_cycle.BOARDS:
         primary = ota_cycle.BOARDS[board]["network"]
+        if primary == "file":
+            # Classic boards have ONE transport and one regression -- the file list -- whatever
+            # interface is asked for (the matrix never generates a secondary leg for them, and
+            # their builds could not run a network scenario anyway: no TLS stack).
+            scs = ota_cycle.regression_scenarios(board, "file")
+            assert scs == ["file_full", "file_bad_sig"]
+            assert all(s in ota_cycle.SCENARIOS for s in scs)
+            continue
         for net in ("lan", "wifi"):
             scs = ota_cycle.regression_scenarios(board, net)
             assert scs, "%s/%s regression is empty" % (board, net)

@@ -216,6 +216,28 @@ BOARDS = {
         "flash": "arduino_cli",              # same MCUboot DFU path as the Nicla
         "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
     },
+    # --- Classic boards (single-image mode, file transport) --------------------------------------
+    # These builds carry no TLS stack (the F427 literally has no `ssl` module -- SD/file IS the
+    # M4's update path by design) and no marker UART is wired on their nodes, so their legs run a
+    # DIFFERENT cycle: stage the signed artifacts on the SD card over USB-CDC, run
+    # install("/sdcard/<board>-manifest.bin"), and score the CDC probe + the install's own log
+    # lines instead of the server record + UART markers. See run_file_scenario. No jlink_device:
+    # nothing is wired to their SWD, and the file cycle never needs a reset it can't ask for.
+    "OPENMV2": {                             # OpenMV M4 (STM32F427: 39 KB heap, frozen installer)
+        "cov_write": "install.xip",
+        "network": "file",
+        "flash": "dfu_cli",                  # same `openmv-ota flash factory` DFU path as the N6
+    },
+    "OPENMV3": {                             # OpenMV M7 (STM32F765: 47 KB heap, frozen installer)
+        "cov_write": "install.xip",
+        "network": "file",
+        "flash": "dfu_cli",
+    },
+    "OPENMV4": {                             # OpenMV H7 (STM32H743: control_stride 32 -- the 32-byte
+        "cov_write": "install.xip",          # ECC-word board the stride exists for)
+        "network": "file",
+        "flash": "dfu_cli",
+    },
 }
 
 
@@ -616,6 +638,18 @@ SCENARIOS = {
         "expect": ["boot.mount", "run.checkin", "partition.compare", "sync.skip"],
         "forbid": ["sync.applying", "partition.prepare", "partition.write", "sync.applied"],
     },
+    # --- File-transport scenarios (the classic boards' whole regression) -------------------------
+    # Scored by run_file_scenario on the CDC, not by run_cycle on the server record + UART markers,
+    # so expect/forbid are empty here -- the evidence is the install's own log lines in the exec
+    # output plus the post-boot status probe. Only on network == "file" boards (guarded in main).
+    "file_full": {
+        "desc": "file transport: full image installed from the SD card -> trial -> confirm",
+        "publish": "file", "app": "file", "end": "promoted", "expect": [], "forbid": [],
+    },
+    "file_bad_sig": {
+        "desc": "file transport: tampered manifest signature -> refused pre-erase, version unchanged",
+        "publish": "file", "app": "file", "end": "golden", "expect": [], "forbid": [],
+    },
 }
 
 # The watchdog happy-path: the delta cycle with the deep-sleep-safe watchdog turned ON (prepare()
@@ -683,6 +717,12 @@ def regression_scenarios(board, network):
     blhost slot-erase); coproc/coproc_skip are AE3-only (the sole coprocessor partition). A board's
     SECONDARY interface runs just delta -- proving the network path; the rest is interface-agnostic
     so there's no point re-running it on both legs."""
+    if BOARDS[board]["network"] == "file":
+        # The classic boards' whole regression: the happy-path file install plus one pre-erase
+        # refusal (a tampered signature). The rest of the tamper set is board-agnostic device
+        # logic fully covered on the N6/RT legs, and these builds cannot transport it anyway --
+        # no TLS stack means no server, so every scenario that needs an offer is out of reach.
+        return ["file_full", "file_bad_sig"]
     if network != BOARDS[board]["network"]:
         return ["delta"]
     # The AE3 runs a REDUCED PR suite: only its two board-SPECIFIC paths -- the happy-path delta
@@ -2017,6 +2057,28 @@ def publish_update(board, version, variant="delta"):
         _tamper(board, "manifest_key")  # pre-erase untrusted-key failure -> reject, stays golden
 
 
+def tamper_manifest_bytes(data, which):
+    """Corrupt ONE field of a manifest.bin (in place), then re-seal the trailing crc32, so the
+    device reaches the specific reject gate we mean to test. A naive mid-stream flip lands in the
+    header (key_id -> "untrusted key") or body (-> "crc mismatch") depending on manifest size,
+    rejecting BEFORE the boundary under test is ever reached.
+      which="manifest"     -> flip a SIGNATURE byte: parse + key lookup pass, verify() fails.
+      which="manifest_key" -> flip a KEY_ID byte: parse passes, the key lookup misses.
+    Shared by the server-store tamper (_tamper) and the file-transport legs, which tamper the
+    local artifact before staging it on the SD card. Returns the flipped offset."""
+    import struct
+    import binascii
+    hdr = "<4sIIIIi"                                 # magic, hver, body_size, sig_size, key, alg
+    hsize = struct.calcsize(hdr)                     # 24; key_id field at offset 16
+    _, _, body_size, sig_size, _, _ = struct.unpack_from(hdr, data, 0)
+    body_end = hsize + body_size + sig_size          # crc covers data[:body_end]
+    off = 16 if which == "manifest_key" else hsize + body_size   # key_id vs signature region
+    data[off] ^= 0xFF                                # break exactly that field, nothing else
+    crc = binascii.crc32(bytes(data[:body_end])) & 0xFFFFFFFF
+    struct.pack_into("<I", data, body_end, crc)      # re-seal so parse (+ key, for sig) pass
+    return off
+
+
 def _tamper(board, which):
     """Flip a byte in the JUST-published artifact in the LOCAL server store, to exercise a
     device integrity path that a clean release can't:
@@ -2042,19 +2104,10 @@ def _tamper(board, which):
         # rejecting BEFORE the target check runs -- the boundary we mean to test is never hit.
         #   which="manifest"     -> flip a SIGNATURE byte: parse + key pass, verify() fails (682).
         #   which="manifest_key" -> flip a KEY_ID byte: parse passes, key lookup misses (680).
-        import struct
-        import binascii
         target = "%s/manifests/%s/manifest.bin" % (root, rel)
         with open(target, "r+b") as f:
             data = bytearray(f.read())
-        hdr = "<4sIIIIi"                                 # magic, hver, body_size, sig_size, key, alg
-        hsize = struct.calcsize(hdr)                     # 24; key_id field at offset 16
-        _, _, body_size, sig_size, _, _ = struct.unpack_from(hdr, data, 0)
-        body_end = hsize + body_size + sig_size          # crc covers data[:body_end]
-        off = 16 if which == "manifest_key" else hsize + body_size   # key_id vs signature region
-        data[off] ^= 0xFF                                # break exactly that field, nothing else
-        crc = binascii.crc32(bytes(data[:body_end])) & 0xFFFFFFFF
-        struct.pack_into("<I", data, body_end, crc)      # re-seal so parse (+ key, for sig) pass
+        off = tamper_manifest_bytes(data, which)
         with open(target, "r+b") as f:
             f.write(data)
         log("  tampered %s byte@%d of %s (crc re-sealed)" % (which, off, os.path.basename(target)))
@@ -2128,6 +2181,242 @@ def device_id():
         if line.startswith("DEVID "):
             return line.split(" ", 1)[1].strip()
     raise RuntimeError("could not read device_id:\n" + out)
+
+
+# ---------------------------------------------------------------------------
+# File-transport cycle -- the classic boards (OPENMV2/3/4, single-image mode).
+#
+# These builds have no TLS stack (the F427 has no `ssl` module at all), so their real-world
+# update path is install() from a file on the SD card -- and that is exactly what this cycle
+# exercises, end to end on hardware: build golden 1.0.0, flash it over DFU, build the signed
+# update artifacts, stage them on the SD card over the USB-CDC, run
+# install("/sdcard/<board>-manifest.bin"), and probe the outcome after the reboot.
+#
+# No server, no marker UART: the evidence is the CDC. The install's own log lines land in the
+# exec output (openmv_log ENABLED -> the USB REPL), and the post-boot status probe says whether
+# the version moved and the trial confirmed. That is the same evidence the manual bring-up used
+# to prove all three boards.
+# ---------------------------------------------------------------------------
+def file_bench_main_py():
+    """The classic boards' bench app: confirm a fresh trial, then idle. No network bring-up and
+    no run() -- the harness drives install() over the CDC -- and kept deliberately tiny: the M4
+    has a 39 KB heap, so every statement this app runs before confirm() is heap the trial boot
+    must afford. The prints land on the USB REPL where the harness's probes can see them."""
+    return (
+        "import time\n"
+        "import openmv_ota\n"
+        "try:\n"
+        "    st = openmv_ota.status()\n"
+        "    print('BENCH boot', st.get('payload_version'), st)\n"
+        "    if st.get('trial'):\n"
+        "        openmv_ota.confirm()\n"
+        "        print('BENCH confirmed')\n"
+        "except Exception as e:\n"
+        "    print('BENCH app error', repr(e))\n"
+        "while True:\n"
+        "    time.sleep(1)\n"
+    )
+
+
+def file_prepare(board, checkout):
+    """prepare()'s file-transport twin: refresh the project's vendored runtime from the checkout
+    under test, turn the device log on (to the USB REPL -- no marker UART on these nodes), and
+    write the minimal confirm-on-trial app."""
+    log("prepare: refresh vendored runtime + file bench app")
+    dev = checkout + "/src/openmv_ota/build/device"
+    sh("cp -rf %s/openmv_ota/. %s/app/lib/openmv_ota/" % (dev, CFG["project"]))
+    sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
+    sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
+    # ENABLED=True with UART=None -> the log goes to sys.stdout (the USB REPL), so the install's
+    # own account ("install: installed + armed", "install: reject bad signature") arrives inside
+    # the mpremote exec output this cycle scores. Fail LOUD if the sed didn't take, exactly like
+    # prepare()'s watchdog flip -- a silent miss would score a healthy install as evidence-free.
+    logpy = "%s/device/openmv_log.py" % CFG["project"]
+    sh("sed -i 's/^ENABLED = False/ENABLED = True/' " + logpy)
+    sh("grep -q '^ENABLED = True' " + logpy)
+    open(CFG["project"] + "/app/main.py", "w").write(file_bench_main_py())
+    _ensure_cdc(board, allow_erase=True)     # no-op today (no J-Link on these nodes); keeps the shape
+
+
+def file_publish(board, version):
+    """Build the signed update artifacts locally (there is no server to publish to):
+    <board>-manifest.bin + <board>-ota.img.gz in the project's build/. Always a FULL image --
+    single-image mode has no delta base to patch against after the slot is erased."""
+    log("build: ota-romfs %s (update %s)" % (board, version))
+    set_version(version)
+    penv = dict(os.environ, PATH=CFG["sdk"] + "/make:" + os.environ["PATH"])
+    subprocess.run([ota("openmv-ota"), "build", "ota-romfs", CFG["project"], "-b", board,
+                    "--allow-dev-key", "--allow-republish"],
+                   env=penv, check=True, timeout=900)
+
+
+def file_stage(board, tamper=None):
+    """Stage the artifacts on the board's SD card over the USB-CDC (mpremote cp), optionally
+    tampering the manifest's signature first -- the SAME byte the server-store tamper flips, so
+    the file leg reaches the same reject gate (verify() fails; parse + key lookup pass). Returns
+    the on-device manifest path install() is given."""
+    bdir = "%s/build" % CFG["project"]
+    man = "%s/%s-manifest.bin" % (bdir, board)
+    img = "%s/%s-ota.img.gz" % (bdir, board)
+    if tamper is not None:
+        data = bytearray(open(man, "rb").read())
+        off = tamper_manifest_bytes(data, tamper)
+        man = "%s/%s-manifest-tampered.bin" % (bdir, board)
+        open(man, "wb").write(bytes(data))
+        log("stage: tampered %s byte@%d (crc re-sealed)" % (tamper, off))
+    dev_man = "/sdcard/%s-manifest.bin" % board
+    log("stage: cp image + manifest -> /sdcard (USB-CDC)")
+    _mpremote(["cp", img, ":/sdcard/%s" % os.path.basename(img)], timeout=300)
+    _mpremote(["cp", man, ":" + dev_man], timeout=120)
+    return dev_man
+
+
+def _wait_cdc(budget=120):
+    """Wait for the USB-CDC to answer after a reboot. The probe itself DTR-resets the board,
+    which is fine here: the app confirms a trial at BOOT, so every extra boot re-runs it."""
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        rc, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
+                   timeout=15, check=False, quiet=True)
+        if rc == 0:
+            return True
+        time.sleep(3)
+    return False
+
+
+def _payload_version(vstr):
+    """The encoded payload_version int for an app-version string -- what status() reports and
+    what the manifest/trailer carry. Imported from the installed tool so the harness can never
+    drift from the real encoding."""
+    from openmv_ota.ota.version import encode_app_version
+    return encode_app_version(vstr)
+
+
+def file_probe(retries=3):
+    """(payload_version, confirmed, trial) off the board's own status(), over the CDC. Retries
+    transport errors only -- the parsed answer, whatever it says, is the verdict.
+
+    payload_version, NOT a version string: status() carries the ENCODED int (there is no
+    "version" key in it -- the app-version string lives in identity()). Callers compare against
+    encode_app_version(target), the same encoding the manifest and trailer carry."""
+    code = ("import openmv_ota\n"
+            "s = openmv_ota.status()\n"
+            "print('PROBE|%s|%s|%s' % (s.get('payload_version'), s.get('confirmed'), "
+            "s.get('trial')))\n")
+    for attempt in range(retries):
+        rc, out = device_exec(code, timeout=90, check=False)
+        for line in reversed(out.splitlines()):
+            if line.startswith("PROBE|"):
+                _, v, confirmed, trial = line.strip().split("|")
+                return int(v), confirmed == "True", trial == "True"
+        log("  (probe attempt %d/%d got no PROBE line, retrying)" % (attempt + 1, retries))
+        time.sleep(5)
+    raise RuntimeError("status probe never answered over the CDC:\n%s" % out[-1500:])
+
+
+def _install_touched_flash(out):
+    """True when the exec output shows the install reached the ERASE (or beyond) -- the boundary
+    a pre-erase refusal must never cross. Keyed on the flash-touching lines ("install: erasing",
+    "install: writing", the armed line), NOT on "install: staged": that line stages the INSTALLER
+    CODE before the vet ever runs, and the classics' frozen fallback logs "install: staged frozen
+    installer (exec would not fit)" on every call -- which scored the M7's textbook pre-erase
+    refusal as erased=True on its first fleet leg."""
+    return ("install: erasing" in out) or ("install: writing" in out) \
+        or ("installed + armed" in out)
+
+
+def _device_raised(out):
+    """True when the exec output shows the DEVICE raising out of install() -- a MicroPython
+    traceback, whose frames are `<stdin>`. NOT mpremote's own: a successful install() reboots
+    the board mid-exec, the CDC dies under mpremote, and its teardown prints a HOST traceback
+    (serialposix RTS/ioctl EIO frames). Measured on the M4's first fleet leg: a flawless install
+    scored as "install raised: OSError: EIO" because the two were not distinguished. A host
+    traceback never contains a `<stdin>` frame; a device one always does."""
+    return "Traceback" in out and "<stdin>" in out
+
+
+def run_file_scenario(args, spec, trace, phase):
+    """Drive one file-transport scenario end to end. Returns a run_cycle-shaped result dict;
+    the caller's shared scoring (empty expect/forbid) reduces to result["reached_end"]."""
+    board = args.board
+    phase("prepare", lambda: file_prepare(board, args.checkout))
+    if not args.skip_provision:
+        phase("build_golden", lambda: build_golden(board))
+        phase("flash_golden", lambda: flash_golden(board))
+    if not _wait_cdc():
+        raise RuntimeError("no CDC after the golden flash -- board never enumerated")
+    golden_v = _payload_version("1.0.0")
+    pre_v, _, _ = file_probe()
+    log("golden up: payload_version %d" % pre_v)
+    if pre_v != golden_v:
+        raise RuntimeError("golden probe says payload_version %r, expected %d (1.0.0) -- the "
+                           "flash did not take" % (pre_v, golden_v))
+    tamper = "manifest" if args.scenario == "file_bad_sig" else None
+    if not args.skip_publish:
+        phase("publish", lambda: file_publish(board, args.target))
+        trace["metrics"] = artifact_sizes(board)
+    dev_man = phase("stage", lambda: file_stage(board, tamper=tamper))
+    # install() REBOOTS the board on success, so the exec dies with a transport error -- that is
+    # the expected shape of a PASS, and why check=False. Its output up to the reboot carries the
+    # device's own account (openmv_log -> USB REPL), kept in the trace as the run's device log.
+    log("install: exec openmv_ota.install(%r)" % dev_man)
+    code = "import openmv_ota\nopenmv_ota.install(%r)\n" % dev_man
+    s = time.time()
+    # ONE mpremote call, deliberately not device_exec: its retry loop re-runs the exec on
+    # transient port errors, and a SUCCESSFUL install() reboots the board mid-exec -- which IS a
+    # transient port error. A retry would then re-run install() on the freshly-armed trial.
+    _, out = sh([ota("mpremote"), "connect", CFG["acm"], "exec", code],
+                timeout=args.timeout, check=False, quiet=True)
+    trace["phases"]["install"] = round(time.time() - s, 1)
+    trace["log"] = out.splitlines()
+    for ln in out.splitlines()[-25:]:
+        if ln.strip():
+            log("  [cdc] " + ln.rstrip())
+    if spec["end"] == "promoted":
+        # PASS = after the reboot the board is RUNNING the target, confirmed -- the post-boot
+        # probe is the verdict. The install's own "installed + armed" line is CORROBORATING
+        # evidence only, never a requirement: the F4's CDC DROPS buffered output at reset
+        # (measured on the M4 -- a flawless install can end with an empty exec capture). What a
+        # capture CAN prove is the opposite: a DEVICE traceback (see _device_raised -- NOT
+        # mpremote's own teardown traceback when the reboot kills the port) with no armed line
+        # means install() raised and the board never rebooted, so fail on the device's own
+        # words instead of waiting out a probe of the unchanged golden.
+        if _device_raised(out) and "installed + armed" not in out:
+            why = [ln for ln in out.splitlines() if ln.strip()][-1].strip()
+            return {"saw_golden": True, "saw_target": False, "version": pre_v, "slot": None,
+                    "reached_end": False, "why": "install raised: " + why}
+        time.sleep(10)                       # let the trial boot run the app's confirm() first
+        if not _wait_cdc():
+            return {"saw_golden": True, "saw_target": False, "version": None, "slot": None,
+                    "reached_end": False, "why": "no CDC after the install's reboot"}
+        target_v = _payload_version(args.target)
+        v, confirmed, trial = file_probe()
+        if trial and not confirmed:
+            # The probe's Ctrl-C may have beaten the app's confirm() on this boot. One clean
+            # reboot gives the app a fresh boot to confirm on (attempts allow it), then re-probe.
+            log("  trial not yet confirmed -- one reset so the app gets a clean boot")
+            device_exec("import machine; machine.reset()", timeout=20, check=False)
+            time.sleep(12)
+            _wait_cdc()
+            v, confirmed, trial = file_probe()
+        ok = (v == target_v) and confirmed
+        # slot stays None: single-image mode has ONE slot, and the probe doesn't read a slot
+        # name -- inventing "A" here would be data the device never said.
+        return {"saw_golden": True, "saw_target": v == target_v, "version": v, "slot": None,
+                "reached_end": ok,
+                "why": "-" if ok else "post-boot probe: payload_version=%s confirmed=%s"
+                                      % (v, confirmed)}
+    # end == "golden": the tampered manifest must be REFUSED pre-erase -- install() raises to
+    # the caller (the exec completes; no reboot), the device logs the reject, and the version
+    # must not move. "signature does not verify" is the raise; "reject bad signature" the log.
+    refused = ("signature does not verify" in out) or ("reject bad signature" in out)
+    erased = _install_touched_flash(out)
+    v, confirmed, _ = file_probe()
+    ok = refused and not erased and v == golden_v
+    return {"saw_golden": True, "saw_target": False, "version": v, "slot": None,
+            "reached_end": ok,
+            "why": "-" if ok else ("refused=%s erased=%s payload_version=%s"
+                                   % (refused, erased, v))}
 
 
 def run_cycle_no_slot(cap, expect, timeout_s):
@@ -2311,8 +2600,9 @@ def main():
     ap.add_argument("--target", default="1.1.0", help="the update version to install")
     ap.add_argument("--timeout", type=int, default=int(env("HIL_TIMEOUT", "600")))
     ap.add_argument("--trace", default=env("HIL_TRACE", "hil-trace.json"))
-    ap.add_argument("--network", choices=["lan", "wifi"], default=None,
-                    help="override the board's default network for the bench app (e.g. N6 wifi)")
+    ap.add_argument("--network", choices=["lan", "wifi", "file"], default=None,
+                    help="override the board's default network for the bench app (e.g. N6 wifi); "
+                         "'file' is the classic boards' SD-card transport, never an override")
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="delta",
                     help="which OTA path to exercise (see SCENARIOS): delta/full happy paths, "
                          "corrupt/rollback/bad_sig/bad_version negative paths")
@@ -2332,6 +2622,12 @@ def main():
         print(" ".join(regression_scenarios(args.board, network)))
         return 0
     spec = SCENARIOS[args.scenario]
+    # The file scenarios and the file boards go together, both ways: a network board asked for
+    # file_full has no SD-staged artifact path, and a file board asked for delta has no server
+    # to poll. Refuse the mismatch loudly rather than timing out into a fake board failure.
+    if (network == "file") != args.scenario.startswith("file_"):
+        ap.error("scenario %r does not run on network %r (file scenarios <-> file boards)"
+                 % (args.scenario, network))
     expect, forbid = scenario_markers(args.board, args.scenario)
     pub_version = spec.get("version", args.target)     # bad_version publishes below the floor
     t0 = time.time()
@@ -2356,11 +2652,19 @@ def main():
         # server, tamper scenarios work on every board). Point CFG at it BEFORE prepare(), which
         # bakes the URL into the bench app + copies this run's CA onto the board.
         # Only bad_version wants the relaxed offer gate; see bench_server.start.
-        srv = bench_server.start(ota("python"), log=log,
-                                 offer_downgrades=(args.scenario == "bad_version"))
-        CFG["server"], CFG["ca_node"], CFG["artifacts"], CFG["token"] = (
-            srv["url"], srv["ca"], srv["store"], srv["token"])
-        if spec["end"] == "no_slot":
+        # The file legs skip it entirely: no TLS on those builds means no server to reach, and
+        # their artifacts are built locally + staged over the CDC (see run_file_scenario).
+        if network != "file":
+            srv = bench_server.start(ota("python"), log=log,
+                                     offer_downgrades=(args.scenario == "bad_version"))
+            CFG["server"], CFG["ca_node"], CFG["artifacts"], CFG["token"] = (
+                srv["url"], srv["ca"], srv["store"], srv["token"])
+        if network == "file":
+            # No server record and no marker UART: the classic legs score the device's own CDC
+            # account. expect/forbid are empty for these scenarios, so the shared scoring below
+            # reduces to result["reached_end"].
+            result = run_file_scenario(args, spec, trace, phase)
+        elif spec["end"] == "no_slot":
             # No OTA: brick BOTH romfs slots, then watch for boot.py's 'no bootable slot'. Start
             # capture BEFORE the brick flash so the reset it triggers (-> boot -> the log line)
             # is caught. Requires the board already provisioned + bootable (firmware carries the
@@ -2437,7 +2741,7 @@ def main():
                 devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout,
                 after_reset=publish))
         time.sleep(2)                            # let the last UART lines land
-        marks = set(cap.points())
+        marks = set(cap.points()) if cap is not None else set()   # file legs run capture-less
         missing = sorted(expect - marks)
         forbidden = sorted(forbid & marks)
         trace["result"] = result
@@ -2448,13 +2752,15 @@ def main():
         # that stopped running (missing), or a wrong path firing (forbidden) all fail the run.
         trace["passed"] = result["reached_end"] and not missing and not forbidden
         if not trace["passed"]:
-            log("FAIL: end=%s reached=%s missing=%s forbidden=%s"
-                % (spec["end"], result["reached_end"], missing or "-", forbidden or "-"))
+            log("FAIL: end=%s reached=%s missing=%s forbidden=%s%s"
+                % (spec["end"], result["reached_end"], missing or "-", forbidden or "-",
+                   (" why=" + result["why"]) if result.get("why", "-") != "-" else ""))
             # ...and WHY, if the board said. Missing markers name the paths that did not run; this
             # names the exception that stopped them. A board that can never install repeats one
             # fault forever, which is otherwise indistinguishable from a board with nothing to do.
-            for text, hits in device_faults(cap).items():
-                log("  the device reported this %d time(s): %s" % (hits, text))
+            if cap is not None:
+                for text, hits in device_faults(cap).items():
+                    log("  the device reported this %d time(s): %s" % (hits, text))
         # A SECOND PHASE, for the paths that only exist AFTER a promote. Every scenario above
         # starts from golden, so the whole "what happens to a board that has already taken an
         # update" surface was unreachable: the run ends the moment the first cycle settles. That

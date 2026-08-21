@@ -16,6 +16,10 @@
 #
 # Usage:  eval "$(ci/hil/provision.sh <board> <checkout>)"
 # Env:    OPENMV_REF   firmware ref to build (default: master, as CI)
+#         OPENMV_URL   firmware repo to fetch that ref from (default: openmv/openmv). Exists for
+#                      boards whose firmware changes are fork-maintained: the classic legs pin
+#                      the exact proven bring-up commit (a SHA in hil-ota.yml -- GitHub serves
+#                      fetch-by-SHA), and moving them is an explicit SHA bump there.
 #         HIL_CACHE    where the runner-owned tooling lives (default: ~/.cache/openmv-ota-hil)
 set -euo pipefail
 
@@ -23,6 +27,7 @@ BOARD="${1:?usage: provision.sh <board> <checkout>}"
 CHECKOUT="${2:?usage: provision.sh <board> <checkout>}"
 CACHE="${HIL_CACHE:-$HOME/.cache/openmv-ota-hil}"
 REF="${OPENMV_REF:-master}"
+URL="${OPENMV_URL:-https://github.com/openmv/openmv.git}"
 
 log() { echo "provision: $*" >&2; }        # stdout is reserved for the `export` lines
 mkdir -p "$CACHE"
@@ -65,16 +70,21 @@ PROJ="$CACHE/proj-$BOARD"
 # add/change re-locks against what the current tool carries -- otherwise the cached lock drifts).
 # Keyed on the checkout's HEAD sha, NOT a file mtime: the runner reuses its workspace and only
 # rewrites CHANGED files, so an unchanged project.py keeps an old mtime and an mtime test misfires.
-SHA="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
+# The stamp carries the firmware url+ref too: a leg whose pin changes (e.g. the classic legs
+# moving off the bring-up branch back to master) must re-provision even when the tool commit
+# didn't move, or the cached project keeps locking against the OLD firmware tree.
+SHA="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown) $URL $REF"
 if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
    || [ "$(cat "$PROJ/.provision-sha" 2>/dev/null)" != "$SHA" ] \
    || ! grep -q 'MP_VFS_ROM_IOCTL_GET_MIN_PREPARE' "$FW/lib/micropython/extmod/vfs.h" 2>/dev/null; then
-  [ -d "$FW/.git" ] || { log "git clone openmv"; git clone -q https://github.com/openmv/openmv.git "$FW"; }
-  log "firmware <- $REF (pristine reset; project new re-carries the current features)"
+  [ -d "$FW/.git" ] || { log "git clone openmv"; git clone -q "$URL" "$FW"; }
+  log "firmware <- $URL $REF (pristine reset; project new re-carries the current features)"
   # Reset HARD to the pinned ref so a prior run's feature-carry commits don't accumulate and the
   # cherry-picks (incl. any fork-compat fixup) re-apply cleanly onto the original tree; `clean -fdx`
   # then wipes build artifacts + any untracked cruft so the tree is pristine to lock against.
-  git -C "$FW" fetch -q origin "$REF"
+  # Fetch by URL, not by the cached remote: the cache may have been cloned from a different repo
+  # (the pin changed), and fetching a URL works either way without rewriting the remote.
+  git -C "$FW" fetch -q "$URL" "$REF"
   git -C "$FW" reset -q --hard FETCH_HEAD
   git -C "$FW" clean -qfdx
   git -C "$FW" submodule update -q --init --force --depth=1 --no-single-branch
@@ -82,9 +92,29 @@ if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
   # `project new` below carries micropython#19348 (ranged romfs erase) into lib/micropython for
   # a v5.0 OTA firmware -- the tool guarantees it, so this script (and any real user) needs no
   # custom step; the lock captures the patched, committed-clean tree.
-  log "openmv-ota project new -b $BOARD --ota --dev --install-sdk"
+  # The classic boards cannot hold the ~184 KB public CA bundle (their ROMFS slot is 112-240 K),
+  # so `project new --ota` refuses them without a root of your own -- the same refusal a real
+  # user hits, resolved the same way. Their legs never do TLS (file transport; these builds have
+  # no ssl module), so the root is trust-store ballast the build requires: generate a throwaway
+  # ~1 KB bench root once and cache it. Kept OUT of the wifi/lan boards' projects -- they freeze
+  # the real public bundle, exactly like a production build.
+  CA_ARGS=()
+  case "$BOARD" in
+    OPENMV2|OPENMV3|OPENMV4)
+      CA="$CACHE/bench-root.pem"
+      if [ ! -f "$CA" ]; then
+        log "generate bench root CA (the classic boards need --ca)"
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+          -keyout "$CACHE/bench-root-key.pem" -out "$CA" -days 3650 -nodes \
+          -subj "/CN=OpenMV HIL bench root" >&2 2>&1
+      fi
+      CA_ARGS=(--ca "$CA")
+      ;;
+  esac
+  log "openmv-ota project new -b $BOARD --ota --dev --install-sdk ${CA_ARGS[*]-}"
   rm -rf "$PROJ"
-  "$VENV/bin/openmv-ota" project new "$PROJ" -f "$FW" -b "$BOARD" --ota --dev --install-sdk >&2
+  "$VENV/bin/openmv-ota" project new "$PROJ" -f "$FW" -b "$BOARD" --ota --dev --install-sdk \
+    ${CA_ARGS+"${CA_ARGS[@]}"} >&2
   echo "$SHA" > "$PROJ/.provision-sha"      # stamp the commit this project+lock was built with
 fi
 SDK="$HOME/openmv-sdk-$(cat "$FW/SDK_VERSION")"
