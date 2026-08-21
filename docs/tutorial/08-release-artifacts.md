@@ -55,9 +55,10 @@ guard off) or if two boards collide on one id (the guard can't tell them apart).
 
 The **manifest** is the descriptor the device fetches before anything else: it
 names the image's size and sha256 and the available representations, and binds
-`product_id` / version / anti-rollback under the same ECDSA key as the image. The
-trailer is its source of truth, so there is no separate metadata file to keep in
-sync. Representation URLs inside it are **relative filenames**, resolved on-device
+`product_id` / version / anti-rollback under the same ECDSA key as the image. Its
+fields are rendered from the image's trailer, so manifest and image can never
+disagree — nothing is hand-maintained.
+Representation URLs inside it are **relative filenames**, resolved on-device
 against the manifest's own location — host the artifacts beside each other and the
 signed manifest moves between hosts without re-signing.
 
