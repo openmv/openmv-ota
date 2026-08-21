@@ -4,8 +4,10 @@
 
 ---
 
-What a camera downloads for an over-the-air release, the SBOM that documents a
-build's dependencies, and the read-only commands that check any built image.
+The previous page built what a device ships with — the factory image and the
+firmware that boots it. This page is what a camera downloads after that: the
+publishable release set, plus the SBOM that documents a build's dependencies
+and the read-only commands that check any built image.
 
 ## build ota-romfs
 
