@@ -10,8 +10,10 @@ partition image written at manufacture, and the firmware that boots it.
 ## build factory-romfs
 
 Where [`build romfs`](06-building.md#build-romfs) produces an OTA *payload* — the
-body + trailer a server streams to a running device — `build factory-romfs`
-produces the **whole partition image flashed at the factory**:
+signed body + trailer a release is composed from — `build factory-romfs` produces
+the **whole partition image flashed at the factory**. It requires an OTA project:
+a plain project's `build romfs` image already spans the partition and is itself
+the factory image.
 
 ```bash
 openmv-ota build factory-romfs ./my-product
@@ -57,11 +59,6 @@ manufacturer holding a signed image can flash any number of boards; metering
 units is per-device registration's job, separate from signing. Factory keys are
 assigned and revocable but never rotated: you retire a compromised run's id, you
 don't roll a live one.
-
-Everything else — compilation, identity, provenance, the drift check — is
-[`build romfs`](06-building.md#build-romfs), with the capacity checked against a
-single slot. It requires an OTA project, and takes the same flags plus
-`--factory-key`.
 
 ## build firmware
 
