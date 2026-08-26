@@ -95,8 +95,8 @@
   <text class="who" x="64" y="420">WRITTEN BY THE UPDATER, boot.py AND confirm()</text>
 
   <rect class="seg" x="40" y="436" width="14" height="14" rx="3" fill="#cfe0f5"/>
-  <text class="t" x="64" y="448"><tspan font-weight="600">rollback</tspan> — the anti-rollback floor: an append-only version log</text>
-  <text class="who" x="64" y="464">GROWS AT confirm()</text>
+  <text class="t" x="64" y="448"><tspan font-weight="600">rollback</tspan> — the anti-rollback floor (raised by appending — flash never rewrites)</text>
+  <text class="who" x="64" y="464">RAISED AT confirm()</text>
 
   <rect class="seg" x="40" y="480" width="14" height="14" rx="3" fill="#e3e7ec"/>
   <text class="t" x="64" y="492"><tspan font-weight="600">spare</tspan> — reserved for future metadata</text>
