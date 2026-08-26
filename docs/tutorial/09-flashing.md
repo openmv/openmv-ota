@@ -6,8 +6,8 @@
 
 `openmv-ota flash` pushes the artifacts `build` produced onto a connected board,
 picking the right programming backend per board. Every verb covers every
-supported board (the retired Nano boards are refused everywhere). Flash one
-board at a time — the device you have plugged in, named with `-b`:
+supported board. Flash one board at a time — the device you have plugged in,
+named with `-b`:
 
 ```
 openmv-ota flash firmware ./my-product -b OPENMV4
