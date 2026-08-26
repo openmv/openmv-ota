@@ -95,7 +95,7 @@ reflash. Everywhere else A/B is the default and single-image is an explicit opt-
 ## The update lifecycle (and your app's one job)
 
 An installed image is on **trial** until your app says otherwise. Markers in the slot's
-status sector drive it, plus an **attempt region** — one byte consumed per trial boot:
+status sector drive it, plus an **attempt region** — one marker programmed per trial boot:
 
 ![The trial lifecycle: the updater writes the other slot and sets pending; boot 1 mounts it on trial, consuming an attempt; the app validates itself and confirms; later boots mount the committed image. If the trial never confirms, boots 2 and 3 each consume an attempt and boot 4 rejects the slot, mounting the previous release.](images/trial-lifecycle.svg)
 
