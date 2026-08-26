@@ -1,29 +1,26 @@
 """OTA slot geometry, derived from a partition's flash erase block.
 
 A ROMFS partition holds two equal slots under A/B, or one slot spanning the
-partition in single-image mode (see ``resolve_mode``). The code names
-the halves FRONT and BACK (v1 names that survived the A/B redesign), but neither
-is privileged: both are real, signed, updatable images, the newest valid one
-boots, and an install writes whichever slot is not running. Each slot holds the
-ROMFS body plus four control sectors at the **end** of the slot, each one 4 KiB
+partition in single-image mode (see ``resolve_mode``). The code names the halves
+FRONT and BACK (v1 names that survived the A/B redesign), but neither is
+privileged: both are real, signed, updatable images, the newest valid one boots,
+and an install writes whichever slot is not running. Each slot holds the ROMFS
+body plus TWO control sectors at the **end** of the slot, each one 4 KiB
 ``control_block`` -- deliberately *not* the erase block; they are never erased
-independently of their slot (see ``control_block`` below). The three used sectors are contiguous
-at the very end; ``spare`` is the lone buffer between them and the body. Counting back
-from the last block::
+independently of their slot (see ``control_block`` below). Counting back from
+the last block::
 
     slot_size - 1*block   trailer    the signed trust trailer
-    slot_size - 2*block   status     the trial-boot state machine markers
-    slot_size - 3*block   rollback   the monotonic anti-rollback floor
-    slot_size - 4*block   spare      reserved for future metadata
+    slot_size - 2*block   status     the trial-boot state machine + the anti-rollback floor
 
-The ``rollback`` sector holds a fixed-size append-only log of confirmed versions (one
-4 KiB block = 512 entries); ``confirm()`` appends the running version (a 1->0 program, no erase)
-and boot.py takes the max as the anti-rollback floor, so a device can't be downgraded to
-an older *signed* release. When the log fills the floor freezes at its max -- still
-protective. No single slot's sector is authoritative: under A/B every
-slot is erased in turn, so boot.py reads the floor as the max across both slots and
-the installer carries the current floor into each slot it writes. ``spare`` is held back so the
-next metadata need doesn't force a layout change that would re-base every fielded device.
+The ``status`` sector carries the trial markers, the install counter, the
+attempt region, and -- in its tail (see ``openmv_ota.ota.status.floor_offset``)
+-- the anti-rollback floor as appended ``u32 || ~u32`` entries: ``confirm()``
+raises the floor by programming a fresh entry (a 1->0 program, no erase) and
+boot.py takes the max across both slots. No single slot is authoritative: under
+A/B every slot is erased in turn, so the installer carries the current floor
+into each slot it writes -- immediately after the erase, so the floor is never
+absent from flash for longer than that one write.
 
 Everything keys off the erase block, but floored to ``MIN_OTA_BLOCK``: a
 byte-writable backing store like AE3's MRAM reports a tiny 16-byte "sector", and
@@ -33,14 +30,14 @@ full 4 KiB block instead costs nothing on a multi-megabyte partition.
 
 A partition is **OTA-capable** only if a slot has room for a body after its
 control sectors, in one of the two modes. Boards whose ROMFS cannot host two
-slots (e.g. OpenMV2/3/4) fall back to single-image mode, where the same four
+slots (e.g. OpenMV2/3/4) fall back to single-image mode, where the same two
 sectors sit at the end of the one slot.
 """
 
 from __future__ import annotations
 
 MIN_OTA_BLOCK = 4096  # each control sector reserves at least one 4 KiB block
-CONTROL_SECTORS = 4   # spare, rollback, status, trailer (in ascending offset order)
+CONTROL_SECTORS = 2   # status, trailer (in ascending offset order)
 
 
 def ota_block(erase_size: int) -> int:
@@ -55,15 +52,15 @@ def control_block(erase_size: int = 0) -> int:
     """The granularity of the CONTROL sectors -- always 4 KiB, never the erase block.
 
     Sizing these to the erase block conflated two different things. The erase block matters for
-    keeping SLOTS separable; it says nothing about how much room the trailer, status, rollback and
-    spare records need. And they are never erased independently of their slot: there is exactly one
-    erase call in the whole device tree (the installer's slot erase), after which every control
-    write is a 1->0 program -- status markers written once each as the trial advances, the rollback
-    log append-only, the trailer written at install.
+    keeping SLOTS separable; it says nothing about how much room the trailer and status records
+    need. And they are never erased independently of their slot: there is exactly one erase call
+    in the whole device tree (the installer's slot erase), after which every control write is a
+    1->0 program -- status markers written once each as the trial advances, floor entries
+    appended, the trailer written at install.
 
-    So on a board with a 128 KiB erase block the old sizing reserved 4 x 128 KiB = 512 KiB of
-    control PER SLOT to hold a few hundred bytes of records, which on smaller partitions was the
-    difference between OTA-capable and not. ``erase_size`` is accepted and ignored so call sites
+    Sizing to the erase block would reserve e.g. 2 x 128 KiB of control per slot on a
+    128 KiB-sector board to hold a few hundred bytes of records, which on smaller partitions
+    is the difference between OTA-capable and not. ``erase_size`` is accepted and ignored so call sites
     read symmetrically with ``ota_block``."""
     del erase_size
     return MIN_OTA_BLOCK
@@ -77,7 +74,7 @@ def front_size(partition_size: int, erase_size: int) -> int:
 
 
 def slot_overhead(erase_size: int) -> int:
-    """Per-slot control overhead: the trailer/status/rollback/spare sectors (one block each)."""
+    """Per-slot control overhead: the status + trailer sectors (one block each)."""
     return CONTROL_SECTORS * control_block(erase_size)
 
 
@@ -91,18 +88,13 @@ def status_offset(slot_size: int, erase_size: int) -> int:
     return slot_size - 2 * control_block(erase_size)
 
 
-def rollback_offset(slot_size: int, erase_size: int) -> int:
-    """Offset of the anti-rollback (version-floor) sector within a slot."""
-    return slot_size - 3 * control_block(erase_size)
-
-
 def delta_base_len(slot_size: int, erase_size: int) -> int:
     """How many bytes of a slot a delta may be computed against: the body region, i.e. the
     slot minus its control sectors.
 
     A delta's base has to be **the same bytes on every device**. The body region is -- it is
-    the signed image. The control sectors are NOT: they carry install counters, rollback
-    entries, consumed attempt bytes and the CONFIRMED marker, all written per device at
+    the signed image. The control sectors are NOT: they carry install counters, floor
+    entries, consumed attempt markers and the CONFIRMED marker, all written per device at
     per-device times. A delta computed over the whole slot can legally copy from that region,
     and then reconstructs differently on each device -- failing the sha256 gate, so the update
     never lands. (Measured, and it applied to v1's golden base too: `confirm()` appended to

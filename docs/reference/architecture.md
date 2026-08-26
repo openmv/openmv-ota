@@ -14,9 +14,10 @@
   opt-out (`single_image = true`) everywhere else, because the cost — a failed
   update needs a network round trip, and a device that cannot reach the network
   needs a physical reflash — is invisible when you choose it and expensive later.
-- Each slot: body + 0xFF padding + four control sectors (spare, **rollback**,
-  **status**, **trailer**), 4 KiB each, at the end of the slot. Both modes use
-  the same layout, so there is one on-flash shape rather than two.
+- Each slot: body + 0xFF padding + two control sectors (**status**, **trailer**),
+  4 KiB each, at the end of the slot; the anti-rollback floor rides in the
+  status sector's tail, past the attempt region. Both modes use the same
+  layout, so there is one on-flash shape rather than two.
 - The trailer carries an ECDSA signature (COSE algorithm ids — ES256/P-256 by
   default, verified on-device by mbedtls) over a signed `header ‖ JSON-meta`
   region, a SHA-256 of the body, version/identity/provenance metadata, and a

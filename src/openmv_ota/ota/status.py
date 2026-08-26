@@ -89,6 +89,21 @@ ATTEMPTS_MAX = 64                    # a slot needing 64 boots to come up is not
 _MASK = 0xFFFFFFFF
 
 
+def attempt_unit(stride: int = DEFAULT_STRIDE) -> int:
+    """Bytes per attempt marker: the portable 16-byte write unit, or the stride where that
+    is larger (a stride-32 board's flash programs whole 32-byte ECC words)."""
+    return max(ATTEMPT_UNIT, stride)
+
+
+def floor_offset(stride: int = DEFAULT_STRIDE) -> int:
+    """Where the anti-rollback floor's entries start inside the status sector: the tail
+    beyond the attempt region. The floor lives here rather than in a sector of its own --
+    same writers (the installer's carry-forward, ``confirm()``'s raise), same 1->0
+    programming, and a sector cycle only ever holds one or two entries, so the status
+    sector's tail is more room than the floor can use."""
+    return attempts_offset(stride) + ATTEMPTS_MAX * attempt_unit(stride)
+
+
 def _marker(label: bytes) -> bytes:
     return hashlib.sha256(b"openmv-ota.status." + label).digest()[:MARKER_SIZE]
 
@@ -118,14 +133,18 @@ def encode_counter(value: int) -> bytes:
 
 
 def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bool,
-                        counter: int | None = None, stride: int = DEFAULT_STRIDE) -> bytes:
+                        counter: int | None = None, stride: int = DEFAULT_STRIDE,
+                        floor_version: int | None = None) -> bytes:
     """A ``block``-sized status sector with the requested markers set (rest ``0xFF``).
 
     Under v2 both slots are real, updatable images and share one shape: an installed slot is
     ``pending`` (a trial) and becomes ``confirmed`` when the app keeps it. A provisioned board
     ships both slots already ``confirmed`` — they have nothing to prove — and ``counter`` orders
     them, so which one boots is decided by the same rule that decides it after every later
-    update rather than by a factory-only special case."""
+    update rather than by a factory-only special case. ``floor_version`` seeds the
+    anti-rollback floor region (``floor_offset``) with one entry — what the factory image
+    ships, and what the installer carries forward into every slot it writes."""
+    from openmv_ota.ota import rollback
     sector = bytearray(b"\xff" * block)
     if pending:
         off = pending_offset(stride)
@@ -139,4 +158,7 @@ def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bo
     if counter is not None:
         off = counter_offset(stride)
         sector[off:off + COUNTER_SIZE] = encode_counter(counter)
+    if floor_version is not None:
+        off = floor_offset(stride)
+        sector[off:off + 8] = rollback.encode_entry(floor_version)
     return bytes(sector)

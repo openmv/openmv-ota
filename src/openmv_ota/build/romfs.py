@@ -598,14 +598,12 @@ def _under(path: Path, root: Path) -> bool:
         return False
 
 
-def _compose_slot(body: bytes, pad: int, rollback_sector: bytes, status_sector: bytes,
+def _compose_slot(body: bytes, pad: int, status_sector: bytes,
                   trailer_bytes: bytes, block: int, slot_size: int) -> bytes:
-    """One slot: ``body || 0xFF pad || spare || rollback || status || trailer`` == slot_size
-    (the control sectors are the last four blocks; ``spare`` is reserved, all 0xFF)."""
-    rollback_block = rollback_sector + b"\xff" * (block - len(rollback_sector))
-    spare_block = b"\xff" * block
+    """One slot: ``body || 0xFF pad || status || trailer`` == slot_size
+    (the two control sectors are the last two blocks)."""
     trailer_block = trailer_bytes + b"\xff" * (block - len(trailer_bytes))
-    slot = body + b"\xff" * pad + spare_block + rollback_block + status_sector + trailer_block
+    slot = body + b"\xff" * pad + status_sector + trailer_block
     assert len(slot) == slot_size, (len(slot), slot_size)
     return slot
 
@@ -627,7 +625,7 @@ def provision_slots(partition_size: int, erase_size: int, single_image: bool = F
 
 def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vendor, *,
                  convert_models, mpy_extra, keep_build_dir, inject=None) -> BuildResult:
-    from openmv_ota.ota import rollback, status
+    from openmv_ota.ota import status
 
     body, system_info, tmp = _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor,
                                          convert_models=convert_models, mpy_extra=mpy_extra,
@@ -646,10 +644,6 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
                 "%s image is %d bytes but a slot holds %d (%d over)"
                 % (t.name, len(body), smallest, len(body) - smallest), exit_code=1)
         _warn_unset_product_id(t, system_info)
-        # seed the anti-rollback floor at the factory version (the device can never be
-        # downgraded below it; confirm() advances it as updates are kept).
-        floor = rollback.encode_entry(signer.payload_version)
-
         # Both slots ship CONFIRMED: they have nothing to prove, having never been trialed.
         # There is no golden shape and no golden slot -- the difference between the two is one
         # number, the install counter, and after the first update they are just two images with
@@ -658,10 +652,14 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         image = b""
         for size, counter in slots:
             pad = size - overhead - len(body)
+            # the status sector ships CONFIRMED + the counter + the anti-rollback floor
+            # seeded at the factory version (the device can never be downgraded below it;
+            # confirm() raises it as updates are kept)
             image += _compose_slot(
-                body, pad, floor,
+                body, pad,
                 status.build_status_sector(block, pending=False, tried=False, confirmed=True,
-                                           counter=counter, stride=t.control_stride),
+                                           counter=counter, stride=t.control_stride,
+                                           floor_version=signer.payload_version),
                 _build_trailer(signer, p, body, system_info, pad), block, size)
 
         name = _target_name(t)
@@ -769,11 +767,11 @@ def build_ota_image(
                 "%s body is %d bytes but a slot holds %d (rebuild within capacity)"
                 % (t.name, len(body), slot_cap), exit_code=1)
 
-        # A full slot, all control sectors blank (0xFF): the installer writes this 1:1, then
-        # stamps the install counter and arms PENDING. The rollback sector stays blank here --
-        # the floor is device state, carried forward by the installer from what the device
-        # already had, and an image cannot know it.
-        image = _compose_slot(body, slot_cap - len(body), b"", b"\xff" * block,
+        # A full slot, the status sector blank (0xFF): the installer writes this 1:1, then
+        # seeds the carried floor, stamps the install counter and arms PENDING. The floor is
+        # device state, carried forward from what the device already had -- an image cannot
+        # know it.
+        image = _compose_slot(body, slot_cap - len(body), b"\xff" * block,
                               trailer_bytes, block, slot_size)
         single = slot_size == t.partition_size
         if single:

@@ -358,6 +358,7 @@ COVERAGE = {
     "status: slots ready": "status.slots",
     "install: slot surveyed": "install.survey",   # per-slot pre-erase read (counter/floor/version)
     "install: erasing": "install.start",          # "install: erasing <slot> (N bytes)"
+    "install: floor carried": "install.floor",    # carried floor programmed FIRST (post blank-verify)
     "install: write path block-device": "install.blockdev",
     "install: write path XIP": "install.xip",
     "install: representation delta": "install.delta",
@@ -490,7 +491,8 @@ SCENARIOS = {
                    "run.ca_path", "run.ca_bytes", "run.read_at", "run.data_path",
                    "install.fetch_manifest",
                    "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
-                   "status.slots", "install.survey", "install.start", "{cov_write}",
+                   "status.slots", "install.survey", "install.start", "install.floor",
+                   "{cov_write}",
                    "install.download",
                    "install.delta",
                    "install.writing", "write.ready", "write.erased", "write.wrote",

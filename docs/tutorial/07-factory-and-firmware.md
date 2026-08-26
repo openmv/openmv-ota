@@ -33,7 +33,7 @@ protected factory copy. Only the install counter tells them apart, so which one
 boots is decided by exactly the rule that decides it after every later update, and
 a device has a real fallback from its very first boot. The slots are equal-sized
 (an OTA image must be installable into either), each ending in the
-[four control sectors](04-ota-projects.md#what---ota-changes) with `0xFF` padding
+[two control sectors](04-ota-projects.md#what---ota-changes) with `0xFF` padding
 before them; a partition whose half doesn't divide evenly leaves the sub-block
 remainder unused. On a board too small for two slots, the same command writes one
 slot spanning the partition (single-image mode) — everything above holds, minus

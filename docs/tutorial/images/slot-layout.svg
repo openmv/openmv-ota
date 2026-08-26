@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 522" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 440" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
   <style>
     .bg    { fill: #ffffff; }
     .t     { fill: #1f2430; }
@@ -22,7 +22,7 @@
 
   <!-- the partition -->
   <text class="who" x="40" y="20">OTA PARTITION</text>
-  <text class="sub" x="820" y="20" text-anchor="end">single-image mode: one slot spans the partition, same four sectors</text>
+  <text class="sub" x="820" y="20" text-anchor="end">single-image mode: one slot spans the partition, same two sectors</text>
   <rect class="seg" x="40" y="28" width="390" height="40" fill="#dbe4f0"/>
   <rect class="seg" x="430" y="28" width="390" height="40" fill="#e6ddf0"/>
   <text class="bar" x="235" y="53" text-anchor="middle">slot A — image + control sectors</text>
@@ -33,20 +33,15 @@
   <path class="zoom" d="M430 68 L820 118"/>
 
   <!-- slot A, zoomed -->
-  <rect class="seg" x="40"  y="118" width="450" height="44" fill="#dbe4f0"/>
-  <rect class="seg" x="490" y="118" width="90"  height="44" fill="#eef1f5"/>
-  <rect class="seg" x="580" y="118" width="60"  height="44" fill="#e3e7ec"/>
-  <rect class="seg" x="640" y="118" width="60"  height="44" fill="#cfe0f5"/>
+  <rect class="seg" x="40"  y="118" width="570" height="44" fill="#dbe4f0"/>
+  <rect class="seg" x="610" y="118" width="90"  height="44" fill="#eef1f5"/>
   <rect class="seg" x="700" y="118" width="60"  height="44" fill="#f5e3bd"/>
   <rect class="seg" x="760" y="118" width="60"  height="44" fill="#c8e8d2"/>
-  <text class="bar" x="265" y="144" text-anchor="middle">image body</text>
-  <text class="bar" x="535" y="144" text-anchor="middle" font-size="12"><tspan class="code">0xFF</tspan> pad</text>
-  <text class="bar" x="610" y="138" text-anchor="middle" font-size="12">spare</text>
-  <text class="bar" x="670" y="138" text-anchor="middle" font-size="12">roll-</text>
-  <text class="bar" x="670" y="152" text-anchor="middle" font-size="12">back</text>
+  <text class="bar" x="325" y="144" text-anchor="middle">image body</text>
+  <text class="bar" x="655" y="144" text-anchor="middle" font-size="12"><tspan class="code">0xFF</tspan> pad</text>
   <text class="bar" x="730" y="144" text-anchor="middle" font-size="12">status</text>
   <text class="bar" x="790" y="144" text-anchor="middle" font-size="12">trailer</text>
-  <text class="sub" x="40" y="180">four control sectors, 4 KiB each, at the slot's end</text>
+  <text class="sub" x="40" y="180">two control sectors, 4 KiB each, at the slot's end</text>
 
   <!-- zoom into the status sector -->
   <path class="zoom" d="M700 162 L40 218"/>
@@ -54,36 +49,40 @@
 
   <!-- the status sector, zoomed (not to scale) -->
   <text class="sub" x="40"  y="212" font-size="10">0</text>
-  <text class="sub" x="145" y="212" font-size="10">16</text>
-  <text class="sub" x="250" y="212" font-size="10">32</text>
-  <text class="sub" x="365" y="212" font-size="10">48</text>
-  <text class="sub" x="475" y="212" font-size="10">64</text>
-  <text class="sub" x="605" y="212" font-size="10">80</text>
-  <text class="sub" x="755" y="212" font-size="10">+1 KiB</text>
-  <rect class="seg" x="40"  y="218" width="105" height="48" fill="#f5e3bd"/>
-  <rect class="seg" x="145" y="218" width="105" height="48" fill="#f9edd2"/>
-  <rect class="seg" x="250" y="218" width="115" height="48" fill="#f5e3bd"/>
-  <rect class="seg" x="365" y="218" width="110" height="48" fill="#f9edd2"/>
-  <rect class="seg" x="475" y="218" width="130" height="48" fill="#f5e3bd"/>
-  <rect class="seg" x="605" y="218" width="150" height="48" fill="#f9edd2"/>
-  <rect class="seg" x="755" y="218" width="65"  height="48" fill="#f3f4f6"/>
-  <text class="bar" x="92"  y="238" text-anchor="middle"><tspan class="code">pending</tspan></text>
-  <text class="barw" x="92"  y="256" text-anchor="middle">set by the updater</text>
-  <text class="bar" x="197" y="238" text-anchor="middle"><tspan class="code">tried</tspan></text>
-  <text class="barw" x="197" y="256" text-anchor="middle">informational</text>
-  <text class="bar" x="307" y="238" text-anchor="middle"><tspan class="code">confirmed</tspan></text>
-  <text class="barw" x="307" y="256" text-anchor="middle">set by confirm()</text>
-  <text class="bar" x="420" y="238" text-anchor="middle">representation</text>
-  <text class="barw" x="420" y="256" text-anchor="middle">full | delta</text>
-  <text class="bar" x="540" y="238" text-anchor="middle">install counter</text>
-  <text class="barw" x="540" y="256" text-anchor="middle"><tspan class="code" font-size="10">u32 ‖ ~u32</tspan></text>
-  <text class="bar" x="680" y="238" text-anchor="middle">attempt region</text>
-  <text class="barw" x="680" y="256" text-anchor="middle">one marker per trial boot</text>
-  <text class="bar" x="787" y="238" text-anchor="middle" font-size="12">…blank</text>
-  <text class="barw" x="787" y="256" text-anchor="middle"><tspan class="code" font-size="10">0xFF</tspan></text>
+  <text class="sub" x="135" y="212" font-size="10">16</text>
+  <text class="sub" x="225" y="212" font-size="10">32</text>
+  <text class="sub" x="330" y="212" font-size="10">48</text>
+  <text class="sub" x="430" y="212" font-size="10">64</text>
+  <text class="sub" x="545" y="212" font-size="10">80</text>
+  <text class="sub" x="675" y="212" font-size="10">+1 KiB</text>
+  <rect class="seg" x="40"  y="218" width="95"  height="48" fill="#f5e3bd"/>
+  <rect class="seg" x="135" y="218" width="90"  height="48" fill="#f9edd2"/>
+  <rect class="seg" x="225" y="218" width="105" height="48" fill="#f5e3bd"/>
+  <rect class="seg" x="330" y="218" width="100" height="48" fill="#f9edd2"/>
+  <rect class="seg" x="430" y="218" width="115" height="48" fill="#f5e3bd"/>
+  <rect class="seg" x="545" y="218" width="130" height="48" fill="#f9edd2"/>
+  <rect class="seg" x="675" y="218" width="90"  height="48" fill="#cfe0f5"/>
+  <rect class="seg" x="765" y="218" width="55"  height="48" fill="#f3f4f6"/>
+  <text class="bar" x="87"  y="238" text-anchor="middle"><tspan class="code">pending</tspan></text>
+  <text class="barw" x="87"  y="256" text-anchor="middle">set by the updater</text>
+  <text class="bar" x="180" y="238" text-anchor="middle"><tspan class="code">tried</tspan></text>
+  <text class="barw" x="180" y="256" text-anchor="middle">informational</text>
+  <text class="bar" x="277" y="238" text-anchor="middle"><tspan class="code">confirmed</tspan></text>
+  <text class="barw" x="277" y="256" text-anchor="middle">set by confirm()</text>
+  <text class="bar" x="380" y="238" text-anchor="middle">representation</text>
+  <text class="barw" x="380" y="256" text-anchor="middle">full | delta</text>
+  <text class="bar" x="487" y="238" text-anchor="middle">install counter</text>
+  <text class="barw" x="487" y="256" text-anchor="middle"><tspan class="code" font-size="10">u32 ‖ ~u32</tspan></text>
+  <text class="bar" x="610" y="238" text-anchor="middle">attempt region</text>
+  <text class="barw" x="610" y="256" text-anchor="middle">one marker per trial boot</text>
+  <text class="bar" x="720" y="238" text-anchor="middle">floor</text>
+  <text class="barw" x="720" y="250" text-anchor="middle">carried at install,</text>
+  <text class="barw" x="720" y="262" text-anchor="middle">raised at confirm()</text>
+  <text class="bar" x="792" y="238" text-anchor="middle" font-size="11">…blank</text>
+  <text class="barw" x="792" y="256" text-anchor="middle"><tspan class="code" font-size="10">0xFF</tspan></text>
   <text class="sub" x="40" y="288">the <tspan class="code">status</tspan> sector (not to scale) — 16-byte cells, one flash write unit each (32 on flash that programs 32-byte ECC words);</text>
-  <text class="sub" x="40" y="304">markers are 16-byte values, the counter is 8 bytes; each trial boot programs one attempt marker (64 max = 1 KiB).</text>
-  <text class="sub" x="40" y="320">Every field is programmed <tspan font-style="italic">once</tspan>; only the slot erase clears it.</text>
+  <text class="sub" x="40" y="304">markers are 16-byte values, the counter is 8 bytes; each trial boot programs one attempt marker (64 max = 1 KiB);</text>
+  <text class="sub" x="40" y="320">floor entries are 8 bytes, appended. Every field is programmed <tspan font-style="italic">once</tspan>; only the slot erase clears it.</text>
 
   <!-- legend -->
   <rect class="seg" x="40" y="348" width="14" height="14" rx="3" fill="#c8e8d2"/>
@@ -91,13 +90,6 @@
   <text class="who" x="64" y="376">WRITTEN AT BUILD · VERIFIED EVERY BOOT</text>
 
   <rect class="seg" x="40" y="392" width="14" height="14" rx="3" fill="#f5e3bd"/>
-  <text class="t" x="64" y="404"><tspan font-weight="600">status</tspan> — the trial state machine, laid out above</text>
+  <text class="t" x="64" y="404"><tspan font-weight="600">status</tspan> — the trial state machine + the anti-rollback floor, laid out above</text>
   <text class="who" x="64" y="420">WRITTEN BY THE UPDATER, boot.py AND confirm()</text>
-
-  <rect class="seg" x="40" y="436" width="14" height="14" rx="3" fill="#cfe0f5"/>
-  <text class="t" x="64" y="448"><tspan font-weight="600">rollback</tspan> — the anti-rollback floor (raised by appending — flash never rewrites)</text>
-  <text class="who" x="64" y="464">RAISED AT confirm()</text>
-
-  <rect class="seg" x="40" y="480" width="14" height="14" rx="3" fill="#e3e7ec"/>
-  <text class="t" x="64" y="492"><tspan font-weight="600">spare</tspan> — reserved for future metadata</text>
 </svg>

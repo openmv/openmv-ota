@@ -26,12 +26,12 @@ def test_slot_overhead_is_four_control_blocks_regardless_of_erase_size():
     The erase block governs where SLOTS may split (erasing A must not disturb B); it says nothing
     about how much room the trailer/status/rollback/spare records need. And no control sector is
     ever erased independently -- there is one erase call in the whole device tree, after which
-    every control write is a 1->0 program. Sizing them by the erase block reserved 4 x 128 KiB per
+    every control write is a 1->0 program. Sizing them by the erase block would reserve 2 x 128 KiB per
     slot on a large-block board to hold a few hundred bytes, which on smaller partitions was the
     difference between OTA-capable and not."""
-    assert geometry.slot_overhead(4096) == 4 * 4096
-    assert geometry.slot_overhead(16) == 4 * 4096        # floored to 4 KiB
-    assert geometry.slot_overhead(131072) == 4 * 4096    # NOT 4 x 128 KiB
+    assert geometry.slot_overhead(4096) == 2 * 4096
+    assert geometry.slot_overhead(16) == 2 * 4096        # floored to 4 KiB
+    assert geometry.slot_overhead(131072) == 2 * 4096    # NOT 2 x 128 KiB
 
 
 def test_a_large_erase_block_no_longer_costs_ota_capability():
@@ -50,21 +50,22 @@ def test_slot_boundaries_still_align_to_the_ERASE_block():
 
 
 def test_control_sector_offsets():
-    # the control sectors are the last four blocks, in fixed order
+    # the control sectors are the last two blocks, in fixed order (the anti-rollback floor
+    # lives in the status sector's tail -- see openmv_ota.ota.status.floor_offset)
     assert geometry.trailer_offset(0x100000, 4096) == 0x100000 - 4096
     assert geometry.status_offset(0x100000, 4096) == 0x100000 - 2 * 4096
-    assert geometry.rollback_offset(0x100000, 4096) == 0x100000 - 3 * 4096
+    assert not hasattr(geometry, "rollback_offset")
 
 
 def test_capable_nor_partition():
     assert geometry.is_ota_capable(0x1800000, 4096)         # 24 MiB NOR
-    assert geometry.body_capacity(0x1800000, 4096) == 0xC00000 - 4 * 4096
+    assert geometry.body_capacity(0x1800000, 4096) == 0xC00000 - 2 * 4096
 
 
 def test_mram_partition_capable_with_floor():
     # AE3 MRAM: 1 MiB, 16-byte physical sector -> floored to 4 KiB blocks, OTA-capable.
     assert geometry.is_ota_capable(0x100000, 16)
-    assert geometry.body_capacity(0x100000, 16) == 0x80000 - 4 * 4096
+    assert geometry.body_capacity(0x100000, 16) == 0x80000 - 2 * 4096
 
 
 def test_single_sector_partition_not_capable():
@@ -98,8 +99,8 @@ def test_one_sector_boards_derive_single_rather_than_nothing():
     assert g.derive_mode(128 * 1024, 128 * 1024) == g.SINGLE
     assert g.single_body_capacity(128 * 1024, 128 * 1024) == 128 * 1024 - g.SINGLE_CONTROL_BYTES
     # ...and the layout is the SAME one A/B uses, so there is only ever one on-flash shape.
-    assert g.SINGLE_CONTROL_BYTES == g.slot_overhead(128 * 1024) == 16 * 1024
-    assert g.single_body_capacity(128 * 1024, 128 * 1024) == 112 * 1024   # OpenMV2/4 budget
+    assert g.SINGLE_CONTROL_BYTES == g.slot_overhead(128 * 1024) == 8 * 1024
+    assert g.single_body_capacity(128 * 1024, 128 * 1024) == 120 * 1024   # OpenMV2/4 budget
 
 
 def test_a_partition_too_small_for_control_hosts_nothing():

@@ -741,25 +741,31 @@ def test_install_stream_stamps_the_counter_and_carries_the_floor():
     image[:4] = b"DATA"
     flash = _run_install(bytes(image), front, block, counter=12, floor=0x01020000,
                          repr_marker=inst("REPR_FULL"))
-    so, ro = front - 2 * block, front - 3 * block
+    so = front - 2 * block
     assert flash.mem[so + status.COUNTER_OFFSET:
                      so + status.COUNTER_OFFSET + status.COUNTER_SIZE] == \
         status.encode_counter(12)
-    assert rollback.floor_of(flash.mem[ro:ro + block]) == 0x01020000
+    fo = status.floor_offset()
+    assert rollback.floor_of(flash.mem[so + fo:so + block]) == 0x01020000
+    # ...and the floor is carried FIRST -- before a single image byte -- so it is never
+    # absent from flash for longer than the blank-verify pass (the single-image blackout fix)
+    assert flash.writes[0][0] == so + fo
     # PENDING is the LAST write of the whole install -- nothing is bootable before it.
     assert flash.writes[-1][0] == so
 
 
-def test_install_stream_without_a_floor_leaves_the_rollback_sector_blank():
+def test_install_stream_without_a_floor_leaves_the_floor_region_blank():
     """floor 0 means nothing has ever been confirmed, so there is nothing to carry. Writing a
     zero entry would claim a floor of 0 rather than none -- harmless today, but it would burn
     an append slot per install for no information."""
+    from openmv_ota.ota import status
+
     block, front = 4096, 5 * 4096
     image = bytearray(b"\xff" * front)
     image[:4] = b"DATA"
     flash = _run_install(bytes(image), front, block, counter=1, floor=0)
-    ro = front - 3 * block
-    assert flash.mem[ro:ro + block] == b"\xff" * block
+    so, fo = front - 2 * block, status.floor_offset()
+    assert flash.mem[so + fo:so + block] == b"\xff" * (block - fo)
 
 
 def test_install_stream_counter_and_floor_verify_their_writes():
@@ -769,7 +775,8 @@ def test_install_stream_counter_and_floor_verify_their_writes():
     image = bytearray(b"\xff" * front)
     image[:4] = b"DATA"
 
-    for drop in (front - 3 * block, front - 2 * block + 64):
+    from openmv_ota.ota import status as _status
+    for drop in (front - 2 * block + _status.floor_offset(), front - 2 * block + 64):
         flash = _FakeFlash(front)
         flash.erase(front)
         real = flash.write

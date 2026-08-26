@@ -515,16 +515,16 @@ class _RecLog:
 
 plog = _RecLog()
 erase(SLOT)                              # the caller erases before _install_stream now
+so = SLOT - 2 * BLOCK
+fo = P["_FLOOR_OFF"]
 P["_install_stream"](_SourceOf(bytes(img)), write, readback, SLOT, BLOCK,
                      lambda: fed.append(1), P["_Progress"](plog),   # the real RAM reporter
                      None, P["REPR_DELTA"],                         # record the representation
                      None, None, 7, 0x01020000)                     # counter + carried floor
-so = SLOT - 2 * BLOCK
-ro = SLOT - 3 * BLOCK
 install_ok = (mem[0:4] == b"DATA" and bytes(mem[so:so + 16]) == P["PENDING"]
               and bytes(mem[so + 48:so + 64]) == P["REPR_DELTA"]   # repr marker written
               and bytes(mem[so + 64:so + 72]) == P["_encode_counter"](7)   # ordered
-              and P["_rollback_floor_of"](bytes(mem[ro:ro + BLOCK])) == 0x01020000
+              and P["_rollback_floor_of"](bytes(mem[so + fo:so + BLOCK])) == 0x01020000
               and len(fed) > 0           # fed the watchdog per chunk
               and plog.n > 0)            # progress logged through the installer's reporter
 
