@@ -37,6 +37,14 @@ sitting in the other slot, untouched — runs instead. If **no** slot survives t
 factory image to retreat to; the device hands off to firmware-resident recovery, which
 re-downloads until it has a working image.
 
+### The slot's control sectors
+
+Everything the rest of this page describes lives in **four 4 KiB control
+sectors** at the end of each slot — the same shape in A/B and single-image
+mode:
+
+![A slot's layout: the image body, 0xFF padding, then four control sectors — spare (reserved), rollback (the anti-rollback floor, an append-only version log grown at confirm), status (trial markers, the install counter, the attempt region), and the trailer (the signed identity, written at build and verified every boot).](images/slot-layout.svg)
+
 **Ordering is an install counter, not the version.** Each install stamps a
 `u32 ‖ ~u32` counter (self-validating, so a torn write reads as *unknown* rather than as
 some other number) into the slot it writes, one higher than anything present. The version
@@ -56,9 +64,7 @@ across **both** slots as the floor, and every install **copies the current floor
 into the slot it writes — without that, rewriting whichever slot happened to hold the
 highest entry would silently lower the floor and re-admit a release the device had moved
 past. The floor is raised *before* `CONFIRMED` is written, so a crash in between falls back
-safely (the floor never locks out the image behind it). Each slot reserves four control
-sectors — `spare`, `rollback`, `status`, `trailer` — 4 KiB each, in both A/B and
-single-image mode, so there is one on-flash shape rather than two.
+safely (the floor never locks out the image behind it).
 
 ### Single-image mode
 
