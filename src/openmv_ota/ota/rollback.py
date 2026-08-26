@@ -1,18 +1,18 @@
-"""The anti-rollback floor — an append-only log of confirmed versions in a slot's rollback
-sector (one flash erase block).
+"""The anti-rollback floor — appended entries in the tail of a slot's STATUS sector
+(``openmv_ota.ota.status.floor_offset``).
 
 A device must never be downgraded to an older *signed* release (a replay attack: the
-signature is genuine, just stale). So ``confirm()`` appends the running ``payload_version``
-to the **BACK** slot's rollback sector and boot.py rejects any FRONT image whose version is
-below the highest recorded one.
+signature is genuine, just stale). The floor must *rise* at ``confirm()``, but flash only
+programs bits 1->0 — a stored value cannot be overwritten with a bigger one without an
+erase. So the floor is held as appended entries: raising it programs a fresh entry into
+blank bytes, and the current floor is the highest valid entry. An entry is a uint32
+version plus its ones-complement; the halves disagree for a blank or torn entry, so a
+power loss mid-append is simply ignored. In practice a sector cycle holds one or two
+entries — the floor the installer carried in, plus one raise at the first ``confirm()`` —
+before the slot's next install erases and re-seeds it.
 
-The log is append-only: each entry is written over erased ``0xFF`` (a 1->0 program, no
-erase), so a power loss mid-append leaves a torn entry that simply decodes as invalid and is
-ignored — there is never a window where the floor reads blank. An entry is a uint32 version
-plus its ones-complement; the two disagree for a blank (``0xFFFF...``) or torn slot, so only
-a fully-written entry counts. A 4 KiB sector holds 512 entries (one per *confirmed* update);
-when it fills the floor simply freezes at its max — the floor only ever needs to rise, and we
-can't erase a single sector to recycle the space, so freezing is both fine and unavoidable.
+The helpers here scan whatever buffer they are given; callers pass the status sector's
+floor region (``sector[floor_offset(stride):]``).
 """
 
 from __future__ import annotations

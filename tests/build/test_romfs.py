@@ -1254,7 +1254,7 @@ def test_capacity_uses_the_single_image_budget_on_a_one_sector_partition():
     construction, i.e. `build romfs` could not produce an image for any of the boards SINGLE
     exists for."""
     cap, bound = build_mod._capacity(_Proj(), _Tgt(131072, 131072, front_size=0))
-    assert cap == 131072 - geometry.SINGLE_CONTROL_BYTES == 114688
+    assert cap == 131072 - geometry.SINGLE_CONTROL_BYTES == 122880
     assert bound == "OTA slot (single image)"
 
 

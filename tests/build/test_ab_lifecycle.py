@@ -29,7 +29,6 @@ import pytest
 
 from openmv_ota.build.device import openmv_ota as rt
 from openmv_ota.ota import ES256, Trailer, algorithm_for, pack_trailer, signed_region, status
-from openmv_ota.ota import rollback as host_rollback
 from openmv_ota.ota.keys import generate_private_key, public_point_hex
 from openmv_ota.ota.sign import sign_region
 
@@ -105,7 +104,7 @@ def _image(version, *, body_tag=b"APP", product_id=PRODUCT_ID, corrupt=False):
     Exactly the shape `build ota-romfs` renders and the installer streams in -- control
     sectors blank, because the counter and the floor are DEVICE state the installer stamps."""
     body = body_tag + b"." + version.encode() + b"\x00" * 64
-    cap = SLOT - 4 * BLOCK
+    cap = SLOT - 2 * BLOCK
     pad = cap - len(body)
     t = Trailer(body_size=len(body), pad_size=pad, meta={"v": version}, product_id=product_id,
                 min_platform_version=0, payload_version=_pv(version), payload_version_floor=0,
@@ -174,9 +173,8 @@ class Device:
             self.flash.write(off, img)
             sector = off + SLOT - 2 * BLOCK
             self.flash.write(sector, status.build_status_sector(
-                BLOCK, pending=False, tried=False, confirmed=True, counter=counter))
-            self.flash.write(off + SLOT - 3 * BLOCK,
-                             host_rollback.encode_entry(_pv(version)))
+                BLOCK, pending=False, tried=False, confirmed=True, counter=counter,
+                floor_version=_pv(version)))
             del i
 
     def _provision_slots(self):
@@ -207,7 +205,7 @@ class Device:
         for name, off, size in slots:
             sector = self.flash.read(off + size - 2 * BLOCK, BLOCK)
             counters[name] = INST._install_counter(sector)
-            floors[name] = INST._rollback_floor_of(self.flash.read(off + size - 3 * BLOCK, BLOCK))
+            floors[name] = INST._rollback_floor_of(sector[INST._FLOOR_OFF:])
         floor = max(floors.values())
         target, target_off, slot_size, counter = INST._install_target(slots, self.slot, counters)
 
@@ -227,8 +225,8 @@ class Device:
         sector = self.flash.read(sector_off, 3 * rt.MARKER_SIZE)
         if not rt._should_confirm(self.slot, sector):
             return False
-        roll_off = off + size - 3 * BLOCK
-        roll = self.flash.read(roll_off, BLOCK)
+        roll_off = off + size - 2 * BLOCK + rt._FLOOR_OFF
+        roll = self.flash.read(off + size - 2 * BLOCK, BLOCK)[rt._FLOOR_OFF:]
         if rt._rollback_floor_of(roll) < self.version:
             pos = rt._rollback_append_offset(roll)
             self.flash.write(roll_off + pos, rt._rollback_entry(self.version))
@@ -359,7 +357,8 @@ def test_the_fallback_survives_every_confirm():
         body = dev.flash.read(off, size - 2 * BLOCK)
         status = dev.flash.read(off + size - 2 * BLOCK, BLOCK)
         trailer = dev.flash.read(off + size - BLOCK, BLOCK)
-        floor = max(INST._rollback_floor_of(dev.flash.read(o + SLOT - 3 * BLOCK, BLOCK))
+        floor = max(INST._rollback_floor_of(
+                        dev.flash.read(o + SLOT - 2 * BLOCK, BLOCK)[INST._FLOOR_OFF:])
                     for o in (0, SLOT))
         t, _consume = B.evaluate_slot(body, status, trailer, floor, 0, TRUSTED, 0, _verify, 3)
         assert t.payload_version < floor      # it IS below the floor...
@@ -379,7 +378,7 @@ def test_the_install_carries_the_floor_into_the_slot_it_writes():
     dev.provision("1.0.0")
     dev.boot()
     dev.install("1.1.0")
-    floor = INST._rollback_floor_of(dev.flash.read(SLOT - 3 * BLOCK, BLOCK))
+    floor = INST._rollback_floor_of(dev.flash.read(SLOT - 2 * BLOCK, BLOCK)[INST._FLOOR_OFF:])
     assert floor == _pv("1.0.0"), "the erase destroyed the floor -- it was not carried forward"
     # ...and the floor it carried still refuses an older signed release
     assert INST._update_reject({"schema": 1, "payload_version": _pv("0.9.0")},
@@ -397,7 +396,7 @@ def test_the_rollback_floor_never_regresses_across_alternating_installs():
         dev.install(version)
         dev.boot()
         dev.confirm()
-        floors = [INST._rollback_floor_of(dev.flash.read(off + SLOT - 3 * BLOCK, BLOCK))
+        floors = [INST._rollback_floor_of(dev.flash.read(off + SLOT - 2 * BLOCK, BLOCK)[INST._FLOOR_OFF:])
                   for off in (0, SLOT)]
         seen.append(max(floors))
     assert seen == sorted(seen) and seen[-1] == _pv("1.3.0")

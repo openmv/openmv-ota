@@ -126,11 +126,12 @@ def _set_stride(stride):
     """Space control records ``stride`` apart and pad each write to it -- on ECC-word
     flash (H7-classic internal: 32) every record owns one one-shot flash word.
     Mirrors boot._set_stride; contents never change, only spacing + write width."""
-    global _STRIDE, _REPR_OFF, _COUNTER_OFF, _ROLLBACK_STRIDE
+    global _STRIDE, _REPR_OFF, _COUNTER_OFF, _ROLLBACK_STRIDE, _FLOOR_OFF
     _STRIDE = stride
     _REPR_OFF = 3 * stride
     _COUNTER_OFF = 4 * stride
     _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
+    _FLOOR_OFF = 5 * stride + 64 * max(16, stride)   # the floor region: past the attempt region
 
 
 def _pad(record):
@@ -610,6 +611,7 @@ def _trailer_body_sha(trailer):
 # --- pure: A/B slot arithmetic (mirror of boot.py; pinned by a test) ---------
 
 _ROLLBACK_ENTRY = 8                               # u32 version || u32 ~version
+_FLOOR_OFF = 80 + 64 * 16                         # floor entries: the status sector's tail
 _ROLLBACK_STRIDE = 8                              # entry spacing; stride-sized on ECC flash
 _COUNTER_OFF = 64                                 # within the status sector
 _COUNTER_LEN = 8
@@ -968,6 +970,22 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         off += n
         feed()
 
+    if floor:
+        # CARRY THE ANTI-ROLLBACK FLOOR INTO THE NEW SLOT, FIRST -- before a single image byte,
+        # not in the arm sequence at the end. boot.py takes the floor as the max across slots,
+        # which only stays monotonic if every install copies the current floor forward. In
+        # SINGLE mode the erase above just destroyed the only copy, so until this write lands
+        # the floor exists NOWHERE on flash -- a power cut in that window would hand recovery a
+        # floor of zero and re-admit any old signed release. Writing it here shrinks that
+        # window from the whole download to the blank-verify pass plus one verified program.
+        # (It cannot go before the blank verify: the verify would read it as a failed erase.)
+        entry = struct.pack("<II", floor & _MASK32, (floor & _MASK32) ^ _MASK32)
+        floor_at = slot_size - 2 * block + _FLOOR_OFF
+        write(floor_at, _pad(entry))
+        if readback(floor_at, len(entry)) != entry:
+            raise OSError("carried floor verify failed")
+        log.debug("install: floor carried")           # HIL path witness (every install, pre-download)
+
     # ENTER THE WRITE LOOP ON A FULL WINDOW. The two allocations below -- the sha256 state and the
     # 4 KiB write buffer -- can each trigger an AUTOMATIC collect, and on the N6's multi-MB heap any
     # collect is 65-100 ms, i.e. at or past that port's 100 ms window. The only feed behind them is
@@ -1053,7 +1071,9 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         log.warning("install: reject sha")           # the integrity trust boundary rejected the image
         raise OSError("image sha256 does not match the manifest")
 
-    # ARM, IN THIS ORDER: provenance, then the carried floor, then the counter, then PENDING.
+    # ARM, IN THIS ORDER: provenance, then the counter, then PENDING. (The carried floor was
+    # already programmed into the status sector's tail right after the blank verify above, so
+    # the floor is never absent from flash for longer than that pass.)
     # Every one of these is a 1->0 program into a region the image left blank, and a power cut
     # between any two of them has to leave a slot that is either not bootable or fully described.
     # PENDING is what makes the slot bootable at all, so it goes LAST -- a slot that dies before
@@ -1063,18 +1083,6 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         write(status_off + _REPR_OFF, _pad(repr_marker))
         if readback(status_off + _REPR_OFF, len(repr_marker)) != repr_marker:
             raise OSError("repr marker verify failed")
-    if floor:
-        # CARRY THE ANTI-ROLLBACK FLOOR INTO THE NEW SLOT. boot.py takes the floor as the max
-        # across slots, which only stays monotonic if every install copies the current floor
-        # forward: without this, rewriting the slot that happened to hold the highest recorded
-        # version would LOWER the device's floor and re-admit a signed release it had already
-        # moved past. In SINGLE mode it is starker still -- the one slot holding the floor is
-        # the one being erased, so nothing survives unless it is written back here.
-        entry = struct.pack("<II", floor & _MASK32, (floor & _MASK32) ^ _MASK32)
-        rollback_off = slot_size - 3 * block
-        write(rollback_off, _pad(entry))
-        if readback(rollback_off, len(entry)) != entry:
-            raise OSError("rollback floor verify failed")
     if counter is not None:
         # The ORDER against the image bytes is what matters here: a half-written image can never
         # carry a valid counter, because the counter is written only once the whole slot has been
@@ -1716,8 +1724,9 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     running = getattr(cfg, "last_slot", None)         # set by boot.py when it mounted a slot
     counters, floors, versions, offsets, shas = {}, {}, {}, {}, {}
     for _name, _off, _size in slots:
-        counters[_name] = _install_counter(read_at(_off + _size - 2 * block, block))
-        floors[_name] = _rollback_floor_of(read_at(_off + _size - 3 * block, block))
+        _st = read_at(_off + _size - 2 * block, block)   # the status sector: counter + floor
+        counters[_name] = _install_counter(_st)
+        floors[_name] = _rollback_floor_of(_st[_FLOOR_OFF:])
         _tr = read_at(_off + _size - block, block)
         versions[_name] = _trailer_version(_tr)
         shas[_name] = _trailer_body_sha(_tr)          # names the slot's exact bytes (one field)
@@ -1746,7 +1755,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # computes the patch against this same region, so a read past it means the patch and the
     # device disagree about the contract -- fail loudly rather than silently mixing device
     # state into an image.
-    base_limit = slot_size - 4 * block
+    base_limit = slot_size - 2 * block
 
     def base_read(off, n):                            # the delta base: the RUNNING slot
         if off + n > base_limit:  # hil-residual: contract guard -- the builder computes the patch against this same region, so a real bench delta never trips it; the taken branch is unit-tested

@@ -108,14 +108,18 @@ ATTEMPT = _marker(b"attempt")           # written once per trial boot; see _ATTE
 _BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
 
 # --- Anti-rollback floor (mirror of openmv_ota.ota.rollback) ----------------
-_ROLLBACK_ENTRY = 8                     # u32 version || u32 ~version, in a slot's rollback sector
+# Entries live in the TAIL of the status sector, past the attempt region (the mirror of
+# openmv_ota.ota.status.floor_offset) -- same writers, same 1->0 programming, and a sector
+# cycle only ever holds one or two entries (the carried floor + one raise).
+_ROLLBACK_ENTRY = 8                     # u32 version || u32 ~version
 _ROLLBACK_STRIDE = 8                    # entry spacing; stride-sized on ECC-word flash
+_FLOOR_OFF = 80 + 64 * 16               # attempts end; _set_stride re-derives
 
 
 def _set_stride(stride):
     """Re-derive the module geometry for ``stride`` (no-op at the default 16)."""
     global _TRIED_OFF, _CONFIRMED_OFF, _COUNTER_OFF, _ATTEMPT_UNIT, _ATTEMPTS_OFF
-    global _BLANK_ATTEMPT, _ROLLBACK_STRIDE
+    global _BLANK_ATTEMPT, _ROLLBACK_STRIDE, _FLOOR_OFF
     _TRIED_OFF = stride
     _CONFIRMED_OFF = 2 * stride
     _COUNTER_OFF = 4 * stride
@@ -123,6 +127,7 @@ def _set_stride(stride):
     _ATTEMPTS_OFF = 5 * stride
     _BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
     _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
+    _FLOOR_OFF = _ATTEMPTS_OFF + 64 * _ATTEMPT_UNIT
 
 
 def _rollback_floor_of(sector):
@@ -412,7 +417,8 @@ class OtaBoot:
         than from a designated one."""
         floor = 0
         for _name, offset, size in self._slots():
-            logged = _rollback_floor_of(self.read(offset + size - 3 * self.block, self.block))
+            status = self.read(offset + size - 2 * self.block, self.block)
+            logged = _rollback_floor_of(status[_FLOOR_OFF:])
             if logged > floor:
                 floor = logged
         return floor

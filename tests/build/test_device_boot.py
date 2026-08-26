@@ -580,8 +580,11 @@ def test_the_rollback_floor_is_the_max_across_slots():
     slot is erased in turn, so a floor living in one slot would vanish when that slot is
     rewritten -- the max is what keeps it monotonic."""
     part = bytearray(b"\xff" * PARTITION_SIZE)
-    part[FRONT_SIZE - 3 * BLOCK:FRONT_SIZE - 3 * BLOCK + 8] = host_rollback.encode_entry(4)
-    part[PARTITION_SIZE - 3 * BLOCK:PARTITION_SIZE - 3 * BLOCK + 8] = host_rollback.encode_entry(11)
+    fo = B._FLOOR_OFF
+    part[FRONT_SIZE - 2 * BLOCK + fo:FRONT_SIZE - 2 * BLOCK + fo + 8] = \
+        host_rollback.encode_entry(4)
+    part[PARTITION_SIZE - 2 * BLOCK + fo:PARTITION_SIZE - 2 * BLOCK + fo + 8] = \
+        host_rollback.encode_entry(11)
     dev = _Dev(part)
     ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker,
                    PARTITION_SIZE, FRONT_SIZE, BLOCK, PRODUCT_ID, {}, PLATFORM)

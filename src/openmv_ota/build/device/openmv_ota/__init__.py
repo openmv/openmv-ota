@@ -102,7 +102,7 @@ def _set_stride(stride):
     like the H7-classic's internal romfs, where each record owns one one-shot flash
     word). Mirrors boot._set_stride; record contents never change."""
     global _TRIED_OFF, _CONFIRMED_OFF, _REPR_OFF, _STATUS_READ, _COUNTER_OFF
-    global _SLOT_READ, _ROLLBACK_STRIDE
+    global _SLOT_READ, _ROLLBACK_STRIDE, _FLOOR_OFF
     _TRIED_OFF = stride
     _CONFIRMED_OFF = 2 * stride
     _REPR_OFF = 3 * stride
@@ -110,6 +110,7 @@ def _set_stride(stride):
     _COUNTER_OFF = 4 * stride
     _SLOT_READ = _COUNTER_OFF + _COUNTER_LEN
     _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
+    _FLOOR_OFF = 5 * stride + 64 * max(16, stride)   # the floor region: past the attempt region
 
 
 def _use_cfg_stride(cfg):
@@ -188,6 +189,7 @@ def _representation_of(status):
 
 _ROLLBACK_ENTRY = 8
 _ROLLBACK_STRIDE = 8                              # u32 version || u32 ~version
+_FLOOR_OFF = 80 + 64 * 16                         # floor entries: the status sector's tail
 
 
 def _rollback_entry(version):
@@ -904,23 +906,24 @@ def _advance_rollback(cfg, slot, version):  # pragma: no cover (device)
     ``version`` or the log is full (the floor then stays frozen at its max -- still
     protective).
 
-    v1 wrote this into BACK, which worked only because BACK was permanent. Under A/B every
-    slot is erased in turn, so the floor is written into the slot being confirmed and boot.py
-    reads the max across slots; the installer carries the floor forward into each new slot, so
-    it survives the slot that recorded it being rewritten."""
+    Under A/B every slot is erased in turn, so the floor is written into the slot being
+    confirmed and boot.py reads the max across slots; the installer carries the floor forward
+    into each new slot, so it survives the slot that recorded it being rewritten. Entries
+    live in the tail of the STATUS sector, past the attempt region."""
     import uctypes
     import vfs
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))
     soff, size = _slot_bounds(cfg, slot)
-    off = soff + size - 3 * cfg.CONTROL_BLOCK            # this slot's rollback sector (absolute)
+    off = soff + size - 2 * cfg.CONTROL_BLOCK            # this slot's status sector (absolute)
     sector = uctypes.bytearray_at(base + off, cfg.CONTROL_BLOCK)
-    if _rollback_floor_of(sector) >= version:
+    region = sector[_FLOOR_OFF:]
+    if _rollback_floor_of(region) >= version:
         return  # hil-residual: bare early return (nothing to advance)
-    pos = _rollback_append_offset(sector)
+    pos = _rollback_append_offset(region)
     if pos is None:
         return  # hil-residual: bare early return (floor already current)
     pad = _ROLLBACK_STRIDE - _ROLLBACK_ENTRY
-    _write_verified(0, off + pos, _rollback_entry(version) + b"\xff" * pad)
+    _write_verified(0, off + _FLOOR_OFF + pos, _rollback_entry(version) + b"\xff" * pad)
     log.debug("confirm: floor advanced")             # HIL path witness (the confirm write path)
 
 
