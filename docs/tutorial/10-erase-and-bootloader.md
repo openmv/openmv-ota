@@ -75,8 +75,8 @@ part automatically, then:
 3. writes the bootloader and TOC to MRAM.
 
 Afterwards the AE3 re-enumerates as the OpenMV DFU bootloader — run
-`flash firmware` to write the application. If the board never appears on its
-SE-UART port at all, recover it with the OpenMV IDE instead.
+`flash firmware` to write the application. If the bootloader flash fails,
+recover the board with the OpenMV IDE instead.
 
 
 ---
