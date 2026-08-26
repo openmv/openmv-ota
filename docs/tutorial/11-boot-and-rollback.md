@@ -45,26 +45,43 @@ mode:
 
 ![A slot's layout: the image body, 0xFF padding, then four control sectors — spare (reserved), rollback (the anti-rollback floor, an append-only version log grown at confirm), status (trial markers, the install counter, the attempt region), and the trailer (the signed identity, written at build and verified every boot).](images/slot-layout.svg)
 
-**Ordering is an install counter, not the version.** Each install stamps a
-`u32 ‖ ~u32` counter (self-validating, so a torn write reads as *unknown* rather than as
-some other number) into the slot it writes, one higher than anything present. The version
-cannot do this job: installing the *same* version twice is legitimate — a reinstall, a
-re-flash — and must not be ambiguous. The version stays a human-facing fact and an
-anti-rollback input, never a boot-order input. A slot whose counter is unreadable is still
-bootable if it verifies; it just sorts last, because we cannot claim it is newer than
-something that says so.
+**The `status` sector orders the slots.** Which slot is "newest" is decided by an
+**install counter**, not the version: each install stamps a counter one higher than
+anything present in either slot into the `status` sector of the slot it writes,
+beside the trial markers and the attempt region. It is stored as `u32 ‖ ~u32` —
+self-validating, so a torn write reads as *unknown* rather than as some other
+number. The version cannot do this job: installing the *same* version twice is
+legitimate (a reinstall, a re-flash) and must not be ambiguous, so the version
+stays a human-facing fact and an anti-rollback input, never a boot-order input.
+A slot whose counter is unreadable is still bootable if it verifies; it just
+sorts last, because we cannot claim it is newer than something that says so.
 
-**The anti-rollback floor** is a monotonic minimum version, so a device can't be downgraded
-to an *older signed* release (a replay attack — the signature is genuine, just stale). It
-starts at the provisioned version and **advances**: each `confirm()` appends the running
-version to an append-only log in the running slot's `rollback` sector (a 1→0 flash program,
-no erase — a power loss mid-append just leaves an ignored torn entry; when the fixed-size
-log fills, the floor simply freezes at its max). `boot.py` takes the highest version logged
-across **both** slots as the floor, and every install **copies the current floor forward**
-into the slot it writes — without that, rewriting whichever slot happened to hold the
-highest entry would silently lower the floor and re-admit a release the device had moved
-past. The floor is raised *before* `CONFIRMED` is written, so a crash in between falls back
-safely (the floor never locks out the image behind it).
+**The `rollback` sector carries the floor.** The anti-rollback floor is a monotonic
+minimum version, so a device can't be downgraded to an *older signed* release (a
+replay attack — the signature is genuine, just stale). Mechanically it is an
+append-only log of confirmed versions: the floor starts at the provisioned
+version, every `confirm()` appends the running version to the running slot's
+`rollback` sector, and `boot.py` takes the **highest version logged across both
+slots** as the floor. Because an install erases the whole slot it writes —
+`rollback` sector included — the installer **copies the current floor forward**
+into the fresh slot first; without that, rewriting whichever slot happened to
+hold the highest entry would silently lower the floor and re-admit a release the
+device had moved past. The floor is raised *before* `CONFIRMED` is written, so a
+crash between the two falls back safely (the floor never locks out the image
+behind it). When the fixed-size log fills, the floor simply freezes at its max —
+still protective.
+
+**Why 4 KiB sectors for a few bytes of state.** The sectors look oversized, and
+that is the design: nothing in them is ever erased while the device runs.
+Installing erases the target slot **once**, leaving every control byte blank
+(`0xFF`); from then on every state change — an attempt consumed, `CONFIRMED`
+written, a floor entry appended — is a 1→0 program into bytes that are still
+blank, which flash permits without an erase. No runtime erase means no
+read-modify-write window: power can fail at any byte and the worst case is one
+torn, self-invalidating entry. A 4 KiB reservation per concern costs nothing on
+a multi-megabyte partition, and buys room — 512 floor entries, the attempt
+region, `spare` held back for future metadata — without ever reshaping a layout
+that fielded devices depend on.
 
 ### Single-image mode
 
