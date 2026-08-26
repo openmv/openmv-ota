@@ -59,14 +59,14 @@
   <text class="sub" x="365" y="212" font-size="10">48</text>
   <text class="sub" x="475" y="212" font-size="10">64</text>
   <text class="sub" x="605" y="212" font-size="10">80</text>
-  <text class="sub" x="735" y="212" font-size="10">+1 KiB</text>
+  <text class="sub" x="755" y="212" font-size="10">+1 KiB</text>
   <rect class="seg" x="40"  y="218" width="105" height="48" fill="#f5e3bd"/>
   <rect class="seg" x="145" y="218" width="105" height="48" fill="#f9edd2"/>
   <rect class="seg" x="250" y="218" width="115" height="48" fill="#f5e3bd"/>
   <rect class="seg" x="365" y="218" width="110" height="48" fill="#f9edd2"/>
   <rect class="seg" x="475" y="218" width="130" height="48" fill="#f5e3bd"/>
-  <rect class="seg" x="605" y="218" width="130" height="48" fill="#f9edd2"/>
-  <rect class="seg" x="735" y="218" width="85"  height="48" fill="#f3f4f6"/>
+  <rect class="seg" x="605" y="218" width="150" height="48" fill="#f9edd2"/>
+  <rect class="seg" x="755" y="218" width="65"  height="48" fill="#f3f4f6"/>
   <text class="bar" x="92"  y="238" text-anchor="middle"><tspan class="code">pending</tspan></text>
   <text class="barw" x="92"  y="256" text-anchor="middle">set by the updater</text>
   <text class="bar" x="197" y="238" text-anchor="middle"><tspan class="code">tried</tspan></text>
@@ -77,10 +77,10 @@
   <text class="barw" x="420" y="256" text-anchor="middle">full | delta</text>
   <text class="bar" x="540" y="238" text-anchor="middle">install counter</text>
   <text class="barw" x="540" y="256" text-anchor="middle"><tspan class="code" font-size="10">u32 ‖ ~u32</tspan></text>
-  <text class="bar" x="670" y="238" text-anchor="middle">attempt region</text>
-  <text class="barw" x="670" y="256" text-anchor="middle">one marker per trial boot</text>
-  <text class="bar" x="777" y="238" text-anchor="middle" font-size="12">…blank</text>
-  <text class="barw" x="777" y="256" text-anchor="middle"><tspan class="code" font-size="10">0xFF</tspan></text>
+  <text class="bar" x="680" y="238" text-anchor="middle">attempt region</text>
+  <text class="barw" x="680" y="256" text-anchor="middle">one marker per trial boot</text>
+  <text class="bar" x="787" y="238" text-anchor="middle" font-size="12">…blank</text>
+  <text class="barw" x="787" y="256" text-anchor="middle"><tspan class="code" font-size="10">0xFF</tspan></text>
   <text class="sub" x="40" y="288">the <tspan class="code">status</tspan> sector (not to scale) — 16-byte cells, one flash write unit each (32 on flash that programs 32-byte ECC words);</text>
   <text class="sub" x="40" y="304">markers are 16-byte values, the counter is 8 bytes; each trial boot programs one attempt marker (64 max = 1 KiB).</text>
   <text class="sub" x="40" y="320">Every field is programmed <tspan font-style="italic">once</tspan>; only the slot erase clears it.</text>
