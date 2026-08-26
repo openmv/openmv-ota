@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 344" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
   <style>
     .t     { fill: #1f2430; }
+    .bar   { fill: #333b49; }
     .sub   { fill: #545d6e; font-size: 12px; }
     .who   { fill: #545d6e; font-size: 11px; font-weight: 600; letter-spacing: .04em; }
     .code  { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
@@ -8,7 +9,8 @@
     .zoom  { stroke: #9aa3af; stroke-width: 1; stroke-dasharray: 3 3; fill: none; }
     @media (prefers-color-scheme: dark) {
       .t    { fill: #e6e9f0; }
-      .sub, .who { fill: #9aa5ba; }
+      .sub  { fill: #9aa5ba; }
+      .who  { fill: #c3cede; }
       .seg  { stroke: #59637a; }
       .zoom { stroke: #59637a; }
     }
@@ -19,8 +21,8 @@
   <text class="sub" x="820" y="20" text-anchor="end">single-image mode: one slot spans the partition, same four sectors</text>
   <rect class="seg" x="40" y="28" width="390" height="40" fill="#dbe4f0"/>
   <rect class="seg" x="430" y="28" width="390" height="40" fill="#e6ddf0"/>
-  <text class="t" x="235" y="53" text-anchor="middle">slot A — image + control sectors</text>
-  <text class="t" x="625" y="53" text-anchor="middle">slot B — same shape</text>
+  <text class="bar" x="235" y="53" text-anchor="middle">slot A — image + control sectors</text>
+  <text class="bar" x="625" y="53" text-anchor="middle">slot B — same shape</text>
 
   <!-- zoom into slot A -->
   <path class="zoom" d="M40 68 L40 118"/>
@@ -33,13 +35,13 @@
   <rect class="seg" x="640" y="118" width="60"  height="44" fill="#cfe0f5"/>
   <rect class="seg" x="700" y="118" width="60"  height="44" fill="#f5e3bd"/>
   <rect class="seg" x="760" y="118" width="60"  height="44" fill="#c8e8d2"/>
-  <text class="t" x="265" y="144" text-anchor="middle">image body</text>
-  <text class="sub" x="535" y="144" text-anchor="middle"><tspan class="code">0xFF</tspan> pad</text>
-  <text class="t" x="610" y="138" text-anchor="middle" font-size="12">spare</text>
-  <text class="t" x="670" y="138" text-anchor="middle" font-size="12">roll-</text>
-  <text class="t" x="670" y="152" text-anchor="middle" font-size="12">back</text>
-  <text class="t" x="730" y="144" text-anchor="middle" font-size="12">status</text>
-  <text class="t" x="790" y="144" text-anchor="middle" font-size="12">trailer</text>
+  <text class="bar" x="265" y="144" text-anchor="middle">image body</text>
+  <text class="bar" x="535" y="144" text-anchor="middle" font-size="12"><tspan class="code">0xFF</tspan> pad</text>
+  <text class="bar" x="610" y="138" text-anchor="middle" font-size="12">spare</text>
+  <text class="bar" x="670" y="138" text-anchor="middle" font-size="12">roll-</text>
+  <text class="bar" x="670" y="152" text-anchor="middle" font-size="12">back</text>
+  <text class="bar" x="730" y="144" text-anchor="middle" font-size="12">status</text>
+  <text class="bar" x="790" y="144" text-anchor="middle" font-size="12">trailer</text>
   <text class="sub" x="820" y="180" text-anchor="end">four control sectors, 4 KiB each, at the slot's end</text>
 
   <!-- legend -->

@@ -12,7 +12,8 @@
       .box  { fill: #262b36; stroke: #59637a; }
       .fail { fill: #332527; stroke: #59637a; }
       .t    { fill: #e6e9f0; }
-      .sub, .who { fill: #9aa5ba; }
+      .sub  { fill: #9aa5ba; }
+      .who  { fill: #c3cede; }
     }
   </style>
   <defs>
