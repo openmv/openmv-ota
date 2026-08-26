@@ -9,8 +9,10 @@ signing — runs on your host): **`boot.py`**, frozen into the firmware by
 `build firmware`, which picks and verifies the image to run at every boot; and the
 **`openmv_ota`** library your app imports. This page is the boot half — slot
 selection, the trial, and rollback. Both pieces are self-contained (they can't import the host
-`openmv_ota.ota.*` packages under MicroPython); their pure logic is host-tested and
-the device I/O is exercised under QEMU.
+`openmv_ota.ota.*` packages under MicroPython); their pure logic is host-tested,
+the device I/O is exercised under QEMU, and the full OTA cycle — install, trial,
+confirm, rollback — runs on real cameras in a hardware-in-the-loop fleet before
+any device change merges.
 
 ## `boot.py` — slot selection at boot
 
