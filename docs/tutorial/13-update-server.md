@@ -1,6 +1,6 @@
 # The update server
 
-*[← 11 · The device library](11-device-library.md) · [Index](00-introduction.md) · [13 · The fleet →](13-fleet.md)*
+*[← 12 · The device library](12-device-library.md) · [Index](00-introduction.md) · [14 · The fleet →](14-fleet.md)*
 
 ---
 
@@ -134,4 +134,4 @@ horizontally. Local-disk + SQLite is for dev and tests only.
 
 ---
 
-*[← 11 · The device library](11-device-library.md) · [Index](00-introduction.md) · [13 · The fleet →](13-fleet.md)*
+*[← 12 · The device library](12-device-library.md) · [Index](00-introduction.md) · [14 · The fleet →](14-fleet.md)*
