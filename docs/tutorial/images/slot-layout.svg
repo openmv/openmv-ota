@@ -1,8 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 344" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 490" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
   <style>
     .bg    { fill: #ffffff; }
     .t     { fill: #1f2430; }
     .bar   { fill: #333b49; }
+    .barw  { fill: #545d6e; font-size: 10px; }
     .sub   { fill: #545d6e; font-size: 12px; }
     .who   { fill: #545d6e; font-size: 11px; font-weight: 600; letter-spacing: .04em; }
     .code  { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
@@ -45,21 +46,49 @@
   <text class="bar" x="670" y="152" text-anchor="middle" font-size="12">back</text>
   <text class="bar" x="730" y="144" text-anchor="middle" font-size="12">status</text>
   <text class="bar" x="790" y="144" text-anchor="middle" font-size="12">trailer</text>
-  <text class="sub" x="820" y="180" text-anchor="end">four control sectors, 4 KiB each, at the slot's end</text>
+  <text class="sub" x="40" y="180">four control sectors, 4 KiB each, at the slot's end</text>
+
+  <!-- zoom into the status sector -->
+  <path class="zoom" d="M700 162 L40 218"/>
+  <path class="zoom" d="M760 162 L820 218"/>
+
+  <!-- the status sector, zoomed (not to scale) -->
+  <rect class="seg" x="40"  y="218" width="105" height="48" fill="#f5e3bd"/>
+  <rect class="seg" x="145" y="218" width="105" height="48" fill="#f9edd2"/>
+  <rect class="seg" x="250" y="218" width="115" height="48" fill="#f5e3bd"/>
+  <rect class="seg" x="365" y="218" width="110" height="48" fill="#f9edd2"/>
+  <rect class="seg" x="475" y="218" width="130" height="48" fill="#f5e3bd"/>
+  <rect class="seg" x="605" y="218" width="130" height="48" fill="#f9edd2"/>
+  <rect class="seg" x="735" y="218" width="85"  height="48" fill="#f3f4f6"/>
+  <text class="bar" x="92"  y="238" text-anchor="middle"><tspan class="code">pending</tspan></text>
+  <text class="barw" x="92"  y="256" text-anchor="middle">set by the updater</text>
+  <text class="bar" x="197" y="238" text-anchor="middle"><tspan class="code">tried</tspan></text>
+  <text class="barw" x="197" y="256" text-anchor="middle">informational</text>
+  <text class="bar" x="307" y="238" text-anchor="middle"><tspan class="code">confirmed</tspan></text>
+  <text class="barw" x="307" y="256" text-anchor="middle">set by confirm()</text>
+  <text class="bar" x="420" y="238" text-anchor="middle">representation</text>
+  <text class="barw" x="420" y="256" text-anchor="middle">full | delta</text>
+  <text class="bar" x="540" y="238" text-anchor="middle">install counter</text>
+  <text class="barw" x="540" y="256" text-anchor="middle"><tspan class="code" font-size="10">u32 ‖ ~u32</tspan></text>
+  <text class="bar" x="670" y="238" text-anchor="middle">attempt region</text>
+  <text class="barw" x="670" y="256" text-anchor="middle">1 byte per trial boot</text>
+  <text class="bar" x="777" y="238" text-anchor="middle" font-size="12">…blank</text>
+  <text class="barw" x="777" y="256" text-anchor="middle"><tspan class="code" font-size="10">0xFF</tspan></text>
+  <text class="sub" x="40" y="288">the <tspan class="code">status</tspan> sector (not to scale) — every field starts blank and is programmed <tspan font-style="italic">once</tspan>; only the slot erase clears it</text>
 
   <!-- legend -->
-  <rect class="seg" x="40" y="206" width="14" height="14" rx="3" fill="#c8e8d2"/>
-  <text class="t" x="64" y="218"><tspan font-weight="600">trailer</tspan> — the signed identity: version, body SHA-256, signing key</text>
-  <text class="who" x="64" y="234">WRITTEN AT BUILD · VERIFIED EVERY BOOT</text>
+  <rect class="seg" x="40" y="316" width="14" height="14" rx="3" fill="#c8e8d2"/>
+  <text class="t" x="64" y="328"><tspan font-weight="600">trailer</tspan> — the signed identity: version, body SHA-256, signing key</text>
+  <text class="who" x="64" y="344">WRITTEN AT BUILD · VERIFIED EVERY BOOT</text>
 
-  <rect class="seg" x="40" y="250" width="14" height="14" rx="3" fill="#f5e3bd"/>
-  <text class="t" x="64" y="262"><tspan font-weight="600">status</tspan> — trial markers (<tspan class="code">pending</tspan> / <tspan class="code">confirmed</tspan>), the install counter, the attempt region</text>
-  <text class="who" x="64" y="278">WRITTEN BY THE UPDATER, boot.py AND confirm()</text>
+  <rect class="seg" x="40" y="360" width="14" height="14" rx="3" fill="#f5e3bd"/>
+  <text class="t" x="64" y="372"><tspan font-weight="600">status</tspan> — the trial state machine, laid out above</text>
+  <text class="who" x="64" y="388">WRITTEN BY THE UPDATER, boot.py AND confirm()</text>
 
-  <rect class="seg" x="40" y="294" width="14" height="14" rx="3" fill="#cfe0f5"/>
-  <text class="t" x="64" y="306"><tspan font-weight="600">rollback</tspan> — the anti-rollback floor: an append-only version log</text>
-  <text class="who" x="64" y="322">GROWS AT confirm()</text>
+  <rect class="seg" x="40" y="404" width="14" height="14" rx="3" fill="#cfe0f5"/>
+  <text class="t" x="64" y="416"><tspan font-weight="600">rollback</tspan> — the anti-rollback floor: an append-only version log</text>
+  <text class="who" x="64" y="432">GROWS AT confirm()</text>
 
-  <rect class="seg" x="500" y="294" width="14" height="14" rx="3" fill="#e3e7ec"/>
-  <text class="t" x="524" y="306"><tspan font-weight="600">spare</tspan> — reserved</text>
+  <rect class="seg" x="40" y="448" width="14" height="14" rx="3" fill="#e3e7ec"/>
+  <text class="t" x="64" y="460"><tspan font-weight="600">spare</tspan> — reserved for future metadata</text>
 </svg>
