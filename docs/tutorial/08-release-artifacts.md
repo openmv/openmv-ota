@@ -128,8 +128,9 @@ describes, not only on the build machine.
 
 ## Inspecting and verifying
 
-The engine underneath emits its OTA output as the `<board>-romfs.zip` **bundle** —
-the two pieces as separate zip entries:
+For an OTA project, the [`build romfs`](06-building.md#build-romfs) engine's
+output is the `<board>-romfs.zip` **bundle** — body and trailer as separate zip
+entries, and what the download set above is *composed from*:
 
 | Entry | What |
 |---|---|
@@ -143,11 +144,12 @@ multi-MB body. The device never sees the zip: `build ota-romfs` lays the body
 and trailer into the slot-sized image exactly as they sit on flash, and that is
 what a device downloads, as a single stream.
 
-Two read-only commands operate on any built image: the `<board>-romfs.zip` bundle,
-the loose `romfs.img` / `trailer.bin`, or a `<board>-factory-romfs.img` — the
-factory image is a dual-slot partition, so both commands locate each slot's
-trailer (scanning block-aligned offsets, CRC-validating) and report or verify
-**each slot** independently. A plain, unsigned romfs (a non-OTA `-romfs.img` or a
+Two read-only commands operate on any built artifact: the `<board>-romfs.zip`
+bundle, the loose `romfs.img` / `trailer.bin`, a `<board>-factory-romfs.img`, a
+signed `-manifest.bin`, or a `.delta.gz` patch. A factory image holds one slot
+(single-image mode) or two (A/B): the commands locate each slot's trailer
+(scanning block-aligned offsets, CRC-validating) and report or verify **each
+slot** independently. A plain, unsigned romfs (a non-OTA `-romfs.img` or a
 `-coprocessor-romfs.img`) has no trailer: `inspect` says so and exits 0, while
 `verify` says there is nothing to verify and exits non-zero — never mistaken for
 "verified".
@@ -177,7 +179,7 @@ signing `key_id` is trusted **and not revoked**, the algorithm matches, the
 **signature verifies**, and the body matches the signed size + SHA-256. Exit 0 on
 success, 1 on a verification failure (with the reason), 2 on a bad argument. For
 a factory image every slot is verified and any failing slot fails the command
-(verdicts printed with `A:` / `B:` prefixes). Trusted keys come from
+(a two-slot image prints `A:` / `B:` prefixes). Trusted keys come from
 `--trusted-keys` (default `keys/trusted_keys.json`), so running from a project
 root just works.
 
