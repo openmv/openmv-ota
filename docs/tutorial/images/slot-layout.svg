@@ -1,5 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 344" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
   <style>
+    .bg    { fill: #ffffff; }
     .t     { fill: #1f2430; }
     .bar   { fill: #333b49; }
     .sub   { fill: #545d6e; font-size: 12px; }
@@ -8,6 +9,7 @@
     .seg   { stroke: #9aa3af; stroke-width: 1.2; }
     .zoom  { stroke: #9aa3af; stroke-width: 1; stroke-dasharray: 3 3; fill: none; }
     @media (prefers-color-scheme: dark) {
+      .bg   { fill: #14181f; }
       .t    { fill: #e6e9f0; }
       .sub  { fill: #9aa5ba; }
       .who  { fill: #c3cede; }
@@ -15,6 +17,7 @@
       .zoom { stroke: #59637a; }
     }
   </style>
+  <rect class="bg" x="0" y="0" width="100%" height="100%" rx="10"/>
 
   <!-- the partition -->
   <text class="who" x="40" y="20">OTA PARTITION</text>
