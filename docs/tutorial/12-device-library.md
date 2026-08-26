@@ -20,7 +20,7 @@ packs it to `/rom/lib/openmv_ota/`. It exposes:
     (the updater stamps this; `None` for a provisioned image). Lets you see on-device
     whether deltas are actually being applied,
   - `pending` / `tried` / `confirmed` / `trial` — the running slot's trial state.
-    (`tried` is a v1 leftover kept for compatibility; v2 counts attempts instead.)
+    (`tried` is informational only — the attempt region is what `boot.py` counts.)
 - **`slots()`** — every slot, newest first: `slot`, `running`, `payload_version`,
   `counter`, `confirmed`, `pending`. This is the half `status()` cannot tell you — **what
   the device would fall back to** — and it is what the check-in reports so a fleet operator
@@ -165,8 +165,8 @@ fold into a cheap copy-with-difference rather than being re-sent. It's *opportun
 device picks the delta only when its running version matches the delta's base and the patch
 is smaller, else the full image. A release may therefore ship **several** deltas, one per base
 version still in the field — with only one, every device that has already updated falls back
-to the full download, because under A/B the base is whatever release the device is running
-(unlike v1, where every device kept the same golden forever). The delta is pure transport: the reconstructed slot is
+to the full download, because under A/B the base is whatever release the device is running.
+The delta is pure transport: the reconstructed slot is
 still sha256- and signature-verified, so a bad patch simply never becomes the newest valid
 slot. The applier ships in the romfs (it's OTA-patchable like the installer) and uses
 `ulab` for the per-byte add — present on every OTA-capable board (it falls back to plain

@@ -87,7 +87,7 @@ rejection costs a full re-download, erase and write that the server then offers 
 minutes, traffic and flash wear, repeatedly — while an extra attempt on a genuinely bad
 image costs one reboot. The honest limit, and why the default stays low: retries only help a
 failure that *self-resets*. A **hang** now hangs N times instead of once. Set
-`[ota].max_attempts = 1` for v1's single-shot behaviour.
+`[ota].max_attempts = 1` for a single-shot trial.
 
 The attempt is recorded **before** the image runs, which is what makes a hang count. Two
 subtleties follow from it: if `boot.py` cannot record the attempt (the write fails or won't
