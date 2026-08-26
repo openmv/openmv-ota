@@ -63,7 +63,9 @@ replay attack — the signature is genuine, just stale). The floor must *rise* a
 overwritten with a bigger one without an erase. So the `rollback` sector holds
 the floor as appended entries: raising it means programming a fresh entry into
 blank bytes, and the current floor is simply the highest valid entry —
-a mutable, monotonic value built from write-once flash, not a history log.
+a mutable, monotonic value built from write-once flash, not a history log. In
+practice a sector holds one or two entries between erases: the floor carried
+in at install, plus one raise at the first `confirm()`.
 `boot.py` takes the **highest entry across both slots** as the floor. Because an install erases the whole slot it writes —
 `rollback` sector included — the installer **copies the current floor forward**
 into the fresh slot first; without that, rewriting whichever slot happened to
