@@ -1,6 +1,6 @@
 # Boot and rollback
 
-*[← 10 · Bootloader & erase](10-bootloader-and-erase.md) · [Index](00-introduction.md) · [12 · The device library →](12-device-library.md)*
+*[← 10 · Erase & bootloader](10-erase-and-bootloader.md) · [Index](00-introduction.md) · [12 · The device library →](12-device-library.md)*
 
 ---
 
@@ -116,4 +116,4 @@ devices are exempt: there is no fallback to protect, and waiting would strand th
 
 ---
 
-*[← 10 · Bootloader & erase](10-bootloader-and-erase.md) · [Index](00-introduction.md) · [12 · The device library →](12-device-library.md)*
+*[← 10 · Erase & bootloader](10-erase-and-bootloader.md) · [Index](00-introduction.md) · [12 · The device library →](12-device-library.md)*

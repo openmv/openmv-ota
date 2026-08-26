@@ -1,12 +1,42 @@
-# Bootloader & erase
+# Erase & bootloader
 
 *[← 9 · Flashing](09-flashing.md) · [Index](00-introduction.md) · [11 · Boot and rollback →](11-boot-and-rollback.md)*
 
 ---
 
-Two maintenance verbs ride the same `flash` tool: writing the **bootloader**
-itself, and **erasing** the onboard filesystem. Both are occasional, by-hand
+Two maintenance verbs ride the same `flash` tool: **erasing** the onboard
+filesystem, and writing the **bootloader** itself. Both are occasional
 operations — nothing here is part of a normal build-flash-iterate loop.
+
+## flash erase
+
+`flash erase` wipes the board's onboard filesystem — the user disk where
+`main.py` and your files live, the same "Erase Onboard Data Flash" the IDE
+does. It invalidates the filesystem partition so the firmware reformats a
+clean disk on the next boot, entering and leaving the bootloader the same way
+the flash verbs do. The filesystem is its own partition, so firmware and romfs
+are untouched:
+
+| Board | erase target |
+| --- | --- |
+| OPENMV2 / 3 / 4 | alt 1 |
+| OPENMV4P / OPENMVPT | alt 3 |
+| OPENMV_N6 | alt 2 |
+| OPENMV_AE3 | alt 5 (its RWFS) |
+| ARDUINO_PORTENTA_H7 / GIGA | app at `0x08020000` + QSPI filesystem at `0x90000000` |
+| ARDUINO_NICLA_VISION | QSPI filesystem only |
+| OPENMV_RT1060 | the disk's MBR sector at `0x60400000`, via blhost |
+
+```
+$ openmv-ota flash erase -b OPENMV4 --dry-run
+would run: dfu-util -w -d ,37c5:9204 -a 1 --reset -D <4KB-zeros>
+
+$ openmv-ota flash erase -b OPENMV_RT1060 --dry-run
+would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 .../sdphost_flash_loader.bin
+...
+would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60400000 0x1000
+would run: blhost -u 0x15A2,0x0073 -- reset
+```
 
 ## flash bootloader
 
@@ -47,35 +77,6 @@ Afterwards the AE3 re-enumerates as the OpenMV DFU bootloader — run
 `flash firmware` to write the application. Recovering a board that won't enter
 maintenance mode is left to the IDE.
 
-## flash erase
-
-`flash erase` wipes the board's onboard filesystem — the user disk where
-`main.py` and your files live, the same "Erase Onboard Data Flash" the IDE
-does. It invalidates the filesystem partition so the firmware reformats a
-clean disk on the next boot, entering and leaving the bootloader the same way
-the flash verbs do. The filesystem is its own partition, so firmware and romfs
-are untouched:
-
-| Board | erase target |
-| --- | --- |
-| OPENMV2 / 3 / 4 | alt 1 |
-| OPENMV4P / OPENMVPT | alt 3 |
-| OPENMV_N6 | alt 2 |
-| OPENMV_AE3 | alt 5 (its RWFS) |
-| ARDUINO_PORTENTA_H7 / GIGA | app at `0x08020000` + QSPI filesystem at `0x90000000` |
-| ARDUINO_NICLA_VISION | QSPI filesystem only |
-| OPENMV_RT1060 | the disk's MBR sector at `0x60400000`, via blhost |
-
-```
-$ openmv-ota flash erase -b OPENMV4 --dry-run
-would run: dfu-util -w -d ,37c5:9204 -a 1 --reset -D <4KB-zeros>
-
-$ openmv-ota flash erase -b OPENMV_RT1060 --dry-run
-would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 .../sdphost_flash_loader.bin
-...
-would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60400000 0x1000
-would run: blhost -u 0x15A2,0x0073 -- reset
-```
 
 ---
 

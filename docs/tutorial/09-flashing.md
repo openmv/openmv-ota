@@ -1,6 +1,6 @@
 # Flashing
 
-*[← 8 · Release artifacts](08-release-artifacts.md) · [Index](00-introduction.md) · [10 · Bootloader & erase →](10-bootloader-and-erase.md)*
+*[← 8 · Release artifacts](08-release-artifacts.md) · [Index](00-introduction.md) · [10 · Erase & bootloader →](10-erase-and-bootloader.md)*
 
 ---
 
@@ -20,8 +20,8 @@ openmv-ota flash factory  ./my-product -b OPENMV4
 | `flash firmware` | the firmware image | `<board>-firmware.bin` |
 | `flash romfs` | the app romfs image | `<board>-romfs.img` |
 | `flash factory` | firmware **+** the factory image (the manufacturing program) | `<board>-firmware.bin`, `<board>-factory-romfs.img` |
-| `flash bootloader` | the bootloader — [next page](10-bootloader-and-erase.md) | `<board>-bootloader.bin` |
-| `flash erase` | the onboard filesystem — [next page](10-bootloader-and-erase.md) | — (no artifact) |
+| `flash erase` | the onboard filesystem — [next page](10-erase-and-bootloader.md) | — (no artifact) |
+| `flash bootloader` | the bootloader — [next page](10-erase-and-bootloader.md) | `<board>-bootloader.bin` |
 | `flash list` | *(query)* connected boards + the state each is in | — |
 
 A multi-partition write (`flash factory`) resets the board only after the final
@@ -115,7 +115,7 @@ OPENMV_RT1060        recovery   system flashloader  -
 
 State is **`running`** (firmware up), **`bootloader`** (the normal DFU the
 flash verbs use), or **`recovery`** (the by-hand ROM/maintenance modes you
-enter to flash a *bootloader* — [next page](10-bootloader-and-erase.md)). A
+enter to flash a *bootloader* — [next page](10-erase-and-bootloader.md)). A
 board that looks identical to others in a shared ROM mode is reported under a
 generic label, and each scanner degrades on its own when its tool is missing.
 `--json` prints the same as a machine-readable array.
@@ -138,4 +138,4 @@ openmv-ota flash factory -b OPENMV4 --dry-run
 
 ---
 
-*[← 8 · Release artifacts](08-release-artifacts.md) · [Index](00-introduction.md) · [10 · Bootloader & erase →](10-bootloader-and-erase.md)*
+*[← 8 · Release artifacts](08-release-artifacts.md) · [Index](00-introduction.md) · [10 · Erase & bootloader →](10-erase-and-bootloader.md)*

@@ -66,7 +66,7 @@ Every command and flag on these pages exists — the test suite holds the CLI to
 | [7 · Factory & firmware](07-factory-and-firmware.md) | `build factory-romfs` + `build firmware` — what a device gets at manufacture |
 | [8 · Release artifacts](08-release-artifacts.md) | `build ota-romfs` / `sbom` / `inspect` / `verify` — the publishable set, its signing, and its checks |
 | [9 · Flashing](09-flashing.md) | `openmv-ota flash` — every board's programming path |
-| [10 · Bootloader & erase](10-bootloader-and-erase.md) | the maintenance verbs — writing the bootloader itself, wiping the user disk |
+| [10 · Erase & bootloader](10-erase-and-bootloader.md) | the maintenance verbs — wiping the user disk, writing the bootloader itself |
 | [11 · Boot and rollback](11-boot-and-rollback.md) | `boot.py` — slot selection, the trial, falling back |
 | [12 · The device library](12-device-library.md) | `openmv_ota` on the camera — `status` / `confirm` / `sync` / `install` |
 | [13 · The update server](13-update-server.md) | `openmv-ota server` — hosting releases, accounts, deploying |
