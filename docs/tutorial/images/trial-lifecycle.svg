@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 444" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+  <style>
+    .box   { fill: #eef1f5; stroke: #9aa3af; stroke-width: 1.2; }
+    .fail  { fill: #f7ecec; stroke: #c97b7b; stroke-width: 1.2; stroke-dasharray: 5 3; }
+    .t     { fill: #1f2430; }
+    .sub   { fill: #545d6e; font-size: 12px; }
+    .code  { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .who   { fill: #545d6e; font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+    .flow  { stroke: #8a93a3; stroke-width: 1.6; fill: none; }
+    .flowf { stroke: #c97b7b; stroke-width: 1.6; fill: none; stroke-dasharray: 5 3; }
+    @media (prefers-color-scheme: dark) {
+      .box  { fill: #262b36; stroke: #59637a; }
+      .fail { fill: #332527; stroke: #a96a6a; }
+      .t    { fill: #e6e9f0; }
+      .sub, .who { fill: #9aa5ba; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8a93a3"/>
+    </marker>
+    <marker id="af" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#c97b7b"/>
+    </marker>
+  </defs>
+
+  <!-- 1 · install -->
+  <rect class="box" x="40" y="22" width="460" height="62" rx="8"/>
+  <text class="who" x="58" y="42">UPDATER</text>
+  <text class="t" x="58" y="60">writes the <tspan font-weight="600">other</tspan> slot, stamps the counter, sets <tspan class="code">pending</tspan></text>
+  <text class="sub" x="58" y="76">the running image is untouched</text>
+
+  <path class="flow" d="M270 84 V116" marker-end="url(#a)"/>
+
+  <!-- 2 · trial boot -->
+  <rect class="box" x="40" y="120" width="460" height="76" rx="8"/>
+  <text class="who" x="58" y="140">BOOT 1 · <tspan class="code">boot.py</tspan></text>
+  <text class="t" x="58" y="158">newest slot, <tspan class="code">pending</tspan>, attempts left</text>
+  <text class="t" x="58" y="176">→ consume one, mount it</text>
+  <rect x="404" y="132" width="80" height="22" rx="11" fill="#f5c66b"/>
+  <text x="444" y="147" text-anchor="middle" fill="#4a3200" font-size="11" font-weight="600">on trial</text>
+
+  <path class="flow" d="M270 196 V214" marker-end="url(#a)"/>
+
+  <!-- 3 · confirm -->
+  <rect class="box" x="40" y="218" width="460" height="62" rx="8"/>
+  <text class="who" x="58" y="238">YOUR APP</text>
+  <text class="t" x="58" y="256">runs, validates itself healthy → <tspan class="code">openmv_ota.confirm()</tspan></text>
+  <rect x="394" y="230" width="90" height="22" rx="11" fill="#7fd49b"/>
+  <text x="439" y="245" text-anchor="middle" fill="#0c3d20" font-size="11" font-weight="600">confirmed</text>
+
+  <path class="flow" d="M270 280 V312" marker-end="url(#a)"/>
+
+  <!-- 4 · committed -->
+  <rect class="box" x="40" y="316" width="460" height="56" rx="8"/>
+  <text class="who" x="58" y="336">LATER BOOTS</text>
+  <text class="t" x="58" y="354"><tspan class="code">pending</tspan> + <tspan class="code">confirmed</tspan> → mount it</text>
+  <rect x="394" y="326" width="90" height="22" rx="11" fill="#7fd49b"/>
+  <text x="439" y="341" text-anchor="middle" fill="#0c3d20" font-size="11" font-weight="600">committed</text>
+
+  <!-- failure branch -->
+  <path class="flowf" d="M500 249 H556 V150 H572" marker-end="url(#af)" fill="none"/>
+  <text class="sub" x="562" y="120" font-style="italic">…but if the trial hangs or crashes</text>
+  <text class="sub" x="562" y="136" font-style="italic">before <tspan class="code">confirm()</tspan>:</text>
+
+  <rect class="fail" x="576" y="146" width="250" height="52" rx="8"/>
+  <text class="who" x="592" y="166">BOOTS 2, 3</text>
+  <text class="t" x="592" y="184">same again — one attempt each</text>
+
+  <path class="flowf" d="M700 198 V230" marker-end="url(#af)"/>
+
+  <rect class="fail" x="576" y="234" width="250" height="88" rx="8"/>
+  <text class="who" x="592" y="254">BOOT 4 · <tspan class="code">boot.py</tspan></text>
+  <text class="t" x="592" y="272">attempts exhausted,</text>
+  <text class="t" x="592" y="288">never confirmed → reject it,</text>
+  <text class="t" x="592" y="304">mount the <tspan font-weight="600">other</tspan> slot</text>
+  <rect x="726" y="246" width="88" height="22" rx="11" fill="#f2a1a1"/>
+  <text x="770" y="261" text-anchor="middle" fill="#5c1414" font-size="11" font-weight="600">rolled back</text>
+
+  <!-- rollback returns to the previous release -->
+  <path class="flowf" d="M700 322 V386" marker-end="url(#af)"/>
+  <text class="sub" x="700" y="408" text-anchor="middle">back on the previous release —</text>
+  <text class="sub" x="700" y="424" text-anchor="middle">the fallback the trial never risked</text>
+</svg>

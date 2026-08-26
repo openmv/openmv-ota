@@ -75,19 +75,7 @@ reflash. Everywhere else A/B is the default and single-image is an explicit opt-
 An installed image is on **trial** until your app says otherwise. Markers in the slot's
 status sector drive it, plus an **attempt region** — one byte consumed per trial boot:
 
-```
-updater writes the OTHER slot, stamps the counter, sets `pending`  (the running image is untouched)
-        │
-   boot 1 ─ boot.py: newest slot, pending, attempts left → consume one, mount it   (on trial)
-        │
-   your app runs, validates itself healthy → openmv_ota.confirm()   → `confirmed`
-        │
-   later boots: pending+confirmed → mount it                        (committed)
-
-   …but if the trial image hangs/crashes BEFORE confirm():
-   boots 2, 3 ─ same again, one attempt each
-   boot 4 ─ boot.py: attempts exhausted, never confirmed → reject it → mount the other slot
-```
+![The trial lifecycle: the updater writes the other slot and sets pending; boot 1 mounts it on trial, consuming an attempt; the app validates itself and confirms; later boots mount the committed image. If the trial never confirms, boots 2 and 3 each consume an attempt and boot 4 rejects the slot, mounting the previous release.](images/trial-lifecycle.svg)
 
 So **your app must call `openmv_ota.confirm()` once it has proven itself healthy** —
 otherwise the trial eventually gives up and the device returns to the previous release.
