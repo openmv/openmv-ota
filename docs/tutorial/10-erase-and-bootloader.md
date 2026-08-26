@@ -10,12 +10,13 @@ operations — nothing here is part of a normal build-flash-iterate loop.
 
 ## flash erase
 
-`flash erase` wipes the board's onboard filesystem — the user disk where
-`main.py` and your files live, the same "Erase Onboard Data Flash" the IDE
-does. It invalidates the filesystem partition so the firmware reformats a
-clean disk on the next boot, entering and leaving the bootloader the same way
-the flash verbs do. The filesystem is its own partition, so firmware and romfs
-are untouched:
+`flash erase` wipes the board's onboard filesystem — the writable disk at
+`/flash`, the same "Erase Onboard Data Flash" the IDE does. In an OTA product
+the app ships read-only in the romfs, so what lives here is runtime data:
+config, logs, whatever your app wrote. The erase invalidates the partition and
+the firmware reformats a clean disk on the next boot, entering and leaving the
+bootloader the same way the flash verbs do; the filesystem is its own
+partition, so firmware and romfs are untouched:
 
 | Board | erase target |
 | --- | --- |
