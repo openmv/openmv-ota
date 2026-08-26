@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 444" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
   <style>
     .box   { fill: #eef1f5; stroke: #9aa3af; stroke-width: 1.2; }
-    .fail  { fill: #f7ecec; stroke: #c97b7b; stroke-width: 1.2; stroke-dasharray: 5 3; }
+    .fail  { fill: #f7ecec; stroke: #9aa3af; stroke-width: 1.2; }
     .t     { fill: #1f2430; }
     .sub   { fill: #545d6e; font-size: 12px; }
     .code  { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
@@ -10,7 +10,7 @@
     .flowf { stroke: #c97b7b; stroke-width: 1.6; fill: none; stroke-dasharray: 5 3; }
     @media (prefers-color-scheme: dark) {
       .box  { fill: #262b36; stroke: #59637a; }
-      .fail { fill: #332527; stroke: #a96a6a; }
+      .fail { fill: #332527; stroke: #59637a; }
       .t    { fill: #e6e9f0; }
       .sub, .who { fill: #9aa5ba; }
     }
@@ -43,13 +43,14 @@
   <path class="flow" d="M270 196 V214" marker-end="url(#a)"/>
 
   <!-- 3 · confirm -->
-  <rect class="box" x="40" y="218" width="460" height="62" rx="8"/>
+  <rect class="box" x="40" y="218" width="460" height="76" rx="8"/>
   <text class="who" x="58" y="238">YOUR APP</text>
-  <text class="t" x="58" y="256">runs, validates itself healthy → <tspan class="code">openmv_ota.confirm()</tspan></text>
+  <text class="t" x="58" y="256">runs, validates itself healthy</text>
+  <text class="t" x="58" y="274">→ <tspan class="code">openmv_ota.confirm()</tspan></text>
   <rect x="394" y="230" width="90" height="22" rx="11" fill="#7fd49b"/>
   <text x="439" y="245" text-anchor="middle" fill="#0c3d20" font-size="11" font-weight="600">confirmed</text>
 
-  <path class="flow" d="M270 280 V312" marker-end="url(#a)"/>
+  <path class="flow" d="M270 294 V312" marker-end="url(#a)"/>
 
   <!-- 4 · committed -->
   <rect class="box" x="40" y="316" width="460" height="56" rx="8"/>
