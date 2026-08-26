@@ -80,7 +80,11 @@ read-modify-write window: power can fail at any byte and the worst case is one
 torn, self-invalidating entry. A 4 KiB reservation per concern costs nothing on
 a multi-megabyte partition, and buys headroom — the attempt region, the append
 log, `spare` held back for future metadata — without ever reshaping a layout
-that fielded devices depend on.
+that fielded devices depend on. The `rollback` sector is separate from `status`
+for a reason beyond space: `status` is *per-install* state, rebuilt from blank
+every time the slot is written, while the floor is *device-lifetime* state the
+installer deliberately carries forward — two different rules that never share
+bytes.
 
 ### Single-image mode
 
