@@ -58,11 +58,13 @@ sorts last, because we cannot claim it is newer than something that says so.
 
 **The `rollback` sector carries the floor.** The anti-rollback floor is a monotonic
 minimum version, so a device can't be downgraded to an *older signed* release (a
-replay attack — the signature is genuine, just stale). Mechanically it is an
-append-only log of confirmed versions: the floor starts at the provisioned
-version, every `confirm()` appends the running version to the running slot's
-`rollback` sector, and `boot.py` takes the **highest version logged across both
-slots** as the floor. Because an install erases the whole slot it writes —
+replay attack — the signature is genuine, just stale). The floor must *rise* at
+`confirm()`, but flash can only program bits 1→0 — a stored value cannot be
+overwritten with a bigger one without an erase. So the `rollback` sector holds
+the floor as appended entries: raising it means programming a fresh entry into
+blank bytes, and the current floor is simply the highest valid entry —
+a mutable, monotonic value built from write-once flash, not a history log.
+`boot.py` takes the **highest entry across both slots** as the floor. Because an install erases the whole slot it writes —
 `rollback` sector included — the installer **copies the current floor forward**
 into the fresh slot first; without that, rewriting whichever slot happened to
 hold the highest entry would silently lower the floor and re-admit a release the
