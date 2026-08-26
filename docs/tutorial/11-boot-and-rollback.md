@@ -68,8 +68,7 @@ into the fresh slot first; without that, rewriting whichever slot happened to
 hold the highest entry would silently lower the floor and re-admit a release the
 device had moved past. The floor is raised *before* `CONFIRMED` is written, so a
 crash between the two falls back safely (the floor never locks out the image
-behind it). When the fixed-size log fills, the floor simply freezes at its max —
-still protective.
+behind it).
 
 **Why 4 KiB sectors for a few bytes of state.** The sectors look oversized, and
 that is the design: nothing in them is ever erased while the device runs.
@@ -79,8 +78,8 @@ written, a floor entry appended — is a 1→0 program into bytes that are still
 blank, which flash permits without an erase. No runtime erase means no
 read-modify-write window: power can fail at any byte and the worst case is one
 torn, self-invalidating entry. A 4 KiB reservation per concern costs nothing on
-a multi-megabyte partition, and buys room — 512 floor entries, the attempt
-region, `spare` held back for future metadata — without ever reshaping a layout
+a multi-megabyte partition, and buys headroom — the attempt region, the append
+log, `spare` held back for future metadata — without ever reshaping a layout
 that fielded devices depend on.
 
 ### Single-image mode
