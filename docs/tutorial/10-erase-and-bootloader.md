@@ -58,7 +58,7 @@ its own -- no jumper needed. Wait for the system DFU bootloader to enumerate.
 | Board | recovery entry | written via |
 | --- | --- | --- |
 | OPENMV2 / 3 / 4 / 4P / PT | BOOT0 jumpered to 3.3V, replug (virgin boards come up in recovery on their own) | system DFU |
-| OPENMV_N6 | BOOT0 jumpered to 3.3V, replug | STM32CubeProgrammer (the layout + loader files it needs are bundled in the tool) |
+| OPENMV_N6 | BOOT0 jumpered to 3.3V, replug (virgin boards come up in recovery on their own) | STM32CubeProgrammer (the layout + loader files it needs are bundled in the tool) |
 | OPENMV_RT1060 | SBL jumper — keep it on until flashing finishes | SDP/blhost (no build artifact: writes the flash-config block + the bundled secure bootloader) |
 | OPENMV_AE3 | SE-UART maintenance mode, over the board's USB-serial bridge (not the OpenMV USB port) | Alif Security Toolkit (see below) |
 | Arduino boards | — | no OpenMV bootloader to flash |
