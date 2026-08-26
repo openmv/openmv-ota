@@ -1,6 +1,7 @@
 """OTA slot geometry, derived from a partition's flash erase block.
 
-A ROMFS partition is split 50/50 into two slots of equal size. The code names
+A ROMFS partition holds two equal slots under A/B, or one slot spanning the
+partition in single-image mode (see ``resolve_mode``). The code names
 the halves FRONT and BACK (v1 names that survived the A/B redesign), but neither
 is privileged: both are real, signed, updatable images, the newest valid one
 boots, and an install writes whichever slot is not running. Each slot holds the
@@ -31,8 +32,9 @@ without reshaping the layout and breaking already-deployed devices. Reserving a
 full 4 KiB block instead costs nothing on a multi-megabyte partition.
 
 A partition is **OTA-capable** only if a slot has room for a body after its
-control sectors -- which excludes boards whose ROMFS is a single large internal
-flash sector (e.g. OpenMV2/3/4), where the math itself proves OTA is impossible.
+control sectors, in one of the two modes. Boards whose ROMFS cannot host two
+slots (e.g. OpenMV2/3/4) fall back to single-image mode, where the same four
+sectors sit at the end of the one slot.
 """
 
 from __future__ import annotations
