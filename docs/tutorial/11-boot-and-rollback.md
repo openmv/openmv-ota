@@ -68,9 +68,14 @@ a mutable, monotonic value built from write-once flash, not a history log.
 `rollback` sector included — the installer **copies the current floor forward**
 into the fresh slot first; without that, rewriting whichever slot happened to
 hold the highest entry would silently lower the floor and re-admit a release the
-device had moved past. The floor is raised *before* `CONFIRMED` is written, so a
-crash between the two falls back safely (the floor never locks out the image
-behind it).
+device had moved past. The floor is raised *before* `CONFIRMED` is written, and the crash
+window between the two is what the floor's one exemption exists for: **the
+floor never applies to a confirmed slot**. Its job is to gate what may be
+*installed* — a slot the device already ran and kept is always a legal
+fallback, even though every kept update leaves the previous slot below the
+floor by construction. (The honest limit, inherent to A/B: an attacker who can
+force trials to fail can force a return to that previous confirmed release —
+never anything older.)
 
 **Why 4 KiB sectors for a few bytes of state.** The sectors look oversized, and
 that is the design: nothing in them is ever erased while the device runs.
