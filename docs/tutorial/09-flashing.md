@@ -58,11 +58,15 @@ prints the exact commands for yours.
 | ARDUINO_NICLA_VISION | dfu (addr) | 2341:035f | 0x08040000 | 0x90B00000 | + CYW4343 wifi/bt blobs (collected by `build firmware`); 1200-baud touch-to-reset |
 | OPENMV_RT1060 | imx | sdphost/blhost | 0x60040000 | 0x60800000 | SDP/flashloader sequence via the SDK's tools (`--sdk-home`); temporary until it gets the DFU bootloader |
 
+On an alt-addressed board, each partition is one `dfu-util` call:
+
 ```
 $ openmv-ota flash factory ./my-product -b OPENMV4 --dry-run
 would run: dfu-util -w -d ,37c5:9204 -a 2 -D build/OPENMV4-firmware.bin
 would run: dfu-util -w -d ,37c5:9204 -a 3 --reset -D build/OPENMV4-factory-romfs.img
 ```
+
+An Arduino board flashes by address, wifi/bt blobs first:
 
 ```
 $ openmv-ota flash factory ./my-product -b ARDUINO_PORTENTA_H7 --dry-run
@@ -71,6 +75,8 @@ would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90FC0000 -D .../cyw4343_btfw.bin
 would run: dfu-util -w -d ,2341:035b -a 0 -s 0x08040000 -D ARDUINO_PORTENTA_H7-firmware.bin
 would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90B00000:leave -D ARDUINO_PORTENTA_H7-romfs.img
 ```
+
+And the RT1060 runs its longer serial-download sequence:
 
 ```
 $ openmv-ota flash factory ./my-product -b OPENMV_RT1060 --dry-run
