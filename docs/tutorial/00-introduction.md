@@ -23,7 +23,7 @@ tutorial covers one verb. Two pieces run somewhere other than your computer:
 - the **device runtime** — `boot.py` and a small library that run on the camera
   itself ([pages 10–11](11-boot-and-rollback.md)), and
 - the **update server** — a web service that hosts what you publish and decides
-  which camera is offered what ([pages 12–13](13-update-server.md)). You drive it
+  which camera is offered what ([pages 12–13](14-update-server.md)). You drive it
   with the `client` verb; other software (such as OpenMV's cloud) drives the same
   **HTTP API** the server exposes.
 
@@ -69,8 +69,9 @@ Every command and flag on these pages exists — the test suite holds the CLI to
 | [10 · Erase & bootloader](10-erase-and-bootloader.md) | the maintenance verbs — wiping the user disk, writing the bootloader itself |
 | [11 · Boot and rollback](11-boot-and-rollback.md) | `boot.py` — slot selection, the trial, falling back |
 | [12 · The device library](12-device-library.md) | `openmv_ota` on the camera — `status` / `confirm` / `sync` / `install` |
-| [13 · The update server](13-update-server.md) | `openmv-ota server` — hosting releases, accounts, deploying |
-| [14 · The fleet](14-fleet.md) | `openmv-ota client` + the admin API — publishing, rollouts, watching devices |
+| [13 · Logging & the watchdog](13-logging-and-watchdog.md) | `openmv_log` / `openmv_wdt` — the frozen survival modules |
+| [14 · The update server](14-update-server.md) | `openmv-ota server` — hosting releases, accounts, deploying |
+| [15 · The fleet](15-fleet.md) | `openmv-ota client` + the admin API — publishing, rollouts, watching devices |
 
 Not part of the walkthrough, but referenced from it:
 
