@@ -27,19 +27,21 @@ update path's:
 
 ## What the firmware carries
 
-Everything recovery needs — except one thing — is the maker's and constant per
-build, so `build firmware` stamps it in:
+Recovery mostly rides what the firmware already carries: the trusted signing
+keys (`boot.py` verifies with them every boot) and the frozen installer. Two
+things are stamped in specifically for recovery — the pieces the runtime
+normally reads from the romfs, which is exactly what is gone:
 
-| Stamped | From |
+| Stamped for recovery | From |
 | --- | --- |
 | the server URL | `server_url` in `openmv-ota.toml`'s `[ota]` table |
-| the TLS trust store | the project's CA (empty = the bundled roots) |
-| the trusted signing keys | `keys/trusted_keys.json` |
-| the installer itself | frozen beside `boot.py` |
+| its own copy of the TLS trust store | the project's `[ota].ca` — the runtime's bundled roots live in the romfs, which recovery cannot read |
 
-**Set `server_url`.** It is the one config line recovery cannot function
-without: a firmware built without it logs a critical error and stops rather
-than spinning, because no amount of retrying fixes a build mistake.
+**Set both.** `server_url` is the line recovery cannot function without (a
+firmware built without it logs a critical error and stops — no amount of
+retrying fixes a build mistake), and `[ota].ca` should name your server's
+root: without it the firmware carries no trust anchors, and recovery cannot
+verify a TLS connection to anyone.
 
 ```toml
 [ota]
