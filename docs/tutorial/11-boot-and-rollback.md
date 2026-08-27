@@ -60,31 +60,21 @@ A slot whose counter is unreadable is still bootable if it verifies; it just
 sorts last, because we cannot claim it is newer than something that says so.
 
 **The floor rides in the `status` sector's tail.** The anti-rollback floor is a
-monotonic minimum version, so a device can't be downgraded to an *older signed*
-release (a replay attack — the signature is genuine, just stale). The floor must
-*rise* at `confirm()`, but flash can only program bits 1→0 — a stored value
-cannot be overwritten with a bigger one without an erase. So the floor is held
-as appended entries in the region past the attempt markers: raising it programs
-a fresh entry into blank bytes, and the current floor is simply the highest
-valid entry — a mutable, monotonic value built from write-once flash, not a
-history log. In practice the region holds one or two entries between erases:
-the floor carried in at install, plus one raise at the first `confirm()`.
-`boot.py` takes the **highest entry across both slots** as the floor. Because an
-install erases the whole slot it writes, the installer **copies the current
-floor forward** into the fresh slot as its *very first write* — before a single
-image byte — so the floor is never absent from flash for longer than the erase
-itself. That ordering is what makes single-image mode safe: there the erase
-just destroyed the only copy, and a slower carry would leave a power-cut window
-in which recovery would restart with no floor at all. Without the carry,
-rewriting whichever slot happened to hold the highest entry would silently
-lower the floor and re-admit a release the device had moved past. The floor is
-raised *before* `CONFIRMED` is written, and the crash window between the two is
-what the floor's one exemption exists for: **the floor never applies to a
-confirmed slot**. Its job is to gate what may be *installed* — a slot the
-device already ran and kept is always a legal fallback, even though every kept
-update leaves the previous slot below the floor by construction. (The honest
-limit, inherent to A/B: an attacker who can force trials to fail can force a
-return to that previous confirmed release — never anything older.)
+monotonic minimum version: a device can't be downgraded to an *older signed*
+release (a replay attack — the signature is genuine, just stale). Flash only
+programs bits 1→0, so a floor that must rise is stored as appended entries past
+the attempt region — a raise programs a fresh entry, and the floor is the
+highest valid one. In practice that is one or two entries between erases: the
+floor the installer carries into every slot it writes — as its *first* write
+after the erase, so the floor is never absent from flash (in single-image mode
+the erase just destroyed the only copy) — plus one raise at the first
+`confirm()`. `boot.py` takes the max across both slots. The raise lands
+*before* `CONFIRMED`, and the floor's one exemption covers the crash window
+between them: **a confirmed slot is always a legal fallback**. The floor gates
+what may be *installed*, never a release the device already ran and kept —
+even though every kept update leaves that slot below the floor. (The honest
+limit of A/B: forcing trials to fail forces a return to that previous
+confirmed release — never anything older.)
 
 **Why a 4 KiB sector for a few bytes of state.** The sector looks oversized, and
 that is the design: nothing in it is ever erased while the device runs.
