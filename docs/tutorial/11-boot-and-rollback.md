@@ -65,10 +65,10 @@ release (a replay attack — the signature is genuine, just stale). Flash only
 programs bits 1→0, so a floor that must rise is stored as appended entries past
 the attempt region — a raise programs a fresh entry, and the floor is the
 highest valid one. In practice that is one or two entries between erases: the
-floor the installer carries into every slot it writes — as its *first* write
-after the erase, so the floor is never absent from flash (in single-image mode
-the erase just destroyed the only copy) — plus one raise at the first
-`confirm()`. `boot.py` takes the max across both slots. The raise lands
+carried floor, then one raise. The installer writes the carried floor
+immediately after the erase, before any image byte — critical in single-image
+mode, where the erase just destroyed the only copy — and the first `confirm()`
+appends the raise. `boot.py` takes the max across both slots. The raise lands
 *before* `CONFIRMED`, and the floor's one exemption covers the crash window
 between them: **a confirmed slot is always a legal fallback**. The floor gates
 what may be *installed*, never a release the device already ran and kept —
