@@ -75,7 +75,7 @@ if you want to react.
 resolves the actual image from the manifest itself (representation URLs are relative to
 the manifest's location by default). It is an `https://` URL, **or a file path**: copy
 the published artifacts onto a mounted filesystem (an SD card, realistically) and
-`install("/sd/fw/OPENMV_N6-manifest.bin")` installs with no network at all — through the
+`install("/sdcard/fw/OPENMV_N6-manifest.bin")` installs with no network at all — through the
 identical signature, vetting, and anti-rollback checks, because the medium is untrusted
 either way and the signature is the boundary. Something else decides *which* manifest to
 hand it (how that's obtained is out of scope here). It:
