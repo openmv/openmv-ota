@@ -114,9 +114,8 @@ hand it (how that's obtained is out of scope here). It:
 - **Failure is safe.** A pre-flight failure (bad URL or path, DNS, TLS, HTTP status) raises
   **before** the erase, with `/rom` intact, so you can catch it and retry without a reboot.
   A failure *after* the erase reboots, and boot.py rejects the half-written slot (bad
-  signature/hash) and mounts the previous release; `status()` then reports the fallback so
-  you know the update failed. Under A/B that previous release is the last update that
-  worked — not a years-old factory build.
+  signature/hash) and mounts the previous release — the last update that worked; `status()`
+  then reports the fallback so you know the update failed.
 
 ```python
 import network, openmv_ota

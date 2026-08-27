@@ -428,8 +428,7 @@ def status():  # pragma: no cover
         pending/tried/confirmed/trial                the RUNNING slot's trial-marker state
 
     A ``fallback_reason`` means the newest slot was rejected and the device is running the
-    previous image -- worth reporting upstream. Under A/B that previous image is the last
-    update that worked, not a years-old factory build."""
+    previous image -- the last update that worked; worth reporting upstream."""
     import _ota_config
     _use_cfg_stride(_ota_config)
     slot, version, reason = _boot_result()
