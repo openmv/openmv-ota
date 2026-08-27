@@ -118,6 +118,7 @@ The `[ota]` section records the mode and the current signing key:
 [ota]
 enabled = true            # each partition holds two updatable slots (A/B)
 signing_key_id = 256      # current OTA signing key (in keys/trusted_keys.json)
+max_attempts = 3          # boots a trial gets to confirm (optional; frozen into the firmware)
 ```
 
 ## The device runtime library (`openmv_ota`)

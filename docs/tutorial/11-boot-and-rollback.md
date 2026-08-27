@@ -115,7 +115,9 @@ rejection costs a full re-download, erase and write that the server then offers 
 minutes, traffic and flash wear, repeatedly — while an extra attempt on a genuinely bad
 image costs one reboot. The honest limit, and why the default stays low: retries only help a
 failure that *self-resets*. A **hang** now hangs N times instead of once. Set
-`[ota].max_attempts = 1` for a single-shot trial.
+`max_attempts = 1` in `openmv-ota.toml`'s `[ota]` table for a single-shot
+trial — the value is frozen into the firmware at `build firmware`, so changing
+it ships with a firmware update, not a romfs one.
 
 The attempt is recorded **before** the image runs, which is what makes a hang count. Two
 subtleties follow from it: if `boot.py` cannot record the attempt (the write fails or won't
@@ -127,10 +129,6 @@ know to move on — and it drops to the next-newest slot rather than abandoning 
 then would trade a proven fallback for an unproven one, at the moment the device has already
 said it is unsure of itself — so an offered update waits until you `confirm()`. (Single-image
 devices are exempt: there is no fallback to protect, and waiting would strand them.)
-
-## See also
-
-- [CI](../reference/ci.md) — how the QEMU device-I/O tests run.
 
 ---
 
