@@ -23,11 +23,15 @@ images a camera can download, verify, and fall back from.
   internal-flash sector — OpenMV2/3/4, where the erase block *is* the whole
   partition — builds in **single-image mode** instead: one slot spanning the
   partition, no on-flash fallback (a failed update there is re-downloaded by
-  firmware-resident recovery). One practical
-  consequence: the public TLS bundle does not fit their small slot, so on these
-  boards `new --ota` requires an explicit `--ca` root and refuses without one.
+  firmware-resident recovery).
   Two-slot boards keep their ROMFS in external NOR/OSPI flash (4 KiB erase
   blocks) or MRAM.
+
+- **A trust store the firmware can carry.** Recovery needs TLS anchors in the
+  firmware itself. On the OpenMV N6, AE3, and RT1062 the firmware is large
+  enough to hold the full public bundle, so nothing needs configuring. On every
+  other board it is not — there `new --ota` requires an explicit `--ca` root
+  (your server's own root, a few KB) and refuses without one.
 
 - **Keys provisioned.** `new --ota` generates the product's whole signing key
   set up front and writes it under `keys/`.
@@ -80,7 +84,7 @@ How the floor survives is the one place the two modes differ:
 | Flag | Effect |
 |---|---|
 | `--ota` | Declare the project over-the-air: split each partition into slots and provision the signing keys. |
-| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle. |
+| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle — allowed only on boards whose firmware can carry it (N6, AE3, RT1062). |
 | `--no-firmware-patches` | Don't auto-apply the OTA-required firmware patches; fail instead if the firmware lacks them. |
 
 ## Files an OTA project adds

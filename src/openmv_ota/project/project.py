@@ -997,10 +997,11 @@ def _trust_store(paths: ProjectPaths, config: OtaConfig, lock: lock_mod.Lock) ->
     104.57%, Nicla 101.56%). The firmware is not a free place to put a trust store, it is a
     tighter one -- what makes freezing work is the store being ~1 KB, not where it lives.
 
-    A device talks to ONE update server, so its own root is what it actually needs. On a
-    single-image board that is not a preference: the bundle does not fit the 114,688-byte slot
-    and the firmware has no room either, so REFUSE and say what to pass, instead of scaffolding
-    something that can only fail later at a linker."""
+    A device talks to ONE update server, so its own root is what it actually needs. On a board
+    whose firmware cannot carry the bundle (``recovery_ca_bundle`` unset in boards.json -- the
+    1792 KB parts, and the classics whose ROMFS slot cannot hold it either) that is not a
+    preference: firmware-resident recovery would be left with no TLS anchors at all, so REFUSE
+    and say what to pass, instead of scaffolding something that can only fail later."""
     rel = (config.ca or "").strip()
     if rel:
         path = paths.root / rel
@@ -1010,19 +1011,15 @@ def _trust_store(paths: ProjectPaths, config: OtaConfig, lock: lock_mod.Lock) ->
             raise ProjectError("[ota] ca %r is not readable: %s" % (rel, e), exit_code=1) from None
     small = sorted({rb["name"] for rb in lock.targets.get("resolved", [])
                     if rb.get("role", "main") == "main"
-                    and geometry.derive_mode(rb["partition_size"], rb["erase_size"])
-                    == geometry.SINGLE})
+                    and not rb.get("recovery_ca_bundle", False)})
     if small:
         raise ProjectError(
-            "%s cannot hold the public CA bundle (~%d KB): its ROMFS slot is %d bytes, and the "
-            "firmware has no room for it either.\nThese boards do OTA against your OWN server, "
-            "so give them your server's root instead -- it is about a kilobyte:\n"
+            "%s cannot hold the public CA bundle (~%d KB) in firmware, and recovery needs TLS "
+            "anchors there.\nThese boards do OTA against your OWN server, so give them your "
+            "server's root instead -- it is about a kilobyte:\n"
             "    openmv-ota project new ... --ca certs/root.pem\n"
             "(or set `ca = \"certs/root.pem\"` under [ota] in openmv-ota.toml)."
-            % (", ".join(small), len(_fetch_ca_bundle()) // 1024,
-               geometry.single_body_capacity(
-                   min(rb["partition_size"] for rb in lock.targets.get("resolved", [])
-                       if rb.get("role", "main") == "main"), 0)),
+            % (", ".join(small), len(_fetch_ca_bundle()) // 1024),
             exit_code=1)
     return None
 
@@ -1086,11 +1083,12 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str], pem: bytes | N
 
     data = dst / "data"
     data.mkdir(exist_ok=True)
-    # The PUBLIC bundle stays in the romfs. Freezing it was tried and is not affordable: at
-    # ~186 KB it overflows FLASH_TEXT on every 1792 KB board -- H7 Plus 106.85%, PureThermal
-    # 104.57%, Nicla 101.56% -- so the firmware is not a free place to put it, it is a tighter
-    # one. Only a project-supplied store (a server's own root, ~1 KB) is small enough to freeze,
-    # and that is what `--ca` does.
+    # The PUBLIC bundle lives in the romfs (the runtime's trust store), and doubles as what
+    # `build firmware` freezes for RECOVERY on boards whose firmware fits it (recovery_ca_bundle
+    # in boards.json: N6, AE3, RT1060). It cannot be a universal default: at ~186 KB it overflows
+    # FLASH_TEXT on every 1792 KB board -- H7 Plus 106.85%, PureThermal 104.57%, Nicla 101.56% --
+    # so those boards must supply their server's root (~1 KB) via `--ca`, and _trust_store
+    # refuses to scaffold them without one.
     if pem is None:
         ca = data / "ca.pem"
         if not ca.exists():

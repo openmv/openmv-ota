@@ -489,13 +489,44 @@ class _FakeProj:
         self.root, self.config = root, _FakeCfg(**kw)
 
 
-def test_recovery_ca_empty_means_the_bundled_public_roots(tmp_path):
-    """Most servers sit behind a public CA, so 'unset' has to be a first-class answer rather
-    than something the maker has to work around."""
+class _FakeTarget:
+    def __init__(self, name="OPENMV_N6", recovery_ca_bundle=False):
+        self.name, self.recovery_ca_bundle = name, recovery_ca_bundle
+
+
+def test_recovery_ca_empty_freezes_the_project_bundle_on_a_board_with_room(tmp_path):
+    """Most servers sit behind a public CA, so 'unset' has to be a first-class answer -- and it
+    must yield REAL anchors: recovery runs when the romfs copy of the bundle is gone, so an
+    empty CA_PEM would leave TLS with nothing to verify against, retrying forever. On a board
+    flagged recovery_ca_bundle the scaffold's own bundle is frozen in."""
     from openmv_ota.build.firmware import _recovery_ca
 
-    assert _recovery_ca(_FakeProj(tmp_path)) == b""
-    assert _recovery_ca(_FakeProj(tmp_path, ca="   ")) == b""
+    data = tmp_path / "app" / "lib" / "openmv_ota" / "data"
+    data.mkdir(parents=True)
+    (data / "ca.pem").write_bytes(b"-----BEGIN CERTIFICATE-----\nbundle\n")
+    big = _FakeTarget(recovery_ca_bundle=True)
+    assert _recovery_ca(_FakeProj(tmp_path), big).startswith(b"-----BEGIN")
+    assert _recovery_ca(_FakeProj(tmp_path, ca="   "), big).startswith(b"-----BEGIN")
+
+
+def test_recovery_ca_empty_on_a_board_without_room_fails_the_build_loudly(tmp_path):
+    """A 1792 KB board cannot link the ~186 KB bundle (measured: H7 Plus 106.85%, PureThermal
+    104.57%, Nicla 101.56%), and shipping recovery with no anchors instead would strand every
+    device it recovers -- so the build refuses and says what to set."""
+    from openmv_ota.build.errors import BuildError
+    from openmv_ota.build.firmware import _recovery_ca
+
+    with pytest.raises(BuildError, match=r"cannot hold the public CA bundle"):
+        _recovery_ca(_FakeProj(tmp_path), _FakeTarget(name="OPENMV4P"))
+
+
+def test_recovery_ca_missing_project_bundle_fails_the_build_loudly(tmp_path):
+    """A flagged board with the scaffold bundle deleted must not fall back to empty anchors."""
+    from openmv_ota.build.errors import BuildError
+    from openmv_ota.build.firmware import _recovery_ca
+
+    with pytest.raises(BuildError, match=r"CA bundle .* is not readable"):
+        _recovery_ca(_FakeProj(tmp_path), _FakeTarget(recovery_ca_bundle=True))
 
 
 def test_recovery_ca_is_read_at_BUILD_time_not_looked_up_on_device(tmp_path):
@@ -505,7 +536,8 @@ def test_recovery_ca_is_read_at_BUILD_time_not_looked_up_on_device(tmp_path):
 
     (tmp_path / "certs").mkdir()
     (tmp_path / "certs" / "root.pem").write_bytes(b"-----BEGIN CERTIFICATE-----\nxx\n")
-    assert _recovery_ca(_FakeProj(tmp_path, ca="certs/root.pem")).startswith(b"-----BEGIN")
+    got = _recovery_ca(_FakeProj(tmp_path, ca="certs/root.pem"), _FakeTarget())
+    assert got.startswith(b"-----BEGIN")
 
 
 def test_an_unreadable_ca_fails_the_build_loudly(tmp_path):
@@ -515,7 +547,7 @@ def test_an_unreadable_ca_fails_the_build_loudly(tmp_path):
     from openmv_ota.build.firmware import _recovery_ca
 
     with pytest.raises(BuildError, match="not readable"):
-        _recovery_ca(_FakeProj(tmp_path, ca="certs/missing.pem"))
+        _recovery_ca(_FakeProj(tmp_path, ca="certs/missing.pem"), _FakeTarget())
 
 
 def test_build_firmware_freezes_a_supplied_trust_store(make_project, monkeypatch):

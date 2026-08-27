@@ -41,6 +41,8 @@ class ResolvedBoard:
     mbedtls: bool = True                   # firmware builds mbedtls (OTA verify needs it)
     role: str = "main"                     # "main" (OTA app) or "coprocessor" (slaved,
                                            # plain romfs written by the main core)
+    recovery_ca_bundle: bool = False       # firmware fits the full public CA bundle
+                                           # for recovery when [ota].ca is unset
 
 
 def _firmware_part_lengths(repo: Path, board: str, index: int) -> list[int]:
@@ -148,5 +150,6 @@ def resolve_board(
         npu_config=npu_config,
         mbedtls=_mbedtls_supported(repo, name),
         role=part.role,
+        recovery_ca_bundle=cfg.recovery_ca_bundle,
     )
     return resolved, warnings

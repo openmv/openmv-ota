@@ -159,6 +159,7 @@
       ]
     },
     "OPENMV_RT1060": {
+      "recovery_ca_bundle": true,
       "display_name": "OpenMV Cam RT1062 (MIMXRT1062)",
       "arch": "OMVRT1060 32768 SDRAM",
       "flash": {"backend": "imx", "runtime": "37c5:1060", "bootloader": {"backend": "imx", "instructions": "The recovery pin is SBL (like BOOT0 on the STM32 boards), sampled at power-on. On an already-programmed camera, jumper SBL to 3.3V (VCC) and keep it connected, then unplug and replug the camera to drop into the ROM serial-download bootloader. A virgin (unprogrammed) camera drops into it on its own -- no jumper needed. Wait for the ROM device to enumerate; remove the SBL jumper only after flashing finishes."}, "sdphost": {"usb": "0x1FC9,0x0135", "loader": "sdphost_flash_loader.bin", "loader_addr": "0x20001C00"}, "blhost": {"usb": "0x15A2,0x0073", "cfg_addr": "0x2000", "cfg_spi": "0xC0000008", "cfg_fcb": "0xF000000F", "cfg_type": "9", "fcb_addr": "0x60000000", "fcb_len": "0x1000", "sbl_addr": "0x60001000", "sbl_loader": "blhost_flash_loader.bin", "firmware_addr": "0x60040000", "disk_addr": "0x60400000", "disk_size": "0x1000", "romfs_addr": "0x60800000", "romfs_size": "0x800000", "efuse_addr": "0x06", "efuse_data": "00000010"}},
@@ -190,6 +191,7 @@
       ]
     },
     "OPENMV_AE3": {
+      "recovery_ca_bundle": true,
       "display_name": "OpenMV AE3",
       "arch": "OPENMV AE3",
       "flash": {"backend": "dfu", "usb": "37c5:96e3", "erase": [{"alt": 5}], "runtime": "37c5:16e3", "alt": {"firmware": 1, "coprocessor": 2, "coprocessor_romfs": 3, "romfs": 6}, "file": {"firmware": "firmware-M55_HP.bin"}, "bootloader": {"backend": "alif", "toolkit": "tools/alif/toolkit", "cfg_rev": "B4", "variants": [{"name": "SBL", "bridge": "0403:6015", "cfg_part": "AE302F80F55D5AE"}, {"name": "SBL2", "bridge": "1a86:55d3", "cfg_part": "AE302F80F55D5LE"}], "images": [{"file": "bootloader.bin", "addr": "0x80000000"}, {"file": "firmware_pad.toc", "addr": "0x8057e000"}], "instructions": "Alif SE-UART maintenance mode is selected at power-on. On an already-programmed camera, put it into maintenance mode while unplugged, then plug it into the PC to drop into the SE-UART bootloader. A virgin (unprogrammed) camera drops into it on its own. Wait for the SE-UART device to enumerate.", "note": "the AE3 bootloader needs the Alif Security Toolkit from the openmv firmware tree (tools/alif/toolkit); run `git submodule update --init`"}},
@@ -262,6 +264,7 @@
       ]
     },
     "OPENMV_N6": {
+      "recovery_ca_bundle": true,
       "display_name": "OpenMV N6 (STM32N657)",
       "arch": "OpenMV N6",
       "flash": {"backend": "dfu", "usb": "37c5:9206", "erase": [{"alt": 2}], "runtime": "37c5:1206", "alt": {"firmware": 1, "romfs": 3}, "bootloader": {"backend": "cubeprog", "tsv": "FlashLayout.tsv", "loaders": ["OpenBootloader_STM32N6570-DK-trusted.stm32", "MX66UW1G45G_STM32N6570-DK-OBL.bin"], "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},

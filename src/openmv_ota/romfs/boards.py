@@ -43,6 +43,10 @@ class BoardConfig:
                                          # None for boards without a configured flasher
     unsupported: str | None = None       # if set, a reason the board is retired -- every
                                          # tool refuses it gracefully with this message
+    recovery_ca_bundle: bool = False     # firmware is large enough to freeze the full
+                                         # public CA bundle (~186 KB) for recovery when
+                                         # [ota].ca is unset; smaller boards must pin
+                                         # their server's root(s) via [ota].ca instead
 
     def partition(self, index: int | None = None) -> Partition:
         """Return the partition with the given ``index`` (default: the first).
@@ -88,6 +92,7 @@ def load_boards() -> dict[str, BoardConfig]:
             display_name=b.get("display_name", name),
             arch=b.get("arch", ""),
             mpy_args=list(b.get("mpy_args", [])),
+            recovery_ca_bundle=bool(b.get("recovery_ca_bundle", False)),
             partitions=parts,
             flash=b.get("flash"),
             unsupported=b.get("unsupported"),
