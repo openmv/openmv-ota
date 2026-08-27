@@ -75,8 +75,10 @@ and the documented defaults tell them what to type.
 
 Recovery tries the configured interface first but not only: a board with an
 Ethernet cable is always worth one DHCP attempt (it needs nothing from the
-user), and stored WiFi credentials are tried even when the file names `eth`.
-A static address applies only to the interface it was written for.
+user), and a file that names `interface = eth` but also carries `wifi.ssid`
+credentials gets a WiFi attempt after it — the stranded device is exactly the
+one whose primary plan turned out wrong. A static address applies only to the
+interface it was written for.
 
 The WiFi passphrase is rewritten in an **obfuscated** form on the next boot —
 obfuscation, not security: it is keyed on the device's own id, so anyone who
