@@ -1,6 +1,6 @@
 # The update server
 
-*[← 13 · Logging & the watchdog](13-logging-and-watchdog.md) · [Index](00-introduction.md) · [15 · The fleet →](15-fleet.md)*
+*[← 14 · Recovery](14-recovery.md) · [Index](00-introduction.md) · [16 · The fleet →](16-fleet.md)*
 
 ---
 
@@ -134,4 +134,4 @@ horizontally. Local-disk + SQLite is for dev and tests only.
 
 ---
 
-*[← 13 · Logging & the watchdog](13-logging-and-watchdog.md) · [Index](00-introduction.md) · [15 · The fleet →](15-fleet.md)*
+*[← 14 · Recovery](14-recovery.md) · [Index](00-introduction.md) · [16 · The fleet →](16-fleet.md)*

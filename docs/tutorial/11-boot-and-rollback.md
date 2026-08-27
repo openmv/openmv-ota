@@ -130,6 +130,10 @@ then would trade a proven fallback for an unproven one, at the moment the device
 said it is unsure of itself — so an offered update waits until you `confirm()`. (Single-image
 devices are exempt: there is no fallback to protect, and waiting would strand them.)
 
+## See also
+
+- [Recovery](14-recovery.md) — what runs when no slot is bootable.
+
 ---
 
 *[← 10 · Erase & bootloader](10-erase-and-bootloader.md) · [Index](00-introduction.md) · [12 · The device library →](12-device-library.md)*

@@ -1,6 +1,6 @@
 # Logging & the watchdog
 
-*[← 12 · The device library](12-device-library.md) · [Index](00-introduction.md) · [14 · The update server →](14-update-server.md)*
+*[← 12 · The device library](12-device-library.md) · [Index](00-introduction.md) · [14 · Recovery →](14-recovery.md)*
 
 ---
 
@@ -123,4 +123,4 @@ haven't enabled a watchdog.
 
 ---
 
-*[← 12 · The device library](12-device-library.md) · [Index](00-introduction.md) · [14 · The update server →](14-update-server.md)*
+*[← 12 · The device library](12-device-library.md) · [Index](00-introduction.md) · [14 · Recovery →](14-recovery.md)*

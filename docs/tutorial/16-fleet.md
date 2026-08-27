@@ -1,6 +1,6 @@
 # The fleet
 
-*[← 14 · The update server](14-update-server.md) · [Index](00-introduction.md)*
+*[← 15 · The update server](15-update-server.md) · [Index](00-introduction.md)*
 
 ---
 
@@ -193,4 +193,4 @@ registered devices.
 
 ---
 
-*[← 14 · The update server](14-update-server.md) · [Index](00-introduction.md)*
+*[← 15 · The update server](15-update-server.md) · [Index](00-introduction.md)*
