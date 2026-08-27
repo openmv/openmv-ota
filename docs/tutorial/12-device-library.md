@@ -144,18 +144,15 @@ validly-signed manifest or image (it lacks your signing key); the worst it can d
 is serve a stale signed update, which the anti-rollback floor blocks, or deny the
 download.
 
-**The manifest + image.** `install()` consumes a signed manifest, which names the
-reconstructed image's size/sha256 and the available **representations** and binds
-`product_id`/`payload_version`/`min_platform_version` under one ECDSA signature (same keys as
-the image). **One command** builds the whole publishable set from app source:
-**`build ota-romfs`** — compiles + signs the bundle, renders `<board>-ota.img.gz`, signs
-`<board>-manifest.bin`, and — with `--delta-from <factory-romfs.img>` — emits
-`<board>-ota.delta.gz` + a delta representation. Host the artifacts beside each other;
-representation URLs are **relative
-filenames** (resolved against the manifest's URL on-device), so the signed manifest moves
-between hosts without re-signing. (The device also accepts absolute `https://` URLs in a
-manifest — what a dynamic update server emits when blobs live on a different origin than
-the manifest endpoint — but the build CLI only ever writes relative ones.)
+**The manifest + image.** `install()` consumes the **signed manifest** that
+[`build ota-romfs`](08-release-artifacts.md#build-ota-romfs) produces beside the
+image and any deltas: it names the image's size/sha256 and the available
+**representations**, and binds `product_id`/`payload_version`/
+`min_platform_version` under the same ECDSA key as the image. Host the artifacts
+beside each other; representation URLs are **relative filenames**, resolved
+on-device against the manifest's own URL, so the signed manifest moves between
+hosts without re-signing. (The device also accepts absolute `https://` URLs in
+a manifest; everything this tool produces is relative.)
 
 **Deltas.** A delta is a bsdiff-class patch against a **base image the device already
 has** — under A/B, the slot it is currently running, which stays intact while the other is
