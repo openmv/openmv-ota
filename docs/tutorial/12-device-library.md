@@ -128,14 +128,21 @@ except OSError as e:
     print("update failed, still running the current image:", e)
 ```
 
-**TLS trust.** `ca` is the PEM trust store: `None` (the default) reads the bundled
-`data/ca.pem`, `bytes` are used directly, a `str` is a path. `project new` downloads a
-fresh Mozilla root bundle into `data/ca.pem` so common public CAs (incl. the ones
-Cloudflare R2 rotates among) verify out of the box; replace it with your own provider's
-roots for a tighter trust store. Broad CA trust is acceptable here because **the
-signature, not TLS, is the integrity boundary** — a TLS MITM still can't forge a
-validly-signed manifest or image (it lacks your signing key); the worst it can do is
-serve a stale signed update, which the anti-rollback floor blocks, or deny the download.
+**TLS trust.** The `ca` argument selects the PEM trust store:
+
+| `ca` | Trust store |
+| --- | --- |
+| `None` (default) | the bundled `data/ca.pem` |
+| a `str` | a file path to read |
+| `bytes` | used directly |
+
+`project new` downloads a fresh Mozilla root bundle into `data/ca.pem`, so common
+public CAs verify out of the box; replace it with your own provider's roots for a
+tighter trust store. Broad CA trust is acceptable here because **the signature,
+not TLS, is the integrity boundary** — a TLS MITM still can't forge a
+validly-signed manifest or image (it lacks your signing key); the worst it can do
+is serve a stale signed update, which the anti-rollback floor blocks, or deny the
+download.
 
 **The manifest + image.** `install()` consumes a signed manifest, which names the
 reconstructed image's size/sha256 and the available **representations** and binds
