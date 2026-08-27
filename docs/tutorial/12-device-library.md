@@ -96,8 +96,8 @@ hand it (how that's obtained is out of scope here). It:
    **streams** the image straight in. For a full image: decompress a chunk → write → **read
    back and compare** → repeat, skipping erased `0xFF` runs. For a delta: stream-decompress
    the patch and reconstruct against the **running** slot (copy a run from it + add the
-   patch's per-byte difference, vectorised with `ulab`; the patch is never held whole in
-   RAM), writing+verifying the same way. Either way the stream is hashed and checked against
+   patch's per-byte difference; the patch is never held whole in RAM),
+   writing+verifying the same way. Either way the stream is hashed and checked against
    the manifest's reconstructed-image **sha256** (fail-fast). A ~1 MB image is never held in
    RAM. Handles `Content-Length`, chunked, close-delimited responses, and redirects.
 5. Arms the slot **last**, only after the whole image verified: the representation marker,
@@ -168,9 +168,8 @@ version still in the field — with only one, every device that has already upda
 to the full download, because under A/B the base is whatever release the device is running.
 The delta is pure transport: the reconstructed slot is
 still sha256- and signature-verified, so a bad patch simply never becomes the newest valid
-slot. The applier ships in the romfs (it's OTA-patchable like the installer) and uses
-`ulab` for the per-byte add — present on every OTA-capable board (it falls back to plain
-Python where it isn't). Single-image devices never take a delta: their base is the slot
+slot. The applier ships in the romfs, so it is OTA-patchable like the
+installer. Single-image devices never take a delta: their base is the slot
 being erased.
 
 ## Bundled resources — applying romfs data to the device
