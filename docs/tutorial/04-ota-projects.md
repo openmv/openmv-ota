@@ -97,8 +97,10 @@ my-product/
 ├── openmv-ota.toml          # gains an [ota] section
 ├── app/lib/openmv_ota/      # the device OTA runtime library (status/confirm/sync/install)
 │   └── data/
-│       ├── installer.py     # the installer, shipped as source (exec'd into RAM)
-│       └── ca.pem           # TLS root bundle for downloads (fetched fresh at `new`)
+│       └── installer.py     # the installer, shipped as source (exec'd into RAM)
+├── certs/
+│   └── ca.pem               # TLS trust store, frozen into the firmware by `build
+│                            # firmware` (fetched fresh at `new`; `--ca` copies here)
 ├── device/
 │   ├── openmv_log.py               # the OTA debug logger
 │   └── openmv_wdt.py               # the watchdog helper
@@ -143,9 +145,10 @@ openmv_ota.confirm()     # keep the update (no-op if it isn't a trial)
 It also exposes **`install(url)`** — fetch a new image over HTTPS, or from a file
 path, and install it.
 The installer ships as source in `data/installer.py` (so the device can `exec` it into
-RAM while it overwrites the slot it runs from), and `data/ca.pem` is the TLS trust
+RAM while it overwrites the slot it runs from), and `certs/ca.pem` is the TLS trust
 store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step needs
-network, like the SDK download), and you can replace it with your provider's roots.
+network, like the SDK download) and `build firmware` freezes it, so the device reads
+its anchors straight out of flash. You can replace it with your provider's roots.
 What `install()` downloads is produced by `build ota-romfs`.
 
 `new --ota` also scaffolds two **opt-in** helpers under `device/`, each frozen into

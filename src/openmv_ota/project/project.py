@@ -1083,15 +1083,19 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str], pem: bytes | N
 
     data = dst / "data"
     data.mkdir(exist_ok=True)
-    # The PUBLIC bundle lives in the romfs (the runtime's trust store), and doubles as what
-    # `build firmware` freezes for RECOVERY on boards whose firmware fits it (recovery_ca_bundle
-    # in boards.json: N6, AE3, RT1060). It cannot be a universal default: at ~186 KB it overflows
-    # FLASH_TEXT on every 1792 KB board -- H7 Plus 106.85%, PureThermal 104.57%, Nicla 101.56% --
-    # so those boards must supply their server's root (~1 KB) via `--ca`, and _trust_store
-    # refuses to scaffold them without one.
+    # The PUBLIC bundle lives at certs/ca.pem -- OUTSIDE app/, so it does NOT ship in the
+    # romfs. `pem is None` only happens on boards flagged recovery_ca_bundle (N6, AE3,
+    # RT1060; _trust_store refuses everyone else), where `build firmware` freezes this file
+    # and BOTH the runtime and recovery read that one frozen copy (openmv_ota.builtin_ca()).
+    # Shipping it in the romfs too would pay ~186 KB per slot for bytes the firmware already
+    # carries; a project that wants a per-image override adds app/lib/openmv_ota/data/ca.pem,
+    # which the runtime prefers when present. It cannot be a universal default: at ~186 KB it
+    # overflows FLASH_TEXT on every 1792 KB board -- H7 Plus 106.85%, PureThermal 104.57%,
+    # Nicla 101.56% -- so those boards supply their server's root (~1 KB) via `--ca` instead.
     if pem is None:
-        ca = data / "ca.pem"
+        ca = paths.root / "certs" / "ca.pem"
         if not ca.exists():
+            ca.parent.mkdir(parents=True, exist_ok=True)
             ca.write_bytes(_fetch_ca_bundle())
     installer = data / "installer.py"
     if not installer.exists():

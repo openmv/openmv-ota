@@ -501,9 +501,9 @@ def test_recovery_ca_empty_freezes_the_project_bundle_on_a_board_with_room(tmp_p
     flagged recovery_ca_bundle the scaffold's own bundle is frozen in."""
     from openmv_ota.build.firmware import _recovery_ca
 
-    data = tmp_path / "app" / "lib" / "openmv_ota" / "data"
-    data.mkdir(parents=True)
-    (data / "ca.pem").write_bytes(b"-----BEGIN CERTIFICATE-----\nbundle\n")
+    certs = tmp_path / "certs"
+    certs.mkdir()
+    (certs / "ca.pem").write_bytes(b"-----BEGIN CERTIFICATE-----\nbundle\n")
     big = _FakeTarget(recovery_ca_bundle=True)
     assert _recovery_ca(_FakeProj(tmp_path), big).startswith(b"-----BEGIN")
     assert _recovery_ca(_FakeProj(tmp_path, ca="   "), big).startswith(b"-----BEGIN")

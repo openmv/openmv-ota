@@ -242,11 +242,12 @@ def _recovery_ca(p, t) -> bytes:
     Recovery runs when the romfs is gone, so the firmware must carry real anchors -- an empty
     CA_PEM would leave TLS with nothing to verify against and recovery retrying forever. With
     ``[ota].ca`` unset, a board whose firmware has the room (``recovery_ca_bundle`` in
-    boards.json) freezes the project's full public bundle -- the same
-    ``app/lib/openmv_ota/data/ca.pem`` the romfs ships, read at build time so the device never
-    has to find a file. A board without the room must pin its server's root(s) via ``[ota].ca``
-    (the ~186 KB bundle overflows FLASH_TEXT on the 1792 KB parts); the build refuses rather
-    than ship a recovery that cannot connect."""
+    boards.json) freezes the project's full public bundle -- ``certs/ca.pem``, scaffolded at
+    ``project new`` and read at build time so the device never has to find a file. That one
+    frozen copy serves the runtime too (``openmv_ota.builtin_ca()``), so the romfs does not
+    ship the bundle at all. A board without the room must pin its server's root(s) via
+    ``[ota].ca`` (the ~186 KB bundle overflows FLASH_TEXT on the 1792 KB parts); the build
+    refuses rather than ship a recovery that cannot connect."""
     rel = (p.config.ca or "").strip()
     if rel:
         path = p.root / rel
@@ -255,7 +256,7 @@ def _recovery_ca(p, t) -> bytes:
         except OSError as e:
             raise BuildError("ota.ca %r is not readable: %s" % (rel, e)) from None
     if t.recovery_ca_bundle:
-        bundle = p.root / "app" / "lib" / "openmv_ota" / "data" / "ca.pem"
+        bundle = p.root / "certs" / "ca.pem"
         try:
             return bundle.read_bytes()
         except OSError as e:

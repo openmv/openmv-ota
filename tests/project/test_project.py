@@ -209,13 +209,14 @@ def test_create_ota_scaffolds_runtime_lib_with_coprocessor_data(tmp_path, make_f
     root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, ota_keys=2, factory_keys=1)
     lib = proj.ProjectPaths(root).app_dir / "lib" / "openmv_ota"
     assert (lib / "__init__.py").exists()
-    # the installer + the public CA bundle are scaffolded for every OTA board
+    # the installer is scaffolded for every OTA board
     assert "def run(" in (lib / "data" / "installer.py").read_text()
-    # WITHOUT --ca the PUBLIC bundle stays in the romfs and nothing is frozen. Freezing it was
-    # measured and is not affordable: ~186 KB overflows FLASH_TEXT on every 1792 KB board (H7
-    # Plus 106.85%, PureThermal 104.57%, Nicla 101.56%). Only a supplied ~1 KB root is small
-    # enough to freeze -- see the single-image test for that path.
-    assert (lib / "data" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()
+    # WITHOUT --ca the PUBLIC bundle scaffolds to certs/ca.pem -- OUTSIDE app/, so it does
+    # NOT ship in the romfs. `build firmware` freezes it (this path only exists on
+    # recovery_ca_bundle boards) and the runtime reads that one frozen copy via
+    # builtin_ca(); shipping it in the romfs too would pay ~186 KB per slot twice.
+    assert (root / "certs" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()
+    assert not (lib / "data" / "ca.pem").exists()
     assert not (root / "device" / proj.CA_MODULE).exists()
     res = json.loads((lib / "data" / "resources.json").read_text())
     assert res[0]["handler"] == "partition" and res[0]["partition"] == 1
@@ -235,8 +236,9 @@ def test_create_ota_runtime_lib_no_coprocessor_data_without_coprocessor(
     assert "class CSI" in (lib.parent / "openmv_cloud" / "csi.py").read_text()
     assert (lib.parent / "openmv_cloud" / "__init__.py").exists()
     assert "def run(" in (data / "installer.py").read_text()
-    assert (data / "ca.pem").read_bytes() == proj._fetch_ca_bundle()   # the stubbed bundle
-    assert not (root / "device" / proj.CA_MODULE).exists()   # nothing frozen without --ca
+    assert (root / "certs" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()  # the stubbed bundle
+    assert not (data / "ca.pem").exists()   # the bundle rides in firmware, not the romfs
+    assert not (root / "device" / proj.CA_MODULE).exists()   # no openmv_ca module without --ca
     assert not (data / "coprocessor.romfs").exists()
     assert not (data / "resources.json").exists()
 

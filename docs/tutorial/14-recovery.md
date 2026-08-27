@@ -29,13 +29,13 @@ update path's:
 
 Recovery mostly rides what the firmware already carries: the trusted signing
 keys (`boot.py` verifies with them every boot) and the frozen installer. Two
-things are stamped in specifically for recovery — the pieces the runtime
-normally reads from the romfs, which is exactly what is gone:
+more things are stamped in so nothing recovery needs depends on the romfs —
+which is exactly what is gone:
 
 | Stamped for recovery | From |
 | --- | --- |
 | the server URL | `server_url` in `openmv-ota.toml`'s `[ota]` table |
-| its own copy of the TLS trust store | the project's `[ota].ca` when set; otherwise the full public CA bundle — the runtime's copy lives in the romfs, which recovery cannot read |
+| the TLS trust store | the project's `[ota].ca` when set; otherwise the full public CA bundle (`certs/ca.pem`) — the same frozen store the runtime trusts by default, so it is there whether or not any romfs is |
 
 **Set `server_url`.** It is the line recovery cannot function without — a
 firmware built without it logs a critical error and stops, because no amount
