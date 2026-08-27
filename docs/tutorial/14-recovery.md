@@ -39,9 +39,11 @@ normally reads from the romfs, which is exactly what is gone:
 
 **Set both.** `server_url` is the line recovery cannot function without (a
 firmware built without it logs a critical error and stops — no amount of
-retrying fixes a build mistake), and `[ota].ca` should name your server's
-root: without it the firmware carries no trust anchors, and recovery cannot
-verify a TLS connection to anyone.
+retrying fixes a build mistake), and `[ota].ca` should point at a PEM file
+holding the root(s) your server chains to — one certificate or a small
+bundle, a few KB, not the full public bundle (which cannot ride in
+firmware). Without it the firmware carries no trust anchors, and recovery
+cannot verify a TLS connection to anyone.
 
 ```toml
 [ota]
