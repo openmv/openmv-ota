@@ -78,19 +78,42 @@ points at it.
 
 ## Staging a rollout
 
-A rollout offers one release to a growing slice of one **cohort** (a named group of
-devices; every device starts in `__default__`). It's created at publish time —
-`--rollout` stages the release in the same command, and the rollout's id comes back in
-the output:
+The server never pushes anything: cameras poll, and each check-in is answered by
+policy. A **rollout** is that policy's unit — an object of its own on the server,
+separate from the release it carries. It binds together:
+
+- **one release** — the thing to distribute;
+- **one cohort** — a named group of devices to distribute it to (every device starts in
+  `__default__`, so one cohort can be the whole fleet);
+- **a percentage** — how much of that cohort is currently offered it;
+- **a state** — `active`, `paused`, or `rolled_back`;
+- **counters** — how many devices it was offered to (`attempted`), how many now run it
+  (`updated`), how many fell back off it (`failures`).
+
+When a device in the cohort checks in, it is offered the rollout's release only if all
+three gates pass: the release is an **upgrade** over what the device reports running,
+the device is **settled** (not mid-trial — a camera that hasn't confirmed its current
+image is left alone, because the slot an install would overwrite is its only proven
+fallback), and the device falls inside the current **percentage**. One rollout is active
+per (product, cohort) at a time; creating another pauses the previous, recorded in the
+audit log as superseded.
+
+Create one at publish time with `--rollout`, or stage an already-published release later
+with `rollout create` — either way the rollout's id comes back in the output:
 
 ```
 $ openmv-ota client publish . -b OPENMV_N6 --rollout beta:5
 published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl)
 rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
+
+$ openmv-ota client rollout create --release rel_4f9c2a81d06b73ee --cohort beta --percent 5
+rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
 ```
 
 (`--rollout 5` with no cohort name stages 5% of `__default__` — the whole fleet.)
-Membership in the staged slice is a stable per-device hash:
+
+Which devices make up the staged percentage is a stable per-device hash, not a choice
+you make or a list the server keeps:
 
 ```
 bucket = sha256(rollout_id + ":" + device_id)[:4] % 10000
@@ -101,6 +124,8 @@ A device's in/out verdict never flips while the percent holds, and raising the p
 only **adds** devices — the "raise it as confidence grows" model, with no per-request
 randomness and no stored per-device flag. Salting by `rollout_id` means the same camera
 isn't the canary in every rollout.
+
+From there the lifecycle is four actions:
 
 ```
 openmv-ota client rollout raise  --id ro_1c3f88ba90d2e644 --percent 50
@@ -116,15 +141,27 @@ openmv-ota client rollout rollback --id ro_1c3f88ba90d2e644
 | `resume` | start offering again |
 | `rollback` | stop offering **permanently**. Devices that already took the release keep it — the server never downgrades a camera; the device's own anti-rollback wouldn't accept one anyway |
 
-One rollout is active per (product, cohort) at a time: creating a new one pauses the
-previous, recorded in the audit log as superseded. A device is only ever offered an
-**upgrade** — a release above what it reports running — and never mid-trial: a camera
-that hasn't confirmed its current image yet is left to settle first, because the slot an
-install would overwrite is its only proven fallback.
+`client rollouts` lists them (so a lost id is always recoverable), and
+`client rollout status --id` reads one rollout's score — the raise/pause decision in
+four numbers:
+
+```
+$ openmv-ota client rollout status --id ro_1c3f88ba90d2e644
+{
+  "rollout_id": "ro_1c3f88ba90d2e644",
+  "state": "active",
+  "percent": 5.0,
+  "attempted": 21,
+  "updated": 19,
+  "failures": 0,
+  "success_rate": 0.9047619047619048,
+  "reported": { "installed": 19, "failed": 0 }
+}
+```
 
 ## Watching the fleet
 
-Four read verbs print the server's JSON directly:
+The read verbs print the server's JSON directly:
 
 ```
 $ openmv-ota client fleet
@@ -268,14 +305,16 @@ them — no special case for parsers.
 | `client login --server URL [--token T]` | save the profile (token also via stdin / `OPENMV_OTA_TOKEN`) |
 | `client logout` | remove the saved profile |
 | `client publish DIR -b BOARD [--rollout c:N] [--allow-republish]` | upload a built release, optionally staging it |
+| `client rollout create --release R --percent N [--cohort C]` | stage an already-published release |
 | `client rollout raise\|pause\|resume\|rollback --id ID` | drive a rollout (`raise` takes `--percent`) |
+| `client rollout status --id ID` | one rollout's counters (JSON) |
 | `client cohort list` / `cohort assign --cohort C --device ID…` | see cohorts / move devices into one |
 | `client pin device --id ID (--release R \| --clear)` | pin one device, overriding rollouts |
 | `client pin cohort --product-id N --cohort C (--release R \| --clear)` | pin a whole cohort |
 | `client bases -b BOARD [--last N] [-o DIR]` | download recent images as delta bases |
 | `client prune --release ID [--force]` | delete a release's stored artifacts, keep its history row |
 | `client bind --id ID` | (re)bind a device to your account |
-| `client fleet` / `devices` / `releases` / `audit` | the read side (JSON) |
+| `client fleet` / `devices` / `releases` / `rollouts` / `audit` | the read side (JSON) |
 | `client account create\|list\|rename\|deactivate\|activate` | tenant accounts (needs `accounts`) |
 | `client token issue\|list\|revoke\|rotate` | an account's API tokens (secrets shown once) |
 

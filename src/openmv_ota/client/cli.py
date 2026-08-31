@@ -2,8 +2,8 @@
 
     login / logout           save/remove the server URL + admin token
     publish                  upload a built release (+ optional rollout)
-    rollout raise|pause|resume|rollback
-    fleet / devices / audit  read fleet status
+    rollout create|raise|pause|resume|rollback|status
+    fleet / devices / releases / rollouts / audit  read fleet status
 
 ``login``/``logout`` need only the standard library; the API verbs use httpx from the ``server``
 extra (via ``api.Api``).
@@ -76,8 +76,19 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_pub)
     p_pub.set_defaults(func=cmd_publish, _command="client publish")
 
-    p_ro = sub.add_parser("rollout", help="raise/pause/resume/rollback a rollout")
+    p_ro = sub.add_parser("rollout", help="create/raise/pause/resume/rollback a rollout")
     rsub = p_ro.add_subparsers(dest="_ro")
+    p_rc = rsub.add_parser("create", help="stage an already-published release to a cohort")
+    p_rc.add_argument("--release", required=True, metavar="RELEASE_ID",
+                      help="release to stage (ids come from publish / `client releases`)")
+    p_rc.add_argument("--cohort", default="__default__",
+                      help="cohort to stage it to (default: the whole fleet)")
+    p_rc.add_argument("--percent", type=float, required=True,
+                      help="share of the cohort to offer it to, 0-100")
+    p_rc.add_argument("--failure-threshold", type=float, default=0.05,
+                      help="fallback rate among offered devices that auto-pauses it (default 0.05)")
+    _creds(p_rc)
+    p_rc.set_defaults(func=cmd_rollout, _command="client rollout create", action="create")
     for action, needs_pct, blurb in (
             ("raise", True, "widen the rollout to --percent of the cohort"),
             ("pause", False, "stop offering it (it auto-pauses on failures too)"),
@@ -85,12 +96,17 @@ def register(parser: argparse.ArgumentParser) -> None:
             ("rollback", False, "stop offering it for good; devices that took it keep it")):
         pr = rsub.add_parser(action, help=blurb)
         pr.add_argument("--id", required=True, metavar="ROLLOUT_ID",
-                        help="the rollout to act on (`client rollout` ids come from publish)")
+                        help="the rollout to act on (ids come from publish / `client rollouts`)")
         if needs_pct:
             pr.add_argument("--percent", type=float, required=True,
                             help="share of the cohort to offer it to, 0-100")
         _creds(pr)
         pr.set_defaults(func=cmd_rollout, _command="client rollout " + action, action=action)
+    p_rs = rsub.add_parser("status", help="a rollout's counters (attempted/updated/failures)")
+    p_rs.add_argument("--id", required=True, metavar="ROLLOUT_ID",
+                      help="the rollout to read (ids come from publish / `client rollouts`)")
+    _creds(p_rs)
+    p_rs.set_defaults(func=cmd_rollout, _command="client rollout status", action="status")
 
     p_co = sub.add_parser("cohort", help="list cohorts / assign devices to one")
     cosub = p_co.add_subparsers(dest="_co")
@@ -203,14 +219,15 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_pc.set_defaults(func=cmd_pin, _command="client pin cohort", target="cohort")
 
     for name, handler in (("fleet", cmd_fleet), ("devices", cmd_devices),
-                          ("releases", cmd_releases), ("audit", cmd_audit)):
+                          ("releases", cmd_releases), ("rollouts", cmd_rollouts),
+                          ("audit", cmd_audit)):
         p = sub.add_parser(name, help="read %s status" % name)
-        if name in ("fleet", "devices", "releases"):
-            p.add_argument("--product-id", type=int, help="only this product")
-        else:
+        if name == "audit":
             p.add_argument("--since", type=int, default=0, metavar="SEQ",
                            help="only events after this sequence number (a cursor, not an offset)")
-        if name in ("devices", "releases"):
+        else:
+            p.add_argument("--product-id", type=int, help="only this product")
+        if name in ("devices", "releases", "rollouts"):
             p.add_argument("--limit", type=int, help="page size")
             p.add_argument("--offset", type=int, help="page offset")
         if name == "devices":
@@ -384,6 +401,14 @@ def cmd_publish(args: argparse.Namespace) -> int:
 def cmd_rollout(args: argparse.Namespace) -> int:
     try:
         api = _make_api(config.resolve(args.server, args.token))
+        if args.action == "create":
+            ro = api.create_rollout(args.release, args.cohort, args.percent,
+                                    failure_threshold=args.failure_threshold)
+            return _emit(args, ro, "rollout %s  %s%%  cohort=%s"
+                         % (ro["rollout_id"], ro["percent"], ro["cohort"]))
+        if args.action == "status":
+            print(json.dumps(api.rollout_status(args.id), indent=2))
+            return 0
         if args.action == "raise":
             ro = api.patch_rollout(args.id, percent=args.percent)
         elif args.action == "pause":
@@ -514,6 +539,11 @@ def cmd_devices(args: argparse.Namespace) -> int:
 def cmd_releases(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.releases(args.product_id, limit=args.limit,
                                                 offset=args.offset))
+
+
+def cmd_rollouts(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.list_rollouts(args.product_id, limit=args.limit,
+                                                     offset=args.offset))
 
 
 def cmd_audit(args: argparse.Namespace) -> int:

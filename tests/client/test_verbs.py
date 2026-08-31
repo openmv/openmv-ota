@@ -496,3 +496,30 @@ def test_publish_warns_but_ships_without_an_sbom(wired, tmp_path, capsys):
     assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
     assert "no SBOM attached" in capsys.readouterr().err
     assert store.list_releases(BID)[0]["sbom_key"] is None
+
+
+def test_rollout_create_status_and_list(wired, tmp_path, capsys):
+    """A rollout can be staged AFTER publish (`rollout create`), found again
+    (`client rollouts`), and its counters read (`rollout status`) -- losing the publish
+    output no longer strands the operator with an id nothing can recover."""
+    import json
+
+    store, root = wired
+    _build_release(root / "p")
+    assert main(["client", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
+    rel = json.loads(capsys.readouterr().out)["release_id"]
+
+    assert main(["client", "rollout", "create", "--release", rel, "--cohort", "beta",
+                 "--percent", "5"]) == 0
+    out = capsys.readouterr().out
+    assert "cohort=beta" in out and "5.0%" in out
+
+    assert main(["client", "rollouts", "--product-id", str(BID), "--limit", "10",
+                 "--offset", "0"]) == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["total"] == 1 and body["rollouts"][0]["release_id"] == rel
+    rid = body["rollouts"][0]["rollout_id"]
+
+    assert main(["client", "rollout", "status", "--id", rid]) == 0
+    st = json.loads(capsys.readouterr().out)
+    assert st["state"] == "active" and st["attempted"] == 0

@@ -78,15 +78,31 @@ class Api:
         return self._req("DELETE", "/api/v1/admin/releases/%s/artifacts" % release_id,
                          params={"force": "true"} if force else {})
 
-    def create_rollout(self, release_id: str, cohort: str, percent: float):
-        return self._req("POST", "/api/v1/admin/rollouts",
-                         json={"release_id": release_id, "cohort": cohort, "percent": percent})
+    def create_rollout(self, release_id: str, cohort: str, percent: float,
+                       failure_threshold: float | None = None):
+        body = {"release_id": release_id, "cohort": cohort, "percent": percent}
+        if failure_threshold is not None:
+            body["failure_threshold"] = failure_threshold
+        return self._req("POST", "/api/v1/admin/rollouts", json=body)
 
     def patch_rollout(self, rollout_id: str, **body):
         return self._req("PATCH", "/api/v1/admin/rollouts/%s" % rollout_id, json=body)
 
     def rollback_rollout(self, rollout_id: str):
         return self._req("POST", "/api/v1/admin/rollouts/%s/rollback" % rollout_id)
+
+    def list_rollouts(self, product_id=None, limit=None, offset=None):
+        params = {}
+        if product_id is not None:
+            params["product_id"] = product_id
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return self._req("GET", "/api/v1/admin/rollouts", params=params)
+
+    def rollout_status(self, rollout_id: str):
+        return self._req("GET", "/api/v1/admin/rollouts/%s/status" % rollout_id)
 
     def list_cohorts(self, product_id=None):
         params = {"product_id": product_id} if product_id is not None else {}
