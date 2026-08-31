@@ -28,13 +28,11 @@ worst it can do is serve stale bytes or nothing. Because the manifest's artifact
 **relative filenames**, the server serves the manifest untouched and co-locates the
 `-ota.img.gz`/`-ota.delta.gz` beside it — no rewriting, no re-signing.
 
-**It never serves an unregistered device.** Every deployment queries OpenMV's central registration
-registry (openmv-swd-ids) to validate each camera. An unregistered `(board, id)` gets
-`{update: false}` and **zero stored state** — no device row, no telemetry, no artifact, no cache
-entry. This is a storage-exhaustion defense: the device id is attacker-controlled, so anything
-allocated per-id turns cost into `O(attacker requests)`. The gate caps allocation to the bounded
-registered fleet. Registration is required and configured with `SWD_IDS_VERIFY_URL` +
-`SWD_IDS_VERIFY_TOKEN` (an OpenMV-issued token tied to your account).
+**It never serves an unregistered device.** Every deployment validates each camera against
+OpenMV's central registration server. An unregistered `(board, id)` gets `{update: false}` and
+**zero stored state** — no device row, no telemetry, no cache entry — so unknown ids can never
+grow the database or storage. Registration is required: the two registration settings below
+carry the verify endpoint and an OpenMV-issued token tied to your account.
 
 ## Configuration
 
@@ -48,14 +46,14 @@ are also honored).
 | storage backend | `OPENMV_OTA_STORAGE_BACKEND` | `local` (disk, dev) or `s3` (R2/S3, prod) |
 | bucket + keys | `OPENMV_OTA_S3_BUCKET`, `OPENMV_OTA_S3_ENDPOINT_URL`, `OPENMV_OTA_S3_REGION`, `OPENMV_OTA_S3_ACCESS_KEY_ID`, `OPENMV_OTA_S3_SECRET_ACCESS_KEY` | R2/S3/MinIO |
 | database | `DATABASE_URL` / `OPENMV_OTA_DATABASE_URL` | `postgresql://…` (prod) or `sqlite:///./ota.db` (dev) |
-| registration | `OPENMV_OTA_SWD_IDS_VERIFY_URL`, `OPENMV_OTA_SWD_IDS_VERIFY_TOKEN` | **required** — the swd-ids verify endpoint + token |
+| registration | `OPENMV_OTA_SWD_IDS_VERIFY_URL`, `OPENMV_OTA_SWD_IDS_VERIFY_TOKEN` | **required** — the registration verify endpoint + its OpenMV-issued token |
 | admin bootstrap | `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` | seeds the first admin token on `server init` |
 | cohort salt | `OPENMV_OTA_COHORT_SALT` | the server HMAC secret; persisted if unset |
 | rate + backoff | `OPENMV_OTA_CHECKIN_RATE_PER_MIN`, `OPENMV_OTA_POLL_AFTER_S`, `OPENMV_OTA_CAPABILITY_TTL` | tunables |
 | browser UI origins | `OPENMV_OTA_CORS_ALLOW_ORIGINS` | comma-separated origins allowed to call this API **cross-origin**, e.g. `https://cloud.openmv.io`. Empty by default = no CORS headers at all. Needed only when a UI is served from a *different* origin than this app; a same-origin UI, or one that proxies through its own backend, leaves it unset. `*` is **refused at startup** -- name the origins |
 | trusted proxy | `OPENMV_OTA_TRUSTED_PROXY_IPS` | which upstream peers may set `X-Forwarded-For`; set `*` behind a PaaS proxy (Render/Fly) so the per-IP rate limiter sees the real client, not the proxy |
-| board codes | `OPENMV_OTA_BOARD_CODE_OVERRIDES` | JSON map to add/correct firmware-name → swd-ids-code translations without a redeploy |
-| unverified boards | `OPENMV_OTA_UNVERIFIED_BOARDS` | JSON list of firmware board names swd-ids never registers (Arduino boards, pre-registration M4); their registration check is bypassed and OTA is served read-only (no device row, so still zero-footprint). Defaults to those known board types; override to change the set |
+| board codes | `OPENMV_OTA_BOARD_CODE_OVERRIDES` | JSON map to add/correct firmware-name → registration-code translations without a redeploy |
+| unverified boards | `OPENMV_OTA_UNVERIFIED_BOARDS` | JSON list of firmware board names the registry never registers (Arduino boards, pre-registration M4); their registration check is bypassed and OTA is served read-only (no device row, so still zero-footprint). Defaults to those known board types; override to change the set |
 | OpenMV Live | `OPENMV_LIVE_RELAY_URL`, `OPENMV_LIVE_TOKEN_SECRET`, `OPENMV_OTA_LIVE_TOKEN_TTL` | when the relay URL **and** secret are both set, every registered device's check-in response carries a `live` grant: a per-stream map of ready-made `camera_url` (WebSocket push) + `poll_url` (deep-sleep wake check) URLs sharing ONE HMAC device token (TTL default 24 h, renewed each check-in). The check-in's `streams` list names the device's image streams (multi-camera boards, virtual streams); names are sanitized and capped, defaulting to a single stream `"0"`. The secret is the live-relay worker's `OPENMV_LIVE_TOKEN_SECRET`. Unregistered and bypassed boards never get a grant |
 | OpenMV datalake | `OPENMV_DATALAKE_URL` (reuses `OPENMV_LIVE_TOKEN_SECRET`) | when set with the shared secret, a registered device's check-in also carries an `ingest` grant: a ready-made ingest `url` (the device appends a topic, e.g. `console`) + an HMAC `ingest` token whose subject binds the **account** (`account/device`), so a device can't attribute data to another account. Same TTL/renewal as the Live grant; unregistered and bypassed boards never get one |
 

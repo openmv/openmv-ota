@@ -63,7 +63,7 @@ holds no key, so it can't prove its account):
   writer-wins; on a shared/hosted server, gate who may call the bind endpoint by
   proof of ownership (the website mediates) — there is no cryptographic ownership
   proof at this layer.
-- Only a **registered** device (past the swd-ids gate) can ever create a binding, so
+- Only a **registered** device (past the registration gate) can ever create a binding, so
   the binding table is bounded by the registered fleet — a fake id can't grow it.
 - `registrar_ref` (which factory/form-key registered a unit) is **per-factory and
   shared** across makers; it is never used to infer the account.
