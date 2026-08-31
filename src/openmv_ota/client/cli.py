@@ -82,7 +82,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_rc.add_argument("--release", required=True, metavar="RELEASE_ID",
                       help="release to stage (ids come from publish / `client releases`)")
     p_rc.add_argument("--cohort", default="__default__",
-                      help="cohort to stage it to (default: the whole fleet)")
+                      help="cohort to stage it to (default: __default__, the un-assigned devices)")
     p_rc.add_argument("--percent", type=float, required=True,
                       help="share of the cohort to offer it to, 0-100")
     p_rc.add_argument("--failure-threshold", type=float, default=0.05,
