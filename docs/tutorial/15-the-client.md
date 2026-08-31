@@ -76,6 +76,24 @@ format's name). Step by step:
 A published release is **inert**: no device is offered it until a rollout (or a pin)
 points at it.
 
+## Cohorts
+
+Before staging an update, decide who gets it first. **Cohorts** exist so a release
+can go to less than everyone — a `beta` bench, a canary
+site, a customer. They're free-form names, and the model is simple: **every device is
+in exactly one cohort**, starting in `__default__` until you move it:
+
+```
+openmv-ota client cohort assign --cohort beta --device 30003d000851303436313832
+openmv-ota client cohort list                     # every cohort in use + device count
+```
+
+A rollout reaches its cohort by exact name — no wildcards, no nesting — so assignment
+is also removal: a device moved to `beta` leaves `__default__`, and rollouts staged to
+`__default__` stop reaching it. Assignment counts only the devices that exist and are
+yours; the summary reports `assigned 1/1 device(s) to cohort beta` so a typo'd id is
+visible.
+
 ## Staging a rollout
 
 The server never pushes anything: cameras poll, and each check-in is answered by
@@ -83,8 +101,8 @@ policy. A **rollout** is that policy's unit — an object of its own on the serv
 separate from the release it carries. It binds together:
 
 - **one release** — the thing to distribute;
-- **one cohort** — a named group of devices to distribute it to (devices you haven't
-  grouped sit in the cohort named `__default__`, which is also the CLI's default);
+- **one cohort** — the group of devices to distribute it to (`__default__` when you
+  don't pass `--cohort`);
 - **a percentage** — how much of that cohort is currently offered it;
 - **a state** — `active`, `paused`, or `rolled_back`;
 - **counters** — how many devices it was offered to (`attempted`), how many now run it
@@ -191,23 +209,6 @@ no fallback by design.
 - **`client audit`** — the append-only audit log: every publish, rollout change, pin,
   assignment, token event, and auto-pause, each with its actor. `--since SEQ` resumes
   from a sequence cursor, so a poller never skips or repeats entries.
-
-## Cohorts
-
-Cohorts exist so a rollout can target less than everyone — a `beta` bench, a canary
-site, a customer. They're free-form names, and the model is simple: **every device is
-in exactly one cohort**, starting in `__default__` until you move it:
-
-```
-openmv-ota client cohort assign --cohort beta --device 30003d000851303436313832
-openmv-ota client cohort list                     # every cohort in use + device count
-```
-
-A rollout reaches its cohort by exact name — no wildcards, no nesting — so assignment
-is also removal: a device moved to `beta` leaves `__default__`, and rollouts staged to
-`__default__` stop reaching it. Assignment counts only the devices that exist and are
-yours; the summary reports `assigned 1/1 device(s) to cohort beta` so a typo'd id is
-visible.
 
 ## Pins
 
