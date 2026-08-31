@@ -262,12 +262,6 @@ membership is a hash, not a list) — and `rates` reads each counter against it,
 "how far through this stage is the fleet, and how is it going" is one glance:
 everyone staged was offered it, 90% already run it, nobody fell back. Time to raise.
 
-## See also
-
-- [16 · Operating the fleet](16-operating-the-fleet.md) — watching devices take it,
-  pins, delta bases, accounts, and the full verb table.
-- [8 · Release artifacts](08-release-artifacts.md) — what `publish` uploads and how it's signed.
-
 ---
 
 *[← 14 · Recovery](14-recovery.md) · [Index](00-introduction.md) · [16 · Operating the fleet →](16-operating-the-fleet.md)*
