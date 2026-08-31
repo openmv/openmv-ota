@@ -11,11 +11,13 @@ hosts releases and stages them across a fleet. The **`client`** verb publishes t
 
 Two deployment shapes run the **same software**:
 
-- **Self-hosted (the default):** you run your own server — your own Render/Postgres/R2. The
+- **OpenMV-hosted (the default):** OpenMV runs the server + website, so there is nothing to
+  deploy — you publish releases with your account's token and everything below (database,
+  bucket, registration credentials) is already supplied. That website embeds this package via
+  `create_app()`.
+- **Self-hosted:** you run your own server — your own Render/Postgres/R2. The
   Dockerfile, `render.yaml`, and `docker-compose.yml` under
   [src/openmv_ota/server/deploy/](../../src/openmv_ota/server/deploy/) make it turnkey.
-- **OpenMV-hosted:** OpenMV runs a server + website so you don't have to. That website embeds this
-  package via `create_app()` and supplies the database, bucket, and registration credentials.
 
 ## Two things the server never does
 
@@ -109,9 +111,10 @@ object (`authenticate(header) -> Principal`) that resolves a logged-in maker to 
 server holds the account→ownership mapping but never any billing or identity — that lives in the
 website.
 
-## Deploying
+## Deploying (self-hosted only)
 
-The base `pip install openmv-ota` stays lean; the server needs the extras:
+On the OpenMV-hosted service there is nothing to deploy. Self-hosting starts here: the base
+`pip install openmv-ota` stays lean, and the server needs the extras:
 
 ```
 pip install "openmv-ota[server]"                          # fastapi/uvicorn + local-disk + sqlite
