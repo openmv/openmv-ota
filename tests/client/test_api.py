@@ -148,11 +148,13 @@ def test_devices_filter_and_paging_params():
 def test_cohort_calls():
     api, c = _api(_Resp(200, {}))
     api.list_cohorts(7)
-    api.assign_cohort("beta", ["d1", "d2"])
+    api.assign_cohort("beta", device_ids=["d1", "d2"])
     assert c.calls[0][:2] == ("GET", "/api/v1/admin/cohorts")
     assert c.calls[0][2]["params"] == {"product_id": 7}
     assert c.calls[1][:2] == ("POST", "/api/v1/admin/cohorts/assign")
     assert c.calls[1][2]["json"] == {"cohort": "beta", "device_ids": ["d1", "d2"]}
+    api.assign_cohort("beta", product_id=7)
+    assert c.calls[2][2]["json"] == {"cohort": "beta", "product_id": 7}
 
 
 def test_pin_calls():

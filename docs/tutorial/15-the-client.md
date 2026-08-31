@@ -84,7 +84,7 @@ site, a customer. They're free-form names, and the model is simple: **every devi
 in exactly one cohort**, starting in `__default__` until you move it:
 
 ```
-$ openmv-ota client cohort assign --cohort beta --device 30003d000851303436313832
+$ openmv-ota client cohort assign --cohort beta --id 30003d000851303436313832
 assigned 1/1 device(s) to cohort beta
 
 $ openmv-ota client cohort list
@@ -94,10 +94,15 @@ $ openmv-ota client cohort list
     { "cohort": "beta", "devices": 8 }
   ]
 }
+
+$ openmv-ota client cohort assign --cohort beta --product-id 41123
+assigned 412 device(s) (product 41123) to cohort beta
 ```
 
-`--device` (repeatable) takes the **device id** — the same MCU unique id everywhere on
-this page, listed by `client devices`. A rollout reaches its cohort by exact name — no
+Exactly one selector per command: `--id` (repeatable) is the surgical one — the
+**device id**, the same MCU unique id everywhere on this page, listed by
+`client devices` — and `--product-id` is the bulk one, moving every device of the
+product at once. A rollout reaches its cohort by exact name — no
 wildcards, no nesting — so assignment is also removal: a device moved to `beta` leaves
 `__default__`, and rollouts staged to `__default__` stop reaching it. Assignment counts
 only the devices that exist and are yours — the `1/1` in the summary is what makes a
@@ -326,7 +331,7 @@ them — no special case for parsers.
 | `client rollout create --release R --percent N [--cohort C]` | stage an already-published release |
 | `client rollout raise\|pause\|resume\|rollback --id ID` | drive a rollout (`raise` takes `--percent`) |
 | `client rollout status --id ID` | one rollout's counters (JSON) |
-| `client cohort list` / `cohort assign --cohort C --device ID…` | see cohorts / move devices into one |
+| `client cohort list` / `cohort assign --cohort C (--id ID… \| --product-id N)` | see cohorts / move devices into one, surgically or by whole product |
 | `client pin device --id ID (--release R \| --clear)` | pin one device, overriding rollouts |
 | `client pin cohort --product-id N --cohort C (--release R \| --clear)` | pin a whole cohort |
 | `client bases -b BOARD [--last N] [-o DIR]` | download recent images as delta bases |

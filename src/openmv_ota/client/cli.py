@@ -114,10 +114,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_col.add_argument("--product-id", type=int, help="only this product's cohorts")
     _creds(p_col)
     p_col.set_defaults(func=cmd_cohort, _command="client cohort list", action="list")
-    p_coa = cosub.add_parser("assign", help="move devices into a cohort")
+    p_coa = cosub.add_parser("assign", help="move devices into a cohort (by id, or a whole product)")
     p_coa.add_argument("--cohort", required=True, help="cohort to move the devices into")
-    p_coa.add_argument("--device", action="append", dest="devices", required=True, metavar="DEVICE_ID",
-                       help="device id to assign (repeatable)")
+    ga = p_coa.add_mutually_exclusive_group(required=True)   # surgical or bulk, exactly one
+    ga.add_argument("--id", action="append", dest="devices", metavar="DEVICE_ID",
+                    help="device id to assign (repeatable)")
+    ga.add_argument("--product-id", type=int,
+                    help="assign EVERY device of this product instead")
     _creds(p_coa)
     p_coa.set_defaults(func=cmd_cohort, _command="client cohort assign", action="assign")
 
@@ -429,10 +432,14 @@ def cmd_cohort(args: argparse.Namespace) -> int:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "list":
             print(json.dumps(api.list_cohorts(args.product_id), indent=2))
-        else:
-            res = api.assign_cohort(args.cohort, args.devices)
+        elif args.devices is not None:
+            res = api.assign_cohort(args.cohort, device_ids=args.devices)
             return _emit(args, res, "assigned %d/%d device(s) to cohort %s"
-                  % (res["assigned"], len(args.devices), res["cohort"]))
+                         % (res["assigned"], len(args.devices), res["cohort"]))
+        else:
+            res = api.assign_cohort(args.cohort, product_id=args.product_id)
+            return _emit(args, res, "assigned %d device(s) (product %d) to cohort %s"
+                         % (res["assigned"], args.product_id, res["cohort"]))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

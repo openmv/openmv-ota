@@ -95,7 +95,7 @@ Grouped by what they manage — the scope column is what the bearer token must c
 | endpoint | scope | what it does |
 |---|---|---|
 | `GET /api/v1/admin/cohorts` | observe | cohorts in use, device count each |
-| `POST /api/v1/admin/cohorts/assign` | manage | move devices into a cohort (ids not yours are skipped, the count says how many landed) |
+| `POST /api/v1/admin/cohorts/assign` | manage | move devices into a cohort — `device_ids` (surgical) or `product_id` (every device of the product), exactly one; devices not yours are skipped, the count says how many landed |
 | `PATCH /api/v1/admin/devices/{id}/pin` | manage | pin/unpin one device (`release_id: null` unpins) |
 | `POST /api/v1/admin/cohorts/pin` | manage | pin/unpin a whole (product, cohort) |
 

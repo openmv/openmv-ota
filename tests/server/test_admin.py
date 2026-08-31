@@ -79,6 +79,24 @@ def test_cohorts_list_and_assign(tmp_path):
     assert empty.json() == {"cohort": "beta", "assigned": 0}   # no-op when nothing to assign
 
 
+def test_cohort_assign_by_product_and_selector_rule(tmp_path):
+    """product_id is the bulk selector (every device of the product, same account scoping);
+    exactly one of device_ids/product_id must be given -- both or neither is a 400."""
+    app, store = _app(tmp_path)
+    for d in ("d1", "d2"):
+        store.upsert_device(device_id=d, product_id=BID)
+    store.upsert_device(device_id="other", product_id=BID + 1)
+    c = TestClient(app)
+    r = c.post("/api/v1/admin/cohorts/assign", headers=AUTH,
+               json={"cohort": "beta", "product_id": BID})
+    assert r.json() == {"cohort": "beta", "assigned": 2}
+    assert store.get_device("other")["cohort"] == "__default__"
+    both = c.post("/api/v1/admin/cohorts/assign", headers=AUTH,
+                  json={"cohort": "b", "device_ids": ["d1"], "product_id": BID})
+    neither = c.post("/api/v1/admin/cohorts/assign", headers=AUTH, json={"cohort": "b"})
+    assert both.status_code == 400 and neither.status_code == 400
+
+
 def test_cohort_assign_requires_scope(tmp_path):
     app, store = _app(tmp_path, scopes=("observe",))
     r = TestClient(app).post("/api/v1/admin/cohorts/assign", headers=AUTH,

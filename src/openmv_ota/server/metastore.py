@@ -466,6 +466,17 @@ class SqlMetadataStore:
             params.append(account_id)
         return self.execute(sql, tuple(params)).rowcount
 
+    def assign_cohort_product(self, product_id: int, cohort: str, account_id=None) -> int:
+        """Move EVERY device of ``product_id`` into ``cohort``; returns how many moved.
+        The bulk selector beside per-id ``assign_cohort`` -- a cohort stays a per-device
+        label, this just sets it fleet-wide in one statement. Same account scoping."""
+        sql = "UPDATE devices SET cohort = ? WHERE product_id = ?"
+        params = [cohort, product_id]
+        if account_id is not None:
+            sql += " AND account_id = ?"
+            params.append(account_id)
+        return self.execute(sql, tuple(params)).rowcount
+
     # --- version pins (device / cohort, override rollouts) ----------------------------------
 
     def set_device_pin(self, device_id: str, release_id: str | None) -> None:

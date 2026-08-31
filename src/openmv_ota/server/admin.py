@@ -79,7 +79,8 @@ class RolloutPatch(BaseModel):
 
 class CohortAssign(BaseModel):
     cohort: str
-    device_ids: list[str]
+    device_ids: list[str] | None = None    # surgical: these exact devices
+    product_id: int | None = None          # bulk: every device of this product
 
 
 class DevicePin(BaseModel):
@@ -344,12 +345,22 @@ def list_cohorts(request: Request, product_id: int | None = None,
 @admin.post("/cohorts/assign", responses={200: {"model": CohortAssigned}})
 def assign_cohort(body: CohortAssign, request: Request,
                   principal: Principal = Depends(require_scope("manage"))):
+    """Move devices into a cohort -- surgically by id, or in bulk by product (exactly one
+    selector). Both are scoped to the caller's account: an id (or a product's device)
+    belonging to another account is silently skipped, never revealed."""
     ms = request.app.state.metastore
-    # scoped to the caller's account: an id belonging to another account is silently skipped
-    n = ms.assign_cohort(body.device_ids, body.cohort, account_id=principal.account_id)
+    if (body.device_ids is None) == (body.product_id is None):
+        raise HTTPException(status_code=400,
+                            detail="pass exactly one of device_ids or product_id")
+    if body.device_ids is not None:
+        n = ms.assign_cohort(body.device_ids, body.cohort, account_id=principal.account_id)
+        data = {"assigned": n, "requested": len(body.device_ids)}
+    else:
+        n = ms.assign_cohort_product(body.product_id, body.cohort,
+                                     account_id=principal.account_id)
+        data = {"assigned": n, "product_id": body.product_id}
     ms.append_audit(actor=principal.name, action="cohort.assign", entity_type="cohort",
-                    entity_id=body.cohort, data={"assigned": n, "requested": len(body.device_ids)},
-                    account_id=principal.account_id)
+                    entity_id=body.cohort, data=data, account_id=principal.account_id)
     return {"cohort": body.cohort, "assigned": n}
 
 

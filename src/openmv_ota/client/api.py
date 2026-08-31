@@ -108,9 +108,13 @@ class Api:
         params = {"product_id": product_id} if product_id is not None else {}
         return self._req("GET", "/api/v1/admin/cohorts", params=params)
 
-    def assign_cohort(self, cohort, device_ids):
-        return self._req("POST", "/api/v1/admin/cohorts/assign",
-                         json={"cohort": cohort, "device_ids": device_ids})
+    def assign_cohort(self, cohort, device_ids=None, product_id=None):
+        body = {"cohort": cohort}
+        if device_ids is not None:
+            body["device_ids"] = device_ids
+        if product_id is not None:
+            body["product_id"] = product_id
+        return self._req("POST", "/api/v1/admin/cohorts/assign", json=body)
 
     def pin_device(self, device_id, release_id):
         return self._req("PATCH", "/api/v1/admin/devices/%s/pin" % device_id,

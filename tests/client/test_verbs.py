@@ -267,10 +267,37 @@ def test_cohort_list_and_assign(wired, tmp_path, capsys):
     import json
     store, _ = wired
     store.upsert_device(device_id="d1", product_id=BID)
-    assert main(["client", "cohort", "assign", "--cohort", "beta", "--device", "d1"]) == 0
+    assert main(["client", "cohort", "assign", "--cohort", "beta", "--id", "d1"]) == 0
     assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
     assert main(["client", "cohort", "list"]) == 0
     assert json.loads(capsys.readouterr().out) == {"cohorts": [{"cohort": "beta", "devices": 1}]}
+
+
+def test_cohort_assign_whole_product(wired, tmp_path, capsys):
+    """The bulk selector: --product-id moves every device of the product in one call --
+    the surgical per-id path stays for anything finer."""
+    store, _ = wired
+    for d in ("d1", "d2", "d3"):
+        store.upsert_device(device_id=d, product_id=BID)
+    store.upsert_device(device_id="other", product_id=BID + 1)
+    assert main(["client", "cohort", "assign", "--cohort", "beta",
+                 "--product-id", str(BID)]) == 0
+    assert "assigned 3 device(s) (product %d) to cohort beta" % BID in capsys.readouterr().out
+    assert store.get_device("other")["cohort"] == "__default__"   # untouched
+
+
+def test_cohort_assign_requires_exactly_one_selector(wired, tmp_path, capsys):
+    """--id and --product-id are mutually exclusive at the prompt, and the API enforces
+    the same rule for direct callers."""
+    import pytest
+
+    from openmv_ota.cli import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["client", "cohort", "assign", "--cohort", "b",
+                                   "--id", "d1", "--product-id", "7"])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["client", "cohort", "assign", "--cohort", "b"])
 
 
 def test_cohort_error_surfaced(tmp_path, monkeypatch, capsys):
@@ -279,7 +306,7 @@ def test_cohort_error_surfaced(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
     monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
     monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
-    assert main(["client", "cohort", "assign", "--cohort", "b", "--device", "d1"]) == 1
+    assert main(["client", "cohort", "assign", "--cohort", "b", "--id", "d1"]) == 1
     assert "403" in capsys.readouterr().err
 
 
@@ -462,13 +489,14 @@ def test_write_verbs_still_print_prose_without_json(monkeypatch, capsys):
     from openmv_ota.client import cli as ccli
 
     class FakeApi:
-        def assign_cohort(self, cohort, devices):
+        def assign_cohort(self, cohort, device_ids=None, product_id=None):
+            devices = device_ids
             return {"cohort": cohort, "assigned": len(devices)}
 
     monkeypatch.setattr(ccli, "_make_api", lambda cfg: FakeApi())
     monkeypatch.setattr(ccli.config, "resolve",
                         lambda s, t: types.SimpleNamespace(server_url="x", token="y"))
-    ns = _ns(["client", "cohort", "assign", "--cohort", "beta", "--device", "d1"])
+    ns = _ns(["client", "cohort", "assign", "--cohort", "beta", "--id", "d1"])
     assert ns.func(ns) == 0
     assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
 
