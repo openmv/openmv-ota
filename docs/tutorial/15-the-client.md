@@ -79,12 +79,27 @@ points at it.
 ## Cohorts
 
 Before staging an update, decide who gets it first. **Cohorts** exist so a release
-can go to less than everyone — a `beta` bench, a canary
-site, a customer. They're free-form names, and the model is simple: **every device is
-in exactly one cohort**, starting in `__default__` until you move it:
+can go to less than everyone — a `beta` bench, a canary site, a customer. How they fit
+the rest of your account, top to bottom:
+
+- Your **account** holds everything — devices, releases, rollouts, cohorts, audit.
+- **Each board you build for is its own product**: `project new` derives one product id
+  per board, and a release is built and published per board (`publish -b`) — which is
+  what keeps an `OPENMV_N6` image from ever being offered to an `OPENMV_RT1060`.
+- **Cohort names are free-form, account-wide labels on devices** — every device is in
+  exactly one, starting in `__default__` until you move it, and devices of different
+  products can share a name (`cohort list` counts a name across products unless you
+  filter with `--product-id`).
+- **Update targeting is always (product, cohort)**: a release fits one product, so a
+  rollout reaches the `beta` devices *of its release's product*. Shipping one app
+  version for a two-board product to `beta` is two publishes and two rollouts sharing
+  the cohort name.
+
+Use as many or as few names as you like — a fleet can live its whole life in
+`__default__`; cohorts only exist to stage updates to a subset:
 
 ```
-$ openmv-ota client cohort assign --cohort beta --id 30003d000851303436313832
+$ openmv-ota client cohort assign --cohort beta --device-id 30003d000851303436313832
 assigned 1/1 device(s) to cohort beta
 
 $ openmv-ota client cohort list
@@ -140,7 +155,7 @@ $ openmv-ota client publish . -b OPENMV_N6 --rollout beta:5
 published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl)
 rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
 
-$ openmv-ota client rollout create --release rel_4f9c2a81d06b73ee --cohort beta --percent 5
+$ openmv-ota client rollout create --release-id rel_4f9c2a81d06b73ee --cohort beta --percent 5
 rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
 ```
 
@@ -162,10 +177,10 @@ isn't the canary in every rollout.
 From there the lifecycle is four actions:
 
 ```
-openmv-ota client rollout raise  --id ro_1c3f88ba90d2e644 --percent 50
-openmv-ota client rollout pause  --id ro_1c3f88ba90d2e644
-openmv-ota client rollout resume --id ro_1c3f88ba90d2e644
-openmv-ota client rollout rollback --id ro_1c3f88ba90d2e644
+openmv-ota client rollout raise  --rollout-id ro_1c3f88ba90d2e644 --percent 50
+openmv-ota client rollout pause  --rollout-id ro_1c3f88ba90d2e644
+openmv-ota client rollout resume --rollout-id ro_1c3f88ba90d2e644
+openmv-ota client rollout rollback --rollout-id ro_1c3f88ba90d2e644
 ```
 
 | action | what happens |
@@ -180,7 +195,7 @@ openmv-ota client rollout rollback --id ro_1c3f88ba90d2e644
 four numbers:
 
 ```
-$ openmv-ota client rollout status --id ro_1c3f88ba90d2e644
+$ openmv-ota client rollout status --rollout-id ro_1c3f88ba90d2e644
 {
   "rollout_id": "ro_1c3f88ba90d2e644",
   "state": "active",
@@ -232,9 +247,9 @@ A pin overrides rollouts for one device or one whole cohort — "this camera run
 this release":
 
 ```
-openmv-ota client pin device --id 30003d000851303436313832 --release rel_4f9c2a81d06b73ee
-openmv-ota client pin device --id 30003d000851303436313832 --clear
-openmv-ota client pin cohort --product-id 396486252 --cohort beta --release rel_4f9c2a81d06b73ee
+openmv-ota client pin device --device-id 30003d000851303436313832 --release-id rel_4f9c2a81d06b73ee
+openmv-ota client pin device --device-id 30003d000851303436313832 --clear
+openmv-ota client pin cohort --product-id 396486252 --cohort beta --release-id rel_4f9c2a81d06b73ee
 ```
 
 A device pin beats a cohort pin, and either beats the rollout. A pin only ever produces
@@ -273,7 +288,7 @@ Retention has **no depth limit**: images are small, and only you know how long a
 stays in the field. Reclaiming space is therefore a deliberate act:
 
 ```
-openmv-ota client prune --release rel_4f9c2a81d06b73ee
+openmv-ota client prune --release-id rel_4f9c2a81d06b73ee
 ```
 
 The release **row** survives — it is the audit trail and the anti-rollback history — so
@@ -291,8 +306,8 @@ privileged `accounts` scope, which ordinary working tokens don't carry:
 ```
 openmv-ota client account create --name "DroneCo"     # a new account + its first admin token
 openmv-ota client account list | rename | deactivate | activate
-openmv-ota client token issue --account acct_7bd21c50e83a94f1 --name ci --scope publish
-openmv-ota client token list --account acct_7bd21c50e83a94f1
+openmv-ota client token issue --account-id acct_7bd21c50e83a94f1 --name ci --scope publish
+openmv-ota client token list --account-id acct_7bd21c50e83a94f1
 openmv-ota client token revoke  <token-hash>
 openmv-ota client token rotate  <token-hash>          # replacement issued, old revoked
 ```
@@ -303,7 +318,7 @@ openmv-ota client token rotate  <token-hash>          # replacement issued, old 
 | secrets | shown **once**, at issue/rotate — the server stores only a hash. `token list` shows metadata and hashes, never secrets |
 | revocation | by hash. `deactivate` revokes every token an account has and blocks issuing new ones — admin access dies, but fielded devices keep being served, so a billing lapse never bricks a fleet |
 
-`client bind --id DEVICE` (re)binds a device to **your** account — the recovery path when
+`client bind --device-id DEVICE` (re)binds a device to **your** account — the recovery path when
 a camera was first seen under the wrong account. A device's binding is otherwise learned
 from its first valid check-in and sticky from then on.
 
@@ -314,7 +329,7 @@ summary line — so nothing has to be scripted by parsing English:
 
 ```bash
 rel=$(openmv-ota client publish ./p -b OPENMV_N6 --json | jq -r .release_id)
-tok=$(openmv-ota client token issue --account "$acct" --name ci --json | jq -r .token)
+tok=$(openmv-ota client token issue --account-id "$acct" --name ci --json | jq -r .token)
 ```
 
 Verbatim matters most for the one-time secrets (`account create`, `token issue`,
@@ -330,15 +345,15 @@ them — no special case for parsers.
 | `client login --server URL [--token T]` | save the profile (token also via stdin / `OPENMV_OTA_TOKEN`) |
 | `client logout` | remove the saved profile |
 | `client publish DIR -b BOARD [--rollout c:N] [--allow-republish]` | upload a built release, optionally staging it |
-| `client rollout create --release R --percent N [--cohort C]` | stage an already-published release |
-| `client rollout raise\|pause\|resume\|rollback --id ID` | drive a rollout (`raise` takes `--percent`) |
-| `client rollout status --id ID` | one rollout's counters (JSON) |
-| `client cohort list` / `cohort assign --cohort C (--id ID… \| --product-id N)` | see cohorts / move devices into one, surgically or by whole product |
-| `client pin device --id ID (--release R \| --clear)` | pin one device, overriding rollouts |
-| `client pin cohort --product-id N --cohort C (--release R \| --clear)` | pin a whole cohort |
+| `client rollout create --release-id R --percent N [--cohort C]` | stage an already-published release |
+| `client rollout raise\|pause\|resume\|rollback --rollout-id ID` | drive a rollout (`raise` takes `--percent`) |
+| `client rollout status --rollout-id ID` | one rollout's counters (JSON) |
+| `client cohort list` / `cohort assign --cohort C (--device-id ID… \| --product-id N)` | see cohorts / move devices into one, surgically or by whole product |
+| `client pin device --device-id ID (--release-id R \| --clear)` | pin one device, overriding rollouts |
+| `client pin cohort --product-id N --cohort C (--release-id R \| --clear)` | pin a whole cohort |
 | `client bases -b BOARD [--last N] [-o DIR]` | download recent images as delta bases |
-| `client prune --release ID [--force]` | delete a release's stored artifacts, keep its history row |
-| `client bind --id ID` | (re)bind a device to your account |
+| `client prune --release-id ID [--force]` | delete a release's stored artifacts, keep its history row |
+| `client bind --device-id ID` | (re)bind a device to your account |
 | `client fleet` / `devices` / `releases` / `rollouts` / `audit` | the read side (JSON) |
 | `client account create\|list\|rename\|deactivate\|activate` | tenant accounts (needs `accounts`) |
 | `client token issue\|list\|revoke\|rotate` | an account's API tokens (secrets shown once) |

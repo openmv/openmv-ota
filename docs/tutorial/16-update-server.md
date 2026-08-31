@@ -196,7 +196,7 @@ local server verbs (no API round-trip, direct database access):
 ```
 openmv-ota server account create --name "DroneCo"    # an account_id + its first admin token
 openmv-ota server account list | rename | deactivate | activate
-openmv-ota server token issue --name ci --scope publish --account acct_7bd21c50e83a94f1
+openmv-ota server token issue --name ci --scope publish --account-id acct_7bd21c50e83a94f1
 openmv-ota server token list | revoke <hash> | rotate <hash>
 ```
 

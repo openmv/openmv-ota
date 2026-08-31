@@ -173,7 +173,7 @@ def test_prune_deletes_a_release_s_objects(wired, tmp_path, capsys):
     rel_id = store.list_releases(BID)[0]["release_id"]
     capsys.readouterr()
 
-    assert main(["client", "prune", "--release", rel_id]) == 0
+    assert main(["client", "prune", "--release-id", rel_id]) == 0
     assert "deleted 2 object(s)" in capsys.readouterr().out    # manifest + image
     assert store.get_release(rel_id) is not None               # history survives
 
@@ -186,10 +186,10 @@ def test_prune_refuses_a_release_a_rollout_still_offers(wired, tmp_path, capsys)
                  "--rollout", "beta:100"]) == 0
     rel_id = store.list_releases(BID)[0]["release_id"]
     capsys.readouterr()
-    assert main(["client", "prune", "--release", rel_id]) == 1
+    assert main(["client", "prune", "--release-id", rel_id]) == 1
     assert "still being offered" in capsys.readouterr().err
     # ...and --force is the explicit override
-    assert main(["client", "prune", "--release", rel_id, "--force"]) == 0
+    assert main(["client", "prune", "--release-id", rel_id, "--force"]) == 0
 
 
 def test_publish_missing_artifacts(wired, tmp_path, capsys):
@@ -227,20 +227,20 @@ def test_rollout_raise_pause_resume_rollback(wired, tmp_path, capsys):
     store, _ = wired
     rid = _publish(store, tmp_path)
     capsys.readouterr()
-    assert main(["client", "rollout", "raise", "--id", rid, "--percent", "50"]) == 0
+    assert main(["client", "rollout", "raise", "--rollout-id", rid, "--percent", "50"]) == 0
     assert store.get_rollout(rid)["percent"] == 50
-    assert main(["client", "rollout", "pause", "--id", rid]) == 0
+    assert main(["client", "rollout", "pause", "--rollout-id", rid]) == 0
     assert store.get_rollout(rid)["state"] == "paused"
-    assert main(["client", "rollout", "resume", "--id", rid]) == 0
+    assert main(["client", "rollout", "resume", "--rollout-id", rid]) == 0
     assert store.get_rollout(rid)["state"] == "active"
-    assert main(["client", "rollout", "rollback", "--id", rid]) == 0
+    assert main(["client", "rollout", "rollback", "--rollout-id", rid]) == 0
     assert store.get_rollout(rid)["state"] == "rolled_back"
     assert "rolled_back" in capsys.readouterr().out
 
 
 def test_rollout_server_error_surfaced(wired, tmp_path, capsys):
     store, _ = wired
-    assert main(["client", "rollout", "pause", "--id", "nope"]) == 1   # 404 -> exit 1
+    assert main(["client", "rollout", "pause", "--rollout-id", "nope"]) == 1   # 404 -> exit 1
     assert "404" in capsys.readouterr().err
 
 
@@ -267,7 +267,7 @@ def test_cohort_list_and_assign(wired, tmp_path, capsys):
     import json
     store, _ = wired
     store.upsert_device(device_id="d1", product_id=BID)
-    assert main(["client", "cohort", "assign", "--cohort", "beta", "--id", "d1"]) == 0
+    assert main(["client", "cohort", "assign", "--cohort", "beta", "--device-id", "d1"]) == 0
     assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
     assert main(["client", "cohort", "list"]) == 0
     assert json.loads(capsys.readouterr().out) == {"cohorts": [{"cohort": "beta", "devices": 1}]}
@@ -295,7 +295,7 @@ def test_cohort_assign_requires_exactly_one_selector(wired, tmp_path, capsys):
 
     with pytest.raises(SystemExit):
         build_parser().parse_args(["client", "cohort", "assign", "--cohort", "b",
-                                   "--id", "d1", "--product-id", "7"])
+                                   "--device-id", "d1", "--product-id", "7"])
     with pytest.raises(SystemExit):
         build_parser().parse_args(["client", "cohort", "assign", "--cohort", "b"])
 
@@ -306,17 +306,17 @@ def test_cohort_error_surfaced(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
     monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
     monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
-    assert main(["client", "cohort", "assign", "--cohort", "b", "--id", "d1"]) == 1
+    assert main(["client", "cohort", "assign", "--cohort", "b", "--device-id", "d1"]) == 1
     assert "403" in capsys.readouterr().err
 
 
 def test_pin_device_and_cohort(wired, tmp_path, capsys):
     store, _ = wired
     store.upsert_device(device_id="d1", product_id=BID)
-    assert main(["client", "pin", "device", "--id", "d1", "--release", "rel9"]) == 0
+    assert main(["client", "pin", "device", "--device-id", "d1", "--release", "rel9"]) == 0
     assert "device d1 pinned to rel9" in capsys.readouterr().out
     assert store.get_device("d1")["pinned_release_id"] == "rel9"
-    assert main(["client", "pin", "device", "--id", "d1", "--clear"]) == 0
+    assert main(["client", "pin", "device", "--device-id", "d1", "--clear"]) == 0
     assert "(unpinned)" in capsys.readouterr().out
     assert main(["client", "pin", "cohort", "--product-id", str(BID),
                  "--cohort", "beta", "--release", "rel9"]) == 0
@@ -327,7 +327,7 @@ def test_pin_device_and_cohort(wired, tmp_path, capsys):
 def test_bind_device(wired, tmp_path, capsys):
     store, _ = wired
     store.upsert_device(device_id="d1", product_id=BID)
-    assert main(["client", "bind", "--id", "d1"]) == 0
+    assert main(["client", "bind", "--device-id", "d1"]) == 0
     # the wired token acts for the implicit '' account -> renders as (unassigned)
     assert "device d1 bound to (unassigned)" in capsys.readouterr().out
     assert store.device_account("d1")["source"] == "admin"
@@ -361,21 +361,21 @@ def test_account_lifecycle_verbs(tmp_path, monkeypatch, capsys):
     store = _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts",))
     store.add_account("acctA", "A")
     store.add_token(hash_token("x"), "t", ["observe"], account_id="acctA")   # a token to revoke
-    assert main(["client", "account", "rename", "--id", "acctA", "--name", "New"]) == 0
+    assert main(["client", "account", "rename", "--account-id", "acctA", "--name", "New"]) == 0
     assert "renamed to New" in capsys.readouterr().out
-    assert main(["client", "account", "deactivate", "--id", "acctA"]) == 0
+    assert main(["client", "account", "deactivate", "--account-id", "acctA"]) == 0
     assert "deactivated" in capsys.readouterr().out and store.get_account("acctA")["active"] == 0
-    assert main(["client", "account", "activate", "--id", "acctA"]) == 0
+    assert main(["client", "account", "activate", "--account-id", "acctA"]) == 0
     assert "activated" in capsys.readouterr().out
 
 
 def test_token_verbs(tmp_path, monkeypatch, capsys):
     store = _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts",))
     store.add_account("acctA", "A")
-    assert main(["client", "token", "issue", "--account", "acctA", "--name", "ci"]) == 0
+    assert main(["client", "token", "issue", "--account-id", "acctA", "--name", "ci"]) == 0
     assert "issued for acctA" in capsys.readouterr().out
     th = store.list_tokens(account_id="acctA")[0]["token_hash"]
-    assert main(["client", "token", "list", "--account", "acctA"]) == 0
+    assert main(["client", "token", "list", "--account-id", "acctA"]) == 0
     assert "acctA" in capsys.readouterr().out
     assert main(["client", "token", "rotate", th]) == 0
     assert "rotated ->" in capsys.readouterr().out
@@ -386,7 +386,7 @@ def test_token_verbs(tmp_path, monkeypatch, capsys):
 
 def test_token_verb_error_surfaced(tmp_path, monkeypatch, capsys):
     _wire_super_admin(tmp_path, monkeypatch, scopes=("manage",))    # no accounts scope -> 403
-    assert main(["client", "token", "issue", "--account", "acctA", "--name", "x"]) == 1
+    assert main(["client", "token", "issue", "--account-id", "acctA", "--name", "x"]) == 1
     assert "403" in capsys.readouterr().err
 
 
@@ -396,7 +396,7 @@ def test_bind_error_surfaced(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
     monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
     monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
-    assert main(["client", "bind", "--id", "d1"]) == 1
+    assert main(["client", "bind", "--device-id", "d1"]) == 1
     assert "403" in capsys.readouterr().err
 
 
@@ -407,7 +407,7 @@ def test_pin_error_surfaced(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
     monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
     monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
-    assert main(["client", "pin", "device", "--id", "d1", "--release", "r"]) == 1
+    assert main(["client", "pin", "device", "--device-id", "d1", "--release", "r"]) == 1
     assert "403" in capsys.readouterr().err
 
 
@@ -496,7 +496,7 @@ def test_write_verbs_still_print_prose_without_json(monkeypatch, capsys):
     monkeypatch.setattr(ccli, "_make_api", lambda cfg: FakeApi())
     monkeypatch.setattr(ccli.config, "resolve",
                         lambda s, t: types.SimpleNamespace(server_url="x", token="y"))
-    ns = _ns(["client", "cohort", "assign", "--cohort", "beta", "--id", "d1"])
+    ns = _ns(["client", "cohort", "assign", "--cohort", "beta", "--device-id", "d1"])
     assert ns.func(ns) == 0
     assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
 
@@ -537,7 +537,7 @@ def test_rollout_create_status_and_list(wired, tmp_path, capsys):
     assert main(["client", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
     rel = json.loads(capsys.readouterr().out)["release_id"]
 
-    assert main(["client", "rollout", "create", "--release", rel, "--cohort", "beta",
+    assert main(["client", "rollout", "create", "--release-id", rel, "--cohort", "beta",
                  "--percent", "5"]) == 0
     out = capsys.readouterr().out
     assert "cohort=beta" in out and "5.0%" in out
@@ -548,6 +548,6 @@ def test_rollout_create_status_and_list(wired, tmp_path, capsys):
     assert body["total"] == 1 and body["rollouts"][0]["release_id"] == rel
     rid = body["rollouts"][0]["rollout_id"]
 
-    assert main(["client", "rollout", "status", "--id", rid]) == 0
+    assert main(["client", "rollout", "status", "--rollout-id", rid]) == 0
     st = json.loads(capsys.readouterr().out)
     assert st["state"] == "active" and st["attempted"] == 0

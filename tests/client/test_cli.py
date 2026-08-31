@@ -66,9 +66,9 @@ def test_scope_is_validated_locally_against_the_same_set_the_api_uses():
 
     p = build_parser()
     with pytest.raises(SystemExit):                      # near-miss for "observe"
-        p.parse_args(["client", "token", "issue", "--account", "a", "--name", "n",
+        p.parse_args(["client", "token", "issue", "--account-id", "a", "--name", "n",
                       "--scope", "observer"])
-    ns = p.parse_args(["client", "token", "issue", "--account", "a", "--name", "n",
+    ns = p.parse_args(["client", "token", "issue", "--account-id", "a", "--name", "n",
                        "--scope", "observe"])
     assert ns.scope == ["observe"] and set(ALL_SCOPES) >= set(ns.scope)
 

@@ -79,7 +79,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_ro = sub.add_parser("rollout", help="create/raise/pause/resume/rollback a rollout")
     rsub = p_ro.add_subparsers(dest="_ro")
     p_rc = rsub.add_parser("create", help="stage an already-published release to a cohort")
-    p_rc.add_argument("--release", required=True, metavar="RELEASE_ID",
+    p_rc.add_argument("--release-id", required=True, metavar="RELEASE_ID",
                       help="release to stage (ids come from publish / `client releases`)")
     p_rc.add_argument("--cohort", default="__default__",
                       help="cohort to stage it to (default: __default__, the un-assigned devices)")
@@ -95,7 +95,7 @@ def register(parser: argparse.ArgumentParser) -> None:
             ("resume", False, "start offering it again after a pause"),
             ("rollback", False, "stop offering it for good; devices that took it keep it")):
         pr = rsub.add_parser(action, help=blurb)
-        pr.add_argument("--id", required=True, metavar="ROLLOUT_ID",
+        pr.add_argument("--rollout-id", required=True, metavar="ROLLOUT_ID",
                         help="the rollout to act on (ids come from publish / `client rollouts`)")
         if needs_pct:
             pr.add_argument("--percent", type=float, required=True,
@@ -103,7 +103,7 @@ def register(parser: argparse.ArgumentParser) -> None:
         _creds(pr)
         pr.set_defaults(func=cmd_rollout, _command="client rollout " + action, action=action)
     p_rs = rsub.add_parser("status", help="a rollout's counters (attempted/updated/failures)")
-    p_rs.add_argument("--id", required=True, metavar="ROLLOUT_ID",
+    p_rs.add_argument("--rollout-id", required=True, metavar="ROLLOUT_ID",
                       help="the rollout to read (ids come from publish / `client rollouts`)")
     _creds(p_rs)
     p_rs.set_defaults(func=cmd_rollout, _command="client rollout status", action="status")
@@ -117,7 +117,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_coa = cosub.add_parser("assign", help="move devices into a cohort (by id, or a whole product)")
     p_coa.add_argument("--cohort", required=True, help="cohort to move the devices into")
     ga = p_coa.add_mutually_exclusive_group(required=True)   # surgical or bulk, exactly one
-    ga.add_argument("--id", action="append", dest="devices", metavar="DEVICE_ID",
+    ga.add_argument("--device-id", action="append", dest="devices", metavar="DEVICE_ID",
                     help="device id to assign (repeatable)")
     ga.add_argument("--product-id", type=int,
                     help="assign EVERY device of this product instead")
@@ -136,14 +136,14 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_bases.set_defaults(func=cmd_bases, _command="client bases")
 
     p_prune = sub.add_parser("prune", help="delete a release's stored artifacts (keeps history)")
-    p_prune.add_argument("--release", required=True, help="release id whose objects to delete")
+    p_prune.add_argument("--release-id", required=True, help="release whose objects to delete")
     p_prune.add_argument("--force", action="store_true",
                          help="delete even while a rollout still offers this release")
     _creds(p_prune)
     p_prune.set_defaults(func=cmd_prune, _command="client prune")
 
     p_bind = sub.add_parser("bind", help="bind a device to your account (re-account / recover)")
-    p_bind.add_argument("--id", required=True, metavar="DEVICE_ID",
+    p_bind.add_argument("--device-id", required=True, metavar="DEVICE_ID",
                         help="device to bind to the caller's account")
     _creds(p_bind)
     p_bind.set_defaults(func=cmd_bind, _command="client bind")
@@ -158,17 +158,17 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_acl)
     p_acl.set_defaults(func=cmd_account, _command="client account list", action="list")
     p_acr = acsub.add_parser("rename", help="rename an account")
-    p_acr.add_argument("--id", required=True, metavar="ACCOUNT_ID", help="account to rename")
+    p_acr.add_argument("--account-id", required=True, metavar="ACCOUNT_ID", help="account to rename")
     p_acr.add_argument("--name", required=True, help="the new name")
     _creds(p_acr)
     p_acr.set_defaults(func=cmd_account, _command="client account rename", action="rename")
     p_acd = acsub.add_parser("deactivate", help="revoke all tokens + disable an account")
-    p_acd.add_argument("--id", required=True, metavar="ACCOUNT_ID",
+    p_acd.add_argument("--account-id", required=True, metavar="ACCOUNT_ID",
                        help="account to deactivate (revokes all of its tokens)")
     _creds(p_acd)
     p_acd.set_defaults(func=cmd_account, _command="client account deactivate", action="deactivate")
     p_aca = acsub.add_parser("activate", help="re-enable an account (issue fresh tokens after)")
-    p_aca.add_argument("--id", required=True, metavar="ACCOUNT_ID",
+    p_aca.add_argument("--account-id", required=True, metavar="ACCOUNT_ID",
                        help="account to re-enable (issue fresh tokens afterwards)")
     _creds(p_aca)
     p_aca.set_defaults(func=cmd_account, _command="client account activate", action="activate")
@@ -176,7 +176,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_tok = sub.add_parser("token", help="manage account API tokens (needs accounts scope)")
     tksub = p_tok.add_subparsers(dest="_tok")
     p_tki = tksub.add_parser("issue", help="issue a token for an account")
-    p_tki.add_argument("--account", required=True, metavar="ACCOUNT_ID",
+    p_tki.add_argument("--account-id", required=True, metavar="ACCOUNT_ID",
                        help="account the token acts for")
     p_tki.add_argument("--name", required=True, help="label for the token, e.g. ci")
     # SAME `choices` AS `server token issue`. The API validates scopes against ALL_SCOPES and
@@ -189,7 +189,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_tki)
     p_tki.set_defaults(func=cmd_token, _command="client token issue", action="issue")
     p_tkl = tksub.add_parser("list", help="list an account's tokens (metadata only, no secrets)")
-    p_tkl.add_argument("--account", required=True, metavar="ACCOUNT_ID",
+    p_tkl.add_argument("--account-id", required=True, metavar="ACCOUNT_ID",
                        help="account whose tokens to list")
     _creds(p_tkl)
     p_tkl.set_defaults(func=cmd_token, _command="client token list", action="list")
@@ -205,9 +205,9 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_pin = sub.add_parser("pin", help="pin a device/cohort to a release (overrides rollouts)")
     pinsub = p_pin.add_subparsers(dest="_pin")
     p_pd = pinsub.add_parser("device", help="pin ONE device to a release (or --clear to unpin)")
-    p_pd.add_argument("--id", required=True, metavar="DEVICE_ID", help="device to pin")
+    p_pd.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="device to pin")
     gd = p_pd.add_mutually_exclusive_group(required=True)
-    gd.add_argument("--release", help="release id to pin to")
+    gd.add_argument("--release-id", help="release to pin to")
     gd.add_argument("--clear", action="store_true", help="unpin")
     _creds(p_pd)
     p_pd.set_defaults(func=cmd_pin, _command="client pin device", target="device")
@@ -216,7 +216,7 @@ def register(parser: argparse.ArgumentParser) -> None:
                       help="product the cohort belongs to")
     p_pc.add_argument("--cohort", required=True, help="cohort to pin")
     gc = p_pc.add_mutually_exclusive_group(required=True)
-    gc.add_argument("--release", help="release id to pin to")
+    gc.add_argument("--release-id", help="release to pin to")
     gc.add_argument("--clear", action="store_true", help="unpin")
     _creds(p_pc)
     p_pc.set_defaults(func=cmd_pin, _command="client pin cohort", target="cohort")
@@ -351,7 +351,7 @@ def cmd_prune(args: argparse.Namespace) -> int:
     """Delete a release's stored objects. The release row (audit + version history) stays."""
     try:
         cfg = config.resolve(args.server, args.token)
-        res = _make_api(cfg).delete_release_artifacts(args.release, force=args.force)
+        res = _make_api(cfg).delete_release_artifacts(args.release_id, force=args.force)
         return _emit(args, res,
                      "deleted %d object(s) for %s" % (len(res["deleted"]), res["release_id"]))
     except ClientError as e:
@@ -405,22 +405,22 @@ def cmd_rollout(args: argparse.Namespace) -> int:
     try:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "create":
-            ro = api.create_rollout(args.release, args.cohort, args.percent,
+            ro = api.create_rollout(args.release_id, args.cohort, args.percent,
                                     failure_threshold=args.failure_threshold)
             return _emit(args, ro, "rollout %s  %s%%  cohort=%s"
                          % (ro["rollout_id"], ro["percent"], ro["cohort"]))
         if args.action == "status":
-            print(json.dumps(api.rollout_status(args.id), indent=2))
+            print(json.dumps(api.rollout_status(args.rollout_id), indent=2))
             return 0
         if args.action == "raise":
-            ro = api.patch_rollout(args.id, percent=args.percent)
+            ro = api.patch_rollout(args.rollout_id, percent=args.percent)
         elif args.action == "pause":
-            ro = api.patch_rollout(args.id, state="paused")
+            ro = api.patch_rollout(args.rollout_id, state="paused")
         elif args.action == "resume":
-            ro = api.patch_rollout(args.id, state="active")
+            ro = api.patch_rollout(args.rollout_id, state="active")
         else:
-            ro = api.rollback_rollout(args.id)
-        return _emit(args, ro, "rollout %s -> %s" % (args.id, ro.get("state", "")))
+            ro = api.rollback_rollout(args.rollout_id)
+        return _emit(args, ro, "rollout %s -> %s" % (args.rollout_id, ro.get("state", "")))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -449,11 +449,11 @@ def cmd_cohort(args: argparse.Namespace) -> int:
 def cmd_pin(args: argparse.Namespace) -> int:
     try:
         api = _make_api(config.resolve(args.server, args.token))
-        release = None if args.clear else args.release
+        release = None if args.clear else args.release_id
         if args.target == "device":
-            res = api.pin_device(args.id, release)
+            res = api.pin_device(args.device_id, release)
             return _emit(args, res, "device %s pinned to %s"
-                         % (args.id, res["pinned_release_id"] or "(unpinned)"))
+                         % (args.device_id, res["pinned_release_id"] or "(unpinned)"))
         else:
             res = api.pin_cohort(args.product_id, args.cohort, release)
             return _emit(args, res, "cohort %s pinned to %s"
@@ -466,9 +466,9 @@ def cmd_pin(args: argparse.Namespace) -> int:
 
 def cmd_bind(args: argparse.Namespace) -> int:
     try:
-        res = _make_api(config.resolve(args.server, args.token)).bind_device(args.id)
+        res = _make_api(config.resolve(args.server, args.token)).bind_device(args.device_id)
         return _emit(args, res,
-                     "device %s bound to %s" % (args.id, _account_label(res["account_id"])))
+                     "device %s bound to %s" % (args.device_id, _account_label(res["account_id"])))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -485,15 +485,15 @@ def cmd_account(args: argparse.Namespace) -> int:
             return _emit(args, res, "account %s created" % res["account_id"],
                          "admin token (store it now -- not recoverable): %s" % res["token"])
         elif args.action == "rename":
-            res = api.rename_account(args.id, args.name)
-            return _emit(args, res, "account %s renamed to %s" % (args.id, args.name))
+            res = api.rename_account(args.account_id, args.name)
+            return _emit(args, res, "account %s renamed to %s" % (args.account_id, args.name))
         elif args.action == "deactivate":
-            res = api.deactivate_account(args.id)
+            res = api.deactivate_account(args.account_id)
             return _emit(args, res, "account %s deactivated (%d token(s) revoked)"
-                         % (args.id, res["tokens_revoked"]))
+                         % (args.account_id, res["tokens_revoked"]))
         elif args.action == "activate":
-            res = api.activate_account(args.id)
-            return _emit(args, res, "account %s activated" % args.id)
+            res = api.activate_account(args.account_id)
+            return _emit(args, res, "account %s activated" % args.account_id)
         else:
             print(json.dumps(api.list_accounts(), indent=2))
     except ClientError as e:
@@ -506,7 +506,7 @@ def cmd_token(args: argparse.Namespace) -> int:
     try:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "issue":
-            res = api.issue_token(args.account, args.name, args.scope or None)
+            res = api.issue_token(args.account_id, args.name, args.scope or None)
             return _emit(args, res,
                          "token %s issued for %s" % (res["token_hash"][:16], res["account_id"]),
                          "token (store it now -- not recoverable): %s" % res["token"])
@@ -518,7 +518,7 @@ def cmd_token(args: argparse.Namespace) -> int:
             res = api.revoke_token(args.token_hash)
             return _emit(args, res, "revoked %s" % args.token_hash[:16])
         else:
-            print(json.dumps(api.list_account_tokens(args.account), indent=2))
+            print(json.dumps(api.list_account_tokens(args.account_id), indent=2))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

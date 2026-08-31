@@ -148,7 +148,7 @@ def test_token_issue_default_scopes(tmp_path, monkeypatch, capsys):
 def test_token_issue_with_account(tmp_path, monkeypatch, capsys):
     from openmv_ota.server.auth import hash_token
     monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
-    assert main(["server", "token", "issue", "--name", "scoped", "--account", "acct_x"]) == 0
+    assert main(["server", "token", "issue", "--name", "scoped", "--account-id", "acct_x"]) == 0
     token = capsys.readouterr().out.strip()
     s = _store(tmp_path)
     assert s.get_token(hash_token(token))["account_id"] == "acct_x"
@@ -176,7 +176,7 @@ def test_account_create_and_list(tmp_path, monkeypatch, capsys):
 def test_token_rotate_and_list_account(tmp_path, monkeypatch, capsys):
     from openmv_ota.server.auth import hash_token
     monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
-    assert main(["server", "token", "issue", "--name", "ci", "--account", "acctA"]) == 0
+    assert main(["server", "token", "issue", "--name", "ci", "--account-id", "acctA"]) == 0
     token = capsys.readouterr().out.strip()
     s = _store(tmp_path)
     th = hash_token(token)
@@ -198,20 +198,20 @@ def test_account_lifecycle_cli(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
     assert main(["server", "account", "create", "--name", "DroneCo"]) == 0
     account_id = capsys.readouterr().out.strip().split()[0]
-    assert main(["server", "account", "rename", "--id", account_id, "--name", "New"]) == 0
+    assert main(["server", "account", "rename", "--account-id", account_id, "--name", "New"]) == 0
     assert "renamed" in capsys.readouterr().out
-    assert main(["server", "account", "deactivate", "--id", account_id]) == 0
+    assert main(["server", "account", "deactivate", "--account-id", account_id]) == 0
     assert "deactivated" in capsys.readouterr().out
     s = _store(tmp_path)
     assert s.get_account(account_id)["active"] == 0
     s.close()
     assert main(["server", "account", "list"]) == 0
     assert "(inactive)" in capsys.readouterr().out
-    assert main(["server", "account", "activate", "--id", account_id]) == 0
+    assert main(["server", "account", "activate", "--account-id", account_id]) == 0
     assert "activated" in capsys.readouterr().out
-    assert main(["server", "account", "rename", "--id", "ghost", "--name", "x"]) == 1   # missing -> 1
+    assert main(["server", "account", "rename", "--account-id", "ghost", "--name", "x"]) == 1   # missing -> 1
     assert "no such account" in capsys.readouterr().err
-    assert main(["server", "account", "deactivate", "--id", "ghost"]) == 1              # shared 404 guard
+    assert main(["server", "account", "deactivate", "--account-id", "ghost"]) == 1              # shared 404 guard
     assert "no such account" in capsys.readouterr().err
 
 
@@ -223,14 +223,14 @@ def test_account_name_validation_cli(tmp_path, monkeypatch, capsys):
     account_id = capsys.readouterr().out.strip().split()[0]
     assert main(["server", "account", "create", "--name", "droneco"]) == 1   # case-insensitive dup
     assert "already exists" in capsys.readouterr().err
-    assert main(["server", "account", "rename", "--id", account_id, "--name", " "]) == 1
+    assert main(["server", "account", "rename", "--account-id", account_id, "--name", " "]) == 1
     assert "must not be empty" in capsys.readouterr().err
     s = _store(tmp_path)
     s.add_account("acctX", "LockCo")
     s.close()
-    assert main(["server", "account", "rename", "--id", "acctX", "--name", "DroneCo"]) == 1   # dup
+    assert main(["server", "account", "rename", "--account-id", "acctX", "--name", "DroneCo"]) == 1   # dup
     assert "already exists" in capsys.readouterr().err
-    assert main(["server", "account", "rename", "--id", "acctX", "--name", "LockCo"]) == 0    # self ok
+    assert main(["server", "account", "rename", "--account-id", "acctX", "--name", "LockCo"]) == 0    # self ok
     assert "renamed" in capsys.readouterr().out
 
 
@@ -243,9 +243,9 @@ def test_account_requires_extra(monkeypatch, capsys):
                         lambda *a, **k: (_ for _ in ()).throw(ServerError("need extra", 2)))
     assert main(["server", "account", "create", "--name", "x"]) == 2
     assert main(["server", "account", "list"]) == 2
-    assert main(["server", "account", "rename", "--id", "a", "--name", "x"]) == 2
-    assert main(["server", "account", "deactivate", "--id", "a"]) == 2
-    assert main(["server", "account", "activate", "--id", "a"]) == 2
+    assert main(["server", "account", "rename", "--account-id", "a", "--name", "x"]) == 2
+    assert main(["server", "account", "deactivate", "--account-id", "a"]) == 2
+    assert main(["server", "account", "activate", "--account-id", "a"]) == 2
     assert "need extra" in capsys.readouterr().err
 
 
