@@ -13,8 +13,7 @@ Two deployment shapes run the **same software**:
 
 - **OpenMV-hosted (the default):** OpenMV runs the server + website, so there is nothing to
   deploy — you publish releases with your account's token and everything below (database,
-  bucket, registration credentials) is already supplied. That website embeds this package via
-  `create_app()`.
+  bucket, registration credentials) is already supplied.
 - **Self-hosted:** you run your own server — your own Render/Postgres/R2. The
   Dockerfile, `render.yaml`, and `docker-compose.yml` under
   [src/openmv_ota/server/deploy/](../../src/openmv_ota/server/deploy/) make it turnkey.
