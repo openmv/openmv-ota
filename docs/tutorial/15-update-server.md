@@ -29,10 +29,12 @@ worst it can do is serve stale bytes or nothing. Because the manifest's artifact
 `-ota.img.gz`/`-ota.delta.gz` beside it — no rewriting, no re-signing.
 
 **It never serves an unregistered device.** Every deployment validates each camera against
-OpenMV's central registration server. An unregistered `(board, id)` gets `{update: false}` and
-**zero stored state** — no device row, no telemetry, no cache entry — so unknown ids can never
-grow the database or storage. Registration is required: the two registration settings below
-carry the verify endpoint and an OpenMV-issued token tied to your account.
+OpenMV's central registration server, using what every check-in already carries: the **board
+name** (`OPENMV_N6`, …) and the **device id** (the MCU's unique hardware id). An unregistered
+pair gets `{update: false}` and **zero stored state** — no device row, no telemetry, no cache
+entry — so unknown ids can never grow the database or storage. Registration is required: the
+two registration settings below carry the verify endpoint and an OpenMV-issued token tied to
+your account.
 
 ## Configuration
 
