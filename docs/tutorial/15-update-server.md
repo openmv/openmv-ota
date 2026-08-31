@@ -38,8 +38,8 @@ your account.
 
 ## Configuration
 
-Settings come from `OPENMV_OTA_*` environment variables (Render's bare `PORT` and `DATABASE_URL`
-are also honored).
+Settings come from `OPENMV_OTA_*` environment variables (the bare `PORT` and `DATABASE_URL`
+that PaaS platforms inject are also honored).
 
 | setting | env var | notes |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ are also honored).
 | admin bootstrap | `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` | seeds the first admin token on `server init` |
 | cohort salt | `OPENMV_OTA_COHORT_SALT` | the server HMAC secret; persisted if unset |
 | rate + backoff | `OPENMV_OTA_CHECKIN_RATE_PER_MIN`, `OPENMV_OTA_POLL_AFTER_S`, `OPENMV_OTA_CAPABILITY_TTL` | tunables |
-| browser UI origins | `OPENMV_OTA_CORS_ALLOW_ORIGINS` | comma-separated origins allowed to call this API **cross-origin**, e.g. `https://cloud.openmv.io`. Empty by default = no CORS headers at all. Needed only when a UI is served from a *different* origin than this app; a same-origin UI, or one that proxies through its own backend, leaves it unset. `*` is **refused at startup** -- name the origins |
+| browser UI origins | `OPENMV_OTA_CORS_ALLOW_ORIGINS` | comma-separated origins allowed to call this API **cross-origin**, e.g. `https://dashboard.example.com`. Empty by default = no CORS headers at all. Needed only when a UI is served from a *different* origin than this app; a same-origin UI, or one that proxies through its own backend, leaves it unset. `*` is **refused at startup** -- name the origins |
 | trusted proxy | `OPENMV_OTA_TRUSTED_PROXY_IPS` | which upstream peers may set `X-Forwarded-For`; set `*` behind a PaaS proxy (Render/Fly) so the per-IP rate limiter sees the real client, not the proxy |
 | board codes | `OPENMV_OTA_BOARD_CODE_OVERRIDES` | JSON map to add/correct firmware-name → registration-code translations without a redeploy |
 | unverified boards | `OPENMV_OTA_UNVERIFIED_BOARDS` | JSON list of firmware board names the registry never registers (Arduino boards, pre-registration M4); their registration check is bypassed and OTA is served read-only (no device row, so still zero-footprint). Defaults to those known board types; override to change the set |
