@@ -211,7 +211,7 @@ def test_patch_bad_state_and_empty_and_missing(tmp_path):
                    json={"percent": 90}).status_code == 404
 
 
-def test_rollback(tmp_path):
+def test_stop(tmp_path):
     app, store = _app(tmp_path)
     c = TestClient(app)
     rid = _make_rollout(c, store)
@@ -219,6 +219,11 @@ def test_rollback(tmp_path):
                   headers=AUTH).json()["state"] == "stopped"
     assert store.get_rollout(rid)["state"] == "stopped"
     assert c.post("/api/v1/admin/rollouts/nope/stop", headers=AUTH).status_code == 404
+    # stop is TERMINAL: the docs promise it, so resume must refuse rather than quietly
+    # re-offer a release the operator ended -- create a new rollout instead
+    r = c.patch("/api/v1/admin/rollouts/%s" % rid, headers=AUTH, json={"state": "active"})
+    assert r.status_code == 409 and "stopped" in r.json()["detail"]
+    assert store.get_rollout(rid)["state"] == "stopped"
 
 
 # --- observability --------------------------------------------------------------------------
