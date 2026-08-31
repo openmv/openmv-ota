@@ -72,16 +72,23 @@ Step by step:
    loop, where you rebuild the same version all afternoon.
 
 A published release is **inert**: no device is offered it until a rollout (or a pin)
-points at it. The CI happy path does both in one command:
-
-```
-openmv-ota client publish . -b OPENMV_N6 --rollout beta:5    # publish + stage to 5% of `beta`
-```
+points at it.
 
 ## Staging a rollout
 
 A rollout offers one release to a growing slice of one **cohort** (a named group of
-devices; every device starts in `__default__`). Membership is a stable per-device hash:
+devices; every device starts in `__default__`). It's created at publish time —
+`--rollout` stages the release in the same command, and the rollout's id comes back in
+the output:
+
+```
+$ openmv-ota client publish . -b OPENMV_N6 --rollout beta:5
+published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl)
+rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
+```
+
+(`--rollout 5` with no cohort name stages 5% of `__default__` — the whole fleet.)
+Membership in the staged slice is a stable per-device hash:
 
 ```
 bucket = sha256(rollout_id + ":" + device_id)[:4] % 10000
