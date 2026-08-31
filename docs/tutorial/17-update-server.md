@@ -1,6 +1,6 @@
 # The update server
 
-*[← 15 · The client](15-the-client.md) · [Index](00-introduction.md) · [17 · The server API →](17-server-api.md)*
+*[← 16 · Operating the fleet](16-operating-the-fleet.md) · [Index](00-introduction.md) · [18 · The server API →](18-server-api.md)*
 
 ---
 
@@ -220,10 +220,10 @@ The [deploy/](../../src/openmv_ota/server/deploy/) directory ships turnkey artif
 
 ## See also
 
-- [17 · The server API](17-server-api.md) — every endpoint, for scripts and dashboards.
+- [18 · The server API](18-server-api.md) — every endpoint, for scripts and dashboards.
 - [Threat model](../reference/threat-model.md) — the trust root and why the server never
   holds a key.
 
 ---
 
-*[← 15 · The client](15-the-client.md) · [Index](00-introduction.md) · [17 · The server API →](17-server-api.md)*
+*[← 16 · Operating the fleet](16-operating-the-fleet.md) · [Index](00-introduction.md) · [18 · The server API →](18-server-api.md)*

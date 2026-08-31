@@ -1,6 +1,6 @@
 # The server API
 
-*[← 16 · The update server](16-update-server.md) · [Index](00-introduction.md)*
+*[← 17 · The update server](17-update-server.md) · [Index](00-introduction.md)*
 
 ---
 
@@ -153,10 +153,10 @@ incomplete doc, never lost data.
 
 ## See also
 
-- [15 · The client](15-the-client.md) — the CLI over this API.
+- [15 · The client](15-the-client.md) / [16 · Operating the fleet](16-operating-the-fleet.md) — the CLI over this API.
 - [Threat model](../reference/threat-model.md) — why a compromised server still can't
   forge an update.
 
 ---
 
-*[← 16 · The update server](16-update-server.md) · [Index](00-introduction.md)*
+*[← 17 · The update server](17-update-server.md) · [Index](00-introduction.md)*
