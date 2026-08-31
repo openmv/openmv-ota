@@ -53,10 +53,12 @@ Step by step:
    `-o DIR`), and reads the **signed manifest** to learn which delta files belong to this
    release — a declared delta missing from the directory is an error here, where the fix
    is local (`build ota-romfs` again), not a rejection from the server.
-2. It renders the project's SBOM fresh from the committed lock and attaches it, so the
-   dependency evidence rides beside the bytes it describes. A project the renderer cannot
-   read publishes anyway, with a warning — evidence is worth carrying, never worth
-   blocking a release over.
+2. It also attaches the release's **SBOM** — the standard machine-readable list
+   (CycloneDX) of every dependency and version built into this firmware, generated from
+   the project's lock file. The server stores it beside the release, so "what exactly is
+   in the release the fleet is running?" stays answerable later (CVE scans, compliance).
+   If the SBOM can't be generated, publish proceeds anyway with a warning — it must never
+   be the reason a release doesn't ship.
 3. The server derives **all** release metadata (product, version, sizes, hashes, your
    account) from the signed manifest — never from anything the client asserts — and
    refuses an upload whose artifacts don't match it: an image whose sha256 or size
