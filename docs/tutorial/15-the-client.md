@@ -229,8 +229,8 @@ $ openmv-ota client rollouts
       "attempted": 21,
       "updated": 19,
       "failures": 0,
-      "created_at": "2026-08-31T18:12:04Z",
-      "updated_at": "2026-08-31T19:40:11Z",
+      "created_at": "2026-08-31T18:12:04.281937+00:00",
+      "updated_at": "2026-08-31T19:40:11.905122+00:00",
       "account_id": "acct_7bd21c50e83a94f1",
       "cohort_devices": 412
     }
