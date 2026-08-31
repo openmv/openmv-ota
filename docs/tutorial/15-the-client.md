@@ -50,9 +50,12 @@ published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl)
 Step by step:
 
 1. It picks up `<board>-manifest.bin` and `<board>-ota.img.gz` from `build/` (or
-   `-o DIR`), and reads the **signed manifest** to learn which delta files belong to this
-   release — a declared delta missing from the directory is an error here, where the fix
-   is local (`build ota-romfs` again), not a rejection from the server.
+   `-o DIR`). Every release has that one **full image**; it may also carry **deltas** —
+   small patches, each against one specific older release (its *base*), so a device
+   running that base downloads only the changes. The **signed manifest** names exactly
+   which deltas belong to this release, and that is what publish reads — a declared delta
+   missing from the directory is an error here, where the fix is local (`build ota-romfs`
+   again), not a rejection from the server.
 2. It also attaches the release's **SBOM** — the standard machine-readable list
    (CycloneDX) of every dependency and version built into this firmware, generated from
    the project's lock file. The server stores it beside the release, so "what exactly is
