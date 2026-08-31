@@ -185,6 +185,12 @@ idea buys three properties:
 - **Reshuffled per rollout**: the rollout id is part of the hash, so every rollout
   deals fresh tickets — the same camera isn't the canary every time.
 
+Tickets aren't seats — devices **share** numbers. A fleet larger than 10,000 simply has
+several devices per ticket, spread uniformly, so a 5% rollout stages ~5% of the cohort
+at any fleet size (and the bigger the fleet, the closer the real fraction lands to the
+dial). The ticket count only sets the resolution: the finest slice is one ticket, 0.01%
+of the cohort.
+
 From there the lifecycle is four actions:
 
 ```
