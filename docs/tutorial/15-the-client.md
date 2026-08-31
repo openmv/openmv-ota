@@ -211,8 +211,34 @@ openmv-ota client rollout stop --rollout-id ro_1c3f88ba90d2e644
 | `resume` | start offering again |
 | `stop` | stop offering **permanently** (a stopped rollout can't be resumed — create a new one). Devices that already took the release keep it — the server never downgrades a camera; the device's own anti-rollback wouldn't accept one anyway |
 
-`client rollouts` lists them (each row carries `cohort_devices`, the audience its
-percent applies to — so a lost id is always recoverable and the reach is visible), and
+`client rollouts` lists them — so a lost id is always recoverable, and each row
+carries `cohort_devices`, the audience its percent applies to:
+
+```
+$ openmv-ota client rollouts
+{
+  "rollouts": [
+    {
+      "rollout_id": "ro_1c3f88ba90d2e644",
+      "release_id": "rel_4f9c2a81d06b73ee",
+      "product_id": 396486252,
+      "cohort": "beta",
+      "percent": 5.0,
+      "state": "active",
+      "failure_threshold": 0.05,
+      "attempted": 21,
+      "updated": 19,
+      "failures": 0,
+      "created_at": "2026-08-31T18:12:04Z",
+      "updated_at": "2026-08-31T19:40:11Z",
+      "account_id": "acct_7bd21c50e83a94f1",
+      "cohort_devices": 412
+    }
+  ],
+  "total": 1
+}
+```
+
 `client rollout status --rollout-id` reads one rollout's score:
 
 ```
