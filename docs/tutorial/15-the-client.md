@@ -84,15 +84,22 @@ site, a customer. They're free-form names, and the model is simple: **every devi
 in exactly one cohort**, starting in `__default__` until you move it:
 
 ```
-openmv-ota client cohort assign --cohort beta --device 30003d000851303436313832
-openmv-ota client cohort list                     # every cohort in use + device count
+$ openmv-ota client cohort assign --cohort beta --device 30003d000851303436313832
+assigned 1/1 device(s) to cohort beta
+
+$ openmv-ota client cohort list
+{
+  "cohorts": [
+    { "cohort": "__default__", "devices": 404 },
+    { "cohort": "beta", "devices": 8 }
+  ]
+}
 ```
 
 A rollout reaches its cohort by exact name — no wildcards, no nesting — so assignment
 is also removal: a device moved to `beta` leaves `__default__`, and rollouts staged to
 `__default__` stop reaching it. Assignment counts only the devices that exist and are
-yours; the summary reports `assigned 1/1 device(s) to cohort beta` so a typo'd id is
-visible.
+yours — the `1/1` in the summary is what makes a typo'd id visible.
 
 ## Staging a rollout
 
