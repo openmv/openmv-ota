@@ -188,12 +188,12 @@ idea buys three properties:
 - **Reshuffled per rollout**: the rollout id is part of the hash, so every rollout
   deals fresh tickets — the same camera isn't the canary every time.
 
-Tickets aren't seats — every device gets its **own draw**, but there are only 10,000
-possible values, so different devices land on the **same number** (in a fleet of
-100,000, about ten per value). That's fine, because only the fraction below the bar
-matters: a 5% rollout stages ~5% of the cohort at any fleet size, and the bigger the
-fleet, the closer the real fraction lands to the dial. The ticket count only sets the
-resolution — the finest slice is one ticket, 0.01% of the cohort.
+A ticket value is **not one device** — every device gets its own draw, but there are
+only 10,000 possible values, so devices share them. Concretely: 15,000 devices at 5% —
+the bar admits ticket values 0–499, each value is held by ~1.5 devices, so about
+**750 devices (5% of 15,000)** are staged, give or take a few dozen. The percent always
+means a *fraction of the cohort*, at any fleet size; the ticket count only sets the
+dial's resolution (the finest slice is one ticket, 0.01% of the cohort).
 
 From there the lifecycle is four actions:
 
