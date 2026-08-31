@@ -143,11 +143,11 @@ fallback), and the device falls inside the current **percentage**. One rollout i
 per (product, cohort) at a time; creating another pauses the previous, recorded in the
 audit log as superseded.
 
-Create one at publish time with `--rollout`, or stage an already-published release later
-with `rollout create` — either way the rollout's id comes back in the output:
+Create one at publish time or stage an already-published release later — the same
+`--cohort`/`--percent` flags either way, and the rollout's id comes back in the output:
 
 ```
-$ openmv-ota client publish . -b OPENMV_N6 --rollout beta:5
+$ openmv-ota client publish . -b OPENMV_N6 --cohort beta --percent 5
 published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl)
 rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
 
@@ -155,7 +155,8 @@ $ openmv-ota client rollout create --release-id rel_4f9c2a81d06b73ee --cohort be
 rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
 ```
 
-(`--rollout 5` with no cohort name stages 5% of `__default__`.)
+(`--percent` alone stages to `__default__`; on `publish`, `--percent` is what triggers
+staging at all — without it the release is published and left inert.)
 
 Which devices make up the staged percentage is a stable per-device hash, not a choice
 you make or a list the server keeps:
@@ -173,7 +174,7 @@ isn't the canary in every rollout.
 From there the lifecycle is four actions:
 
 ```
-openmv-ota client rollout raise  --rollout-id ro_1c3f88ba90d2e644 --percent 50
+openmv-ota client rollout raise 50 --rollout-id ro_1c3f88ba90d2e644
 openmv-ota client rollout pause  --rollout-id ro_1c3f88ba90d2e644
 openmv-ota client rollout resume --rollout-id ro_1c3f88ba90d2e644
 openmv-ota client rollout rollback --rollout-id ro_1c3f88ba90d2e644
@@ -181,7 +182,7 @@ openmv-ota client rollout rollback --rollout-id ro_1c3f88ba90d2e644
 
 | action | what happens |
 |---|---|
-| `raise --percent N` | widen the staged slice. Percent is **monotonic** — lowering it is refused, because devices already offered the release can't be un-offered |
+| `raise N` | widen the staged slice to N percent. Percent is **monotonic** — lowering it is refused, because devices already offered the release can't be un-offered |
 | `pause` | stop offering; resumable. The server also **auto-pauses** a rollout whose fallback rate among offered devices crosses its failure threshold (5% by default) and records an audit event |
 | `resume` | start offering again |
 | `rollback` | stop offering **permanently**. Devices that already took the release keep it — the server never downgrades a camera; the device's own anti-rollback wouldn't accept one anyway |
@@ -330,7 +331,7 @@ tok=$(openmv-ota client token issue --account-id "$acct" --name ci --json | jq -
 
 Verbatim matters most for the one-time secrets (`account create`, `token issue`,
 `token rotate`): the token exists in exactly that one response, and a script that can't
-capture it has to mint another. `publish --rollout` is two API calls, so its JSON nests
+capture it has to mint another. `publish --percent` is two API calls, so its JSON nests
 the rollout under `rollout` and leaves the release fields where a plain `publish` puts
 them — no special case for parsers.
 
@@ -340,9 +341,9 @@ them — no special case for parsers.
 |---|---|
 | `client login --server URL [--token T]` | save the profile (token also via stdin / `OPENMV_OTA_TOKEN`) |
 | `client logout` | remove the saved profile |
-| `client publish DIR -b BOARD [--rollout c:N] [--allow-republish]` | upload a built release, optionally staging it |
+| `client publish DIR -b BOARD [--percent N [--cohort C]] [--allow-republish]` | upload a built release, optionally staging it |
 | `client rollout create --release-id R --percent N [--cohort C]` | stage an already-published release |
-| `client rollout raise\|pause\|resume\|rollback --rollout-id ID` | drive a rollout (`raise` takes `--percent`) |
+| `client rollout raise\|pause\|resume\|rollback --rollout-id ID` | drive a rollout (`raise` takes the percent directly: `raise 50`) |
 | `client rollout status --rollout-id ID` | one rollout's counters (JSON) |
 | `client cohort list` / `cohort assign --cohort C (--device-id ID… \| --product-id N)` | see cohorts / move devices into one, surgically or by whole product |
 | `client pin device --device-id ID (--release-id R \| --clear)` | pin one device, overriding rollouts |

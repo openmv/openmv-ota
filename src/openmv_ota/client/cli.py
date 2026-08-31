@@ -69,8 +69,12 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_pub.add_argument("project", nargs="?", default=".", help="project dir (default: .)")
     p_pub.add_argument("-b", "--board", required=True, help="board to publish")
     p_pub.add_argument("-o", "--output", help="artifact dir (default: <project>/build)")
-    p_pub.add_argument("--rollout", metavar="COHORT:PCT",
-                       help="create a rollout after publishing, e.g. beta:5 or 5")
+    # Staging at publish time uses the SAME flags as `rollout create` -- one syntax for
+    # one concept. --percent is the trigger; --cohort refines it.
+    p_pub.add_argument("--percent", type=float,
+                       help="also stage the release: create a rollout at this percent")
+    p_pub.add_argument("--cohort", default=None,
+                       help="cohort for that rollout (default: __default__, the un-assigned devices)")
     p_pub.add_argument("--allow-republish", action="store_true",
                        help="re-upload a version the server already has (dev loop)")
     _creds(p_pub)
@@ -98,7 +102,8 @@ def register(parser: argparse.ArgumentParser) -> None:
         pr.add_argument("--rollout-id", required=True, metavar="ROLLOUT_ID",
                         help="the rollout to act on (ids come from publish / `client rollouts`)")
         if needs_pct:
-            pr.add_argument("--percent", type=float, required=True,
+            # positional: the percent IS the action ("raise 50"), not a modifier of it
+            pr.add_argument("percent", type=float,
                             help="share of the cohort to offer it to, 0-100")
         _creds(pr)
         pr.set_defaults(func=cmd_rollout, _command="client rollout " + action, action=action)
@@ -277,14 +282,6 @@ def _make_api(cfg):
     return Api(cfg)
 
 
-def _parse_rollout(spec: str):
-    cohort, _, pct = spec.rpartition(":")
-    try:
-        return (cohort or "__default__"), float(pct)
-    except ValueError:
-        raise ClientError("bad --rollout %r (want cohort:percent, e.g. beta:5)" % spec) from None
-
-
 def _declared_deltas(manifest: Path, out: Path) -> dict:
     """The delta files this manifest declares, as ``{filename: bytes}``.
 
@@ -369,6 +366,8 @@ def cmd_publish(args: argparse.Namespace) -> int:
         if not manifest.exists() or not image.exists():
             raise ClientError("no built release for %s in %s -- run `build ota-romfs` first"
                               % (args.board, out))
+        if args.cohort is not None and args.percent is None:
+            raise ClientError("--cohort stages a rollout only with --percent (how much of it)")
         api = _make_api(cfg)
         # The SBOM is rendered fresh from the committed lock (deterministic, no firmware
         # checkout needed) and rides with the release -- dependency evidence beside the bytes
@@ -386,11 +385,11 @@ def cmd_publish(args: argparse.Namespace) -> int:
         lines = ["published %s  version %s  (%s)" % (res["release_id"], res.get("version"),
                                                      ", ".join(res["representations"]))]
         payload = dict(res)
-        if args.rollout:
-            cohort, pct = _parse_rollout(args.rollout)
-            ro = api.create_rollout(res["release_id"], cohort, pct)
-            lines.append("rollout %s  %s%%  cohort=%s" % (ro["rollout_id"], ro["percent"], cohort))
-            # ONE object for one command: `publish --rollout` is two API calls, and a caller
+        if args.percent is not None:
+            ro = api.create_rollout(res["release_id"], args.cohort or "__default__", args.percent)
+            lines.append("rollout %s  %s%%  cohort=%s"
+                         % (ro["rollout_id"], ro["percent"], ro["cohort"]))
+            # ONE object for one command: `publish --percent` is two API calls, and a caller
             # scripting it needs both ids. Nesting the rollout keeps the release fields where a
             # plain `publish` leaves them, so parsers do not need a special case.
             payload["rollout"] = ro

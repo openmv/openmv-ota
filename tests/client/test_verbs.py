@@ -81,7 +81,7 @@ def test_publish_and_rollout(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project)
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6", "--rollout", "beta:5"]) == 0
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta", "--percent", "5"]) == 0
     out = capsys.readouterr().out
     assert "published rel_" in out and "rollout ro_" in out
     releases = store.list_releases(BID)
@@ -183,7 +183,7 @@ def test_prune_refuses_a_release_a_rollout_still_offers(wired, tmp_path, capsys)
     project = tmp_path / "proj"
     _build_release(project)
     assert main(["client", "publish", str(project), "-b", "OPENMV_N6",
-                 "--rollout", "beta:100"]) == 0
+                 "--cohort", "beta", "--percent", "100"]) == 0
     rel_id = store.list_releases(BID)[0]["release_id"]
     capsys.readouterr()
     assert main(["client", "prune", "--release-id", rel_id]) == 1
@@ -202,8 +202,8 @@ def test_publish_bad_rollout_spec(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project)
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6", "--rollout", "beta:x"]) == 2
-    assert "bad --rollout" in capsys.readouterr().err
+    assert main(["client", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta"]) == 2
+    assert "--cohort stages a rollout only with --percent" in capsys.readouterr().err
 
 
 def test_publish_server_rejects_republish(wired, tmp_path, capsys):
@@ -219,7 +219,7 @@ def test_publish_server_rejects_republish(wired, tmp_path, capsys):
 def _publish(store, tmp_path):
     project = tmp_path / "p2"
     _build_release(project)
-    main(["client", "publish", str(project), "-b", "OPENMV_N6", "--rollout", "beta:5"])
+    main(["client", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta", "--percent", "5"])
     return store.list_rollouts(BID)[0]["rollout_id"]
 
 
@@ -227,7 +227,7 @@ def test_rollout_raise_pause_resume_rollback(wired, tmp_path, capsys):
     store, _ = wired
     rid = _publish(store, tmp_path)
     capsys.readouterr()
-    assert main(["client", "rollout", "raise", "--rollout-id", rid, "--percent", "50"]) == 0
+    assert main(["client", "rollout", "raise", "--rollout-id", rid, "50"]) == 0
     assert store.get_rollout(rid)["percent"] == 50
     assert main(["client", "rollout", "pause", "--rollout-id", rid]) == 0
     assert store.get_rollout(rid)["state"] == "paused"
