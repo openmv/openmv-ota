@@ -1,6 +1,6 @@
 # Recovery
 
-*[← 13 · Logging & the watchdog](13-logging-and-watchdog.md) · [Index](00-introduction.md) · [15 · The update server →](15-update-server.md)*
+*[← 13 · Logging & the watchdog](13-logging-and-watchdog.md) · [Index](00-introduction.md) · [15 · The client →](15-the-client.md)*
 
 ---
 
@@ -103,4 +103,4 @@ recovery if both slots are damaged at once.
 
 ---
 
-*[← 13 · Logging & the watchdog](13-logging-and-watchdog.md) · [Index](00-introduction.md) · [15 · The update server →](15-update-server.md)*
+*[← 13 · Logging & the watchdog](13-logging-and-watchdog.md) · [Index](00-introduction.md) · [15 · The client →](15-the-client.md)*
