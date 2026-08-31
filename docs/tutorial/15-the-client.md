@@ -47,7 +47,9 @@ $ openmv-ota client publish ./my-product -b OPENMV_N6
 published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl)
 ```
 
-Step by step:
+The parenthetical lists the release's **representations** — the forms a device can
+download it in: `full` is the whole image, `ocdl` is a delta patch (`ocdl` is the patch
+format's name). Step by step:
 
 1. It picks up `<board>-manifest.bin` and `<board>-ota.img.gz` from `build/` (or
    `-o DIR`). Every release has that one **full image**; it may also carry **deltas** —

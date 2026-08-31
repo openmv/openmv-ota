@@ -1,7 +1,7 @@
-"""Binary delta (patch) codec for OTA images -- a bsdiff-class delta against the golden.
+"""Binary delta (patch) codec for OTA images -- a bsdiff-class delta against a base image.
 
-A delta reconstructs a *new* image from the device's immutable golden (BACK slot). Like
-bsdiff, each instruction has a **diff region** -- a run copied from the base with a
+A delta reconstructs a *new* image from a base the device already holds (the release it is
+running). Like bsdiff, each instruction has a **diff region** -- a run copied from the base with a
 per-byte difference added back -- plus an **extra** run of literal new bytes, and a signed
 **seek** of the base cursor. The diff stream means an *approximately* matching region
 (a recompiled function, a table whose pointers all shifted) is encoded as one copy with a
@@ -11,8 +11,8 @@ choice for the firmware/romfs case, where most of the image is unchanged model d
 edits are small but may be scattered.
 
 The reconstructed image is still verified by its sha256 (the manifest) and its signed
-trailer (on boot), so a wrong/corrupt patch just yields a slot that fails verification ->
-golden fallback. The patch is never trusted.
+trailer (on boot), so a wrong/corrupt patch just yields a slot that fails verification and
+the device falls back to its other slot. The patch is never trusted.
 
 Wire format (the patch is gzipped for download; these are the decompressed bytes)::
 
