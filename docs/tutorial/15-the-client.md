@@ -163,18 +163,27 @@ rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
 (`--percent` alone stages to `__default__`; on `publish`, `--percent` is what triggers
 staging at all — without it the release is published and left inert.)
 
-Which devices make up the staged percentage is a stable per-device hash, not a choice
-you make or a list the server keeps:
+Which devices make up that percentage isn't a choice you make or a list the server
+keeps. Think of it as a lottery: for this rollout, every device holds a fixed ticket
+number between 0 and 9,999, computed by hashing the rollout id together with the
+device id —
 
 ```
-bucket = sha256(rollout_id + ":" + device_id)[:4] % 10000
-staged = bucket < percent * 100
+ticket = sha256(rollout_id + ":" + device_id) % 10000     # 0–9999, fixed per device
+staged = ticket < percent * 100                           # 5%  -> tickets 0–499
+                                                          # 50% -> tickets 0–4999
 ```
 
-A device's in/out verdict never flips while the percent holds, and raising the percent
-only **adds** devices — the "raise it as confidence grows" model, with no per-request
-randomness and no stored per-device flag. Salting by `rollout_id` means the same camera
-isn't the canary in every rollout.
+— and the rollout simply admits every ticket below the bar its percent sets. That one
+idea buys three properties:
+
+- **Stable**: the hash gives the same ticket on every poll, so a device never flips in
+  and out of the rollout — with nothing stored per device to make it so.
+- **Monotonic**: raising the percent only lowers the bar, so it only ever **adds**
+  devices; everyone already offered stays offered. This is the "raise it as confidence
+  grows" model.
+- **Reshuffled per rollout**: the rollout id is part of the hash, so every rollout
+  deals fresh tickets — the same camera isn't the canary every time.
 
 From there the lifecycle is four actions:
 
