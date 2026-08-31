@@ -288,12 +288,25 @@ class SqlMetadataStore:
 
     def list_rollouts(self, product_id: int | None = None, account_id=None, limit=None,
                       offset=0) -> list[dict]:
+        # cohort_devices: how many devices sit in each rollout's (product, cohort) RIGHT NOW --
+        # the audience its percent applies to. Computed live rather than stored, because cohort
+        # membership shifts under the rollout (assignments, first check-ins).
         where, params = _scope(account_id, product_id)
-        sql = "SELECT * FROM rollouts " + where + " ORDER BY created_at DESC"
+        sql = ("SELECT r.*, (SELECT COUNT(*) FROM devices d WHERE d.product_id = r.product_id "
+               "AND d.cohort = r.cohort AND d.account_id = r.account_id) AS cohort_devices "
+               "FROM rollouts r " + where.replace("account_id", "r.account_id")
+                                         .replace("product_id", "r.product_id")
+               + " ORDER BY r.created_at DESC")
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params = (*params, limit, offset)
         return [_d(r) for r in self.query_all(sql, params)]
+
+    def cohort_device_count(self, product_id: int, cohort: str, account_id: str = "") -> int:
+        """How many devices are in ``(product, cohort)`` right now -- a rollout's audience."""
+        return self.query_one(
+            "SELECT COUNT(*) AS n FROM devices WHERE account_id = ? AND product_id = ? "
+            "AND cohort = ?", (account_id, product_id, cohort))["n"]
 
     def rollouts_for_release(self, release_id: str, account_id=None) -> list[dict]:
         """Every rollout pointing at a release. The guard on deleting its artifacts: a rollout

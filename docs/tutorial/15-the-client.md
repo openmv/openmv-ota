@@ -209,9 +209,9 @@ openmv-ota client rollout stop --rollout-id ro_1c3f88ba90d2e644
 | `resume` | start offering again |
 | `stop` | stop offering **permanently** (a stopped rollout can't be resumed — create a new one). Devices that already took the release keep it — the server never downgrades a camera; the device's own anti-rollback wouldn't accept one anyway |
 
-`client rollouts` lists them (so a lost id is always recoverable), and
-`client rollout status --rollout-id` reads one rollout's score — the raise/pause decision in
-four numbers:
+`client rollouts` lists them (each row carries `cohort_devices`, the audience its
+percent applies to — so a lost id is always recoverable and the reach is visible), and
+`client rollout status --rollout-id` reads one rollout's score:
 
 ```
 $ openmv-ota client rollout status --rollout-id ro_1c3f88ba90d2e644
@@ -219,13 +219,20 @@ $ openmv-ota client rollout status --rollout-id ro_1c3f88ba90d2e644
   "rollout_id": "ro_1c3f88ba90d2e644",
   "state": "active",
   "percent": 5.0,
+  "cohort_devices": 412,
+  "staged_devices": 21,
   "attempted": 21,
   "updated": 19,
   "failures": 0,
-  "success_rate": 0.9047619047619048,
+  "rates": { "attempted": 1.0, "updated": 0.9047619047619048, "failures": 0.0 },
   "reported": { "installed": 19, "failed": 0 }
 }
 ```
+
+`staged_devices` is the current target — `percent` of the audience (an estimate:
+membership is a hash, not a list) — and `rates` reads each counter against it, so
+"how far through this stage is the fleet, and how is it going" is one glance:
+everyone staged was offered it, 90% already run it, nobody fell back. Time to raise.
 
 ## Watching the fleet
 

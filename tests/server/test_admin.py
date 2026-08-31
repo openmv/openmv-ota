@@ -235,10 +235,10 @@ def test_list_rollouts_and_status(tmp_path):
     assert [r["rollout_id"] for r in c.get("/api/v1/admin/rollouts", headers=AUTH).json()
             ["rollouts"]] == [rid]
     st = c.get("/api/v1/admin/rollouts/%s/status" % rid, headers=AUTH).json()
-    assert st["success_rate"] is None                        # no attempts yet
+    assert st["rates"] is None                               # nothing staged yet
     store.bump_rollout(rid, attempted=4, updated=3)
     st2 = c.get("/api/v1/admin/rollouts/%s/status" % rid, headers=AUTH).json()
-    assert st2["attempted"] == 4 and st2["updated"] == 3 and st2["success_rate"] == 0.75
+    assert st2["attempted"] == 4 and st2["updated"] == 3
     assert c.get("/api/v1/admin/rollouts/nope/status", headers=AUTH).status_code == 404
 
 

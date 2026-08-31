@@ -76,6 +76,9 @@ class Rollout(_Row):
     product_id: int = 0
     cohort: str = ""
     percent: float = 0.0
+    cohort_devices: int = 0
+    """Devices in this rollout's (product, cohort) right now -- the audience its percent
+    applies to. Computed live on list reads; cohort membership shifts under the rollout."""
     state: str = ""
     failure_threshold: float = 0.0
     attempted: int = 0
@@ -243,11 +246,17 @@ class RolloutStatus(BaseModel):
     rollout_id: str
     state: str
     percent: float
+    cohort_devices: int = 0
+    """Devices in the rollout's (product, cohort) right now -- its current audience."""
+    staged_devices: int = 0
+    """The current target: ``round(cohort_devices * percent / 100)``. An estimate --
+    membership is a hash, not a list, so the true staged count varies around it."""
     attempted: int
     updated: int
     failures: int
-    success_rate: float | None = None
-    """``updated / attempted``, or null before anything was attempted."""
+    rates: dict[str, float] | None = None
+    """Each counter as a fraction of ``staged_devices`` (keys ``attempted`` /
+    ``updated`` / ``failures``); null until anything is staged."""
     reported: dict[str, int]
     """Explicit device reports (``POST /feedback``) for this rollout's release."""
 

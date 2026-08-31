@@ -330,13 +330,23 @@ def list_rollouts(request: Request, product_id: int | None = None, limit: int = 
 @admin.get("/rollouts/{rollout_id}/status", responses={200: {"model": RolloutStatus}})
 def rollout_status(rollout_id: str, request: Request,
                    principal: Principal = Depends(require_scope("observe"))):
-    ro = _owned(request.app.state.metastore.get_rollout(rollout_id), principal)
-    rate = (ro["updated"] / ro["attempted"]) if ro["attempted"] else None
+    ms = request.app.state.metastore
+    ro = _owned(ms.get_rollout(rollout_id), principal)
+    cohort_devices = ms.cohort_device_count(ro["product_id"], ro["cohort"],
+                                            ro.get("account_id", ""))
+    # The current target: percent of the audience. An ESTIMATE -- membership is a hash,
+    # not a list, so the true staged count varies around it (and shifts as the cohort does).
+    staged = round(cohort_devices * ro["percent"] / 100)
+    rates = ({k: ro[k] / staged for k in ("attempted", "updated", "failures")}
+             if staged else None)
     return {"rollout_id": rollout_id, "state": ro["state"], "percent": ro["percent"],
+            "cohort_devices": cohort_devices, "staged_devices": staged,
             "attempted": ro["attempted"], "updated": ro["updated"], "failures": ro["failures"],
-            "success_rate": rate,
+            # each counter as a fraction of staged_devices -- how far through the current
+            # target each metric is; null until anything is staged
+            "rates": rates,
             # explicit device reports (POST /feedback) for this rollout's release
-            "reported": request.app.state.metastore.deployment_counts(ro["release_id"])}
+            "reported": ms.deployment_counts(ro["release_id"])}
 
 
 @admin.get("/cohorts", responses={200: {"model": CohortList}})
