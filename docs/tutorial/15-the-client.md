@@ -83,8 +83,10 @@ policy. A **rollout** is that policy's unit — an object of its own on the serv
 separate from the release it carries. It binds together:
 
 - **one release** — the thing to distribute;
-- **one cohort** — a named group of devices to distribute it to (every device starts in
-  `__default__`, so one cohort can be the whole fleet);
+- **one cohort** — a named group of devices to distribute it to. `__default__` is the
+  cohort every un-assigned device sits in, and the one the CLI uses when you don't pass
+  `--cohort` — an ordinary cohort matched by name, not a wildcard: a device you assign
+  to `beta` leaves it, and `__default__` rollouts stop reaching that device;
 - **a percentage** — how much of that cohort is currently offered it;
 - **a state** — `active`, `paused`, or `rolled_back`;
 - **counters** — how many devices it was offered to (`attempted`), how many now run it
@@ -110,7 +112,7 @@ $ openmv-ota client rollout create --release rel_4f9c2a81d06b73ee --cohort beta 
 rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
 ```
 
-(`--rollout 5` with no cohort name stages 5% of `__default__` — the whole fleet.)
+(`--rollout 5` with no cohort name stages 5% of `__default__`.)
 
 Which devices make up the staged percentage is a stable per-device hash, not a choice
 you make or a list the server keeps:
