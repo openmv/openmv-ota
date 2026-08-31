@@ -52,7 +52,9 @@ def register(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="_subcommand")
 
     p_login = sub.add_parser("login", help="save the server URL + admin token")
-    p_login.add_argument("--server", required=True, help="server base URL (https://...)")
+    p_login.add_argument("--server",
+                         help="server base URL (else OPENMV_OTA_SERVER; default: %s)"
+                              % config.DEFAULT_SERVER_URL)
     p_login.add_argument("--token", help="admin API token (else OPENMV_OTA_TOKEN, else stdin)")
     p_login.add_argument("--json", action="store_true",
                          help="print the saved profile as JSON instead of a summary")
@@ -224,6 +226,12 @@ def _account_label(account_id: str) -> str:
 
 
 def cmd_login(args: argparse.Namespace) -> int:
+    # The same resolution every other verb uses, minus the profile (login WRITES it):
+    # flag > OPENMV_OTA_SERVER > the hosted default. Requiring the flag here while the
+    # rest of the surface honoured the env var meant a CI setup had the value and login
+    # would not take it -- and a fresh pip install has neither, which is what the
+    # hosted default is for.
+    server = args.server or os.environ.get("OPENMV_OTA_SERVER") or config.DEFAULT_SERVER_URL
     token = args.token or os.environ.get("OPENMV_OTA_TOKEN") or sys.stdin.readline().strip()
     if not token:
         print("error: no token (pass --token, set OPENMV_OTA_TOKEN, or pipe it on stdin)",
@@ -232,8 +240,8 @@ def cmd_login(args: argparse.Namespace) -> int:
     # login/logout are LOCAL (they write the saved profile, they do not call the API), but they
     # take --json anyway: a group where one verb speaks JSON and its neighbour does not is the
     # inconsistency this change exists to remove, and a setup script wants the path it wrote.
-    path = config.save(args.server.rstrip("/"), token)
-    return _emit(args, {"saved": str(path), "server": args.server.rstrip("/")},
+    path = config.save(server.rstrip("/"), token)
+    return _emit(args, {"saved": str(path), "server": server.rstrip("/")},
                  "saved %s" % path)
 
 

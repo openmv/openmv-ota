@@ -15,6 +15,14 @@ from pathlib import Path
 from .errors import ClientError
 
 
+# The OpenMV-hosted update service -- what the server URL resolves to when no flag, env var,
+# or saved profile names one. A fresh `pip install openmv-ota` has none of those set, and the
+# hosted service is the default deployment, so the out-of-the-box experience is `client login
+# --token <tok>` and go; a self-host overrides it through any of the three. The scaffolded
+# main.py spells the same URL out as a literal so the device side is visible and editable.
+DEFAULT_SERVER_URL = "https://ota.cloud.openmv.io"
+
+
 def config_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / "openmv-ota" / "client.toml"
@@ -56,13 +64,13 @@ def remove(path: Path | None = None) -> bool:
 
 def resolve(flag_server: str | None, flag_token: str | None,
             path: Path | None = None) -> ClientConfig:
-    """The effective server URL + token: flag > env > saved file. Raises ``ClientError`` if either
-    can't be resolved."""
+    """The effective server URL + token: flag > env > saved file > (URL only) the OpenMV-hosted
+    service. Raises ``ClientError`` if the token can't be resolved -- there is no default
+    credential, only a default place to present one."""
     cfg = load(path)
-    server = flag_server or os.environ.get("OPENMV_OTA_SERVER") or (cfg.server_url if cfg else "")
+    server = (flag_server or os.environ.get("OPENMV_OTA_SERVER")
+              or (cfg.server_url if cfg else "") or DEFAULT_SERVER_URL)
     token = flag_token or os.environ.get("OPENMV_OTA_TOKEN") or (cfg.token if cfg else "")
-    if not server:
-        raise ClientError("no server URL -- pass --server, set OPENMV_OTA_SERVER, or `client login`")
     if not token:
         raise ClientError("no API token -- pass --token, set OPENMV_OTA_TOKEN, or `client login`")
     return ClientConfig(server_url=server.rstrip("/"), token=token)

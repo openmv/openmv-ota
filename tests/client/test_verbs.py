@@ -385,11 +385,13 @@ def test_pin_error_surfaced(tmp_path, monkeypatch, capsys):
 
 
 def test_missing_creds(tmp_path, monkeypatch, capsys):
+    # The server URL always resolves (the hosted default backstops it) -- the token is the
+    # only credential with no default, so it is what a bare verb fails on.
     monkeypatch.delenv("OPENMV_OTA_SERVER", raising=False)
     monkeypatch.delenv("OPENMV_OTA_TOKEN", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))       # no saved profile
     assert main(["client", "fleet"]) == 2
-    assert "no server URL" in capsys.readouterr().err
+    assert "no API token" in capsys.readouterr().err
 
 
 def test_client_no_subcommand(capsys):

@@ -17,22 +17,23 @@ server issues its own.
 
 ## Logging in
 
-`client login` saves the URL + token so no later command needs them:
+`client login` saves your credentials so no later command needs them. The server URL
+defaults to the OpenMV-hosted service, so out of the box only the token is needed:
 
 ```
-$ openmv-ota client login --server https://updates.example.com --token <admin-token>
+$ openmv-ota client login --token <admin-token>
 saved /home/you/.config/openmv-ota/client.toml
 ```
 
 The token can also arrive on stdin or from `OPENMV_OTA_TOKEN`, so it never has to appear
-in shell history. Every later verb resolves credentials as **flag > environment > saved
-profile**:
+in shell history. Every verb resolves its credentials the same way:
 
 | source | when it wins |
 |---|---|
 | `--server` / `--token` on the verb | always (a one-off against another server) |
 | `OPENMV_OTA_SERVER` / `OPENMV_OTA_TOKEN` | when no flag is given — how CI runs stateless |
-| `~/.config/openmv-ota/client.toml` | the fallback — what `login` wrote (mode 0600) |
+| `~/.config/openmv-ota/client.toml` | what `login` wrote (mode 0600) |
+| `https://ota.cloud.openmv.io` | the server URL when nothing above names one — the OpenMV-hosted service. There is no default token: a self-host points `--server`/env/`login` at its own deployment |
 
 `client logout` deletes the file.
 

@@ -38,7 +38,7 @@ The answer is `{"update": false, "poll_after_s": 3600}` in the common case. On a
 ```json
 {
   "update": true,
-  "manifest_url": "https://updates.example.com/d/<token>/manifest.bin",
+  "manifest_url": "https://ota.cloud.openmv.io/d/<token>/manifest.bin",
   "release_id": "rel_4f9c2a81d06b73ee",
   "poll_after_s": 3600
 }

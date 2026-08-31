@@ -189,7 +189,7 @@ def render_config(
             "# Where devices fetch updates, and what they trust. BAKED INTO THE FIRMWARE, not the\n"
             "# romfs -- a device whose image is gone still needs both to reach the server, which is\n"
             "# exactly the case recovery exists for.\n"
-            "# server_url = \"https://updates.example.com\"\n"
+            "# server_url = \"https://ota.cloud.openmv.io\"\n"
             % (signing_key_id or 0)                 # binds to the literal chain above, not below
             + (('ca = "%s"   # TLS roots for OTA downloads (relative to the project)\n' % ca)
                if ca else

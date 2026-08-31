@@ -94,3 +94,30 @@ def test_client_cli_imports_without_the_server_extra():
             importlib.reload(importlib.import_module(m))
     finally:
         builtins.__import__ = real
+
+
+def test_login_server_from_env(tmp_path, monkeypatch):
+    """login honours OPENMV_OTA_SERVER like every other verb -- a CI setup that exports the
+    pair should not need flags at all."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.cloud.openmv.io/")
+    monkeypatch.setenv("OPENMV_OTA_TOKEN", "envtok")
+    assert main(["client", "login"]) == 0
+    cfg = config.load()
+    assert cfg.server_url == "https://ota.cloud.openmv.io" and cfg.token == "envtok"
+
+
+def test_login_defaults_to_the_hosted_service(tmp_path, monkeypatch):
+    """A fresh pip install has no flags, env, or profile -- login (and every verb through
+    resolve()) falls back to the OpenMV-hosted service, so `login --token T` just works."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENMV_OTA_SERVER", raising=False)
+    assert main(["client", "login", "--token", "abc"]) == 0
+    assert config.load().server_url == "https://ota.cloud.openmv.io"
+
+
+def test_resolve_defaults_to_the_hosted_service(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENMV_OTA_SERVER", raising=False)
+    cfg = config.resolve(None, "tok", path=tmp_path / "absent.toml")
+    assert cfg.server_url == config.DEFAULT_SERVER_URL and cfg.token == "tok"

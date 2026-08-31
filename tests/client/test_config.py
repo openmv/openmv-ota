@@ -52,10 +52,11 @@ def test_resolve_flag_over_env_over_file(tmp_path, monkeypatch):
 
 
 def test_resolve_missing_raises(tmp_path, monkeypatch):
+    # Only the token can be missing: the server URL is backstopped by the hosted default.
     monkeypatch.delenv("OPENMV_OTA_SERVER", raising=False)
     monkeypatch.delenv("OPENMV_OTA_TOKEN", raising=False)
     none = tmp_path / "none.toml"
-    with pytest.raises(ClientError, match="server URL"):
+    with pytest.raises(ClientError, match="API token"):
         config.resolve(None, None, path=none)
     with pytest.raises(ClientError, match="API token"):
         config.resolve("https://s", None, path=none)

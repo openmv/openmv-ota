@@ -43,7 +43,7 @@ of retrying fixes a build mistake.
 
 ```toml
 [ota]
-server_url = "https://updates.example.com"
+server_url = "https://ota.cloud.openmv.io"
 ```
 
 The trust store has a working default: on the OpenMV N6, AE3, and RT1062 the
