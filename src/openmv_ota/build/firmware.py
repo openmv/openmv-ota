@@ -236,20 +236,40 @@ def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
     return tmp
 
 
-def _recovery_ca(p) -> bytes:
+def _recovery_ca(p, t) -> bytes:
     """The TLS anchors baked into the firmware for recovery, read at build time.
 
-    Empty means "use the bundled public roots" -- correct for a server behind a public CA, which
-    is most of them. A project-relative path is read here so the device never has to find a file:
-    the whole point is that recovery works when the filesystem holding it is gone."""
+    Recovery runs when the romfs is gone, so the firmware must carry real anchors -- an empty
+    CA_PEM would leave TLS with nothing to verify against and recovery retrying forever. With
+    ``[ota].ca`` unset, a board whose firmware has the room (``recovery_ca_bundle`` in
+    boards.json) freezes the project's full public bundle -- ``certs/ca.pem``, scaffolded at
+    ``project new`` and read at build time so the device never has to find a file. That one
+    frozen copy serves the runtime too (``openmv_ota.builtin_ca()``), so the romfs does not
+    ship the bundle at all. A board without the room must pin its server's root(s) via
+    ``[ota].ca`` (the ~186 KB bundle overflows FLASH_TEXT on the 1792 KB parts); the build
+    refuses rather than ship a recovery that cannot connect."""
     rel = (p.config.ca or "").strip()
-    if not rel:
-        return b""
-    path = p.root / rel
-    try:
-        return path.read_bytes()
-    except OSError as e:
-        raise BuildError("ota.ca %r is not readable: %s" % (rel, e)) from None
+    if rel:
+        path = p.root / rel
+        try:
+            return path.read_bytes()
+        except OSError as e:
+            raise BuildError("ota.ca %r is not readable: %s" % (rel, e)) from None
+    if t.recovery_ca_bundle:
+        bundle = p.root / "certs" / "ca.pem"
+        try:
+            return bundle.read_bytes()
+        except OSError as e:
+            raise BuildError(
+                "%s: [ota].ca is unset and the project's CA bundle (%s) is not readable: %s\n"
+                "recovery needs TLS anchors in the firmware -- restore the bundle "
+                "(re-run `project new`) or point [ota].ca at your server's root(s)."
+                % (t.name, bundle, e)) from None
+    raise BuildError(
+        "%s: [ota].ca is unset, and this board's firmware cannot hold the public CA "
+        "bundle (~186 KB overflows its flash budget).\n"
+        "Recovery needs TLS anchors in the firmware: point [ota].ca at a PEM holding "
+        "the root(s) your server's certificate chains to (a few KB)." % t.name)
 
 
 def _render_ota_config(p, name: str) -> str:
@@ -299,9 +319,10 @@ def _render_ota_config(p, name: str) -> str:
         + "MAX_ATTEMPTS = %d\n" % p.config.max_attempts
         # RECOVERY CONFIG -- in the FIRMWARE, deliberately, not the romfs. A device whose image is
         # gone still needs both of these to reach the server, which is exactly when recovery runs;
-        # keeping them in the app is what made recovery impossible in v1. Empty CA = bundled roots.
+        # keeping them in the app is what made recovery impossible in v1. CA_PEM is never empty:
+        # [ota].ca when set, else the full public bundle on boards whose firmware fits it.
         + "SERVER_URL = %r\n" % p.config.server_url
-        + "CA_PEM = %r\n" % _recovery_ca(p)
+        + "CA_PEM = %r\n" % _recovery_ca(p, t)
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
         + "BUILD_TIME = %d\n" % _build_time(p)
         + "TRUSTED_KEYS = {\n%s}\n" % keys

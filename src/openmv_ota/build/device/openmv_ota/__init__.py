@@ -15,6 +15,9 @@ are what an app uses around an OTA update:
                   chunked write of a whole partition, so NOT quick -- it feeds the
                   watchdog (openmv_wdt) like install() does. Idempotent; call early
                   (before the helper core is used). No-op when nothing is bundled.
+    builtin_ca() -> the TLS trust anchors frozen into the firmware (or None on a
+                  non-OTA build) -- the store install() trusts by default, public
+                  so an app's own TLS connections can reuse it.
     install()  -> download a gzipped FRONT-slot image over HTTPS and install it:
                   write the FRONT slot, arm the one-shot trial, reboot. Does NOT
                   return on success. Call with the network already up, after any app
@@ -639,7 +642,8 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
     is knowable immediately and that would rather not confirm in their own loop.
     Leave it None (the default) to confirm explicitly.
 
-    ``ca`` are TLS anchors (PEM/path); ``None`` uses the bundled ``data/ca.pem``.
+    ``ca`` are TLS anchors (PEM/path); ``None`` uses the romfs override ``data/ca.pem``
+    if the image ships one, else the firmware's built-in store (``builtin_ca()``).
     ``ntp_host`` overrides the NTP server used to set the clock when the RTC is
     not already trustworthy (``None`` = ntptime's default pool).
 
@@ -1086,9 +1090,10 @@ def install(url, ca=None):  # pragma: no cover
     caller callback -- any callback here (this lib, the app) lives in the slot being
     erased, so calling it post-erase would XIP from erased flash. (``sync()`` *does* take
     an ``on_progress`` -- it erases a different partition, leaving this one intact.) ``ca``
-    are the TLS trust anchors (PEM): ``None`` uses the bundled ``data/ca.pem`` (the Mozilla
-    root bundle), ``bytes`` are used as-is, and a ``str`` is a path to read. Ignored for
-    a file install -- there is no connection to authenticate."""
+    are the TLS trust anchors (PEM): ``None`` uses the romfs override ``data/ca.pem`` if the
+    image ships one, else the firmware's built-in store (``builtin_ca()``); ``bytes`` are
+    used as-is, and a ``str`` is a path to read. Ignored for a file install -- there is no
+    connection to authenticate."""
     import _ota_config as cfg
     _use_cfg_stride(cfg)
     here = __file__.rsplit("/", 1)[0]
@@ -1121,26 +1126,47 @@ def install(url, ca=None):  # pragma: no cover
     run(url, ca, cfg)  # hil-residual: terminal call into the installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
 
 
+def builtin_ca():  # pragma: no cover  (device: frozen-module imports)
+    """The TLS trust anchors frozen into the FIRMWARE, or ``None`` if this firmware carries
+    none (a non-OTA build). Read straight out of flash -- no RAM copy of a ~186 KB bundle.
+    Two frozen homes, oldest first: ``openmv_ca`` (a ``--ca`` project's own roots) and
+    ``_ota_config.CA_PEM`` (what recovery uses -- the full public bundle on boards whose
+    firmware fits it, or the same ``--ca`` roots). Public so an app that opens its own TLS
+    connections can reuse the store the updater trusts."""
+    try:  # hil-residual: import guard; a --ca firmware freezes openmv_ca, the bench (explicit-CA legs) reaches neither arm
+        import openmv_ca  # hil-residual: dominated by the return below
+        return openmv_ca.PEM  # hil-residual: --ca-firmware arm; the bench passes an EXPLICIT ca (path or bytes) on every leg
+    except ImportError:  # hil-residual: bundle-default firmware has no openmv_ca module
+        pass  # hil-residual: fall through to the recovery config's copy
+    try:  # hil-residual: import guard for the frozen boot config
+        import _ota_config  # hil-residual: dominated by the return below
+        return getattr(_ota_config, "CA_PEM", None) or None  # hil-residual: bundle-default arm; the bench passes an explicit CA on every leg
+    except ImportError:  # hil-residual: non-OTA firmware (no _ota_config frozen) -- install() then needs an explicit ca
+        return None  # hil-residual: no frozen anchors to offer
+
+
 def _resolve_ca(ca, base):  # pragma: no cover
-    """Normalise the TLS trust anchors run()/install() accept -- ``None`` -> the bundled
-    ``data/ca.pem``, a ``str`` -> a path to read, ``bytes`` -> used as-is. Shared so both
+    """Normalise the TLS trust anchors run()/install() accept -- ``None`` -> the romfs
+    override ``data/ca.pem`` if the image ships one, else the firmware's built-in store
+    (``builtin_ca()``); a ``str`` -> a path to read, ``bytes`` -> used as-is. Shared so both
     entry points normalise identically (and so the read is witnessed in one place)."""
     if ca is None:
-        # THE TRUST STORE LIVES IN THE FIRMWARE, not the romfs. Frozen, it is read straight out
-        # of flash -- no RAM copy of a ~186 KB bundle -- and it costs the slot nothing. That last
-        # part is what makes it matter: the romfs image is duplicated under A/B, so a bundle
-        # shipped there is paid for TWICE, and on a single-image board (M4/M7/H7 classic, whose
-        # whole slot is 114688 bytes) it did not fit at all. It is also the same reasoning that
-        # puts boot.py and openmv_log in the firmware: a device must be able to reach its update
-        # server even when the filesystem holding the app is the thing that is broken.
-        try:  # hil-residual: the import guard itself; both arms are witnessed (ca: frozen / the legacy read), the `try` cannot carry its own marker
-            import openmv_ca  # hil-residual: dominated by `ca: frozen` on the next line but one
-            ca = openmv_ca.PEM  # hil-residual: dominated by `ca: frozen` on the next line
-            log.debug("ca: frozen")  # hil-residual: the bench server is self-signed, so every leg passes an EXPLICIT ca (path or bytes) and none reaches the default frozen store
-        except ImportError:  # hil-residual: only a project scaffolded BEFORE the store moved reaches this; current firmware freezes openmv_ca
-            # A project scaffolded before the store moved still ships it in the romfs. Keep
-            # reading that, so an existing project keeps updating across the change.
-            ca = _read_file(base + "/data/ca.pem", "rb")  # hil-residual: legacy romfs-ca branch; the bench passes an explicit CA (self-signed server) and current firmware freezes openmv_ca, so no leg reaches it
+        # THE DEFAULT TRUST STORE LIVES IN THE FIRMWARE (builtin_ca): frozen, it is read
+        # straight out of flash -- no RAM copy of a ~186 KB bundle -- and it costs the romfs
+        # slot nothing, which is paid TWICE under A/B and did not fit a classic's single-image
+        # slot at all. The romfs is the OVERRIDE, not the default: an image that ships
+        # data/ca.pem swaps the trust store with a romfs update, no firmware reflash -- absent
+        # by default, so shipping one is always a deliberate act.
+        try:  # hil-residual: the override probe; both arms are witnessed (ca: romfs / ca: builtin), the `try` cannot carry its own marker
+            ca = _read_file(base + "/data/ca.pem", "rb")  # hil-residual: romfs-override branch; the bench passes an EXPLICIT ca (self-signed server) and ships no override, so no leg reaches it
+            log.debug("ca: romfs")  # hil-residual: override witness; see the read above
+        except OSError:  # hil-residual: no override shipped -- the default default
+            ca = builtin_ca()  # hil-residual: frozen-store branch; the bench passes an explicit CA on every leg
+            log.debug("ca: builtin")  # hil-residual: builtin witness; see the line above
+            if not ca:  # hil-residual: only a non-OTA firmware (no frozen anchors) reaches this
+                # No override, nothing frozen: refuse here, with a name for the problem,
+                # rather than let TLS fail every connection with an anchorless verify.
+                raise OSError("no TLS trust anchors: no data/ca.pem and none frozen; pass ca=")  # hil-residual: anchorless refusal; needs a non-OTA firmware, which no OTA leg runs
     elif isinstance(ca, str):
         ca = _read_file(ca, "rb")
         log.debug("ca: from path")                    # HIL path witness (run() passes a CA path)

@@ -132,17 +132,20 @@ except OSError as e:
 
 | `ca` | Trust store |
 | --- | --- |
-| `None` (default) | the bundled `data/ca.pem` |
+| `None` (default) | the image's `data/ca.pem` if it ships one, else the firmware's built-in store |
 | a `str` | a file path to read |
 | `bytes` | used directly |
 
-`project new` downloads a fresh Mozilla root bundle into `data/ca.pem`, so common
-public CAs verify out of the box; replace it with your own provider's roots for a
-tighter trust store. Broad CA trust is acceptable here because **the signature,
-not TLS, is the integrity boundary** — a TLS MITM still can't forge a
-validly-signed manifest or image (it lacks your signing key); the worst it can do
-is serve a stale signed update, which the anti-rollback floor blocks, or deny the
-download.
+The built-in store is the trust store frozen into the firmware — the project's
+`certs/ca.pem` (a fresh Mozilla root bundle downloaded at `project new`, or the
+roots you supplied with `--ca`) — read straight out of flash, and exposed as
+**`openmv_ota.builtin_ca()`** so your app's own TLS connections can reuse it. An
+image that ships `app/lib/openmv_ota/data/ca.pem` overrides it: the trust store
+then swaps with a romfs update, no firmware reflash. Broad CA trust is acceptable
+here because **the signature, not TLS, is the integrity boundary** — a TLS MITM
+still can't forge a validly-signed manifest or image (it lacks your signing key);
+the worst it can do is serve a stale signed update, which the anti-rollback floor
+blocks, or deny the download.
 
 **The manifest + image.** `install()` consumes the **signed manifest** that
 [`build ota-romfs`](08-release-artifacts.md#build-ota-romfs) produces beside the

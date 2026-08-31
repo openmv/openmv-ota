@@ -221,20 +221,26 @@ def _batch_window(window, max_bytes):
 # --- device network plumbing (exercised on hardware, not host) ---------------
 
 def _ca():  # pragma: no cover  (device: filesystem)
-    """The PEM trust anchors, read once and cached: the same bundle the OTA
-    runtime verifies updates against (``openmv_ota/data/ca.pem``). Returns None
-    if the OTA runtime is not installed alongside us, in which case the platform
-    default applies."""
+    """The PEM trust anchors, read once and cached: the same store the OTA runtime
+    verifies updates against -- the romfs override ``openmv_ota/data/ca.pem`` if the
+    image ships one, else the firmware's frozen copy (``openmv_ota.builtin_ca()``).
+    Returns None if the OTA runtime is not installed alongside us (or the firmware
+    froze nothing), in which case the platform default applies."""
     global _ca_pem
     if _ca_pem is None:
         try:
             import openmv_ota
             here = openmv_ota.__file__.rsplit("/", 1)[0]
-            # Read through openmv_ota's helper, which sizes the read by the file rather than by
-            # the ceiling: `f.read(_CA_MAX)` pre-allocates 256 KiB in MicroPython and MemoryErrors
-            # on any board without external SDRAM (measured on the Nicla Vision). We are already
-            # inside `import openmv_ota`, so there is no new dependency to carry.
-            _ca_pem = openmv_ota._read_file(here + "/data/ca.pem", "r", _CA_MAX)
+            try:
+                # Read through openmv_ota's helper, which sizes the read by the file rather than
+                # by the ceiling: `f.read(_CA_MAX)` pre-allocates 256 KiB in MicroPython and
+                # MemoryErrors on any board without external SDRAM (measured on the Nicla
+                # Vision). We are already inside `import openmv_ota`, so no new dependency.
+                _ca_pem = openmv_ota._read_file(here + "/data/ca.pem", "r", _CA_MAX)
+            except OSError:
+                # No romfs override shipped (the default): the frozen store, straight
+                # out of flash -- no RAM copy.
+                _ca_pem = openmv_ota.builtin_ca() or False
         except (ImportError, OSError):
             _ca_pem = False                          # looked, not available
     return _ca_pem or None

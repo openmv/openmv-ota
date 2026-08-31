@@ -29,26 +29,32 @@ update path's:
 
 Recovery mostly rides what the firmware already carries: the trusted signing
 keys (`boot.py` verifies with them every boot) and the frozen installer. Two
-things are stamped in specifically for recovery — the pieces the runtime
-normally reads from the romfs, which is exactly what is gone:
+more things are stamped in so nothing recovery needs depends on the romfs —
+which is exactly what is gone:
 
 | Stamped for recovery | From |
 | --- | --- |
 | the server URL | `server_url` in `openmv-ota.toml`'s `[ota]` table |
-| its own copy of the TLS trust store | the project's `[ota].ca` — the runtime's bundled roots live in the romfs, which recovery cannot read |
+| the TLS trust store | the project's `[ota].ca` when set; otherwise the full public CA bundle (`certs/ca.pem`) — the same frozen store the runtime trusts by default, so it is there whether or not any romfs is |
 
-**Set both.** `server_url` is the line recovery cannot function without (a
-firmware built without it logs a critical error and stops — no amount of
-retrying fixes a build mistake), and `[ota].ca` should point at a PEM file
-holding the root(s) your server chains to — one certificate or a small
-bundle, a few KB, not the full public bundle (which cannot ride in
-firmware). Without it the firmware carries no trust anchors, and recovery
-cannot verify a TLS connection to anyone.
+**Set `server_url`.** It is the line recovery cannot function without — a
+firmware built without it logs a critical error and stops, because no amount
+of retrying fixes a build mistake.
 
 ```toml
 [ota]
 server_url = "https://updates.example.com"
 ```
+
+The trust store has a working default: on the OpenMV N6, AE3, and RT1062 the
+firmware is large enough to carry the full public CA bundle, so a server
+behind a public CA needs no configuration at all. On the smaller boards the
+~186 KB bundle does not fit in firmware, so `[ota].ca` must point at a PEM
+file holding the root(s) your server chains to — one certificate or a small
+bundle, a few KB — and both `project new --ota` and `build firmware` refuse
+to build those boards without one, rather than ship a recovery with no trust
+anchors. Setting `[ota].ca` is never wrong on any board: your device talks to
+one server, so its root is all it actually needs.
 
 ## The network settings file
 

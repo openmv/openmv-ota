@@ -103,7 +103,7 @@ def test_a_fallback_interface_gets_credentials_but_not_the_other_one_s_address(m
 
     class Cfg:
         SERVER_URL = "https://x/manifest.bin"
-        CA_PEM = b""
+        CA_PEM = b"-----BEGIN CERTIFICATE-----\nxx\n"  # the build never stamps this empty
 
     with pytest.raises(_Stop):
         rec.run(Cfg)

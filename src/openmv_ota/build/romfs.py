@@ -424,7 +424,8 @@ def _runtime_inject(out_dir, board, copro_targets):
                                  encoding="utf-8")
         if not copro_targets:
             # Plain board: drop only the coprocessor resource (nothing to sync) -- keep
-            # installer.py + ca.pem, which every OTA image needs.
+            # installer.py, which every OTA image needs (the trust store rides in the
+            # firmware; a data/ca.pem here is a project's deliberate override).
             (data / "coprocessor.romfs").unlink(missing_ok=True)
             (data / "resources.json").unlink(missing_ok=True)
             return

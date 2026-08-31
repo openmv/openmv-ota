@@ -92,18 +92,20 @@ if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
   # `project new` below carries micropython#19348 (ranged romfs erase) into lib/micropython for
   # a v5.0 OTA firmware -- the tool guarantees it, so this script (and any real user) needs no
   # custom step; the lock captures the patched, committed-clean tree.
-  # The classic boards cannot hold the ~184 KB public CA bundle (their ROMFS slot is 112-240 K),
-  # so `project new --ota` refuses them without a root of your own -- the same refusal a real
-  # user hits, resolved the same way. Their legs never do TLS (file transport; these builds have
-  # no ssl module), so the root is trust-store ballast the build requires: generate a throwaway
-  # ~1 KB bench root once and cache it. Kept OUT of the wifi/lan boards' projects -- they freeze
-  # the real public bundle, exactly like a production build.
+  # Boards whose firmware cannot carry the ~186 KB public CA bundle (no recovery_ca_bundle in
+  # boards.json: the classics, whose ROMFS slot can't hold it either, and the 1792 KB H7-family
+  # boards) are refused by `project new --ota` without a root of your own -- the same refusal a
+  # real user hits, resolved the same way: generate a throwaway ~1 KB bench root once and cache
+  # it. (The classic legs never do TLS at all -- file transport -- so for them it is pure
+  # trust-store ballast the build requires.) Kept OUT of the N6/AE3/RT1060 projects -- those
+  # freeze the real public bundle for recovery, exactly like a production build, which also
+  # makes every fleet run the link-fit proof of that default.
   CA_ARGS=()
   case "$BOARD" in
-    OPENMV2|OPENMV3|OPENMV4)
+    OPENMV2|OPENMV3|OPENMV4|OPENMV4P|OPENMVPT|ARDUINO_PORTENTA_H7|ARDUINO_GIGA|ARDUINO_NICLA_VISION)
       CA="$CACHE/bench-root.pem"
       if [ ! -f "$CA" ]; then
-        log "generate bench root CA (the classic boards need --ca)"
+        log "generate bench root CA (this board's firmware can't hold the public bundle; needs --ca)"
         openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
           -keyout "$CACHE/bench-root-key.pem" -out "$CA" -days 3650 -nodes \
           -subj "/CN=OpenMV HIL bench root" >&2 2>&1

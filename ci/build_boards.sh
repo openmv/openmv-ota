@@ -13,7 +13,12 @@
 #                              build firmware + romfs + factory-romfs; inspect +
 #                              verify the OTA bundle (bundle and loose
 #                              body+trailer); a corrupted body must FAIL verify;
-#                              the factory image is the full partition.
+#                              the factory image is the full partition. Boards whose
+#                              firmware cannot carry the public CA bundle for recovery
+#                              (no recovery_ca_bundle in boards.json: the 1792 KB parts)
+#                              must REFUSE `project new --ota` without `--ca` and are
+#                              built with a generated root; N6/AE3/RT1060 build with no
+#                              --ca, which is the link-fit proof of the frozen bundle.
 #   classic  (romfs, small):   BOTH paths, because under v2 these boards are OTA-capable
 #                              -- a partition with room for only one slot builds in
 #                              SINGLE-IMAGE mode instead of being refused. So:
@@ -184,9 +189,21 @@ verify_coprocessor() {  # proj  board  img
 }
 
 do_full() {  # board  work
-  local board="$1" work="$2" proj="$2/ota" keys
+  local board="$1" work="$2" proj="$2/ota" keys ca_flag=
+  if needs_own_ca "$board"; then
+    # THE PUBLIC CA BUNDLE DOES NOT FIT THIS BOARD'S FIRMWARE, and firmware-resident recovery
+    # needs TLS anchors there -- so `project new --ota` refuses without a CA, exactly like the
+    # classic boards, and the build proceeds with a generated root.
+    expect_clean_fail "project new --ota refuses without a CA (recovery needs anchors in firmware)" \
+      1 "cannot hold the public CA bundle" \
+      $OTA project new "$work/ota_noca" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=openmv-ota-ci" \
+      -keyout "$work/root.key" -out "$work/root.pem" >/dev/null 2>&1
+    expect_file "test root generated" "$work/root.pem"
+    ca_flag="--ca $work/root.pem"
+  fi
   expect_success "project new --ota" \
-    $OTA project new "$proj" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
+    $OTA project new "$proj" -f "$FW" -b "$board" --ota --dev $ca_flag $SDK_FLAG
   [ "$LAST_RC" -eq 0 ] || return 0
   keys="$proj/keys/trusted_keys.json"
 
@@ -332,6 +349,15 @@ $LAST_OUT";;
 do_noromfs() {  # board  work
   expect_clean_fail "project new refused cleanly (no ROMFS partition)" "" "" \
     $OTA project new "$2/plain" -f "$FW" -b "$1" $SDK_FLAG
+}
+
+# Full boards whose firmware cannot carry the public CA bundle (no recovery_ca_bundle
+# in boards.json) -- they must supply their own root, like the classics.
+needs_own_ca() {
+  case "$1" in
+    OPENMV4P|OPENMVPT|ARDUINO_PORTENTA_H7|ARDUINO_GIGA|ARDUINO_NICLA_VISION) return 0;;
+    *) return 1;;
+  esac
 }
 
 # Expected capability per board (black-box: known board -> known behaviour).

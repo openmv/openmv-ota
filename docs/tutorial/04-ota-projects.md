@@ -23,11 +23,15 @@ images a camera can download, verify, and fall back from.
   internal-flash sector — OpenMV2/3/4, where the erase block *is* the whole
   partition — builds in **single-image mode** instead: one slot spanning the
   partition, no on-flash fallback (a failed update there is re-downloaded by
-  firmware-resident recovery). One practical
-  consequence: the public TLS bundle does not fit their small slot, so on these
-  boards `new --ota` requires an explicit `--ca` root and refuses without one.
+  firmware-resident recovery).
   Two-slot boards keep their ROMFS in external NOR/OSPI flash (4 KiB erase
   blocks) or MRAM.
+
+- **A trust store the firmware can carry.** Recovery needs TLS anchors in the
+  firmware itself. On the OpenMV N6, AE3, and RT1062 the firmware is large
+  enough to hold the full public bundle, so nothing needs configuring. On every
+  other board it is not — there `new --ota` requires an explicit `--ca` root
+  (your server's own root, a few KB) and refuses without one.
 
 - **Keys provisioned.** `new --ota` generates the product's whole signing key
   set up front and writes it under `keys/`.
@@ -80,7 +84,7 @@ How the floor survives is the one place the two modes differ:
 | Flag | Effect |
 |---|---|
 | `--ota` | Declare the project over-the-air: split each partition into slots and provision the signing keys. |
-| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle. |
+| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle — allowed only on boards whose firmware can carry it (N6, AE3, RT1062). |
 | `--no-firmware-patches` | Don't auto-apply the OTA-required firmware patches; fail instead if the firmware lacks them. |
 
 ## Files an OTA project adds
@@ -93,8 +97,10 @@ my-product/
 ├── openmv-ota.toml          # gains an [ota] section
 ├── app/lib/openmv_ota/      # the device OTA runtime library (status/confirm/sync/install)
 │   └── data/
-│       ├── installer.py     # the installer, shipped as source (exec'd into RAM)
-│       └── ca.pem           # TLS root bundle for downloads (fetched fresh at `new`)
+│       └── installer.py     # the installer, shipped as source (exec'd into RAM)
+├── certs/
+│   └── ca.pem               # TLS trust store, frozen into the firmware by `build
+│                            # firmware` (fetched fresh at `new`; `--ca` copies here)
 ├── device/
 │   ├── openmv_log.py               # the OTA debug logger
 │   └── openmv_wdt.py               # the watchdog helper
@@ -139,9 +145,10 @@ openmv_ota.confirm()     # keep the update (no-op if it isn't a trial)
 It also exposes **`install(url)`** — fetch a new image over HTTPS, or from a file
 path, and install it.
 The installer ships as source in `data/installer.py` (so the device can `exec` it into
-RAM while it overwrites the slot it runs from), and `data/ca.pem` is the TLS trust
+RAM while it overwrites the slot it runs from), and `certs/ca.pem` is the TLS trust
 store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step needs
-network, like the SDK download), and you can replace it with your provider's roots.
+network, like the SDK download) and `build firmware` freezes it, so the device reads
+its anchors straight out of flash. You can replace it with your provider's roots.
 What `install()` downloads is produced by `build ota-romfs`.
 
 `new --ota` also scaffolds two **opt-in** helpers under `device/`, each frozen into
