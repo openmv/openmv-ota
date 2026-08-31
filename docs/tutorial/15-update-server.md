@@ -39,7 +39,7 @@ registered fleet. Registration is required and configured with `SWD_IDS_VERIFY_U
 ## Configuration
 
 Settings come from `OPENMV_OTA_*` environment variables (Render's bare `PORT` and `DATABASE_URL`
-are also honored), or are injected programmatically via `create_app(ServerSettings(**overrides))`.
+are also honored).
 
 | setting | env var | notes |
 | --- | --- | --- |
@@ -103,12 +103,6 @@ The same is available remotely to an `accounts` token: `POST /api/v1/admin/accou
 (`client account create --name …`) returns the new `account_id` + its first token once, and
 `GET /api/v1/admin/accounts` (`client account list`) lists them. An operator (re)binds a device to
 an account with `POST /api/v1/admin/devices/{id}/account` (`client bind --id …`).
-
-**Hosted identity seam.** `create_app(admin_auth=…)` lets OpenMV's website inject its own auth
-object (`authenticate(header) -> Principal`) that resolves a logged-in maker to their
-`account_id`; the scoping then follows that Principal, with no `admin_tokens` rows involved. The
-server holds the account→ownership mapping but never any billing or identity — that lives in the
-website.
 
 ## Deploying (self-hosted only)
 
