@@ -7,7 +7,7 @@
 `openmv-ota build ota-romfs` leaves a signed release in `build/`; nothing so far decides
 which camera downloads it. That is the **update server**'s job — a central service that
 hosts your releases and stages them across the fleet — and **`openmv-ota client`** is how
-you and CI drive it. Everything the client does goes through the server's admin HTTP API,
+you drive it. Everything the client does goes through the server's admin HTTP API,
 so anything it can do, your own scripts and dashboards can do too.
 
 This page is the release workflow: log in once, publish, stage it out ([16 ·
