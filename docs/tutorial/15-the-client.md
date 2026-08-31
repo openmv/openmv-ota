@@ -95,14 +95,16 @@ $ openmv-ota client cohort list
   ]
 }
 
-$ openmv-ota client cohort assign --cohort beta --product-id 41123
-assigned 412 device(s) (product 41123) to cohort beta
+$ openmv-ota client cohort assign --cohort beta --product-id 396486252
+assigned 412 device(s) (product 396486252) to cohort beta
 ```
 
 Exactly one selector per command: `--id` (repeatable) is the surgical one — the
 **device id**, the same MCU unique id everywhere on this page, listed by
 `client devices` — and `--product-id` is the bulk one, moving every device of the
-product at once. A rollout reaches its cohort by exact name — no
+product at once. The **product id** is the per-board number `project new` stamped into
+`openmv-ota.toml` ([page 2](02-projects.md)); every device reports it at check-in, and
+`client devices` shows it per device. A rollout reaches its cohort by exact name — no
 wildcards, no nesting — so assignment is also removal: a device moved to `beta` leaves
 `__default__`, and rollouts staged to `__default__` stop reaching it. Assignment counts
 only the devices that exist and are yours — the `1/1` in the summary is what makes a
@@ -232,7 +234,7 @@ this release":
 ```
 openmv-ota client pin device --id 30003d000851303436313832 --release rel_4f9c2a81d06b73ee
 openmv-ota client pin device --id 30003d000851303436313832 --clear
-openmv-ota client pin cohort --product-id 41123 --cohort beta --release rel_4f9c2a81d06b73ee
+openmv-ota client pin cohort --product-id 396486252 --cohort beta --release rel_4f9c2a81d06b73ee
 ```
 
 A device pin beats a cohort pin, and either beats the rollout. A pin only ever produces
