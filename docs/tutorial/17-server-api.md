@@ -86,7 +86,7 @@ Grouped by what they manage — the scope column is what the bearer token must c
 |---|---|---|
 | `POST /api/v1/admin/rollouts` | manage | create (release, cohort, percent, optional `failure_threshold`, default 0.05). Supersedes — pauses — the cohort's prior active rollout |
 | `PATCH /api/v1/admin/rollouts/{id}` | manage | raise `percent` (monotonic — lowering is 400) and/or set `state` to `active`/`paused` |
-| `POST /api/v1/admin/rollouts/{id}/rollback` | manage | terminal stop; devices that took the release keep it |
+| `POST /api/v1/admin/rollouts/{id}/stop` | manage | terminal stop; devices that took the release keep it, and a stopped rollout can't be resumed |
 | `GET /api/v1/admin/rollouts` | observe | list (paged) |
 | `GET /api/v1/admin/rollouts/{id}/status` | observe | the counters: `attempted`, `updated`, `failures`, `success_rate`, plus the devices' explicit `reported` outcomes |
 

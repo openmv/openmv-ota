@@ -215,10 +215,10 @@ def test_rollback(tmp_path):
     app, store = _app(tmp_path)
     c = TestClient(app)
     rid = _make_rollout(c, store)
-    assert c.post("/api/v1/admin/rollouts/%s/rollback" % rid,
-                  headers=AUTH).json()["state"] == "rolled_back"
-    assert store.get_rollout(rid)["state"] == "rolled_back"
-    assert c.post("/api/v1/admin/rollouts/nope/rollback", headers=AUTH).status_code == 404
+    assert c.post("/api/v1/admin/rollouts/%s/stop" % rid,
+                  headers=AUTH).json()["state"] == "stopped"
+    assert store.get_rollout(rid)["state"] == "stopped"
+    assert c.post("/api/v1/admin/rollouts/nope/stop", headers=AUTH).status_code == 404
 
 
 # --- observability --------------------------------------------------------------------------
@@ -613,7 +613,7 @@ def test_account_isolation(tmp_path):
     assert c.get("/api/v1/admin/rollouts", headers=B).json()["rollouts"] == []
     assert c.get("/api/v1/admin/rollouts/%s/status" % roA, headers=B).status_code == 404
     assert c.patch("/api/v1/admin/rollouts/%s" % roA, headers=B, json={"percent": 50}).status_code == 404
-    assert c.post("/api/v1/admin/rollouts/%s/rollback" % roA, headers=B).status_code == 404
+    assert c.post("/api/v1/admin/rollouts/%s/stop" % roA, headers=B).status_code == 404
 
     # B cannot roll out, or pin its cohort to, A's release
     assert c.post("/api/v1/admin/rollouts", headers=B,

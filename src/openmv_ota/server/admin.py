@@ -294,6 +294,10 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
     if body.state is not None:
         if body.state not in ("active", "paused"):
             raise HTTPException(status_code=400, detail="state must be active or paused")
+        if ro["state"] == "stopped":
+            # stop is TERMINAL -- the docs promise it, and a resume here would silently
+            # re-offer a release the operator decided nobody else should get
+            raise HTTPException(status_code=409, detail="rollout is stopped -- create a new one")
         changes["state"] = body.state
     if not changes:
         raise HTTPException(status_code=400, detail="nothing to change")
@@ -303,15 +307,15 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
     return ms.get_rollout(rollout_id)
 
 
-@admin.post("/rollouts/{rollout_id}/rollback", responses={200: {"model": RolloutState}})
-def rollback_rollout(rollout_id: str, request: Request,
+@admin.post("/rollouts/{rollout_id}/stop", responses={200: {"model": RolloutState}})
+def stop_rollout(rollout_id: str, request: Request,
                      principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
     _owned(ms.get_rollout(rollout_id), principal)
-    ms.update_rollout(rollout_id, state="rolled_back")   # stops offering; does not downgrade
-    ms.append_audit(actor=principal.name, action="rollout.rollback", entity_type="rollout",
+    ms.update_rollout(rollout_id, state="stopped")       # stops offering; does not downgrade
+    ms.append_audit(actor=principal.name, action="rollout.stop", entity_type="rollout",
                     entity_id=rollout_id, account_id=principal.account_id)
-    return {"rollout_id": rollout_id, "state": "rolled_back"}
+    return {"rollout_id": rollout_id, "state": "stopped"}
 
 
 @admin.get("/rollouts", responses={200: {"model": RolloutList}})
@@ -573,8 +577,8 @@ def delete_release_artifacts(release_id: str, request: Request, force: bool = Fa
     if live and not force:
         raise HTTPException(
             status_code=409,
-            detail="release %s is still being offered by rollout(s) %s -- pause or roll them "
-                   "back first, or pass force=true"
+            detail="release %s is still being offered by rollout(s) %s -- pause or stop them "
+                   "first, or pass force=true"
                    % (release_id, ", ".join(r["rollout_id"] for r in live)))
 
     keys = [rel["manifest_key"], rel["image_key"]]

@@ -131,7 +131,7 @@ separate from the release it carries. It binds together:
 - **one cohort** — the group of devices to distribute it to (`__default__` when you
   don't pass `--cohort`);
 - **a percentage** — how much of that cohort is currently offered it;
-- **a state** — `active`, `paused`, or `rolled_back`;
+- **a state** — `active`, `paused`, or `stopped`;
 - **counters** — how many devices it was offered to (`attempted`), how many now run it
   (`updated`), how many fell back off it (`failures`).
 
@@ -182,7 +182,7 @@ From there the lifecycle is four actions:
 openmv-ota client rollout raise 50 --rollout-id ro_1c3f88ba90d2e644
 openmv-ota client rollout pause  --rollout-id ro_1c3f88ba90d2e644
 openmv-ota client rollout resume --rollout-id ro_1c3f88ba90d2e644
-openmv-ota client rollout rollback --rollout-id ro_1c3f88ba90d2e644
+openmv-ota client rollout stop --rollout-id ro_1c3f88ba90d2e644
 ```
 
 | action | what happens |
@@ -190,10 +190,10 @@ openmv-ota client rollout rollback --rollout-id ro_1c3f88ba90d2e644
 | `raise N` | widen the staged slice to N percent. Percent is **monotonic** — lowering it is refused, because devices already offered the release can't be un-offered |
 | `pause` | stop offering; resumable. The server also **auto-pauses** a rollout whose fallback rate among offered devices crosses its failure threshold (5% by default) and records an audit event |
 | `resume` | start offering again |
-| `rollback` | stop offering **permanently**. Devices that already took the release keep it — the server never downgrades a camera; the device's own anti-rollback wouldn't accept one anyway |
+| `stop` | stop offering **permanently** (a stopped rollout can't be resumed — create a new one). Devices that already took the release keep it — the server never downgrades a camera; the device's own anti-rollback wouldn't accept one anyway |
 
 `client rollouts` lists them (so a lost id is always recoverable), and
-`client rollout status --id` reads one rollout's score — the raise/pause decision in
+`client rollout status --rollout-id` reads one rollout's score — the raise/pause decision in
 four numbers:
 
 ```
@@ -296,7 +296,7 @@ openmv-ota client prune --release-id rel_4f9c2a81d06b73ee
 The release **row** survives — it is the audit trail and the anti-rollback history — so
 the server can answer "this release existed but its bytes are gone" rather than a bare
 not-found. Pruning is refused while a rollout still offers that release (those are the
-devices downloading it right now): pause or roll back first, or pass `--force` if you
+devices downloading it right now): pause or stop it first, or pass `--force` if you
 mean it.
 
 ## Accounts, tokens, and binding
@@ -348,7 +348,7 @@ them — no special case for parsers.
 | `client logout` | remove the saved profile |
 | `client publish DIR -b BOARD [--percent N [--cohort C]] [--allow-republish]` | upload a built release, optionally staging it |
 | `client rollout create --release-id R --percent N [--cohort C]` | stage an already-published release |
-| `client rollout raise\|pause\|resume\|rollback --rollout-id ID` | drive a rollout (`raise` takes the percent directly: `raise 50`) |
+| `client rollout raise\|pause\|resume\|stop --rollout-id ID` | drive a rollout (`raise` takes the percent directly: `raise 50`) |
 | `client rollout status --rollout-id ID` | one rollout's counters (JSON) |
 | `client cohort list` / `cohort assign --cohort C (--device-id ID… \| --product-id N)` | see cohorts / move devices into one, surgically or by whole product |
 | `client pin device --device-id ID (--release-id R \| --clear)` | pin one device, overriding rollouts |

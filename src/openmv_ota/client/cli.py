@@ -2,7 +2,7 @@
 
     login / logout           save/remove the server URL + admin token
     publish                  upload a built release (+ optional rollout)
-    rollout create|raise|pause|resume|rollback|status
+    rollout create|raise|pause|resume|stop|status
     fleet / devices / releases / rollouts / audit  read fleet status
 
 ``login``/``logout`` need only the standard library; the API verbs use httpx from the ``server``
@@ -80,7 +80,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_pub)
     p_pub.set_defaults(func=cmd_publish, _command="client publish")
 
-    p_ro = sub.add_parser("rollout", help="create/raise/pause/resume/rollback a rollout")
+    p_ro = sub.add_parser("rollout", help="create/raise/pause/resume/stop a rollout")
     rsub = p_ro.add_subparsers(dest="_ro")
     p_rc = rsub.add_parser("create", help="stage an already-published release to a cohort")
     p_rc.add_argument("--release-id", required=True, metavar="RELEASE_ID",
@@ -97,7 +97,7 @@ def register(parser: argparse.ArgumentParser) -> None:
             ("raise", True, "widen the rollout to --percent of the cohort"),
             ("pause", False, "stop offering it (it auto-pauses on failures too)"),
             ("resume", False, "start offering it again after a pause"),
-            ("rollback", False, "stop offering it for good; devices that took it keep it")):
+            ("stop", False, "stop offering it for good; devices that took it keep it")):
         pr = rsub.add_parser(action, help=blurb)
         pr.add_argument("--rollout-id", required=True, metavar="ROLLOUT_ID",
                         help="the rollout to act on (ids come from publish / `client rollouts`)")
@@ -418,7 +418,7 @@ def cmd_rollout(args: argparse.Namespace) -> int:
         elif args.action == "resume":
             ro = api.patch_rollout(args.rollout_id, state="active")
         else:
-            ro = api.rollback_rollout(args.rollout_id)
+            ro = api.stop_rollout(args.rollout_id)
         return _emit(args, ro, "rollout %s -> %s" % (args.rollout_id, ro.get("state", "")))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)

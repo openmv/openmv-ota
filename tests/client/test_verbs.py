@@ -233,9 +233,9 @@ def test_rollout_raise_pause_resume_rollback(wired, tmp_path, capsys):
     assert store.get_rollout(rid)["state"] == "paused"
     assert main(["client", "rollout", "resume", "--rollout-id", rid]) == 0
     assert store.get_rollout(rid)["state"] == "active"
-    assert main(["client", "rollout", "rollback", "--rollout-id", rid]) == 0
-    assert store.get_rollout(rid)["state"] == "rolled_back"
-    assert "rolled_back" in capsys.readouterr().out
+    assert main(["client", "rollout", "stop", "--rollout-id", rid]) == 0
+    assert store.get_rollout(rid)["state"] == "stopped"
+    assert "stopped" in capsys.readouterr().out
 
 
 def test_rollout_server_error_surfaced(wired, tmp_path, capsys):

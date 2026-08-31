@@ -88,8 +88,8 @@ class Api:
     def patch_rollout(self, rollout_id: str, **body):
         return self._req("PATCH", "/api/v1/admin/rollouts/%s" % rollout_id, json=body)
 
-    def rollback_rollout(self, rollout_id: str):
-        return self._req("POST", "/api/v1/admin/rollouts/%s/rollback" % rollout_id)
+    def stop_rollout(self, rollout_id: str):
+        return self._req("POST", "/api/v1/admin/rollouts/%s/stop" % rollout_id)
 
     def list_rollouts(self, product_id=None, limit=None, offset=None):
         params = {}

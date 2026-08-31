@@ -116,12 +116,12 @@ def test_rollout_calls():
     api, c = _api(_Resp(200, {}))
     api.create_rollout("r1", "beta", 5)
     api.patch_rollout("ro1", percent=50)
-    api.rollback_rollout("ro1")
+    api.stop_rollout("ro1")
     assert c.calls[0][:2] == ("POST", "/api/v1/admin/rollouts")
     assert c.calls[0][2]["json"] == {"release_id": "r1", "cohort": "beta", "percent": 5}
     assert c.calls[1][:2] == ("PATCH", "/api/v1/admin/rollouts/ro1")
     assert c.calls[1][2]["json"] == {"percent": 50}
-    assert c.calls[2][:2] == ("POST", "/api/v1/admin/rollouts/ro1/rollback")
+    assert c.calls[2][:2] == ("POST", "/api/v1/admin/rollouts/ro1/stop")
 
 
 def test_read_calls_carry_params():
