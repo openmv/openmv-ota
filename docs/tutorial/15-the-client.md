@@ -84,8 +84,9 @@ the rest of your account, top to bottom:
 
 - Your **account** holds everything — devices, releases, rollouts, cohorts, audit.
 - **Each board you build for is its own product**: `project new` derives one product id
-  per board, and a release is built and published per board (`publish -b`) — which is
-  what keeps an `OPENMV_N6` image from ever being offered to an `OPENMV_RT1060`.
+  per board and stamps it into `openmv-ota.toml` ([page 2](02-projects.md)); a release
+  is built and published per board (`publish -b`) — which is what keeps an `OPENMV_N6`
+  image from ever being offered to an `OPENMV_RT1060`.
 - **Cohort names are free-form, account-wide labels on devices** — every device is in
   exactly one, starting in `__default__` until you move it, and devices of different
   products can share a name (`cohort list` counts a name across products unless you
@@ -114,16 +115,11 @@ $ openmv-ota client cohort assign --cohort beta --product-id 396486252
 assigned 412 device(s) (product 396486252) to cohort beta
 ```
 
-Exactly one selector per command: `--id` (repeatable) is the surgical one — the
-**device id**, the same MCU unique id everywhere on this page, listed by
-`client devices` — and `--product-id` is the bulk one, moving every device of the
-product at once. The **product id** is the per-board number `project new` stamped into
-`openmv-ota.toml` ([page 2](02-projects.md)); every device reports it at check-in, and
-`client devices` shows it per device. A rollout reaches its cohort by exact name — no
-wildcards, no nesting — so assignment is also removal: a device moved to `beta` leaves
-`__default__`, and rollouts staged to `__default__` stop reaching it. Assignment counts
-only the devices that exist and are yours — the `1/1` in the summary is what makes a
-typo'd id visible.
+`assign` takes exactly one selector: `--device-id` (repeatable) moves those exact
+devices; `--product-id` moves every device of the product. `client devices` lists both
+ids per device. Assignment is also removal — a device moved to `beta` leaves
+`__default__` — and it counts only the devices that exist and are yours: the `1/1` in
+the summary is what makes a typo'd id visible.
 
 ## Staging a rollout
 
