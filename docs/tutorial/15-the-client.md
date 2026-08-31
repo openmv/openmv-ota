@@ -34,8 +34,9 @@ in shell history. Every verb resolves its credentials the same way:
 | `--server` / `--token` on the verb | always (a one-off against another server) |
 | `OPENMV_OTA_SERVER` / `OPENMV_OTA_TOKEN` | when no flag is given — how CI runs stateless |
 | `~/.config/openmv-ota/client.toml` | what `login` wrote (mode 0600) |
-| `https://ota.cloud.openmv.io` | the server URL when nothing above names one — the OpenMV-hosted service. There is no default token: a self-host points `--server`/env/`login` at its own deployment |
+| `https://ota.cloud.openmv.io` | the built-in fallback for the server URL — the OpenMV-hosted service |
 
+Only the URL has a built-in fallback; the token is always yours to provide.
 `client logout` deletes the file.
 
 ## Publishing a release
