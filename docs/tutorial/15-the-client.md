@@ -139,9 +139,14 @@ When a device in the cohort checks in, it is offered the rollout's release only 
 three gates pass: the release is an **upgrade** over what the device reports running,
 the device is **settled** (not mid-trial — a camera that hasn't confirmed its current
 image is left alone, because the slot an install would overwrite is its only proven
-fallback), and the device falls inside the current **percentage**. One rollout is active
-per (product, cohort) at a time; creating another pauses the previous, recorded in the
-audit log as superseded.
+fallback), and the device falls inside the current **percentage**.
+
+Within one cohort, only one rollout offers at a time. Staging a new release to a cohort
+mid-rollout — v1.3 while v1.2 is still going out — automatically pauses the v1.2
+rollout (nothing is deleted: its counters stay readable, and the audit log records that
+it was superseded). The cohort's check-ins are answered by the new rollout from then
+on: devices that already took v1.2 are offered the upgrade, and devices the old rollout
+never reached skip straight to v1.3.
 
 Create one at publish time or stage an already-published release later — the same
 `--cohort`/`--percent` flags either way, and the rollout's id comes back in the output:
