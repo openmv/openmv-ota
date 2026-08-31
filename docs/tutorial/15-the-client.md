@@ -169,7 +169,8 @@ number between 0 and 9,999, computed by hashing the rollout id together with the
 device id —
 
 ```
-ticket = sha256(rollout_id + ":" + device_id) % 10000     # 0–9999, fixed per device
+ticket = sha256(rollout_id + ":" + device_id) % 10000     # 0–9999: deterministic,
+                                                          # NOT unique per device
 staged = ticket < percent * 100                           # 5%  -> tickets 0–499
                                                           # 50% -> tickets 0–4999
 ```
@@ -185,11 +186,12 @@ idea buys three properties:
 - **Reshuffled per rollout**: the rollout id is part of the hash, so every rollout
   deals fresh tickets — the same camera isn't the canary every time.
 
-Tickets aren't seats — devices **share** numbers. A fleet larger than 10,000 simply has
-several devices per ticket, spread uniformly, so a 5% rollout stages ~5% of the cohort
-at any fleet size (and the bigger the fleet, the closer the real fraction lands to the
-dial). The ticket count only sets the resolution: the finest slice is one ticket, 0.01%
-of the cohort.
+Tickets aren't seats — every device gets its **own draw**, but there are only 10,000
+possible values, so different devices land on the **same number** (in a fleet of
+100,000, about ten per value). That's fine, because only the fraction below the bar
+matters: a 5% rollout stages ~5% of the cohort at any fleet size, and the bigger the
+fleet, the closer the real fraction lands to the dial. The ticket count only sets the
+resolution — the finest slice is one ticket, 0.01% of the cohort.
 
 From there the lifecycle is four actions:
 
