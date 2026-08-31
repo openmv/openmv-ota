@@ -96,10 +96,12 @@ $ openmv-ota client cohort list
 }
 ```
 
-A rollout reaches its cohort by exact name — no wildcards, no nesting — so assignment
-is also removal: a device moved to `beta` leaves `__default__`, and rollouts staged to
-`__default__` stop reaching it. Assignment counts only the devices that exist and are
-yours — the `1/1` in the summary is what makes a typo'd id visible.
+`--device` (repeatable) takes the **device id** — the same MCU unique id everywhere on
+this page, listed by `client devices`. A rollout reaches its cohort by exact name — no
+wildcards, no nesting — so assignment is also removal: a device moved to `beta` leaves
+`__default__`, and rollouts staged to `__default__` stop reaching it. Assignment counts
+only the devices that exist and are yours — the `1/1` in the summary is what makes a
+typo'd id visible.
 
 ## Staging a rollout
 
@@ -231,6 +233,10 @@ openmv-ota client pin cohort --product-id 41123 --cohort beta --release rel_4f9c
 A device pin beats a cohort pin, and either beats the rollout. A pin only ever produces
 an **offer** when it's an upgrade for a settled device; pinning to the version a camera
 already runs (or older) simply holds it — no rollout reaches it, nothing downgrades.
+
+`pin cohort` names the product because a cohort name is only meaningful per product —
+the same name can exist under two products, so the pin binds the `(product, cohort)`
+pair. A device pin doesn't need it: the device id alone is unique.
 
 ## Delta bases — and why the server keeps every image
 
