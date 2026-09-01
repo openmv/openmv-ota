@@ -516,7 +516,7 @@ def fleet_bases(request: Request, product_id: int | None = None,
     """The distinct (version, body_sha256) bases the fleet is RUNNING, with device counts --
     the release-planning answer to "which delta bases must this release cover?". Grouped by
     exact bytes: two rows for one version means a republish split the fleet, and only the
-    row matching the store's bytes can take a delta (`build ota-romfs --delta-fleet` reads
+    row matching the store's bytes can take a delta (`client release bases --fleet` reads
     exactly this and warns about the rest)."""
     from openmv_ota.ota.version import decode_app_version
 

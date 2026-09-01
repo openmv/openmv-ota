@@ -43,25 +43,24 @@ deltas must be built **locally** — a delta is named in the *signed* manifest, 
 server never holds signing keys — but only the server knows what the fleet is actually
 running. So the release build asks it:
 
+The client asks and fetches, the build stays local — `build` never talks to the
+server:
+
 ```
-$ openmv-ota build ota-romfs . --delta-fleet        # one delta per base the fleet runs
-$ openmv-ota client release publish . -b OPENMV_N6  # uploads the image + every delta
+$ openmv-ota client release bases --fleet -b OPENMV_N6 --product-id 396486252 -o build/bases
+build/bases/OPENMV_N6-base-1.1.0.img.gz  (1.1.0, 358 device(s), 731648 bytes)
+build/bases/OPENMV_N6-base-1.0.0.img.gz  (1.0.0, 51 device(s), 730112 bytes)
+
+$ openmv-ota build ota-romfs . --delta-from build/bases   # one delta per fetched base
+$ openmv-ota client release publish . -b OPENMV_N6        # uploads the image + every delta
 ```
 
-`--delta-fleet` pulls the matching stored images, builds one delta per base, and warns
-about any group of devices no delta can reach (a pruned release, a republish that split
-the bytes) — those take the full image, never nothing.
-
+`--fleet` warns at fetch time about any group of devices no base can cover (a pruned
+release, a republish that split the bytes) — those take the full image, never nothing.
 The server can answer because it **retains every published image**: lose the build
 directory, re-clone the repo, hand the release to a colleague — the bases are still
-there. `release bases` is the underlying fetch, for when you want an old image itself:
-
-```
-$ openmv-ota client release bases -b OPENMV_N6 --last 3 -o build/bases
-build/bases/OPENMV_N6-base-1.2.0.img.gz  (1.2.0, 734208 bytes)
-build/bases/OPENMV_N6-base-1.1.0.img.gz  (1.1.0, 731648 bytes)
-build/bases/OPENMV_N6-base-1.0.0.img.gz  (1.0.0, 730112 bytes)
-```
+there. (`release bases --last N` fetches the N most recent releases instead, when you
+want an old image itself rather than the fleet's plan.)
 
 **The first base is the factory image.** A fresh-from-manufacture fleet runs bytes
 that were never published, so its first OTA could never be a delta — which is why
@@ -74,8 +73,8 @@ openmv-ota client release publish . -b OPENMV_N6 -o build/factory
 ```
 
 (A local build already defaults its delta base to the recorded factory image;
-publishing it is what lets the server-driven `--delta-fleet` path cover
-factory-fresh devices as well.)
+publishing it is what lets `release bases --fleet` cover factory-fresh
+devices as well.)
 
 Retention has **no depth limit**: images are small, and only you know how long a version
 stays in the field. Reclaiming space is therefore a deliberate act:

@@ -89,11 +89,6 @@ def register(build_parser: argparse.ArgumentParser):
                             "release's -ota.img.gz. REPEATABLE -- a device patches against "
                             "the release it is RUNNING, so publish a base per version still "
                             "in the field or those devices take the full image")
-    p_otr.add_argument("--delta-fleet", action="store_true",
-                       help="ask the update server which (version, bytes) bases the fleet is "
-                            "RUNNING (GET /fleet/bases) and build one delta per stored release "
-                            "that matches -- the automated --delta-from. Uses the client "
-                            "credentials (env or `client login`); composes with --delta-from")
     p_otr.add_argument("--app", help="app source dir (default: <project>/app)")
     p_otr.add_argument("-o", "--output", help="output dir (default: <project>/build)")
     p_otr.add_argument("-b", "--board", action="append", metavar="NAME",
@@ -262,8 +257,7 @@ def cmd_ota_romfs(args: argparse.Namespace) -> int:
             stedgeai_optimization=args.stedgeai_optimization, firmware=args.firmware,
             allow_republish=args.allow_republish,
             key_passphrase_file=args.key_passphrase_file, allow_dev_key=args.allow_dev_key,
-            delta_fleet=args.delta_fleet,
-        )
+                    )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

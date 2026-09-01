@@ -81,12 +81,10 @@ invalidates deltas built against its old bytes; affected devices take the full
 image). The delta is pure transport — the reconstructed slot is still sha256-
 and signature-verified on the device.
 
-`--delta-fleet` automates choosing the bases: it asks the update server which
-(version, bytes) bases the fleet is **running** — aggregated from every device's
-check-in — pulls the matching stored releases, and builds one delta per base,
-warning about any it cannot cover (a pruned release, or devices running
-republished bytes the store no longer holds). It uses the client credentials
-(environment or `client login`) and composes with explicit `--delta-from`.
+Choosing the bases is the update server's knowledge, not the build's: `client
+release bases --fleet` downloads exactly the bases the fleet is **running**
+(aggregated from every device's check-in) into a directory `--delta-from`
+reads. The build itself never talks to the server.
 
 `--allow-republish` permits re-signing a version at or below the last published
 one — a dev-loop convenience the server mirrors with a flag of the same name.

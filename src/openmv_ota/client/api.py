@@ -60,7 +60,7 @@ class Api:
 
     def fleet_bases(self, product_id=None):
         """The distinct (version, body_sha256) bases the fleet is running, with device
-        counts -- what `build ota-romfs --delta-fleet` plans deltas against."""
+        counts -- what `client release bases --fleet` plans deltas against."""
         params = {} if product_id is None else {"product_id": product_id}
         return self._req("GET", "/api/v1/admin/fleet/bases", params=params)
 

@@ -656,3 +656,86 @@ def test_release_sbom_download(wired, tmp_path, capsys):
     out = tmp_path / "sbom.json"
     assert main(["client", "release", "sbom", "--release-id", rel, "-o", str(out)]) == 0
     assert "saved" in capsys.readouterr().out and out.read_bytes() == sbom
+
+
+def _build_release_with_trailer(project, pv=0x02000000):
+    """Like ``_build_release`` but the image is SLOT-SHAPED -- body, 0xFF pad, and a real
+    trailer in the final control block -- so `release bases --fleet` can verify the stored
+    bytes against the fleet's reported body sha. Returns the trailer's body sha (hex)."""
+    from openmv_ota.ota.trailer import Trailer, pack_trailer
+
+    build = project / "build"
+    build.mkdir(parents=True, exist_ok=True)
+    body_bytes = b"\xA5" * 64
+    body_sha = hashlib.sha256(body_bytes).digest()
+    packed = pack_trailer(Trailer(
+        body_size=len(body_bytes), pad_size=0, meta={}, product_id=BID,
+        min_platform_version=0, payload_version=pv, payload_version_floor=0,
+        key_id=0x0100, sig_alg=ES256, body_sha256=body_sha, signature=b"\x00" * 64))
+    # the trailer FRONT-ANCHORS the final 4 KiB control block (parse_trailer reads the
+    # header first), exactly as _compose_slot lays a real slot out
+    img = (body_bytes + b"\xff" * (8192 - len(body_bytes) - 4096)
+           + packed + b"\xff" * (4096 - len(packed)))
+    image_gz = gzip.compress(img, mtime=0)
+    body = {"schema": 1, "product_id": BID, "product": "P", "version": "2.0.0",
+            "payload_version": pv, "min_platform_version": 0, "size": len(img),
+            "sha256": hashlib.sha256(img).hexdigest(),
+            "representations": [{"format": "full", "url": "OPENMV_N6-ota.img.gz",
+                                 "size": len(image_gz)}]}
+    manifest = pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256,
+                                      signature=b"\x00" * 64))
+    (build / "OPENMV_N6-manifest.bin").write_bytes(manifest)
+    (build / "OPENMV_N6-ota.img.gz").write_bytes(image_gz)
+    return body_sha.hex()
+
+
+def test_release_bases_fleet_covers_what_the_fleet_runs(wired, tmp_path, capsys):
+    """--fleet asks the server's fleet report and downloads one base per (version, bytes)
+    group it can cover, warning AT FETCH TIME about the two groups it can't: a pruned
+    release, and a republish whose stored bytes differ from what devices run."""
+    import json
+
+    store, root = wired
+    sha = _build_release_with_trailer(root / "p")
+    assert main(["client", "release", "publish", str(root / "p"), "-b", "OPENMV_N6",
+                 "--json"]) == 0
+    json.loads(capsys.readouterr().out)
+    pv = 0x02000000
+    store.upsert_device(device_id="ok1", product_id=BID,
+                        current_payload_version=pv, body_sha256=sha)
+    store.upsert_device(device_id="ok2", product_id=BID,
+                        current_payload_version=pv, body_sha256=sha)
+    store.upsert_device(device_id="split", product_id=BID,
+                        current_payload_version=pv, body_sha256="ff" * 32)   # republish split
+    store.upsert_device(device_id="pruned", product_id=BID,
+                        current_payload_version=0x01000000, body_sha256="aa" * 32)
+    store.upsert_device(device_id="shaless", product_id=BID,
+                        current_payload_version=pv)                          # full by design
+    # ...and a release whose STORED image has no readable trailer at all: unverifiable
+    # bytes can't cover anyone, so it warns like a republish split
+    _build_release(root / "p2", pv=0x03000000)
+    assert main(["client", "release", "publish", str(root / "p2"), "-b", "OPENMV_N6"]) == 0
+    capsys.readouterr()
+    store.upsert_device(device_id="unverif", product_id=BID,
+                        current_payload_version=0x03000000, body_sha256="dd" * 32)
+
+    out = tmp_path / "bases"
+    assert main(["client", "release", "bases", "--fleet", "-b", "OPENMV_N6",
+                 "--product-id", str(BID), "-o", str(out)]) == 0
+    text, err = capsys.readouterr()
+    assert "2 device(s)" in text                       # the covered group, with its count
+    assert (out / "OPENMV_N6-base-2.0.0.img.gz").read_bytes() == (
+        root / "p" / "build" / "OPENMV_N6-ota.img.gz").read_bytes()
+    assert "no stored release matches" in err
+    assert err.count("different bytes than the store") == 2   # the split AND the unverifiable
+
+
+def test_release_bases_fleet_needs_a_product_and_says_when_nothing_covers(wired, tmp_path,
+                                                                          capsys):
+    store, root = wired
+    assert main(["client", "release", "bases", "--fleet", "-b", "OPENMV_N6",
+                 "-o", str(tmp_path / "b")]) == 2
+    assert "needs --product-id" in capsys.readouterr().err
+    assert main(["client", "release", "bases", "--fleet", "-b", "OPENMV_N6",
+                 "--product-id", str(BID), "-o", str(tmp_path / "b")]) == 0
+    assert "no coverable fleet bases" in capsys.readouterr().out

@@ -177,12 +177,17 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_cop)
     p_cop.set_defaults(func=cmd_pin, _command="client cohort pin", target="cohort")
 
-    p_bases = rlsub.add_parser("bases", help="download recent release images to build deltas from")
+    p_bases = rlsub.add_parser("bases", help="download release images to build deltas from")
     p_bases.add_argument("-b", "--board", required=True,
                          help="board these bases are for (names the files)")
-    p_bases.add_argument("--product-id", type=int, help="only this product's releases")
-    p_bases.add_argument("--last", type=int, default=3,
-                         help="how many recent releases to fetch (default: 3)")
+    p_bases.add_argument("--product-id", type=int,
+                         help="only this product's releases (required with --fleet)")
+    gb = p_bases.add_mutually_exclusive_group()
+    gb.add_argument("--fleet", action="store_true",
+                    help="fetch the bases the FLEET is actually running (asks the server's "
+                         "fleet report) instead of the most recent releases")
+    gb.add_argument("--last", type=int, default=3,
+                    help="how many recent releases to fetch (default: 3)")
     p_bases.add_argument("-o", "--output", default="build/bases",
                          help="directory to write into (default: build/bases)")
     _creds(p_bases)
@@ -369,6 +374,8 @@ def cmd_bases(args: argparse.Namespace) -> int:
         api = _make_api(cfg)
         out = Path(args.output)
         out.mkdir(parents=True, exist_ok=True)
+        if args.fleet:
+            return _fleet_bases(args, api, out)
         releases = api.releases(args.product_id, limit=args.last)["releases"]
         if not releases:
             raise ClientError("no retained releases to use as delta bases")
@@ -387,6 +394,57 @@ def cmd_bases(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     return 0
+
+
+def _fleet_bases(args: argparse.Namespace, api, out: Path) -> int:
+    """``release bases --fleet``: ask the server which (version, exact-bytes) bases the
+    fleet is RUNNING (its check-ins report each slot's body sha) and download the stored
+    release matching each -- the curated base set ``build ota-romfs --delta-from`` wants.
+    The two groups no download can cover are named here, at fetch time: a pruned release,
+    and a republish whose stored bytes differ from what devices run. Both are safe -- those
+    devices take the full image -- but silence would read as covered."""
+    import gzip
+
+    from openmv_ota.ota import geometry
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.trailer import parse_trailer
+
+    if args.product_id is None:
+        raise ClientError("--fleet needs --product-id (whose fleet to ask; see `client fleet`)")
+    rows = api.fleet_bases(args.product_id)["bases"]
+    releases = {r["payload_version"]: r
+                for r in api.releases(args.product_id, limit=500)["releases"]}
+    got, lines = [], []
+    for row in rows:
+        if not row["body_sha256"]:
+            continue                       # a sha-less device takes the full image by design
+        rel = releases.get(row["payload_version"])
+        if rel is None:
+            print("warning: %d device(s) run %s but no stored release matches (pruned?) "
+                  "-- they will take the full image" % (row["devices"], row["version"]),
+                  file=sys.stderr)
+            continue
+        data = api.release_image(rel["release_id"])
+        try:
+            stored_sha = parse_trailer(
+                gzip.decompress(data)[-geometry.control_block():]).body_sha256.hex()
+        except OtaError:
+            stored_sha = ""                      # unverifiable bytes can't cover anyone
+        if stored_sha != row["body_sha256"]:
+            print("warning: %d device(s) run %s with different bytes than the store "
+                  "(republished version?) -- they will take the full image"
+                  % (row["devices"], row["version"]), file=sys.stderr)
+            continue
+        path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, rel["version"]))
+        path.write_bytes(data)
+        got.append({"path": str(path), "release_id": rel["release_id"],
+                    "version": rel["version"], "devices": row["devices"],
+                    "bytes": path.stat().st_size})
+        lines.append("%s  (%s, %d device(s), %d bytes)"
+                     % (path, rel["version"], row["devices"], path.stat().st_size))
+    if not got:
+        lines = ["no coverable fleet bases -- the next release ships full-image only"]
+    return _emit(args, {"bases": got}, *lines)
 
 
 def cmd_prune(args: argparse.Namespace) -> int:

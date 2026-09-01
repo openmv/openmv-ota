@@ -164,7 +164,7 @@ _MIGRATIONS: list[list[str]] = [
     [   # v12 -- the RUNNING slot's exact bytes, named: the trailer's body_sha256 as reported in
         # the check-in slots list. A version stopped being a byte identity when --allow-republish
         # arrived, and a delta base matches by version AND sha -- so "which delta bases must this
-        # release cover?" (GET /fleet/bases, `build ota-romfs --delta-fleet`) needs the sha, not
+        # release cover?" (GET /fleet/bases, `client release bases --fleet`) needs the sha, not
         # just the version. NULL means the device did not say (a pre-sha payload).
         "ALTER TABLE devices ADD COLUMN body_sha256 TEXT",
     ],

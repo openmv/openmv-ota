@@ -106,7 +106,7 @@ Grouped by what they manage — the scope column is what the bearer token must c
 | endpoint | scope | what it does |
 |---|---|---|
 | `GET /api/v1/admin/fleet` | observe | the summary `client fleet` prints: `total`, `by_version`, `by_fallback`, `fell_back`, `unconfirmed` |
-| `GET /api/v1/admin/fleet/bases` | observe | the distinct (version, exact-bytes) bases the fleet is running, with device counts — what `build ota-romfs --delta-fleet` plans against |
+| `GET /api/v1/admin/fleet/bases` | observe | the distinct (version, exact-bytes) bases the fleet is running, with device counts — what `client release bases --fleet` fetches against |
 | `GET /api/v1/admin/devices` | observe | per-device rows (paged; `product_id`/`cohort` filters) |
 | `GET /api/v1/admin/devices/{id}` | observe | one device, same shape as a list row |
 | `POST /api/v1/admin/devices/{id}/account` | manage | (re)bind the device to the caller's account |
