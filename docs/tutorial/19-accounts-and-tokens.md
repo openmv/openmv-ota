@@ -32,8 +32,10 @@ tokens don't carry. (On the OpenMV-hosted service this happens through your Open
 account; the verbs below are the same operations, exposed to operators and
 self-hosts.)
 
-Creating an account also mints its first admin token — the one moment that secret
-exists:
+A brand-new account has no credentials yet, so `create` returns two things: the
+account id, and the account's **first admin token**. That token is displayed only in
+this one response — the server stores just its hash — so capture it now; every later
+token for the account comes from `token issue` below:
 
 ```
 $ openmv-ota client account create --name "DroneCo"
