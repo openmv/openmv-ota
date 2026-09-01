@@ -96,6 +96,14 @@ can't move the device. `client bind --device-id DEVICE` is the operator override
 (re)binds a device to **your** account — the recovery path when a camera was first seen
 under the wrong one.
 
+Knowing a device id is not owning the device: a binding only controls visibility and
+offers, never installs — the camera verifies every image against the keys baked into
+its own firmware, so another account's releases can't run on it. An admin-bound device
+can't be re-bound by another account (their attempt reads as not-found), and your admin
+bind always recovers a wrongly learned one. On the OpenMV-hosted service, who may bind
+a given device is additionally gated by proof of ownership; the
+[threat model](../reference/threat-model.md) spells out the full trust story.
+
 ## Watching the fleet
 
 Four reads cover the whole picture. Each prints the server's JSON verbatim, so what you
