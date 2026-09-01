@@ -7,10 +7,22 @@
 Everything on the previous pages happened inside one **account**: yours. The account
 is the tenancy boundary — releases, rollouts, cohorts, devices, and the audit log are
 all namespaced by it, and one tenant can never see or touch another's (a cross-account
-lookup reads as not-found, so probing reveals nothing). On the OpenMV-hosted service
-an account came with your sign-up; the token you `login` with acts for it. This page
-is the layer itself: the credentials that act for an account, and how a device ends up
-belonging to one.
+lookup reads as not-found, so probing reveals nothing). This page is the layer itself:
+where credentials come from, the verbs that manage them, and how a device ends up
+belonging to an account.
+
+## Where your first token comes from
+
+- **OpenMV-hosted (the default):** your account was created at sign-up, and the
+  website issues (and revokes) your working tokens. `client login --token <it>` is the
+  only part of this page a hosted maker ever touches — everything below is the
+  operator machinery behind that button.
+- **Self-hosted:** `server init` prints a **bootstrap token** once at first setup
+  ([page 20](20-update-server.md)) — all four scopes, acting for the implicit single
+  account named `''`. A single-tenant self-host can `login` with it and publish,
+  manage, and observe forever without ever creating an account: the verbs below exist
+  for the **multi-tenant** case, carving real accounts out of one server and issuing
+  each its own scoped tokens.
 
 
 ## Managing accounts
