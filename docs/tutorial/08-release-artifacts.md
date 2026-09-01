@@ -195,7 +195,7 @@ remain `boot.py`'s job.
 
 ## See also
 
-- [16 · Operating the fleet](16-operating-the-fleet.md) — fetching the delta bases a
+- [17 · Operating the fleet](17-operating-the-fleet.md) — fetching the delta bases a
   live fleet is running (`client release bases --fleet`), and publishing the set.
 - [Trailer format](../reference/trailer.md) — the on-flash layout of the signed trailer.
 
