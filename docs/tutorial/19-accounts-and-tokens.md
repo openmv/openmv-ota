@@ -27,20 +27,24 @@ belonging to an account.
 
 ## Managing accounts
 
-Account management needs the privileged `accounts` scope, which ordinary working
-tokens don't carry. (On the OpenMV-hosted service this happens through your OpenMV
-account; the verbs below are the same operations, exposed to operators and
-self-hosts.)
+Every verb in this section **and** the token section below requires the privileged
+`accounts` scope — and only the **operator's** credential carries it: the self-host
+bootstrap token, or a token deliberately issued with that scope. An account's own
+tokens never have it, so a tenant cannot create accounts or mint tokens, *not even
+for itself*. That's deliberate: a stolen working token must not be able to
+manufacture a replacement that survives revocation. (On the OpenMV-hosted service
+these operations happen through the website, which holds the operator role.)
 
 A brand-new account has no credentials yet, so `create` returns two things: the
-account id, and the account's **first admin token**. That token is displayed only in
-this one response — the server stores just its hash — so capture it now; every later
-token for the account comes from `token issue` below:
+account id, and the account's **first working token** (scopes publish, manage,
+observe — everything a tenant does day to day, and nothing operator-level). It is
+displayed only in this one response — the server stores just its hash — so capture it
+now; every later token for the account comes from `token issue` below:
 
 ```
 $ openmv-ota client account create --name "DroneCo"
 account acct_7bd21c50e83a94f1 created
-admin token (store it now -- not recoverable): 5oQ4wLr8kJ2vN9xB1mA3sT6yD0eF7cH_gPzUiRnE2aM
+working token (store it now -- not recoverable): 5oQ4wLr8kJ2vN9xB1mA3sT6yD0eF7cH_gPzUiRnE2aM
 ```
 
 `list` shows every account; `rename` changes only the display name (the id is

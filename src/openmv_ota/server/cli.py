@@ -161,7 +161,7 @@ def cmd_account_create(args: argparse.Namespace) -> int:
     store.add_token(hash_token(token), name, list(SCOPES), account_id=account_id)
     store.close()
     print("account created: %s" % account_id, file=sys.stderr)
-    print("admin token (store it now -- it is not recoverable):", file=sys.stderr)
+    print("working token (store it now -- it is not recoverable):", file=sys.stderr)
     print("%s %s" % (account_id, token))
     return 0
 

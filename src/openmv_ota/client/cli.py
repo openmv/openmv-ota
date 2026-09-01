@@ -596,7 +596,7 @@ def cmd_account(args: argparse.Namespace) -> int:
             # The secret is IN the JSON under --json, which is the point: this is the one moment
             # it exists, and a script that cannot capture it has to mint another account.
             return _emit(args, res, "account %s created" % res["account_id"],
-                         "admin token (store it now -- not recoverable): %s" % res["token"])
+                         "working token (store it now -- not recoverable): %s" % res["token"])
         elif args.action == "rename":
             res = api.rename_account(args.account_id, args.name)
             return _emit(args, res, "account %s renamed to %s" % (args.account_id, args.name))
