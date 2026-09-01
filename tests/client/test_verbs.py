@@ -347,7 +347,7 @@ def test_account_create_and_list(tmp_path, monkeypatch, capsys):
     _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts",))
     assert main(["client", "account", "create", "--name", "DroneCo"]) == 0
     out = capsys.readouterr().out
-    assert "created" in out and "admin token" in out
+    assert "created" in out and "working token" in out
     assert main(["client", "account", "list"]) == 0
     assert "DroneCo" in capsys.readouterr().out
 
