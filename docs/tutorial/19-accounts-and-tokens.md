@@ -26,6 +26,17 @@ account acct_7bd21c50e83a94f1 created
 admin token (store it now -- not recoverable): 5oQ4wLr8kJ2vN9xB1mA3sT6yD0eF7cH_gPzUiRnE2aM
 
 $ openmv-ota client account list
+{
+  "accounts": [
+    {
+      "account_id": "acct_7bd21c50e83a94f1",
+      "name": "DroneCo",
+      "created_at": "2026-08-31T20:02:17.481903+00:00",
+      "active": 1
+    }
+  ]
+}
+
 $ openmv-ota client account rename --account-id acct_7bd21c50e83a94f1 --name "DroneCo GmbH"
 account acct_7bd21c50e83a94f1 renamed to DroneCo GmbH
 
@@ -39,6 +50,19 @@ token 3f2a9c1e77d0b4a8 issued for acct_7bd21c50e83a94f1
 token (store it now -- not recoverable): xK9pW2qL5mR8tV1zC4nB7dF0gJ3hS6yA_eU2iO5rT8wQ
 
 $ openmv-ota client token list --account-id acct_7bd21c50e83a94f1
+{
+  "tokens": [
+    {
+      "token_hash": "3f2a9c1e77d0b4a8c5e2f91d6b038a7c4d1e8f25a9c6b3d07e4f1a852c9b6e03",
+      "name": "ci",
+      "scopes": ["publish"],
+      "account_id": "acct_7bd21c50e83a94f1",
+      "created_at": "2026-08-31T20:05:44.190226+00:00",
+      "revoked": 0
+    }
+  ]
+}
+
 $ openmv-ota client token revoke <token-hash>
 $ openmv-ota client token rotate <token-hash>         # replacement issued, old revoked
 ```
