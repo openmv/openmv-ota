@@ -65,8 +65,8 @@ signed manifest moves between hosts without re-signing.
 ### Deltas (`--delta-from`)
 
 ```bash
-openmv-ota build ota-romfs ./my-product --delta-from build/bases
-# -> additionally: build/<board>-ota.delta-<base-version>.gz
+openmv-ota build ota-romfs ./my-product --delta-from build/OPENMV_N6-factory-romfs.img
+# -> additionally: build/OPENMV_N6-ota.delta-1.0.0.gz
 ```
 
 A **delta** is a compressed patch from one specific older release — its **base** —
