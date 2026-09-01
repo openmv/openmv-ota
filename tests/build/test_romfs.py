@@ -539,6 +539,33 @@ def test_factory_build_composes_dual_slot(make_project):
     assert a[co:co + cn] == status.encode_counter(2)
     assert b[co:co + cn] == status.encode_counter(1)
 
+    # THE PUBLISHABLE PAIR: build/factory/ holds the same bytes in release form -- the
+    # gzipped download image + a manifest signed with the FACTORY key -- so `client
+    # publish -o build/factory` can put the factory base on the server and the fleet's
+    # FIRST OTA can be a delta. The manifest's identity must match the flashed slot.
+    import gzip as _gzip
+    import hashlib as _hashlib
+
+    from openmv_ota.ota.keys import FACTORY_KEY_ID_BASE
+    from openmv_ota.ota.manifest import parse_manifest
+
+    pub = r.output.parent / "factory"
+    dl = _gzip.decompress((pub / "OPENMV_N6-ota.img.gz").read_bytes())
+    assert len(dl) == slot                                 # one slot, download form
+    assert dl[:slot - 2 * block] == img[:slot - 2 * block]  # body+pad = the flashed bytes
+    assert dl[slot - 2 * block: slot - block] == b"\xff" * block   # status BLANK (installer's)
+    # trailer: same identity, fresh signature (ECDSA is randomized) -- the delta base
+    # identity is the BODY sha, asserted byte-equal above
+    tr_dl, tr_a = parse_trailer(dl[slot - block:]), parse_trailer(img[slot - block: slot])
+    assert (tr_dl.body_sha256, tr_dl.payload_version, tr_dl.product_id) == \
+        (tr_a.body_sha256, tr_a.payload_version, tr_a.product_id)
+    m = parse_manifest((pub / "OPENMV_N6-manifest.bin").read_bytes())
+    assert m.key_id == FACTORY_KEY_ID_BASE
+    assert m.body["product_id"] == 7
+    assert m.body["sha256"] == _hashlib.sha256(dl).hexdigest()
+    assert m.body["size"] == len(dl)
+    assert [rep["format"] for rep in m.body["representations"]] == ["full"]
+
 
 def test_provision_slots_by_mode():
     """A/B lays down the SAME image twice with different counters, so a device has a fallback

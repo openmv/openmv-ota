@@ -666,6 +666,37 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         name = _target_name(t)
         out_path = out_dir / (name + "-factory-romfs.img")
         out_path.write_bytes(image)
+
+        # THE PUBLISHABLE FORM OF THE FACTORY BYTES -- build/factory/<board>-ota.img.gz +
+        # a manifest signed with the same factory key. A factory-fresh fleet's first delta
+        # base is exactly this body, and the server-driven base machinery (--delta-fleet /
+        # `client bases`) only knows STORED RELEASES -- so publish this pair right after
+        # manufacture (`client publish . -b <board> -o build/factory`) and the fleet's
+        # first OTA can be a delta. Rendered here from the very bytes just composed, so
+        # the published base can never drift from the flashed one.
+        import gzip as _gzip
+
+        from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
+        from openmv_ota.ota.trailer import parse_trailer
+
+        pub_dir = out_dir / "factory"
+        pub_dir.mkdir(parents=True, exist_ok=True)
+        size0, _counter0 = slots[0]
+        pad0 = size0 - overhead - len(body)
+        trailer0 = _build_trailer(signer, p, body, system_info, pad0)
+        dl = _compose_slot(body, pad0, b"\xff" * block, trailer0, block, size0)
+        single = size0 == t.partition_size
+        gz = _gzip_small(dl, SINGLE_WBITS) if single else _gzip.compress(dl, mtime=0)
+        img_path = pub_dir / (name + "-ota.img.gz")
+        img_path.write_bytes(gz)
+        reps = [{"format": "full", "url": img_path.name, "size": len(gz)}]
+        if single:
+            reps[0]["wbits"] = SINGLE_WBITS
+        m = Manifest(body=_manifest_body(p, parse_trailer(trailer0), dl, reps),
+                     key_id=signer.key_id, sig_alg=signer.sig_alg)
+        m.signature = signer.backend.sign(signed_region(m))
+        (pub_dir / (name + "-manifest.bin")).write_bytes(pack_manifest(m))
+
         return BuildResult(t.name, t.partition_index, out_path, len(body), smallest,
                            bound="factory slot", ota=True,
                            build_dir=tmp if keep_build_dir else None)
@@ -850,6 +881,28 @@ def build_delta(base: str | Path, target: str | Path,
     return OtaDeltaResult(out, len(patch), len(gz), len(target_bytes))
 
 
+def _manifest_body(p, tr, image: bytes, reps: list[dict]) -> dict:
+    """The manifest's signed body dict for ``image`` (the decompressed download image),
+    identity bound from its trailer ``tr``. Shared by ``build_manifest`` and the factory
+    build's publishable pair, so the two can never drift on a field."""
+    from openmv_ota.ota.manifest import SCHEMA
+    from openmv_ota.ota.version import decode_app_version
+
+    return {
+        "schema": SCHEMA,
+        "product_id": tr.product_id,
+        "account_id": tr.meta.get("account_id", ""),   # rides in the trailer's JSON meta, not the binary header
+        "dev": tr.meta.get("dev", False),              # dev-signed provenance (visibility only)
+        "product": tr.meta.get("product", p.config.name),
+        "version": decode_app_version(tr.payload_version),
+        "payload_version": tr.payload_version,
+        "min_platform_version": tr.min_platform_version,
+        "size": len(image),
+        "sha256": hashlib.sha256(image).hexdigest(),
+        "representations": reps,
+    }
+
+
 def build_manifest(
     project: str | Path,
     *,
@@ -881,9 +934,9 @@ def build_manifest(
     from openmv_ota.ota import bundle
     from openmv_ota.ota.delta import target_size as delta_target_size
     from openmv_ota.ota.errors import OtaError
-    from openmv_ota.ota.manifest import DELTA_FORMAT, SCHEMA, Manifest, pack_manifest, signed_region
+    from openmv_ota.ota.manifest import DELTA_FORMAT, Manifest, pack_manifest, signed_region
     from openmv_ota.ota.trailer import parse_trailer
-    from openmv_ota.ota.version import decode_app_version, encode_app_version
+    from openmv_ota.ota.version import encode_app_version
 
     if url_base and not url_base.startswith("https://"):
         raise BuildError("manifest --url-base must be an absolute https:// URL", exit_code=1)
@@ -957,19 +1010,7 @@ def build_manifest(
                          # alone stopped being an identity when --allow-republish arrived)
                          "base_body_sha256": base_body_sha})
 
-        body = {
-            "schema": SCHEMA,
-            "product_id": tr.product_id,
-            "account_id": tr.meta.get("account_id", ""),   # rides in the trailer's JSON meta, not the binary header
-            "dev": tr.meta.get("dev", False),              # dev-signed provenance (visibility only)
-            "product": tr.meta.get("product", p.config.name),
-            "version": decode_app_version(tr.payload_version),
-            "payload_version": tr.payload_version,
-            "min_platform_version": tr.min_platform_version,
-            "size": len(image),
-            "sha256": hashlib.sha256(image).hexdigest(),
-            "representations": reps,
-        }
+        body = _manifest_body(p, tr, image, reps)
         m = Manifest(body=body, key_id=signer.key_id, sig_alg=signer.sig_alg)
         m.signature = signer.backend.sign(signed_region(m))
         raw = pack_manifest(m)

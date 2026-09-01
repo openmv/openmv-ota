@@ -53,6 +53,20 @@ openmv-ota client publish . -b OPENMV_N6                       # uploads all of 
 `--delta-from` picks up. Lose the build directory, re-clone the repo, or hand the release
 to a colleague — the bases are still on the server.
 
+**The first base is the factory image.** A fresh-from-manufacture fleet runs bytes
+that were never published, so its first OTA could never be a delta — which is why
+`build factory-romfs` also renders its exact bytes in release form,
+`build/factory/<board>-ota.img.gz` plus a factory-key-signed manifest. Publish that
+pair right after manufacture and the first update ships as a delta too:
+
+```
+openmv-ota client publish . -b OPENMV_N6 -o build/factory
+```
+
+(A local build already defaults its delta base to the recorded factory image;
+publishing it is what lets the server-driven `--delta-fleet` path cover
+factory-fresh devices as well.)
+
 Retention has **no depth limit**: images are small, and only you know how long a version
 stays in the field. Reclaiming space is therefore a deliberate act:
 

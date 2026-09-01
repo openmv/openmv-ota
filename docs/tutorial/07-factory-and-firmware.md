@@ -18,7 +18,9 @@ partition and is flashed as-is at manufacture.
 
 ```bash
 openmv-ota build factory-romfs ./my-product
-# -> build/<board>-factory-romfs.img   (sized to the exact partition)
+# -> build/<board>-factory-romfs.img          (sized to the exact partition)
+# -> build/factory/<board>-ota.img.gz         (the same bytes in release form,
+#    build/factory/<board>-manifest.bin        publishable as the fleet's first delta base)
 ```
 
 It composes the same compiled body into both slots:
