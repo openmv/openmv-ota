@@ -13,18 +13,26 @@ is the layer itself: the credentials that act for an account, and how a device e
 belonging to one.
 
 
-## Managing accounts and their tokens
+## Managing accounts
 
-Two verbs manage the layer; both need the privileged `accounts` scope, which ordinary
-working tokens don't carry (on the OpenMV-hosted service, account management happens
-through your OpenMV account — these verbs are the same operations, exposed to
-operators and self-hosts):
+Account management needs the privileged `accounts` scope, which ordinary working
+tokens don't carry. (On the OpenMV-hosted service this happens through your OpenMV
+account; the verbs below are the same operations, exposed to operators and
+self-hosts.)
+
+Creating an account also mints its first admin token — the one moment that secret
+exists:
 
 ```
 $ openmv-ota client account create --name "DroneCo"
 account acct_7bd21c50e83a94f1 created
 admin token (store it now -- not recoverable): 5oQ4wLr8kJ2vN9xB1mA3sT6yD0eF7cH_gPzUiRnE2aM
+```
 
+`list` shows every account; `rename` changes only the display name (the id is
+forever):
+
+```
 $ openmv-ota client account list
 {
   "accounts": [
@@ -39,16 +47,38 @@ $ openmv-ota client account list
 
 $ openmv-ota client account rename --account-id acct_7bd21c50e83a94f1 --name "DroneCo GmbH"
 account acct_7bd21c50e83a94f1 renamed to DroneCo GmbH
+```
 
+`deactivate` is the soft off-switch: it revokes every token and blocks minting new
+ones, so admin access dies — but fielded devices keep being served, so a billing
+lapse never bricks a fleet. `activate` re-enables the account; the old tokens stay
+revoked, so issue fresh ones after:
+
+```
 $ openmv-ota client account deactivate --account-id acct_7bd21c50e83a94f1
 account acct_7bd21c50e83a94f1 deactivated (3 token(s) revoked)
+
 $ openmv-ota client account activate --account-id acct_7bd21c50e83a94f1
 account acct_7bd21c50e83a94f1 activated
+```
 
+## Tokens and scopes
+
+A token acts for one account and carries **scopes** — `publish` (publish releases),
+`manage` (rollouts, cohorts, pins, binds), `observe` (read everything), and the
+operator scope `accounts`. `issue` defaults to the worker set (publish, manage,
+observe); give a CI machine only what it needs:
+
+```
 $ openmv-ota client token issue --account-id acct_7bd21c50e83a94f1 --name ci --scope publish
 token 3f2a9c1e77d0b4a8 issued for acct_7bd21c50e83a94f1
 token (store it now -- not recoverable): xK9pW2qL5mR8tV1zC4nB7dF0gJ3hS6yA_eU2iO5rT8wQ
+```
 
+The secret is shown **once** — the server stores only a hash, so `list` shows
+metadata and hashes, never secrets. The hash is the id you revoke or rotate by:
+
+```
 $ openmv-ota client token list --account-id acct_7bd21c50e83a94f1
 {
   "tokens": [
@@ -66,12 +96,6 @@ $ openmv-ota client token list --account-id acct_7bd21c50e83a94f1
 $ openmv-ota client token revoke <token-hash>
 $ openmv-ota client token rotate <token-hash>         # replacement issued, old revoked
 ```
-
-| about tokens | |
-|---|---|
-| scopes | `publish` (publish releases), `manage` (rollouts, cohorts, pins, binds), `observe` (read everything), `accounts` (the operator scope). `token issue` defaults to the worker set: publish, manage, observe |
-| secrets | shown **once**, at issue/rotate — the server stores only a hash. `token list` shows metadata and hashes, never secrets |
-| revocation | by hash. `deactivate` revokes every token an account has and blocks issuing new ones — admin access dies, but fielded devices keep being served, so a billing lapse never bricks a fleet |
 
 ## How a device knows its account
 
