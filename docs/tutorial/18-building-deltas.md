@@ -12,11 +12,8 @@ server knows. This page is that loop: fetch the bases, build, publish.
 A device patches against **the release it is running**, so a fleet mid-rollout is
 spread over several versions, and one delta reaches only the devices on its base. The
 deltas must be built **locally** — a delta is named in the *signed* manifest, and the
-server never holds signing keys — but only the server knows what the fleet is actually
-running. So the release build asks it:
-
-The client asks and fetches, the build stays local — `build` never talks to the
-server:
+server never holds signing keys. So the client asks and fetches, and the build stays
+local (`build` never talks to the server):
 
 ```
 $ openmv-ota client release bases --fleet -b OPENMV_N6 --product-id 396486252 -o build/bases
