@@ -1,6 +1,6 @@
 # Accounts and tokens
 
-*[← 18 · Watching the fleet](18-watching-the-fleet.md) · [Index](00-introduction.md) · [20 · The update server →](20-update-server.md)*
+*[← 18 · Building deltas](18-building-deltas.md) · [Index](00-introduction.md) · [20 · The update server →](20-update-server.md)*
 
 ---
 
@@ -74,4 +74,4 @@ a given device is additionally gated by proof of ownership; the
 
 ---
 
-*[← 18 · Watching the fleet](18-watching-the-fleet.md) · [Index](00-introduction.md) · [20 · The update server →](20-update-server.md)*
+*[← 18 · Building deltas](18-building-deltas.md) · [Index](00-introduction.md) · [20 · The update server →](20-update-server.md)*

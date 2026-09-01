@@ -1,12 +1,12 @@
 # Cohorts and rollouts
 
-*[← 15 · The client](15-the-client.md) · [Index](00-introduction.md) · [17 · Operating the fleet →](17-operating-the-fleet.md)*
+*[← 15 · The client](15-the-client.md) · [Index](00-introduction.md) · [17 · Watching the fleet →](17-watching-the-fleet.md)*
 
 ---
 
-A published release is inert until something offers it. Two ideas decide who gets
-what: **cohorts** — how you group devices — and **rollouts** — how a release reaches
-a growing share of one group.
+A published release is inert until something offers it. This page is what decides who
+gets what: **cohorts** — how you group devices — **rollouts** — how a release reaches
+a growing share of one group — and **pins**, the exceptions that override them.
 
 ## Cohorts
 
@@ -48,7 +48,7 @@ assigned 412 device(s) (product 396486252) to cohort beta
 `assign` takes exactly one selector: `--device-id` (repeatable) moves those exact
 devices; `--product-id` moves every device of the product. And the devices behind any
 count are one filter away — `client device list --cohort beta [--product-id N]` prints
-the per-device rows ([page 18](18-watching-the-fleet.md) shows them in full). Assignment is also removal — a device moved to `beta` leaves
+the per-device rows ([page 17](17-watching-the-fleet.md) shows them in full). Assignment is also removal — a device moved to `beta` leaves
 `__default__` — and it counts only the devices that exist and are yours: the `1/1` in
 the summary is what makes a typo'd id visible.
 
@@ -209,6 +209,29 @@ membership is a hash, not a list) — and `rates` reads each counter against it,
 "how far through this stage is the fleet, and how is it going" is one glance:
 everyone staged was offered it, 90% already run it, nobody fell back. Time to raise.
 
+## Pins
+
+A pin overrides rollouts for one device or one whole cohort — "this camera runs exactly
+this release":
+
+```
+openmv-ota client device pin --device-id 30003d000851303436313832 --release-id rel_4f9c2a81d06b73ee
+openmv-ota client device pin --device-id 30003d000851303436313832 --clear
+openmv-ota client cohort pin --product-id 396486252 --cohort beta --release-id rel_4f9c2a81d06b73ee
+```
+
+A device pin beats a cohort pin, and either beats the rollout. A pin only ever produces
+an **offer** when it's an upgrade for a settled device; pinning to the version a camera
+already runs (or older) simply holds it — no rollout reaches it, nothing downgrades.
+
+`cohort pin` names the product because a cohort can hold devices of **several
+products** — your `OPENMV_N6`s and `OPENMV_RT1060`s can all carry the label `beta` —
+while the pin carries a release, and a release only fits one product. So pinning
+`--product-id 396486252 --cohort beta` freezes only beta's N6 devices; beta's RT1060s
+keep following their own rollouts until you pin them too, with the RT release. (Rollouts
+work the same way — targeting is always the `(product, cohort)` pair.) A device pin
+needs no product: the device id alone is unique.
+
 ---
 
-*[← 15 · The client](15-the-client.md) · [Index](00-introduction.md) · [17 · Operating the fleet →](17-operating-the-fleet.md)*
+*[← 15 · The client](15-the-client.md) · [Index](00-introduction.md) · [17 · Watching the fleet →](17-watching-the-fleet.md)*

@@ -1,6 +1,6 @@
 # Watching the fleet
 
-*[← 17 · Operating the fleet](17-operating-the-fleet.md) · [Index](00-introduction.md) · [19 · Accounts and tokens →](19-accounts-and-tokens.md)*
+*[← 16 · Cohorts and rollouts](16-cohorts-and-rollouts.md) · [Index](00-introduction.md) · [18 · Building deltas →](18-building-deltas.md)*
 
 ---
 
@@ -190,4 +190,4 @@ them — no special case for parsers.
 
 ---
 
-*[← 17 · Operating the fleet](17-operating-the-fleet.md) · [Index](00-introduction.md) · [19 · Accounts and tokens →](19-accounts-and-tokens.md)*
+*[← 16 · Cohorts and rollouts](16-cohorts-and-rollouts.md) · [Index](00-introduction.md) · [18 · Building deltas →](18-building-deltas.md)*

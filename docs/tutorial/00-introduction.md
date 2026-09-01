@@ -72,9 +72,9 @@ Every command and flag on these pages exists — the test suite holds the CLI to
 | [13 · Logging & the watchdog](13-logging-and-watchdog.md) | `openmv_log` / `openmv_wdt` — the frozen survival modules |
 | [14 · Recovery](14-recovery.md) | firmware-resident recovery — what runs when no slot is bootable |
 | [15 · The client](15-the-client.md) | `openmv-ota client` — logging in and publishing |
-| [16 · Cohorts and rollouts](16-cohorts-and-rollouts.md) | grouping devices and staging a release across them |
-| [17 · Operating the fleet](17-operating-the-fleet.md) | pins, and the next release's delta bases |
-| [18 · Watching the fleet](18-watching-the-fleet.md) | the four reads + scripting with `--json` |
+| [16 · Cohorts and rollouts](16-cohorts-and-rollouts.md) | grouping devices, staging a release, pinning exceptions |
+| [17 · Watching the fleet](17-watching-the-fleet.md) | the four reads + scripting with `--json` |
+| [18 · Building deltas](18-building-deltas.md) | the next release, built against what the field runs |
 | [19 · Accounts and tokens](19-accounts-and-tokens.md) | the tenancy layer — credentials, scopes, device binding |
 | [20 · The update server](20-update-server.md) | `openmv-ota server` — what the service does, settings, deploying |
 | [21 · The server API](21-server-api.md) | every device + admin endpoint, for scripts and dashboards |

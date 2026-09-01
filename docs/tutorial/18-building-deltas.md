@@ -1,38 +1,13 @@
-# Operating the fleet
+# Building deltas
 
-*[← 16 · Cohorts and rollouts](16-cohorts-and-rollouts.md) · [Index](00-introduction.md) · [18 · Watching the fleet →](18-watching-the-fleet.md)*
+*[← 17 · Watching the fleet](17-watching-the-fleet.md) · [Index](00-introduction.md) · [19 · Accounts and tokens →](19-accounts-and-tokens.md)*
 
 ---
 
-Publishing is a moment; operating is the rest of the time. Two jobs recur for as long
-as a fleet is live: the **exceptions** — devices that must hold a release or jump to
-one regardless of any rollout — and the **next release**, whose deltas must match what
-the field is actually running today. This page is those levers.
+The fleet is moving, and the next release is coming. Shipping it small — as deltas —
+means building against what the field is *actually running today*, which only the
+server knows. This page is that loop: fetch the bases, build, publish.
 
-## Pins
-
-A pin overrides rollouts for one device or one whole cohort — "this camera runs exactly
-this release":
-
-```
-openmv-ota client device pin --device-id 30003d000851303436313832 --release-id rel_4f9c2a81d06b73ee
-openmv-ota client device pin --device-id 30003d000851303436313832 --clear
-openmv-ota client cohort pin --product-id 396486252 --cohort beta --release-id rel_4f9c2a81d06b73ee
-```
-
-A device pin beats a cohort pin, and either beats the rollout. A pin only ever produces
-an **offer** when it's an upgrade for a settled device; pinning to the version a camera
-already runs (or older) simply holds it — no rollout reaches it, nothing downgrades.
-
-`cohort pin` names the product because a cohort can hold devices of **several
-products** — your `OPENMV_N6`s and `OPENMV_RT1060`s can all carry the label `beta` —
-while the pin carries a release, and a release only fits one product. So pinning
-`--product-id 396486252 --cohort beta` freezes only beta's N6 devices; beta's RT1060s
-keep following their own rollouts until you pin them too, with the RT release. (Rollouts
-work the same way — targeting is always the `(product, cohort)` pair.) A device pin
-needs no product: the device id alone is unique.
-
-## Building the next release's deltas
 
 A device patches against **the release it is running**, so a fleet mid-rollout is
 spread over several versions, and one delta reaches only the devices on its base. The
@@ -88,4 +63,4 @@ mean it.
 
 ---
 
-*[← 16 · Cohorts and rollouts](16-cohorts-and-rollouts.md) · [Index](00-introduction.md) · [18 · Watching the fleet →](18-watching-the-fleet.md)*
+*[← 17 · Watching the fleet](17-watching-the-fleet.md) · [Index](00-introduction.md) · [19 · Accounts and tokens →](19-accounts-and-tokens.md)*
