@@ -74,6 +74,16 @@ class Api:
                               % (release_id, resp.status_code, _detail(resp)), exit_code=1)
         return resp.content
 
+    def release_sbom(self, release_id: str) -> bytes:
+        """The release's CycloneDX SBOM, as uploaded at publish."""
+        resp = self._client.request(
+            "GET", "/api/v1/admin/releases/%s/sbom" % release_id,
+            headers={"Authorization": "Bearer %s" % self._token})
+        if resp.status_code >= 400:
+            raise ClientError("GET release sbom %s -> %d: %s"
+                              % (release_id, resp.status_code, _detail(resp)), exit_code=1)
+        return resp.content
+
     def delete_release_artifacts(self, release_id: str, force: bool = False):
         return self._req("DELETE", "/api/v1/admin/releases/%s/artifacts" % release_id,
                          params={"force": "true"} if force else {})

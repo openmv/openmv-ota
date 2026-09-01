@@ -41,11 +41,11 @@ Only the URL has a built-in fallback; the token is always yours to provide.
 
 ## Publishing a release
 
-`client publish` uploads the exact signed bytes the build produced — the manifest, the
+`client release publish` uploads the exact signed bytes the build produced — the manifest, the
 full image, and every delta the manifest declares:
 
 ```
-$ openmv-ota client publish ./my-product -b OPENMV_N6
+$ openmv-ota client release publish ./my-product -b OPENMV_N6
 published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl)
 ```
 
@@ -116,7 +116,7 @@ assigned 412 device(s) (product 396486252) to cohort beta
 ```
 
 `assign` takes exactly one selector: `--device-id` (repeatable) moves those exact
-devices; `--product-id` moves every device of the product. `client devices` lists both
+devices; `--product-id` moves every device of the product. `client device list` lists both
 ids per device. Assignment is also removal — a device moved to `beta` leaves
 `__default__` — and it counts only the devices that exist and are yours: the `1/1` in
 the summary is what makes a typo'd id visible.
@@ -160,7 +160,7 @@ Create one at publish time or stage an already-published release later — the s
 `--cohort`/`--percent` flags either way, and the rollout's id comes back in the output:
 
 ```
-$ openmv-ota client publish . -b OPENMV_N6 --cohort beta --percent 5
+$ openmv-ota client release publish . -b OPENMV_N6 --cohort beta --percent 5
 published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl)
 rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
 
@@ -213,11 +213,11 @@ openmv-ota client rollout stop --rollout-id ro_1c3f88ba90d2e644
 | `resume` | start offering again |
 | `stop` | stop offering **permanently** (a stopped rollout can't be resumed — create a new one). Devices that already took the release keep it — the server never downgrades a camera; the device's own anti-rollback wouldn't accept one anyway |
 
-`client rollouts` lists them — so a lost id is always recoverable, and each row
+`client rollout list` lists them — so a lost id is always recoverable, and each row
 carries `cohort_devices`, the audience its percent applies to:
 
 ```
-$ openmv-ota client rollouts
+$ openmv-ota client rollout list
 {
   "rollouts": [
     {

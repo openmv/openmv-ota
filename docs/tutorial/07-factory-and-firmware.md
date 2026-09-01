@@ -27,13 +27,13 @@ The `build/factory/` pair is a step one is expected to complete: **publish it to
 update server once, right after manufacture** —
 
 ```bash
-openmv-ota client publish ./my-product -b OPENMV_N6 -o build/factory
+openmv-ota client release publish ./my-product -b OPENMV_N6 -o build/factory
 ```
 
 — because it is the fleet's **first delta base**. Every device leaves the factory
 running exactly these bytes, and the server can only build-plan deltas against images
 it stores; skip this and the fleet's first update silently downloads in full instead
-of as a small patch. (`client publish` is covered on [page 15](15-the-client.md).)
+of as a small patch. (`client release publish` is covered on [page 15](15-the-client.md).)
 
 It composes the same compiled body into both slots:
 

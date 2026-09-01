@@ -16,9 +16,9 @@ A pin overrides rollouts for one device or one whole cohort — "this camera run
 this release":
 
 ```
-openmv-ota client pin device --device-id 30003d000851303436313832 --release-id rel_4f9c2a81d06b73ee
-openmv-ota client pin device --device-id 30003d000851303436313832 --clear
-openmv-ota client pin cohort --product-id 396486252 --cohort beta --release-id rel_4f9c2a81d06b73ee
+openmv-ota client device pin --device-id 30003d000851303436313832 --release-id rel_4f9c2a81d06b73ee
+openmv-ota client device pin --device-id 30003d000851303436313832 --clear
+openmv-ota client cohort pin --product-id 396486252 --cohort beta --release-id rel_4f9c2a81d06b73ee
 ```
 
 A device pin beats a cohort pin, and either beats the rollout. A pin only ever produces
@@ -44,12 +44,12 @@ openmv-ota build ota-romfs . --delta-fleet                     # asks the server
                                                                # the fleet actually runs, and
                                                                # builds one delta per base
 # or by hand:
-openmv-ota client bases -b OPENMV_N6 --last 3 -o build/bases   # pull recent images back
+openmv-ota client release bases -b OPENMV_N6 --last 3 -o build/bases   # pull recent images back
 openmv-ota build ota-romfs . --delta-from build/bases          # one delta per base
-openmv-ota client publish . -b OPENMV_N6                       # uploads all of them
+openmv-ota client release publish . -b OPENMV_N6                       # uploads all of them
 ```
 
-`bases` writes `<board>-base-<version>.img.gz` files, exactly the naming
+`release bases` writes `<board>-base-<version>.img.gz` files, exactly the naming
 `--delta-from` picks up. Lose the build directory, re-clone the repo, or hand the release
 to a colleague — the bases are still on the server.
 
@@ -60,7 +60,7 @@ that were never published, so its first OTA could never be a delta — which is 
 pair right after manufacture and the first update ships as a delta too:
 
 ```
-openmv-ota client publish . -b OPENMV_N6 -o build/factory
+openmv-ota client release publish . -b OPENMV_N6 -o build/factory
 ```
 
 (A local build already defaults its delta base to the recorded factory image;
@@ -71,7 +71,7 @@ Retention has **no depth limit**: images are small, and only you know how long a
 stays in the field. Reclaiming space is therefore a deliberate act:
 
 ```
-openmv-ota client prune --release-id rel_4f9c2a81d06b73ee
+openmv-ota client release prune --release-id rel_4f9c2a81d06b73ee
 ```
 
 The release **row** survives — it is the audit trail and the anti-rollback history — so
@@ -106,7 +106,7 @@ the project (`account_id` under `[product]` in `openmv-ota.toml`), the build sta
 into the image's `system.json`, and the device reports it with every check-in. On the
 first valid check-in the server **learns** that binding and it's sticky from then on —
 a later boot reporting a different or empty account (a factory-state fallback, say)
-can't move the device. `client bind --device-id DEVICE` is the operator override that
+can't move the device. `client device bind --device-id DEVICE` is the operator override that
 (re)binds a device to **your** account — the recovery path when a camera was first seen
 under the wrong one.
 
@@ -157,11 +157,11 @@ has no fallback by design.
 
 ### The per-device rows
 
-`client devices` is the same picture one camera at a time — everything the device
+`client device list` is the same picture one camera at a time — everything the device
 reported at its last check-in, plus what the server decided about it:
 
 ```
-$ openmv-ota client devices --cohort beta --limit 1
+$ openmv-ota client device list --cohort beta --limit 1
 {
   "devices": [
     {
@@ -198,11 +198,11 @@ counts the whole scoped fleet so a full page is distinguishable from a complete 
 
 ### The publish history
 
-`client releases` lists what has been published, newest first — the release rows every
+`client release list` lists what has been published, newest first — the release rows every
 rollout and pin points into:
 
 ```
-$ openmv-ota client releases --limit 1
+$ openmv-ota client release list --limit 1
 {
   "releases": [
     {
@@ -275,7 +275,7 @@ Every verb takes `--json`, which prints the server's response verbatim instead o
 summary line — so nothing has to be scripted by parsing English:
 
 ```bash
-rel=$(openmv-ota client publish ./p -b OPENMV_N6 --json | jq -r .release_id)
+rel=$(openmv-ota client release publish ./p -b OPENMV_N6 --json | jq -r .release_id)
 tok=$(openmv-ota client token issue --account-id "$acct" --name ci --json | jq -r .token)
 ```
 
@@ -284,34 +284,6 @@ Verbatim matters most for the one-time secrets (`account create`, `token issue`,
 capture it has to mint another. `publish --percent` is two API calls, so its JSON nests
 the rollout under `rollout` and leaves the release fields where a plain `publish` puts
 them — no special case for parsers.
-
-## Every `client` command
-
-| command | what it does |
-|---|---|
-| `client login --server URL [--token T]` | save the profile (token also via stdin / `OPENMV_OTA_TOKEN`) |
-| `client logout` | remove the saved profile |
-| `client publish DIR -b BOARD [--percent N [--cohort C]] [--allow-republish]` | upload a built release, optionally staging it |
-| `client rollout create --release-id R --percent N [--cohort C]` | stage an already-published release |
-| `client rollout raise\|pause\|resume\|stop --rollout-id ID` | drive a rollout (`raise` takes the percent directly: `raise 50`) |
-| `client rollout status --rollout-id ID` | one rollout's counters (JSON) |
-| `client cohort list` / `cohort assign --cohort C (--device-id ID… \| --product-id N)` | see cohorts / move devices into one, surgically or by whole product |
-| `client cohort rename --cohort C --name N` / `cohort delete --cohort C` | relabel a cohort everywhere / retire it (devices return to `__default__`) |
-| `client pin device --device-id ID (--release-id R \| --clear)` | pin one device, overriding rollouts |
-| `client pin cohort --product-id N --cohort C (--release-id R \| --clear)` | pin a whole cohort |
-| `client bases -b BOARD [--last N] [-o DIR]` | download recent images as delta bases |
-| `client prune --release-id ID [--force]` | delete a release's stored artifacts, keep its history row |
-| `client bind --device-id ID` | (re)bind a device to your account |
-| `client fleet` / `devices` / `releases` / `rollouts` / `audit` | the read side (JSON) |
-| `client account create\|list\|rename\|deactivate\|activate` | tenant accounts (needs `accounts`) |
-| `client token issue\|list\|revoke\|rotate` | an account's API tokens (secrets shown once) |
-
-## See also
-
-- [17 · The update server](17-update-server.md) — the service on the other end, and how
-  to run your own.
-- [Threat model](../reference/threat-model.md) — why a compromised server still can't
-  forge an update.
 
 ---
 

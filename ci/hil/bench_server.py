@@ -128,7 +128,7 @@ def _assert_is_our_server(url, ca):
     server left behind by an earlier run answers it perfectly happily -- and then the whole
     run publishes into, and tampers with, a store that is not the one it thinks it owns.
     That is a gate that LIES: it reported `certificate verify failed: self-signed certificate`
-    from `client publish` and read as a device/code failure, on a PR whose device code was fine.
+    from `client release publish` and read as a device/code failure, on a PR whose device code was fine.
 
     The port-freeing above cannot prevent it: `pkill`/`fuser` run as whoever launched the run,
     and the orphan belonged to another user (a bench run started by hand, killed without its

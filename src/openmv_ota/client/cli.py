@@ -1,9 +1,14 @@
 """CLI handlers for ``openmv-ota client``.
 
     login / logout           save/remove the server URL + admin token
-    publish                  upload a built release (+ optional rollout)
-    rollout create|raise|pause|resume|stop|status
-    fleet / devices / releases / rollouts / audit  read fleet status
+    release publish|list|show|sbom|bases|prune
+    rollout create|raise|pause|resume|stop|status|list
+    cohort  list|assign|rename|delete|pin
+    device  list|show|pin|bind
+    account / token          tenant + credential management
+    fleet / audit            the account-wide reads
+
+One verb per entity; every action lives under its entity.
 
 ``login``/``logout`` need only the standard library; the API verbs use httpx from the ``server``
 extra (via ``api.Api``).
@@ -65,7 +70,9 @@ def register(parser: argparse.ArgumentParser) -> None:
                           help="print what was removed as JSON instead of a summary")
     p_logout.set_defaults(func=cmd_logout, _command="client logout")
 
-    p_pub = sub.add_parser("publish", help="upload a built release (+ optional rollout)")
+    p_rel = sub.add_parser("release", help="publish / list / show / sbom / bases / prune releases")
+    rlsub = p_rel.add_subparsers(dest="_rel")
+    p_pub = rlsub.add_parser("publish", help="upload a built release (+ optional rollout)")
     p_pub.add_argument("project", nargs="?", default=".", help="project dir (default: .)")
     p_pub.add_argument("-b", "--board", required=True, help="board to publish")
     p_pub.add_argument("-o", "--output", help="artifact dir (default: <project>/build)")
@@ -78,13 +85,30 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_pub.add_argument("--allow-republish", action="store_true",
                        help="re-upload a version the server already has (dev loop)")
     _creds(p_pub)
-    p_pub.set_defaults(func=cmd_publish, _command="client publish")
+    p_pub.set_defaults(func=cmd_publish, _command="client release publish")
+    p_rll = rlsub.add_parser("list", help="the publish history, newest first (JSON)")
+    p_rll.add_argument("--product-id", type=int, help="only this product")
+    p_rll.add_argument("--limit", type=int, help="page size")
+    p_rll.add_argument("--offset", type=int, help="page offset")
+    _creds(p_rll)
+    p_rll.set_defaults(func=cmd_releases, _command="client release list")
+    p_rsh = rlsub.add_parser("show", help="one release (JSON)")
+    p_rsh.add_argument("--release-id", required=True, metavar="RELEASE_ID",
+                       help="the release to read")
+    _creds(p_rsh)
+    p_rsh.set_defaults(func=cmd_release_show, _command="client release show")
+    p_rsb = rlsub.add_parser("sbom", help="download a release's SBOM (CycloneDX JSON)")
+    p_rsb.add_argument("--release-id", required=True, metavar="RELEASE_ID",
+                       help="the release whose SBOM to fetch")
+    p_rsb.add_argument("-o", "--output", help="write to this file (default: stdout)")
+    _creds(p_rsb)
+    p_rsb.set_defaults(func=cmd_release_sbom, _command="client release sbom")
 
-    p_ro = sub.add_parser("rollout", help="create/raise/pause/resume/stop a rollout")
+    p_ro = sub.add_parser("rollout", help="create / drive / read rollouts")
     rsub = p_ro.add_subparsers(dest="_ro")
     p_rc = rsub.add_parser("create", help="stage an already-published release to a cohort")
     p_rc.add_argument("--release-id", required=True, metavar="RELEASE_ID",
-                      help="release to stage (ids come from publish / `client releases`)")
+                      help="release to stage (ids come from `client release list`)")
     p_rc.add_argument("--cohort", default="__default__",
                       help="cohort to stage it to (default: __default__, the un-assigned devices)")
     p_rc.add_argument("--percent", type=float, required=True,
@@ -100,7 +124,7 @@ def register(parser: argparse.ArgumentParser) -> None:
             ("stop", False, "stop offering it for good; devices that took it keep it")):
         pr = rsub.add_parser(action, help=blurb)
         pr.add_argument("--rollout-id", required=True, metavar="ROLLOUT_ID",
-                        help="the rollout to act on (ids come from publish / `client rollouts`)")
+                        help="the rollout to act on (ids come from `client rollout list`)")
         if needs_pct:
             # positional: the percent IS the action ("raise 50"), not a modifier of it
             pr.add_argument("percent", type=float,
@@ -109,11 +133,17 @@ def register(parser: argparse.ArgumentParser) -> None:
         pr.set_defaults(func=cmd_rollout, _command="client rollout " + action, action=action)
     p_rs = rsub.add_parser("status", help="a rollout's counters (attempted/updated/failures)")
     p_rs.add_argument("--rollout-id", required=True, metavar="ROLLOUT_ID",
-                      help="the rollout to read (ids come from publish / `client rollouts`)")
+                      help="the rollout to read (ids come from `client rollout list`)")
     _creds(p_rs)
     p_rs.set_defaults(func=cmd_rollout, _command="client rollout status", action="status")
+    p_rol = rsub.add_parser("list", help="every rollout, newest first (JSON)")
+    p_rol.add_argument("--product-id", type=int, help="only this product")
+    p_rol.add_argument("--limit", type=int, help="page size")
+    p_rol.add_argument("--offset", type=int, help="page offset")
+    _creds(p_rol)
+    p_rol.set_defaults(func=cmd_rollouts, _command="client rollout list")
 
-    p_co = sub.add_parser("cohort", help="list / assign / rename / delete cohorts")
+    p_co = sub.add_parser("cohort", help="list / assign / rename / delete / pin cohorts")
     cosub = p_co.add_subparsers(dest="_co")
     p_col = cosub.add_parser("list", help="list cohorts in use, with a device count each")
     p_col.add_argument("--product-id", type=int, help="only this product's cohorts")
@@ -137,8 +167,17 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_cod.add_argument("--cohort", required=True, help="the label to delete")
     _creds(p_cod)
     p_cod.set_defaults(func=cmd_cohort, _command="client cohort delete", action="delete")
+    p_cop = cosub.add_parser("pin", help="pin a whole cohort to a release (or --clear)")
+    p_cop.add_argument("--product-id", type=int, required=True,
+                       help="product the cohort belongs to")
+    p_cop.add_argument("--cohort", required=True, help="cohort to pin")
+    gc = p_cop.add_mutually_exclusive_group(required=True)
+    gc.add_argument("--release-id", help="release to pin to")
+    gc.add_argument("--clear", action="store_true", help="unpin")
+    _creds(p_cop)
+    p_cop.set_defaults(func=cmd_pin, _command="client cohort pin", target="cohort")
 
-    p_bases = sub.add_parser("bases", help="download recent release images to build deltas from")
+    p_bases = rlsub.add_parser("bases", help="download recent release images to build deltas from")
     p_bases.add_argument("-b", "--board", required=True,
                          help="board these bases are for (names the files)")
     p_bases.add_argument("--product-id", type=int, help="only this product's releases")
@@ -147,20 +186,41 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_bases.add_argument("-o", "--output", default="build/bases",
                          help="directory to write into (default: build/bases)")
     _creds(p_bases)
-    p_bases.set_defaults(func=cmd_bases, _command="client bases")
+    p_bases.set_defaults(func=cmd_bases, _command="client release bases")
 
-    p_prune = sub.add_parser("prune", help="delete a release's stored artifacts (keeps history)")
+    p_prune = rlsub.add_parser("prune", help="delete a release's stored artifacts (keeps history)")
     p_prune.add_argument("--release-id", required=True, help="release whose objects to delete")
     p_prune.add_argument("--force", action="store_true",
                          help="delete even while a rollout still offers this release")
     _creds(p_prune)
-    p_prune.set_defaults(func=cmd_prune, _command="client prune")
+    p_prune.set_defaults(func=cmd_prune, _command="client release prune")
 
-    p_bind = sub.add_parser("bind", help="bind a device to your account (re-account / recover)")
+    p_dev = sub.add_parser("device", help="list / show / pin / bind devices")
+    dsub = p_dev.add_subparsers(dest="_dev")
+    p_dvl = dsub.add_parser("list", help="the per-device rows (JSON)")
+    p_dvl.add_argument("--product-id", type=int, help="only this product")
+    p_dvl.add_argument("--cohort", help="only devices in this cohort")
+    p_dvl.add_argument("--limit", type=int, help="page size")
+    p_dvl.add_argument("--offset", type=int, help="page offset")
+    _creds(p_dvl)
+    p_dvl.set_defaults(func=cmd_devices, _command="client device list")
+    p_dvs = dsub.add_parser("show", help="one device (JSON)")
+    p_dvs.add_argument("--device-id", required=True, metavar="DEVICE_ID",
+                       help="the device to read")
+    _creds(p_dvs)
+    p_dvs.set_defaults(func=cmd_device_show, _command="client device show")
+    p_dvp = dsub.add_parser("pin", help="pin ONE device to a release (or --clear to unpin)")
+    p_dvp.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="device to pin")
+    gd = p_dvp.add_mutually_exclusive_group(required=True)
+    gd.add_argument("--release-id", help="release to pin to")
+    gd.add_argument("--clear", action="store_true", help="unpin")
+    _creds(p_dvp)
+    p_dvp.set_defaults(func=cmd_pin, _command="client device pin", target="device")
+    p_bind = dsub.add_parser("bind", help="bind a device to your account (re-account / recover)")
     p_bind.add_argument("--device-id", required=True, metavar="DEVICE_ID",
                         help="device to bind to the caller's account")
     _creds(p_bind)
-    p_bind.set_defaults(func=cmd_bind, _command="client bind")
+    p_bind.set_defaults(func=cmd_bind, _command="client device bind")
 
     p_acct = sub.add_parser("account", help="create/list tenant accounts (needs accounts)")
     acsub = p_acct.add_subparsers(dest="_acct")
@@ -216,41 +276,17 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_tkrot)
     p_tkrot.set_defaults(func=cmd_token, _command="client token rotate", action="rotate")
 
-    p_pin = sub.add_parser("pin", help="pin a device/cohort to a release (overrides rollouts)")
-    pinsub = p_pin.add_subparsers(dest="_pin")
-    p_pd = pinsub.add_parser("device", help="pin ONE device to a release (or --clear to unpin)")
-    p_pd.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="device to pin")
-    gd = p_pd.add_mutually_exclusive_group(required=True)
-    gd.add_argument("--release-id", help="release to pin to")
-    gd.add_argument("--clear", action="store_true", help="unpin")
-    _creds(p_pd)
-    p_pd.set_defaults(func=cmd_pin, _command="client pin device", target="device")
-    p_pc = pinsub.add_parser("cohort", help="pin a whole cohort to a release (or --clear)")
-    p_pc.add_argument("--product-id", type=int, required=True,
-                      help="product the cohort belongs to")
-    p_pc.add_argument("--cohort", required=True, help="cohort to pin")
-    gc = p_pc.add_mutually_exclusive_group(required=True)
-    gc.add_argument("--release-id", help="release to pin to")
-    gc.add_argument("--clear", action="store_true", help="unpin")
-    _creds(p_pc)
-    p_pc.set_defaults(func=cmd_pin, _command="client pin cohort", target="cohort")
+    p_fl = sub.add_parser("fleet", help="the fleet summary (JSON)")
+    p_fl.add_argument("--product-id", type=int, help="only this product")
+    p_fl.add_argument("--cohort", help="only devices in this cohort")
+    _creds(p_fl)
+    p_fl.set_defaults(func=cmd_fleet, _command="client fleet")
 
-    for name, handler in (("fleet", cmd_fleet), ("devices", cmd_devices),
-                          ("releases", cmd_releases), ("rollouts", cmd_rollouts),
-                          ("audit", cmd_audit)):
-        p = sub.add_parser(name, help="read %s status" % name)
-        if name == "audit":
-            p.add_argument("--since", type=int, default=0, metavar="SEQ",
-                           help="only events after this sequence number (a cursor, not an offset)")
-        else:
-            p.add_argument("--product-id", type=int, help="only this product")
-        if name in ("devices", "releases", "rollouts"):
-            p.add_argument("--limit", type=int, help="page size")
-            p.add_argument("--offset", type=int, help="page offset")
-        if name in ("fleet", "devices"):
-            p.add_argument("--cohort", help="only devices in this cohort")
-        _creds(p)
-        p.set_defaults(func=handler, _command="client " + name)
+    p_au = sub.add_parser("audit", help="the append-only audit log (JSON)")
+    p_au.add_argument("--since", type=int, default=0, metavar="SEQ",
+                      help="only events after this sequence number (a cursor, not an offset)")
+    _creds(p_au)
+    p_au.set_defaults(func=cmd_audit, _command="client audit")
 
 
 def _account_label(account_id: str) -> str:
@@ -549,6 +585,29 @@ def _read(args, call) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     return 0
+
+
+def cmd_release_show(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.release(args.release_id))
+
+
+def cmd_device_show(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.device(args.device_id))
+
+
+def cmd_release_sbom(args: argparse.Namespace) -> int:
+    """The release's SBOM, to stdout (pipeable into a scanner) or -o FILE."""
+    try:
+        data = _make_api(config.resolve(args.server, args.token)).release_sbom(args.release_id)
+        if args.output:
+            Path(args.output).write_bytes(data)
+            return _emit(args, {"saved": args.output, "bytes": len(data)},
+                         "saved %s (%d bytes)" % (args.output, len(data)))
+        sys.stdout.write(data.decode("utf-8"))
+        return 0
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
 
 
 def cmd_fleet(args: argparse.Namespace) -> int:

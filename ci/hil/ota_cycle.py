@@ -2034,9 +2034,9 @@ def publish_update(board, version, variant="delta"):
         nodelta = tempfile.mkdtemp(prefix="hil-nodelta-")
         build += ["--delta-from", nodelta]
         # A full-only build does NOT produce a .delta.gz, but a prior delta build left one in
-        # the build dir -- and `client publish` uploads every artifact present, so the server
+        # the build dir -- and `client release publish` uploads every artifact present, so the server
         # rejects (delta uploaded, manifest declares none). Drop the stale delta first.
-        # (Belt and braces: `client publish` now uploads only what the SIGNED manifest declares,
+        # (Belt and braces: `client release publish` now uploads only what the SIGNED manifest declares,
         # so a stale delta on disk is ignored rather than rejected by the server. Clearing it
         # keeps the build dir honest, and the glob covers the v2 per-base naming.)
         sh("rm -f %s/build/%s-ota.delta*.gz" % (CFG["project"], board), check=False)
@@ -2046,7 +2046,7 @@ def publish_update(board, version, variant="delta"):
         % (_human(_s.get("manifest")), _human(_s.get("full_img_gz")), _human(_s.get("delta_gz")),
            ("  (delta=%.1f%% of full)" % (100.0 * _s["delta_gz"] / _s["full_img_gz"])
             if _s.get("delta_gz") and _s.get("full_img_gz") else "")))
-    subprocess.run([ota("openmv-ota"), "client", "publish", CFG["project"], "-b", board,
+    subprocess.run([ota("openmv-ota"), "client", "release", "publish", CFG["project"], "-b", board,
                     "--server", CFG["server"], "--token", CFG["token"], "--allow-republish",
                     "--rollout", "__default__:100"], env=penv, check=True, timeout=180)
     if variant == "corrupt":

@@ -63,7 +63,7 @@ interval. In order:
    among offered devices crosses the rollout's threshold, the rollout **auto-pauses**
    and the audit log records it.
 6. **The device row** — version, slot, confirmation state, fallback identity, cohort —
-   is upserted; this is what `client fleet` and `client devices` summarize.
+   is upserted; this is what `client fleet` and `client device list` summarize.
 7. **The answer** — `{update: false, poll_after_s: …}` in the common case; on an offer,
    a short-lived download URL for the release's manifest. Where the deployment is wired
    for them, the answer also carries per-device **grants** for OpenMV's live-viewing and

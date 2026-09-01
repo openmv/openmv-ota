@@ -81,7 +81,7 @@ def test_publish_and_rollout(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project)
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta", "--percent", "5"]) == 0
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta", "--percent", "5"]) == 0
     out = capsys.readouterr().out
     assert "published rel_" in out and "rollout ro_" in out
     releases = store.list_releases(BID)
@@ -108,7 +108,7 @@ def test_publish_uploads_every_delta_the_manifest_declares(wired, tmp_path, caps
                      "base_payload_version": 0x01000000})
     _rewrite_manifest(build, board, reps)
 
-    assert main(["client", "publish", str(project), "-b", board]) == 0
+    assert main(["client", "release", "publish", str(project), "-b", board]) == 0
     rel = store.list_releases(BID)[0]
     assert len([r for r in rel["representations"] if r["format"] == DELTA_FORMAT]) == 2
 
@@ -125,7 +125,7 @@ def test_publish_errors_when_a_declared_delta_is_missing(wired, tmp_path, capsys
         {"format": "full", "url": "%s-ota.img.gz" % board, "size": 10},
         {"format": DELTA_FORMAT, "url": "%s-ota.delta-9.9.9.gz" % board, "size": 1,
          "base_payload_version": 0x01000000}])
-    assert main(["client", "publish", str(project), "-b", board]) == 2
+    assert main(["client", "release", "publish", str(project), "-b", board]) == 2
     assert "declares delta" in capsys.readouterr().err
 
 
@@ -134,7 +134,7 @@ def test_publish_rejects_an_unreadable_manifest(wired, tmp_path, capsys):
     project = tmp_path / "proj"
     build = _build_release(project)
     (build / "OPENMV_N6-manifest.bin").write_bytes(b"not a manifest at all")
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 2
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 2
     assert "unreadable manifest" in capsys.readouterr().err
 
 
@@ -145,11 +145,11 @@ def test_bases_downloads_retained_images_for_the_build_to_diff_against(wired, tm
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project)
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
     capsys.readouterr()
 
     dest = tmp_path / "bases"
-    assert main(["client", "bases", "-b", "OPENMV_N6", "-o", str(dest)]) == 0
+    assert main(["client", "release", "bases", "-b", "OPENMV_N6", "-o", str(dest)]) == 0
     written = sorted(p.name for p in dest.iterdir())
     assert written == ["OPENMV_N6-base-2.0.0.img.gz"]
     # ...and it is the published image byte-for-byte, which is what a delta must diff against
@@ -159,7 +159,7 @@ def test_bases_downloads_retained_images_for_the_build_to_diff_against(wired, tm
 
 def test_bases_reports_when_there_is_no_history_yet(wired, tmp_path, capsys):
     store, _ = wired
-    assert main(["client", "bases", "-b", "OPENMV_N6", "-o", str(tmp_path / "b")]) == 2
+    assert main(["client", "release", "bases", "-b", "OPENMV_N6", "-o", str(tmp_path / "b")]) == 2
     assert "no retained releases" in capsys.readouterr().err
 
 
@@ -169,11 +169,11 @@ def test_prune_deletes_a_release_s_objects(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project)
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
     rel_id = store.list_releases(BID)[0]["release_id"]
     capsys.readouterr()
 
-    assert main(["client", "prune", "--release-id", rel_id]) == 0
+    assert main(["client", "release", "prune", "--release-id", rel_id]) == 0
     assert "deleted 2 object(s)" in capsys.readouterr().out    # manifest + image
     assert store.get_release(rel_id) is not None               # history survives
 
@@ -182,19 +182,19 @@ def test_prune_refuses_a_release_a_rollout_still_offers(wired, tmp_path, capsys)
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project)
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6",
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6",
                  "--cohort", "beta", "--percent", "100"]) == 0
     rel_id = store.list_releases(BID)[0]["release_id"]
     capsys.readouterr()
-    assert main(["client", "prune", "--release-id", rel_id]) == 1
+    assert main(["client", "release", "prune", "--release-id", rel_id]) == 1
     assert "still being offered" in capsys.readouterr().err
     # ...and --force is the explicit override
-    assert main(["client", "prune", "--release-id", rel_id, "--force"]) == 0
+    assert main(["client", "release", "prune", "--release-id", rel_id, "--force"]) == 0
 
 
 def test_publish_missing_artifacts(wired, tmp_path, capsys):
     store, _ = wired
-    assert main(["client", "publish", str(tmp_path / "empty"), "-b", "OPENMV_N6"]) == 2
+    assert main(["client", "release", "publish", str(tmp_path / "empty"), "-b", "OPENMV_N6"]) == 2
     assert "no built release" in capsys.readouterr().err
 
 
@@ -202,7 +202,7 @@ def test_publish_bad_rollout_spec(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project)
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta"]) == 2
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta"]) == 2
     assert "--cohort stages a rollout only with --percent" in capsys.readouterr().err
 
 
@@ -210,16 +210,16 @@ def test_publish_server_rejects_republish(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project, pv=0x02000000)
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
     capsys.readouterr()
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 1   # same pv -> 409
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 1   # same pv -> 409
     assert "409" in capsys.readouterr().err
 
 
 def _publish(store, tmp_path):
     project = tmp_path / "p2"
     _build_release(project)
-    main(["client", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta", "--percent", "5"])
+    main(["client", "release", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta", "--percent", "5"])
     return store.list_rollouts(BID)[0]["rollout_id"]
 
 
@@ -251,13 +251,13 @@ def test_fleet_devices_audit(wired, tmp_path, capsys):
     store.append_audit(actor="ci", action="release.publish")
     assert main(["client", "fleet"]) == 0
     assert json.loads(capsys.readouterr().out)["total"] == 1
-    assert main(["client", "devices", "--product-id", str(BID)]) == 0
+    assert main(["client", "device", "list", "--product-id", str(BID)]) == 0
     assert json.loads(capsys.readouterr().out)["devices"][0]["device_id"] == "d1"
     store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
                       payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
                       image_size=1, representations=[{"format": "full", "url": "x", "size": 1}],
                       manifest_key="m", image_key="i")
-    assert main(["client", "releases"]) == 0
+    assert main(["client", "release", "list"]) == 0
     assert json.loads(capsys.readouterr().out)["releases"][0]["release_id"] == "rel1"
     assert main(["client", "audit"]) == 0
     assert json.loads(capsys.readouterr().out)["events"][0]["action"] == "release.publish"
@@ -313,12 +313,12 @@ def test_cohort_error_surfaced(tmp_path, monkeypatch, capsys):
 def test_pin_device_and_cohort(wired, tmp_path, capsys):
     store, _ = wired
     store.upsert_device(device_id="d1", product_id=BID)
-    assert main(["client", "pin", "device", "--device-id", "d1", "--release", "rel9"]) == 0
+    assert main(["client", "device", "pin", "--device-id", "d1", "--release", "rel9"]) == 0
     assert "device d1 pinned to rel9" in capsys.readouterr().out
     assert store.get_device("d1")["pinned_release_id"] == "rel9"
-    assert main(["client", "pin", "device", "--device-id", "d1", "--clear"]) == 0
+    assert main(["client", "device", "pin", "--device-id", "d1", "--clear"]) == 0
     assert "(unpinned)" in capsys.readouterr().out
-    assert main(["client", "pin", "cohort", "--product-id", str(BID),
+    assert main(["client", "cohort", "pin", "--product-id", str(BID),
                  "--cohort", "beta", "--release", "rel9"]) == 0
     assert "cohort beta pinned to rel9" in capsys.readouterr().out
     assert store.get_cohort_pin(BID, "beta") == "rel9"
@@ -327,7 +327,7 @@ def test_pin_device_and_cohort(wired, tmp_path, capsys):
 def test_bind_device(wired, tmp_path, capsys):
     store, _ = wired
     store.upsert_device(device_id="d1", product_id=BID)
-    assert main(["client", "bind", "--device-id", "d1"]) == 0
+    assert main(["client", "device", "bind", "--device-id", "d1"]) == 0
     # the wired token acts for the implicit '' account -> renders as (unassigned)
     assert "device d1 bound to (unassigned)" in capsys.readouterr().out
     assert store.device_account("d1")["source"] == "admin"
@@ -396,7 +396,7 @@ def test_bind_error_surfaced(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
     monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
     monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
-    assert main(["client", "bind", "--device-id", "d1"]) == 1
+    assert main(["client", "device", "bind", "--device-id", "d1"]) == 1
     assert "403" in capsys.readouterr().err
 
 
@@ -407,7 +407,7 @@ def test_pin_error_surfaced(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
     monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
     monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
-    assert main(["client", "pin", "device", "--device-id", "d1", "--release", "r"]) == 1
+    assert main(["client", "device", "pin", "--device-id", "d1", "--release", "r"]) == 1
     assert "403" in capsys.readouterr().err
 
 
@@ -509,7 +509,7 @@ def test_publish_attaches_a_rendered_sbom(wired, tmp_path, capsys, monkeypatch):
     project = tmp_path / "proj"
     _build_release(project)
     monkeypatch.setattr(sbom_mod, "render_sbom", lambda p: '{"bomFormat": "CycloneDX"}')
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
     rel = store.list_releases(BID)[0]
     assert rel["sbom_key"] == "sbom/%s/sbom.cdx.json" % rel["release_id"]
 
@@ -521,7 +521,7 @@ def test_publish_warns_but_ships_without_an_sbom(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project)
-    assert main(["client", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
     assert "no SBOM attached" in capsys.readouterr().err
     assert store.list_releases(BID)[0]["sbom_key"] is None
 
@@ -534,7 +534,7 @@ def test_rollout_create_status_and_list(wired, tmp_path, capsys):
 
     store, root = wired
     _build_release(root / "p")
-    assert main(["client", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
+    assert main(["client", "release", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
     rel = json.loads(capsys.readouterr().out)["release_id"]
 
     assert main(["client", "rollout", "create", "--release-id", rel, "--cohort", "beta",
@@ -542,7 +542,7 @@ def test_rollout_create_status_and_list(wired, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "cohort=beta" in out and "5.0%" in out
 
-    assert main(["client", "rollouts", "--product-id", str(BID), "--limit", "10",
+    assert main(["client", "rollout", "list", "--product-id", str(BID), "--limit", "10",
                  "--offset", "0"]) == 0
     body = json.loads(capsys.readouterr().out)
     assert body["total"] == 1 and body["rollouts"][0]["release_id"] == rel
@@ -560,13 +560,13 @@ def test_cohort_rename_relabels_everything_at_once(wired, tmp_path, capsys):
 
     store, root = wired
     _build_release(root / "p")
-    assert main(["client", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
+    assert main(["client", "release", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
     rel = json.loads(capsys.readouterr().out)["release_id"]
     for d in ("d1", "d2"):
         store.upsert_device(device_id=d, product_id=BID, cohort="beta")
     assert main(["client", "rollout", "create", "--release-id", rel, "--cohort", "beta",
                  "--percent", "5"]) == 0
-    assert main(["client", "pin", "cohort", "--product-id", str(BID), "--cohort", "beta",
+    assert main(["client", "cohort", "pin", "--product-id", str(BID), "--cohort", "beta",
                  "--release-id", rel]) == 0
     capsys.readouterr()
 
@@ -590,13 +590,13 @@ def test_cohort_delete_returns_devices_to_default(wired, tmp_path, capsys):
 
     store, root = wired
     _build_release(root / "p")
-    assert main(["client", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
+    assert main(["client", "release", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
     rel = json.loads(capsys.readouterr().out)["release_id"]
     store.upsert_device(device_id="d1", product_id=BID, cohort="beta")
     assert main(["client", "rollout", "create", "--release-id", rel, "--cohort", "beta",
                  "--percent", "5", "--json"]) == 0
     rid = json.loads(capsys.readouterr().out)["rollout_id"]
-    assert main(["client", "pin", "cohort", "--product-id", str(BID), "--cohort", "beta",
+    assert main(["client", "cohort", "pin", "--product-id", str(BID), "--cohort", "beta",
                  "--release-id", rel]) == 0
     capsys.readouterr()
 
@@ -608,3 +608,51 @@ def test_cohort_delete_returns_devices_to_default(wired, tmp_path, capsys):
     assert "1 device(s) back to __default__, 1 pin(s) dropped" in capsys.readouterr().out
     assert store.get_device("d1")["cohort"] == "__default__"
     assert store.get_cohort_pin(BID, "beta") is None
+
+
+def test_release_show_and_device_show(wired, tmp_path, capsys):
+    """The single-entity reads: the CRUD 'R' the list verbs alone couldn't give a script
+    without paging until the row turned up."""
+    import json
+
+    store, root = wired
+    _build_release(root / "p")
+    assert main(["client", "release", "publish", str(root / "p"), "-b", "OPENMV_N6",
+                 "--json"]) == 0
+    rel = json.loads(capsys.readouterr().out)["release_id"]
+    store.upsert_device(device_id="d1", product_id=BID)
+
+    assert main(["client", "release", "show", "--release-id", rel]) == 0
+    assert json.loads(capsys.readouterr().out)["release_id"] == rel
+    assert main(["client", "device", "show", "--device-id", "d1"]) == 0
+    assert json.loads(capsys.readouterr().out)["device_id"] == "d1"
+
+
+def test_release_sbom_download(wired, tmp_path, capsys):
+    """`release sbom` hands back exactly the uploaded evidence -- to stdout for piping
+    into a scanner, or to a file with -o. A release without one is a clean error."""
+    import json
+
+    store, root = wired
+    _build_release(root / "p")
+    assert main(["client", "release", "publish", str(root / "p"), "-b", "OPENMV_N6",
+                 "--json"]) == 0
+    rel = json.loads(capsys.readouterr().out)["release_id"]
+    assert main(["client", "release", "sbom", "--release-id", rel]) == 1   # none attached
+    assert "404" in capsys.readouterr().err
+
+    sbom = json.dumps({"bomFormat": "CycloneDX", "components": []}).encode()
+    key = "sbom/%s/sbom.cdx.json" % rel
+    # attach one the way publish would have (the fixture project has no lock to render)
+    from openmv_ota.server.storage import LocalArtifactStorage
+    # reach the wired server's storage through the metastore row + a fresh handle
+    row = store.get_release(rel)
+    assert row["sbom_key"] is None
+    store.execute("UPDATE releases SET sbom_key = ? WHERE release_id = ?", (key, rel))
+    LocalArtifactStorage(str(tmp_path / "blobs")).put(key, sbom, "application/json")
+
+    assert main(["client", "release", "sbom", "--release-id", rel]) == 0
+    assert json.loads(capsys.readouterr().out)["bomFormat"] == "CycloneDX"
+    out = tmp_path / "sbom.json"
+    assert main(["client", "release", "sbom", "--release-id", rel, "-o", str(out)]) == 0
+    assert "saved" in capsys.readouterr().out and out.read_bytes() == sbom

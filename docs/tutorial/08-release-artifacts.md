@@ -118,7 +118,7 @@ version. Output is **deterministic**: the BOM's timestamp is the lock's
 byte-identical JSON — an SBOM that changes only when a dependency changes is
 diffable evidence.
 
-`client publish` renders and uploads it automatically, and the server serves it
+`client release publish` renders and uploads it automatically, and the server serves it
 back per release — so the dependency evidence lives beside the exact bytes it
 describes, not only on the build machine.
 

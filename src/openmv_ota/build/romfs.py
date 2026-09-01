@@ -670,8 +670,8 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         # THE PUBLISHABLE FORM OF THE FACTORY BYTES -- build/factory/<board>-ota.img.gz +
         # a manifest signed with the same factory key. A factory-fresh fleet's first delta
         # base is exactly this body, and the server-driven base machinery (--delta-fleet /
-        # `client bases`) only knows STORED RELEASES -- so publish this pair right after
-        # manufacture (`client publish . -b <board> -o build/factory`) and the fleet's
+        # `client release bases`) only knows STORED RELEASES -- so publish this pair right after
+        # manufacture (`client release publish . -b <board> -o build/factory`) and the fleet's
         # first OTA can be a delta. Rendered here from the very bytes just composed, so
         # the published base can never drift from the flashed one.
         import gzip as _gzip
@@ -1107,7 +1107,7 @@ def build_ota_romfs(
     fleet = {}
     if delta_fleet:
         # Ask the server which (version, bytes) bases the fleet is RUNNING and pull the
-        # matching stored releases -- the automated spelling of `client bases` + a curated
+        # matching stored releases -- the automated spelling of `client release bases` + a curated
         # --delta-from. Composes with any explicit --delta-from entries.
         from openmv_ota.client.errors import ClientError
         try:
@@ -1251,7 +1251,7 @@ def _resolve_bases(project, name, delta_from, delta_files, delta_dirs) -> list[P
             out.append(f)
         for d in delta_dirs:
             # A directory contributes the board's provisioning image AND any bases pulled back
-            # from the server by `client bases` (<board>-base-<version>.img.gz). Matching a
+            # from the server by `client release bases` (<board>-base-<version>.img.gz). Matching a
             # fixed pattern rather than "every file here" keeps an output directory full of
             # unrelated artifacts from being fed to the delta builder.
             found = sorted(d.glob(name + "-base-*.img.gz"))
