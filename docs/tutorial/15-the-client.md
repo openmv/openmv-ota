@@ -167,14 +167,13 @@ staging at all — without it the release is published and left inert.)
 
 Which devices make up that percentage isn't a choice you make or a list the server
 keeps. Think of it as a lottery: for this rollout, every device holds a fixed ticket
-number between 0 and 9,999, computed by hashing the rollout id together with the
+number between 0 and 999,999, computed by hashing the rollout id together with the
 device id —
 
 ```
-ticket = sha256(rollout_id + ":" + device_id) % 10000     # 0–9999: deterministic,
-                                                          # NOT unique per device
-staged = ticket < percent * 100                           # 5%  -> tickets 0–499
-                                                          # 50% -> tickets 0–4999
+ticket = sha256(rollout_id + ":" + device_id) % 1000000   # 0–999999, deterministic
+staged = ticket < percent * 10000                         # 5%  -> tickets below  50,000
+                                                          # 50% -> tickets below 500,000
 ```
 
 — and the rollout simply admits every ticket below the bar its percent sets. That one
@@ -188,12 +187,13 @@ idea buys three properties:
 - **Reshuffled per rollout**: the rollout id is part of the hash, so every rollout
   deals fresh tickets — the same camera isn't the canary every time.
 
-A ticket value is **not one device** — every device gets its own draw, but there are
-only 10,000 possible values, so devices share them. Concretely: 15,000 devices at 5% —
-the bar admits ticket values 0–499, each value is held by ~1.5 devices, so about
-**750 devices (5% of 15,000)** are staged, give or take a few dozen. The percent always
-means a *fraction of the cohort*, at any fleet size; the ticket count only sets the
-dial's resolution (the finest slice is one ticket, 0.01% of the cohort).
+The percent is a **fraction of the cohort, at any fleet size** — each device's ticket
+lands uniformly in the million, so 5% of them fall below the 50,000 bar whether the
+cohort holds 400 devices or 400,000. Concretely: 15,000 devices at 5% stages about
+**750 of them** (±√750 ≈ 27 — the draw is random, so the count wobbles a little around
+the dial; `rollout status` shows the real numbers). The million-value space just makes
+the dial fine: the smallest slice is 0.0001% of a cohort, small enough that even a
+multi-million-device fleet can stage a handful as its canary.
 
 From there the lifecycle is four actions:
 

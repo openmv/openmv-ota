@@ -12,13 +12,18 @@ import hashlib
 
 
 def staged_in(rollout_id: str, device_id: str, percent: float) -> bool:
-    """Whether ``device_id`` is in the staged set of ``rollout_id`` at ``percent`` (0..100)."""
+    """Whether ``device_id`` is in the staged set of ``rollout_id`` at ``percent`` (0..100).
+
+    The ticket space is 1,000,000, so the dial resolves to 0.0001% of a cohort -- fine
+    enough that a huge fleet can still stage a tiny canary (10 devices of 10M). Widening
+    it does NOT tighten the +/-sqrt(N) sampling wobble; that is inherent to per-device
+    independent decisions, which is the price of stable, stateless membership."""
     if percent >= 100:
         return True
     if percent <= 0:
         return False
     h = hashlib.sha256(("%s:%s" % (rollout_id, device_id)).encode()).digest()
-    return (int.from_bytes(h[:4], "big") % 10000) < percent * 100
+    return (int.from_bytes(h[:4], "big") % 1_000_000) < percent * 10_000
 
 
 def fallback_payload_version(slots: list[dict] | None) -> int | None:
