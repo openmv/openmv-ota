@@ -107,11 +107,12 @@ def test_list_devices_and_fleet_summary():
     assert len(s.list_devices()) == 4 and len(s.list_devices(1, limit=2)) == 2
     fs = s.fleet_summary(1)
     assert fs["total"] == 3
-    assert fs["by_version"] == {"1.0.0": 2, "1.1.0": 1}
+    prod = fs["products"]["1"]
+    assert prod["by_version"] == {"1.0.0": 2, "1.1.0": 1}
     assert fs["fell_back"] == 1          # the rollout alarm
     assert fs["unconfirmed"] == 1        # mid-trial, and therefore deferring further updates
     # what the fleet would fall back TO -- None means the device did not say
-    assert fs["by_fallback"] == {0x00FF0000: 1, 0x01000000: 1, None: 1}
+    assert prod["by_fallback"] == {0x00FF0000: 1, 0x01000000: 1, None: 1}
     assert s.fleet_summary()["total"] == 4
 
 
