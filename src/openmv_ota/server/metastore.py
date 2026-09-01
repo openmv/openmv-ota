@@ -474,7 +474,8 @@ class SqlMetadataStore:
                               + " ORDER BY last_seen DESC LIMIT ? OFFSET ?", (*params, limit, offset))
         return [_d(r) for r in rows]
 
-    def fleet_summary(self, product_id: int | None = None, account_id=None) -> dict:
+    def fleet_summary(self, product_id: int | None = None, account_id=None,
+                      cohort: str | None = None) -> dict:
         """What an operator wants to know about a fleet mid-rollout.
 
         v1 reported `by_slot`, which answered "how many devices are on golden" -- i.e. how many
@@ -490,6 +491,9 @@ class SqlMetadataStore:
                           one where half of them report nothing, and that is invisible in
                           by_version."""
         where, params = _scope(account_id, product_id)
+        if cohort is not None:                       # scope to one rollout's audience
+            where = (where + " AND cohort = ?") if where else "WHERE cohort = ?"
+            params = (*params, cohort)
         and_ = (where + " AND ") if where else "WHERE "
         by_version = {r["current_version"]: r["n"] for r in self.query_all(
             "SELECT current_version, COUNT(*) AS n FROM devices " + where
@@ -503,7 +507,16 @@ class SqlMetadataStore:
             params)["n"]
         unconfirmed = self.query_one(
             "SELECT COUNT(*) AS n FROM devices " + and_ + "confirmed = 0", params)["n"]
+        # the account-level breakdowns: device counts per product and per cohort (within
+        # the current filters), so one call structures the whole account
+        by_product = {r["product_id"]: r["n"] for r in self.query_all(
+            "SELECT product_id, COUNT(*) AS n FROM devices " + where
+            + " GROUP BY product_id", params)}
+        by_cohort = {r["cohort"]: r["n"] for r in self.query_all(
+            "SELECT cohort, COUNT(*) AS n FROM devices " + where
+            + " GROUP BY cohort", params)}
         return {"total": total, "by_version": by_version, "by_fallback": by_fallback,
+                "by_product": by_product, "by_cohort": by_cohort,
                 "fell_back": fell_back, "unconfirmed": unconfirmed}
 
     def list_cohorts(self, product_id: int | None = None, account_id=None) -> list[dict]:

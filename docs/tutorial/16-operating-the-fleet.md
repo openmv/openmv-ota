@@ -106,10 +106,17 @@ $ openmv-ota client fleet
   "total": 412,
   "by_version": { "1.2.0": 361, "1.1.0": 51 },
   "by_fallback": { "1.1.0": 358, "unknown": 54 },
+  "by_product": { "396486252": 412 },
+  "by_cohort": { "__default__": 404, "beta": 8 },
   "fell_back": 2,
   "unconfirmed": 7
 }
 ```
+
+`--product-id` and `--cohort` scope the whole summary — `client fleet --cohort beta`
+is the dashboard for exactly the audience a rollout is reaching. At account scope the
+`by_product`/`by_cohort` maps structure the totals; note `by_version` then mixes
+products, since version strings are per product.
 
 | field | what it answers |
 |---|---|

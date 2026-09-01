@@ -164,8 +164,12 @@ class Api:
         return self._req("POST", "/api/v1/admin/cohorts/pin",
                          json={"product_id": product_id, "cohort": cohort, "release_id": release_id})
 
-    def fleet(self, product_id=None):
-        params = {"product_id": product_id} if product_id is not None else {}
+    def fleet(self, product_id=None, cohort=None):
+        params = {}
+        if product_id is not None:
+            params["product_id"] = product_id
+        if cohort is not None:
+            params["cohort"] = cohort
         return self._req("GET", "/api/v1/admin/fleet", params=params)
 
     def devices(self, product_id=None, cohort=None, limit=None, offset=None):

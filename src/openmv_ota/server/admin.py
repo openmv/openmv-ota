@@ -494,12 +494,13 @@ def pin_cohort(body: CohortPin, request: Request,
 
 
 @admin.get("/fleet", responses={200: {"model": FleetSummary}})
-def fleet(request: Request, product_id: int | None = None,
+def fleet(request: Request, product_id: int | None = None, cohort: str | None = None,
           principal: Principal = Depends(require_scope("observe"))):
     from openmv_ota.ota.version import decode_app_version
 
     summary = request.app.state.metastore.fleet_summary(product_id,
-                                                        account_id=principal.account_id)
+                                                        account_id=principal.account_id,
+                                                        cohort=cohort)
     # by_fallback is keyed by the packed uint32 the device reports; render it the way
     # by_version already reads. "unknown" is the device that did not say -- a single-image
     # board, or one on a payload from before the slots field existed.

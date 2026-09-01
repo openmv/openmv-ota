@@ -192,6 +192,11 @@ class FleetSummary(BaseModel):
     total: int
     by_version: dict[str, int]
     by_fallback: dict[str, int]
+    by_product: dict[str, int] = {}
+    """Device counts per product id (JSON object keys are strings; within the request's
+    filters)."""
+    by_cohort: dict[str, int] = {}
+    """Device counts per cohort (within the request's filters)."""
     fell_back: int
     unconfirmed: int
 

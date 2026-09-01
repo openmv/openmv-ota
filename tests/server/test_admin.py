@@ -528,6 +528,24 @@ def test_fleet_devices_audit(tmp_path):
     assert events[0]["action"] == "release.publish"
 
 
+def test_fleet_breakdowns_and_cohort_filter(tmp_path):
+    """The account view structures itself: device counts per product and per cohort ride
+    in every summary, and ?cohort= scopes the whole summary to one rollout's audience."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="a1", product_id=BID, cohort="beta", current_version="1.2.0")
+    store.upsert_device(device_id="a2", product_id=BID, cohort="__default__",
+                        current_version="1.1.0")
+    store.upsert_device(device_id="b1", product_id=BID + 1, cohort="beta",
+                        current_version="3.0.0")
+    c = TestClient(app)
+    body = c.get("/api/v1/admin/fleet", headers=AUTH).json()
+    assert body["by_product"] == {str(BID): 2, str(BID + 1): 1}
+    assert body["by_cohort"] == {"beta": 2, "__default__": 1}
+    scoped = c.get("/api/v1/admin/fleet?cohort=beta&product_id=%d" % BID, headers=AUTH).json()
+    assert scoped["total"] == 1 and scoped["by_version"] == {"1.2.0": 1}
+    assert scoped["by_cohort"] == {"beta": 1}
+
+
 def test_fleet_summary_reports_exposure_not_slot_names(tmp_path):
     """What an operator watching a rollout needs: who fell back, who is still unproven, and
     what the fleet would fall back TO. A slot NAME answers none of those under A/B."""

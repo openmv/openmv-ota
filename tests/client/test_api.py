@@ -251,3 +251,9 @@ def test_fleet_bases_query():
     assert path == "/api/v1/admin/fleet/bases" and kw["params"] == {"product_id": 7}
     api.fleet_bases()                                   # unfiltered: no params
     assert c.calls[1][2]["params"] == {}
+
+
+def test_fleet_cohort_filter_rides_as_a_param():
+    api, c = _api(_Resp(200, {}))
+    api.fleet(7, cohort="beta")
+    assert c.calls[0][2]["params"] == {"product_id": 7, "cohort": "beta"}

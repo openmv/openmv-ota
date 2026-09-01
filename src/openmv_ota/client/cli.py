@@ -247,7 +247,7 @@ def register(parser: argparse.ArgumentParser) -> None:
         if name in ("devices", "releases", "rollouts"):
             p.add_argument("--limit", type=int, help="page size")
             p.add_argument("--offset", type=int, help="page offset")
-        if name == "devices":
+        if name in ("fleet", "devices"):
             p.add_argument("--cohort", help="only devices in this cohort")
         _creds(p)
         p.set_defaults(func=handler, _command="client " + name)
@@ -552,7 +552,7 @@ def _read(args, call) -> int:
 
 
 def cmd_fleet(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.fleet(args.product_id))
+    return _read(args, lambda api: api.fleet(args.product_id, cohort=args.cohort))
 
 
 def cmd_devices(args: argparse.Namespace) -> int:
