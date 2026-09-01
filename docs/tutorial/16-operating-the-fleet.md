@@ -106,9 +106,13 @@ the project (`account_id` under `[product]` in `openmv-ota.toml`), the build sta
 into the image's `system.json`, and the device reports it with every check-in. On the
 first valid check-in the server **learns** that binding and it's sticky from then on —
 a later boot reporting a different or empty account (a factory-state fallback, say)
-can't move the device. `client device bind --device-id DEVICE` is the operator override that
-(re)binds a device to **your** account — the recovery path when a camera was first seen
-under the wrong one.
+can't move the device. The operator override — the recovery path when a camera was
+first seen under the wrong account — (re)binds it to **yours**:
+
+```
+$ openmv-ota client device bind --device-id 30003d000851303436313832
+device 30003d000851303436313832 bound to acct_7bd21c50e83a94f1
+```
 
 Knowing a device id is not owning the device: a binding only controls visibility and
 offers, never installs — the camera verifies every image against the keys baked into
@@ -195,6 +199,11 @@ Versions appear twice on purpose: the packed number is what the device reports a
 comparisons use; the decoded form (`current_version`, `fallback_version`) is for you.
 Filters: `--product-id`, `--cohort`; pages with `--limit`/`--offset`, and `total` always
 counts the whole scoped fleet so a full page is distinguishable from a complete list.
+One camera by id, same row shape:
+
+```
+openmv-ota client device show --device-id 30003d000851303436313832
+```
 
 ### The publish history
 
@@ -237,6 +246,19 @@ $ openmv-ota client release list --limit 1
 Worth knowing in there: `dev` marks a release signed with a throwaway `--dev` key
 (provenance, visible forever), and `representations` is the signed manifest's own list —
 the deltas a device can choose from, each naming the base it patches.
+
+One release by id, and the evidence that shipped with it:
+
+```
+$ openmv-ota client release show --release-id rel_4f9c2a81d06b73ee     # the same row, singly
+
+$ openmv-ota client release sbom --release-id rel_4f9c2a81d06b73ee -o sbom.cdx.json
+saved sbom.cdx.json (48213 bytes)
+```
+
+`release sbom` hands back the CycloneDX SBOM exactly as publish uploaded it — pipe it
+to a scanner (no `-o` writes it to stdout) to answer "does the release the fleet runs
+carry this CVE?".
 
 ### The audit log
 
