@@ -544,10 +544,15 @@ def test_rollout_create_status_and_list(wired, tmp_path, capsys):
     assert "cohort=beta" in out and "5.0%" in out
 
     assert main(["client", "rollout", "list", "--product-id", str(BID), "--limit", "10",
-                 "--offset", "0"]) == 0
+                 "--offset", "0", "--state", "active"]) == 0
     body = json.loads(capsys.readouterr().out)
     assert body["total"] == 1 and body["rollouts"][0]["release_id"] == rel
-    rid = body["rollouts"][0]["rollout_id"]
+    # the list is the INVENTORY: identity/state/dial/audience -- the counters are status's
+    row = body["rollouts"][0]
+    assert "attempted" not in row and "cohort_devices" in row
+    rid = row["rollout_id"]
+    assert main(["client", "rollout", "list", "--state", "stopped"]) == 0
+    assert json.loads(capsys.readouterr().out)["rollouts"] == []
 
     assert main(["client", "rollout", "status", "--rollout-id", rid]) == 0
     st = json.loads(capsys.readouterr().out)

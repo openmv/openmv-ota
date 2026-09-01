@@ -325,12 +325,21 @@ def stop_rollout(rollout_id: str, request: Request,
     return {"rollout_id": rollout_id, "state": "stopped"}
 
 
+# The list is pure ENUMERATION -- enough to find and recognize a rollout -- while
+# /status is the complete single-rollout read (identity, policy, timestamps, counters,
+# derived score). Everything specific to one rollout lives there, once.
+_ROLLOUT_ROW = ("rollout_id", "release_id", "product_id", "cohort", "percent", "state",
+                "cohort_devices")
+
+
 @admin.get("/rollouts", responses={200: {"model": RolloutList}})
 def list_rollouts(request: Request, product_id: int | None = None, limit: int = _PAGE,
-                  offset: int = 0, principal: Principal = Depends(require_scope("observe"))):
+                  offset: int = 0, state: str | None = None,
+                  principal: Principal = Depends(require_scope("observe"))):
     ms = request.app.state.metastore
-    return {"rollouts": ms.list_rollouts(product_id, account_id=principal.account_id,
-                                         limit=limit, offset=offset),
+    rows = ms.list_rollouts(product_id, account_id=principal.account_id,
+                            limit=limit, offset=offset, state=state)
+    return {"rollouts": [{k: r[k] for k in _ROLLOUT_ROW} for r in rows],
             "total": ms.count_scoped("rollouts", product_id, principal.account_id)}
 
 
@@ -346,9 +355,9 @@ def rollout_status(rollout_id: str, request: Request,
     staged = round(cohort_devices * ro["percent"] / 100)
     rates = ({k: ro[k] / staged for k in ("attempted", "updated", "failures")}
              if staged else None)
-    return {"rollout_id": rollout_id, "state": ro["state"], "percent": ro["percent"],
-            "cohort_devices": cohort_devices, "staged_devices": staged,
-            "attempted": ro["attempted"], "updated": ro["updated"], "failures": ro["failures"],
+    # the COMPLETE single-rollout read: the stored row (identity, policy, timestamps,
+    # counters), plus the audience and the derived score
+    return {**ro, "cohort_devices": cohort_devices, "staged_devices": staged,
             # each counter as a fraction of staged_devices -- how far through the current
             # target each metric is; null until anything is staged
             "rates": rates,

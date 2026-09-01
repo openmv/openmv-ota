@@ -167,8 +167,21 @@ class ReleaseList(BaseModel):
     total: int
 
 
+class RolloutRow(_Row):
+    """A list row: just enough to find and recognize a rollout. Everything else --
+    policy, timestamps, counters, the derived score -- is the /status read."""
+
+    rollout_id: str = ""
+    release_id: str = ""
+    product_id: int = 0
+    cohort: str = ""
+    percent: float = 0.0
+    state: str = ""
+    cohort_devices: int = 0
+
+
 class RolloutList(BaseModel):
-    rollouts: list[Rollout]
+    rollouts: list[RolloutRow]
     total: int
 
 
@@ -251,9 +264,18 @@ class RolloutState(BaseModel):
 
 
 class RolloutStatus(BaseModel):
+    """The complete single-rollout read: the stored row plus the derived score."""
+
     rollout_id: str
+    release_id: str = ""
+    product_id: int = 0
+    cohort: str = ""
     state: str
     percent: float
+    failure_threshold: float = 0.0
+    created_at: str = ""
+    updated_at: str = ""
+    account_id: str = ""
     cohort_devices: int = 0
     """Devices in the rollout's (product, cohort) right now -- its current audience."""
     staged_devices: int = 0

@@ -160,8 +160,10 @@ openmv-ota client rollout stop --rollout-id ro_1c3f88ba90d2e644
 | `resume` | start offering again |
 | `stop` | stop offering **permanently** (a stopped rollout can't be resumed — create a new one). Devices that already took the release keep it — the server never downgrades a camera; the device's own anti-rollback wouldn't accept one anyway |
 
-`client rollout list` lists them — so a lost id is always recoverable, and each row
-carries `cohort_devices`, the audience its percent applies to:
+Two reads split the work. **`rollout list` is pure enumeration** — just enough to find
+and recognize a rollout (filter with `--state active|paused|stopped`, `--product-id`) —
+and **`rollout status` is everything about one**: identity, policy, counters, and the
+derived score:
 
 ```
 $ openmv-ota client rollout list
@@ -174,33 +176,29 @@ $ openmv-ota client rollout list
       "cohort": "beta",
       "percent": 5.0,
       "state": "active",
-      "failure_threshold": 0.05,
-      "attempted": 21,
-      "updated": 19,
-      "failures": 0,
-      "created_at": "2026-08-31T18:12:04.281937+00:00",
-      "updated_at": "2026-08-31T19:40:11.905122+00:00",
-      "account_id": "acct_7bd21c50e83a94f1",
       "cohort_devices": 412
     }
   ],
   "total": 1
 }
-```
 
-`client rollout status --rollout-id` reads one rollout's score:
-
-```
 $ openmv-ota client rollout status --rollout-id ro_1c3f88ba90d2e644
 {
   "rollout_id": "ro_1c3f88ba90d2e644",
-  "state": "active",
+  "release_id": "rel_4f9c2a81d06b73ee",
+  "product_id": 396486252,
+  "cohort": "beta",
   "percent": 5.0,
-  "cohort_devices": 412,
-  "staged_devices": 21,
+  "state": "active",
+  "failure_threshold": 0.05,
   "attempted": 21,
   "updated": 19,
   "failures": 0,
+  "created_at": "2026-08-31T18:12:04.281937+00:00",
+  "updated_at": "2026-08-31T19:40:11.905122+00:00",
+  "account_id": "acct_7bd21c50e83a94f1",
+  "cohort_devices": 412,
+  "staged_devices": 21,
   "rates": { "attempted": 1.0, "updated": 0.9047619047619048, "failures": 0.0 },
   "reported": { "installed": 19, "failed": 0 }
 }
