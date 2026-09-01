@@ -46,8 +46,9 @@ assigned 412 device(s) (product 396486252) to cohort beta
 ```
 
 `assign` takes exactly one selector: `--device-id` (repeatable) moves those exact
-devices; `--product-id` moves every device of the product. `client device list` lists both
-ids per device. Assignment is also removal — a device moved to `beta` leaves
+devices; `--product-id` moves every device of the product. And the devices behind any
+count are one filter away — `client device list --cohort beta [--product-id N]` prints
+the per-device rows ([page 18](18-watching-the-fleet.md) shows them in full). Assignment is also removal — a device moved to `beta` leaves
 `__default__` — and it counts only the devices that exist and are yours: the `1/1` in
 the summary is what makes a typo'd id visible.
 
