@@ -81,10 +81,10 @@ invalidates deltas built against its old bytes; affected devices take the full
 image). The delta is pure transport — the reconstructed slot is still sha256-
 and signature-verified on the device.
 
-Choosing the bases is the update server's knowledge, not the build's: `client
-release bases --fleet` downloads exactly the bases the fleet is **running**
-(aggregated from every device's check-in) into a directory `--delta-from`
-reads. The build itself never talks to the server.
+With no `--delta-from` at all, the base is the ledger's recorded factory image —
+right for a fleet that has never updated. Either way the build works purely from
+local files; which bases a *live* fleet actually needs is the update server's
+knowledge, and fetching them is covered where the server is.
 
 `--allow-republish` permits re-signing a version at or below the last published
 one — a dev-loop convenience the server mirrors with a flag of the same name.
@@ -116,7 +116,7 @@ version. Output is **deterministic**: the BOM's timestamp is the lock's
 byte-identical JSON — an SBOM that changes only when a dependency changes is
 diffable evidence.
 
-`client release publish` renders and uploads it automatically, and the server serves it
+Publishing a release uploads it automatically, and the update server serves it
 back per release — so the dependency evidence lives beside the exact bytes it
 describes, not only on the build machine.
 
@@ -188,6 +188,8 @@ remain `boot.py`'s job.
 
 ## See also
 
+- [16 · Operating the fleet](16-operating-the-fleet.md) — fetching the delta bases a
+  live fleet is running (`client release bases --fleet`), and publishing the set.
 - [Trailer format](../reference/trailer.md) — the on-flash layout of the signed trailer.
 
 ---
