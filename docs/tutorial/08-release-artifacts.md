@@ -69,25 +69,32 @@ openmv-ota build ota-romfs ./my-product --delta-from build/bases
 # -> additionally: build/<board>-ota.delta-<base-version>.gz
 ```
 
-`--delta-from` takes a base to diff against — a factory image, a previous
-release's `-ota.img.gz`, or a directory of either — and emits a compressed patch
-a camera applies against the release it is already running, downloading only the
-changes. It is repeatable because a fleet mid-rollout is spread over several
-versions: ship one delta per base version still in the field, and a device with
-no matching base takes the full image. A base matches by version **and** exact
-bytes — each delta records its base's `body_sha256`, and a device applies it
-only when its running slot carries those bytes (so republishing a version
-invalidates deltas built against its old bytes; affected devices take the full
-image). The delta is pure transport — the reconstructed slot is still sha256-
-and signature-verified on the device.
+A **delta** is a compressed patch from one specific older release — its **base** —
+to this one. A camera running that base downloads just the changes instead of the
+whole image; a camera with no matching delta takes the full image, which every
+release always carries.
 
-With no `--delta-from` at all, the base is the ledger's recorded factory image —
-right for a fleet that has never updated. Either way the build works purely from
-local files; which bases a *live* fleet actually needs is the update server's
-knowledge, and fetching them is covered where the server is.
+`--delta-from` names the base: a factory image, a previous release's
+`-ota.img.gz`, or a directory of either. It is **repeatable**, because one delta
+only reaches the devices running its base and a fleet mid-rollout is spread over
+several versions — so a release ships one delta per version still in the field.
+With no `--delta-from` at all, the base is the factory image this project
+recorded when `build factory-romfs` ran — right for a fleet that has never
+updated.
 
-`--allow-republish` permits re-signing a version at or below the last published
-one — a dev-loop convenience the server mirrors with a flag of the same name.
+Two properties keep deltas safe:
+
+- **A base is exact bytes, not just a version.** Each delta records its base's
+  `body_sha256`, and a device applies it only when its running slot carries
+  exactly those bytes. Republishing a version therefore invalidates deltas built
+  against its old bytes — the affected devices take the full image.
+- **A delta is pure transport.** The reconstructed slot is verified against the
+  manifest's sha256 and its own signed trailer, exactly like a full download — a
+  bad patch cannot produce an installable image.
+
+`--allow-republish` permits re-signing a version at or below this project's last
+published one — a dev-loop convenience; the server enforces the same rule on
+upload, with the same override.
 
 ## build sbom
 
