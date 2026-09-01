@@ -110,8 +110,7 @@ $ openmv-ota client releases --limit 1
       "uploaded_at": "2026-08-31T18:11:59.771402+00:00",
       "account_id": "acct_7bd21c50e83a94f1",
       "dev": 0,
-      "sbom_key": "sbom/rel_4f9c2a81d06b73ee/sbom.cdx.json",
-      "cohort_devices": null
+      "sbom_key": "sbom/rel_4f9c2a81d06b73ee/sbom.cdx.json"
     }
   ],
   "total": 9
