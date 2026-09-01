@@ -35,29 +35,33 @@ keep following their own rollouts until you pin them too, with the RT release. (
 work the same way — targeting is always the `(product, cohort)` pair.) A device pin
 needs no product: the device id alone is unique.
 
-## Delta bases — and why the server keeps every image
+## Building the next release's deltas
 
-A device patches against **the release it is running**, so a fleet mid-rollout is spread
-over several versions and one delta reaches only the devices still on its base. A release
-therefore ships one delta per base version still in the field — and the deltas must be
-built **locally**, because a delta has to be named in the *signed* manifest and the
-server never holds signing keys. What the maker needs are the older images to diff
-against, and the server retains every published image precisely so a build machine
-doesn't have to:
+A device patches against **the release it is running**, so a fleet mid-rollout is
+spread over several versions, and one delta reaches only the devices on its base. The
+deltas must be built **locally** — a delta is named in the *signed* manifest, and the
+server never holds signing keys — but only the server knows what the fleet is actually
+running. So the release build asks it:
 
 ```
-openmv-ota build ota-romfs . --delta-fleet                     # asks the server which bases
-                                                               # the fleet actually runs, and
-                                                               # builds one delta per base
-# or by hand:
-openmv-ota client release bases -b OPENMV_N6 --last 3 -o build/bases   # pull recent images back
-openmv-ota build ota-romfs . --delta-from build/bases          # one delta per base
-openmv-ota client release publish . -b OPENMV_N6                       # uploads all of them
+$ openmv-ota build ota-romfs . --delta-fleet        # one delta per base the fleet runs
+$ openmv-ota client release publish . -b OPENMV_N6  # uploads the image + every delta
 ```
 
-`release bases` writes `<board>-base-<version>.img.gz` files, exactly the naming
-`--delta-from` picks up. Lose the build directory, re-clone the repo, or hand the release
-to a colleague — the bases are still on the server.
+`--delta-fleet` pulls the matching stored images, builds one delta per base, and warns
+about any group of devices no delta can reach (a pruned release, a republish that split
+the bytes) — those take the full image, never nothing.
+
+The server can answer because it **retains every published image**: lose the build
+directory, re-clone the repo, hand the release to a colleague — the bases are still
+there. `release bases` is the underlying fetch, for when you want an old image itself:
+
+```
+$ openmv-ota client release bases -b OPENMV_N6 --last 3 -o build/bases
+build/bases/OPENMV_N6-base-1.2.0.img.gz  (1.2.0, 734208 bytes)
+build/bases/OPENMV_N6-base-1.1.0.img.gz  (1.1.0, 731648 bytes)
+build/bases/OPENMV_N6-base-1.0.0.img.gz  (1.0.0, 730112 bytes)
+```
 
 **The first base is the factory image.** A fresh-from-manufacture fleet runs bytes
 that were never published, so its first OTA could never be a delta — which is why
