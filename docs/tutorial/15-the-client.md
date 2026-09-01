@@ -89,10 +89,8 @@ the rest of your account, top to bottom:
   per board and stamps it into `openmv-ota.toml` ([page 2](02-projects.md)); a release
   is built and published per board (`publish -b`) — which is what keeps an `OPENMV_N6`
   image from ever being offered to an `OPENMV_RT1060`.
-- **Cohort names are free-form, account-wide labels on devices** — every device is in
-  exactly one, starting in `__default__` until you move it, and devices of different
-  products can share a name (`cohort list` counts a name across products unless you
-  filter with `--product-id`).
+- **Cohort names are free-form labels on devices** — every device is in exactly one,
+  starting in `__default__` until you move it, and the same name can span products.
 - **Update targeting is always (product, cohort)**: a release fits one product, so a
   rollout reaches the `beta` devices *of its release's product*. Shipping one app
   version for a two-board product to `beta` is two publishes and two rollouts sharing
