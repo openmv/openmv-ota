@@ -136,6 +136,14 @@ The percent is a **fraction of the cohort, at any fleet size**: 15,000 devices a
 stages about 750 of them. The draw is random, so the count wobbles slightly around the
 dial — `rollout status` shows the real numbers.
 
+Nothing promotes a rollout for you. The only automation in the loop points the other
+way — the server **pauses** a rollout whose failure rate crosses its threshold, but it
+never widens one: software may stop a rollout on evidence, while widening exposure is
+always a human reading the score and deciding. A rollout left at 5% therefore never
+finishes on its own; raising to 100 is how one completes (it then stays active,
+satisfying stragglers and newly assigned devices), and the alternative ending is the
+next release's rollout superseding it.
+
 From there the lifecycle is four actions:
 
 ```
