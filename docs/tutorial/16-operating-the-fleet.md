@@ -27,9 +27,13 @@ A device pin beats a cohort pin, and either beats the rollout. A pin only ever p
 an **offer** when it's an upgrade for a settled device; pinning to the version a camera
 already runs (or older) simply holds it — no rollout reaches it, nothing downgrades.
 
-`pin cohort` names the product because a cohort name is only meaningful per product —
-the same name can exist under two products, so the pin binds the `(product, cohort)`
-pair. A device pin doesn't need it: the device id alone is unique.
+`cohort pin` names the product because a cohort can hold devices of **several
+products** — your `OPENMV_N6`s and `OPENMV_RT1060`s can all carry the label `beta` —
+while the pin carries a release, and a release only fits one product. So pinning
+`--product-id 396486252 --cohort beta` freezes only beta's N6 devices; beta's RT1060s
+keep following their own rollouts until you pin them too, with the RT release. (Rollouts
+work the same way — targeting is always the `(product, cohort)` pair.) A device pin
+needs no product: the device id alone is unique.
 
 ## Delta bases — and why the server keeps every image
 
