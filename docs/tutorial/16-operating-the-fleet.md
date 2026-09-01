@@ -4,11 +4,13 @@
 
 ---
 
-A release is out and a rollout is offering it. This page is the rest of the `client`
-surface, levers first: **pins** for the devices that must be exceptions, **delta
-bases** and retention for building the next release, **accounts and tokens** for who
-may do any of this. Then the read side — the four verbs that tell you how it's all
-going — and the `--json` flag that turns every one of them into a script.
+Publishing is a moment; operating is the rest of the time. Once a rollout is offering,
+the fleet stops being an abstraction: one customer's cameras must stay on last month's
+release while everyone else moves, next month's build needs deltas against whatever is
+actually running in the field today, the CI machine needs a credential that can publish
+but not manage, and at three in the morning you want one command that says whether
+anything fell back. This page is that work — the verbs you reach for while a fleet is
+live.
 
 ## Pins
 
