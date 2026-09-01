@@ -520,11 +520,20 @@ class SqlMetadataStore:
                 "fell_back": fell_back, "unconfirmed": unconfirmed}
 
     def list_cohorts(self, product_id: int | None = None, account_id=None) -> list[dict]:
-        """The cohorts in use (per board), with a device count each."""
+        """The cohorts in use, each with its device count AND its per-product breakdown --
+        a cohort name spans products (it is a label on devices), so the flat count alone
+        hides composition a `(product, cohort)`-targeted rollout or pin cares about."""
         where, params = _scope(account_id, product_id)
-        rows = self.query_all("SELECT cohort, COUNT(*) AS devices FROM devices " + where
-                              + " GROUP BY cohort ORDER BY cohort", params)
-        return [{"cohort": r["cohort"], "devices": r["devices"]} for r in rows]
+        rows = self.query_all(
+            "SELECT cohort, product_id, COUNT(*) AS devices FROM devices " + where
+            + " GROUP BY cohort, product_id ORDER BY cohort, product_id", params)
+        out: dict[str, dict] = {}
+        for r in rows:
+            c = out.setdefault(r["cohort"], {"cohort": r["cohort"], "devices": 0,
+                                             "by_product": {}})
+            c["devices"] += r["devices"]
+            c["by_product"][str(r["product_id"])] = r["devices"]
+        return list(out.values())
 
     def assign_cohort(self, device_ids: list, cohort: str, account_id=None) -> int:
         """Move the given (already-registered) devices into ``cohort``; returns how many existed.

@@ -132,6 +132,9 @@ class FleetBases(BaseModel):
 class Cohort(_Row):
     cohort: str = ""
     devices: int = 0
+    by_product: dict[str, int] = {}
+    """Device counts per product id within the cohort (JSON object keys are strings) --
+    a cohort name spans products, and targeting is always (product, cohort)."""
 
 
 class AuditEvent(_Row):

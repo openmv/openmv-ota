@@ -67,7 +67,8 @@ def test_cohorts_list_and_assign(tmp_path):
     store.upsert_device(device_id="d2", product_id=BID)
     c = TestClient(app)
     assert c.get("/api/v1/admin/cohorts", headers=AUTH).json() == {
-        "cohorts": [{"cohort": "__default__", "devices": 2}]}
+        "cohorts": [{"cohort": "__default__", "devices": 2,
+                     "by_product": {str(BID): 2}}]}
     r = c.post("/api/v1/admin/cohorts/assign", headers=AUTH,
                json={"cohort": "beta", "device_ids": ["d1", "ghost"]})   # ghost doesn't exist
     assert r.json() == {"cohort": "beta", "assigned": 1}                 # only d1 was updated

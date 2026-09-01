@@ -270,7 +270,8 @@ def test_cohort_list_and_assign(wired, tmp_path, capsys):
     assert main(["client", "cohort", "assign", "--cohort", "beta", "--device-id", "d1"]) == 0
     assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
     assert main(["client", "cohort", "list"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"cohorts": [{"cohort": "beta", "devices": 1}]}
+    assert json.loads(capsys.readouterr().out) == {"cohorts": [
+        {"cohort": "beta", "devices": 1, "by_product": {str(BID): 1}}]}
 
 
 def test_cohort_assign_whole_product(wired, tmp_path, capsys):
