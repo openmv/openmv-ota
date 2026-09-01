@@ -87,9 +87,14 @@ openmv-ota client token rotate  <token-hash>          # replacement issued, old 
 | secrets | shown **once**, at issue/rotate — the server stores only a hash. `token list` shows metadata and hashes, never secrets |
 | revocation | by hash. `deactivate` revokes every token an account has and blocks issuing new ones — admin access dies, but fielded devices keep being served, so a billing lapse never bricks a fleet |
 
-`client bind --device-id DEVICE` (re)binds a device to **your** account — the recovery path when
-a camera was first seen under the wrong account. A device's binding is otherwise learned
-from its first valid check-in and sticky from then on.
+**How a device knows its account.** It's baked in at build: you put your account id in
+the project (`account_id` under `[product]` in `openmv-ota.toml`), the build stamps it
+into the image's `system.json`, and the device reports it with every check-in. On the
+first valid check-in the server **learns** that binding and it's sticky from then on —
+a later boot reporting a different or empty account (a factory-state fallback, say)
+can't move the device. `client bind --device-id DEVICE` is the operator override that
+(re)binds a device to **your** account — the recovery path when a camera was first seen
+under the wrong one.
 
 ## Watching the fleet
 
