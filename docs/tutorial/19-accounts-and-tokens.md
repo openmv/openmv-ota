@@ -14,9 +14,9 @@ belonging to an account.
 ## Where your first token comes from
 
 - **OpenMV-hosted (the default):** your account was created at sign-up, and the
-  website issues (and revokes) your working tokens. `client login --token <it>` is the
-  only part of this page a hosted maker ever touches — everything below is the
-  operator machinery behind that button.
+  website issues (and revokes) your working tokens. Logging in with one
+  ([page 15](15-the-client.md)) is all a hosted maker ever does — everything on this
+  page is the operator machinery behind that button.
 - **Self-hosted:** `server init` prints a **bootstrap token** once at first setup
   ([page 20](20-update-server.md)) — all four scopes, acting for the implicit single
   account named `''`. A single-tenant self-host can `login` with it and publish,
