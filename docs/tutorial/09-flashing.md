@@ -127,6 +127,7 @@ generic label, and each scanner degrades on its own when its tool is missing.
 openmv-ota build firmware       -b OPENMV4
 openmv-ota build factory-romfs  -b OPENMV4
 openmv-ota flash factory        -b OPENMV4
+openmv-ota client publish . -b OPENMV4 -o build/factory   # once: the fleet's first delta base
 
 # Iterate on the app image on a dev board:
 openmv-ota build romfs  -b OPENMV4
