@@ -24,6 +24,9 @@ defaults to the OpenMV-hosted service, so out of the box only the token is neede
 ```
 $ openmv-ota client login --token <admin-token>
 saved /home/you/.config/openmv-ota/client.toml
+
+$ openmv-ota client logout
+removed /home/you/.config/openmv-ota/client.toml
 ```
 
 The token can also arrive on stdin or from `OPENMV_OTA_TOKEN`, so it never has to appear
@@ -37,7 +40,6 @@ in shell history. Every verb resolves its credentials the same way:
 | `https://ota.cloud.openmv.io` | the built-in fallback for the server URL — the OpenMV-hosted service |
 
 Only the URL has a built-in fallback; the token is always yours to provide.
-`client logout` deletes the file.
 
 ## Publishing a release
 
