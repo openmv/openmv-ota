@@ -187,13 +187,9 @@ idea buys three properties:
 - **Reshuffled per rollout**: the rollout id is part of the hash, so every rollout
   deals fresh tickets — the same camera isn't the canary every time.
 
-The percent is a **fraction of the cohort, at any fleet size** — each device's ticket
-lands uniformly in the million, so 5% of them fall below the 50,000 bar whether the
-cohort holds 400 devices or 400,000. Concretely: 15,000 devices at 5% stages about
-**750 of them** (±√750 ≈ 27 — the draw is random, so the count wobbles a little around
-the dial; `rollout status` shows the real numbers). The million-value space just makes
-the dial fine: the smallest slice is 0.0001% of a cohort, small enough that even a
-multi-million-device fleet can stage a handful as its canary.
+The percent is a **fraction of the cohort, at any fleet size**: 15,000 devices at 5%
+stages about 750 of them. The draw is random, so the count wobbles slightly around the
+dial — `rollout status` shows the real numbers.
 
 From there the lifecycle is four actions:
 
