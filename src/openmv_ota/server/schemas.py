@@ -200,21 +200,27 @@ class AuditList(BaseModel):
 
 # --- summaries + action results -----------------------------------------------------------------
 
-class FleetSummary(BaseModel):
-    """Fleet EXPOSURE, not slot occupancy: under A/B the slot a device runs from alternates, so
-    which one it is says nothing useful. ``by_fallback`` is keyed by decoded version, with
-    ``"unknown"`` for a device that did not report one."""
+class ProductFleet(BaseModel):
+    """One product's slice of the fleet. ``by_fallback`` is keyed by decoded version,
+    with ``"unknown"`` for a device that did not report one (a single-image board)."""
 
     total: int
     by_version: dict[str, int]
     by_fallback: dict[str, int]
-    by_product: dict[str, int] = {}
-    """Device counts per product id (JSON object keys are strings; within the request's
-    filters)."""
-    by_cohort: dict[str, int] = {}
-    """Device counts per cohort (within the request's filters)."""
+    by_cohort: dict[str, int]
     fell_back: int
     unconfirmed: int
+
+
+class FleetSummary(BaseModel):
+    """The fleet, structured per product (version strings and cohort composition only
+    mean anything within one product). The top level carries the account-wide alarms;
+    ``products`` is keyed by product id (JSON object keys are strings)."""
+
+    total: int
+    fell_back: int
+    unconfirmed: int
+    products: dict[str, ProductFleet]
 
 
 class AccountCreated(BaseModel):

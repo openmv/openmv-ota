@@ -513,9 +513,10 @@ def fleet(request: Request, product_id: int | None = None, cohort: str | None = 
     # by_fallback is keyed by the packed uint32 the device reports; render it the way
     # by_version already reads. "unknown" is the device that did not say -- a single-image
     # board, or one on a payload from before the slots field existed.
-    summary["by_fallback"] = {
-        (decode_app_version(k) if k else "unknown"): n
-        for k, n in summary["by_fallback"].items()}
+    for prod in summary["products"].values():
+        prod["by_fallback"] = {
+            (decode_app_version(k) if k else "unknown"): n
+            for k, n in prod["by_fallback"].items()}
     return summary
 
 

@@ -10,35 +10,49 @@ the server's JSON verbatim, so what you see below is exactly what your scripts c
 
 ## The fleet summary
 
-`client fleet` is the dashboard — the whole fleet in five numbers:
+`client fleet` is the dashboard read: the account-wide alarms on top, and under
+`products`, one complete breakdown per product — because version strings, fallbacks,
+and cohort composition only mean anything *within* a product:
 
 ```
 $ openmv-ota client fleet
 {
-  "total": 412,
-  "by_version": { "1.2.0": 361, "1.1.0": 51 },
-  "by_fallback": { "1.1.0": 358, "unknown": 54 },
-  "by_product": { "396486252": 412 },
-  "by_cohort": { "__default__": 404, "beta": 8 },
+  "total": 950,
   "fell_back": 2,
-  "unconfirmed": 7
+  "unconfirmed": 9,
+  "products": {
+    "396486252": {
+      "total": 412,
+      "by_version": { "1.2.0": 361, "1.1.0": 51 },
+      "by_fallback": { "1.1.0": 358, "unknown": 54 },
+      "by_cohort": { "__default__": 404, "beta": 8 },
+      "fell_back": 2,
+      "unconfirmed": 7
+    },
+    "646934278": {
+      "total": 538,
+      "by_version": { "3.0.1": 538 },
+      "by_fallback": { "3.0.0": 538 },
+      "by_cohort": { "__default__": 530, "beta": 8 },
+      "fell_back": 0,
+      "unconfirmed": 2
+    }
+  }
 }
 ```
 
-`--product-id` and `--cohort` scope the whole summary — `client fleet --cohort beta`
-is the dashboard for exactly the audience a rollout is reaching. At account scope the
-`by_product`/`by_cohort` maps structure the totals; note `by_version` then mixes
-products, since version strings are per product.
-
-| field | what it answers |
+| per-product field | what it answers |
 |---|---|
-| `by_version` | what the fleet is running |
-| `by_fallback` | what it would fall back **to**. A fleet whose devices all have the previous release behind them is in a very different position from one where half report `unknown` — and that is invisible in `by_version` |
+| `by_version` | what this product's devices are running |
+| `by_fallback` | what they would fall back **to**. A fleet whose devices all have the previous release behind them is in a very different position from one where half report `unknown` — and that is invisible in `by_version` |
+| `by_cohort` | how the product's devices are grouped |
 | `fell_back` | devices whose last boot rejected a slot — the direct rollout alarm |
 | `unconfirmed` | devices mid-trial. They are also the devices deferring further updates until they settle |
 
 `unknown` in `by_fallback` is a device that did not say — a single-image board, which
-has no fallback by design.
+has no fallback by design. `--product-id` narrows `products` to one entry, and
+`--cohort` scopes every number to that cohort — `client fleet --cohort beta` is the
+dashboard for exactly the audiences your `beta` rollouts reach.
 
 ## The per-device rows
 

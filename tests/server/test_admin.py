@@ -540,11 +540,18 @@ def test_fleet_breakdowns_and_cohort_filter(tmp_path):
                         current_version="3.0.0")
     c = TestClient(app)
     body = c.get("/api/v1/admin/fleet", headers=AUTH).json()
-    assert body["by_product"] == {str(BID): 2, str(BID + 1): 1}
-    assert body["by_cohort"] == {"beta": 2, "__default__": 1}
+    # the dashboard shape: every breakdown nests under its product -- version strings
+    # and cohort composition only mean anything within one
+    assert body["total"] == 3
+    assert body["products"][str(BID)]["by_cohort"] == {"beta": 1, "__default__": 1}
+    assert body["products"][str(BID)]["by_version"] == {"1.2.0": 1, "1.1.0": 1}
+    assert body["products"][str(BID + 1)] == {
+        "total": 1, "by_version": {"3.0.0": 1}, "by_fallback": {"unknown": 1},
+        "by_cohort": {"beta": 1}, "fell_back": 0, "unconfirmed": 0}
     scoped = c.get("/api/v1/admin/fleet?cohort=beta&product_id=%d" % BID, headers=AUTH).json()
-    assert scoped["total"] == 1 and scoped["by_version"] == {"1.2.0": 1}
-    assert scoped["by_cohort"] == {"beta": 1}
+    assert scoped["total"] == 1
+    assert scoped["products"][str(BID)]["by_version"] == {"1.2.0": 1}
+    assert scoped["products"][str(BID)]["by_cohort"] == {"beta": 1}
 
 
 def test_fleet_summary_reports_exposure_not_slot_names(tmp_path):
@@ -559,8 +566,10 @@ def test_fleet_summary_reports_exposure_not_slot_names(tmp_path):
                         confirmed=1, fallback_reason="A:body-sha")
     fs = TestClient(app).get("/api/v1/admin/fleet", headers=AUTH).json()
     assert fs["total"] == 3 and fs["fell_back"] == 1 and fs["unconfirmed"] == 1
+    prod = fs["products"][str(BID)]
     # decoded, and a device that did not report its slots reads as "unknown" -- never as 0.0.0
-    assert fs["by_fallback"] == {"1.0.0": 2, "unknown": 1}
+    assert prod["by_fallback"] == {"1.0.0": 2, "unknown": 1}
+    assert prod["by_version"] == {"1.1.0": 2, "1.0.0": 1}
 
 
 # --- account isolation (adversarial: B must never see or touch A's data) --------------------

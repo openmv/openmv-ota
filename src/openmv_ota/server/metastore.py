@@ -479,48 +479,54 @@ class SqlMetadataStore:
 
     def fleet_summary(self, product_id: int | None = None, account_id=None,
                       cohort: str | None = None) -> dict:
-        """What an operator wants to know about a fleet mid-rollout.
+        """The fleet, structured PER PRODUCT -- a dashboard's shape, not a flat rollup.
 
-        v1 reported `by_slot`, which answered "how many devices are on golden" -- i.e. how many
-        updates had failed -- because FRONT and BACK meant something. Under A/B a slot name is
-        just which half of flash a device happens to be running from, and counting it says
-        nothing at all. The same question now has better answers:
+        Version strings, fallbacks, and cohort compositions only mean anything within
+        one product (an account's five products have five version histories), so every
+        breakdown nests under ``products``; the top level keeps only the account-wide
+        alarms. Fields per product:
 
-          fell_back    -- devices whose last boot REJECTED a slot. The direct rollout alarm.
-          unconfirmed  -- devices running an image that has not confirmed itself yet. They are
-                          mid-trial, so they are also the devices deferring further updates.
-          by_fallback  -- what the fleet would fall back TO. A rollout where every device has
-                          the previous release behind it is in a very different position from
-                          one where half of them report nothing, and that is invisible in
-                          by_version."""
+          by_version   -- what that product's devices are running
+          by_fallback  -- what they would fall back TO (packed versions; the API layer
+                          decodes). A fleet with the previous release behind it is in a
+                          very different position from one reporting nothing.
+          by_cohort    -- how the product's devices are grouped
+          fell_back    -- devices whose last boot REJECTED a slot. The direct alarm.
+          unconfirmed  -- devices mid-trial (also the devices deferring updates)."""
         where, params = _scope(account_id, product_id)
         if cohort is not None:                       # scope to one rollout's audience
             where = (where + " AND cohort = ?") if where else "WHERE cohort = ?"
             params = (*params, cohort)
-        and_ = (where + " AND ") if where else "WHERE "
-        by_version = {r["current_version"]: r["n"] for r in self.query_all(
-            "SELECT current_version, COUNT(*) AS n FROM devices " + where
-            + " GROUP BY current_version", params)}
-        by_fallback = {r["fallback_payload_version"]: r["n"] for r in self.query_all(
-            "SELECT fallback_payload_version, COUNT(*) AS n FROM devices " + where
-            + " GROUP BY fallback_payload_version", params)}
-        total = self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
-        fell_back = self.query_one(
-            "SELECT COUNT(*) AS n FROM devices " + and_ + "fallback_reason IS NOT NULL",
-            params)["n"]
-        unconfirmed = self.query_one(
-            "SELECT COUNT(*) AS n FROM devices " + and_ + "confirmed = 0", params)["n"]
-        # the account-level breakdowns: device counts per product and per cohort (within
-        # the current filters), so one call structures the whole account
-        by_product = {r["product_id"]: r["n"] for r in self.query_all(
-            "SELECT product_id, COUNT(*) AS n FROM devices " + where
-            + " GROUP BY product_id", params)}
-        by_cohort = {r["cohort"]: r["n"] for r in self.query_all(
-            "SELECT cohort, COUNT(*) AS n FROM devices " + where
-            + " GROUP BY cohort", params)}
-        return {"total": total, "by_version": by_version, "by_fallback": by_fallback,
-                "by_product": by_product, "by_cohort": by_cohort,
-                "fell_back": fell_back, "unconfirmed": unconfirmed}
+
+        def _grouped(col):
+            out: dict[int, dict] = {}
+            for r in self.query_all(
+                    "SELECT product_id, %s AS k, COUNT(*) AS n FROM devices " % col
+                    + where + " GROUP BY product_id, %s" % col, params):
+                out.setdefault(r["product_id"], {})[r["k"]] = r["n"]
+            return out
+
+        by_version = _grouped("current_version")
+        by_fallback = _grouped("fallback_payload_version")
+        by_cohort = _grouped("cohort")
+        products: dict[str, dict] = {}
+        total = fell_back = unconfirmed = 0
+        for r in self.query_all(
+                "SELECT product_id, COUNT(*) AS n, "
+                "SUM(CASE WHEN fallback_reason IS NOT NULL THEN 1 ELSE 0 END) AS fb, "
+                "SUM(CASE WHEN confirmed = 0 THEN 1 ELSE 0 END) AS uc "
+                "FROM devices " + where + " GROUP BY product_id", params):
+            pid = r["product_id"]
+            products[str(pid)] = {
+                "total": r["n"], "by_version": by_version.get(pid, {}),
+                "by_fallback": by_fallback.get(pid, {}),
+                "by_cohort": by_cohort.get(pid, {}),
+                "fell_back": r["fb"], "unconfirmed": r["uc"]}
+            total += r["n"]
+            fell_back += r["fb"]
+            unconfirmed += r["uc"]
+        return {"total": total, "fell_back": fell_back, "unconfirmed": unconfirmed,
+                "products": products}
 
     def list_cohorts(self, product_id: int | None = None, account_id=None) -> list[dict]:
         """The cohorts in use, each with its device count AND its per-product breakdown --
