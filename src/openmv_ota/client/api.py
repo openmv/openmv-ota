@@ -116,6 +116,13 @@ class Api:
             body["product_id"] = product_id
         return self._req("POST", "/api/v1/admin/cohorts/assign", json=body)
 
+    def rename_cohort(self, cohort, name):
+        return self._req("POST", "/api/v1/admin/cohorts/rename",
+                         json={"cohort": cohort, "name": name})
+
+    def delete_cohort(self, cohort):
+        return self._req("POST", "/api/v1/admin/cohorts/delete", json={"cohort": cohort})
+
     def pin_device(self, device_id, release_id):
         return self._req("PATCH", "/api/v1/admin/devices/%s/pin" % device_id,
                          json={"release_id": release_id})

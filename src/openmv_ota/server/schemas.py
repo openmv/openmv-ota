@@ -261,6 +261,22 @@ class RolloutStatus(BaseModel):
     """Explicit device reports (``POST /feedback``) for this rollout's release."""
 
 
+class CohortDeleted(BaseModel):
+    cohort: str
+    devices: int
+    """Devices returned to __default__."""
+    pins: int
+
+
+class CohortRenamed(BaseModel):
+    cohort: str
+    """The new label."""
+    renamed_from: str
+    devices: int
+    rollouts: int
+    pins: int
+
+
 class CohortAssigned(BaseModel):
     cohort: str
     assigned: int

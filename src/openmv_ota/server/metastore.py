@@ -302,6 +302,53 @@ class SqlMetadataStore:
             params = (*params, limit, offset)
         return [_d(r) for r in self.query_all(sql, params)]
 
+    def cohort_in_use(self, cohort: str, account_id: str = "") -> bool:
+        """Whether any device, rollout, or pin in the account uses ``cohort``."""
+        for table in ("devices", "rollouts", "cohort_pins"):
+            if self.query_one("SELECT 1 AS x FROM %s WHERE account_id = ? AND cohort = ? "
+                              "LIMIT 1" % table, (account_id, cohort)):
+                return True
+        return False
+
+    def rename_cohort(self, old: str, new: str, account_id: str = "") -> dict:
+        """Relabel a cohort everywhere it is referenced -- device rows, rollouts, pins --
+        in ONE commit, so a crash can't leave the name half-changed and a rollout keeps
+        reaching exactly the devices it did (its staged set hashes on rollout_id +
+        device_id, never the name). Returns the per-table counts. Validation (refusing
+        __default__ and an in-use target) is the caller's."""
+        counts = {}
+        with self._lock:
+            cur = self._conn.cursor()
+            for key, table in (("devices", "devices"), ("rollouts", "rollouts"),
+                               ("pins", "cohort_pins")):
+                cur.execute(self._sql(
+                    "UPDATE %s SET cohort = ? WHERE account_id = ? AND cohort = ?" % table),
+                    (new, account_id, old))
+                counts[key] = cur.rowcount
+            self._conn.commit()
+        return counts
+
+    def cohort_has_active_rollout(self, cohort: str, account_id: str = "") -> bool:
+        return bool(self.query_one(
+            "SELECT 1 AS x FROM rollouts WHERE account_id = ? AND cohort = ? "
+            "AND state = 'active' LIMIT 1", (account_id, cohort)))
+
+    def delete_cohort(self, cohort: str, account_id: str = "") -> dict:
+        """Retire a label: its devices return to __default__ and its pins drop, in one
+        commit. Rollout rows keep the name -- they are history. Validation (refusing
+        __default__ and a cohort an active rollout still targets) is the caller's."""
+        counts = {}
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(self._sql("UPDATE devices SET cohort = '__default__' "
+                                  "WHERE account_id = ? AND cohort = ?"), (account_id, cohort))
+            counts["devices"] = cur.rowcount
+            cur.execute(self._sql("DELETE FROM cohort_pins WHERE account_id = ? AND cohort = ?"),
+                        (account_id, cohort))
+            counts["pins"] = cur.rowcount
+            self._conn.commit()
+        return counts
+
     def cohort_device_count(self, product_id: int, cohort: str, account_id: str = "") -> int:
         """How many devices are in ``(product, cohort)`` right now -- a rollout's audience."""
         return self.query_one(

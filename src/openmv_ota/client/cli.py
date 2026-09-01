@@ -113,7 +113,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_rs)
     p_rs.set_defaults(func=cmd_rollout, _command="client rollout status", action="status")
 
-    p_co = sub.add_parser("cohort", help="list cohorts / assign devices to one")
+    p_co = sub.add_parser("cohort", help="list / assign / rename / delete cohorts")
     cosub = p_co.add_subparsers(dest="_co")
     p_col = cosub.add_parser("list", help="list cohorts in use, with a device count each")
     p_col.add_argument("--product-id", type=int, help="only this product's cohorts")
@@ -128,6 +128,15 @@ def register(parser: argparse.ArgumentParser) -> None:
                     help="assign EVERY device of this product instead")
     _creds(p_coa)
     p_coa.set_defaults(func=cmd_cohort, _command="client cohort assign", action="assign")
+    p_corn = cosub.add_parser("rename", help="relabel a cohort everywhere (devices, rollouts, pins)")
+    p_corn.add_argument("--cohort", required=True, help="the label to rename")
+    p_corn.add_argument("--name", required=True, help="the new label (must not be in use)")
+    _creds(p_corn)
+    p_corn.set_defaults(func=cmd_cohort, _command="client cohort rename", action="rename")
+    p_cod = cosub.add_parser("delete", help="retire a label: devices return to __default__")
+    p_cod.add_argument("--cohort", required=True, help="the label to delete")
+    _creds(p_cod)
+    p_cod.set_defaults(func=cmd_cohort, _command="client cohort delete", action="delete")
 
     p_bases = sub.add_parser("bases", help="download recent release images to build deltas from")
     p_bases.add_argument("-b", "--board", required=True,
@@ -431,6 +440,15 @@ def cmd_cohort(args: argparse.Namespace) -> int:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "list":
             print(json.dumps(api.list_cohorts(args.product_id), indent=2))
+        elif args.action == "rename":
+            res = api.rename_cohort(args.cohort, args.name)
+            return _emit(args, res, "cohort %s renamed to %s (%d device(s), %d rollout(s), "
+                         "%d pin(s))" % (res["renamed_from"], res["cohort"], res["devices"],
+                                         res["rollouts"], res["pins"]))
+        elif args.action == "delete":
+            res = api.delete_cohort(args.cohort)
+            return _emit(args, res, "cohort %s deleted (%d device(s) back to __default__, "
+                         "%d pin(s) dropped)" % (res["cohort"], res["devices"], res["pins"]))
         elif args.devices is not None:
             res = api.assign_cohort(args.cohort, device_ids=args.devices)
             return _emit(args, res, "assigned %d/%d device(s) to cohort %s"

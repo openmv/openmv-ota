@@ -97,6 +97,8 @@ Grouped by what they manage — the scope column is what the bearer token must c
 | `GET /api/v1/admin/cohorts` | observe | cohorts in use, device count each |
 | `POST /api/v1/admin/cohorts/assign` | manage | move devices into a cohort — `device_ids` (surgical) or `product_id` (every device of the product), exactly one; devices not yours are skipped, the count says how many landed |
 | `PATCH /api/v1/admin/devices/{id}/pin` | manage | pin/unpin one device (`release_id: null` unpins) |
+| `POST /api/v1/admin/cohorts/rename` | manage | relabel a cohort everywhere it appears (devices, rollouts, pins); refuses `__default__` and an in-use target |
+| `POST /api/v1/admin/cohorts/delete` | manage | retire a label: devices return to `__default__`, its pins drop; 409 while an active rollout targets it |
 | `POST /api/v1/admin/cohorts/pin` | manage | pin/unpin a whole (product, cohort) |
 
 **Devices & the fleet**

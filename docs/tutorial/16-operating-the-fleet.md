@@ -149,6 +149,7 @@ them — no special case for parsers.
 | `client rollout raise\|pause\|resume\|stop --rollout-id ID` | drive a rollout (`raise` takes the percent directly: `raise 50`) |
 | `client rollout status --rollout-id ID` | one rollout's counters (JSON) |
 | `client cohort list` / `cohort assign --cohort C (--device-id ID… \| --product-id N)` | see cohorts / move devices into one, surgically or by whole product |
+| `client cohort rename --cohort C --name N` / `cohort delete --cohort C` | relabel a cohort everywhere / retire it (devices return to `__default__`) |
 | `client pin device --device-id ID (--release-id R \| --clear)` | pin one device, overriding rollouts |
 | `client pin cohort --product-id N --cohort C (--release-id R \| --clear)` | pin a whole cohort |
 | `client bases -b BOARD [--last N] [-o DIR]` | download recent images as delta bases |

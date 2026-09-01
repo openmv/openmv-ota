@@ -97,6 +97,21 @@ def test_cohort_assign_by_product_and_selector_rule(tmp_path):
     assert both.status_code == 400 and neither.status_code == 400
 
 
+def test_cohort_rename_and_delete_validation(tmp_path):
+    """The 400s: empty/equal names, __default__ on either side of rename, deleting
+    __default__ -- each refused with a reason, nothing touched."""
+    app, store = _app(tmp_path)
+    c = TestClient(app)
+    rn = "/api/v1/admin/cohorts/rename"
+    dl = "/api/v1/admin/cohorts/delete"
+    assert c.post(rn, headers=AUTH, json={"cohort": "a", "name": "a"}).status_code == 400
+    assert c.post(rn, headers=AUTH, json={"cohort": "", "name": "b"}).status_code == 400
+    assert c.post(rn, headers=AUTH, json={"cohort": "__default__", "name": "b"}).status_code == 400
+    assert c.post(rn, headers=AUTH, json={"cohort": "a", "name": "__default__"}).status_code == 400
+    assert c.post(dl, headers=AUTH, json={"cohort": "__default__"}).status_code == 400
+    assert c.post(dl, headers=AUTH, json={"cohort": ""}).status_code == 400
+
+
 def test_cohort_assign_requires_scope(tmp_path):
     app, store = _app(tmp_path, scopes=("observe",))
     r = TestClient(app).post("/api/v1/admin/cohorts/assign", headers=AUTH,

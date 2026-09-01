@@ -551,3 +551,60 @@ def test_rollout_create_status_and_list(wired, tmp_path, capsys):
     assert main(["client", "rollout", "status", "--rollout-id", rid]) == 0
     st = json.loads(capsys.readouterr().out)
     assert st["state"] == "active" and st["attempted"] == 0
+
+
+def test_cohort_rename_relabels_everything_at_once(wired, tmp_path, capsys):
+    """Rename touches the three places a cohort name lives -- device rows, rollouts,
+    pins -- in one commit, so a mid-flight rollout keeps its audience under the new name."""
+    import json
+
+    store, root = wired
+    _build_release(root / "p")
+    assert main(["client", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
+    rel = json.loads(capsys.readouterr().out)["release_id"]
+    for d in ("d1", "d2"):
+        store.upsert_device(device_id=d, product_id=BID, cohort="beta")
+    assert main(["client", "rollout", "create", "--release-id", rel, "--cohort", "beta",
+                 "--percent", "5"]) == 0
+    assert main(["client", "pin", "cohort", "--product-id", str(BID), "--cohort", "beta",
+                 "--release-id", rel]) == 0
+    capsys.readouterr()
+
+    assert main(["client", "cohort", "rename", "--cohort", "beta", "--name", "pilot"]) == 0
+    assert "beta renamed to pilot (2 device(s), 1 rollout(s), 1 pin(s))" \
+        in capsys.readouterr().out
+    assert store.get_device("d1")["cohort"] == "pilot"
+    assert store.list_rollouts(BID)[0]["cohort"] == "pilot"
+    assert store.get_cohort_pin(BID, "pilot") == rel and store.get_cohort_pin(BID, "beta") is None
+
+    # renaming ONTO a name in use is refused -- merging is `assign`, never a rename surprise
+    store.upsert_device(device_id="d3", product_id=BID, cohort="bench")
+    assert main(["client", "cohort", "rename", "--cohort", "bench", "--name", "pilot"]) == 1
+    assert "already in use" in capsys.readouterr().err
+
+
+def test_cohort_delete_returns_devices_to_default(wired, tmp_path, capsys):
+    """Delete retires the label: devices back to __default__, pins dropped -- but never
+    out from under an ACTIVE rollout (pause or stop it first)."""
+    import json
+
+    store, root = wired
+    _build_release(root / "p")
+    assert main(["client", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
+    rel = json.loads(capsys.readouterr().out)["release_id"]
+    store.upsert_device(device_id="d1", product_id=BID, cohort="beta")
+    assert main(["client", "rollout", "create", "--release-id", rel, "--cohort", "beta",
+                 "--percent", "5", "--json"]) == 0
+    rid = json.loads(capsys.readouterr().out)["rollout_id"]
+    assert main(["client", "pin", "cohort", "--product-id", str(BID), "--cohort", "beta",
+                 "--release-id", rel]) == 0
+    capsys.readouterr()
+
+    assert main(["client", "cohort", "delete", "--cohort", "beta"]) == 1   # active rollout
+    assert "active rollout" in capsys.readouterr().err
+    assert main(["client", "rollout", "pause", "--rollout-id", rid]) == 0
+    capsys.readouterr()
+    assert main(["client", "cohort", "delete", "--cohort", "beta"]) == 0
+    assert "1 device(s) back to __default__, 1 pin(s) dropped" in capsys.readouterr().out
+    assert store.get_device("d1")["cohort"] == "__default__"
+    assert store.get_cohort_pin(BID, "beta") is None

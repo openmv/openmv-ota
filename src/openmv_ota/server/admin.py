@@ -23,6 +23,8 @@ from .schemas import (
     CohortAssigned,
     CohortList,
     CohortPinned,
+    CohortDeleted,
+    CohortRenamed,
     Device,
     DeviceBound,
     DeviceList,
@@ -81,6 +83,11 @@ class CohortAssign(BaseModel):
     cohort: str
     device_ids: list[str] | None = None    # surgical: these exact devices
     product_id: int | None = None          # bulk: every device of this product
+
+
+class CohortRename(BaseModel):
+    cohort: str                            # the label to rename
+    name: str                              # the new label
 
 
 class DevicePin(BaseModel):
@@ -376,6 +383,56 @@ def assign_cohort(body: CohortAssign, request: Request,
     ms.append_audit(actor=principal.name, action="cohort.assign", entity_type="cohort",
                     entity_id=body.cohort, data=data, account_id=principal.account_id)
     return {"cohort": body.cohort, "assigned": n}
+
+
+@admin.post("/cohorts/rename", responses={200: {"model": CohortRenamed}})
+def rename_cohort(body: CohortRename, request: Request,
+                  principal: Principal = Depends(require_scope("manage"))):
+    """Relabel a cohort everywhere at once -- device rows, rollouts, pins -- so nothing
+    orphans: a rollout keeps reaching exactly the devices it did (staging hashes on ids,
+    never the name). ``__default__`` is refused on either side (it is where new devices
+    arrive, not a label you own), and a target already in use is refused too: merging
+    two cohorts is an explicit `assign`, never a rename surprise."""
+    ms = request.app.state.metastore
+    old, new = (body.cohort or "").strip(), (body.name or "").strip()
+    if not old or not new or old == new:
+        raise HTTPException(status_code=400, detail="need two different, non-empty names")
+    if "__default__" in (old, new):
+        raise HTTPException(status_code=400, detail="__default__ cannot be renamed or targeted")
+    if ms.cohort_in_use(new, account_id=principal.account_id):
+        raise HTTPException(status_code=409,
+                            detail="cohort %r is already in use -- merging is `assign`, "
+                                   "not rename" % new)
+    counts = ms.rename_cohort(old, new, account_id=principal.account_id)
+    ms.append_audit(actor=principal.name, action="cohort.rename", entity_type="cohort",
+                    entity_id=old, data={"to": new, **counts}, account_id=principal.account_id)
+    return {"cohort": new, "renamed_from": old, **counts}
+
+
+class CohortDelete(BaseModel):
+    cohort: str
+
+
+@admin.post("/cohorts/delete", responses={200: {"model": CohortDeleted}})
+def delete_cohort(body: CohortDelete, request: Request,
+                  principal: Principal = Depends(require_scope("manage"))):
+    """Retire a label: its devices return to ``__default__`` and its pins drop.
+    ``__default__`` itself is refused, and so is a cohort an **active** rollout still
+    targets (pause or stop it first) -- deleting the audience out from under a live
+    rollout would silently strand it. Paused/stopped rollout rows keep the old name:
+    they are history."""
+    ms = request.app.state.metastore
+    cohort = (body.cohort or "").strip()
+    if not cohort or cohort == "__default__":
+        raise HTTPException(status_code=400, detail="__default__ cannot be deleted")
+    if ms.cohort_has_active_rollout(cohort, account_id=principal.account_id):
+        raise HTTPException(status_code=409,
+                            detail="an active rollout targets cohort %r -- pause or stop "
+                                   "it first" % cohort)
+    counts = ms.delete_cohort(cohort, account_id=principal.account_id)
+    ms.append_audit(actor=principal.name, action="cohort.delete", entity_type="cohort",
+                    entity_id=cohort, data=counts, account_id=principal.account_id)
+    return {"cohort": cohort, **counts}
 
 
 def _check_pin_release(ms, release_id, principal):
