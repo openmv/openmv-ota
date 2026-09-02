@@ -64,7 +64,7 @@ where = ["src"]
     "data/n6_bootloader/*",      # static N6 CubeProgrammer FSBL/loader + FlashLayout.tsv
     "build/device/*.c",          # the ECDSA verify C module dropped into modules/
     "build/device/openmv_ota/data/*",  # the installer source, scaffolded into projects
-    "server/deploy/*",           # Dockerfile + render.yaml Blueprint for self-hosters
+    "server/deploy/*",           # Dockerfile + compose stack for self-hosters
     "server/docs_static/*",      # self-hosted /docs API reference (ReDoc bundle + logo)
 ]
 
