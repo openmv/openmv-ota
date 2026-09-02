@@ -1,6 +1,7 @@
 # Threat model
 
-> [architecture.md](architecture.md) gives the design this defends.
+> [Boot and rollback](../tutorial/11-boot-and-rollback.md) and [the device
+> library](../tutorial/12-device-library.md) give the design this defends.
 
 **In scope:** OTA-borne threats — signed-or-unsigned artefacts pushed over a
 possibly-controlled network. Defended with ECDSA signatures (COSE algorithm ids,

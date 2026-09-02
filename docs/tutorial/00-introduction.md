@@ -83,8 +83,8 @@ Every command and flag on these pages exists — the test suite holds the CLI to
 
 Not part of the walkthrough, but referenced from it:
 
-- [`docs/reference/`](../reference/) — the design and engineering notes: the
-  [architecture](../reference/architecture.md), the [signed trailer
+- [`docs/reference/`](../reference/) — the engineering notes: the
+  [signed trailer
   format](../reference/trailer.md), the [ROMFS image
   anatomy](../reference/romfs-format.md), the [threat model](../reference/threat-model.md),
   and [CI](../reference/ci.md).

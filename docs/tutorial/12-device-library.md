@@ -230,6 +230,19 @@ Two properties make this safe for sensitive resources (keys, fuses):
 | The rollback floor can't regress | it is the max across both slots, and every install copies the current floor into the slot it writes |
 | Safe install | `install()` writes the slot you are **not** running, downloads over verified HTTPS, read-back-verifies every write, and arms `pending` only after the whole image checks out; the image signature (not TLS) is the integrity boundary |
 
+Two of the installer's flash rules were proven on hardware rather than designed,
+and both guard against **silent** failures — no fault, no log, no reset. They are
+enforced in the installer with the full reasoning in comments at the point of use:
+
+- **16 bytes is the minimum flash program unit.** A one-byte program hard-faults
+  some boards' flash controllers with no trace, so every marker is a 16-byte
+  write.
+- **A bulk memory-mapped read never reaches the last address of an XIP flash.**
+  On some parts such a burst wedges the controller and every later read of the
+  mapped window hangs forever — and slot B can end flush against the end of the
+  flash. Every XIP read is clamped 512 bytes short of the device's end; reads
+  are shortened, never moved, and only trailer padding is affected.
+
 ---
 
 *[← 11 · Boot and rollback](11-boot-and-rollback.md) · [Index](00-introduction.md) · [13 · Logging & the watchdog →](13-logging-and-watchdog.md)*

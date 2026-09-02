@@ -23,9 +23,8 @@ the last release that worked.
 navigable reference for every command and the update server's HTTP API, in the order you use them:
 install → project → build → flash → device runtime → update server. The command
 documentation lives there and only there, so it has one place to be right.
-Design and engineering notes are in [docs/reference/](docs/reference/)
-(the [architecture](docs/reference/architecture.md), the
-[signed trailer format](docs/reference/trailer.md), the
+Engineering notes are in [docs/reference/](docs/reference/)
+(the [signed trailer format](docs/reference/trailer.md), the
 [threat model](docs/reference/threat-model.md)).
 
 - [Status](#status)
