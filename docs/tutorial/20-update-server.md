@@ -69,10 +69,36 @@ interval. In order:
    for them, the answer also carries per-device **grants** for OpenMV's live-viewing and
    data-ingest services.
 
-Downloads then go through the **capability gateway**: the offer's URL embeds an
-unguessable, expiring token that authorizes the whole bundle — the manifest and every
-image/delta beside it. Devices report their terminal outcome (`installed` / `failed`)
-back explicitly, which is what the rollout status counts as `reported`.
+## From offer to installed bytes
+
+When step 7 answers with an offer, the download unfolds like this:
+
+1. **The offer is one URL.** The check-in answer carries
+   `manifest_url: …/d/<token>/manifest.bin`. The `<token>` is a signed, expiring
+   **capability**: an HMAC over the release id and an expiry, minted with the server's
+   `capability_secret`. It is the entire authorization — no account, no session, no
+   device credential — which is safe because it names exactly one release, expires
+   (`capability_ttl`, an hour by default), and is only ever handed to a device the
+   policy chose.
+2. **The device fetches the manifest first** through that URL. The gateway verifies
+   the token by recomputing the HMAC — no database lookup — and serves the signed
+   manifest byte-for-byte as published. The device checks the manifest's signature
+   against its firmware-baked keys *before* anything is erased.
+3. **The device picks its representation** from the manifest: the delta whose base
+   matches the exact bytes it is running, else the full image.
+4. **One token covers the whole bundle.** The manifest's artifact URLs are relative
+   filenames, so the chosen file resolves under the same `/d/<token>/` prefix — that
+   is why a release's artifacts are stored beside their manifest, and why a filename
+   must match something the signed manifest declares (the token can't fish for other
+   objects).
+5. **The bytes stream from storage.** On s3-backed deployments the gateway answers
+   with a `302` to a short-lived presigned URL, so the multi-megabyte transfer is
+   carried by object storage, not the server. A device on a poor link resumes from
+   the byte offset it reached instead of restarting.
+6. **The device reports the outcome** — `installed` or `failed` — which is what a
+   rollout's status counts as `reported`.
+
+The wire-level shapes of each request live with the device API pages.
 
 ## See also
 
