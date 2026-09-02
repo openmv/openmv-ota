@@ -132,8 +132,8 @@ The wire-level shapes of each request live with the device API pages.
 
 ## See also
 
-- [Threat model](../reference/threat-model.md) — the trust root and why the server never
-  holds a key.
+- [Residual threats](../compliance/residual-threats.md) — what this stack deliberately
+  does *not* defend against.
 
 ---
 

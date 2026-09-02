@@ -15,7 +15,9 @@ release that worked* rather than the factory build. See
 The Cyber Resilience Act ([Regulation (EU) 2024/2847](https://eur-lex.europa.eu/eli/reg/2024/2847)) is in force; full compliance deadline 11 December 2027, and the **Article 14 reporting obligations — actively exploited vulnerabilities and severe incidents reported to ENISA within 24 hours — apply from 11 September 2026**. The Radio Equipment Directive Article 3.3(d)(e)(f) ([Delegated Regulation 2022/30](https://eur-lex.europa.eu/eli/reg_del/2022/30)) is mandatory for radio equipment from 1 August 2025. EN 18031-1/2/3 are the harmonised standards.
 
 The tables say what is **shipped** and what is **planned** — an auditor reading this
-must never find a claimed control that does not exist. Shipped rows describe code in
+must never find a claimed control that does not exist. The inverse list — the threats
+this stack deliberately does **not** defend against — is
+[residual-threats.md](residual-threats.md). Shipped rows describe code in
 this repository, tested at enforced 100% coverage and, for the update path, exercised
 on a nine-board hardware fleet including the negative cases (corrupt image, bad
 signature, untrusted key, version rollback, no bootable slot).

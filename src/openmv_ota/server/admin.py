@@ -475,7 +475,8 @@ def bind_device(device_id: str, request: Request,
     re-accounting a device or recovering one wrongly *learned* onto another account (which the
     signature already stops from installing anything). A device already *admin*-bound to a different
     account is 404 (not yours; no existence leak), so one account can't steal another's binding via
-    the API. On a shared server, gate who may call this by proof of ownership (see threat-model)."""
+    the API. On a shared server, gate who may call this by proof of ownership (see
+    docs/compliance/residual-threats.md)."""
     ms = request.app.state.metastore
     cur = ms.device_account(device_id)
     if cur is not None and cur["source"] == "admin" and cur["account_id"] != principal.account_id:

@@ -135,8 +135,8 @@ offers, never installs — the camera verifies every image against the keys bake
 its own firmware, so another account's releases can't run on it. An admin-bound device
 can't be re-bound by another account (their attempt reads as not-found), and your admin
 bind always recovers a wrongly learned one. On the OpenMV-hosted service, who may bind
-a given device is additionally gated by proof of ownership; the
-[threat model](../reference/threat-model.md) spells out the full trust story.
+a given device is additionally gated by proof of ownership; what this layer deliberately
+does *not* guarantee is listed in [residual threats](../compliance/residual-threats.md).
 
 ---
 

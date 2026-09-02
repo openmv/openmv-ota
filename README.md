@@ -25,7 +25,9 @@ install → project → build → flash → device runtime → update server. Th
 documentation lives there and only there, so it has one place to be right.
 Engineering notes are in [docs/reference/](docs/reference/)
 (the [signed trailer format](docs/reference/trailer.md), the
-[threat model](docs/reference/threat-model.md)).
+[ROMFS image anatomy](docs/reference/romfs-format.md)), and the compliance
+material — including the [residual-threats
+register](docs/compliance/residual-threats.md) — in [docs/compliance/](docs/compliance/).
 
 - [Status](#status)
 - [Installation](#installation)
