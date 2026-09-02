@@ -1,6 +1,6 @@
 # The update server
 
-*[← 19 · Accounts and tokens](19-accounts-and-tokens.md) · [Index](00-introduction.md) · [21 · The server API →](21-server-api.md)*
+*[← 19 · Accounts and tokens](19-accounts-and-tokens.md) · [Index](00-introduction.md) · [21 · Self-hosting →](21-self-hosting.md)*
 
 ---
 
@@ -8,15 +8,12 @@ The update server is the central service the `client` verb drives: it hosts the 
 you publish, decides which camera is offered what, and records what the fleet did about
 it. Two deployment shapes run the **same software**:
 
-- **OpenMV-hosted (the default):** OpenMV runs the server + website, so there is nothing
-  to deploy — you publish releases with your account's token and everything on this page
-  is already configured.
-- **Self-hosted:** you run your own server — your own PaaS/Postgres/object storage. The
-  Dockerfile, `render.yaml`, `fly.toml`, and `docker-compose.yml` under
-  [src/openmv_ota/server/deploy/](../../src/openmv_ota/server/deploy/) make it turnkey.
+- **OpenMV-hosted (the default):** OpenMV runs the server + website — there is nothing
+  to deploy, and everything the earlier pages did happened against it.
+- **Self-hosted:** you run your own; the next page is the manual.
 
-Either way, this page is what the thing actually *does* — worth reading even if you never
-deploy one, because it is the other half of every `client` command.
+Either way, this page is what the thing actually *does* — worth reading even if you
+never deploy one, because it is the other half of every `client` command.
 
 ## Two things the server never does
 
@@ -67,163 +64,18 @@ interval. In order:
 7. **The answer** — `{update: false, poll_after_s: …}` in the common case; on an offer,
    a short-lived download URL for the release's manifest. Where the deployment is wired
    for them, the answer also carries per-device **grants** for OpenMV's live-viewing and
-   data-ingest services (below).
+   data-ingest services (their settings are a self-hosting concern).
 
 Downloads then go through the **capability gateway**: the offer's URL embeds an
 unguessable, expiring token that authorizes the whole bundle — the manifest and every
 image/delta beside it. Devices report their terminal outcome (`installed` / `failed`)
 back explicitly, which is what the rollout status counts as `reported`.
 
-## Running your own
-
-The base `pip install openmv-ota` stays lean; the server needs extras:
-
-```
-pip install "openmv-ota[server]"                            # fastapi/uvicorn + local disk + sqlite
-pip install "openmv-ota[server,server-s3,server-postgres]"  # + R2/S3 + Postgres (prod)
-```
-
-The lifecycle is four verbs:
-
-```
-openmv-ota server check      # validate the resolved settings (deploy preflight)
-openmv-ota server init       # migrate the schema + one-time bootstrap (idempotent)
-openmv-ota server run        # start the ASGI app (uvicorn), binds $PORT / 0.0.0.0
-openmv-ota server migrate    # apply pending schema migrations (upgrades)
-```
-
-- **`check`** prints every resolved setting as `key = value` lines (secrets redacted to
-  `***`) and lists anything required that's missing — run it before every deploy.
-- **`init`** migrates the database, persists the server's HMAC secret (generated if you
-  didn't set one), and seeds the first **admin token**: from
-  `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` if set, otherwise freshly generated and printed
-  **once** — only its hash is stored, so it is not recoverable. It's idempotent, which is
-  why the container entrypoint just runs `init` then `run`.
-- **`run`** also migrates + seeds on the way up, so a plain `server run` on a fresh
-  database works.
-
-The server is **stateless** — artifacts live in object storage, metadata in Postgres — so
-it scales horizontally. Local disk + SQLite is for dev and evaluation only.
-
-## Configuration, feature by feature
-
-Settings come from `OPENMV_OTA_*` environment variables (the bare `PORT` and
-`DATABASE_URL` that PaaS platforms inject are also honored). Grouped by the feature each
-serves:
-
-**Identity & HTTP**
-
-| env var | what it does |
-|---|---|
-| `OPENMV_OTA_BASE_URL` | the public https origin — used to build the download URLs handed to devices |
-| `PORT` / `OPENMV_OTA_PORT` | bind port (default 8080) |
-
-**Storage (the artifact bytes)**
-
-| env var | what it does |
-|---|---|
-| `OPENMV_OTA_STORAGE_BACKEND` | `local` (disk, dev) or `s3` (R2/S3/MinIO, prod) |
-| `OPENMV_OTA_STORAGE_LOCATION` | the local backend's directory (default `./ota-storage`) |
-| `OPENMV_OTA_S3_BUCKET`, `…_S3_ENDPOINT_URL`, `…_S3_REGION`, `…_S3_ACCESS_KEY_ID`, `…_S3_SECRET_ACCESS_KEY` | the s3 backend's bucket + credentials. With s3, artifact downloads 302-redirect to presigned URLs, so bandwidth offloads to object storage |
-
-**Database (the metadata)**
-
-| env var | what it does |
-|---|---|
-| `DATABASE_URL` / `OPENMV_OTA_DATABASE_URL` | `postgresql://…` (prod) or `sqlite:///./ota.db` (dev). Holds devices, releases, rollouts, accounts, tokens, audit |
-
-**Registration (required)**
-
-| env var | what it does |
-|---|---|
-| `OPENMV_OTA_SWD_IDS_VERIFY_URL`, `OPENMV_OTA_SWD_IDS_VERIFY_TOKEN` | the registration verify endpoint + its OpenMV-issued token |
-| `OPENMV_OTA_BOARD_CODE_OVERRIDES` | JSON map to add/correct firmware-name → registration-code translations without a redeploy |
-| `OPENMV_OTA_UNVERIFIED_BOARDS` | JSON list of board names the registry never registers; served read-only as described above. Defaults to the known set — override to change it |
-
-**Device check-in behavior**
-
-| env var | what it does |
-|---|---|
-| `OPENMV_OTA_CHECKIN_RATE_PER_MIN` | per-IP device rate limit (default 60; 0 disables) |
-| `OPENMV_OTA_POLL_AFTER_S` | the backoff devices are told before polling again (default 3600) |
-| `OPENMV_OTA_CAPABILITY_TTL` | lifetime of a download token (default 3600 s) |
-| `OPENMV_OTA_COHORT_SALT` | the server's HMAC secret (download tokens, stable staging). Persisted at `init` if unset; must be shared for tokens to verify across workers |
-
-**Admin auth**
-
-| env var | what it does |
-|---|---|
-| `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` | seeds the first admin token at `server init` (else one is generated and printed once) |
-
-**Browser dashboards (only when a UI calls the API cross-origin)**
-
-| env var | what it does |
-|---|---|
-| `OPENMV_OTA_CORS_ALLOW_ORIGINS` | comma-separated origins allowed to call the API from a browser, e.g. `https://dashboard.example.com`. Empty (the default) sends no CORS headers; `*` is **refused at startup** — a wildcard would let any page on the internet read admin responses with a token it obtained some other way |
-| `OPENMV_OTA_TRUSTED_PROXY_IPS` | which upstream peers may set `X-Forwarded-For`; set `*` behind a PaaS proxy so the per-IP rate limiter sees the real client, not the proxy |
-
-**OpenMV service grants (optional integrations)**
-
-| env var | what it does |
-|---|---|
-| `OPENMV_LIVE_RELAY_URL` + `OPENMV_LIVE_TOKEN_SECRET` | when both are set, every registered device's check-in answer carries a `live` grant: ready-made per-stream URLs (WebSocket push + a deep-sleep wake poll) under one expiring device token, renewed each check-in |
-| `OPENMV_DATALAKE_URL` (reuses the same secret) | adds an `ingest` grant the same way: an ingest URL + token whose subject binds the *account*, so a device can't attribute data to another tenant |
-| `OPENMV_OTA_LIVE_TOKEN_TTL` | grant lifetime (default 24 h) |
-
-Unregistered and read-only-bypassed boards never receive a grant.
-
-One more setting exists — `OPENMV_OTA_TEST_OFFER_DOWNGRADES` — and it is **test-only**:
-it makes the server willing to *offer* a release at or below a device's current version,
-which a correct server never does, and which is the only way to exercise the device's own
-anti-rollback rejection on real hardware. Devices still refuse the downgrade themselves.
-`server check` flags it and the app logs a loud warning when it's on; never set it in
-production.
-
-## Accounts and tokens
-
-A product is namespaced by the maker's **account**: `(account_id, product_id)` is the
-real identity, so a `product_id` only has to be unique within an account. Every admin
-credential belongs to an account, every read and write is scoped to it, and cross-account
-lookups return not-found — probing leaks nothing. The `account_id` is baked into the
-firmware (`[product].account_id` → `system.json` → the check-in), so a device is only
-ever offered its own account's releases.
-
-`''` is the **implicit single account**: a self-host that never creates an account keeps
-its bootstrap token, publishes under `''`, and sees everything. To run several tenants on
-one server, the same account/token management the client offers remotely also exists as
-local server verbs (no API round-trip, direct database access):
-
-```
-openmv-ota server account create --name "DroneCo"    # an account_id + its first admin token
-openmv-ota server account list | rename | deactivate | activate
-openmv-ota server token issue --name ci --scope publish --account-id acct_7bd21c50e83a94f1
-openmv-ota server token list | revoke <hash> | rotate <hash>
-```
-
-Tokens carry scopes — `publish`, `manage`, `observe` per account, plus the privileged
-operator scope `accounts` (create/list accounts; held by the bootstrap token, never by a
-regular account's tokens). Secrets print once; the store keeps hashes.
-
-## Deploying (self-hosted only)
-
-The [deploy/](../../src/openmv_ota/server/deploy/) directory ships turnkey artifacts:
-
-- **`Dockerfile`** — multi-stage build; the entrypoint runs `server init` (idempotent)
-  then `server run`.
-- **`render.yaml`** — a Render Blueprint: a stateless `web` service + managed Postgres.
-  Bring an R2/S3 bucket and your registration token; the HMAC secret and admin token are
-  generated once and kept by the platform. `render blueprint launch`, then fill the
-  `sync:false` secrets.
-- **`fly.toml`** — the Fly.io equivalent (external Postgres + R2/S3).
-- **`docker-compose.yml`** — a full local stack (server + Postgres + MinIO) for
-  evaluation: `SWD_IDS_VERIFY_URL=… SWD_IDS_VERIFY_TOKEN=… docker compose up --build`.
-
 ## See also
 
-- [21 · The server API](21-server-api.md) — every endpoint, for scripts and dashboards.
 - [Threat model](../reference/threat-model.md) — the trust root and why the server never
   holds a key.
 
 ---
 
-*[← 19 · Accounts and tokens](19-accounts-and-tokens.md) · [Index](00-introduction.md) · [21 · The server API →](21-server-api.md)*
+*[← 19 · Accounts and tokens](19-accounts-and-tokens.md) · [Index](00-introduction.md) · [21 · Self-hosting →](21-self-hosting.md)*

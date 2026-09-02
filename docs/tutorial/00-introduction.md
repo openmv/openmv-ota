@@ -23,7 +23,7 @@ tutorial covers one verb. Two pieces run somewhere other than your computer:
 - the **device runtime** — `boot.py` and a small library that run on the camera
   itself ([pages 10–11](11-boot-and-rollback.md)), and
 - the **update server** — a web service that hosts what you publish and decides
-  which camera is offered what ([pages 15–21](15-the-client.md)). You drive it
+  which camera is offered what ([pages 15–23](15-the-client.md)). You drive it
   with the `client` verb; other software (such as OpenMV's cloud) drives the same
   **HTTP API** the server exposes.
 
@@ -76,8 +76,10 @@ Every command and flag on these pages exists — the test suite holds the CLI to
 | [17 · Watching the fleet](17-watching-the-fleet.md) | the four reads + scripting with `--json` |
 | [18 · Building deltas](18-building-deltas.md) | the next release, built against what the field runs |
 | [19 · Accounts and tokens](19-accounts-and-tokens.md) | the tenancy layer — credentials, scopes, device binding |
-| [20 · The update server](20-update-server.md) | `openmv-ota server` — what the service does, settings, deploying |
-| [21 · The server API](21-server-api.md) | every device + admin endpoint, for scripts and dashboards |
+| [20 · The update server](20-update-server.md) | what the service does — its guarantees, and one check-in step by step |
+| [21 · Self-hosting](21-self-hosting.md) | `openmv-ota server` — running your own: lifecycle, settings, deploy artifacts |
+| [22 · The device API](22-device-api.md) | what a camera speaks: check-in, downloads, feedback |
+| [23 · The admin API](23-admin-api.md) | every admin endpoint, for scripts and dashboards |
 
 Not part of the walkthrough, but referenced from it:
 

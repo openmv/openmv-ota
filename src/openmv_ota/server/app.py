@@ -69,7 +69,7 @@ the bundle over a short-lived link, then reports the result at
   `accounts`), and every operation is scoped to the token's account.
 
 Self-hosting and operations are covered in the
-[server manual](https://github.com/openmv/openmv-ota/blob/main/docs/tutorial/20-update-server.md).
+[server manual](https://github.com/openmv/openmv-ota/blob/main/docs/tutorial/21-self-hosting.md).
 """
 
 _OPENAPI_TAGS = [
