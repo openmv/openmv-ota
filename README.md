@@ -22,12 +22,7 @@ it — falling back to the last release that worked if anything goes wrong.
 navigable reference for every command and the update server's HTTP API, in the
 order you use them: install → project → build → flash → device runtime → update
 server. The command documentation lives there and only there, so it has one
-place to be right. Beyond it: the deep format specs (the
-[signed trailer](docs/reference/trailer.md), the
-[ROMFS image anatomy](docs/reference/romfs-format.md)),
-[the CI page](ci/README.md), and the compliance material — including the
-[residual-threats register](docs/compliance/residual-threats.md) — in
-[docs/compliance/](docs/compliance/).
+place to be right.
 
 ## Status
 
