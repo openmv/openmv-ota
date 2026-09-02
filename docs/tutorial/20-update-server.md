@@ -69,9 +69,29 @@ interval. In order:
    for them, the answer also carries per-device **grants** for OpenMV's live-viewing and
    data-ingest services.
 
+## What publishing stores
+
+When `client release publish` uploads a release, the server does exactly three things:
+
+1. **Reads the signed manifest** and derives every piece of metadata from it — product,
+   version, account, sizes, hashes, which delta files belong — refusing any upload
+   whose artifacts don't match what the manifest declares.
+2. **Puts the bytes in object storage**, untouched, under a freshly minted release id:
+   the manifest at `manifests/<release_id>/manifest.bin`, and the image and each delta
+   at `artifacts/<release_id>/<filename>` — *filename* being exactly what the signed
+   manifest declares, because that name is how a device will later ask for it.
+3. **Records a release row** in the database: the id, the identity fields, the
+   representation list, and the storage keys above.
+
+That's all — no unpacking, no re-signing, no transformation. The row is the join point
+for everything after: rollouts and pins reference the release id, and the download
+gateway resolves the id back to those storage keys. Until a rollout or pin points at
+the id, the release just sits there.
+
 ## From offer to installed bytes
 
-When step 7 answers with an offer, the download unfolds like this:
+When a check-in's offer decision lands on a release (step 7 above), its stored bytes
+become a download like this:
 
 1. **The offer is one URL.** The check-in answer carries
    `manifest_url: …/d/<token>/manifest.bin`. The `<token>` is a signed, expiring
@@ -87,8 +107,9 @@ When step 7 answers with an offer, the download unfolds like this:
 3. **The device picks its representation** from the manifest: the delta whose base
    matches the exact bytes it is running, else the full image.
 4. **One token covers the whole bundle.** The manifest's artifact URLs are relative
-   filenames, so the chosen file resolves under the same `/d/<token>/` prefix — that
-   is why a release's artifacts are stored beside their manifest, and why a filename
+   filenames, so the chosen file resolves under the same `/d/<token>/` prefix. The
+   gateway maps token → release id → the release row → the
+   `artifacts/<release_id>/<filename>` key publish stored — which is why a filename
    must match something the signed manifest declares (the token can't fish for other
    objects).
 5. **The bytes stream from storage.** On s3-backed deployments the gateway answers
