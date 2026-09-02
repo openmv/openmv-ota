@@ -24,6 +24,12 @@ order you use them: install → project → build → flash → device runtime �
 server. The command documentation lives there and only there, so it has one
 place to be right.
 
+Shipping in the EU? [docs/compliance/](docs/compliance/) maps this stack onto
+the Cyber Resilience Act and RED 3.3 — what's covered, the
+[residual threats](docs/compliance/residual-threats.md) that aren't — and
+`project new --ota` scaffolds the fill-in templates (conformity checklist, EU
+DoC, disclosure policy, security.txt) into your project's `compliance/`.
+
 ## Installation
 
 > Not yet published. Once the package lands on PyPI, all tools install together:

@@ -306,6 +306,25 @@ def test_create_ota_scaffolds_device_files(tmp_path, make_firmware, make_sdk):
 def test_create_non_ota_no_device_files(tmp_path, make_firmware, make_sdk):
     root, _ = _create(tmp_path, make_firmware, make_sdk, boards=["OPENMV_N6"])
     assert not (root / "device").exists()
+    assert not (root / "compliance").exists()
+
+
+def test_create_ota_scaffolds_compliance_templates(tmp_path, make_firmware, make_sdk):
+    # CRA conformity is per-product, so the fill-in paperwork lands in the project.
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, boards=["OPENMV_N6"],
+                      ota=True, ota_keys=2, factory_keys=1)
+    d = root / "compliance"
+    names = sorted(p.name for p in d.iterdir())
+    assert names == ["conformity-assessment-checklist.md.template", "eu-doc.md.template",
+                     "security.txt.template", "vuln-disclosure-policy.md.template"]
+    assert "{{PRODUCT_NAME}}" in (d / "eu-doc.md.template").read_text()
+    # A filled-in (renamed-or-edited) file survives new --force; templates are re-seeded
+    # only when absent.
+    (d / "eu-doc.md.template").write_text("filled in\n")
+    _create(tmp_path, make_firmware, make_sdk, repo=repo, root=root, force=True,
+            boards=["OPENMV_N6"], ota=True, ota_keys=2, factory_keys=1)
+    assert (d / "eu-doc.md.template").read_text() == "filled in\n"
 
 
 def test_create_preserves_existing_app(tmp_path, make_firmware, make_sdk):

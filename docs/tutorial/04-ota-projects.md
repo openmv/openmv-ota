@@ -101,6 +101,9 @@ my-product/
 ├── certs/
 │   └── ca.pem               # TLS trust store, frozen into the firmware by `build
 │                            # firmware` (fetched fresh at `new`; `--ca` copies here)
+├── compliance/              # EU CRA/RED fill-in templates (conformity checklist,
+│                            # EU DoC, disclosure policy, security.txt) — see
+│                            # docs/compliance/cra-red-alignment.md
 ├── device/
 │   ├── openmv_log.py               # the OTA debug logger
 │   └── openmv_wdt.py               # the watchdog helper

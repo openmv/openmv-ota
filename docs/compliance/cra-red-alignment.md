@@ -97,12 +97,14 @@ missed.
 ## The templates we ship
 
 Filling these in is the customer's job — openmv-ota is a *component*, and CRA
-conformity is assessed per **product**. They live in
-[`compliance-templates/`](../../compliance-templates/):
+conformity is assessed per **product**. `openmv-ota project new --ota` copies
+them into every OTA project as `compliance/`, so the paperwork starts where the
+product lives; the sources ship in the package
+([`src/openmv_ota/project/compliance_templates/`](../../src/openmv_ota/project/compliance_templates/)):
 
 | Template | Who issues it | Covers |
 |---|---|---|
-| [`conformity-assessment-checklist.md.template`](../../compliance-templates/conformity-assessment-checklist.md.template) | the customer, in their technical documentation | the Annex I tables above, as a fill-in checklist with a "customer must add" column |
-| [`eu-doc.md.template`](../../compliance-templates/eu-doc.md.template) | the customer, placing the product on the market | the EU Declaration of Conformity behind the CE marking (CRA Art. 28 / Annex V) |
-| [`vuln-disclosure-policy.md.template`](../../compliance-templates/vuln-disclosure-policy.md.template) | the vendor, published | coordinated disclosure — CRA Annex I Part II (4)(5)(6) |
-| [`security.txt.template`](../../compliance-templates/security.txt.template) | the vendor, served at `/.well-known/security.txt` | RFC 9116 contact + a pointer to the disclosure policy |
+| [`conformity-assessment-checklist.md.template`](../../src/openmv_ota/project/compliance_templates/conformity-assessment-checklist.md.template) | the customer, in their technical documentation | the Annex I tables above, as a fill-in checklist with a "customer must add" column |
+| [`eu-doc.md.template`](../../src/openmv_ota/project/compliance_templates/eu-doc.md.template) | the customer, placing the product on the market | the EU Declaration of Conformity behind the CE marking (CRA Art. 28 / Annex V) |
+| [`vuln-disclosure-policy.md.template`](../../src/openmv_ota/project/compliance_templates/vuln-disclosure-policy.md.template) | the vendor, published | coordinated disclosure — CRA Annex I Part II (4)(5)(6) |
+| [`security.txt.template`](../../src/openmv_ota/project/compliance_templates/security.txt.template) | the vendor, served at `/.well-known/security.txt` | RFC 9116 contact + a pointer to the disclosure policy |

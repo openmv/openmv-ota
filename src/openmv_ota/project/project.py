@@ -628,6 +628,7 @@ def create_project(
         trust = _trust_store(paths, config, lock)   # supplied roots, or None -> public bundle
         _scaffold_runtime_lib(paths, boards, trust)
         _scaffold_device_files(paths, trust)
+        _scaffold_compliance(paths)   # CRA/RED fill-in templates -- per-product paperwork
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
@@ -1135,6 +1136,24 @@ def _scaffold_device_files(paths: ProjectPaths, pem: bytes | None) -> None:
         ca = d / CA_MODULE
         if not ca.exists():
             ca.write_text(render_ca_module(pem), encoding="utf-8")
+
+
+_COMPLIANCE_SRC_DIR = Path(__file__).resolve().parent / "compliance_templates"
+
+
+def _scaffold_compliance(paths: ProjectPaths) -> None:
+    """Scaffold ``compliance/`` for OTA projects: the CRA/RED fill-in templates
+    (conformity checklist, EU DoC, disclosure policy, security.txt), because CRA
+    conformity is assessed per product and the customer issues these -- see
+    docs/compliance/cra-red-alignment.md for the authoritative mapping they fill
+    in against. Copied, not linked, so the project owns its filled-in versions;
+    existing files are left alone across ``new --force``."""
+    d = paths.root / "compliance"
+    d.mkdir(parents=True, exist_ok=True)
+    for src in sorted(_COMPLIANCE_SRC_DIR.iterdir()):
+        out = d / src.name
+        if not out.exists():
+            out.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _write_local(paths: ProjectPaths, repo: Path, sdk_home_override: Path | None) -> None:
