@@ -132,12 +132,9 @@ openmv-ota server token list | revoke <hash> | rotate <hash>
 The [deploy/](../../src/openmv_ota/server/deploy/) directory ships turnkey artifacts:
 
 - **`Dockerfile`** — multi-stage build; the entrypoint runs `server init` (idempotent)
-  then `server run`.
-- **`render.yaml`** — a Render Blueprint: a stateless `web` service + managed Postgres.
-  Bring an R2/S3 bucket and your registration token; the HMAC secret and admin token are
-  generated once and kept by the platform. `render blueprint launch`, then fill the
-  `sync:false` secrets.
-- **`fly.toml`** — the Fly.io equivalent (external Postgres + R2/S3).
+  then `server run`. This is the whole deployment story: any platform that runs a
+  container image can host the server — bring a Postgres, an S3-compatible bucket, and
+  the settings above.
 - **`docker-compose.yml`** — a full local stack (server + Postgres + MinIO) for
   evaluation: `SWD_IDS_VERIFY_URL=… SWD_IDS_VERIFY_TOKEN=… docker compose up --build`.
 

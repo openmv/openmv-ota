@@ -1,6 +1,7 @@
 """Server configuration.
 
-Read from ``OPENMV_OTA_*`` environment variables (with Render's bare ``PORT`` / ``DATABASE_URL``
+Read from ``OPENMV_OTA_*`` environment variables (with the bare ``PORT`` / ``DATABASE_URL``
+that PaaS platforms inject
 also honored), **or passed programmatically** -- kwargs override the environment, so OpenMV's
 website can inject DB/R2/swd-ids config directly (``create_app(ServerSettings(**overrides))``).
 ENV is the self-host convenience.
@@ -35,7 +36,7 @@ class ServerSettings(BaseSettings):
     s3_access_key_id: str = ""
     s3_secret_access_key: str = ""
 
-    # Render injects a bare DATABASE_URL for its managed Postgres; default to a local sqlite file.
+    # PaaS platforms inject a bare DATABASE_URL for managed Postgres; default to a local sqlite file.
     database_url: str = Field(
         default="sqlite:///./ota.db",
         validation_alias=AliasChoices("OPENMV_OTA_DATABASE_URL", "DATABASE_URL"),
@@ -94,7 +95,7 @@ class ServerSettings(BaseSettings):
     # it has to be done by us -- otherwise the obvious thing to type silently opens the API up.
     cors_allow_origins: str = ""
     # uvicorn forwarded-allow-ips: which upstream peers may set X-Forwarded-For. Behind a PaaS proxy
-    # (Render/Fly) set "*" so the rate limiter sees the real client IP, not the proxy's single IP.
+    # set "*" behind a PaaS proxy so the rate limiter sees the real client IP, not the proxy's.
     trusted_proxy_ips: str = "127.0.0.1"
 
     def missing(self) -> list[str]:
