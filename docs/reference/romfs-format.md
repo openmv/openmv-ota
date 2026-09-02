@@ -76,12 +76,6 @@ for the N6 with `openmv-ota romfs pack` — 3167 bytes. Its first 48:
 00000020  02 80 80 23 69 6d 70 6f 72 74 20 73 65 6e 73 6f  …
 ```
 
-```
-00000000  d2 cd 31 80 80 80 80 80 80 80 80 80 80 80 98 4f
-00000010  05 80 80 80 80 80 80 2f 07 6d 61 69 6e 2e 70 79
-00000020  02 80 80 23 69 6d 70 6f 72 74 20 73 65 6e 73 6f  …
-```
-
 Decoded, field by field:
 
 | offset | bytes | meaning |

@@ -1,30 +1,14 @@
 # trailer
 
-The **trailer** is the signed footer that `openmv-ota build romfs` stamps onto an
-OTA image. On its own, a `build romfs` body is just a bare ROMFS filesystem — a
-camera would mount and run whatever is in it. The trailer is what makes an image
-*trustworthy*: it lets the camera confirm, before running an image, that the image
-is authentic, intact, meant for this product, and not an old version rolled back.
-
-It does that by authenticating a large image with a small signed footer. The
-trailer carries a SHA-256 of the body, an ECDSA signature over the footer, the
-targeting and anti-rollback fields the camera checks, and a JSON blob of build
-provenance the app can read. Verifying the signature and re-hashing the body
-together authenticate the whole image (see
-[How verification works](#how-verification-works)).
-
-On the camera, that checking is the job of **`boot.py`** — a small, fixed startup
-script compiled into the firmware (not user-editable). At boot it chooses which
-image slot to mount and verifies that slot's trailer first, falling back to the
-previous slot if the check fails. It is kept deliberately tiny and parser-free on
-the trust path. The host signer (`build romfs`) and `boot.py` agree on exactly the
-format described here.
-
-This page is that on-flash format; the codec —
-[src/openmv_ota/ota/trailer.py](../../src/openmv_ota/ota/trailer.py) — is its source
-of truth. (`boot.py`, the slot layout, and the on-device verifier are the higher
-layers that consume this format; the [architecture](architecture.md) page sketches
-the whole picture.)
+The **trailer** is the signed footer `openmv-ota build romfs` stamps onto an OTA
+image: a SHA-256 of the body, an ECDSA signature over the footer, the targeting
+and anti-rollback fields a camera checks before mounting the body, and a JSON blob
+of build provenance. What it is *for* is tutorial material ([building](../tutorial/06-building.md)
+introduces it; [boot and rollback](../tutorial/11-boot-and-rollback.md) shows
+`boot.py` consuming it); this page is the on-flash format. The codec —
+[src/openmv_ota/ota/trailer.py](../../src/openmv_ota/ota/trailer.py) — is its
+source of truth, and the host signer and `boot.py` agree on exactly the format
+described here.
 
 ## Layout
 
@@ -33,7 +17,7 @@ deliberately sized to 4 KiB rather than the flash erase block (AE3's byte-writab
 MRAM reports a tiny sector, floored to the same 4 KiB so growing the metadata can't
 reshape the layout). Boards whose ROMFS is a single large internal-flash sector
 (OpenMV2/3/4) carry the same trailer in single-image mode (see
-[project.md](../tutorial/04-ota-projects.md)). Laid out little-endian:
+[the OTA-projects page](../tutorial/04-ota-projects.md)). Laid out little-endian:
 
 ```
 [ header (80) ][ json_meta (meta_size) ][ signature (sig_size) ][ crc32 (4) ]
@@ -83,7 +67,7 @@ trust path stays a tiny parser-free path.
 
 This blob is a **verbatim copy of the image's `/rom/system.json`** — the same
 board identity + provenance the build packs into the ROMFS body (see
-[project.md](../tutorial/02-projects.md#systemjson-generated-read-only)). The on-device app reads
+[the projects page](../tutorial/02-projects.md#systemjson-generated-read-only)). The on-device app reads
 its identity from `/rom/system.json` (one read path, OTA or not); the trailer
 carries the copy so **host tools** — the update server, an `inspect` command — and
 the bootloader can read it straight from the signed trailer without mounting the
@@ -152,9 +136,3 @@ The CRC is checked first as a cheap torn-write reject; it is not a trust check.
 The trusted public keys come only from the firmware's baked-in set — an embedded
 public key is never trusted. (`boot.py` and the mbedtls verify shim are the layers
 above; this page documents the format they consume.)
-
-## See also
-
-- [build.md](../tutorial/06-building.md) — `build romfs` produces the trailer from a project.
-- [project.md](../tutorial/02-projects.md) — `project new --ota` provisions the keys and identity
-  the trailer records.

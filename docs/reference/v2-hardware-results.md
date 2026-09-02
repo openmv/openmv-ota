@@ -1,6 +1,6 @@
 # v2 on hardware
 
-Three sweeps, oldest first. The **most recent and most complete is the 2026-08-12 fleet run**
+Three sweeps. The **most recent and most complete is the 2026-08-12 fleet run**
 below -- nine legs, every board reachable including the AE3, run on the merge gate rather than by
 hand. The two earlier sections are kept because they are where the XIP tail wedge was found and
 fixed, which is the reason the later sweeps pass.
@@ -135,7 +135,9 @@ This is worth stating plainly rather than filing as an environment nit: the AE3 
 port**, and `_XIP_TAIL_GUARD` changes exactly the XIP read path. Whether its romfs partition also
 ends flush against the end of its flash decides whether it shared the H7 Plus's silent wedge. Of
 every board in the fleet it is the one whose result carries the most information about this
-change, and it is the one we do not have.
+change, and at the time of this sweep it was the one we did not have. (Since
+resolved: the bridge was reconnected and the AE3 leg passes in the 2026-08-12
+fleet run above.)
 
 ### A wifi "outage" that was an own goal, worth writing down
 

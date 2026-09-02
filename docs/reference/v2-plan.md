@@ -1,21 +1,11 @@
 # v2 — true A/B, single-image mode, and firmware-resident recovery
 
-Status: **SHIPPED.** Merged to `main` (the `kwabena/v2-step1-mode` branch is long gone), and
-proven on hardware: every board in the fleet runs its full regression set against v2 -- see
-[v2-hardware-results.md](v2-hardware-results.md). This page is kept for the DESIGN and its
-reasoning, which is still what the code implements; it is not a status page.
-
-Progress: mode derivation, the control-block fix, project config, `_ota_config` stamping, the
-symmetric A/B `boot.py`, the install path retargeted to the non-running slot, the provisioning
-image writing two real slots, the check-in reporting both slots, and the HIL catalog. The docs and
-the QEMU suite were swept with it -- the QEMU job was calling `evaluate_slot`'s v1 signature and
-would have failed. Per the bench rule, hardware proof is one board and the targeted scenarios
-first; the fleet runs afterwards as a regression gate, never as a debugger.
-
-**Still unbuilt, and named honestly:** firmware-resident recovery itself. `boot.py` hands off to
-it and the config it needs is stamped into the firmware, but the flow does not exist -- so today a
-device with no valid slot halts rather than re-downloading. That only bites single-image boards
-and the both-slots-bad case, but it is the piece that makes single-image mode honest.
+Status: **SHIPPED**, all of it — including firmware-resident recovery
+(`openmv_recovery.py` + the `openmv_netcfg` settings file below; [tutorial page
+14](../tutorial/14-recovery.md)) — and proven on hardware: every board in the fleet
+runs its full regression set against v2, see
+[v2-hardware-results.md](v2-hardware-results.md). This page is kept for the DESIGN
+and its reasoning, which is still what the code implements; it is not a status page.
 
 Two findings that changed the design, recorded so they are not re-derived: the erase block was
 sizing control sectors it does not govern (fixed -- `control_block()` is 4 KiB always, which also
@@ -268,22 +258,16 @@ ipv4        = dhcp        # dhcp | static
    distinguish "trial in progress" from "settled"; then the cloud work.
 6. **HIL catalog** — every scenario ending "settled back on golden" re-expressed as "rejected and kept
    retrying". The integrity gates (bad_sig, bad_key, sha, anti-rollback) are unchanged; only the
-   *recovery* assertion moves.
-   **Known stale, and deliberately left for this step:** the `boot.mount.front` / `boot.mount.back` /
-   `boot.front_reject` coverage keys still match on the words FRONT and BACK, which boot.py no longer
-   logs (it logs `mounted A` / `mounted B`). The static guard cannot catch it, because it strips a
-   trailing runtime slot name by design. Those three markers carry scenario *meaning* — "ended on
-   golden" is what several scenarios assert — so renaming them is the catalog rework, not a
-   search-and-replace. Until step 6 lands, a bench run would silently fail to see them.
+   *recovery* assertion moves. (Done — the v1 FRONT/BACK markers were reworked into slot-neutral
+   promoted-path scoring during this step.)
 
 Each step proves itself on **one board** before the fleet runs as a regression check.
 
-## Open items
+## What stayed deferred
 
-- **Recovery flash cost** — measure at step 2. Informs whether the legacy single-sector boards can
-  host the flow; not a gate on A/B, which is the default everywhere with room.
-- **Watchdog during install/recovery** — deferred deliberately. Arming is unresolved on the N6's tight
-  WWDG ceiling (~167 ms vs a 65–100 ms collect); `relax()` remains an option.
-- **Credentials hand-off API** — how the app passes proven-good credentials to the OTA layer; expected
-  to fall out of the build rather than needing a decision now.
+Everything above shipped (the recovery flash cost came in at ~26 KiB of firmware, as measured at
+step 2). Two deliberate deferrals remain:
+
+- **Watchdog arming during install/recovery** — unresolved on the N6's tight WWDG ceiling
+  (~167 ms vs a 65–100 ms collect); `relax()` remains an option.
 - **Enterprise WiFi / captive portals** — SSID+PSK does not cover them; out of scope unless asked.

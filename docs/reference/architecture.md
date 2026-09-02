@@ -1,7 +1,8 @@
 # Architecture
 
-> The design and its reasoning live in [v2-plan.md](v2-plan.md). This page is the
-> short version: what is on the flash and who reads it.
+> The design and its reasoning live in [v2-plan.md](v2-plan.md); the walkthrough of
+> how you use all this is [the tutorial](../tutorial/00-introduction.md). This page
+> is the short version: what is on the flash and who reads it.
 
 ## ROMFS OTA at a glance
 
@@ -31,8 +32,6 @@
   state; then boot the survivor with the highest install counter. If none
   survives there is no factory image to retreat to — the device hands off to
   firmware-resident recovery, which re-downloads until it has a working image.
-- Host tooling (this package) builds firmware, composes + signs images, and
-  serves updates. The on-device SDK drives trial-confirm, polling, and install.
 
 ## The one invariant everything rests on
 

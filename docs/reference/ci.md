@@ -3,11 +3,10 @@
 `.github/workflows/ci.yml` runs on every push / PR (and `workflow_dispatch`) in five
 jobs: `test` (Linux **and** macOS), `cshim`, `qemu`, `build`, and `hil`.
 
-`hil` is **manual-only** (`workflow_dispatch`). It builds firmware on a board's own
-runner, and it used to fire on every push to `main` -- i.e. on every merge, taking the
-AE3, N6 and RT1060 to rebuild what they had already proven. The gate that matters is
-`hil-ota.yml`, which runs each board's full OTA regression on the **pull request**,
-before the merge -- it is documented in [../ci/hil/README.md](../../ci/hil/README.md).
+`hil` is **manual-only** (`workflow_dispatch`): it builds firmware on a board's own
+runner. The gate that matters is `hil-ota.yml`, which runs each board's full OTA
+regression on the **pull request**, before the merge -- it is documented in
+[../ci/hil/README.md](../../ci/hil/README.md).
 
 ## `test` — unit tests + coverage
 
@@ -20,8 +19,7 @@ The **trial state machine** is covered exhaustively rather than by example, sinc
 edge cases are where update-safety bugs hide:
 
 - `evaluate_slot` is tested against the marker combinations for **one** rule applied to
-  both slots — v2 evaluates them symmetrically, so the v1 asymmetry checks
-  (`forged-confirm`, `back-not-factory`) are gone along with the roles that motivated them.
+  both slots, which are evaluated symmetrically.
 - The **install counter** and **attempt region** are tested as pure logic: `install_counter`
   rejects a blank or torn field, `select_slot` orders by counter with an unreadable one
   sorting last and ties broken toward `CONFIRMED`, and `attempt_offset` walks the append
@@ -30,9 +28,9 @@ edge cases are where update-safety bugs hide:
   newest `trial-failed` → the previous slot, newest signature-rejected → the previous slot,
   a trial whose attempt can't be recorded → **dropped, then re-select** (not abandon), and
   both slots failing → `no-slot`.
-- `openmv_ota._should_confirm` is parametrized over slot × markers. The v1 slot-name guard
-  is gone because it became structural: `confirm()` reads the **running** slot's own status
-  sector, so there is no sector for a slot you did not boot.
+- `openmv_ota._should_confirm` is parametrized over slot × markers. The slot guard is
+  structural: `confirm()` reads the **running** slot's own status sector, so there is
+  no sector for a slot you did not boot.
 - `_defer_install` and the server's `settled()` are pinned to the same rule from both sides:
   an update offered while the running image is an un-confirmed trial waits, because the slot
   it would overwrite is the last release known to work.
@@ -81,9 +79,8 @@ manifest + delta paths):
 1. **All boot paths** — `evaluate_slot`/`parse_trailer` exercised for every reject
    reason (`magic`/`crc`/`key`/`sig`/`board`/`compat`/`size`/`body-sha`/`rollback`/
    `trial-failed`/`status`) and the valid cases, mirroring the host suite but on
-   MicroPython. It also asserts the shape v1 called `forged-confirm` — confirmed, never
-   pending — is now **accepted**, because that is exactly what a provisioned slot looks
-   like.
+   MicroPython. It also asserts a confirmed-never-pending slot is **accepted** —
+   that is exactly what a provisioned slot looks like.
 2. **Real mount → the newest slot** — a two-slot romfs (distinct markers, A carrying the
    higher install counter, laid out like the provisioning image) is loaded into the
    emulated XIP region; `OtaBoot.run` reads it via `vfs.rom_ioctl` and mounts A.
