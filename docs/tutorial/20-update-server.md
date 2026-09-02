@@ -116,10 +116,13 @@ become a download like this:
    objects).
 5. **The bytes stream from storage.** The device asked the *server* — but on
    s3-backed deployments the gateway answers with a `302` to a short-lived
-   **presigned URL**, and the device's HTTP client follows it to pull the bytes
-   **directly from object storage**. So authorization and resolution pass through
-   the server on every fetch, while the multi-megabyte transfer never does. (On the
-   local-disk backend there is no redirect; the server streams the bytes itself.)
+   **presigned URL**, and the camera's HTTPS client — the installer — follows it to
+   pull the bytes **directly from object storage**, verifying the storage host's
+   certificate against the same trust store as every other connection (a self-host
+   that pinned only its own server's root must make sure the storage host's root is
+   in there too). So authorization and resolution pass through the server on every
+   fetch, while the multi-megabyte transfer never does. (On the local-disk backend
+   there is no redirect; the server streams the bytes itself.)
    A device on a poor link resumes from the byte offset it reached instead of
    restarting.
 6. **The device reports the outcome** — `installed` or `failed` — which is what a
