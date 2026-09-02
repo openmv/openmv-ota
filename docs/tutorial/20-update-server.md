@@ -26,13 +26,13 @@ Because the manifest's artifact URLs are **relative filenames**, the server serv
 manifest untouched and co-locates the `-ota.img.gz`/`-ota.delta.gz` beside it — no
 rewriting, no re-signing.
 
-**It never serves an unregistered device.** Every deployment validates each camera
-against OpenMV's central registration server, using what every check-in already carries:
-the **board name** (`OPENMV_N6`, …) and the **device id** (the MCU's unique hardware id).
-An unregistered pair gets `{update: false}` and **zero stored state** — no device row, no
-telemetry, no cache entry — so unknown ids can never grow the database or storage.
-Registration is required: the two registration settings below carry the verify endpoint
-and an OpenMV-issued token tied to your account.
+**It never stores data for an unvalidated device.** A deployment attached to OpenMV's
+central registration server validates each camera using what every check-in already
+carries — the **board name** (`OPENMV_N6`, …) and the **device id** (the MCU's unique
+hardware id) — and an unregistered pair gets `{update: false}` and **zero stored
+state**: no device row, no telemetry, no cache entry. A deployment with no registration
+server attached serves updates but stores nothing for *any* device. Either way, an
+attacker-controlled id can never grow the database or storage.
 
 ## What one check-in does
 
