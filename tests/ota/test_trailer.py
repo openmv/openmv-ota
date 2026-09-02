@@ -30,7 +30,7 @@ def _trailer(**over) -> Trailer:
         product_id=0x1234,
         min_platform_version=(5 << 24),
         payload_version=7,
-        payload_version_floor=2,
+        reserved0=0,
         key_id=0x10,
         sig_alg=ES256,
         body_sha256=bytes(range(32)),
@@ -45,13 +45,13 @@ def _raw_header(**over) -> bytes:
     f = dict(
         magic=MAGIC_ROMFS_APP, header_version=1, body_size=0, pad_size=0, meta_size=0,
         sig_size=64, product_id=0, min_platform_version=0, payload_version=0,
-        payload_version_floor=0, key_id=0, sig_alg=ES256, body_sha256=b"\x00" * 32,
+        reserved0=0, key_id=0, sig_alg=ES256, body_sha256=b"\x00" * 32,
     )
     f.update(over)
     return struct.pack(
         trailer_mod.HEADER_STRUCT, f["magic"], f["header_version"], f["body_size"],
         f["pad_size"], f["meta_size"], f["sig_size"], f["product_id"],
-        f["min_platform_version"], f["payload_version"], f["payload_version_floor"],
+        f["min_platform_version"], f["payload_version"], f["reserved0"],
         f["key_id"], f["sig_alg"], f["body_sha256"],
     )
 
@@ -138,6 +138,13 @@ def test_pack_bad_signature_length():
 def test_pack_bad_body_sha_length():
     with pytest.raises(OtaError, match="body_sha256 must be 32 bytes"):
         pack_trailer(_trailer(body_sha256=b"\x00" * 10))
+
+
+def test_pack_nonzero_reserved0_rejected():
+    # reserved0 is signed headroom: writers must stamp 0 so the field can gain a
+    # meaning later without a header_version bump. Readers stay permissive.
+    with pytest.raises(OtaError, match="reserved0 must be 0"):
+        pack_trailer(_trailer(reserved0=7))
 
 
 def test_pack_unsupported_algorithm():

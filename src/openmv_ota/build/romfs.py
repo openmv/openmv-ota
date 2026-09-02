@@ -30,7 +30,6 @@ class _OtaSigner:
 
     app_version: str
     payload_version: int
-    payload_version_floor: int
     vendor: str
     key_id: int
     sig_alg: int        # COSE id
@@ -40,7 +39,7 @@ class _OtaSigner:
 
 def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
                  key_passphrase_file=None, allow_dev_key: bool = False) -> _OtaSigner:
-    """Resolve a signing context: the app version + rollback floor from
+    """Resolve a signing context: the app version from
     ``app/settings.json``, plus the trusted key ``key_id`` (which must have role
     ``require_role`` and not be revoked) and a ``Signer`` for it. Shared by ``build
     romfs`` (the OTA signing key) and ``build factory-romfs`` (a factory key)."""
@@ -66,19 +65,6 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
     except OtaError as e:
         raise BuildError(str(e), exit_code=1) from None
 
-    # rollback_floor: an anti-rollback floor (the oldest version ever allowed back).
-    # Optional; defaults to 0 (no floor). Must not exceed the image's own version.
-    floor_str = settings.get("rollback_floor")
-    payload_version_floor = 0
-    if floor_str:
-        try:
-            payload_version_floor = encode_app_version(floor_str)
-        except OtaError as e:
-            raise BuildError("invalid rollback_floor: %s" % e, exit_code=1) from None
-        if payload_version_floor > payload_version:
-            raise BuildError(
-                "rollback_floor %s can't exceed app_version %s in %s"
-                % (floor_str, app_version, settings_path), exit_code=1)
 
     entry = next((k for k in trusted if k.key_id == key_id), None)
     if entry is None:
@@ -106,7 +92,7 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
         raise BuildError(
             "refusing to sign a production image with a dev signing key (0x%04x); use a real "
             "encrypted key, or pass --allow-dev-key for a throwaway build" % key_id, exit_code=1)
-    return _OtaSigner(app_version, payload_version, payload_version_floor,
+    return _OtaSigner(app_version, payload_version,
                       str(settings.get("vendor", "")), key_id, entry.alg, alg, backend)
 
 
@@ -190,7 +176,7 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_si
         product_id=int(system_info["product_id"]),
         min_platform_version=int(p.lock.firmware.get("version_code", 0)),
         payload_version=signer.payload_version,
-        payload_version_floor=signer.payload_version_floor,
+        reserved0=0,
         key_id=signer.key_id,
         sig_alg=signer.sig_alg,
         body_sha256=hashlib.sha256(body).digest(),

@@ -21,8 +21,12 @@ verifier trusts comes from authenticated fields, not from the flexible blob.
 The fixed header, in order (``docs/reference/trailer.md`` has per-field semantics)::
 
     magic(4s) header_version body_size pad_size meta_size sig_size
-    product_id min_platform_version payload_version payload_version_floor
+    product_id min_platform_version payload_version reserved0
     key_id sig_alg(int32) body_sha256(32s)
+
+``reserved0`` is four bytes of signed headroom for a future field: writers must
+stamp ``0`` (enforced), readers ignore it — so it can later gain a meaning
+without a ``header_version`` bump.
 
 ``magic`` doubles as the payload-kind discriminator (``OMVR`` = ROMFS app,
 ``OMVF`` = firmware, reserved). The lone signed field ``sig_alg`` is placed just
@@ -69,7 +73,7 @@ class Trailer:
     product_id: int
     min_platform_version: int
     payload_version: int
-    payload_version_floor: int
+    reserved0: int
     key_id: int
     sig_alg: int
     body_sha256: bytes
@@ -91,6 +95,8 @@ def _build_signed_region(t: Trailer) -> tuple[bytes, AlgSpec]:
     spec = algorithm_for(t.sig_alg)
     if len(t.body_sha256) != 32:
         raise OtaError("body_sha256 must be 32 bytes, got %d" % len(t.body_sha256))
+    if t.reserved0:
+        raise OtaError("reserved0 must be 0, got %d" % t.reserved0)
     meta_bytes = _serialize_meta(t.meta)
     header = struct.pack(
         HEADER_STRUCT,
@@ -103,7 +109,7 @@ def _build_signed_region(t: Trailer) -> tuple[bytes, AlgSpec]:
         t.product_id,
         t.min_platform_version,
         t.payload_version,
-        t.payload_version_floor,
+        t.reserved0,
         t.key_id,
         t.sig_alg,
         t.body_sha256,
@@ -170,7 +176,7 @@ def parse_trailer(data: bytes) -> Trailer:
         product_id,
         min_platform_version,
         payload_version,
-        payload_version_floor,
+        reserved0,
         key_id,
         sig_alg,
         body_sha256,
@@ -209,7 +215,7 @@ def parse_trailer(data: bytes) -> Trailer:
         product_id=product_id,
         min_platform_version=min_platform_version,
         payload_version=payload_version,
-        payload_version_floor=payload_version_floor,
+        reserved0=reserved0,
         key_id=key_id,
         sig_alg=sig_alg,
         body_sha256=bytes(body_sha256),

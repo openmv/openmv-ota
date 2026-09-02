@@ -676,7 +676,7 @@ def _build_release_with_trailer(project, pv=0x02000000):
     body_sha = hashlib.sha256(body_bytes).digest()
     packed = pack_trailer(Trailer(
         body_size=len(body_bytes), pad_size=0, meta={}, product_id=BID,
-        min_platform_version=0, payload_version=pv, payload_version_floor=0,
+        min_platform_version=0, payload_version=pv, reserved0=0,
         key_id=0x0100, sig_alg=ES256, body_sha256=body_sha, signature=b"\x00" * 64))
     # the trailer FRONT-ANCHORS the final 4 KiB control block (parse_trailer reads the
     # header first), exactly as _compose_slot lays a real slot out

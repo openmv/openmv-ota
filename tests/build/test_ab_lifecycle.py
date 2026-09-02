@@ -107,7 +107,7 @@ def _image(version, *, body_tag=b"APP", product_id=PRODUCT_ID, corrupt=False):
     cap = SLOT - 2 * BLOCK
     pad = cap - len(body)
     t = Trailer(body_size=len(body), pad_size=pad, meta={"v": version}, product_id=product_id,
-                min_platform_version=0, payload_version=_pv(version), payload_version_floor=0,
+                min_platform_version=0, payload_version=_pv(version), reserved0=0,
                 key_id=_KEY_ID, sig_alg=ES256, body_sha256=hashlib.sha256(body).digest())
     t.signature = sign_region(_KEY, signed_region(t), _SPEC)
     trailer = pack_trailer(t)

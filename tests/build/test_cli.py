@@ -153,7 +153,7 @@ def _make_image_files(tmp_path):
               "firmware": {"version": "5.0.0", "commit": "abc123def456"}, "micropython": "1.28.0",
               "toolchain": {"mpy_cross": "1.28.0", "vela": None, "stedgeai": None, "sdk": "1.6.0"}},
         product_id=7, min_platform_version=(5 << 24), payload_version=encode_app_version("1.2.3"),
-        payload_version_floor=0, key_id=0x0100, sig_alg=ES256,
+        reserved0=0, key_id=0x0100, sig_alg=ES256,
         body_sha256=hashlib.sha256(body).digest())
     t.signature = sign_region(priv, signed_region(t), spec)
     romfs = tmp_path / "x.romfs"

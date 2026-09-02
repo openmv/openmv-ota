@@ -309,8 +309,6 @@ def _trailer_summary(t) -> dict:
         "vendor": meta.get("vendor"),
         "app_version": meta.get("app_version"),
         "payload_version": decode_app_version(t.payload_version),
-        "rollback_floor": decode_app_version(t.payload_version_floor) if t.payload_version_floor
-        else "none",
         "min_platform_version": decode_app_version(t.min_platform_version)
         if t.min_platform_version else "none",
         "key_id": "0x%04x" % t.key_id,
@@ -345,7 +343,6 @@ def _print_trailer(s: dict) -> None:
     print("  board:          %s  (id %d)" % (s["board"], s["product_id"]))
     print("  board_name:     %s" % s["board_name"])
     print("  app_version:    %s  (payload_version %s)" % (s["app_version"], s["payload_version"]))
-    print("  rollback_floor: %s" % s["rollback_floor"])
     print("  min_platform:   %s" % s["min_platform_version"])
     print("  signed by:      key %s  (%s, %d-byte sig)"
           % (s["key_id"], s["sig_alg"], s["signature_size"]))

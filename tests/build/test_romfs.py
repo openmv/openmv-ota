@@ -416,31 +416,17 @@ def test_ota_trailer_meta_mirrors_system_json(make_project):
     assert info["ota"] is True and info["product_id"] == 42 and info["app_version"] == "1.2.3"
 
 
-def test_ota_build_sets_rollback_floor(make_project):
+def test_ota_build_stamps_reserved0_zero(make_project):
     from openmv_ota.ota import parse_trailer
     from openmv_ota.ota.version import encode_app_version
 
     root, repo, app = _build_ota(
-        make_project, settings='{"app_version": "2.5.0", "rollback_floor": "2.0.0"}\n')
+        make_project, settings='{"app_version": "2.5.0"}\n')
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
     t = parse_trailer(_read_bundle(r)[1])
-    assert t.payload_version_floor == encode_app_version("2.0.0")
+    assert t.reserved0 == 0
     assert t.payload_version == encode_app_version("2.5.0")
-
-
-def test_ota_build_floor_above_version_errors(make_project):
-    root, repo, app = _build_ota(
-        make_project, settings='{"app_version": "2.0.0", "rollback_floor": "3.0.0"}\n')
-    with pytest.raises(BuildError, match="rollback_floor 3.0.0 can't exceed app_version"):
-        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
-
-
-def test_ota_build_bad_floor_semver(make_project):
-    root, repo, app = _build_ota(
-        make_project, settings='{"app_version": "2.0.0", "rollback_floor": "2.0"}\n')
-    with pytest.raises(BuildError, match="invalid rollback_floor"):
-        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
 
 
 def test_ota_build_warns_on_unset_product_id(make_project, capsys):
@@ -1090,7 +1076,7 @@ def test_build_ota_romfs_publishes_one_delta_per_base(make_project):
 
     # ...then 1.2.0 with BOTH bases: the provisioned image and the release before it
     (root / "app" / "settings.json").write_text(
-        '{"app_version": "1.2.0", "vendor": "", "rollback_floor": "1.0.0"}\n')
+        '{"app_version": "1.2.0", "vendor": ""}\n')
     [r2] = build_mod.build_ota_romfs(root, firmware=repo, delta_from=[factory, prev],
                                      compile_py=False, convert_models=False)
     assert sorted(d.name for d in r2.deltas) == [

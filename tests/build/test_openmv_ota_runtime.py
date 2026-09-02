@@ -289,7 +289,7 @@ def test_trailer_body_sha_offset_matches_the_host_trailer():
     body = b"R" * 32
     t = Trailer(body_size=len(body), pad_size=0, meta={}, product_id=7,
                 min_platform_version=0, payload_version=0x01020000,
-                payload_version_floor=0, key_id=0x0100, sig_alg=ES256,
+                reserved0=0, key_id=0x0100, sig_alg=ES256,
                 body_sha256=hashlib.sha256(body).digest())
     t.signature = sign_region(priv, signed_region(t), spec)
     trailer = pack_trailer(t)
@@ -317,7 +317,7 @@ def test_trailer_version_offset_is_pinned_to_the_host_trailer():
 
     pv = encode_app_version("3.4.5")
     t = Trailer(body_size=8, pad_size=0, meta={}, product_id=7, min_platform_version=0,
-                payload_version=pv, payload_version_floor=0, key_id=1, sig_alg=ES256,
+                payload_version=pv, reserved0=0, key_id=1, sig_alg=ES256,
                 body_sha256=hashlib.sha256(b"x").digest())
     assert rt._trailer_version(signed_region(t)) == pv
     assert rt._trailer_version(b"XXXX" + b"\x00" * 40) == 0     # bad magic -> 0

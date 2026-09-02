@@ -163,7 +163,7 @@ def parse_trailer(data):
     if len(data) < _HEADER_SIZE:
         raise OtaReject("trunc")
     (magic, header_version, body_size, pad_size, meta_size, sig_size, product_id,
-     min_platform_version, payload_version, payload_version_floor, key_id, sig_alg,
+     min_platform_version, payload_version, _reserved0, key_id, sig_alg,
      body_sha256) = struct.unpack_from(_HEADER_STRUCT, data, 0)
     if magic != MAGIC:
         raise OtaReject("magic")
@@ -185,7 +185,6 @@ def parse_trailer(data):
     t.product_id = product_id
     t.min_platform_version = min_platform_version
     t.payload_version = payload_version
-    t.payload_version_floor = payload_version_floor
     t.key_id = key_id
     t.sig_alg = sig_alg
     t.body_sha256 = bytes(body_sha256)
