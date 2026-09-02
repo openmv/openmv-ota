@@ -15,7 +15,7 @@ authorized by expiring capability tokens — nothing here can be used to write a
 |---|---|
 | `device_id`, `board` | the registration pair — the MCU's unique id + the board name |
 | `product_id`, `account_id` | which product/tenant this camera belongs to (baked into its firmware) |
-| `app_version`, `payload_version` | the running release, twice: the human string ("1.2.0") and its packed form — `(major<<24)|(minor<<16)|(patch<<8)`, one integer so version comparisons (the offer gate, anti-rollback) are single numeric compares |
+| `app_version`, `payload_version` | the running release, twice: the human string ("1.2.0") and its packed numeric form, which is what the machines compare (the offer gate, anti-rollback). You never set or interpret the number — read the string |
 | `slot`, `representation`, `confirmed`, `fallback_reason` | trial state: which slot booted, how it was installed, whether it confirmed, why the other slot was rejected (if it was) |
 | `slots` | every slot, newest first — what the device would fall back to |
 | `streams` | live image stream names (multi-camera boards); empty means the single default |
