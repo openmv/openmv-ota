@@ -14,43 +14,28 @@
 
 # OpenMV OTA
 
-Tooling for building OpenMV ROMFS images and delivering them to cameras over the
-air. `openmv-ota romfs` builds the read-only `/rom` filesystem image; the
-over-the-air update tools deliver signed, anti-rollback updates that fall back to
-the last release that worked.
+Secure over-the-air updates for OpenMV cameras: build your application into a
+signed ROMFS image, publish it, and a camera downloads, verifies, and installs
+it — falling back to the last release that worked if anything goes wrong.
 
 **Start with the [tutorial](docs/tutorial/00-introduction.md)** — the complete,
-navigable reference for every command and the update server's HTTP API, in the order you use them:
-install → project → build → flash → device runtime → update server. The command
-documentation lives there and only there, so it has one place to be right.
-Engineering notes are in [docs/reference/](docs/reference/)
-(the [signed trailer format](docs/reference/trailer.md), the
-[ROMFS image anatomy](docs/reference/romfs-format.md)), and the compliance
-material — including the [residual-threats
-register](docs/compliance/residual-threats.md) — in [docs/compliance/](docs/compliance/).
-
-- [Status](#status)
-- [Installation](#installation)
-- [Contributing to the project](#contributing-to-the-project)
-  + [Contribution guidelines](#contribution-guidelines)
+navigable reference for every command and the update server's HTTP API, in the
+order you use them: install → project → build → flash → device runtime → update
+server. The command documentation lives there and only there, so it has one
+place to be right. Beyond it: the deep format specs (the
+[signed trailer](docs/reference/trailer.md), the
+[ROMFS image anatomy](docs/reference/romfs-format.md)),
+[the CI page](ci/README.md), and the compliance material — including the
+[residual-threats register](docs/compliance/residual-threats.md) — in
+[docs/compliance/](docs/compliance/).
 
 ## Status
 
-The `openmv-ota romfs` image tool, `openmv-ota project` (firmware pegging + key
-management), and `openmv-ota build` (app compile, signed ROMFS + dual-slot factory
-images, firmware builds, inspect/verify) are implemented and tested. That includes
-the frozen `boot.py` slot selection — exercised on real MicroPython under QEMU — the
-on-device ECDSA verify module, checked against the firmware's own mbedtls, and the
-`openmv_ota` device runtime library (`status`/`confirm`/`sync`) an OTA project
-scaffolds into the app.
-
-The over-the-air pieces are built too: the **on-device installer** downloads, verifies and
-stages an image (full or delta, resumable across a dropped connection), and the **update
-server** (`openmv-ota server`) hosts releases and drives fleet rollouts, with
-`openmv-ota client` as its admin CLI. The whole path runs on real hardware — every board in
-the HIL fleet exercises its own regression set on each pull request, negative paths included
-(corrupt image, bad signature, untrusted key, anti-rollback, no bootable slot) — see
-[the CI page](ci/README.md).
+Everything the tutorial documents is implemented — the test suite holds the CLI
+and the server to it, at enforced 100% coverage. The whole update path runs on
+real hardware: every board in the HIL fleet exercises its own regression set on
+each pull request, negative paths included (corrupt image, bad signature,
+untrusted key, anti-rollback, no bootable slot).
 
 ## Installation
 
