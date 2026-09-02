@@ -50,7 +50,7 @@ serves:
 | env var | what it does |
 |---|---|
 | `OPENMV_OTA_BASE_URL` | the public https origin — used to build the download URLs handed to devices |
-| `PORT` / `OPENMV_OTA_PORT` | bind port (default 8080) |
+| `PORT` / `OPENMV_OTA_PORT` | bind port (default 8080). One app, one port: `/docs`, the device endpoints, and the admin API all share it — in production your platform's edge terminates TLS on 443 and forwards here |
 
 **Storage (the artifact bytes)**
 
