@@ -14,69 +14,15 @@ tenants. The server documents itself: `/docs` serves a browsable reference and
 `/openapi.json` the machine-readable schema, so a client can be generated instead of
 hand-written against guesses.
 
-## The endpoints
+## The reference is the server itself
 
-
-Grouped by what they manage — the scope column is what the bearer token must carry:
-
-**Publishing**
-
-| endpoint | scope | what it does |
-|---|---|---|
-| `POST /api/v1/admin/releases` | publish | multipart upload: `manifest` + `image` + repeated `delta` parts + optional `sbom`. All metadata derives from the signed manifest; inconsistent artifacts are refused (400); the manifest's `account_id` must match the token's (403); `payload_version` at or below the newest published is refused (409) unless `?allow_republish=true` |
-| `GET /api/v1/admin/releases` | observe | the publish history (paged) |
-| `GET /api/v1/admin/releases/{id}` | observe | one release |
-| `GET /api/v1/admin/releases/{id}/image` | observe | the retained image bytes — the delta-base download. A release whose bytes were pruned answers "image is no longer retained" |
-| `GET /api/v1/admin/releases/{id}/sbom` | observe | the release's CycloneDX SBOM, as uploaded |
-| `DELETE /api/v1/admin/releases/{id}/artifacts` | publish | prune the stored objects, keep the row; 409 while an active rollout offers it, `?force=true` overrides |
-
-**Rollouts**
-
-| endpoint | scope | what it does |
-|---|---|---|
-| `POST /api/v1/admin/rollouts` | manage | create (release, cohort, percent, optional `failure_threshold`, default 0.05). Supersedes — pauses — the cohort's prior active rollout |
-| `PATCH /api/v1/admin/rollouts/{id}` | manage | raise `percent` (monotonic — lowering is 400) and/or set `state` to `active`/`paused` |
-| `POST /api/v1/admin/rollouts/{id}/stop` | manage | terminal stop; devices that took the release keep it, and a stopped rollout can't be resumed |
-| `GET /api/v1/admin/rollouts` | observe | list (paged); each row carries `cohort_devices`, its audience |
-| `GET /api/v1/admin/rollouts/{id}/status` | observe | the score: `cohort_devices` (audience), `staged_devices` (percent of it, estimated), the `attempted`/`updated`/`failures` counters with `rates` against the staged target, and the devices' explicit `reported` outcomes |
-
-**Cohorts & pins**
-
-| endpoint | scope | what it does |
-|---|---|---|
-| `GET /api/v1/admin/cohorts` | observe | cohorts in use, device count each |
-| `POST /api/v1/admin/cohorts/assign` | manage | move devices into a cohort — `device_ids` (surgical) or `product_id` (every device of the product), exactly one; devices not yours are skipped, the count says how many landed |
-| `PATCH /api/v1/admin/devices/{id}/pin` | manage | pin/unpin one device (`release_id: null` unpins) |
-| `POST /api/v1/admin/cohorts/rename` | manage | relabel a cohort everywhere it appears (devices, rollouts, pins); refuses `__default__` and an in-use target |
-| `POST /api/v1/admin/cohorts/delete` | manage | retire a label: devices return to `__default__`, its pins drop; 409 while an active rollout targets it |
-| `POST /api/v1/admin/cohorts/pin` | manage | pin/unpin a whole (product, cohort) |
-
-**Devices & the fleet**
-
-| endpoint | scope | what it does |
-|---|---|---|
-| `GET /api/v1/admin/fleet` | observe | the summary `client fleet` prints: account totals + a per-product map of `by_version`/`by_fallback`/`by_cohort`/alarms (`?product_id=`/`?cohort=` scope it) |
-| `GET /api/v1/admin/fleet/bases` | observe | the distinct (version, exact-bytes) bases the fleet is running, with device counts — what `client release bases --fleet` fetches against |
-| `GET /api/v1/admin/devices` | observe | per-device rows (paged; `product_id`/`cohort` filters) |
-| `GET /api/v1/admin/devices/{id}` | observe | one device, same shape as a list row |
-| `POST /api/v1/admin/devices/{id}/account` | manage | (re)bind the device to the caller's account |
-| `POST /api/v1/admin/devices/{id}/viewer-grant` | observe | mint a short-lived single-device viewing credential for a dashboard user (503 when live viewing isn't configured) |
-
-**Accounts & tokens** (the operator scope, `accounts`)
-
-| endpoint | what it does |
-|---|---|
-| `POST /api/v1/admin/accounts` / `GET …/accounts` | create (returns the first working token **once**) / list |
-| `PATCH …/accounts/{id}` | rename (empty is 400, a taken name is 409) |
-| `POST …/accounts/{id}/deactivate` / `…/activate` | revoke all tokens + disable / re-enable (old tokens stay revoked — issue fresh ones) |
-| `POST …/accounts/{id}/tokens` / `GET …/accounts/{id}/tokens` | issue (secret once; unknown scopes are 400; a deactivated account is 409) / list metadata |
-| `POST …/tokens/{hash}/revoke` / `…/tokens/{hash}/rotate` | revoke / replace-and-revoke (same name, scopes, account) |
-
-**Audit**
-
-| endpoint | scope | what it does |
-|---|---|---|
-| `GET /api/v1/admin/audit` | observe | the append-only log: every publish, rollout change (auto-pauses included), pin, assignment, bind, and account/token event, each with its actor |
+The endpoint-by-endpoint reference deliberately does not live in this tutorial, where
+it would drift: it is generated from the running code and served by every deployment.
+Open **`/docs`** on your server for the browsable version — every operation, grouped
+and searchable, with its request and response schemas — or fetch **`/openapi.json`**
+for the machine-readable contract. The CLI pages ([15](15-the-client.md) onward) walk
+every operation in workflow order; `/docs` is the same surface in wire order, and it is
+always exactly what your server speaks.
 
 ## Paging
 
