@@ -1,63 +1,38 @@
 # openmv-ota — what's next
 
-Live list of what's being built next. **Done work is not tracked here** — see `git log`.
-(It used to be, which is how this file grew into a changelog nobody read. If you want the
-history of the multi-tenancy, API-audit or signer-hygiene work, the commits have it in
-more detail than a bullet ever will.)
+To-do only. Done work is in `git log`; deliberate non-goals are in
+[docs/compliance/residual-threats.md](docs/compliance/residual-threats.md); this
+file's own history has the longer design notes behind each line.
 
-## Parked — revisit, with the context needed to pick each up
-
-Each of these was understood and deliberately set down, not forgotten. The reason it was
-parked is recorded so the next person does not re-derive it.
-
-- **DER trust store, and dropping the PEM parser.** PEM is base64-wrapped DER, so DER is
-  ~25% smaller — but mbedtls only concatenates PEM: *"For certificates in PEM encoding,
-  this may be a concatenation of multiple certificates; for DER encoding, the buffer must
-  [be a single certificate]"* (`x509_crt.h`). So the public bundle cannot be one DER blob
-  without splitting it per-cert on device. The saving also lands in the wrong place: the
-  bundle only ships on boards with 4–12 MiB slots, where ~49 KB is noise, and a supplied
-  root is ~1 KB where DER saves a few hundred bytes.
-  **The version worth doing is about CODE size, not data.** An OTA build patches in
-  `MBEDTLS_BASE64_C` + `MBEDTLS_PEM_PARSE_C` purely to parse PEM. A project supplying a DER
-  root and shipping no PEM bundle needs neither — and that is `FLASH_TEXT`, which is exactly
-  where the pressure is (OPENMV4 is 32,192 bytes over; the H7 Plus hit 106% when the bundle
-  was briefly frozen). Measure the saving from dropping those two defines before building
-  anything: if it is ~3 KB it does not dent 32 KB, if it is ~10 KB it is worth having.
-
-- **The H7 Plus (OPENMV4P) cannot run an armed watchdog.** It is the one board in
-  `WATCHDOG_BROKEN`: an armed WWDG reset-loops it off USB, so its leg skips `watchdog`
-  while its other eight scenarios pass. 100 ms is the WWDG ceiling and boot + app startup
-  does not fit inside it, so one bite becomes a bite loop. A per-port window is the likely
-  answer. Safety-relevant — measure, do not guess. (The AE3, which used to be listed here,
-  now runs `watchdog` in its regression and passes.)
-
-- **Firmware updates via the ROMFS.** Design discussed, not built: the bootloader copies a
-  verified `firmware.bin` out of a slot into the firmware area, so firmware ships only when
-  it changes and needs no A/B of its own (there is no room for one). The framing that makes
-  it work: the bootloader is a *reconciler*, not an installer — the verified slot is the
-  durable source, so a power loss mid-copy is retried, not a brick. Open points: reconcile
-  only from a **confirmed** slot (so firmware never moves on an unproven image), never
-  downgrade, gate apps with `min_platform_version`, put the image at a fixed offset so the
-  bootloader needs no romfs parser, keep the bootloader itself out of OTA scope.
-
-- **Multi-signature per image (N-of-M).** Carried over from the concept plan when it was
-  retired — the only idea in it that is neither built nor superseded. The trailer carries a
-  single `signature`, so high-security setups wanting N-of-M signing are not served. The
-  design note worth keeping: it fits the existing trailer **without a schema bump**, because
-  the metadata blob is additive and signed. Nobody has asked for it; it is recorded so the
-  extension point is not rediscovered from scratch.
-
-## Remaining / optional (pre-v2, still true)
-
-- **Real-hardware/cloud acceptance** for the signer backends (SoftHSM opt-in test exists;
-  AWS/GCP/Azure + provisioning are unit-covered via fakes but need one live end-to-end pass
-  each).
-- **KMS bulk-provisioning cost** — `keys backend provision` defaults to a small pool (1
-  factory + 4 ota) because external keys are billable; document per-provider pricing before
-  recommending it.
-- `configure` with an explicit `DIR` must place it *before* `--set`/`--backend` (argparse
-  can't split two positionals across value options); the default `.` covers the common
-  in-project case.
-- Consistent error envelopes (FastAPI's `{detail}` is the current shape).
-- Account-scoped read indexes lag multi-tenancy (indexes lead with `product_id`, not
-  `account_id`); additive index-only migration when fleets/accounts grow.
+- **On-device image encryption** — images are signed, not confidential
+  (residual-threats: planned). The trailer's `reserved0` field is the headroom
+  for its metadata.
+- **Device lockdown** — debug-port and boot protection (residual-threats:
+  planned); until then bench/bus access is accepted.
+- **Firmware updates via the ROMFS** — bootloader as *reconciler*: copy a
+  verified `firmware.bin` out of a **confirmed** slot into the firmware area at
+  a fixed offset (no romfs parser in the bootloader), never downgrade; a power
+  loss mid-copy retries, not bricks.
+- **Rollout ramps** — optional declared-at-creation stages
+  `{percent, min_soak, min_attempted, max_failure_rate}` evaluated lazily on
+  check-ins; auto-pause always beats auto-raise; every auto-raise audited.
+- **Scaling past ~100K devices** — metastore connection pool, `poll_after_s`
+  jitter (post-outage herds), NAT-aware rate limiting (per-IP × per-worker
+  today).
+- **`device retire`** — no verb removes a device record today.
+- **H7 Plus (OPENMV4P) armed watchdog** — the one board in `WATCHDOG_BROKEN`:
+  boot + app startup does not fit the 100 ms WWDG ceiling, so one bite becomes
+  a reset loop. Likely a per-port window; safety-relevant — measure, don't
+  guess.
+- **Signer backends: one live pass each** — AWS/GCP/Azure KMS + provisioning
+  are unit-covered via fakes (SoftHSM has an opt-in real test); each needs one
+  end-to-end run against the real service.
+- **KMS provisioning pricing** — `keys backend provision` defaults to a small
+  pool because external keys are billable; document per-provider pricing before
+  recommending bigger pools.
+- **DER trust store — measure first** — the win is CODE size, not data:
+  dropping `MBEDTLS_BASE64_C` + `MBEDTLS_PEM_PARSE_C` from OTA builds that ship
+  a DER root and no PEM bundle frees `FLASH_TEXT` (where OPENMV4 is 32 KB
+  over). Measure the saving before building anything.
+- **Account-scoped read indexes** — indexes lead with `product_id`, not
+  `account_id`; additive index-only migration when fleets/accounts grow.
