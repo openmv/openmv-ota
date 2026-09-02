@@ -4,7 +4,8 @@
 > stack provides and what {{VENDOR_NAME}} must add. The customer includes a
 > completed copy in their technical documentation when self-certifying.
 >
-> The authoritative mapping table lives in `docs/compliance/cra-red-alignment.md`
+> The authoritative mapping table lives in
+> [the CRA / RED alignment page](https://github.com/openmv/openmv-ota/blob/main/docs/compliance/cra-red-alignment.md)
 > (lettered per Annex I of Regulation (EU) 2024/2847); this template is the
 > customer-facing fill-in version. Every requirement is listed — a row with "—"
 > in the customer column still needs the checkbox: confirm it holds for the
@@ -14,7 +15,7 @@
 
 | Req | Provided by openmv-ota | Customer must add | Status |
 |---|---|---|---|
-| (1) Appropriate cybersecurity based on the risks | The documented risk posture (`docs/compliance/residual-threats.md`) | Product-level risk assessment (Art. 13(2)) | ☐ |
+| (1) Appropriate cybersecurity based on the risks | The documented risk posture ([the residual-threats register](https://github.com/openmv/openmv-ota/blob/main/docs/compliance/residual-threats.md)) | Product-level risk assessment (Art. 13(2)) | ☐ |
 | (2)(a) No known exploitable vulns at making available | `build sbom` CycloneDX export + osv-scanner in CI (firmware, submodules, tools at exact pins) | Track and act on findings | ☐ |
 | (2)(b) Secure by default, incl. reset to original state | Signing always on (no plaintext-key mode), anti-rollback always on, `flash factory` restores original state | The product's own defaults (network, app, no default passwords) | ☐ |
 | (2)(c) Security updates, automatic by default, opt-out, postponement | Check-in loop installs updates automatically; app controls when it runs | Commit to a support period (Art. 13(8)); document update UX | ☐ |
