@@ -17,8 +17,18 @@ authorized by expiring capability tokens — nothing here can be used to write a
 | `product_id`, `account_id` | which product/tenant this camera belongs to (baked into its firmware) |
 | `app_version`, `payload_version` | the running release, twice: the human string ("1.2.0") and its packed numeric form, which is what the machines compare (the offer gate, anti-rollback). You never set or interpret the number — read the string |
 | `slot`, `representation`, `confirmed`, `fallback_reason` | trial state: which slot booted, how it was installed, whether it confirmed, why the other slot was rejected (if it was) |
-| `slots` | every slot, newest first — what the device would fall back to |
-| `streams` | live image stream names (multi-camera boards); empty means the single default |
+| `slots` | the device's own account of both flash slots, newest first (detailed below) |
+| `streams` | the live image stream names this camera publishes (a multi-camera board, or virtual streams an app defines). Names are sanitized and capped; empty means the single default stream `"0"`. Stored on the device row and used to build the Live grant's per-stream URLs |
+
+Each `slots` entry is
+`{slot, running, payload_version, counter, pending, confirmed, body_sha256}` — the
+trial state of one flash slot. The server reads three things from the list: whether the
+device is **settled** (a running slot still `pending` and not `confirmed` is mid-trial,
+so offers are deferred — its fallback is worth more than a download), what it would
+**fall back to** (the newest non-running slot — the fleet summary's `by_fallback`), and
+the running body's **exact bytes** (`body_sha256`, the delta-base identity that
+`release bases --fleet` plans against). A single-image device sends no `slots`; every
+reader treats the empty list as *unknown*, never as "no fallback".
 
 The answer is `{"update": false, "poll_after_s": 3600}` in the common case. On an offer:
 
