@@ -11,7 +11,7 @@ from openmv_ota.server.storage import LocalArtifactStorage
 def _app(tmp_path, *, base_url="https://ota.test"):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
-    store.set_meta("cohort_salt", "test-secret")
+    store.set_meta("capability_secret", "test-secret")
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))
     settings = ServerSettings(base_url=base_url, swd_ids_verify_url="u",
                               swd_ids_verify_token="t")

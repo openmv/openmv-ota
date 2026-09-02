@@ -21,7 +21,7 @@ class _Verifier:
 def _app(tmp_path, scopes=("manage", "observe")):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
-    store.set_meta("cohort_salt", "x")
+    store.set_meta("capability_secret", "x")
     store.add_token(hash_token("admintok"), "ci", list(scopes))
     app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
                                     swd_ids_verify_token="t"),
@@ -577,7 +577,7 @@ def test_fleet_summary_reports_exposure_not_slot_names(tmp_path):
 def _two_accounts(tmp_path):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
-    store.set_meta("cohort_salt", "x")
+    store.set_meta("capability_secret", "x")
     for acc in ("acctA", "acctB"):
         store.add_account(acc, acc)
         store.add_token(hash_token("tok" + acc[-1]), acc,
@@ -626,7 +626,7 @@ def test_injected_website_auth_scopes_by_account(tmp_path):
     # honor whatever account that Principal carries (the hosted path, no admin_tokens rows).
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
-    store.set_meta("cohort_salt", "x")
+    store.set_meta("capability_secret", "x")
     store.upsert_device(device_id="dz", product_id=BID, account_id="acctZ")
     store.upsert_device(device_id="dq", product_id=BID, account_id="acctQ")
 
@@ -687,7 +687,7 @@ def test_account_isolation(tmp_path):
 def _live_app(tmp_path, scopes=("manage", "observe")):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
-    store.set_meta("cohort_salt", "x")
+    store.set_meta("capability_secret", "x")
     store.add_token(hash_token("admintok"), "ci", list(scopes))
     app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
                                     swd_ids_verify_token="t",

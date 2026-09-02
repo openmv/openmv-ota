@@ -59,25 +59,25 @@ def test_migrate_cli(tmp_path, monkeypatch, capsys):
 
 def test_init_cli_seeds_and_keeps_salt(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
-    monkeypatch.delenv("OPENMV_OTA_COHORT_SALT", raising=False)
+    monkeypatch.delenv("OPENMV_OTA_CAPABILITY_SECRET", raising=False)
     assert main(["server", "init"]) == 0
     assert "initialized (schema v" in capsys.readouterr().out
     s = _store(tmp_path)
-    salt = s.get_meta("cohort_salt")
+    salt = s.get_meta("capability_secret")
     s.close()
     assert salt and len(salt) == 32                  # secrets.token_hex(16)
     assert main(["server", "init"]) == 0             # idempotent: salt not regenerated
     s2 = _store(tmp_path)
-    assert s2.get_meta("cohort_salt") == salt
+    assert s2.get_meta("capability_secret") == salt
     s2.close()
 
 
 def test_init_uses_configured_salt(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
-    monkeypatch.setenv("OPENMV_OTA_COHORT_SALT", "fixed-salt")
+    monkeypatch.setenv("OPENMV_OTA_CAPABILITY_SECRET", "fixed-salt")
     assert main(["server", "init"]) == 0
     s = _store(tmp_path)
-    assert s.get_meta("cohort_salt") == "fixed-salt"
+    assert s.get_meta("capability_secret") == "fixed-salt"
     s.close()
 
 

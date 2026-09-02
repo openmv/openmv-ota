@@ -79,7 +79,7 @@ serves:
 | `OPENMV_OTA_CHECKIN_RATE_PER_MIN` | per-IP device rate limit (default 60; 0 disables) |
 | `OPENMV_OTA_POLL_AFTER_S` | the backoff devices are told before polling again (default 3600) |
 | `OPENMV_OTA_CAPABILITY_TTL` | lifetime of a download token (default 3600 s) |
-| `OPENMV_OTA_COHORT_SALT` | the HMAC secret that signs download tokens (the name is historical). It's what lets the capability gateway verify a download with no database lookup — so it must be the same for every worker (a token is usually verified by a different worker than minted it) and survive restarts (or a deploy would kill every in-flight download). `init` generates and persists one in the database if unset |
+| `OPENMV_OTA_CAPABILITY_SECRET` | the HMAC secret that signs download (capability) tokens. It's what lets the capability gateway verify a download with no database lookup — so it must be the same for every worker (a token is usually verified by a different worker than minted it) and survive restarts (or a deploy would kill every in-flight download). `init` generates and persists one in the database if unset |
 
 **Admin auth**
 

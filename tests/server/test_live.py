@@ -34,7 +34,7 @@ class _Verifier:
 def _app(tmp_path, *, registered=True, unregistered_type=False, **overrides):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
-    store.set_meta("cohort_salt", "test-secret")
+    store.set_meta("capability_secret", "test-secret")
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))
     settings = ServerSettings(base_url="https://ota.test", checkin_rate_per_min=0,
                               swd_ids_verify_url="u", swd_ids_verify_token="t",

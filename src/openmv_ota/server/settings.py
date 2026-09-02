@@ -14,7 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _SECRET_FIELDS = frozenset(
     {"s3_secret_access_key", "s3_access_key_id", "admin_bootstrap_token",
-     "swd_ids_verify_token", "cohort_salt", "live_token_secret", "datalake_token_secret"}
+     "swd_ids_verify_token", "capability_secret", "live_token_secret", "datalake_token_secret"}
 )
 
 
@@ -45,7 +45,7 @@ class ServerSettings(BaseSettings):
     admin_bootstrap_token: str = ""        # seeds the root admin token on first `server init`
     swd_ids_verify_url: str = ""           # the registration dependency -- required to serve
     swd_ids_verify_token: str = ""
-    cohort_salt: str = ""                  # the server HMAC secret (capability tokens); persisted if unset
+    capability_secret: str = ""            # signs the download (capability) tokens; persisted at init if unset
     # TEST-ONLY. Relaxes the server's OFFER-side anti-rollback (rollout.offers_update) so a
     # rollout can offer a release at/below a device's current version -- the one condition a
     # correct server never produces, which is exactly why the DEVICE's own anti-rollback (the

@@ -294,8 +294,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 def _bootstrap(store, settings) -> int:
     """Migrate + seed the server HMAC secret if unset. Idempotent."""
     version = store.migrate()
-    if not store.get_meta("cohort_salt"):
-        store.set_meta("cohort_salt", settings.cohort_salt or secrets.token_hex(16))
+    if not store.get_meta("capability_secret"):
+        store.set_meta("capability_secret", settings.capability_secret or secrets.token_hex(16))
     return version
 
 

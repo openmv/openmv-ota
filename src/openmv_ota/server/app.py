@@ -641,13 +641,13 @@ def _ranged(data: bytes, media_type: str, header: str | None) -> Response:
 def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_auth=None):
     """Build the ASGI app. Collaborators default to the settings-driven backends; the website
     injects its own. The server HMAC secret comes from the DB (seeded by ``server init``) or
-    ``OPENMV_OTA_COHORT_SALT`` -- required so capability tokens are stable across workers."""
+    ``OPENMV_OTA_CAPABILITY_SECRET`` -- required so capability tokens are stable across workers."""
     storage = storage if storage is not None else build_storage(settings)
     metastore = metastore if metastore is not None else build_metastore(settings)
     verifier = verifier if verifier is not None else build_verifier(settings)
-    secret = metastore.get_meta("cohort_salt") or settings.cohort_salt
+    secret = metastore.get_meta("capability_secret") or settings.capability_secret
     if not secret:
-        raise ServerError("no server secret -- run `server init` or set OPENMV_OTA_COHORT_SALT",
+        raise ServerError("no server secret -- run `server init` or set OPENMV_OTA_CAPABILITY_SECRET",
                           exit_code=2)
     if not settings.swd_ids_verify_url:
         print("note: no registration server configured -- serving ALL devices READ-ONLY "

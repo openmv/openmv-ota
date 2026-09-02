@@ -63,7 +63,7 @@ _RUN_SERVER = (
     "from openmv_ota.server.cli import _settings, _store, _bootstrap, _seed_admin_token\n"
     "from openmv_ota.server.app import create_app\n"
     "import uvicorn\n"
-    # migrate + cohort_salt (_bootstrap) AND seed the ADMIN_BOOTSTRAP_TOKEN into the fresh DB
+    # migrate + capability_secret (_bootstrap) AND seed the ADMIN_BOOTSTRAP_TOKEN into the fresh DB
     # (_seed_admin_token) -- exactly what `server init` does, so the harness's publish token works
     "s = _settings(); st = _store(s); _bootstrap(st, s); _seed_admin_token(st, s)\n"
     "app = create_app(s, metastore=st)\n"

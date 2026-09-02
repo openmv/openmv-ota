@@ -33,7 +33,7 @@ def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0,
          unregistered_type=False, downgrades=False, cors="", registrar="u"):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
-    store.set_meta("cohort_salt", SECRET)
+    store.set_meta("capability_secret", SECRET)
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))
     settings = ServerSettings(base_url=base_url, checkin_rate_per_min=rate,
                               swd_ids_verify_url=registrar, swd_ids_verify_token="t",
@@ -525,7 +525,7 @@ def test_gateway_redirects_to_presigned(tmp_path):
 
 def test_create_app_requires_secret(tmp_path):
     store = SqliteMetadataStore(":memory:")
-    store.migrate()                                          # no cohort_salt seeded
+    store.migrate()                                          # no capability_secret seeded
     with pytest.raises(ServerError, match="no server secret"):
         create_app(ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t"),
                    metastore=store, storage=LocalArtifactStorage(str(tmp_path)), verifier=_Verifier())
@@ -541,7 +541,7 @@ def test_create_app_injected_admin_auth(tmp_path):
     sentinel = object()
     store = SqliteMetadataStore(":memory:")
     store.migrate()
-    store.set_meta("cohort_salt", "x")
+    store.set_meta("capability_secret", "x")
     app = create_app(ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t"),
                      metastore=store, storage=LocalArtifactStorage(str(tmp_path)),
                      verifier=_Verifier(), admin_auth=sentinel)
@@ -551,7 +551,7 @@ def test_create_app_injected_admin_auth(tmp_path):
 def test_create_app_builds_defaults(tmp_path):
     s = SqliteMetadataStore(str(tmp_path / "ota.db"))
     s.migrate()
-    s.set_meta("cohort_salt", "x")
+    s.set_meta("capability_secret", "x")
     s.close()
     settings = ServerSettings(database_url="sqlite:///" + str(tmp_path / "ota.db"),
                               storage_location=str(tmp_path / "blobs"),

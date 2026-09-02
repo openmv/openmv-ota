@@ -31,7 +31,7 @@ class _Verifier:
 def _server(tmp_path, scopes=("publish", "manage", "observe")):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
-    store.set_meta("cohort_salt", "x")
+    store.set_meta("capability_secret", "x")
     store.add_token(hash_token("tok"), "ci", list(scopes))
     app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
                                     swd_ids_verify_token="t"),
