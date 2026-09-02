@@ -50,10 +50,17 @@ credential minted only when a registered device is offered a release, and **one 
 authorizes the whole bundle**: the manifest and every image/delta beside it resolve under
 the same `/d/{token}/` prefix, which is why the signed manifest's artifact URLs are
 relative filenames. A filename must match something the signed manifest declares —
-the token can't be used to fish for other stored objects. On s3 storage the response is a
-`302` to a short-lived presigned URL (bandwidth offloads to object storage); on local
-storage the bytes stream directly, honouring single-range `Range` requests so a device on
-a poor link can resume an interrupted download instead of restarting it.
+the token can't be used to fish for other stored objects.
+
+On s3 storage the response is a `302` to a short-lived **presigned URL**: the private
+object's address plus a signature the server computes with its own bucket credentials —
+a grant for one GET, on one object, for a few minutes, that storage verifies itself.
+The bucket is otherwise private (a plain GET on any object is refused), so the only
+path to the bytes runs through both capability layers: a valid gateway token buys a
+presigned URL, and nothing else does. Bandwidth offloads to object storage; no storage
+credential ever reaches a device. On local storage the bytes stream from the server
+directly instead, honouring single-range `Range` requests so a device on a poor link
+resumes an interrupted download instead of restarting it.
 
 **`POST /api/v1/feedback`** — the explicit terminal outcome of an offered update:
 `device_id`, `board`, `product_id`, `release_id`, and `status` (`installed` or `failed`,
