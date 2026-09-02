@@ -11,7 +11,7 @@
 # dfu-util / blhost cover the other flashers.
 #
 # Anything needing ROOT (the runner user, USB/serial groups + udev, git safe.directory, the
-# system build deps) belongs in the node image (see NODE_REQUIREMENTS.md), NOT here -- this script assumes only an
+# system build deps) belongs in the node image (see ci/README.md), NOT here -- this script assumes only an
 # unprivileged runner with python3 + git + a working toolchain on PATH.
 #
 # Usage:  eval "$(ci/hil/provision.sh <board> <checkout>)"
