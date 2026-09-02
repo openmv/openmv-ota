@@ -104,7 +104,7 @@ product lives; the sources ship in the package
 
 | Template | Who issues it | Covers |
 |---|---|---|
-| [`conformity-assessment-checklist.md.template`](../../src/openmv_ota/project/compliance_templates/conformity-assessment-checklist.md.template) | the customer, in their technical documentation | the Annex I tables above, as a fill-in checklist with a "customer must add" column |
-| [`eu-doc.md.template`](../../src/openmv_ota/project/compliance_templates/eu-doc.md.template) | the customer, placing the product on the market | the EU Declaration of Conformity behind the CE marking (CRA Art. 28 / Annex V) |
-| [`vuln-disclosure-policy.md.template`](../../src/openmv_ota/project/compliance_templates/vuln-disclosure-policy.md.template) | the vendor, published | coordinated disclosure — CRA Annex I Part II (4)(5)(6) |
-| [`security.txt.template`](../../src/openmv_ota/project/compliance_templates/security.txt.template) | the vendor, served at `/.well-known/security.txt` | RFC 9116 contact + a pointer to the disclosure policy |
+| [`conformity-assessment-checklist.md`](../../src/openmv_ota/project/compliance_templates/conformity-assessment-checklist.md) | the customer, in their technical documentation | the Annex I tables above, as a fill-in checklist with a "customer must add" column |
+| [`eu-doc.md`](../../src/openmv_ota/project/compliance_templates/eu-doc.md) | the customer, placing the product on the market | the EU Declaration of Conformity behind the CE marking (CRA Art. 28 / Annex V) |
+| [`vuln-disclosure-policy.md`](../../src/openmv_ota/project/compliance_templates/vuln-disclosure-policy.md) | the vendor, published | coordinated disclosure — CRA Annex I Part II (4)(5)(6) |
+| [`security.txt`](../../src/openmv_ota/project/compliance_templates/security.txt) | the vendor, served at `/.well-known/security.txt` | RFC 9116 contact + a pointer to the disclosure policy |

@@ -29,7 +29,8 @@ lays out how this stack lines up with the Cyber Resilience Act and RED 3.3 —
 what's covered, and the [residual threats](docs/compliance/residual-threats.md)
 that aren't — and `project new --ota` scaffolds the fill-in templates
 (conformity checklist, EU DoC, disclosure policy, security.txt) into your
-project's `compliance/`.
+project's `compliance/`. Found a vulnerability in this stack itself? See
+[the security policy](SECURITY.md).
 
 ## Installation
 

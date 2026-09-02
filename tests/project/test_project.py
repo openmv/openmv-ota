@@ -316,15 +316,15 @@ def test_create_ota_scaffolds_compliance_templates(tmp_path, make_firmware, make
                       ota=True, ota_keys=2, factory_keys=1)
     d = root / "compliance"
     names = sorted(p.name for p in d.iterdir())
-    assert names == ["conformity-assessment-checklist.md.template", "eu-doc.md.template",
-                     "security.txt.template", "vuln-disclosure-policy.md.template"]
-    assert "{{PRODUCT_NAME}}" in (d / "eu-doc.md.template").read_text()
+    assert names == ["conformity-assessment-checklist.md", "eu-doc.md",
+                     "security.txt", "vuln-disclosure-policy.md"]
+    assert "{{PRODUCT_NAME}}" in (d / "eu-doc.md").read_text()
     # A filled-in (renamed-or-edited) file survives new --force; templates are re-seeded
     # only when absent.
-    (d / "eu-doc.md.template").write_text("filled in\n")
+    (d / "eu-doc.md").write_text("filled in\n")
     _create(tmp_path, make_firmware, make_sdk, repo=repo, root=root, force=True,
             boards=["OPENMV_N6"], ota=True, ota_keys=2, factory_keys=1)
-    assert (d / "eu-doc.md.template").read_text() == "filled in\n"
+    assert (d / "eu-doc.md").read_text() == "filled in\n"
 
 
 def test_create_preserves_existing_app(tmp_path, make_firmware, make_sdk):
