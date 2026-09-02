@@ -11,6 +11,10 @@ Two defenses against an attacker looping the id-space:
 * **positive-only caching** -- a registered result is cached (bounded by the real fleet); a
   negative is *never* cached (an unbounded negative cache would be the very exhaustion we're
   defending against). Rate-limiting the check-in edge is the caller's job (before ``verify``).
+  The TTL (6 h) is deliberately LONGER than the default poll interval (1 h): registration
+  state effectively never changes, and a TTL shorter than the poll cadence would make the
+  cache a no-op -- every check-in paying a registry round trip for nothing. A revoked
+  registration takes effect within one TTL.
 * **fail-closed** -- any error/timeout/non-200 from swd-ids is treated as *not registered*, so an
   outage can't be leveraged into serving.
 """
@@ -38,7 +42,7 @@ class RegistrationVerifier:
     """``client`` is an ``httpx.Client``-like object (injected; ``build_verifier`` supplies a real
     one). ``now`` is a monotonic clock seam for the cache TTL."""
 
-    def __init__(self, url: str, token: str, client, *, cache_ttl: float = 300.0,
+    def __init__(self, url: str, token: str, client, *, cache_ttl: float = 6 * 3600.0,
                  timeout: float = 5.0, now=time.monotonic):
         self._url = url
         self._token = token

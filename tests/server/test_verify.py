@@ -100,3 +100,13 @@ def test_negative_result_never_cached():
 def test_build_verifier_from_settings():
     v = build_verifier(ServerSettings(swd_ids_verify_url="https://swd", swd_ids_verify_token="tk"))
     assert isinstance(v, RegistrationVerifier) and v._url == "https://swd" and v._token == "tk"
+
+
+def test_default_cache_ttl_outlives_the_default_poll_interval():
+    """A TTL shorter than the poll cadence makes the cache a no-op: every check-in pays
+    a registry round trip for nothing (the 300s original did exactly that against the
+    3600s default poll). Registration effectively never changes; hours is honest."""
+    from openmv_ota.server.settings import ServerSettings
+
+    v = RegistrationVerifier("u", "t", _Client(_Resp(200, {"registered": False})))
+    assert v._ttl > ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t").poll_after_s
