@@ -87,8 +87,7 @@ Not part of the walkthrough, but referenced from it:
   [architecture](../reference/architecture.md), the [signed trailer
   format](../reference/trailer.md), the [ROMFS image
   anatomy](../reference/romfs-format.md), the [threat model](../reference/threat-model.md),
-  [CI](../reference/ci.md), the [v2 design](../reference/v2-plan.md) and its
-  [hardware results](../reference/v2-hardware-results.md).
+  and [CI](../reference/ci.md).
 - [`docs/compliance/`](../compliance/) — the [CRA / RED
   mapping](../compliance/cra-red-alignment.md) and the shipped fill-in templates.
 

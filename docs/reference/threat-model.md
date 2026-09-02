@@ -1,7 +1,6 @@
 # Threat model
 
-> [architecture.md](architecture.md) and [v2-plan.md](v2-plan.md) give the design
-> this defends.
+> [architecture.md](architecture.md) gives the design this defends.
 
 **In scope:** OTA-borne threats — signed-or-unsigned artefacts pushed over a
 possibly-controlled network. Defended with ECDSA signatures (COSE algorithm ids,
@@ -19,6 +18,12 @@ boards can do anything — that's accepted.
 
 **Explicit non-goals:** image confidentiality (no encryption), multi-signature per
 image, in-field OTA-only key revocation, persistent counters outside the partition.
+
+**Inherent to A/B (mcuboot shares it):** an attacker who can force a trial to
+fail forces a fall back to the *previous update*. The floor that bounds the
+damage is "the last working release" rather than "what shipped years ago", and
+anti-rollback still gates every install, so a replayed old release cannot be
+installed.
 
 **Key custody (operational, assumed not enforced by tooling):** private signing
 keys (`keys/private/*.pem`, both `ota` and `factory` roles) never leave the party

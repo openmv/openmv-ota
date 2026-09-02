@@ -25,8 +25,8 @@ install → project → build → flash → device runtime → update server. Th
 documentation lives there and only there, so it has one place to be right.
 Design and engineering notes are in [docs/reference/](docs/reference/)
 (the [architecture](docs/reference/architecture.md), the
-[v2 slot model](docs/reference/v2-plan.md), the
-[hardware results](docs/reference/v2-hardware-results.md)).
+[signed trailer format](docs/reference/trailer.md), the
+[threat model](docs/reference/threat-model.md)).
 
 - [Status](#status)
 - [Installation](#installation)
@@ -49,7 +49,7 @@ server** (`openmv-ota server`) hosts releases and drives fleet rollouts, with
 `openmv-ota client` as its admin CLI. The whole path runs on real hardware — every board in
 the HIL fleet exercises its own regression set on each pull request, negative paths included
 (corrupt image, bad signature, untrusted key, anti-rollback, no bootable slot). See
-[docs/reference/v2-hardware-results.md](docs/reference/v2-hardware-results.md).
+[docs/reference/ci.md](docs/reference/ci.md).
 
 ## Installation
 
