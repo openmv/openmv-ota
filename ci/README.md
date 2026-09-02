@@ -6,7 +6,7 @@ jobs: `test` (Linux **and** macOS), `cshim`, `qemu`, `build`, and `hil`.
 `hil` is **manual-only** (`workflow_dispatch`): it builds firmware on a board's own
 runner. The gate that matters is `hil-ota.yml`, which runs each board's full OTA
 regression on the **pull request**, before the merge -- it is documented in
-[../ci/hil/README.md](../../ci/hil/README.md).
+[hil/README.md](hil/README.md).
 
 ## `test` — unit tests + coverage
 
@@ -40,7 +40,7 @@ The **update path** is covered at every layer: the signed-manifest codec + polic
 copy-with-difference **delta codec** (`ota.delta` — make/apply across identical, scattered-
 edit, shift, insert/delete, and truncation cases), and the device installer's *mirrors* of
 both (pinned byte-for-byte to the host codecs). A **black-box end-to-end test**
-([`tests/build/test_integration.py`](../../tests/build/test_integration.py)) then publishes a
+([`tests/build/test_integration.py`](../tests/build/test_integration.py)) then publishes a
 real base→new image + delta + manifest with the build tools and consumes them through the
 installer's own parse / select / streaming delta-apply, asserting the manifest's sha256+size
 match the image and the install-time hash check passes — catching cross-tool drift.
@@ -71,7 +71,7 @@ MPS3 partition specifically exercises the second slot **past the 16 MiB mark** �
 32-bit MicroPython a `memoryview`'s offset field is only 24-bit, so boot.py reads
 each slot at its absolute XIP address via `uctypes.bytearray_at` rather than
 slicing one whole-partition memoryview (which would overflow on the 24 MiB N6/AE3
-partitions). [`ci/qemu_boot_test.py`](../../ci/qemu_boot_test.py)
+partitions). [`ci/qemu_boot_test.py`](qemu_boot_test.py)
 drives the device over the QEMU serial REPL via the firmware's bundled `mpremote`
 (pasting a script — no filesystem mount) and checks six scenarios (the last folds in the
 manifest + delta paths):
@@ -141,7 +141,7 @@ or asserted to fail *cleanly* (a single structural error, never a traceback or a
 wall of `make` output).
 
 The per-board logic is a **black-box** bash driver,
-[`ci/build_boards.sh`](../../ci/build_boards.sh): it invokes only the installed
+[`ci/build_boards.sh`](build_boards.sh): it invokes only the installed
 `openmv-ota` CLI (plus standard unix tools — `unzip`, `awk`, `wc`) exactly as a
 pip-installed user would. Nothing in CI imports the Python package. Each board's
 expected capability is a fixed table in the script (known board → known

@@ -50,7 +50,7 @@ server** (`openmv-ota server`) hosts releases and drives fleet rollouts, with
 `openmv-ota client` as its admin CLI. The whole path runs on real hardware — every board in
 the HIL fleet exercises its own regression set on each pull request, negative paths included
 (corrupt image, bad signature, untrusted key, anti-rollback, no bootable slot). See
-[docs/reference/ci.md](docs/reference/ci.md).
+[ci/README.md](ci/README.md).
 
 ## Installation
 

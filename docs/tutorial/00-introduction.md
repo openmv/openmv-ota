@@ -86,7 +86,7 @@ Not part of the walkthrough, but referenced from it:
 - [`docs/reference/`](../reference/) — the engineering notes: the
   [signed trailer
   format](../reference/trailer.md), the [ROMFS image
-  anatomy](../reference/romfs-format.md), and [CI](../reference/ci.md).
+  anatomy](../reference/romfs-format.md).
 - [`docs/compliance/`](../compliance/) — the [CRA / RED
   mapping](../compliance/cra-red-alignment.md), the
   [residual-threats register](../compliance/residual-threats.md), and the shipped
