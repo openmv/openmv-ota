@@ -693,7 +693,8 @@ def _live_app(tmp_path, scopes=("manage", "observe")):
                                     swd_ids_verify_token="t",
                                     live_relay_url="https://live.test",
                                     live_token_secret="s3cret",
-                                    datalake_url="https://data.test"),
+                                    datalake_url="https://data.test",
+                                    datalake_token_secret="dl-s3cret"),
                      metastore=store, storage=LocalArtifactStorage(str(tmp_path / "blobs")),
                      verifier=_Verifier())
     return app, store
@@ -714,8 +715,8 @@ def test_viewer_grant_returns_watch_and_read_urls(tmp_path):
     body = r.json()
     assert set(body["streams"]) == {"0", "thermal"}      # persisted at check-in
     assert body["streams"]["0"]["watch_url"].startswith("wss://live.test/watch/dev1/0?token=")
-    assert body["topics_url"] == "https://data.test/api/v1/topics/dev1"
-    assert body["token"]
+    assert body["datalake"]["topics_url"] == "https://data.test/api/v1/topics/dev1"
+    assert body["token"] and body["datalake"]["token"] != body["token"]
 
 
 def test_viewer_grant_needs_the_observe_scope(tmp_path):

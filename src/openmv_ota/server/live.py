@@ -52,11 +52,11 @@ def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "")
     """The grant a DASHBOARD needs to read one device: a ``viewer``-role token
     plus ready-made URLs. None when Live is not configured.
 
-    The same token opens both halves of the read path -- the relay's
-    ``/watch/{device}/{stream}`` WebSocket and the datalake's read endpoints --
-    because both verify the identical ``role:device_id:exp`` MAC. It is scoped to
-    ONE device and expires, so it is safe to hand to a browser; the signing
-    secret never leaves the server.
+    The relay half rides ``token``; when the datalake is configured, its read
+    endpoints get their OWN ``viewer`` token under ``datalake`` -- the two
+    services sign with separate secrets, deliberately, so they rotate and fail
+    independently. Every token is scoped to ONE device and expires, so the grant
+    is safe to hand to a browser; the signing secrets never leave the server.
 
     Note the asymmetry with :func:`camera_grant`: a camera's token also covers
     ``/poll`` (role ``camera``), while a viewer may only watch. A viewer token
@@ -75,13 +75,18 @@ def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "")
         },
         "expires_in_s": settings.live_token_ttl,
     }
-    if datalake_url:
-        # The read side: topics for the pane list, logs/{topic} for backscroll.
-        # Both take the same token as a bearer header.
+    if datalake_url and settings.datalake_token_secret:
+        # The read side: topics for the pane list, logs/{topic} for backscroll --
+        # bearer-authed with the DATALAKE's own viewer token, not the relay's.
         dl = datalake_url.rstrip("/")
-        grant["topics_url"] = "%s/api/v1/topics/%s" % (dl, device_id)
-        grant["logs_url"] = "%s/api/v1/logs/%s" % (dl, device_id)   # + /{topic}
-        grant["series_url"] = "%s/api/v1/series/%s" % (dl, device_id)  # + /{topic}
+        grant["datalake"] = {
+            "token": mint_token(settings.datalake_token_secret, "viewer", device_id,
+                                settings.datalake_token_ttl),
+            "topics_url": "%s/api/v1/topics/%s" % (dl, device_id),
+            "logs_url": "%s/api/v1/logs/%s" % (dl, device_id),      # + /{topic}
+            "series_url": "%s/api/v1/series/%s" % (dl, device_id),  # + /{topic}
+            "expires_in_s": settings.datalake_token_ttl,
+        }
     return grant
 
 

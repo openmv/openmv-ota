@@ -13,7 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _SECRET_FIELDS = frozenset(
     {"s3_secret_access_key", "s3_access_key_id", "admin_bootstrap_token",
-     "swd_ids_verify_token", "cohort_salt"}
+     "swd_ids_verify_token", "cohort_salt", "live_token_secret", "datalake_token_secret"}
 )
 
 
@@ -69,11 +69,19 @@ class ServerSettings(BaseSettings):
         default="",
         validation_alias=AliasChoices("OPENMV_OTA_LIVE_TOKEN_SECRET", "OPENMV_LIVE_TOKEN_SECRET"))
     live_token_ttl: int = 86400            # seconds; outlives a deep-sleep cycle, renewed each check-in
-    # OpenMV datalake: when set (with the shared secret above), registered devices get an
-    # `ingest` grant each check-in -- a ready-made ingest URL + token for logs/telemetry.
+    # OpenMV datalake: when BOTH are set, registered devices get an `ingest` grant each
+    # check-in -- a ready-made ingest URL + token for logs/telemetry. Deliberately its
+    # OWN secret and TTL, decoupled from Live: the two integrations rotate (and fail)
+    # independently, and the datalake service already reads
+    # OPENMV_DATALAKE_TOKEN_SECRET as its primary env name.
     datalake_url: str = Field(             # public origin, e.g. https://data.cloud.openmv.io
         default="",
         validation_alias=AliasChoices("OPENMV_OTA_DATALAKE_URL", "OPENMV_DATALAKE_URL"))
+    datalake_token_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENMV_OTA_DATALAKE_TOKEN_SECRET",
+                                      "OPENMV_DATALAKE_TOKEN_SECRET"))
+    datalake_token_ttl: int = 86400        # seconds; renewed each check-in, like Live's
     # Browser origins allowed to call this API cross-origin, comma-separated, e.g.
     # OPENMV_OTA_CORS_ALLOW_ORIGINS="https://cloud.openmv.io,https://staging.openmv.io".
     # EMPTY BY DEFAULT, which means no CORS headers at all -- a browser on another origin simply

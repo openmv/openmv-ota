@@ -66,8 +66,8 @@ def test_ingest_grant_none_unless_configured(overrides):
 
 def test_ingest_grant_binds_account_in_the_token():
     s = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
-                       datalake_url=DATALAKE + "/", live_token_secret=SECRET,
-                       live_token_ttl=1234)
+                       datalake_url=DATALAKE + "/", datalake_token_secret=SECRET,
+                       datalake_token_ttl=1234)
     g = datalog.ingest_grant(s, "acct1", "cam-42")
     assert g["expires_in_s"] == 1234
     assert g["url"] == "https://data.cloud.openmv.io/api/v1/ingest/acct1/cam-42"
@@ -77,7 +77,7 @@ def test_ingest_grant_binds_account_in_the_token():
 
 def test_ingest_grant_empty_account_falls_back_to_default():
     s = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
-                       datalake_url=DATALAKE, live_token_secret=SECRET)
+                       datalake_url=DATALAKE, datalake_token_secret=SECRET)
     g = datalog.ingest_grant(s, "", "cam-42")
     assert g["url"].endswith("/api/v1/ingest/default/cam-42")
     assert relay_verify(g["token"], "ingest", "default/cam-42")
@@ -86,7 +86,7 @@ def test_ingest_grant_empty_account_falls_back_to_default():
 # --- the check-in integration ------------------------------------------------
 
 def test_checkin_carries_ingest_grant_when_configured(tmp_path):
-    app = _app(tmp_path, datalake_url=DATALAKE, live_token_secret=SECRET)
+    app = _app(tmp_path, datalake_url=DATALAKE, datalake_token_secret=SECRET)
     r = TestClient(app).post("/api/v1/check", json=CHECKIN)
     assert r.status_code == 200
     g = r.json()["ingest"]
@@ -100,14 +100,14 @@ def test_checkin_without_datalake_config_omits_ingest(tmp_path):
 
 
 def test_unregistered_device_gets_no_ingest_grant(tmp_path):
-    app = _app(tmp_path, registered=False, datalake_url=DATALAKE, live_token_secret=SECRET)
+    app = _app(tmp_path, registered=False, datalake_url=DATALAKE, datalake_token_secret=SECRET)
     r = TestClient(app).post("/api/v1/check", json=CHECKIN)
     assert "ingest" not in r.json()
 
 
 def test_unregistered_board_type_gets_no_ingest_grant(tmp_path):
     app = _app(tmp_path, registered=False, unregistered_type=True,
-               datalake_url=DATALAKE, live_token_secret=SECRET)
+               datalake_url=DATALAKE, datalake_token_secret=SECRET)
     r = TestClient(app).post("/api/v1/check",
                              json={"device_id": "legacy-1", "product_id": 7, "board": "OPENMV2"})
     assert "ingest" not in r.json()

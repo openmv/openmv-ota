@@ -99,8 +99,9 @@ serves:
 | env var | what it does |
 |---|---|
 | `OPENMV_LIVE_RELAY_URL` + `OPENMV_LIVE_TOKEN_SECRET` | when both are set, every registered device's check-in answer carries a `live` grant: ready-made per-stream URLs (WebSocket push + a deep-sleep wake poll) under one expiring device token, renewed each check-in |
-| `OPENMV_DATALAKE_URL` (reuses the same secret) | adds an `ingest` grant the same way: an ingest URL + token whose subject binds the *account*, so a device can't attribute data to another tenant |
-| `OPENMV_OTA_LIVE_TOKEN_TTL` | grant lifetime (default 24 h) |
+| `OPENMV_OTA_LIVE_TOKEN_TTL` | Live grant lifetime (default 24 h) |
+| `OPENMV_DATALAKE_URL` + `OPENMV_DATALAKE_TOKEN_SECRET` | when both are set, check-ins also carry an `ingest` grant: an ingest URL + token whose subject binds the *account*, so a device can't attribute data to another tenant. Deliberately its **own** secret — the two integrations rotate and fail independently |
+| `OPENMV_OTA_DATALAKE_TOKEN_TTL` | ingest grant lifetime (default 24 h) |
 
 Unregistered and read-only-bypassed boards never receive a grant.
 

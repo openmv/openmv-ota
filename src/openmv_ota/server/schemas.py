@@ -349,14 +349,16 @@ class Published(BaseModel):
 
 class ViewerGrant(_Row):
     """A short-lived viewer token plus the URLs it opens. Watch-only: it can never publish
-    frames or ingest data (see ``live.camera_grant`` for the asymmetry)."""
+    frames or ingest data (see ``live.camera_grant`` for the asymmetry). ``token`` opens
+    the relay's watch URLs; the datalake read endpoints ride their OWN token under
+    ``datalake`` -- the two services sign with separate secrets."""
 
     token: str = ""
     streams: dict[str, dict[str, str]] = {}
     expires_in_s: int = 0
-    topics_url: str | None = None
-    logs_url: str | None = None
-    series_url: str | None = None
+    datalake: dict | None = None
+    """``{token, topics_url, logs_url, series_url, expires_in_s}`` when the datalake is
+    configured; absent otherwise."""
 
 
 # --- device-facing ------------------------------------------------------------------------------

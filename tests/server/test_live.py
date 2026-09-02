@@ -202,15 +202,27 @@ def test_viewer_grant_is_scoped_to_one_device():
     assert a != b                            # the device id is inside the MAC
 
 
-def test_viewer_grant_includes_the_datalake_read_urls_when_configured():
-    grant = live.viewer_grant(_settings(), "dev1", datalake_url="https://data.test/")
-    assert grant["topics_url"] == "https://data.test/api/v1/topics/dev1"
-    assert grant["logs_url"] == "https://data.test/api/v1/logs/dev1"
-    assert grant["series_url"] == "https://data.test/api/v1/series/dev1"
+def test_viewer_grant_includes_the_datalake_half_with_its_own_token():
+    """The datalake read endpoints verify against the DATALAKE's secret, so the grant
+    carries a second viewer token under `datalake` -- decoupled from the relay's."""
+    s = _settings(datalake_token_secret="dl-secret")
+    grant = live.viewer_grant(s, "dev1", datalake_url="https://data.test/")
+    dl = grant["datalake"]
+    assert dl["topics_url"] == "https://data.test/api/v1/topics/dev1"
+    assert dl["logs_url"] == "https://data.test/api/v1/logs/dev1"
+    assert dl["series_url"] == "https://data.test/api/v1/series/dev1"
+    assert dl["token"] != grant["token"]          # separate secrets, separate tokens
+    exp, mac = dl["token"].split(".", 1)
+    want = hmac.new(b"dl-secret", b"viewer:dev1:%d" % int(exp),
+                    hashlib.sha256).hexdigest()
+    assert mac == want                            # signed with the DATALAKE's secret
 
 
-def test_viewer_grant_omits_read_urls_without_a_datalake():
-    assert "topics_url" not in live.viewer_grant(_settings(), "dev1")
+def test_viewer_grant_omits_the_datalake_half_without_its_secret():
+    # a datalake URL alone is not enough -- an un-signable half is omitted, not broken
+    assert "datalake" not in live.viewer_grant(
+        _settings(), "dev1", datalake_url="https://data.test/")
+    assert "datalake" not in live.viewer_grant(_settings(), "dev1")
 
 
 def test_viewer_grant_is_none_when_live_is_unconfigured():
