@@ -5,9 +5,11 @@ from __future__ import annotations
 from openmv_ota.server.settings import ServerSettings
 
 
-def test_missing_reports_required_registration_fields():
+def test_registration_is_optional_not_missing():
+    """A self-host that cannot reach OpenMV's registration server still deploys -- it
+    degrades to read-only serving instead of failing preflight."""
     s = ServerSettings(swd_ids_verify_url="", swd_ids_verify_token="", storage_backend="local")
-    assert set(s.missing()) == {"swd_ids_verify_url", "swd_ids_verify_token"}
+    assert s.missing() == []
 
 
 def test_missing_empty_when_configured():

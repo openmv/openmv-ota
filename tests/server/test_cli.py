@@ -30,6 +30,7 @@ def test_check_ok(monkeypatch, capsys):
 
 def test_check_missing_settings(monkeypatch, capsys):
     _clear(monkeypatch)
+    monkeypatch.setenv("OPENMV_OTA_STORAGE_BACKEND", "s3")     # s3 without a bucket
     assert main(["server", "check"]) == 2
     assert "missing required settings" in capsys.readouterr().err
 

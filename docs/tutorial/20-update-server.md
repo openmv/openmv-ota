@@ -41,10 +41,13 @@ interval. In order:
 
 1. **Rate limit** per client IP (429 with a retry hint when exceeded).
 2. **Registration gate** — unregistered pairs are answered `{update: false}` and leave
-   nothing behind. A short list of board types the registry structurally never registers
-   (legacy Arduino boards, pre-registration M4s) bypasses the check and is served OTA
-   **read-only**: offers work, but no device row is written, so a fake id still can't
-   grow the database.
+   nothing behind. A short list of board types the registry structurally never
+   registers bypasses the check and is served OTA **read-only**: offers work, but no
+   device row is written, so a fake id still can't grow the database. A deployment
+   with **no registration server attached at all** — a self-host that can't reach
+   OpenMV's — serves *every* device that same read-only way: updates flow, nothing is
+   logged. Data collection is the gate's privilege, because without the gate every
+   stored row would be attacker-growable.
 3. **Account binding** — the device's account is learned from its first valid check-in
    and **sticky** from then on (an admin `bind` overrides it). A later boot that reports
    a different or empty account — a factory-state fallback image, say — can't strand the

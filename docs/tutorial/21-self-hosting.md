@@ -66,11 +66,11 @@ serves:
 |---|---|
 | `DATABASE_URL` / `OPENMV_OTA_DATABASE_URL` | `postgresql://…` (prod) or `sqlite:///./ota.db` (dev). Holds devices, releases, rollouts, accounts, tokens, audit |
 
-**Registration (required)**
+**Registration (recommended)**
 
 | env var | what it does |
 |---|---|
-| `OPENMV_OTA_SWD_IDS_VERIFY_URL`, `OPENMV_OTA_SWD_IDS_VERIFY_TOKEN` | the registration verify endpoint + its OpenMV-issued token |
+| `OPENMV_OTA_SWD_IDS_VERIFY_URL`, `OPENMV_OTA_SWD_IDS_VERIFY_TOKEN` | the registration verify endpoint + its OpenMV-issued token. **Leave both unset and the server still works, read-only**: updates are served to every device, but nothing is logged — no device registry, telemetry, or grants (`server run` says so at startup). Attach registration to get the fleet-tracking half of the product |
 | `OPENMV_OTA_BOARD_CODE_OVERRIDES` | JSON map to add/correct firmware-name → registration-code translations without a redeploy |
 | `OPENMV_OTA_UNVERIFIED_BOARDS` | JSON list of board names the registry never registers; served OTA read-only: offers work but no device row is written ([page 20](20-update-server.md) walks the gate). Defaults to the known set — override to change it |
 

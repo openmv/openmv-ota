@@ -503,10 +503,26 @@ def check(checkin: CheckIn, request: Request):
         return JSONResponse(nothing, status_code=429,
                             headers={"Retry-After": str(st.settings.poll_after_s)})
 
+    if not st.settings.swd_ids_verify_url:
+        # NO REGISTRATION SERVER ATTACHED (a self-host that cannot reach OpenMV's
+        # registrar). The default policy is READ-ONLY serving for every device: offers
+        # work -- scoped by the account the device claims, which is safe because a
+        # mis-claimed offer still cannot install (firmware-baked keys) -- but nothing
+        # is written: no device registry, no telemetry, no grants. Data collection is
+        # the registration gate's privilege, because without the gate every row would
+        # be attacker-growable.
+        _, rel, offered, manifest_url = _decide(st, checkin, "__default__",
+                                                account_id=checkin.account_id)
+        if manifest_url:
+            return {"update": True, "manifest_url": manifest_url,
+                    "release_id": rel["release_id"], "poll_after_s": st.settings.poll_after_s}
+        return nothing
+
     if checkin.board in st.settings.unverified_boards:
-        # A board type swd-ids never registers (legacy Arduino, pre-registration M4). Serve OTA
-        # READ-ONLY: skip the registration check AND the device-registry write, so a fake id can't
-        # grow the DB -- zero footprint preserved, at the cost of no fleet tracking for these boards.
+        # A board type the registry structurally never registers. Serve OTA READ-ONLY:
+        # skip the registration check AND the device-registry write, so a fake id can't
+        # grow the DB -- zero footprint preserved, at the cost of no fleet tracking for
+        # these boards.
         _, rel, offered, manifest_url = _decide(st, checkin, "__default__")
         if manifest_url:
             return {"update": True, "manifest_url": manifest_url,
@@ -562,6 +578,8 @@ def feedback(report: Feedback, request: Request):
                             headers={"Retry-After": str(st.settings.poll_after_s)})
     if report.status not in ("installed", "failed"):
         raise HTTPException(status_code=400, detail="status must be 'installed' or 'failed'")
+    if not st.settings.swd_ids_verify_url:
+        return {"ok": False}          # no registrar attached -> read-only: nothing is logged
     if report.board in st.settings.unverified_boards or not _verify(st, report).registered:
         return {"ok": False}                                    # untracked / unregistered -> no write
     st.metastore.record_deployment(
@@ -632,6 +650,9 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     if not secret:
         raise ServerError("no server secret -- run `server init` or set OPENMV_OTA_COHORT_SALT",
                           exit_code=2)
+    if not settings.swd_ids_verify_url:
+        print("note: no registration server configured -- serving ALL devices READ-ONLY "
+              "(offers work; no device registry, telemetry, or grants)", file=sys.stderr)
     if settings.test_offer_downgrades:      # loud: a real deployment must never boot with this on
         print("WARNING: test_offer_downgrades is ON -- the server will OFFER anti-rollback "
               "downgrades (a TEST-ONLY hook; devices still reject them). Never in production.",

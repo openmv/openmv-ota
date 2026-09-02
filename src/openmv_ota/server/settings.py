@@ -113,10 +113,10 @@ class ServerSettings(BaseSettings):
             need.append("storage_backend (local|s3)")
         if self.storage_backend == "s3" and not self.s3_bucket:
             need.append("s3_bucket")
-        if not self.swd_ids_verify_url:
-            need.append("swd_ids_verify_url")
-        if not self.swd_ids_verify_token:
-            need.append("swd_ids_verify_token")
+        # Registration is deliberately NOT required: a self-host that cannot reach
+        # OpenMV's registration server still works, degraded to READ-ONLY serving
+        # (offers work; no device registry, telemetry, or grants). create_app() and
+        # `server check` both say so loudly instead of failing.
         return need
 
     def summary(self) -> list[str]:

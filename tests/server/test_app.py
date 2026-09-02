@@ -29,13 +29,13 @@ class _Verifier:
 
 
 def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0, unverified=(),
-         downgrades=False, cors=""):
+         downgrades=False, cors="", registrar="u"):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("cohort_salt", SECRET)
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))
     settings = ServerSettings(base_url=base_url, checkin_rate_per_min=rate,
-                              swd_ids_verify_url="u", swd_ids_verify_token="t",
+                              swd_ids_verify_url=registrar, swd_ids_verify_token="t",
                               unverified_boards=set(unverified),
                               test_offer_downgrades=downgrades,
                               cors_allow_origins=cors)
@@ -109,6 +109,39 @@ def test_unverified_board_served_readonly_zero_footprint(tmp_path):
     assert v.calls == 0                                      # verify was skipped
     assert store.get_device("dev1") is None                 # zero footprint — no device row
     assert store.get_rollout("ro1")["attempted"] == 0       # and no rollout accounting
+
+
+def test_no_registrar_serves_everyone_readonly(tmp_path, capsys):
+    """A self-host with no registration server attached (it may not be able to reach
+    OpenMV's) still serves updates -- READ-ONLY: offers work, scoped by the account the
+    device claims, but nothing is logged: no device row, no rollout accounting, no
+    feedback rows, no grants. Data collection is the registration gate's privilege."""
+    app, store, storage, v = _app(tmp_path, registered=False, registrar="")
+    _seed(store, storage=storage, percent=100)
+    c = TestClient(app)
+    r = c.post("/api/v1/check", json=_checkin())
+    assert r.json()["update"] is True                        # served
+    assert v.calls == 0                                      # never asked a registrar
+    assert store.get_device("dev1") is None                  # nothing written
+    assert store.get_rollout("ro1")["attempted"] == 0
+    assert "live" not in r.json() and "ingest" not in r.json()
+
+    fb = c.post("/api/v1/feedback", json={
+        "device_id": "dev1", "product_id": 7, "board": "OPENMV_N6",
+        "release_id": "rel1", "status": "installed"})
+    assert fb.json() == {"ok": False}                        # read-only: not logged
+    assert store.deployment_counts("rel1") == {"installed": 0, "failed": 0}
+
+
+def test_no_registrar_offer_scopes_by_claimed_account(tmp_path):
+    """Without a registrar there is no sticky binding, so the CLAIMED account scopes the
+    offer -- safe, because a mis-claimed offer still cannot install (firmware-baked keys).
+    A device claiming another account gets that account's releases or nothing, never a
+    cross-account leak of yours."""
+    app, store, storage, v = _app(tmp_path, registered=False, registrar="")
+    _seed(store, storage=storage, percent=100)               # release under account ''
+    r = TestClient(app).post("/api/v1/check", json=_checkin(account_id="acct_other"))
+    assert r.json()["update"] is False                       # '' release never offered to them
 
 
 def test_unverified_board_no_rollout_returns_nothing(tmp_path):
