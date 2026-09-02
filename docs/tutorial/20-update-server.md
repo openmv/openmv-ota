@@ -46,7 +46,9 @@ When `client release publish` uploads a release, the server does exactly three t
    at `artifacts/<release_id>/<filename>` — *filename* being exactly what the signed
    manifest declares, because that name is how a device will later ask for it.
 3. **Records a release row** in the database: the id, the identity fields, the
-   representation list, and the storage keys above.
+   representation list, and the storage keys above. (The keys are names *inside the
+   bucket* — a device never sees or constructs them; the URL a device gets is the
+   gateway's, below.)
 
 That's all — no unpacking, no re-signing, no transformation. The row is the join point
 for everything after: rollouts and pins reference the release id, and the download
@@ -112,10 +114,14 @@ become a download like this:
    `artifacts/<release_id>/<filename>` key publish stored — which is why a filename
    must match something the signed manifest declares (the token can't fish for other
    objects).
-5. **The bytes stream from storage.** On s3-backed deployments the gateway answers
-   with a `302` to a short-lived presigned URL, so the multi-megabyte transfer is
-   carried by object storage, not the server. A device on a poor link resumes from
-   the byte offset it reached instead of restarting.
+5. **The bytes stream from storage.** The device asked the *server* — but on
+   s3-backed deployments the gateway answers with a `302` to a short-lived
+   **presigned URL**, and the device's HTTP client follows it to pull the bytes
+   **directly from object storage**. So authorization and resolution pass through
+   the server on every fetch, while the multi-megabyte transfer never does. (On the
+   local-disk backend there is no redirect; the server streams the bytes itself.)
+   A device on a poor link resumes from the byte offset it reached instead of
+   restarting.
 6. **The device reports the outcome** — `installed` or `failed` — which is what a
    rollout's status counts as `reported`.
 
