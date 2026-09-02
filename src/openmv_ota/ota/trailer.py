@@ -18,7 +18,7 @@ there is no JSON-canonicalisation pitfall). The signature and CRC necessarily si
 outside it. ``meta_size``/``sig_size`` live in the signed header, so the framing a
 verifier trusts comes from authenticated fields, not from the flexible blob.
 
-The fixed header, in order (see the plan for per-field semantics)::
+The fixed header, in order (``docs/reference/trailer.md`` has per-field semantics)::
 
     magic(4s) header_version body_size pad_size meta_size sig_size
     product_id min_platform_version payload_version payload_version_floor
@@ -45,11 +45,10 @@ MAGIC_ROMFS_APP = b"OMVR"   # ROMFS application image
 MAGIC_FIRMWARE = b"OMVF"    # firmware image (reserved; a future payload kind)
 
 HEADER_VERSION = 1
-# Maximum packed trailer size. The trailer is padded out to one flash erase block
-# by the build (4 KiB on every OTA-capable board; see openmv_ota.ota.geometry), so
-# this caps the trailer content at the smallest such block, guaranteeing it fits in
-# one block on any board. It is NOT a fixed on-flash size: the padded sector is the
-# board's erase block, which is >= this on boards with larger blocks.
+# Maximum packed trailer size == the on-flash trailer sector: the build pads the
+# trailer with 0xFF to exactly one control block, and control_block() is 4 KiB on
+# every board -- deliberately NOT the erase block (see openmv_ota.ota.geometry), so
+# growing the metadata on a large-erase board can't reshape the slot layout.
 TRAILER_SZ = 4096
 CRC_SIZE = 4
 

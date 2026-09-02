@@ -1,21 +1,26 @@
-# trailer
+# The signed trailer format
 
-The **trailer** is the signed footer `openmv-ota build romfs` stamps onto an OTA
-image: a SHA-256 of the body, an ECDSA signature over the footer, the targeting
-and anti-rollback fields a camera checks before mounting the body, and a JSON blob
-of build provenance. What it is *for* is tutorial material ([building](../tutorial/06-building.md)
-introduces it; [boot and rollback](../tutorial/11-boot-and-rollback.md) shows
-`boot.py` consuming it); this page is the on-flash format. The codec —
+The **trailer** is the signed footer at the end of every OTA image. It carries a
+SHA-256 of the image body, an ECDSA signature, the targeting and anti-rollback
+fields a camera checks before mounting the body, and a JSON blob of build
+provenance.
+
+The tutorial covers both ends of its life: [release
+artifacts](../tutorial/08-release-artifacts.md) is the host side (how `build`
+signs it and `inspect`/`verify` read it back), and [boot and
+rollback](../tutorial/11-boot-and-rollback.md) is the camera side (`boot.py`
+verifying it at every boot). This page is the byte-level on-flash format those
+two sides agree on; the codec —
 [src/openmv_ota/ota/trailer.py](../../src/openmv_ota/ota/trailer.py) — is its
-source of truth, and the host signer and `boot.py` agree on exactly the format
-described here.
+source of truth.
 
 ## Layout
 
 The trailer occupies one 4 KiB control block on every OTA-capable board —
-deliberately sized to 4 KiB rather than the flash erase block (AE3's byte-writable
-MRAM reports a tiny sector, floored to the same 4 KiB so growing the metadata can't
-reshape the layout). Boards whose ROMFS is a single large internal-flash sector
+deliberately sized to 4 KiB rather than the flash erase block. Control data is
+never erased independently of its slot, so a large-erase board doesn't inflate
+the sector, and a board reporting a tiny sector (byte-writable MRAM) is floored
+to the same 4 KiB: growing the metadata can never reshape the layout. Boards whose ROMFS is a single large internal-flash sector
 (OpenMV2/3/4) carry the same trailer in single-image mode (see
 [the OTA-projects page](../tutorial/04-ota-projects.md)). Laid out little-endian:
 
@@ -50,7 +55,7 @@ The fixed header is 80 bytes, all scalar fields 4-byte aligned. In order:
 | `product_id` | `uint32` | Target product id; the cross-flash guard. The build auto-assigns a nonzero id, so this is `0` (check skipped) only if you override it to `0`. |
 | `min_platform_version` | `uint32` | Minimum platform version the payload needs, encoded `(major<<24)\|(minor<<16)\|(patch<<8)\|build`. For a ROMFS app the platform is the OpenMV base firmware. `0` = no constraint. |
 | `payload_version` | `uint32` | The monotonic anti-rollback counter / OTA epoch. `boot.py` rejects any slot below the recorded rollback floor. Distinct from any human version string. Note this does **not** order the slots — the install counter does. |
-| `payload_version_floor` | `uint32` | Reserved. Stamped from a legacy `rollback_floor` in `settings.json` when present (must be `<= payload_version`; `0` = unset); current devices don't consume it — the device's own floor, risen by `confirm()`, already refuses anything older. |
+| `payload_version_floor` | `uint32` | Reserved. Stamped from an optional `rollback_floor` in the app's `settings.json` when present (must be `<= payload_version`; `0` = unset); devices parse it but don't consume it — the device's own floor, risen by `confirm()`, already refuses anything older. |
 | `key_id` | `uint32` | Which trusted key signed; a selector into the device's baked-in key table, not trust itself. |
 | `sig_alg` | `int32` | COSE algorithm id (negative — hence signed); authenticated, so the algorithm can't be downgraded. |
 | `body_sha256` | `32s` | SHA-256 of the `body_size` body bytes. Verifying the signature + recomputing this hash transitively authenticates the body. |
