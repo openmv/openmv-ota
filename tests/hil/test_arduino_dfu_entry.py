@@ -352,7 +352,7 @@ def test_arduino_flash_takes_no_repl_to_reach_the_board(board, monkeypatch):
 
 @pytest.mark.parametrize("board", _ARDUINO)
 def test_arduino_boards_are_marked_unrecorded(board):
-    """The server's `unverified_boards` set skips the device-registry write for these, so a run that
+    """The registry flags these board types as never-registered, so the server skips the device-registry write and a run that
     waits on device_record() can never conclude -- it watches until timeout while the device, still
     running, re-installs over and over (observed: repeated `image sha256 does not match the
     manifest` -> fallback -> re-offer, which looked like an OTA bug and was a harness deadlock)."""

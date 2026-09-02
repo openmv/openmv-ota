@@ -27,15 +27,27 @@ import urllib.request
 REGISTRAR_PORT = 8901
 CERT_DIR = os.path.expanduser("~/.cache/hil-bench")   # cert is STABLE per node (see _ensure_cert)
 
-# The fake swd-ids registrar: every device is "registered" (the registration GATE is tested
-# by swd-ids' own suite; here we just need it to not block the OTA check-in).
+# The fake registrar: mirrors the real service's contract shape -- registered for
+# every real device (the gate itself is tested by the registry's own suite), and the
+# unregistered_board_type flag for the board types the registry structurally never
+# registers. The flag matters on the bench: the Arduino legs are scored with
+# server_record=False (read-only serving, no device rows), which is exactly what the
+# flag produces.
 _FAKE_REGISTRAR = (
     "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+    "from urllib.parse import parse_qs\n"
     "import json\n"
+    "NEVER = {'ARDUINO_PORTENTA_H7', 'ARDUINO_GIGA', 'ARDUINO_NICLA_VISION',\n"
+    "         'ARDUINO_NANO_33_BLE_SENSE', 'ARDUINO_NANO_RP2040_CONNECT', 'OPENMV2'}\n"
     "class H(BaseHTTPRequestHandler):\n"
     "    def do_POST(self):\n"
-    "        self.rfile.read(int(self.headers.get('Content-Length', 0)))\n"
-    "        b = json.dumps({'registered': True, 'registrar_ref': 'bench'}).encode()\n"
+    "        body = self.rfile.read(int(self.headers.get('Content-Length', 0)))\n"
+    "        board = parse_qs(body.decode()).get('board', [''])[0]\n"
+    "        if board in NEVER:\n"
+    "            b = json.dumps({'registered': False,\n"
+    "                            'unregistered_board_type': True}).encode()\n"
+    "        else:\n"
+    "            b = json.dumps({'registered': True, 'registrar_ref': 'bench'}).encode()\n"
     "        self.send_response(200); self.send_header('Content-Type', 'application/json')\n"
     "        self.send_header('Content-Length', str(len(b))); self.end_headers()\n"
     "        self.wfile.write(b)\n"

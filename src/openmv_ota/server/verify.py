@@ -1,7 +1,11 @@
 """Validate a device against the central openmv-swd-ids registration registry.
 
 The device check-in is gated on this call: an unregistered ``(board, id)`` gets nothing and
-leaves zero footprint. We call swd-ids' server-to-server ``POST /api/v1/registration/verify`` (token-authed).
+leaves zero footprint. We call the registry's server-to-server
+``POST /api/v1/registration/verify`` (token-authed) with the check-in's ``board``
+VERBATIM -- the canonical firmware name. The registry owns board identity: it
+normalizes names to its stored codes and flags board types it structurally never
+registers, so this server carries no translation table of its own.
 
 Two defenses against an attacker looping the id-space:
 * **positive-only caching** -- a registered result is cached (bounded by the real fleet); a
@@ -21,6 +25,10 @@ from dataclasses import dataclass
 class Registration:
     registered: bool
     registrar_ref: str = ""
+    unregistered_board_type: bool = False
+    """The registry's own verdict that this board TYPE is structurally never registered
+    (it owns that set; we no longer keep a copy) -- the caller serves such devices
+    read-only instead of nothing."""
 
 
 _NO = Registration(False)
@@ -65,6 +73,8 @@ class RegistrationVerifier:
         except Exception:
             return _NO
         if not data.get("registered"):
+            if data.get("unregistered_board_type"):
+                return Registration(False, unregistered_board_type=True)
             return _NO
         return Registration(True, registrar_ref=data.get("registrar_ref", "") or "")
 

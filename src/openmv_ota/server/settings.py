@@ -88,23 +88,6 @@ class ServerSettings(BaseSettings):
     # uvicorn forwarded-allow-ips: which upstream peers may set X-Forwarded-For. Behind a PaaS proxy
     # (Render/Fly) set "*" so the rate limiter sees the real client IP, not the proxy's single IP.
     trusted_proxy_ips: str = "127.0.0.1"
-    # Add/correct firmware-board-name -> swd-ids code mappings without a redeploy (JSON in env),
-    # e.g. OPENMV_OTA_BOARD_CODE_OVERRIDES='{"ARDUINO_PORTENTA_H7":"H7"}'. Merged over boardmap defaults.
-    board_code_overrides: dict[str, str] = {}
-    # Firmware board names swd-ids never registers (the Arduino boards the IDE never checks, and the
-    # pre-registration M4). For these the registration check is BYPASSED and OTA is served read-only
-    # -- no device-registry write, so they stay zero-footprint (can't be flooded) with no fleet
-    # tracking. Defaulted to the known-unregistered board types (structurally never in swd-ids);
-    # override via OPENMV_OTA_UNVERIFIED_BOARDS='[...]' to change the set. OPENMV3/M7 is NOT here --
-    # those are registered and must verify.
-    unverified_boards: set[str] = {
-        "OPENMV2",                          # OpenMV Cam M4 -- predates registration capture
-        "ARDUINO_PORTENTA_H7",
-        "ARDUINO_GIGA",
-        "ARDUINO_NICLA_VISION",
-        "ARDUINO_NANO_33_BLE_SENSE",
-        "ARDUINO_NANO_RP2040_CONNECT",
-    }
 
     def missing(self) -> list[str]:
         """Settings required before the server can serve devices (used by ``server check``)."""

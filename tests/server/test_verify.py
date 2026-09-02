@@ -53,6 +53,16 @@ def test_unregistered_is_false():
     assert v.verify("b", "d") == Registration(False)
 
 
+def test_unregistered_board_type_flag_rides_through():
+    """The registry's structurally-never-registered verdict reaches the caller, so the
+    server can serve such devices read-only without keeping its own set."""
+    v = RegistrationVerifier("u", "t", _Client(_Resp(
+        200, {"registered": False, "unregistered_board_type": True})))
+    reg = v.verify("ARDUINO_GIGA", "d")
+    assert reg == Registration(False, unregistered_board_type=True)
+    assert not reg.registered
+
+
 def test_non_200_fail_closed():
     v = RegistrationVerifier("u", "t", _Client(_Resp(503, {"registered": True})))
     assert v.verify("b", "d").registered is False

@@ -32,7 +32,6 @@ from . import capability
 from . import datalog as datalog_mod
 from . import live as live_mod
 from .auth import TokenAuth
-from .boardmap import swd_ids_board_code
 from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter
@@ -468,10 +467,10 @@ def _account(ms, ro, rel, checkin, existing, offered):
 
 
 def _verify(state, req):
-    """Translate the firmware board name to the swd-ids code, then the registration check.
-    ``req`` is a CheckIn or Feedback (both carry ``board`` + ``device_id``)."""
-    swd_board = swd_ids_board_code(req.board, state.settings.board_code_overrides)
-    return state.verifier.verify(swd_board, req.device_id)
+    """The registration check, with the check-in's board name sent VERBATIM -- the
+    registry normalizes and owns board identity. ``req`` is a CheckIn or Feedback
+    (both carry ``board`` + ``device_id``)."""
+    return state.verifier.verify(req.board or "", req.device_id)
 
 
 def _effective_account(ms, checkin):
@@ -518,18 +517,17 @@ def check(checkin: CheckIn, request: Request):
                     "release_id": rel["release_id"], "poll_after_s": st.settings.poll_after_s}
         return nothing
 
-    if checkin.board in st.settings.unverified_boards:
-        # A board type the registry structurally never registers. Serve OTA READ-ONLY:
-        # skip the registration check AND the device-registry write, so a fake id can't
-        # grow the DB -- zero footprint preserved, at the cost of no fleet tracking for
-        # these boards.
+    reg = _verify(st, checkin)
+    if reg.unregistered_board_type:
+        # The REGISTRY says this board type is structurally never registered (it owns
+        # that set; we keep no copy). Serve OTA READ-ONLY: offers work, but no
+        # device-registry write, so a fake id can't grow the DB -- zero footprint,
+        # at the cost of no fleet tracking for these boards.
         _, rel, offered, manifest_url = _decide(st, checkin, "__default__")
         if manifest_url:
             return {"update": True, "manifest_url": manifest_url,
                     "release_id": rel["release_id"], "poll_after_s": st.settings.poll_after_s}
         return nothing
-
-    reg = _verify(st, checkin)
     if not reg.registered:
         return nothing                                          # ZERO footprint for unregistered ids
     ms = st.metastore
@@ -580,7 +578,8 @@ def feedback(report: Feedback, request: Request):
         raise HTTPException(status_code=400, detail="status must be 'installed' or 'failed'")
     if not st.settings.swd_ids_verify_url:
         return {"ok": False}          # no registrar attached -> read-only: nothing is logged
-    if report.board in st.settings.unverified_boards or not _verify(st, report).registered:
+    reg = _verify(st, report)
+    if reg.unregistered_board_type or not reg.registered:
         return {"ok": False}                                    # untracked / unregistered -> no write
     st.metastore.record_deployment(
         device_id=report.device_id, release_id=report.release_id, product_id=report.product_id,

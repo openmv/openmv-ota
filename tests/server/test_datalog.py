@@ -23,14 +23,15 @@ SECRET = "shared-secret"
 
 
 class _Verifier:
-    def __init__(self, registered=True):
-        self._reg = Registration(registered, "o1")
+    def __init__(self, registered=True, unregistered_type=False):
+        self._reg = Registration(registered, "o1",
+                                 unregistered_board_type=unregistered_type)
 
     def verify(self, board, device_id):
         return self._reg
 
 
-def _app(tmp_path, *, registered=True, **overrides):
+def _app(tmp_path, *, registered=True, unregistered_type=False, **overrides):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("cohort_salt", "test-secret")
@@ -38,7 +39,7 @@ def _app(tmp_path, *, registered=True, **overrides):
     settings = ServerSettings(base_url="https://ota.test", checkin_rate_per_min=0,
                               swd_ids_verify_url="u", swd_ids_verify_token="t", **overrides)
     return create_app(settings, storage=storage, metastore=store,
-                      verifier=_Verifier(registered))
+                      verifier=_Verifier(registered, unregistered_type=unregistered_type))
 
 
 CHECKIN = {"device_id": "cam-42", "product_id": 7, "board": "OPENMV_N6"}
@@ -104,9 +105,9 @@ def test_unregistered_device_gets_no_ingest_grant(tmp_path):
     assert "ingest" not in r.json()
 
 
-def test_unverified_board_bypass_gets_no_ingest_grant(tmp_path):
-    app = _app(tmp_path, datalake_url=DATALAKE, live_token_secret=SECRET,
-               unverified_boards={"OPENMV2"})
+def test_unregistered_board_type_gets_no_ingest_grant(tmp_path):
+    app = _app(tmp_path, registered=False, unregistered_type=True,
+               datalake_url=DATALAKE, live_token_secret=SECRET)
     r = TestClient(app).post("/api/v1/check",
                              json={"device_id": "legacy-1", "product_id": 7, "board": "OPENMV2"})
     assert "ingest" not in r.json()

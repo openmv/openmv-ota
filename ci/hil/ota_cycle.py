@@ -176,8 +176,8 @@ BOARDS = {
     # failure to the WINC; a failing one makes it H7-wide.
     "ARDUINO_NICLA_VISION": {
         # The update server NEVER writes a device record for these: they sit in its
-        # `unverified_boards` set (swd-ids does not register Arduino boards), so
-        # registration is bypassed and OTA is served read-only -- zero-footprint by
+        # registry's unregistered-board-type answer (it never registers Arduino
+        # boards), so OTA is served read-only -- zero-footprint by
         # design. run_cycle therefore cannot use the server record to decide when the
         # scenario is done, and scores the UART markers instead.
         "server_record": False,                # Arduino Nicla Vision (STM32H747, QSPI ROMFS dual-slot)
@@ -200,8 +200,8 @@ BOARDS = {
     },
     "ARDUINO_PORTENTA_H7": {
         # The update server NEVER writes a device record for these: they sit in its
-        # `unverified_boards` set (swd-ids does not register Arduino boards), so
-        # registration is bypassed and OTA is served read-only -- zero-footprint by
+        # registry's unregistered-board-type answer (it never registers Arduino
+        # boards), so OTA is served read-only -- zero-footprint by
         # design. run_cycle therefore cannot use the server record to decide when the
         # scenario is done, and scores the UART markers instead.
         "server_record": False,                 # Arduino Portenta H7 (STM32H747, QSPI ROMFS dual-slot)
@@ -2497,7 +2497,7 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=Fals
             device_exec("import machine; machine.reset()", timeout=20, check=False)
         except Exception:
             pass                             # ...an I/O error here just means the reset landed
-    # Some boards are served OTA but never RECORDED: the server's `unverified_boards` set skips the
+    # Some boards are served OTA but never RECORDED: the registry flags their type as never-registered, so the server skips the
     # device-registry write entirely, so device_record() returns nothing for them no matter how well
     # the install goes. Waiting on that record means never concluding -- the run watches until its
     # timeout while the device, left running, re-installs over and over. Score their UART markers

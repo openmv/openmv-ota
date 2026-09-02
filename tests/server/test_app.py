@@ -17,8 +17,9 @@ SECRET = "test-secret"
 
 
 class _Verifier:
-    def __init__(self, registered=True, registrar_ref="o1"):
-        self._reg = Registration(registered, registrar_ref)
+    def __init__(self, registered=True, registrar_ref="o1", unregistered_type=False):
+        self._reg = Registration(registered, registrar_ref,
+                                 unregistered_board_type=unregistered_type)
         self.calls = 0
         self.last_board = None
 
@@ -28,18 +29,17 @@ class _Verifier:
         return self._reg
 
 
-def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0, unverified=(),
-         downgrades=False, cors="", registrar="u"):
+def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0,
+         unregistered_type=False, downgrades=False, cors="", registrar="u"):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("cohort_salt", SECRET)
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))
     settings = ServerSettings(base_url=base_url, checkin_rate_per_min=rate,
                               swd_ids_verify_url=registrar, swd_ids_verify_token="t",
-                              unverified_boards=set(unverified),
                               test_offer_downgrades=downgrades,
                               cors_allow_origins=cors)
-    verifier = _Verifier(registered)
+    verifier = _Verifier(registered, unregistered_type=unregistered_type)
     app = create_app(settings, storage=storage, metastore=store, verifier=verifier)
     return app, store, storage, verifier
 
@@ -93,20 +93,24 @@ def test_registered_no_rollout_writes_registry(tmp_path):
     assert store.get_device("dev1") is not None
 
 
-def test_firmware_board_translated_to_swd_ids_code(tmp_path):
+def test_firmware_board_sent_to_the_registry_verbatim(tmp_path):
+    """The registry owns board identity (it normalizes names to its stored codes), so
+    this server sends the check-in's canonical firmware name untouched -- no local
+    translation table to drift."""
     app, store, storage, v = _app(tmp_path)
     TestClient(app).post("/api/v1/check", json=_checkin(board="OPENMV_N6"))
-    assert v.last_board == "N6"                              # verify() got the swd-ids code, not OPENMV_N6
-    assert store.get_device("dev1")["board"] == "OPENMV_N6"  # the raw firmware name is still stored
+    assert v.last_board == "OPENMV_N6"                       # verbatim, no translation
+    assert store.get_device("dev1")["board"] == "OPENMV_N6"  # and stored as reported
 
 
-def test_unverified_board_served_readonly_zero_footprint(tmp_path):
-    # verifier would say NO, but a bypassed board is served anyway — read-only, no writes.
-    app, store, storage, v = _app(tmp_path, registered=False, unverified=["ARDUINO_GIGA"])
+def test_unregistered_board_type_served_readonly_zero_footprint(tmp_path):
+    """The REGISTRY flags board types it structurally never registers; this server keeps
+    no list of its own. The flagged answer is served read-only: offers work, no writes."""
+    app, store, storage, v = _app(tmp_path, registered=False, unregistered_type=True)
     _seed(store, storage=storage, percent=100)
     r = TestClient(app).post("/api/v1/check", json=_checkin(board="ARDUINO_GIGA"))
     assert r.json()["update"] is True                        # got the update
-    assert v.calls == 0                                      # verify was skipped
+    assert v.calls == 1 and v.last_board == "ARDUINO_GIGA"  # asked VERBATIM, no translation
     assert store.get_device("dev1") is None                 # zero footprint — no device row
     assert store.get_rollout("ro1")["attempted"] == 0       # and no rollout accounting
 
@@ -144,8 +148,8 @@ def test_no_registrar_offer_scopes_by_claimed_account(tmp_path):
     assert r.json()["update"] is False                       # '' release never offered to them
 
 
-def test_unverified_board_no_rollout_returns_nothing(tmp_path):
-    app, store, *_ = _app(tmp_path, unverified=["ARDUINO_GIGA"])
+def test_unregistered_board_type_no_rollout_returns_nothing(tmp_path):
+    app, store, *_ = _app(tmp_path, registered=False, unregistered_type=True)
     r = TestClient(app).post("/api/v1/check", json=_checkin(board="ARDUINO_GIGA"))
     assert r.json() == {"update": False, "poll_after_s": 3600}
     assert store.get_device("dev1") is None
@@ -282,11 +286,11 @@ def test_feedback_unregistered_is_noop(tmp_path):
     assert store.deployment_counts("rel1") == {"installed": 0, "failed": 0}
 
 
-def test_feedback_bypassed_board_is_noop(tmp_path):
-    app, store, storage, v = _app(tmp_path, unverified=["ARDUINO_GIGA"])
+def test_feedback_unregistered_board_type_is_noop(tmp_path):
+    app, store, storage, v = _app(tmp_path, registered=False, unregistered_type=True)
     assert TestClient(app).post("/api/v1/feedback",
                                 json=_feedback(board="ARDUINO_GIGA")).json() == {"ok": False}
-    assert v.calls == 0                                       # bypass -> not verified, not recorded
+    assert v.calls == 1                                       # asked; the FLAG says read-only
 
 
 def test_feedback_bad_status_400(tmp_path):
