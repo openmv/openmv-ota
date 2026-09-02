@@ -21,7 +21,7 @@ the environment so nothing secret is committed:
     BOARD_UART      the P4/P5 UART bridge on the node (default /dev/ttyUSB0)
 
 This is a live-hardware gate, not a host unit test -- it is invoked by the
-``hil-ota`` workflow (workflow_dispatch), never per-commit.
+``hil-ota`` workflow on every pull request (and by hand via workflow_dispatch).
 """
 
 import argparse

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Provision the RUNNER-OWNED OTA HIL tooling for a board, idempotently and cached under the
-# runner's own $HOME. The HIL nodes are DISPOSABLE infra (built once by openmv-hil): they carry
+# runner's own $HOME. The HIL nodes are DISPOSABLE infra (built once from the node image): they carry
 # no hand-set-up state, so the test workflow brings everything OTA-specific itself. A reimage
 # wipes the cache and the next run re-provisions from scratch.
 #
@@ -11,7 +11,7 @@
 # dfu-util / blhost cover the other flashers.
 #
 # Anything needing ROOT (the runner user, USB/serial groups + udev, git safe.directory, the
-# system build deps) belongs in the openmv-hil image, NOT here -- this script assumes only an
+# system build deps) belongs in the node image (see NODE_REQUIREMENTS.md), NOT here -- this script assumes only an
 # unprivileged runner with python3 + git + a working toolchain on PATH.
 #
 # Usage:  eval "$(ci/hil/provision.sh <board> <checkout>)"
