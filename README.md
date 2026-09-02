@@ -24,14 +24,6 @@ order you use them: install → project → build → flash → device runtime �
 server. The command documentation lives there and only there, so it has one
 place to be right.
 
-## Status
-
-Everything the tutorial documents is implemented — the test suite holds the CLI
-and the server to it, at enforced 100% coverage. The whole update path runs on
-real hardware: every board in the HIL fleet exercises its own regression set on
-each pull request, negative paths included (corrupt image, bad signature,
-untrusted key, anti-rollback, no bootable slot).
-
 ## Installation
 
 > Not yet published. Once the package lands on PyPI, all tools install together:
