@@ -34,6 +34,25 @@ state**: no device row, no telemetry, no cache entry. A deployment with no regis
 server attached serves updates but stores nothing for *any* device. Either way, an
 attacker-controlled id can never grow the database or storage.
 
+## What publishing stores
+
+When `client release publish` uploads a release, the server does exactly three things:
+
+1. **Reads the signed manifest** and derives every piece of metadata from it — product,
+   version, account, sizes, hashes, which delta files belong — refusing any upload
+   whose artifacts don't match what the manifest declares.
+2. **Puts the bytes in object storage**, untouched, under a freshly minted release id:
+   the manifest at `manifests/<release_id>/manifest.bin`, and the image and each delta
+   at `artifacts/<release_id>/<filename>` — *filename* being exactly what the signed
+   manifest declares, because that name is how a device will later ask for it.
+3. **Records a release row** in the database: the id, the identity fields, the
+   representation list, and the storage keys above.
+
+That's all — no unpacking, no re-signing, no transformation. The row is the join point
+for everything after: rollouts and pins reference the release id, and the download
+gateway resolves the id back to those storage keys. Until a rollout or pin points at
+the id, the release just sits there.
+
 ## What one check-in does
 
 The heart of the server is `POST /api/v1/check` — what every camera calls on its poll
@@ -68,25 +87,6 @@ interval. In order:
    a short-lived download URL for the release's manifest. Where the deployment is wired
    for them, the answer also carries per-device **grants** for OpenMV's live-viewing and
    data-ingest services.
-
-## What publishing stores
-
-When `client release publish` uploads a release, the server does exactly three things:
-
-1. **Reads the signed manifest** and derives every piece of metadata from it — product,
-   version, account, sizes, hashes, which delta files belong — refusing any upload
-   whose artifacts don't match what the manifest declares.
-2. **Puts the bytes in object storage**, untouched, under a freshly minted release id:
-   the manifest at `manifests/<release_id>/manifest.bin`, and the image and each delta
-   at `artifacts/<release_id>/<filename>` — *filename* being exactly what the signed
-   manifest declares, because that name is how a device will later ask for it.
-3. **Records a release row** in the database: the id, the identity fields, the
-   representation list, and the storage keys above.
-
-That's all — no unpacking, no re-signing, no transformation. The row is the join point
-for everything after: rollouts and pins reference the release id, and the download
-gateway resolves the id back to those storage keys. Until a rollout or pin points at
-the id, the release just sits there.
 
 ## From offer to installed bytes
 
