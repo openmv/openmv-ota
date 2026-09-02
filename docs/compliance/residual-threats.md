@@ -1,8 +1,8 @@
 # Residual threats
 
-The complement of [cra-red-alignment.md](cra-red-alignment.md): that page says what
-is shipped; this one says what is **deliberately not defended**, so an auditor (or
-we, later) can read the risk acceptance rather than discover it. Same honesty rule —
+The complement of [the CRA / RED alignment page](cra-red-alignment.md): that page
+says what is shipped; this one says what is **deliberately not defended**, so an
+auditor (or we, later) can read the risk acceptance rather than discover it. Same honesty rule —
 a threat leaves this list only when the control that closes it actually exists.
 
 How the shipped controls work is tutorial material: signing and custody

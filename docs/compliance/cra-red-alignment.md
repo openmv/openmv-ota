@@ -18,7 +18,7 @@ harmonised standards.
 The tables say what is **shipped** and what is **planned** — an auditor reading
 this must never find a claimed control that does not exist. The inverse list —
 the threats this stack deliberately does **not** defend against — is
-[residual-threats.md](residual-threats.md). Shipped rows describe code in this
+[the residual-threats register](residual-threats.md). Shipped rows describe code in this
 repository, tested at enforced 100% coverage and, for the update path, exercised
 on a nine-board hardware fleet including the negative cases (corrupt image, bad
 signature, untrusted key, version rollback, no bootable slot).
@@ -29,11 +29,11 @@ Lettered per the regulation (Annex I Part I point (2)).
 
 | Requirement | How this stack supports it |
 |---|---|
-| (1) Appropriate level of cybersecurity based on the risks | The design is built around a documented risk posture: [residual-threats.md](residual-threats.md) is the risk-acceptance record. The product-level cybersecurity risk assessment (Article 13(2)) is the customer's, built on it |
+| (1) Appropriate level of cybersecurity based on the risks | The design is built around a documented risk posture: [the residual-threats register](residual-threats.md) is the risk-acceptance record. The product-level cybersecurity risk assessment (Article 13(2)) is the customer's, built on it |
 | (2)(a) No known exploitable vulnerabilities at making available | **Shipped:** `build sbom` exports the CycloneDX SBOM from the lock's exact pin-set — every submodule at its exact commit with its remote-derived purl — and CI runs osv-scanner over it |
 | (2)(b) Secure by default configuration, incl. reset to original state | **Shipped where the stack decides:** signing is not optional (no plaintext-key mode; a production build refuses a dev key), anti-rollback is always on, and `flash factory` restores the original state. The final product's defaults (network config, app behaviour) are the customer's |
 | (2)(c) Security updates, incl. automatic updates as default with opt-out, notification, postponement | **Shipped:** the device runtime's check-in loop fetches and installs updates automatically; an update is deferred while a trial is unconfirmed, and the app decides when the loop runs (its postponement mechanism). The support-period commitment is the customer's |
-| (2)(d) Protection from unauthorised access + reporting of it | **Shipped server-side:** every admin path takes a scoped bearer token; releases and devices are account-scoped; devices pass a registration gate before anything is stored; downloads are one-time capability URLs; the audit log records admin access. Devices hold no credentials — the check-in trust model and its limits are in [residual-threats.md](residual-threats.md) |
+| (2)(d) Protection from unauthorised access + reporting of it | **Shipped server-side:** every admin path takes a scoped bearer token; releases and devices are account-scoped; devices pass a registration gate before anything is stored; downloads are one-time capability URLs; the audit log records admin access. Devices hold no credentials — the check-in trust model and its limits are in [the residual-threats register](residual-threats.md) |
 | (2)(e) Confidentiality of stored and transmitted data | **Transit shipped:** device↔server traffic is TLS with the server certificate verified against the device's trust store. **At rest: planned** (on-device image encryption — residual-threats); the customer covers their own stored data |
 | (2)(f) Integrity of stored/transmitted data, programs, config + reporting of corruptions | **Shipped:** ECDSA signature + SHA-256 + CRC32 on every image, verified at every boot; anti-rollback; the check-in reports slot state and fallback, so a corrupted or rejected image is visible fleet-wide. Customer covers /flash and /sdcard |
 | (2)(g) Data minimisation | **Shipped server-side:** a check-in carries device/build state only — no personal data — and the server never stores data for an unvalidated device. App-level data handling is the customer's |
@@ -71,7 +71,7 @@ Where the harmonised standards specify test cases, this stack maps onto them:
 - EN 18031-1 (general): update mechanism, integrity protection, secure storage of
   cryptographic material.
 - EN 18031-2 (data confidentiality): transit is covered (TLS); at-rest image
-  encryption is planned — see [residual-threats.md](residual-threats.md).
+  encryption is planned — see [the residual-threats register](residual-threats.md).
 - EN 18031-3 (fraud prevention): signature verification + anti-rollback covers
   the relevant test cases.
 
