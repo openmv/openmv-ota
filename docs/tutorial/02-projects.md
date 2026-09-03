@@ -63,6 +63,16 @@ Replace `main.py` with your code. Commit everything except
 `openmv-ota.local.toml` and `build/`; the generated `.gitignore` already
 excludes them.
 
+## The app license
+
+`new` also drops a `LICENSE` at the project root — an all-rights-reserved
+proprietary license with your vendor (or product) name as the holder, the safe
+default for product firmware. Replace it with whatever terms you actually ship
+under; it is never overwritten. The SBOM renderer reads it on every build:
+the classic licenses come out as their SPDX id (`MIT`, `Apache-2.0`, ...),
+an all-rights-reserved file as `Proprietary`, anything else as `Custom` — and
+that is what dashboards render next to your app.
+
 ## The app folder
 
 Every project is scaffolded with a starter `app/`:

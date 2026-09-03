@@ -14,6 +14,7 @@ that changes only when the dependencies change is diffable evidence.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from openmv_ota import __version__
@@ -46,6 +47,53 @@ def _props(**kv) -> list[dict]:
     """CycloneDX properties from keyword pairs, skipping empty values, sorted by name."""
     return [{"name": "openmv-ota:%s" % k, "value": str(v)}
             for k, v in sorted(kv.items()) if v not in (None, "")]
+
+
+# SPDX detection by distinctive body text. Ordered: first match wins. Coarse on
+# purpose -- the goal is a correct id for the licenses people actually ship
+# firmware apps under, with honest fallbacks for everything else.
+_LICENSE_MARKERS = (
+    ("Apache License", "Apache-2.0"),
+    ("GNU AFFERO GENERAL PUBLIC LICENSE", "AGPL-3.0-only"),
+    ("GNU LESSER GENERAL PUBLIC LICENSE", "LGPL-3.0-only"),
+    ("GNU GENERAL PUBLIC LICENSE", "GPL-3.0-only"),
+    ("Mozilla Public License", "MPL-2.0"),
+    ("Permission is hereby granted, free of charge", "MIT"),
+    ("Redistribution and use in source and binary forms", "BSD-3-Clause"),
+    ("This is free and unencumbered software released into the public domain",
+     "Unlicense"),
+)
+
+
+def detect_license(text: str) -> dict:
+    """One CycloneDX license entry for the project's LICENSE text: an SPDX id
+    for the classics, {"name": "Proprietary"} for an all-rights-reserved file,
+    {"name": "Custom"} for anything else."""
+    for marker, spdx in _LICENSE_MARKERS:
+        if marker.lower() in text.lower():
+            return {"id": spdx}
+    if "proprietary" in text.lower() or "all rights reserved" in text.lower():
+        return {"name": "Proprietary"}
+    return {"name": "Custom"}
+
+
+def _app_licenses(paths) -> list | None:
+    """The app's license, read from the project's LICENSE file (scaffolded as
+    proprietary; the customer replaces it freely). No file = no claim."""
+    lic = paths.root / "LICENSE"
+    try:
+        return [{"license": detect_license(lic.read_text(encoding="utf-8"))}]
+    except OSError:
+        return None
+
+
+def _describe_version(describe: str, fallback: str) -> str:
+    """The RELEASE version a submodule sits on, from its `git describe`:
+    "v2.1.3-14-gabc123" -> "2.1.3" (release plus local commits -- the version
+    vulnerability databases speak). No tag reachable = no release claim; the
+    commit stays the version and the purl carries the exact identity anyway."""
+    m = re.match(r"v?(\d[\w.]*?)(?:-\d+-g[0-9a-f]+)?$", describe or "")
+    return m.group(1) if m else fallback
 
 
 def generate_sbom(project: str | Path) -> dict:
@@ -94,8 +142,10 @@ def generate_sbom(project: str | Path) -> dict:
         sub_refs.append(ref)
         component = {
             "type": "library", "bom-ref": ref, "name": sub.get("path", ""),
-            "version": sub.get("commit", ""),
-            "properties": _props(describe=sub.get("describe")),
+            # the release version when a tag is reachable (what OSV/NVD match);
+            # the exact commit stays in the bom-ref, purl, and properties
+            "version": _describe_version(sub.get("describe", ""), sub.get("commit", "")),
+            "properties": _props(commit=sub.get("commit"), describe=sub.get("describe")),
         }
         purl = _github_purl(sub.get("remote", ""), sub.get("commit", ""))
         if purl:
@@ -134,6 +184,7 @@ def generate_sbom(project: str | Path) -> dict:
             "component": {
                 "type": "firmware", "bom-ref": root_ref, "name": config.name,
                 "version": app_version,
+                **({"licenses": lic} if (lic := _app_licenses(paths)) else {}),
                 "properties": _props(boards=",".join(config.boards),
                                      vendor=config.vendor or "", ota=lock.ota),
             },

@@ -629,6 +629,7 @@ def create_project(
         _scaffold_runtime_lib(paths, boards, trust)
         _scaffold_device_files(paths, trust)
         _scaffold_compliance(paths)   # CRA/RED fill-in templates -- per-product paperwork
+    _scaffold_license(paths, vendor or name)   # proprietary default; replace freely
     _write_local(paths, repo, sdk_home_override)
     paths.gitignore.write_text(_GITIGNORE, encoding="utf-8")
     paths.readme.write_text(_readme(name), encoding="utf-8")
@@ -1154,6 +1155,42 @@ def _scaffold_compliance(paths: ProjectPaths) -> None:
         out = d / src.name
         if not out.exists():
             out.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+_LICENSE_TEMPLATE = """Copyright (c) {year} {holder}. All rights reserved.
+
+PROPRIETARY AND CONFIDENTIAL
+
+This software and all associated files, documentation, and materials (the
+"Software") are the proprietary and confidential property of {holder}.
+
+No license, right, or permission -- express or implied -- to use, copy,
+reproduce, modify, merge, publish, distribute, sublicense, sell, or create
+derivative works of the Software is granted, except under a separate written
+agreement signed by {holder}. Unauthorized copying, distribution,
+modification, or use of the Software, in whole or in part, by any means, is
+strictly prohibited.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
+{holder} BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+"""
+
+
+def _scaffold_license(paths: ProjectPaths, holder: str) -> None:
+    """The project's app LICENSE, defaulting to all-rights-reserved proprietary
+    (the safe default for a product firmware app). The customer replaces it with
+    whatever terms they actually ship under; the SBOM renderer reads whatever is
+    there. Never overwritten -- an edited LICENSE is the customer's."""
+    from datetime import UTC, datetime
+
+    out = paths.root / "LICENSE"
+    if not out.exists():
+        out.write_text(_LICENSE_TEMPLATE.format(year=datetime.now(UTC).year,
+                                                holder=holder), encoding="utf-8")
 
 
 def _write_local(paths: ProjectPaths, repo: Path, sdk_home_override: Path | None) -> None:

@@ -327,6 +327,21 @@ def test_create_ota_scaffolds_compliance_templates(tmp_path, make_firmware, make
     assert (d / "eu-doc.md").read_text() == "filled in\n"
 
 
+def test_create_scaffolds_proprietary_license(tmp_path, make_firmware, make_sdk):
+    # The safe default for product firmware: all-rights-reserved, holder = the
+    # vendor (falling back to the product name). The customer replaces it with
+    # real terms; the SBOM renderer reads whatever is there.
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    text = (root / "LICENSE").read_text()
+    assert "PROPRIETARY AND CONFIDENTIAL" in text
+    assert "All rights reserved." in text
+    # a replaced LICENSE survives new --force -- it is the customer's
+    (root / "LICENSE").write_text("MIT License\n")
+    _create(tmp_path, make_firmware, make_sdk, repo=repo, root=root, force=True)
+    assert (root / "LICENSE").read_text() == "MIT License\n"
+
+
 def test_create_preserves_existing_app(tmp_path, make_firmware, make_sdk):
     # Re-running new --force never clobbers a user's app.
     repo = make_firmware()

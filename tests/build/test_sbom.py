@@ -53,7 +53,12 @@ def test_sbom_shape_and_determinism(tmp_path):
                                          "url": "https://github.com/openmv/openmv.git"}]
     assert by_name["micropython"]["version"] == "1.28.0"
     assert by_name["lib/micropython"]["purl"] == "pkg:github/openmv/micropython@" + "aa" * 20
-    assert by_name["lib/lwip"]["version"] == "bb" * 20
+    # describe carries a reachable tag -> the RELEASE version (what OSV/NVD
+    # match); the exact commit stays in the purl and properties
+    assert by_name["lib/micropython"]["version"] == "1.28.0"
+    assert {"name": "openmv-ota:commit", "value": "aa" * 20} \
+        in by_name["lib/micropython"]["properties"]
+    assert by_name["lib/lwip"]["version"] == "bb" * 20            # no tag -> no release claim
     assert "purl" not in by_name["lib/lwip"]                     # no remote -> never guessed
     assert by_name["mpy-cross"]["purl"] == "pkg:pypi/mpy-cross@1.28.0"
     assert by_name["vela"]["version"] == "3.12.0"
@@ -62,6 +67,45 @@ def test_sbom_shape_and_determinism(tmp_path):
     deps = {d["ref"]: d["dependsOn"] for d in doc["dependencies"]}
     assert fw["bom-ref"] in deps["widget@1.2.3"]
     assert "lib/lwip@" + "bb" * 20 in deps[fw["bom-ref"]]
+
+
+def test_sbom_reads_the_app_license(tmp_path):
+    root = _project(tmp_path)
+    # no LICENSE -> no claim
+    assert "licenses" not in sbom_mod.generate_sbom(root)["metadata"]["component"]
+    # the scaffolded proprietary default
+    (root / "LICENSE").write_text("PROPRIETARY AND CONFIDENTIAL\nAll rights reserved.")
+    doc = sbom_mod.generate_sbom(root)
+    assert doc["metadata"]["component"]["licenses"] == [
+        {"license": {"name": "Proprietary"}}]
+    # ...replaced by the customer with a classic -> the SPDX id
+    (root / "LICENSE").write_text(
+        "MIT License\n\nPermission is hereby granted, free of charge, ...")
+    doc = sbom_mod.generate_sbom(root)
+    assert doc["metadata"]["component"]["licenses"] == [{"license": {"id": "MIT"}}]
+
+
+def test_describe_version_parsing():
+    d = sbom_mod._describe_version
+    assert d("v2.1.3", "f") == "2.1.3"
+    assert d("v2.1.3-14-gabc123", "f") == "2.1.3"          # release + local commits
+    assert d("1.28.0-5-g0deadb1", "f") == "1.28.0"          # tags without the v
+    assert d("STABLE-2_1_3-14-gabc", "f") == "f"            # unparseable tag style
+    assert d("", "fallback") == "fallback"
+
+
+def test_license_detection_table():
+    d = sbom_mod.detect_license
+    assert d("Apache License\nVersion 2.0") == {"id": "Apache-2.0"}
+    assert d("GNU GENERAL PUBLIC LICENSE Version 3") == {"id": "GPL-3.0-only"}
+    assert d("GNU LESSER GENERAL PUBLIC LICENSE") == {"id": "LGPL-3.0-only"}
+    assert d("GNU AFFERO GENERAL PUBLIC LICENSE") == {"id": "AGPL-3.0-only"}
+    assert d("Mozilla Public License Version 2.0") == {"id": "MPL-2.0"}
+    assert d("Redistribution and use in source and binary forms") == {"id": "BSD-3-Clause"}
+    assert d("This is free and unencumbered software released into the public domain") \
+        == {"id": "Unlicense"}
+    assert d("you may not sell this. All rights reserved.") == {"name": "Proprietary"}
+    assert d("do whatever, idk") == {"name": "Custom"}
 
 
 def test_sbom_non_github_remote_gets_no_purl(tmp_path):
