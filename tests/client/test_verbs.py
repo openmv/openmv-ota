@@ -763,6 +763,45 @@ def test_device_rename_and_clear(wired, tmp_path, capsys):
     assert any(e["action"] == "device.rename" for e in store.read_audit())
 
 
+def test_release_artifact_download(wired, tmp_path, capsys):
+    store, _ = wired
+    storage = LocalArtifactStorage(str(tmp_path / "blobs"))   # same root the server uses
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=4, manifest_key="m", image_key="artifacts/rel1/img.gz",
+                      representations=[
+                          {"format": "full", "url": "img.gz", "size": 4},
+                          {"format": "ocdl", "url": "img.delta-1.9.0.gz", "size": 2,
+                           "base_payload_version": 0x01090000, "base_body_sha256": "cd" * 32}])
+    storage.put("artifacts/rel1/img.gz", b"FULL", "application/gzip")
+    storage.put("artifacts/rel1/img.delta-1.9.0.gz", b"DP", "application/gzip")
+    assert main(["client", "release", "artifact", "--release-id", "rel1",
+                 "--filename", "img.delta-1.9.0.gz",
+                 "-o", str(tmp_path / "d.gz")]) == 0
+    assert "saved" in capsys.readouterr().out
+    assert (tmp_path / "d.gz").read_bytes() == b"DP"
+    # default output name = the artifact filename (written into the cwd)
+    import os
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        assert main(["client", "release", "artifact", "--release-id", "rel1",
+                     "--filename", "img.gz"]) == 0
+    finally:
+        os.chdir(cwd)
+    assert (tmp_path / "img.gz").read_bytes() == b"FULL"
+    capsys.readouterr()
+    # a filename the manifest never declared is a 404 (whitelist, not a path)
+    assert main(["client", "release", "artifact", "--release-id", "rel1",
+                 "--filename", "evil.gz", "-o", str(tmp_path / "x")]) == 1
+    capsys.readouterr()
+    # declared but no longer retained
+    storage.delete("artifacts/rel1/img.gz")
+    assert main(["client", "release", "artifact", "--release-id", "rel1",
+                 "--filename", "img.gz", "-o", str(tmp_path / "y")]) == 1
+    assert "404" in capsys.readouterr().err
+
+
 def test_release_and_rollout_rename(wired, capsys):
     store, _ = wired
     store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",

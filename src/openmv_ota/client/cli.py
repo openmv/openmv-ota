@@ -1,7 +1,7 @@
 """CLI handlers for ``openmv-ota client``.
 
     login / logout           save/remove the server URL + admin token
-    release publish|list|show|sbom|bases|prune|rename
+    release publish|list|show|sbom|bases|prune|rename|artifact
     rollout create|raise|pause|resume|stop|status|list|rename
     cohort  list|assign|rename|delete|pin
     device  list|show|pin|bind
@@ -105,6 +105,14 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_rsb.add_argument("-o", "--output", help="write to this file (default: stdout)")
     _creds(p_rsb)
     p_rsb.set_defaults(func=cmd_release_sbom, _command="client release sbom")
+    p_art = rlsub.add_parser("artifact", help="download one artifact (full image or a delta)")
+    p_art.add_argument("--release-id", required=True, metavar="RELEASE_ID",
+                       help="the release to read")
+    p_art.add_argument("--filename", required=True,
+                       help="artifact filename as `release show` lists it")
+    p_art.add_argument("-o", "--output", help="write to this file (default: the filename)")
+    _creds(p_art)
+    p_art.set_defaults(func=cmd_release_artifact, _command="client release artifact")
     p_rrn = rlsub.add_parser("rename", help="set a release's display name (a label; --clear removes)")
     p_rrn.add_argument("--release-id", required=True, metavar="RELEASE_ID", help="release to rename")
     grn = p_rrn.add_mutually_exclusive_group(required=True)
@@ -723,6 +731,20 @@ def cmd_rollout_rename(args: argparse.Namespace) -> int:
     if name:
         return _emit(args, out, "rollout %s named %r" % (args.rollout_id, name))
     return _emit(args, out, "rollout %s name cleared" % args.rollout_id)
+
+
+def cmd_release_artifact(args: argparse.Namespace) -> int:
+    """Download one artifact by the filename the manifest declares."""
+    try:
+        data = _make_api(config.resolve(args.server, args.token)).release_artifact(
+            args.release_id, args.filename)
+        out = Path(args.output or args.filename)
+        out.write_bytes(data)
+        return _emit(args, {"saved": str(out), "bytes": len(data)},
+                     "saved %s (%d bytes)" % (out, len(data)))
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
 
 
 def cmd_release_sbom(args: argparse.Namespace) -> int:

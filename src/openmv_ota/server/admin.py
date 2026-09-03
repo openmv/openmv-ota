@@ -684,6 +684,29 @@ def release_image(release_id: str, request: Request,
     return Response(content=data, media_type="application/gzip")
 
 
+@admin.get("/releases/{release_id}/artifacts/{filename}",
+           responses={200: {"content": {"application/gzip": {}},
+                            "description": "one artifact of the release (full image or a delta)"}})
+def release_artifact(release_id: str, filename: str, request: Request,
+                     principal: Principal = Depends(require_scope("observe"))):
+    """Download ONE of the release's artifacts by the filename its manifest declares --
+    the full image or any delta. The filename must be one of the release's declared
+    representation urls (a whitelist, so this can never read outside the release's own
+    artifact directory). Account-scoped like every release read."""
+    from .errors import ServerError
+
+    st = request.app.state
+    rel = _owned(st.metastore.get_release(release_id), principal)
+    if filename not in {r.get("url") for r in rel["representations"]}:
+        raise HTTPException(status_code=404)
+    try:
+        data = st.storage.get("artifacts/%s/%s" % (release_id, filename))
+    except ServerError:
+        raise HTTPException(status_code=404,
+                            detail="artifact is no longer retained") from None
+    return Response(content=data, media_type="application/gzip")
+
+
 @admin.get("/releases/{release_id}/sbom", responses={200: {"content": {"application/json": {}}, "description": "the release's CycloneDX SBOM"}})
 def release_sbom(release_id: str, request: Request,
                  principal: Principal = Depends(require_scope("observe"))):

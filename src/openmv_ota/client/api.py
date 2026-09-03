@@ -66,6 +66,17 @@ class Api:
         params = {} if product_id is None else {"product_id": product_id}
         return self._req("GET", "/api/v1/admin/fleet/bases", params=params)
 
+    def release_artifact(self, release_id: str, filename: str) -> bytes:
+        """One artifact by its manifest-declared filename (full image or a delta)."""
+        resp = self._client.request(
+            "GET", "/api/v1/admin/releases/%s/artifacts/%s" % (release_id, filename),
+            headers={"Authorization": "Bearer %s" % self._token})
+        if resp.status_code >= 400:
+            raise ClientError("GET release artifact %s/%s -> %d: %s"
+                              % (release_id, filename, resp.status_code, _detail(resp)),
+                              exit_code=1)
+        return resp.content
+
     def release_image(self, release_id: str) -> bytes:
         """The raw gzipped image of a retained release -- a delta base."""
         resp = self._client.request(

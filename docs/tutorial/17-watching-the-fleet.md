@@ -155,6 +155,15 @@ saved sbom.cdx.json (48213 bytes)
 to a scanner (no `-o` writes it to stdout) to answer "does the release the fleet runs
 carry this CVE?".
 
+`release artifact` downloads any single artifact by the filename the manifest
+declares (the full image or one delta), so you can inspect or re-verify exactly what
+devices receive:
+
+```
+$ openmv-ota client release artifact --release-id rel_4f9c2a81d06b73ee --filename OPENMV_N6-ota.delta-1.3.0.gz
+saved OPENMV_N6-ota.delta-1.3.0.gz (183214 bytes)
+```
+
 ## The audit log
 
 `client audit` is the append-only record of every admin action — publish, rollout
