@@ -455,6 +455,32 @@ def _check_pin_release(ms, release_id, principal):
             raise HTTPException(status_code=404)
 
 
+class DeviceName(BaseModel):
+    name: str                              # display label; '' clears it
+
+
+class DeviceRenamed(BaseModel):
+    device_id: str
+    display_name: str
+
+
+@admin.patch("/devices/{device_id}/name", responses={200: {"model": DeviceRenamed}})
+def rename_device(device_id: str, body: DeviceName, request: Request,
+                  principal: Principal = Depends(require_scope("manage"))):
+    """Set the device's operator-facing display name -- a pure label (the
+    device_id stays the identity everywhere). '' clears it."""
+    name = body.name.strip()
+    if len(name) > 64:
+        raise HTTPException(status_code=400, detail="name too long (max 64)")
+    ms = request.app.state.metastore
+    _owned(ms.get_device(device_id), principal)              # 404 if missing or another account's
+    ms.set_device_name(device_id, name)
+    ms.append_audit(actor=principal.name, action="device.rename", entity_type="device",
+                    entity_id=device_id, data={"name": name},
+                    account_id=principal.account_id)
+    return {"device_id": device_id, "display_name": name}
+
+
 @admin.patch("/devices/{device_id}/pin", responses={200: {"model": DevicePinned}})
 def pin_device(device_id: str, body: DevicePin, request: Request,
                principal: Principal = Depends(require_scope("manage"))):

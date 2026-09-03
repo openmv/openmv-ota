@@ -232,6 +232,19 @@ keep following their own rollouts until you pin them too, with the RT release. (
 work the same way — targeting is always the `(product, cohort)` pair.) A device pin
 needs no product: the device id alone is unique.
 
+## Naming devices
+
+A device's identity is its hardware id, but a fleet of 40 hex strings is unreadable on a
+dashboard. `device rename` sets an operator-facing **display name** — a pure label
+(`display_name` in every device row; it never affects lookups, offers, or identity):
+
+```
+$ openmv-ota client device rename --device-id 30003d000851303436313832 --name "Loading dock east"
+device 30003d000851303436313832 named 'Loading dock east'
+$ openmv-ota client device rename --device-id 30003d000851303436313832 --clear
+device 30003d000851303436313832 name cleared
+```
+
 ---
 
 *[← 15 · The client](15-the-client.md) · [Index](00-introduction.md) · [17 · Watching the fleet →](17-watching-the-fleet.md)*

@@ -745,3 +745,28 @@ def test_release_bases_fleet_needs_a_product_and_says_when_nothing_covers(wired,
     assert main(["client", "release", "bases", "--fleet", "-b", "OPENMV_N6",
                  "--product-id", str(BID), "-o", str(tmp_path / "b")]) == 0
     assert "no coverable fleet bases" in capsys.readouterr().out
+
+
+def test_device_rename_and_clear(wired, tmp_path, capsys):
+    store, _ = wired
+    store.upsert_device(device_id="d1", product_id=BID)
+    assert main(["client", "device", "rename", "--device-id", "d1",
+                 "--name", "Loading dock east"]) == 0
+    assert "named 'Loading dock east'" in capsys.readouterr().out
+    assert store.get_device("d1")["display_name"] == "Loading dock east"
+    assert main(["client", "device", "rename", "--device-id", "d1", "--clear"]) == 0
+    assert "name cleared" in capsys.readouterr().out
+    assert store.get_device("d1")["display_name"] == ""
+    # audited like every mutation
+    assert any(e["action"] == "device.rename" for e in store.read_audit())
+
+
+def test_device_rename_errors(wired, tmp_path, capsys):
+    store, _ = wired
+    assert main(["client", "device", "rename", "--device-id", "ghost",
+                 "--name", "x"]) == 1                              # 404 -> exit 1
+    capsys.readouterr()
+    store.upsert_device(device_id="d1", product_id=BID)
+    assert main(["client", "device", "rename", "--device-id", "d1",
+                 "--name", "x" * 65]) == 1                         # 400 too long
+    assert "400" in capsys.readouterr().err

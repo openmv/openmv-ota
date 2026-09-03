@@ -223,6 +223,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     gd.add_argument("--clear", action="store_true", help="unpin")
     _creds(p_dvp)
     p_dvp.set_defaults(func=cmd_pin, _command="client device pin", target="device")
+    p_dvn = dsub.add_parser("rename", help="set a device's display name (a label; --clear removes)")
+    p_dvn.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="device to rename")
+    gn = p_dvn.add_mutually_exclusive_group(required=True)
+    gn.add_argument("--name", help="the display name (max 64 chars)")
+    gn.add_argument("--clear", action="store_true", help="remove the display name")
+    _creds(p_dvn)
+    p_dvn.set_defaults(func=cmd_device_rename, _command="client device rename")
     p_bind = dsub.add_parser("bind", help="bind a device to your account (re-account / recover)")
     p_bind.add_argument("--device-id", required=True, metavar="DEVICE_ID",
                         help="device to bind to the caller's account")
@@ -653,6 +660,21 @@ def cmd_release_show(args: argparse.Namespace) -> int:
 
 def cmd_device_show(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.device(args.device_id))
+
+
+def cmd_device_rename(args: argparse.Namespace) -> int:
+    """Set (or --clear) the device's operator-facing display name -- a label
+    for dashboards and lists; the device_id stays the identity everywhere."""
+    name = "" if args.clear else args.name
+    try:
+        out = _make_api(config.resolve(args.server, args.token)).rename_device(
+            args.device_id, name)
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if name:
+        return _emit(args, out, "device %s named %r" % (args.device_id, name))
+    return _emit(args, out, "device %s name cleared" % args.device_id)
 
 
 def cmd_release_sbom(args: argparse.Namespace) -> int:

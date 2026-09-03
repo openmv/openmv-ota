@@ -174,6 +174,11 @@ _MIGRATIONS: list[list[str]] = [
         # release was published without one (an older client).
         "ALTER TABLE releases ADD COLUMN sbom_key TEXT",
     ],
+    [   # v14 -- a human-facing display name for a device, set by the operator (the website's
+        # rename button / `client device rename`). Pure label: never used for lookups, offers,
+        # or identity -- the device_id remains the only key a device ever reports.
+        "ALTER TABLE devices ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+    ],
 ]
 
 
@@ -569,6 +574,11 @@ class SqlMetadataStore:
         return self.execute(sql, tuple(params)).rowcount
 
     # --- version pins (device / cohort, override rollouts) ----------------------------------
+
+    def set_device_name(self, device_id: str, name: str) -> None:
+        """Set the operator-facing display name (empty = clear). A label only."""
+        self.execute("UPDATE devices SET display_name = ? WHERE device_id = ?",
+                     (name, device_id))
 
     def set_device_pin(self, device_id: str, release_id: str | None) -> None:
         """Pin (or, with None, unpin) a device to a release. Preserved across check-ins."""

@@ -139,6 +139,11 @@ class Api:
         return self._req("PATCH", "/api/v1/admin/devices/%s/pin" % device_id,
                          json={"release_id": release_id})
 
+    def rename_device(self, device_id, name):
+        """Set the device's display name ('' clears). A label, never identity."""
+        return self._req("PATCH", "/api/v1/admin/devices/%s/name" % device_id,
+                         json={"name": name})
+
     def bind_device(self, device_id):
         return self._req("POST", "/api/v1/admin/devices/%s/account" % device_id)
 
