@@ -335,6 +335,29 @@ class CohortPinned(BaseModel):
     release_id: str | None = None
 
 
+class Advisory(_Row):
+    release_id: str = ""
+    vuln_id: str = ""
+    component: str = ""
+    version: str = ""
+    severity: str = "unknown"
+    summary: str = ""
+    first_seen: str = ""
+    last_seen: str = ""
+    cleared_at: str | None = None
+    account_id: str = ""
+
+
+class AdvisoryList(BaseModel):
+    advisories: list[Advisory]
+
+
+class AdvisoryScan(BaseModel):
+    releases_scanned: int
+    findings: int
+    new: list[Advisory]
+
+
 class ArtifactsDeleted(BaseModel):
     release_id: str
     deleted: list[str] | int

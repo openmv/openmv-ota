@@ -9,6 +9,17 @@ import subprocess
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _no_real_osv(monkeypatch):
+    """CVE scans must never reach api.osv.dev from a test: the default client's
+    scan is a no-op here, and a test that wants findings monkeypatches its own."""
+    from openmv_ota.server import advisor
+    if not hasattr(advisor, "REAL_OSV_SCAN"):    # the unit tests exercise the real one
+        advisor.REAL_OSV_SCAN = advisor.OsvClient.scan
+    monkeypatch.setattr(advisor.OsvClient, "scan", lambda self, components: [])
+
+
 OMV_PROTOCOL = (
     "#define OMV_FIRMWARE_VERSION_MAJOR  (5)\n"
     "#define OMV_FIRMWARE_VERSION_MINOR  (0)\n"

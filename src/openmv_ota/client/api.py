@@ -159,6 +159,18 @@ class Api:
         return self._req("PATCH", "/api/v1/admin/devices/%s/name" % device_id,
                          json={"name": name})
 
+    def advisories(self, release_id=None, active_only=True):
+        """The account's CVE findings from SBOM scans (active by default)."""
+        params = {"active_only": "true" if active_only else "false"}
+        if release_id is not None:
+            params["release_id"] = release_id
+        return self._req("GET", "/api/v1/admin/advisories", params=params)
+
+    def scan_advisories(self, release_id=None):
+        """Run a scan now: one release, or every release the fleet still runs."""
+        body = {} if release_id is None else {"release_id": release_id}
+        return self._req("POST", "/api/v1/admin/advisories/scan", json=body)
+
     def rename_release(self, release_id, name):
         """Set a release's display name ('' clears). A label, never identity."""
         return self._req("PATCH", "/api/v1/admin/releases/%s/name" % release_id,

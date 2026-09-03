@@ -11,8 +11,9 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import sys
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 
 from openmv_ota.ota import delta as delta_codec
 from openmv_ota.ota.errors import OtaError
@@ -81,7 +82,8 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
 
 
 @publish.post("/releases", responses={200: {"model": Published}})
-async def publish_release(request: Request, manifest: UploadFile = File(...),
+async def publish_release(request: Request, background: BackgroundTasks,
+                          manifest: UploadFile = File(...),
                           image: UploadFile = File(...),
                           delta: list[UploadFile] | None = File(None),
                           sbom: UploadFile | None = File(None),
@@ -152,6 +154,18 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
                     entity_id=release_id, data={"product_id": product_id, "version": body.get("version"),
                                                 "payload_version": payload_version},
                     account_id=account_id)
+    # CVE monitoring starts NOW, not at the next daily pass: scan the new release's
+    # SBOM in the background (a scan failure never touches the publish result).
+    if sbom_key is not None:
+        def _scan_quietly(state=request.app.state,
+                          rel={"release_id": release_id, "account_id": account_id,
+                               "sbom_key": sbom_key}):
+            from . import advisor
+            try:
+                advisor.scan_release(state, rel, actor=principal.name)
+            except Exception as e:                            # noqa: BLE001
+                print("publish-time advisory scan failed: %s" % e, file=sys.stderr)
+        background.add_task(_scan_quietly)
     return {"release_id": release_id, "product_id": product_id, "version": body.get("version"),
             "payload_version": payload_version, "representations": [r["format"] for r in reps],
             "display_name": display_name}

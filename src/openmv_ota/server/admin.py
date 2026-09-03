@@ -18,6 +18,8 @@ from .schemas import (
     AccountCreated,
     AccountList,
     AccountNamed,
+    AdvisoryList,
+    AdvisoryScan,
     ArtifactsDeleted,
     AuditList,
     CohortAssigned,
@@ -682,6 +684,41 @@ def release_image(release_id: str, request: Request,
         raise HTTPException(status_code=404,
                             detail="image is no longer retained") from None
     return Response(content=data, media_type="application/gzip")
+
+
+@admin.get("/advisories", responses={200: {"model": AdvisoryList}})
+def list_advisories(request: Request, release_id: str | None = None,
+                    active_only: bool = True,
+                    principal: Principal = Depends(require_scope("observe"))):
+    """The account's CVE findings from SBOM scans -- active by default;
+    ``active_only=false`` includes cleared rows (the monitoring history)."""
+    ms = request.app.state.metastore
+    if release_id is not None:
+        _owned(ms.get_release(release_id), principal)
+    return {"advisories": ms.list_advisories(account_id=principal.account_id,
+                                             release_id=release_id,
+                                             active_only=active_only)}
+
+
+class AdvisoryScanRequest(BaseModel):
+    release_id: str | None = None          # one release, or the whole live fleet
+
+
+@admin.post("/advisories/scan", responses={200: {"model": AdvisoryScan}})
+def scan_advisories(body: AdvisoryScanRequest, request: Request,
+                    principal: Principal = Depends(require_scope("manage"))):
+    """Run a scan NOW -- one release, or every release the fleet still runs.
+    The daily scheduler calls the same code; this is the on-demand edge
+    (publish-time, a dashboard button, CI)."""
+    from . import advisor
+
+    st = request.app.state
+    if body.release_id is not None:
+        rel = _owned(st.metastore.get_release(body.release_id), principal)
+        out = advisor.scan_release(st, rel, actor=principal.name)
+        return {"releases_scanned": 1, "findings": out["findings"], "new": out["new"]}
+    out = advisor.scan_account(st, principal.account_id, actor=principal.name)
+    return out
 
 
 @admin.get("/releases/{release_id}/artifacts/{filename}",

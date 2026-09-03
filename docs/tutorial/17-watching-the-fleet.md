@@ -164,6 +164,29 @@ $ openmv-ota client release artifact --release-id rel_4f9c2a81d06b73ee --filenam
 saved OPENMV_N6-ota.delta-1.3.0.gz (183214 bytes)
 ```
 
+## Vulnerability monitoring
+
+The server scans the SBOMs of every release the fleet still runs (or an active
+rollout still offers) against [OSV.dev](https://osv.dev), daily by default
+(`OPENMV_OTA_ADVISORY_SCAN_INTERVAL_S`; `0` disables the loop). Findings land in
+the advisories table — new ones appear with a `first_seen`, and a finding a later
+scan no longer reports is cleared, never deleted, so the history shows monitoring
+ran. `release publish` triggers a scan of the new release immediately and prints
+what it carries:
+
+```
+$ openmv-ota client advisories scan
+scanned 3 release(s): 1 finding(s), 1 new
+  NEW CVE-2026-21437  high  mbedtls 3.5.1
+
+$ openmv-ota client advisories list
+```
+
+`advisories list --all` includes cleared findings; `advisories scan --release-id`
+scans one release. Every scan is audited as `advisory.scan`. OSV matches firmware
+C libraries by name and version, so treat a clean scan as "no known issues in one
+good database", not a guarantee.
+
 ## The audit log
 
 `client audit` is the append-only record of every admin action — publish, rollout

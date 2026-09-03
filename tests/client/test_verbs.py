@@ -763,6 +763,151 @@ def test_device_rename_and_clear(wired, tmp_path, capsys):
     assert any(e["action"] == "device.rename" for e in store.read_audit())
 
 
+def _fake_osv_hits(monkeypatch, table):
+    """Findings for (name, version) pairs in ``table``; everything else clean."""
+    from openmv_ota.server.advisor import OsvClient
+
+    def scan(self, components):
+        out = []
+        for c in components:
+            for f in table.get((c.get("name"), c.get("version")), []):
+                out.append(dict(f, component=c["name"], version=c["version"]))
+        return out
+
+    monkeypatch.setattr(OsvClient, "scan", scan)
+
+
+def _seed_scannable(store, storage, *, with_device=True):
+    """A release with an SBOM in storage, and (optionally) a device running it --
+    the scanner's whole scope condition."""
+    sbom = {"components": [{"name": "mbedtls", "version": "3.5.1"},
+                           {"name": "lwip", "version": "2.2.0"}]}
+    storage.put("sbom/rel1/sbom.cdx.json", json.dumps(sbom).encode(), "application/json")
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0,
+                      image_sha256="ab" * 32, image_size=1,
+                      representations=[{"format": "full", "url": "x", "size": 1}],
+                      manifest_key="m", image_key="i",
+                      sbom_key="sbom/rel1/sbom.cdx.json")
+    if with_device:
+        store.upsert_device(device_id="d1", product_id=BID, current_version="2.0.0")
+
+
+MBEDTLS_CVE = {("mbedtls", "3.5.1"): [
+    {"vuln_id": "CVE-2026-21437", "severity": "high", "summary": "x509 overflow"}]}
+
+
+def test_advisories_scan_finds_clears_and_lists(wired, tmp_path, monkeypatch, capsys):
+    store, _ = wired
+    storage = LocalArtifactStorage(str(tmp_path / "blobs"))
+    _seed_scannable(store, storage)
+    _fake_osv_hits(monkeypatch, MBEDTLS_CVE)
+    assert main(["client", "advisories", "scan"]) == 0
+    out = capsys.readouterr().out
+    assert "scanned 1 release(s): 1 finding(s), 1 new" in out
+    assert "NEW CVE-2026-21437  high  mbedtls 3.5.1" in out
+    # listed as active, with the full row
+    assert main(["client", "advisories", "list"]) == 0
+    rows = json.loads(capsys.readouterr().out)["advisories"]
+    assert rows[0]["vuln_id"] == "CVE-2026-21437" and rows[0]["cleared_at"] is None
+    # a second identical scan is not "new" again -- the notification edge
+    assert main(["client", "advisories", "scan"]) == 0
+    assert "1 finding(s), 0 new" in capsys.readouterr().out
+    # the vulnerability database moves on: the finding clears, history remains
+    _fake_osv_hits(monkeypatch, {})
+    assert main(["client", "advisories", "scan"]) == 0
+    capsys.readouterr()
+    assert main(["client", "advisories", "list"]) == 0
+    assert json.loads(capsys.readouterr().out)["advisories"] == []
+    assert main(["client", "advisories", "list", "--all"]) == 0
+    rows = json.loads(capsys.readouterr().out)["advisories"]
+    assert rows[0]["cleared_at"] is not None
+    # audited like every mutation
+    assert any(e["action"] == "advisory.scan" for e in store.read_audit())
+
+
+def test_advisories_scan_scope(wired, tmp_path, monkeypatch, capsys):
+    store, _ = wired
+    storage = LocalArtifactStorage(str(tmp_path / "blobs"))
+    # no device runs it and no rollout offers it -> not scanned
+    _seed_scannable(store, storage, with_device=False)
+    _fake_osv_hits(monkeypatch, MBEDTLS_CVE)
+    assert main(["client", "advisories", "scan"]) == 0
+    assert "scanned 0 release(s)" in capsys.readouterr().out
+    # an ACTIVE rollout pulls it back into scope even with zero devices on it
+    store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID,
+                      cohort="__default__", percent=10)
+    assert main(["client", "advisories", "scan"]) == 0
+    assert "scanned 1 release(s): 1 finding(s), 1 new" in capsys.readouterr().out
+    # single-release scan + the 404 edge
+    assert main(["client", "advisories", "scan", "--release-id", "rel1"]) == 0
+    assert "scanned 1 release(s)" in capsys.readouterr().out
+    assert main(["client", "advisories", "scan", "--release-id", "rel_ghost"]) == 1
+    capsys.readouterr()
+    assert main(["client", "advisories", "list", "--release-id", "rel_ghost"]) == 1
+    capsys.readouterr()
+
+
+def test_publish_reports_advisories(wired, tmp_path, monkeypatch, capsys):
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    import openmv_ota.build.sbom as sbom_mod
+    monkeypatch.setattr(sbom_mod, "render_sbom", lambda proj: json.dumps(
+        {"components": [{"name": "mbedtls", "version": "3.5.1"}]}))
+    _fake_osv_hits(monkeypatch, MBEDTLS_CVE)
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    out = capsys.readouterr().out
+    assert "published rel_" in out
+    # the maker walks away knowing what the new release carries
+    assert "advisory: CVE-2026-21437  high  mbedtls 3.5.1" in out
+    # a clean SBOM says so explicitly
+    _fake_osv_hits(monkeypatch, {})
+    _build_release(project, pv=0x02000100)
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    assert "no known vulnerabilities" in capsys.readouterr().out
+
+
+def test_publish_advisory_scan_unavailable(wired, tmp_path, monkeypatch, capsys):
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    import openmv_ota.build.sbom as sbom_mod
+    monkeypatch.setattr(sbom_mod, "render_sbom", lambda proj: json.dumps(
+        {"components": [{"name": "x", "version": "1"}]}))
+    from openmv_ota.client.api import Api, ClientError
+
+    def boom(self, release_id=None):
+        raise ClientError("scan endpoint down", exit_code=1)
+    monkeypatch.setattr(Api, "scan_advisories", boom)
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    out = capsys.readouterr().out
+    assert "published rel_" in out and "advisory scan unavailable" in out
+
+
+def test_publish_survives_scanner_crash(wired, tmp_path, monkeypatch, capsys):
+    # The publish-time background scan blowing up must never touch the publish.
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    import openmv_ota.build.sbom as sbom_mod
+    monkeypatch.setattr(sbom_mod, "render_sbom", lambda proj: json.dumps(
+        {"components": [{"name": "x", "version": "1"}]}))
+    from openmv_ota.server.advisor import OsvClient
+    calls = {"n": 0}
+
+    def crash_once(self, components):
+        calls["n"] += 1
+        if calls["n"] == 1:                     # the publish-time background scan
+            raise RuntimeError("osv exploded")
+        return []
+    monkeypatch.setattr(OsvClient, "scan", crash_once)
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    out = capsys.readouterr()
+    assert "published rel_" in out.out
+    assert "publish-time advisory scan failed" in out.err
+
+
 def test_release_artifact_download(wired, tmp_path, capsys):
     store, _ = wired
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))   # same root the server uses

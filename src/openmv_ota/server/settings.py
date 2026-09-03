@@ -42,6 +42,11 @@ class ServerSettings(BaseSettings):
         validation_alias=AliasChoices("OPENMV_OTA_DATABASE_URL", "DATABASE_URL"),
     )
 
+    # CVE monitoring: how often the scheduler re-scans every account's live releases
+    # against OSV. 0 disables the loop (tests; deployments that trigger scans externally).
+    # Daily is the industry norm and comfortably meets an "ongoing monitoring" bar.
+    advisory_scan_interval_s: int = 86400
+
     admin_bootstrap_token: str = ""        # seeds the root admin token on first `server init`
     swd_ids_verify_url: str = ""           # the registration dependency -- required to serve
     swd_ids_verify_token: str = ""

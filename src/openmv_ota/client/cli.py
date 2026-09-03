@@ -4,6 +4,7 @@
     release publish|list|show|sbom|bases|prune|rename|artifact
     rollout create|raise|pause|resume|stop|status|list|rename
     cohort  list|assign|rename|delete|pin
+    advisories list|scan
     device  list|show|pin|bind
     account / token          tenant + credential management
     fleet / audit            the account-wide reads
@@ -316,6 +317,19 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_tkrot)
     p_tkrot.set_defaults(func=cmd_token, _command="client token rotate", action="rotate")
 
+    p_adv = sub.add_parser("advisories", help="CVE findings from SBOM scans")
+    advsub = p_adv.add_subparsers(dest="_adv")
+    p_advl = advsub.add_parser("list", help="the account's findings (JSON)")
+    p_advl.add_argument("--release-id", metavar="RELEASE_ID", help="only this release")
+    p_advl.add_argument("--all", action="store_true",
+                        help="include cleared findings (the monitoring history)")
+    _creds(p_advl)
+    p_advl.set_defaults(func=cmd_advisories, _command="client advisories list", action="list")
+    p_advs = advsub.add_parser("scan", help="scan now (one release, or the live fleet)")
+    p_advs.add_argument("--release-id", metavar="RELEASE_ID", help="only this release")
+    _creds(p_advs)
+    p_advs.set_defaults(func=cmd_advisories, _command="client advisories scan", action="scan")
+
     p_fl = sub.add_parser("fleet", help="the fleet summary (JSON)")
     p_fl.add_argument("--product-id", type=int, help="only this product")
     p_fl.add_argument("--cohort", help="only devices in this cohort")
@@ -523,6 +537,23 @@ def cmd_publish(args: argparse.Namespace) -> int:
         lines = ["published %s  version %s  (%s)" % (res["release_id"], res.get("version"),
                                                      ", ".join(res["representations"]))]
         payload = dict(res)
+        if sbom_bytes is not None:
+            # Surface CVEs IMMEDIATELY -- publish succeeded either way, but the
+            # maker should walk away knowing what the new release carries.
+            try:
+                api.scan_advisories(res["release_id"])
+                # ACTIVE findings, not just this scan's news: the publish-time
+                # background scan may have recorded them a moment earlier.
+                adv = api.advisories(res["release_id"])["advisories"]
+                payload["advisories"] = adv
+                for f in adv:
+                    lines.append("advisory: %s  %s  %s %s"
+                                 % (f["vuln_id"], f.get("severity", "?"),
+                                    f["component"], f.get("version", "")))
+                if not adv:
+                    lines.append("advisory scan: no known vulnerabilities")
+            except ClientError as e:
+                lines.append("advisory scan unavailable (%s)" % e)
         if args.percent is not None:
             ro = api.create_rollout(res["release_id"], args.cohort or "__default__", args.percent)
             lines.append("rollout %s  %s%%  cohort=%s"
@@ -731,6 +762,26 @@ def cmd_rollout_rename(args: argparse.Namespace) -> int:
     if name:
         return _emit(args, out, "rollout %s named %r" % (args.rollout_id, name))
     return _emit(args, out, "rollout %s name cleared" % args.rollout_id)
+
+
+def cmd_advisories(args: argparse.Namespace) -> int:
+    """Read or trigger CVE scans of the SBOMs the fleet still runs."""
+    try:
+        api = _make_api(config.resolve(args.server, args.token))
+        if args.action == "scan":
+            out = api.scan_advisories(args.release_id)
+            lines = ["scanned %d release(s): %d finding(s), %d new"
+                     % (out["releases_scanned"], out["findings"], len(out["new"]))]
+            for f in out["new"]:
+                lines.append("  NEW %s  %s  %s %s" % (f["vuln_id"], f.get("severity", "?"),
+                                                      f["component"], f.get("version", "")))
+            return _emit(args, out, *lines)
+        print(json.dumps(api.advisories(args.release_id, active_only=not args.all),
+                         indent=2))
+        return 0
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
 
 
 def cmd_release_artifact(args: argparse.Namespace) -> int:

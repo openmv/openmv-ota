@@ -287,8 +287,36 @@ def cmd_run(args: argparse.Namespace) -> int:
     _bootstrap(store, settings)                  # migrate + seed the secret (safe if init already ran)
     from .app import create_app
     app = create_app(settings, metastore=store)
+    _schedule_advisory_scans(app, settings)
     _serve(app, args.host or settings.host, args.port or settings.port, settings.trusted_proxy_ips)
     return 0
+
+
+def _schedule_advisory_scans(app, settings) -> None:
+    """Arm the daily CVE-scan loop on the served app. Lives on the SERVE path,
+    not in create_app: tests and the website's in-process mount create apps by
+    the dozen and must not each spawn a sleeping task."""
+    if settings.advisory_scan_interval_s <= 0:
+        return
+
+    @app.on_event("startup")
+    async def _start():                          # pragma: no cover - loop plumbing
+        import asyncio
+
+        from . import advisor
+
+        async def loop():
+            while True:
+                await asyncio.sleep(settings.advisory_scan_interval_s)
+                for acct in app.state.metastore.list_accounts():
+                    try:
+                        await asyncio.to_thread(advisor.scan_account, app.state,
+                                                acct["account_id"])
+                    except Exception as e:       # noqa: BLE001 - keep the loop alive
+                        print("advisory scan failed for %s: %s"
+                              % (acct["account_id"], e), file=sys.stderr)
+
+        app.state.advisory_task = asyncio.create_task(loop())
 
 
 def _bootstrap(store, settings) -> int:

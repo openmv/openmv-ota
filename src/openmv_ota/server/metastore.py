@@ -185,6 +185,25 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE releases ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE rollouts ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
     ],
+    [   # v16 -- CVE monitoring: findings from scanning stored SBOMs against a vulnerability
+        # database (OSV). One row per (release, advisory, component); a row whose advisory a
+        # later scan no longer reports is CLEARED, never deleted -- the history is the
+        # CRA-facing evidence that monitoring ran and what it found.
+        """CREATE TABLE advisories (
+            release_id TEXT NOT NULL,
+            vuln_id TEXT NOT NULL,
+            component TEXT NOT NULL,
+            version TEXT NOT NULL DEFAULT '',
+            severity TEXT NOT NULL DEFAULT 'unknown',
+            summary TEXT NOT NULL DEFAULT '',
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            cleared_at TEXT,
+            account_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (release_id, vuln_id, component)
+        )""",
+        "CREATE INDEX idx_advisories_account ON advisories (account_id, cleared_at)",
+    ],
 ]
 
 
@@ -598,6 +617,77 @@ class SqlMetadataStore:
         """Set a rollout's display name (empty = clear). A label only."""
         self.execute("UPDATE rollouts SET display_name = ? WHERE rollout_id = ?",
                      (name, rollout_id))
+
+    # --- advisories (CVE monitoring) --------------------------------------------------------
+
+    def releases_with_devices(self, account_id: str = "") -> list[dict]:
+        """The releases the scanner must cover: every release some device is RUNNING,
+        plus every release an active rollout is still offering. A release nobody runs
+        and nobody offers needs no scan."""
+        rows = self.query_all(
+            "SELECT DISTINCT r.* FROM releases r JOIN devices d "
+            "ON d.product_id = r.product_id AND d.current_version = r.version "
+            "AND d.account_id = r.account_id WHERE r.account_id = ? "
+            "UNION "
+            "SELECT DISTINCT r.* FROM releases r JOIN rollouts ro "
+            "ON ro.release_id = r.release_id AND ro.state = 'active' "
+            "WHERE r.account_id = ?", (account_id, account_id))
+        out = [_d(r) for r in rows]
+        for r in out:
+            r["representations"] = json.loads(r["representations"])
+        return out
+
+    def upsert_advisories(self, release_id: str, findings: list[dict],
+                          account_id: str = "") -> dict:
+        """Reconcile one release's scan result: new findings inserted (first_seen=now),
+        repeats refreshed (last_seen), and active rows the scan no longer reports
+        cleared. Returns {new: [...], cleared: n} -- `new` is what notification edges on."""
+        now = _now_iso()
+        current = {(a["vuln_id"], a["component"]): a
+                   for a in self.query_all(
+                       "SELECT * FROM advisories WHERE release_id = ? "
+                       "AND cleared_at IS NULL", (release_id,))}
+        new = []
+        seen = set()
+        for f in findings:
+            key = (f["vuln_id"], f["component"])
+            seen.add(key)
+            if key in current:
+                self.execute(
+                    "UPDATE advisories SET last_seen = ?, severity = ?, summary = ? "
+                    "WHERE release_id = ? AND vuln_id = ? AND component = ?",
+                    (now, f.get("severity", "unknown"), f.get("summary", ""),
+                     release_id, f["vuln_id"], f["component"]))
+            else:
+                self.execute(
+                    "INSERT OR REPLACE INTO advisories (release_id, vuln_id, component, "
+                    "version, severity, summary, first_seen, last_seen, cleared_at, "
+                    "account_id) VALUES (?,?,?,?,?,?,?,?,NULL,?)",
+                    (release_id, f["vuln_id"], f["component"], f.get("version", ""),
+                     f.get("severity", "unknown"), f.get("summary", ""), now, now,
+                     account_id))
+                new.append(dict(f, release_id=release_id))
+        cleared = 0
+        for key, row in current.items():
+            if key not in seen:
+                self.execute(
+                    "UPDATE advisories SET cleared_at = ? WHERE release_id = ? "
+                    "AND vuln_id = ? AND component = ?",
+                    (now, release_id, key[0], key[1]))
+                cleared += 1
+        return {"new": new, "cleared": cleared}
+
+    def list_advisories(self, account_id: str = "", release_id: str | None = None,
+                        active_only: bool = True) -> list[dict]:
+        sql = "SELECT * FROM advisories WHERE account_id = ?"
+        params: tuple = (account_id,)
+        if release_id is not None:
+            sql += " AND release_id = ?"
+            params = (*params, release_id)
+        if active_only:
+            sql += " AND cleared_at IS NULL"
+        sql += " ORDER BY first_seen DESC, vuln_id"
+        return [_d(r) for r in self.query_all(sql, params)]
 
     def set_device_pin(self, device_id: str, release_id: str | None) -> None:
         """Pin (or, with None, unpin) a device to a release. Preserved across check-ins."""

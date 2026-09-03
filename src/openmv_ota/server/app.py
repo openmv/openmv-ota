@@ -638,7 +638,8 @@ def _ranged(data: bytes, media_type: str, header: str | None) -> Response:
                              "Content-Range": "bytes %d-%d/%d" % (start, end, len(data))})
 
 
-def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_auth=None):
+def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_auth=None,
+               osv=None):
     """Build the ASGI app. Collaborators default to the settings-driven backends; the website
     injects its own. The server HMAC secret comes from the DB (seeded by ``server init``) or
     ``OPENMV_OTA_CAPABILITY_SECRET`` -- required so capability tokens are stable across workers."""
@@ -667,6 +668,9 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.admin_auth = admin_auth if admin_auth is not None else TokenAuth(metastore)
     app.state.secret = secret
     app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min)
+    from .advisor import OsvClient
+    app.state.osv = osv if osv is not None else OsvClient()
+
     origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
     if "*" in origins:
         # REFUSE, rather than quietly honour it. Starlette reads a "*" in this list as
