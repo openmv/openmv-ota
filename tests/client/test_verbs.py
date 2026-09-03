@@ -81,11 +81,12 @@ def test_publish_and_rollout(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project)
-    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta", "--percent", "5"]) == 0
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta", "--percent", "5", "--name", "First light"]) == 0
     out = capsys.readouterr().out
     assert "published rel_" in out and "rollout ro_" in out
     releases = store.list_releases(BID)
     assert len(releases) == 1 and store.list_rollouts(BID)[0]["cohort"] == "beta"
+    assert releases[0]["display_name"] == "First light"    # --name rides with publish
 
 
 def test_publish_uploads_every_delta_the_manifest_declares(wired, tmp_path, capsys):
@@ -759,6 +760,47 @@ def test_device_rename_and_clear(wired, tmp_path, capsys):
     assert store.get_device("d1")["display_name"] == ""
     # audited like every mutation
     assert any(e["action"] == "device.rename" for e in store.read_audit())
+
+
+def test_release_and_rollout_rename(wired, capsys):
+    store, _ = wired
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[{"format": "full", "url": "x", "size": 1}],
+                      manifest_key="m", image_key="i")
+    rid = "rel1"
+    # a label, never identity: need not be unique, renamable at any time
+    assert main(["client", "release", "rename", "--release-id", rid,
+                 "--name", "Night vision tuning"]) == 0
+    assert "named 'Night vision tuning'" in capsys.readouterr().out
+    assert store.get_release(rid)["display_name"] == "Night vision tuning"
+    assert main(["client", "rollout", "create", "--release-id", rid,
+                 "--percent", "10", "--name", "Beta wave"]) == 0
+    ro = store.list_rollouts()[0]
+    assert ro["display_name"] == "Beta wave"
+    capsys.readouterr()
+    assert main(["client", "rollout", "rename", "--rollout-id", ro["rollout_id"],
+                 "--name", "Beta wave 2"]) == 0
+    assert "named 'Beta wave 2'" in capsys.readouterr().out
+    assert main(["client", "rollout", "rename", "--rollout-id", ro["rollout_id"],
+                 "--clear"]) == 0
+    assert "name cleared" in capsys.readouterr().out
+    assert store.get_rollout(ro["rollout_id"])["display_name"] == ""
+    assert main(["client", "release", "rename", "--release-id", rid, "--clear"]) == 0
+    assert store.get_release(rid)["display_name"] == ""
+    # audited like every mutation
+    actions = [e["action"] for e in store.read_audit()]
+    assert "release.rename" in actions and "rollout.rename" in actions
+
+
+def test_release_rollout_rename_errors(wired, capsys):
+    store, _ = wired
+    assert main(["client", "release", "rename", "--release-id", "rel_ghost",
+                 "--name", "x"]) == 1                              # 404 -> exit 1
+    capsys.readouterr()
+    assert main(["client", "rollout", "rename", "--rollout-id", "ro_ghost",
+                 "--name", "x"]) == 1
+    capsys.readouterr()
 
 
 def test_device_rename_errors(wired, tmp_path, capsys):

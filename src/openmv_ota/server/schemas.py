@@ -68,6 +68,7 @@ class Release(_Row):
     uploaded_at: str = ""
     account_id: str = ""
     dev: int = 0
+    display_name: str = ""
 
 
 class Rollout(_Row):
@@ -345,6 +346,7 @@ class Published(BaseModel):
     version: str | None = None
     payload_version: int
     representations: list[str]
+    display_name: str = ""
 
 
 class ViewerGrant(_Row):

@@ -43,7 +43,7 @@ class Api:
         return resp.json() if resp.content else {}
 
     def publish_release(self, manifest: bytes, image: bytes, deltas, allow_republish: bool,
-                        sbom: bytes | None = None):
+                        sbom: bytes | None = None, display_name: str = ""):
         """Upload a release. ``deltas`` is ``{filename: gzipped patch}`` -- a release carries
         one per base version, and each is uploaded UNDER THE NAME THE MANIFEST DECLARES,
         because that name is how the server matches an artifact to its representation and how
@@ -56,6 +56,8 @@ class Api:
         if sbom is not None:
             files.append(("sbom", ("sbom.cdx.json", sbom, "application/json")))
         params = {"allow_republish": "true"} if allow_republish else {}
+        if display_name:
+            params["display_name"] = display_name
         return self._req("POST", "/api/v1/admin/releases", files=files, params=params)
 
     def fleet_bases(self, product_id=None):
@@ -89,10 +91,12 @@ class Api:
                          params={"force": "true"} if force else {})
 
     def create_rollout(self, release_id: str, cohort: str, percent: float,
-                       failure_threshold: float | None = None):
+                       failure_threshold: float | None = None, display_name: str = ""):
         body = {"release_id": release_id, "cohort": cohort, "percent": percent}
         if failure_threshold is not None:
             body["failure_threshold"] = failure_threshold
+        if display_name:
+            body["display_name"] = display_name
         return self._req("POST", "/api/v1/admin/rollouts", json=body)
 
     def patch_rollout(self, rollout_id: str, **body):
@@ -142,6 +146,16 @@ class Api:
     def rename_device(self, device_id, name):
         """Set the device's display name ('' clears). A label, never identity."""
         return self._req("PATCH", "/api/v1/admin/devices/%s/name" % device_id,
+                         json={"name": name})
+
+    def rename_release(self, release_id, name):
+        """Set a release's display name ('' clears). A label, never identity."""
+        return self._req("PATCH", "/api/v1/admin/releases/%s/name" % release_id,
+                         json={"name": name})
+
+    def rename_rollout(self, rollout_id, name):
+        """Set a rollout's display name ('' clears). A label, never identity."""
+        return self._req("PATCH", "/api/v1/admin/rollouts/%s/name" % rollout_id,
                          json={"name": name})
 
     def bind_device(self, device_id):

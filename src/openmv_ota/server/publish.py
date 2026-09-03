@@ -18,7 +18,7 @@ from openmv_ota.ota import delta as delta_codec
 from openmv_ota.ota.errors import OtaError
 from openmv_ota.ota.manifest import DELTA_FORMAT, parse_manifest
 
-from .admin import new_id
+from .admin import _label, new_id
 from .auth import Principal, require_scope
 
 from .schemas import Published
@@ -85,7 +85,7 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
                           image: UploadFile = File(...),
                           delta: list[UploadFile] | None = File(None),
                           sbom: UploadFile | None = File(None),
-                          allow_republish: bool = False,
+                          allow_republish: bool = False, display_name: str = "",
                           principal: Principal = Depends(require_scope("publish"))):
     ms = request.app.state.metastore
     storage = request.app.state.storage
@@ -95,6 +95,8 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
     except OtaError as e:
         raise HTTPException(status_code=400, detail="bad manifest: %s" % e) from None
     product_id, payload_version = body["product_id"], body["payload_version"]
+    # A label only -- it lives beside, not in, the signed manifest, so it stays renamable.
+    display_name = _label(display_name)
     account_id = body.get("account_id", "")           # the maker's account (baked into the signed manifest)
     if account_id != principal.account_id:
         # you can only publish releases under your own account -- the signed manifest's account
@@ -145,10 +147,11 @@ async def publish_release(request: Request, manifest: UploadFile = File(...),
                    manifest_key=manifest_key, image_key=image_key,
                    uploaded_by=principal.name, account_id=account_id,
                    dev=1 if body.get("dev") else 0,   # dev-signed provenance (visibility only)
-                   sbom_key=sbom_key)
+                   sbom_key=sbom_key, display_name=display_name)
     ms.append_audit(actor=principal.name, action="release.publish", entity_type="release",
                     entity_id=release_id, data={"product_id": product_id, "version": body.get("version"),
                                                 "payload_version": payload_version},
                     account_id=account_id)
     return {"release_id": release_id, "product_id": product_id, "version": body.get("version"),
-            "payload_version": payload_version, "representations": [r["format"] for r in reps]}
+            "payload_version": payload_version, "representations": [r["format"] for r in reps],
+            "display_name": display_name}

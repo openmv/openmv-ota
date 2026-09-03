@@ -179,6 +179,12 @@ _MIGRATIONS: list[list[str]] = [
         # or identity -- the device_id remains the only key a device ever reports.
         "ALTER TABLE devices ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
     ],
+    [   # v15 -- the same operator-facing display name for releases and rollouts (set at
+        # publish/create time or renamed later). Labels only, need not be unique; the
+        # rel_/ro_ ids remain the identity everywhere.
+        "ALTER TABLE releases ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE rollouts ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+    ],
 ]
 
 
@@ -240,15 +246,17 @@ class SqlMetadataStore:
     def add_release(self, *, release_id, product_id, product, version, payload_version,
                     min_platform_version, image_sha256, image_size, representations,
                     manifest_key, image_key, delta_key=None, key_id=None, uploaded_by=None,
-                    account_id="", dev=0, sbom_key=None) -> None:
+                    account_id="", dev=0, sbom_key=None,
+                    display_name="") -> None:
         self.execute(
             "INSERT INTO releases (release_id, product_id, product, version, payload_version, "
             "min_platform_version, image_sha256, image_size, representations, manifest_key, "
-            "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id, dev, sbom_key) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id, dev, sbom_key, "
+            "display_name) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (release_id, product_id, product, version, payload_version, min_platform_version,
              image_sha256, image_size, json.dumps(representations), manifest_key, image_key,
-             delta_key, key_id, uploaded_by, _now_iso(), account_id, dev, sbom_key))
+             delta_key, key_id, uploaded_by, _now_iso(), account_id, dev, sbom_key,
+             display_name))
 
     def get_release(self, release_id: str) -> dict | None:
         r = _d(self.query_one("SELECT * FROM releases WHERE release_id = ?", (release_id,)))
@@ -275,13 +283,14 @@ class SqlMetadataStore:
     # --- rollouts ---------------------------------------------------------------------------
 
     def add_rollout(self, *, rollout_id, release_id, product_id, cohort, percent, state="active",
-                    failure_threshold=0.05, account_id="") -> None:
+                    failure_threshold=0.05, account_id="", display_name="") -> None:
         now = _now_iso()
         self.execute(
             "INSERT INTO rollouts (rollout_id, release_id, product_id, cohort, percent, state, "
-            "failure_threshold, created_at, updated_at, account_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "failure_threshold, created_at, updated_at, account_id, display_name) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (rollout_id, release_id, product_id, cohort, percent, state, failure_threshold, now,
-             now, account_id))
+             now, account_id, display_name))
 
     def get_rollout(self, rollout_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM rollouts WHERE rollout_id = ?", (rollout_id,)))
@@ -579,6 +588,16 @@ class SqlMetadataStore:
         """Set the operator-facing display name (empty = clear). A label only."""
         self.execute("UPDATE devices SET display_name = ? WHERE device_id = ?",
                      (name, device_id))
+
+    def set_release_name(self, release_id: str, name: str) -> None:
+        """Set a release's display name (empty = clear). A label only."""
+        self.execute("UPDATE releases SET display_name = ? WHERE release_id = ?",
+                     (name, release_id))
+
+    def set_rollout_name(self, rollout_id: str, name: str) -> None:
+        """Set a rollout's display name (empty = clear). A label only."""
+        self.execute("UPDATE rollouts SET display_name = ? WHERE rollout_id = ?",
+                     (name, rollout_id))
 
     def set_device_pin(self, device_id: str, release_id: str | None) -> None:
         """Pin (or, with None, unpin) a device to a release. Preserved across check-ins."""

@@ -1,8 +1,8 @@
 """CLI handlers for ``openmv-ota client``.
 
     login / logout           save/remove the server URL + admin token
-    release publish|list|show|sbom|bases|prune
-    rollout create|raise|pause|resume|stop|status|list
+    release publish|list|show|sbom|bases|prune|rename
+    rollout create|raise|pause|resume|stop|status|list|rename
     cohort  list|assign|rename|delete|pin
     device  list|show|pin|bind
     account / token          tenant + credential management
@@ -82,6 +82,8 @@ def register(parser: argparse.ArgumentParser) -> None:
                        help="also stage the release: create a rollout at this percent")
     p_pub.add_argument("--cohort", default=None,
                        help="cohort for that rollout (default: __default__, the un-assigned devices)")
+    p_pub.add_argument("--name", default="",
+                       help="display name for the release (a label; rename any time)")
     p_pub.add_argument("--allow-republish", action="store_true",
                        help="re-upload a version the server already has (dev loop)")
     _creds(p_pub)
@@ -103,6 +105,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_rsb.add_argument("-o", "--output", help="write to this file (default: stdout)")
     _creds(p_rsb)
     p_rsb.set_defaults(func=cmd_release_sbom, _command="client release sbom")
+    p_rrn = rlsub.add_parser("rename", help="set a release's display name (a label; --clear removes)")
+    p_rrn.add_argument("--release-id", required=True, metavar="RELEASE_ID", help="release to rename")
+    grn = p_rrn.add_mutually_exclusive_group(required=True)
+    grn.add_argument("--name", help="the display name (max 64 chars)")
+    grn.add_argument("--clear", action="store_true", help="remove the display name")
+    _creds(p_rrn)
+    p_rrn.set_defaults(func=cmd_release_rename, _command="client release rename")
 
     p_ro = sub.add_parser("rollout", help="create / drive / read rollouts")
     rsub = p_ro.add_subparsers(dest="_ro")
@@ -115,6 +124,8 @@ def register(parser: argparse.ArgumentParser) -> None:
                       help="share of the cohort to offer it to, 0-100")
     p_rc.add_argument("--failure-threshold", type=float, default=0.05,
                       help="fallback rate among offered devices that auto-pauses it (default 0.05)")
+    p_rc.add_argument("--name", default="",
+                      help="display name for the rollout (a label; rename any time)")
     _creds(p_rc)
     p_rc.set_defaults(func=cmd_rollout, _command="client rollout create", action="create")
     for action, needs_pct, blurb in (
@@ -144,6 +155,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_rol.add_argument("--offset", type=int, help="page offset")
     _creds(p_rol)
     p_rol.set_defaults(func=cmd_rollouts, _command="client rollout list")
+    p_ron = rsub.add_parser("rename", help="set a rollout's display name (a label; --clear removes)")
+    p_ron.add_argument("--rollout-id", required=True, metavar="ROLLOUT_ID", help="rollout to rename")
+    gon = p_ron.add_mutually_exclusive_group(required=True)
+    gon.add_argument("--name", help="the display name (max 64 chars)")
+    gon.add_argument("--clear", action="store_true", help="remove the display name")
+    _creds(p_ron)
+    p_ron.set_defaults(func=cmd_rollout_rename, _command="client rollout rename")
 
     p_co = sub.add_parser("cohort", help="list / assign / rename / delete / pin cohorts")
     cosub = p_co.add_subparsers(dest="_co")
@@ -493,7 +511,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
             print("warning: no SBOM attached (%s)" % e, file=sys.stderr)
         res = api.publish_release(manifest.read_bytes(), image.read_bytes(),
                                   _declared_deltas(manifest, out), args.allow_republish,
-                                  sbom=sbom_bytes)
+                                  sbom=sbom_bytes, display_name=args.name)
         lines = ["published %s  version %s  (%s)" % (res["release_id"], res.get("version"),
                                                      ", ".join(res["representations"]))]
         payload = dict(res)
@@ -517,7 +535,8 @@ def cmd_rollout(args: argparse.Namespace) -> int:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "create":
             ro = api.create_rollout(args.release_id, args.cohort, args.percent,
-                                    failure_threshold=args.failure_threshold)
+                                    failure_threshold=args.failure_threshold,
+                                    display_name=args.name)
             return _emit(args, ro, "rollout %s  %s%%  cohort=%s"
                          % (ro["rollout_id"], ro["percent"], ro["cohort"]))
         if args.action == "status":
@@ -675,6 +694,35 @@ def cmd_device_rename(args: argparse.Namespace) -> int:
     if name:
         return _emit(args, out, "device %s named %r" % (args.device_id, name))
     return _emit(args, out, "device %s name cleared" % args.device_id)
+
+
+def cmd_release_rename(args: argparse.Namespace) -> int:
+    """Set (or --clear) a release's display name -- a label for dashboards and
+    lists; the release_id stays the identity everywhere."""
+    name = "" if args.clear else args.name
+    try:
+        out = _make_api(config.resolve(args.server, args.token)).rename_release(
+            args.release_id, name)
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if name:
+        return _emit(args, out, "release %s named %r" % (args.release_id, name))
+    return _emit(args, out, "release %s name cleared" % args.release_id)
+
+
+def cmd_rollout_rename(args: argparse.Namespace) -> int:
+    """Set (or --clear) a rollout's display name -- same label rules as releases."""
+    name = "" if args.clear else args.name
+    try:
+        out = _make_api(config.resolve(args.server, args.token)).rename_rollout(
+            args.rollout_id, name)
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if name:
+        return _emit(args, out, "rollout %s named %r" % (args.rollout_id, name))
+    return _emit(args, out, "rollout %s name cleared" % args.rollout_id)
 
 
 def cmd_release_sbom(args: argparse.Namespace) -> int:

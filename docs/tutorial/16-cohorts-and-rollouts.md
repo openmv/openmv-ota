@@ -245,6 +245,22 @@ $ openmv-ota client device rename --device-id 30003d000851303436313832 --clear
 device 30003d000851303436313832 name cleared
 ```
 
+## Naming releases and rollouts
+
+Releases and rollouts carry the same kind of display name — a label beside the
+`rel_`/`ro_` id, never a key, and it need not be unique. Set it at creation
+(`release publish --name`, `rollout create --name`) or any time after with
+`rename`; `--clear` removes it:
+
+```
+$ openmv-ota client release rename --release-id rel_4f9c2a81d06b73ee --name "Night vision tuning"
+release rel_4f9c2a81d06b73ee named 'Night vision tuning'
+$ openmv-ota client rollout rename --rollout-id ro_7209dc3c597caec0 --name "Beta wave 1"
+rollout ro_7209dc3c597caec0 named 'Beta wave 1'
+```
+
+The name rides along in `release list` / `rollout list` rows as `display_name`.
+
 ---
 
 *[← 15 · The client](15-the-client.md) · [Index](00-introduction.md) · [17 · Watching the fleet →](17-watching-the-fleet.md)*

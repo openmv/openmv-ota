@@ -72,6 +72,7 @@ class RolloutCreate(BaseModel):
     cohort: str = "__default__"
     percent: float
     failure_threshold: float = 0.05
+    display_name: str = ""                 # a label only; need not be unique
 
 
 class RolloutPatch(BaseModel):
@@ -277,15 +278,17 @@ def create_rollout(body: RolloutCreate, request: Request,
         ms.update_rollout(prior["rollout_id"], state="paused")
         ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
                         entity_id=prior["rollout_id"], account_id=account_id)
+    display_name = _label(body.display_name)
     rid = new_id("ro")
     ms.add_rollout(rollout_id=rid, release_id=body.release_id, product_id=product_id,
                    cohort=body.cohort, percent=body.percent,
-                   failure_threshold=body.failure_threshold, account_id=account_id)
+                   failure_threshold=body.failure_threshold, account_id=account_id,
+                   display_name=display_name)
     ms.append_audit(actor=principal.name, action="rollout.create", entity_type="rollout",
                     entity_id=rid, data={"release_id": body.release_id, "cohort": body.cohort,
                                          "percent": body.percent}, account_id=account_id)
     return {"rollout_id": rid, "product_id": product_id, "cohort": body.cohort,
-            "percent": body.percent, "state": "active"}
+            "percent": body.percent, "state": "active", "display_name": display_name}
 
 
 @admin.patch("/rollouts/{rollout_id}", responses={200: {"model": Rollout}})
@@ -455,6 +458,14 @@ def _check_pin_release(ms, release_id, principal):
             raise HTTPException(status_code=404)
 
 
+def _label(name: str) -> str:
+    """Validate a display label: stripped, max 64 chars, '' allowed (= cleared)."""
+    name = name.strip()
+    if len(name) > 64:
+        raise HTTPException(status_code=400, detail="name too long (max 64)")
+    return name
+
+
 class DeviceName(BaseModel):
     name: str                              # display label; '' clears it
 
@@ -469,9 +480,7 @@ def rename_device(device_id: str, body: DeviceName, request: Request,
                   principal: Principal = Depends(require_scope("manage"))):
     """Set the device's operator-facing display name -- a pure label (the
     device_id stays the identity everywhere). '' clears it."""
-    name = body.name.strip()
-    if len(name) > 64:
-        raise HTTPException(status_code=400, detail="name too long (max 64)")
+    name = _label(body.name)
     ms = request.app.state.metastore
     _owned(ms.get_device(device_id), principal)              # 404 if missing or another account's
     ms.set_device_name(device_id, name)
@@ -479,6 +488,45 @@ def rename_device(device_id: str, body: DeviceName, request: Request,
                     entity_id=device_id, data={"name": name},
                     account_id=principal.account_id)
     return {"device_id": device_id, "display_name": name}
+
+
+class ReleaseRenamed(BaseModel):
+    release_id: str
+    display_name: str
+
+
+@admin.patch("/releases/{release_id}/name", responses={200: {"model": ReleaseRenamed}})
+def rename_release(release_id: str, body: DeviceName, request: Request,
+                   principal: Principal = Depends(require_scope("manage"))):
+    """Set a release's display name -- a label for dashboards and lists, never
+    identity (the release_id stays the key everywhere). '' clears it."""
+    name = _label(body.name)
+    ms = request.app.state.metastore
+    _owned(ms.get_release(release_id), principal)
+    ms.set_release_name(release_id, name)
+    ms.append_audit(actor=principal.name, action="release.rename", entity_type="release",
+                    entity_id=release_id, data={"name": name},
+                    account_id=principal.account_id)
+    return {"release_id": release_id, "display_name": name}
+
+
+class RolloutRenamed(BaseModel):
+    rollout_id: str
+    display_name: str
+
+
+@admin.patch("/rollouts/{rollout_id}/name", responses={200: {"model": RolloutRenamed}})
+def rename_rollout(rollout_id: str, body: DeviceName, request: Request,
+                   principal: Principal = Depends(require_scope("manage"))):
+    """Set a rollout's display name -- same label rules as releases."""
+    name = _label(body.name)
+    ms = request.app.state.metastore
+    _owned(ms.get_rollout(rollout_id), principal)
+    ms.set_rollout_name(rollout_id, name)
+    ms.append_audit(actor=principal.name, action="rollout.rename", entity_type="rollout",
+                    entity_id=rollout_id, data={"name": name},
+                    account_id=principal.account_id)
+    return {"rollout_id": rollout_id, "display_name": name}
 
 
 @admin.patch("/devices/{device_id}/pin", responses={200: {"model": DevicePinned}})
