@@ -94,6 +94,40 @@ def test_describe_version_parsing():
     assert d("", "fallback") == "fallback"
 
 
+def test_sbom_records_the_app_repo_head(tmp_path):
+    import subprocess
+
+    root = _project(tmp_path)
+    # not a git repo -> no commit claim (and never an error)
+    props = {p["name"] for p in sbom_mod.generate_sbom(root)["metadata"]["component"]["properties"]}
+    assert "openmv-ota:commit" not in props
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    comp = sbom_mod.generate_sbom(root)["metadata"]["component"]
+    props = {p["name"]: p["value"] for p in comp["properties"]}
+    assert len(props["openmv-ota:commit"]) == 40
+    assert "openmv-ota:dirty" not in props                     # clean tree
+    (root / "app" / "main.py").write_text("print()")
+    props = {p["name"]: p["value"] for p in
+             sbom_mod.generate_sbom(root)["metadata"]["component"]["properties"]}
+    assert props["openmv-ota:dirty"] == "True"                 # uncommitted changes
+    # a broken git environment never breaks the build -- identity is best-effort
+    import openmv_ota.project.gitrepo as gr
+    real = gr.head_commit
+    try:
+        gr.head_commit = lambda repo: (_ for _ in ()).throw(RuntimeError("git ate it"))
+        comp = sbom_mod.generate_sbom(root)["metadata"]["component"]
+        assert "openmv-ota:commit" not in {q["name"] for q in comp["properties"]}
+    finally:
+        gr.head_commit = real
+
+
 def test_license_detection_table():
     d = sbom_mod.detect_license
     assert d("Apache License\nVersion 2.0") == {"id": "Apache-2.0"}

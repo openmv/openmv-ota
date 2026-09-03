@@ -77,6 +77,24 @@ def detect_license(text: str) -> dict:
     return {"name": "Custom"}
 
 
+def _app_identity(paths) -> dict:
+    """The app's own exact identity: the PROJECT repo's HEAD (the customer's
+    app is a git repo like every submodule), plus a dirty flag when the tree
+    has uncommitted changes -- so "version 1.2.3" is pinned to real bytes.
+    A project that is not a git repo simply makes no commit claim."""
+    from openmv_ota.project import gitrepo
+
+    try:
+        if not gitrepo.is_git_repo(paths.root):
+            return {}
+        out = {"commit": gitrepo.head_commit(paths.root)}
+        if gitrepo.is_dirty(paths.root):
+            out["dirty"] = True
+        return out
+    except Exception:                              # noqa: BLE001 - identity is
+        return {}                                  # best-effort, never a build error
+
+
 def _app_licenses(paths) -> list | None:
     """The app's license, read from the project's LICENSE file (scaffolded as
     proprietary; the customer replaces it freely). No file = no claim."""
@@ -186,7 +204,8 @@ def generate_sbom(project: str | Path) -> dict:
                 "version": app_version,
                 **({"licenses": lic} if (lic := _app_licenses(paths)) else {}),
                 "properties": _props(boards=",".join(config.boards),
-                                     vendor=config.vendor or "", ota=lock.ota),
+                                     vendor=config.vendor or "", ota=lock.ota,
+                                     **_app_identity(paths)),
             },
         },
         "components": components,
