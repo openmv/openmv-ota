@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -778,6 +779,9 @@ def test_release_and_rollout_rename(wired, capsys):
                  "--percent", "10", "--name", "Beta wave"]) == 0
     ro = store.list_rollouts()[0]
     assert ro["display_name"] == "Beta wave"
+    capsys.readouterr()
+    assert main(["client", "rollout", "list"]) == 0             # the API row carries the label
+    assert json.loads(capsys.readouterr().out)["rollouts"][0]["display_name"] == "Beta wave"
     capsys.readouterr()
     assert main(["client", "rollout", "rename", "--rollout-id", ro["rollout_id"],
                  "--name", "Beta wave 2"]) == 0

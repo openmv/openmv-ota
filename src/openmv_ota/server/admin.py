@@ -332,7 +332,7 @@ def stop_rollout(rollout_id: str, request: Request,
 # /status is the complete single-rollout read (identity, policy, timestamps, counters,
 # derived score). Everything specific to one rollout lives there, once.
 _ROLLOUT_ROW = ("rollout_id", "release_id", "product_id", "cohort", "percent", "state",
-                "cohort_devices")
+                "cohort_devices", "display_name")
 
 
 @admin.get("/rollouts", responses={200: {"model": RolloutList}})
