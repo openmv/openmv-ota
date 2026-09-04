@@ -667,6 +667,13 @@ class SqlMetadataStore:
                 cleared += 1
         return {"new": new, "cleared": cleared}
 
+    def releases_with_active_advisories(self, account_id: str = "") -> list[str]:
+        """Release ids still carrying active findings -- the reconciliation set:
+        a release that left rotation must have its findings cleared, not linger."""
+        return [r["release_id"] for r in self.query_all(
+            "SELECT DISTINCT release_id FROM advisories WHERE account_id = ? "
+            "AND cleared_at IS NULL", (account_id,))]
+
     def list_advisories(self, account_id: str = "", release_id: str | None = None,
                         active_only: bool = True) -> list[dict]:
         sql = "SELECT * FROM advisories WHERE account_id = ?"

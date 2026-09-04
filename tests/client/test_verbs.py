@@ -800,6 +800,25 @@ def test_advisories_scan_finds_clears_and_lists(wired, tmp_path, monkeypatch, ca
     assert any(e["action"] == "advisory.scan" for e in store.read_audit())
 
 
+def test_advisories_clear_when_release_leaves_rotation(wired, tmp_path, monkeypatch,
+                                                       capsys):
+    store, _ = wired
+    storage = LocalArtifactStorage(str(tmp_path / "blobs"))
+    _seed_scannable(store, storage)                     # device d1 runs 2.0.0
+    _fake_osv_hits(monkeypatch, MBEDTLS_CVE)
+    assert main(["client", "advisories", "scan"]) == 0
+    capsys.readouterr()
+    assert len(store.list_advisories(account_id="")) == 1
+    # the fleet moves on: d1 now runs 3.0.0 -> rel1 leaves rotation, and the
+    # next account scan clears its findings instead of letting them linger
+    store.upsert_device(device_id="d1", product_id=BID, current_version="3.0.0")
+    assert main(["client", "advisories", "scan"]) == 0
+    capsys.readouterr()
+    assert store.list_advisories(account_id="") == []
+    rows = store.list_advisories(account_id="", active_only=False)
+    assert rows and rows[0]["cleared_at"] is not None    # history kept
+
+
 def test_advisories_scan_scope(wired, tmp_path, monkeypatch, capsys):
     store, _ = wired
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))

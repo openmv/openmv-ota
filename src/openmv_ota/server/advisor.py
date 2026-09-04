@@ -150,12 +150,25 @@ def scan_release(state, rel: dict, actor: str = "scheduler") -> dict:
 
 
 def scan_account(state, account_id: str, actor: str = "scheduler") -> dict:
-    """Scan every release the account's fleet still cares about."""
-    rels = state.metastore.releases_with_devices(account_id)
+    """Scan every release the account's fleet still cares about -- and CLEAR
+    the findings of releases that left rotation. A release nobody runs and
+    nobody offers is out of scope, and stale advisories lingering on it would
+    make the security list grow forever."""
+    ms = state.metastore
+    rels = ms.releases_with_devices(account_id)
     new: list[dict] = []
     findings = 0
     for rel in rels:
         out = scan_release(state, rel, actor=actor)
         findings += out["findings"]
         new.extend(out["new"])
+    in_scope = {r["release_id"] for r in rels}
+    for rid in ms.releases_with_active_advisories(account_id):
+        if rid in in_scope:
+            continue
+        cleared = ms.upsert_advisories(rid, [], account_id=account_id)["cleared"]
+        ms.append_audit(actor=actor, action="advisory.scan", entity_type="release",
+                        entity_id=rid,
+                        data={"out_of_rotation": True, "cleared": cleared},
+                        account_id=account_id)
     return {"releases_scanned": len(rels), "findings": findings, "new": new}
