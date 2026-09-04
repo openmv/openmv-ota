@@ -391,16 +391,6 @@ class SqlMetadataStore:
             "SELECT COUNT(*) AS n FROM devices WHERE account_id = ? AND product_id = ? "
             "AND cohort = ?", (account_id, product_id, cohort))["n"]
 
-    def rollouts_for_release(self, release_id: str, account_id=None) -> list[dict]:
-        """Every rollout pointing at a release. The guard on deleting its artifacts: a rollout
-        that is still offering a release has devices mid-download of it."""
-        sql = "SELECT * FROM rollouts WHERE release_id = ?"
-        params: tuple = (release_id,)
-        if account_id is not None:
-            sql += " AND account_id = ?"
-            params = (*params, account_id)
-        return [_d(r) for r in self.query_all(sql, params)]
-
     def update_rollout(self, rollout_id: str, **fields) -> None:
         fields = {**fields, "updated_at": _now_iso()}       # column names are code-controlled
         assigns = ", ".join(k + " = ?" for k in fields)
@@ -819,12 +809,16 @@ class SqlMetadataStore:
             (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry, account_id))
         return seq
 
-    def read_audit(self, limit: int = 100, since_seq: int = 0, account_id=None) -> list[dict]:
+    def read_audit(self, limit: int = 100, since_seq: int = 0, account_id=None,
+                   entity_id: str | None = None) -> list[dict]:
         sql = "SELECT * FROM audit WHERE seq > ?"
         params = [since_seq]
         if account_id is not None:
             sql += " AND account_id = ?"
             params.append(account_id)
+        if entity_id is not None:
+            sql += " AND entity_id = ?"
+            params.append(entity_id)
         rows = [_d(r) for r in self.query_all(sql + " ORDER BY seq LIMIT ?", (*params, limit))]
         for r in rows:
             r["data"] = json.loads(r["data"])

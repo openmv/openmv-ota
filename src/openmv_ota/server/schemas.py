@@ -358,11 +358,6 @@ class AdvisoryScan(BaseModel):
     new: list[Advisory]
 
 
-class ArtifactsDeleted(BaseModel):
-    release_id: str
-    deleted: list[str] | int
-
-
 class Published(BaseModel):
     release_id: str
     product_id: int

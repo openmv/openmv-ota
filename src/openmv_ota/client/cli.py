@@ -1,7 +1,7 @@
 """CLI handlers for ``openmv-ota client``.
 
     login / logout           save/remove the server URL + admin token
-    release publish|list|show|sbom|bases|prune|rename|artifact|manifest
+    release publish|list|show|sbom|bases|rename|artifact|manifest
     rollout create|raise|pause|resume|stop|status|list|rename
     cohort  list|assign|rename|delete|pin
     advisories list|scan
@@ -71,7 +71,7 @@ def register(parser: argparse.ArgumentParser) -> None:
                           help="print what was removed as JSON instead of a summary")
     p_logout.set_defaults(func=cmd_logout, _command="client logout")
 
-    p_rel = sub.add_parser("release", help="publish / list / show / sbom / bases / prune releases")
+    p_rel = sub.add_parser("release", help="publish / list / show / sbom / bases releases")
     rlsub = p_rel.add_subparsers(dest="_rel")
     p_pub = rlsub.add_parser("publish", help="upload a built release (+ optional rollout)")
     p_pub.add_argument("project", nargs="?", default=".", help="project dir (default: .)")
@@ -228,12 +228,6 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_bases)
     p_bases.set_defaults(func=cmd_bases, _command="client release bases")
 
-    p_prune = rlsub.add_parser("prune", help="delete a release's stored artifacts (keeps history)")
-    p_prune.add_argument("--release-id", required=True, help="release whose objects to delete")
-    p_prune.add_argument("--force", action="store_true",
-                         help="delete even while a rollout still offers this release")
-    _creds(p_prune)
-    p_prune.set_defaults(func=cmd_prune, _command="client release prune")
 
     p_dev = sub.add_parser("device", help="list / show / pin / bind devices")
     dsub = p_dev.add_subparsers(dest="_dev")
@@ -343,6 +337,8 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_fl.set_defaults(func=cmd_fleet, _command="client fleet")
 
     p_au = sub.add_parser("audit", help="the append-only audit log (JSON)")
+    p_au.add_argument("--entity-id", metavar="ID",
+                      help="only events for one release/rollout/device id")
     p_au.add_argument("--since", type=int, default=0, metavar="SEQ",
                       help="only events after this sequence number (a cursor, not an offset)")
     _creds(p_au)
@@ -455,9 +451,10 @@ def _fleet_bases(args: argparse.Namespace, api, out: Path) -> int:
     """``release bases --fleet``: ask the server which (version, exact-bytes) bases the
     fleet is RUNNING (its check-ins report each slot's body sha) and download the stored
     release matching each -- the curated base set ``build ota-romfs --delta-from`` wants.
-    The two groups no download can cover are named here, at fetch time: a pruned release,
-    and a republish whose stored bytes differ from what devices run. Both are safe -- those
-    devices take the full image -- but silence would read as covered."""
+    The two groups no download can cover are named here, at fetch time: a version with
+    no stored release (never published through the server), and a republish whose stored
+    bytes differ from what devices run. Both are safe -- those devices take the full
+    image -- but silence would read as covered."""
     import gzip
 
     from openmv_ota.ota import geometry
@@ -475,7 +472,7 @@ def _fleet_bases(args: argparse.Namespace, api, out: Path) -> int:
             continue                       # a sha-less device takes the full image by design
         rel = releases.get(row["payload_version"])
         if rel is None:
-            print("warning: %d device(s) run %s but no stored release matches (pruned?) "
+            print("warning: %d device(s) run %s but no stored release matches "
                   "-- they will take the full image" % (row["devices"], row["version"]),
                   file=sys.stderr)
             continue
@@ -500,19 +497,6 @@ def _fleet_bases(args: argparse.Namespace, api, out: Path) -> int:
     if not got:
         lines = ["no coverable fleet bases -- the next release ships full-image only"]
     return _emit(args, {"bases": got}, *lines)
-
-
-def cmd_prune(args: argparse.Namespace) -> int:
-    """Delete a release's stored objects. The release row (audit + version history) stays."""
-    try:
-        cfg = config.resolve(args.server, args.token)
-        res = _make_api(cfg).delete_release_artifacts(args.release_id, force=args.force)
-        return _emit(args, res,
-                     "deleted %d object(s) for %s" % (len(res["deleted"]), res["release_id"]))
-    except ClientError as e:
-        print("error: %s" % e, file=sys.stderr)
-        return e.exit_code
-    return 0
 
 
 def cmd_publish(args: argparse.Namespace) -> int:
@@ -853,4 +837,4 @@ def cmd_rollouts(args: argparse.Namespace) -> int:
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.audit(args.since))
+    return _read(args, lambda api: api.audit(args.since, entity_id=args.entity_id))

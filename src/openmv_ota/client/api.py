@@ -108,10 +108,6 @@ class Api:
                               % (release_id, resp.status_code, _detail(resp)), exit_code=1)
         return resp.content
 
-    def delete_release_artifacts(self, release_id: str, force: bool = False):
-        return self._req("DELETE", "/api/v1/admin/releases/%s/artifacts" % release_id,
-                         params={"force": "true"} if force else {})
-
     def create_rollout(self, release_id: str, cohort: str, percent: float,
                        failure_threshold: float | None = None, display_name: str = ""):
         body = {"release_id": release_id, "cohort": cohort, "percent": percent}
@@ -268,5 +264,8 @@ class Api:
         """One release, same reasoning as `device()`."""
         return self._req("GET", "/api/v1/admin/releases/%s" % release_id)
 
-    def audit(self, since: int = 0):
-        return self._req("GET", "/api/v1/admin/audit", params={"since": since})
+    def audit(self, since: int = 0, entity_id: str | None = None):
+        params = {"since": since}
+        if entity_id is not None:
+            params["entity_id"] = entity_id
+        return self._req("GET", "/api/v1/admin/audit", params=params)

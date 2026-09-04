@@ -24,8 +24,9 @@ $ openmv-ota build ota-romfs . --delta-from build/bases   # one delta per fetche
 $ openmv-ota client release publish . -b OPENMV_N6        # uploads the image + every delta
 ```
 
-`--fleet` warns at fetch time about any group of devices no base can cover (a pruned
-release, a republish that split the bytes) — those take the full image, never nothing.
+`--fleet` warns at fetch time about any group of devices no base can cover (a version
+never published through the server, a republish that split the bytes) — those take the
+full image, never nothing.
 The server can answer because it **retains every published image**: lose the build
 directory, re-clone the repo, hand the release to a colleague — the bases are still
 there. (`release bases --last N` fetches the N most recent releases instead, when you
@@ -45,18 +46,12 @@ openmv-ota client release publish . -b OPENMV_N6 -o build/factory
 publishing it is what lets `release bases --fleet` cover factory-fresh
 devices as well.)
 
-Retention has **no depth limit**: images are small, and only you know how long a version
-stays in the field. Reclaiming space is therefore a deliberate act:
-
-```
-openmv-ota client release prune --release-id rel_4f9c2a81d06b73ee
-```
-
-The release **row** survives — it is the audit trail and the anti-rollback history — so
-the server can answer "this release existed but its bytes are gone" rather than a bare
-not-found. Pruning is refused while a rollout still offers that release (those are the
-devices downloading it right now): pause or stop it first, or pass `--force` if you
-mean it.
+Retention has **no depth limit, and no delete**: the published bytes are part of a
+release's history — the SBOM and the manifest hash are testimony about the image,
+but the image itself is the evidence — so the server keeps every artifact for as
+long as the release row exists. Images are small; only you know how long a version
+stays in the field. (A release that must stop reaching devices is a rollout
+question — stop its rollouts — not a deletion question.)
 
 ---
 

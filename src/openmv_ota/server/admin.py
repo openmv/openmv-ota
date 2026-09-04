@@ -20,7 +20,6 @@ from .schemas import (
     AccountNamed,
     AdvisoryList,
     AdvisoryScan,
-    ArtifactsDeleted,
     AuditList,
     CohortAssigned,
     CohortList,
@@ -783,55 +782,6 @@ def release_sbom(release_id: str, request: Request,
     return Response(content=data, media_type="application/json")
 
 
-@admin.delete("/releases/{release_id}/artifacts", responses={200: {"model": ArtifactsDeleted}})
-def delete_release_artifacts(release_id: str, request: Request, force: bool = False,
-                             principal: Principal = Depends(require_scope("publish"))):
-    """Delete a release's stored objects, keeping the release ROW.
-
-    Retention has no depth limit -- images are small and cheap to keep, and a delta base is
-    only useful for as long as devices are still running that version, which only the operator
-    knows. So reclaiming space is a deliberate act, and this is it.
-
-    The row survives on purpose. It is the audit trail and the anti-rollback history, and
-    `GET /releases/{id}/image` already answers "image is no longer retained" for exactly this
-    state -- a release that existed, whose bytes are gone -- which a caller must be able to
-    tell apart from a release that never existed.
-
-    REFUSED while a rollout still points at the release, because those are the devices being
-    offered it right now: deleting the image mid-rollout turns every in-flight download into a
-    404. ``force`` is there for the case the operator means it (a rolled-back release nobody
-    should install), and it says so rather than silently allowing it."""
-    st = request.app.state
-    ms = st.metastore
-    rel = _owned(ms.get_release(release_id), principal)
-    live = [r for r in ms.rollouts_for_release(release_id, account_id=principal.account_id)
-            if r["state"] == "active"]
-    if live and not force:
-        raise HTTPException(
-            status_code=409,
-            detail="release %s is still being offered by rollout(s) %s -- pause or stop them "
-                   "first, or pass force=true"
-                   % (release_id, ", ".join(r["rollout_id"] for r in live)))
-
-    keys = [rel["manifest_key"], rel["image_key"]]
-    keys += ["artifacts/%s/%s" % (release_id, rep["url"].rsplit("/", 1)[-1])
-             for rep in rel["representations"] if rep["format"] != "full"]
-    # Report what was actually REMOVED, not what was attempted: `delete` is idempotent on both
-    # backends (missing_ok / delete_object), so a second call would otherwise claim to have
-    # deleted the same objects again and an operator could not tell whether anything was there.
-    deleted = []
-    for key in keys:
-        if not st.storage.exists(key):
-            continue
-        st.storage.delete(key)
-        deleted.append(key)
-    ms.append_audit(actor=principal.name, action="release.artifacts.delete",
-                    entity_type="release", entity_id=release_id,
-                    data={"deleted": len(deleted), "forced": bool(force)},
-                    account_id=principal.account_id)
-    return {"release_id": release_id, "deleted": deleted}
-
-
 @admin.get("/devices", responses={200: {"model": DeviceList}})
 def devices(request: Request, product_id: int | None = None, limit: int = 100,
             cohort: str | None = None, offset: int = 0,
@@ -877,6 +827,9 @@ def viewer_grant(device_id: str, request: Request,
 
 @admin.get("/audit", responses={200: {"model": AuditList}})
 def audit(request: Request, since: int = 0, limit: int = 100,
+          entity_id: str | None = None,
           principal: Principal = Depends(require_scope("observe"))):
+    """The append-only record. ``entity_id`` narrows it to one release, rollout,
+    or device -- a dashboard's per-entity history."""
     return {"events": request.app.state.metastore.read_audit(
-        limit, since, account_id=principal.account_id)}
+        limit, since, account_id=principal.account_id, entity_id=entity_id)}

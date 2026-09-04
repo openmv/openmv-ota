@@ -166,33 +166,6 @@ def test_bases_reports_when_there_is_no_history_yet(wired, tmp_path, capsys):
     assert "no retained releases" in capsys.readouterr().err
 
 
-def test_prune_deletes_a_release_s_objects(wired, tmp_path, capsys):
-    """Retention is unbounded, so removing a release's bytes is a deliberate operator action.
-    The release row -- audit trail and version history -- is untouched."""
-    store, _ = wired
-    project = tmp_path / "proj"
-    _build_release(project)
-    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
-    rel_id = store.list_releases(BID)[0]["release_id"]
-    capsys.readouterr()
-
-    assert main(["client", "release", "prune", "--release-id", rel_id]) == 0
-    assert "deleted 2 object(s)" in capsys.readouterr().out    # manifest + image
-    assert store.get_release(rel_id) is not None               # history survives
-
-
-def test_prune_refuses_a_release_a_rollout_still_offers(wired, tmp_path, capsys):
-    store, _ = wired
-    project = tmp_path / "proj"
-    _build_release(project)
-    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6",
-                 "--cohort", "beta", "--percent", "100"]) == 0
-    rel_id = store.list_releases(BID)[0]["release_id"]
-    capsys.readouterr()
-    assert main(["client", "release", "prune", "--release-id", rel_id]) == 1
-    assert "still being offered" in capsys.readouterr().err
-    # ...and --force is the explicit override
-    assert main(["client", "release", "prune", "--release-id", rel_id, "--force"]) == 0
 
 
 def test_publish_missing_artifacts(wired, tmp_path, capsys):
@@ -700,7 +673,7 @@ def _build_release_with_trailer(project, pv=0x02000000):
 
 def test_release_bases_fleet_covers_what_the_fleet_runs(wired, tmp_path, capsys):
     """--fleet asks the server's fleet report and downloads one base per (version, bytes)
-    group it can cover, warning AT FETCH TIME about the two groups it can't: a pruned
+    group it can cover, warning AT FETCH TIME about the two groups it can't: an unstored
     release, and a republish whose stored bytes differ from what devices run."""
     import json
 
@@ -946,6 +919,21 @@ def test_release_artifact_download(wired, tmp_path, capsys):
     assert main(["client", "release", "artifact", "--release-id", "rel1",
                  "--filename", "img.gz", "-o", str(tmp_path / "y")]) == 1
     assert "404" in capsys.readouterr().err
+
+
+def test_audit_entity_filter(wired, capsys):
+    store, _ = wired
+    store.append_audit(actor="ci", action="release.publish",
+                       entity_type="release", entity_id="rel_1")
+    store.append_audit(actor="ci", action="release.rename",
+                       entity_type="release", entity_id="rel_1")
+    store.append_audit(actor="ci", action="rollout.create",
+                       entity_type="rollout", entity_id="ro_9")
+    assert main(["client", "audit", "--entity-id", "rel_1"]) == 0
+    events = json.loads(capsys.readouterr().out)["events"]
+    assert [e["action"] for e in events] == ["release.publish", "release.rename"]
+    assert main(["client", "audit"]) == 0
+    assert len(json.loads(capsys.readouterr().out)["events"]) == 3
 
 
 def test_release_manifest_download(wired, tmp_path, capsys):
