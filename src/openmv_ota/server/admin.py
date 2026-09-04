@@ -721,6 +721,25 @@ def scan_advisories(body: AdvisoryScanRequest, request: Request,
     return out
 
 
+@admin.get("/releases/{release_id}/manifest",
+           responses={200: {"content": {"application/octet-stream": {}},
+                            "description": "the release's SIGNED manifest, byte-exact"}})
+def release_manifest(release_id: str, request: Request,
+                     principal: Principal = Depends(require_scope("observe"))):
+    """Download the signed manifest exactly as published -- the root of trust a
+    device verifies. Completes the artifact set for audit workflows."""
+    from .errors import ServerError
+
+    st = request.app.state
+    rel = _owned(st.metastore.get_release(release_id), principal)
+    try:
+        data = st.storage.get(rel["manifest_key"])
+    except ServerError:
+        raise HTTPException(status_code=404,
+                            detail="manifest is no longer retained") from None
+    return Response(content=data, media_type="application/octet-stream")
+
+
 @admin.get("/releases/{release_id}/artifacts/{filename}",
            responses={200: {"content": {"application/gzip": {}},
                             "description": "one artifact of the release (full image or a delta)"}})

@@ -66,6 +66,17 @@ class Api:
         params = {} if product_id is None else {"product_id": product_id}
         return self._req("GET", "/api/v1/admin/fleet/bases", params=params)
 
+    def release_manifest(self, release_id: str) -> bytes:
+        """The signed manifest, byte-exact as published."""
+        resp = self._client.request(
+            "GET", "/api/v1/admin/releases/%s/manifest" % release_id,
+            headers={"Authorization": "Bearer %s" % self._token})
+        if resp.status_code >= 400:
+            raise ClientError("GET release manifest %s -> %d: %s"
+                              % (release_id, resp.status_code, _detail(resp)),
+                              exit_code=1)
+        return resp.content
+
     def release_artifact(self, release_id: str, filename: str) -> bytes:
         """One artifact by its manifest-declared filename (full image or a delta)."""
         resp = self._client.request(

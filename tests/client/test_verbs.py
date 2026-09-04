@@ -948,6 +948,24 @@ def test_release_artifact_download(wired, tmp_path, capsys):
     assert "404" in capsys.readouterr().err
 
 
+def test_release_manifest_download(wired, tmp_path, capsys):
+    store, _ = wired
+    storage = LocalArtifactStorage(str(tmp_path / "blobs"))
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0,
+                      image_sha256="ab" * 32, image_size=1, representations=[],
+                      manifest_key="manifests/rel1/manifest.bin", image_key="i")
+    storage.put("manifests/rel1/manifest.bin", b"SIGNEDMANIFEST", "application/octet-stream")
+    assert main(["client", "release", "manifest", "--release-id", "rel1",
+                 "-o", str(tmp_path / "m.bin")]) == 0
+    assert "saved" in capsys.readouterr().out
+    assert (tmp_path / "m.bin").read_bytes() == b"SIGNEDMANIFEST"
+    storage.delete("manifests/rel1/manifest.bin")
+    assert main(["client", "release", "manifest", "--release-id", "rel1",
+                 "-o", str(tmp_path / "n.bin")]) == 1               # retained no longer
+    assert "404" in capsys.readouterr().err
+
+
 def test_release_and_rollout_rename(wired, capsys):
     store, _ = wired
     store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",

@@ -1,7 +1,7 @@
 """CLI handlers for ``openmv-ota client``.
 
     login / logout           save/remove the server URL + admin token
-    release publish|list|show|sbom|bases|prune|rename|artifact
+    release publish|list|show|sbom|bases|prune|rename|artifact|manifest
     rollout create|raise|pause|resume|stop|status|list|rename
     cohort  list|assign|rename|delete|pin
     advisories list|scan
@@ -114,6 +114,12 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_art.add_argument("-o", "--output", help="write to this file (default: the filename)")
     _creds(p_art)
     p_art.set_defaults(func=cmd_release_artifact, _command="client release artifact")
+    p_man = rlsub.add_parser("manifest", help="download the SIGNED manifest, byte-exact")
+    p_man.add_argument("--release-id", required=True, metavar="RELEASE_ID",
+                       help="the release to read")
+    p_man.add_argument("-o", "--output", help="write to this file (default: manifest.bin)")
+    _creds(p_man)
+    p_man.set_defaults(func=cmd_release_manifest, _command="client release manifest")
     p_rrn = rlsub.add_parser("rename", help="set a release's display name (a label; --clear removes)")
     p_rrn.add_argument("--release-id", required=True, metavar="RELEASE_ID", help="release to rename")
     grn = p_rrn.add_mutually_exclusive_group(required=True)
@@ -779,6 +785,20 @@ def cmd_advisories(args: argparse.Namespace) -> int:
         print(json.dumps(api.advisories(args.release_id, active_only=not args.all),
                          indent=2))
         return 0
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+
+
+def cmd_release_manifest(args: argparse.Namespace) -> int:
+    """The signed manifest as published -- what a device actually verifies."""
+    try:
+        data = _make_api(config.resolve(args.server, args.token)).release_manifest(
+            args.release_id)
+        out = Path(args.output or "manifest.bin")
+        out.write_bytes(data)
+        return _emit(args, {"saved": str(out), "bytes": len(data)},
+                     "saved %s (%d bytes)" % (out, len(data)))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
