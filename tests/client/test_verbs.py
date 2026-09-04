@@ -87,6 +87,7 @@ def test_publish_and_rollout(wired, tmp_path, capsys):
     assert "published rel_" in out and "rollout ro_" in out
     releases = store.list_releases(BID)
     assert len(releases) == 1 and store.list_rollouts(BID)[0]["cohort"] == "beta"
+    assert releases[0]["key_id"] == 0x0100      # the manifest's signing key, recorded
     assert releases[0]["display_name"] == "First light"    # --name rides with publish
 
 

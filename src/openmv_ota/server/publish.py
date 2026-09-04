@@ -93,7 +93,8 @@ async def publish_release(request: Request, background: BackgroundTasks,
     storage = request.app.state.storage
     manifest_bytes = await manifest.read()
     try:
-        body = parse_manifest(manifest_bytes).body
+        parsed = parse_manifest(manifest_bytes)
+        body = parsed.body
     except OtaError as e:
         raise HTTPException(status_code=400, detail="bad manifest: %s" % e) from None
     product_id, payload_version = body["product_id"], body["payload_version"]
@@ -147,6 +148,7 @@ async def publish_release(request: Request, background: BackgroundTasks,
                    min_platform_version=body.get("min_platform_version", 0),
                    image_sha256=body["sha256"], image_size=body["size"], representations=reps,
                    manifest_key=manifest_key, image_key=image_key,
+                   key_id=parsed.key_id,   # which signing key vouches for these bytes
                    uploaded_by=principal.name, account_id=account_id,
                    dev=1 if body.get("dev") else 0,   # dev-signed provenance (visibility only)
                    sbom_key=sbom_key, display_name=display_name)
