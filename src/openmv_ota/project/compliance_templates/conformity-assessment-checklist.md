@@ -35,7 +35,7 @@
 | Req | Provided | Customer must add | Status |
 |---|---|---|---|
 | (1) SBOM | `build sbom` — CycloneDX 1.5 rendered from the lock, deterministic per build | Attach to technical documentation | ☐ |
-| (2) Remediate without delay; security updates separable | OTA staged rollouts + pins; security-only releases are ordinary releases | Operate the release process | ☐ |
+| (2) Remediate without delay; security updates separable | Daily + on-publish OSV scans of every in-rotation release's SBOM (`client advisories`), audited findings history; OTA staged rollouts + pins for the fix; security-only releases are ordinary releases | Review findings; operate the release process | ☐ |
 | (3) Effective and regular testing | 2,000+ host tests at enforced 100% coverage + QEMU boot runs + per-PR hardware-fleet adversarial catalog | App-level tests | ☐ |
 | (4) Publicly disclose fixed vulnerabilities | Disclosure policy template | Publish advisories on your channel | ☐ |
 | (5) Coordinated disclosure policy | `vuln-disclosure-policy` template | Publish + staff it | ☐ |
