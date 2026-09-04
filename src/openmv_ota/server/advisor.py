@@ -22,20 +22,63 @@ _OSV_URL = "https://api.osv.dev"
 _BATCH = 500                                   # OSV caps querybatch at 1000
 
 
+# CVSS 3.x base-score metric weights (first.org spec, section 7.4).
+_CVSS3 = {
+    "AV": {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2},
+    "AC": {"L": 0.77, "H": 0.44},
+    "UI": {"N": 0.85, "R": 0.62},
+    "CIA": {"H": 0.56, "L": 0.22, "N": 0.0},
+    "PR_U": {"N": 0.85, "L": 0.62, "H": 0.27},   # scope unchanged
+    "PR_C": {"N": 0.85, "L": 0.68, "H": 0.5},    # scope changed
+}
+
+
+def _cvss3_score(vector: str) -> float | None:
+    """The CVSS 3.x base score from a vector string -- the real spec math,
+    because shortcuts get it exactly backwards (AC:H means HARDER to exploit,
+    i.e. LESS severe, yet naively reads as 'high')."""
+    import math
+
+    m = dict(part.split(":", 1) for part in vector.split("/")[1:] if ":" in part)
+    try:
+        scope_changed = m["S"] == "C"
+        iss = 1 - ((1 - _CVSS3["CIA"][m["C"]]) * (1 - _CVSS3["CIA"][m["I"]])
+                   * (1 - _CVSS3["CIA"][m["A"]]))
+        impact = (7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15 if scope_changed
+                  else 6.42 * iss)
+        pr = (_CVSS3["PR_C"] if scope_changed else _CVSS3["PR_U"])[m["PR"]]
+        expl = 8.22 * _CVSS3["AV"][m["AV"]] * _CVSS3["AC"][m["AC"]] * pr * _CVSS3["UI"][m["UI"]]
+    except KeyError:
+        return None
+    if impact <= 0:
+        return 0.0
+    raw = min((1.08 if scope_changed else 1.0) * (impact + expl), 10)
+    return math.ceil(raw * 10) / 10                      # spec: round UP to 0.1
+
+
 def _severity(vuln: dict) -> str:
     """OSV entries carry severity in one of two places: GitHub-imported
-    advisories set database_specific.severity (MODERATE/HIGH/...), native OSV
-    records a CVSS vector. Map both to low/medium/high/critical."""
-    ds = (vuln.get("database_specific") or {}).get("severity", "")
-    if ds:
-        ds = ds.lower()
-        return "medium" if ds == "moderate" else ds
+    advisories set database_specific.severity (LOW/MODERATE/HIGH/CRITICAL),
+    native OSV records a CVSS vector. Map both to low/medium/high/critical;
+    an entry saying neither (common for OSS-Fuzz findings) is 'unknown'."""
+    ds = (vuln.get("database_specific") or {}).get("severity", "").lower()
+    if ds == "moderate":
+        return "medium"
+    if ds in ("low", "medium", "high", "critical"):
+        return ds
     for sev in vuln.get("severity") or []:
         score = str(sev.get("score", ""))
-        # a CVSS v3/v4 vector; the base score is not in it, so bucket by the
-        # vector's C/I/A impact -- crude, but better than "unknown"
-        if score.startswith("CVSS"):
-            return "high" if ":H" in score else ("medium" if ":L" in score else "unknown")
+        if score.startswith("CVSS:3"):
+            base = _cvss3_score(score)
+            if base is None:
+                continue
+            if base >= 9.0:
+                return "critical"
+            if base >= 7.0:
+                return "high"
+            if base >= 4.0:
+                return "medium"
+            return "low" if base > 0 else "unknown"
     return "unknown"
 
 

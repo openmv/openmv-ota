@@ -810,7 +810,9 @@ class SqlMetadataStore:
         return seq
 
     def read_audit(self, limit: int = 100, since_seq: int = 0, account_id=None,
-                   entity_id: str | None = None) -> list[dict]:
+                   entity_id: str | None = None, newest: bool = False) -> list[dict]:
+        """``newest`` flips the window to the most RECENT events (a history
+        view); the default keeps append order (a log tail via ``since``)."""
         sql = "SELECT * FROM audit WHERE seq > ?"
         params = [since_seq]
         if account_id is not None:
@@ -819,6 +821,12 @@ class SqlMetadataStore:
         if entity_id is not None:
             sql += " AND entity_id = ?"
             params.append(entity_id)
+        if newest:
+            rows = [_d(r) for r in self.query_all(
+                sql + " ORDER BY seq DESC LIMIT ?", (*params, limit))]
+            for r in rows:
+                r["data"] = json.loads(r["data"])
+            return rows
         rows = [_d(r) for r in self.query_all(sql + " ORDER BY seq LIMIT ?", (*params, limit))]
         for r in rows:
             r["data"] = json.loads(r["data"])

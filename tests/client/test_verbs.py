@@ -934,6 +934,12 @@ def test_audit_entity_filter(wired, capsys):
     assert [e["action"] for e in events] == ["release.publish", "release.rename"]
     assert main(["client", "audit"]) == 0
     assert len(json.loads(capsys.readouterr().out)["events"]) == 3
+    # newest=true flips to most-recent-first -- the history-view read
+    from openmv_ota.client import config as cfg_mod
+    api = client_cli._make_api(cfg_mod.resolve(None, None))
+    ev = api._req("GET", "/api/v1/admin/audit",
+                  params={"entity_id": "rel_1", "newest": "true", "limit": 1})["events"]
+    assert [e["action"] for e in ev] == ["release.rename"]
 
 
 def test_release_manifest_download(wired, tmp_path, capsys):

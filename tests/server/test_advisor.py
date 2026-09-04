@@ -79,11 +79,22 @@ def test_osv_detail_404_falls_back_to_id():
 def test_severity_mapping():
     assert _severity({"database_specific": {"severity": "CRITICAL"}}) == "critical"
     assert _severity({"database_specific": {"severity": "MODERATE"}}) == "medium"
-    assert _severity({"severity": [{"type": "CVSS_V3",
-                                    "score": "CVSS:3.1/AV:N/C:H/I:N"}]}) == "high"
-    assert _severity({"severity": [{"type": "CVSS_V3",
-                                    "score": "CVSS:3.1/AV:N/C:L/I:N"}]}) == "medium"
-    assert _severity({"severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N"}]}) == "unknown"
+    assert _severity({"database_specific": {"severity": "weird"}}) == "unknown"
+    # real CVSS 3.1 base-score math, spec test vectors:
+    def v(vec):
+        return _severity({"severity": [{"type": "CVSS_V3", "score": vec}]})
+    assert v("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") == "critical"   # 9.8
+    assert v("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N") == "medium"    # 6.5
+    assert v("CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N") == "medium"    # 5.5
+    # the case the old shortcut got backwards: AC:H makes it LESS severe
+    assert v("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N") == "low"       # 3.7
+    # scope-changed branch
+    assert v("CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H") == "critical"  # 9.9
+    assert v("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N") == "unknown"   # 0.0
+    assert v("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N") == "high"      # 7.5
+    # malformed / non-v3 vectors fall through, never crash
+    assert v("CVSS:3.1/AV:N") == "unknown"
+    assert v("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H") == "unknown"
     assert _severity({"severity": [{"score": "not-a-vector"}]}) == "unknown"
     assert _severity({}) == "unknown"
 

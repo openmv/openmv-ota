@@ -827,9 +827,11 @@ def viewer_grant(device_id: str, request: Request,
 
 @admin.get("/audit", responses={200: {"model": AuditList}})
 def audit(request: Request, since: int = 0, limit: int = 100,
-          entity_id: str | None = None,
+          entity_id: str | None = None, newest: bool = False,
           principal: Principal = Depends(require_scope("observe"))):
     """The append-only record. ``entity_id`` narrows it to one release, rollout,
-    or device -- a dashboard's per-entity history."""
+    or device -- a dashboard's per-entity history. ``newest`` returns the most
+    recent events first (otherwise: append order from ``since``, a log tail)."""
     return {"events": request.app.state.metastore.read_audit(
-        limit, since, account_id=principal.account_id, entity_id=entity_id)}
+        limit, since, account_id=principal.account_id, entity_id=entity_id,
+        newest=newest)}
