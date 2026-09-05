@@ -901,6 +901,7 @@ def viewer_grant(device_id: str, request: Request,
 @admin.get("/audit", responses={200: {"model": AuditList}})
 def audit(request: Request, since: int = 0, limit: int = 100, offset: int = 0,
           entity_id: str | None = None, newest: bool = False,
+          action_not: str | None = Query(None, description="hide one action, e.g. advisory.scan"),
           sort: str | None = _sort_q("when, action, actor, entity"), dir: str = _DIR_Q,
           principal: Principal = Depends(require_scope("observe"))):
     """The append-only record. ``entity_id`` narrows it to one release, rollout,
@@ -910,5 +911,5 @@ def audit(request: Request, since: int = 0, limit: int = 100, offset: int = 0,
     ms = request.app.state.metastore
     return {"events": ms.read_audit(limit, since, account_id=principal.account_id,
                                     entity_id=entity_id, newest=newest, sort=sort,
-                                    direction=dir, offset=offset),
-            "total": ms.count_audit(since, principal.account_id, entity_id)}
+                                    direction=dir, offset=offset, action_not=action_not),
+            "total": ms.count_audit(since, principal.account_id, entity_id, action_not)}

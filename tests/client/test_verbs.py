@@ -283,6 +283,8 @@ def test_list_flags_and_product_list(wired, tmp_path, capsys):
     assert main(["client", "product", "list"]) == 0
     prods = json.loads(capsys.readouterr().out)
     assert prods["total"] == 1 and prods["products"][0]["product_id"] == BID
+    assert main(["client", "audit", "--not-action", "device.rename", "--limit", "3"]) == 0
+    assert all(e["action"] != "device.rename" for e in json.loads(capsys.readouterr().out)["events"])
     assert main(["client", "audit", "--sort", "action", "--dir", "desc", "--limit", "1"]) == 0
     assert len(json.loads(capsys.readouterr().out)["events"]) <= 1
     assert main(["client", "release", "list", "--sort", "version", "--dir", "asc", "--limit", "5"]) == 0

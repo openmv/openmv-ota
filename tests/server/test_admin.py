@@ -223,6 +223,9 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     assert g("audit", sort="action", dir="asc")["events"][0]["action"] <= \
         g("audit", sort="action", dir="desc")["events"][0]["action"]
     assert g("audit", offset=1)["events"] == a["events"][1:]
+    hidden = g("audit", action_not=a["events"][0]["action"])
+    assert hidden["total"] == a["total"] - sum(1 for e in a["events"] if e["action"] == a["events"][0]["action"])
+    assert all(e["action"] != a["events"][0]["action"] for e in hidden["events"])
     assert g("audit", newest="true")["events"][0]["seq"] == a["events"][-1]["seq"]
     # products: the directory
     prods = g("products")
