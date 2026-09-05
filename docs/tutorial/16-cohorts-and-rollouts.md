@@ -36,8 +36,8 @@ assigned 1/1 device(s) to cohort beta
 $ openmv-ota client cohort list
 {
   "cohorts": [
-    { "cohort": "__default__", "devices": 404, "by_product": { "396486252": 404 } },
-    { "cohort": "beta", "devices": 8, "by_product": { "396486252": 8 } }
+    { "cohort": "__default__", "devices": 404, "by_product": { "396486252": 404 }, "pins": {} },
+    { "cohort": "beta", "devices": 8, "by_product": { "396486252": 8 }, "pins": {} }
   ]
 }
 

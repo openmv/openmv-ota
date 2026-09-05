@@ -136,6 +136,9 @@ class Cohort(_Row):
     by_product: dict[str, int] = {}
     """Device counts per product id within the cohort (JSON object keys are strings) --
     a cohort name spans products, and targeting is always (product, cohort)."""
+    pins: dict[str, str] = {}
+    """Release id the cohort is pinned to, per product id -- devices there stay on it
+    and rollouts don't move them. Absent product = not pinned."""
 
 
 class AuditEvent(_Row):

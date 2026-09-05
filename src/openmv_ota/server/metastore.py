@@ -604,6 +604,14 @@ class SqlMetadataStore:
         for r in self.query_all("SELECT cohort FROM cohorts " + dwhere + " ORDER BY cohort",
                                 dparams):
             out.setdefault(r["cohort"], {"cohort": r["cohort"], "devices": 0, "by_product": {}})
+        # pins, per (product, cohort): the holdback half of what a cohort is for
+        for c in out.values():
+            c["pins"] = {}
+        for r in self.query_all("SELECT product_id, cohort, release_id FROM cohort_pins "
+                                + where, params):
+            c = out.setdefault(r["cohort"], {"cohort": r["cohort"], "devices": 0,
+                                             "by_product": {}, "pins": {}})
+            c["pins"][str(r["product_id"])] = r["release_id"]
         return sorted(out.values(), key=lambda c: c["cohort"])
 
     def assign_cohort(self, device_ids: list, cohort: str, account_id=None) -> int:

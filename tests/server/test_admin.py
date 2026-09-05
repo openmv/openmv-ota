@@ -68,7 +68,7 @@ def test_cohorts_list_and_assign(tmp_path):
     c = TestClient(app)
     assert c.get("/api/v1/admin/cohorts", headers=AUTH).json() == {
         "cohorts": [{"cohort": "__default__", "devices": 2,
-                     "by_product": {str(BID): 2}}]}
+                     "by_product": {str(BID): 2}, "pins": {}}]}
     r = c.post("/api/v1/admin/cohorts/assign", headers=AUTH,
                json={"cohort": "beta", "device_ids": ["d1", "ghost"]})   # ghost doesn't exist
     assert r.json() == {"cohort": "beta", "assigned": 1}                 # only d1 was updated
@@ -124,7 +124,8 @@ def test_cohort_create_declares_an_empty_label(tmp_path):
     cr = "/api/v1/admin/cohorts/create"
     assert c.post(cr, headers=AUTH, json={"cohort": "staging"}).json() == {"cohort": "staging"}
     rows = {x["cohort"]: x for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}
-    assert rows["staging"] == {"cohort": "staging", "devices": 0, "by_product": {}}
+    assert rows["staging"] == {"cohort": "staging", "devices": 0, "by_product": {},
+                               "pins": {}}
     assert c.post(cr, headers=AUTH, json={"cohort": "staging"}).status_code == 409     # declared
     assert c.post(cr, headers=AUTH, json={"cohort": "__default__"}).status_code == 400
     assert c.post(cr, headers=AUTH, json={"cohort": " "}).status_code == 400
@@ -144,6 +145,23 @@ def test_cohort_create_declares_an_empty_label(tmp_path):
     rows = {x["cohort"]: x for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}
     assert rows["beta"]["devices"] == 0
     assert "__default__" not in {r for r in rows if rows[r]["devices"] == 0 and r != "beta"}
+
+
+def test_cohort_list_shows_pins(tmp_path):
+    """A pin is per (product, cohort); the list carries it so a dashboard can show
+    'pinned to X' -- and drops it on clear."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="d1", product_id=BID, cohort="beta")
+    _seed_release(store, "rel_p")
+    c = TestClient(app)
+    c.post("/api/v1/admin/cohorts/pin", headers=AUTH,
+           json={"product_id": BID, "cohort": "beta", "release_id": "rel_p"})
+    rows = {x["cohort"]: x for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}
+    assert rows["beta"]["pins"] == {str(BID): "rel_p"}
+    c.post("/api/v1/admin/cohorts/pin", headers=AUTH,
+           json={"product_id": BID, "cohort": "beta", "release_id": None})
+    rows = {x["cohort"]: x for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}
+    assert rows["beta"]["pins"] == {}
 
 
 def test_cohort_assign_requires_scope(tmp_path):

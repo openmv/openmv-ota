@@ -247,7 +247,7 @@ def test_cohort_list_and_assign(wired, tmp_path, capsys):
     assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
     assert main(["client", "cohort", "list"]) == 0
     assert json.loads(capsys.readouterr().out) == {"cohorts": [
-        {"cohort": "beta", "devices": 1, "by_product": {str(BID): 1}}]}
+        {"cohort": "beta", "devices": 1, "by_product": {str(BID): 1}, "pins": {}}]}
 
 
 def test_cohort_create_verb(wired, tmp_path, capsys):
@@ -256,7 +256,7 @@ def test_cohort_create_verb(wired, tmp_path, capsys):
     assert "cohort staging created (no devices yet)" in capsys.readouterr().out
     assert main(["client", "cohort", "list"]) == 0
     assert json.loads(capsys.readouterr().out) == {"cohorts": [
-        {"cohort": "staging", "devices": 0, "by_product": {}}]}
+        {"cohort": "staging", "devices": 0, "by_product": {}, "pins": {}}]}
     assert main(["client", "cohort", "create", "--cohort", "staging"]) != 0   # 409 surfaced
     assert "already in use" in capsys.readouterr().err
 
