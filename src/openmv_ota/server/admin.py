@@ -355,6 +355,7 @@ _ROLLOUT_ROW = ("rollout_id", "release_id", "product_id", "cohort", "percent", "
 @admin.get("/rollouts", responses={200: {"model": RolloutList}})
 def list_rollouts(request: Request, product_id: int | None = None, limit: int = _PAGE,
                   offset: int = 0, state: str | None = None, cohort: str | None = None,
+                  release_id: str | None = Query(None, description="only rollouts of this release"),
                   sort: str | None = _sort_q("created, percent, state, cohort, product, name, "
                                              "devices, rollout"),
                   dir: str = _DIR_Q,
@@ -365,9 +366,10 @@ def list_rollouts(request: Request, product_id: int | None = None, limit: int = 
     ms = request.app.state.metastore
     rows = ms.list_rollouts(product_id, account_id=principal.account_id,
                             limit=limit, offset=offset, state=state, cohort=cohort,
-                            sort=sort, direction=dir)
+                            sort=sort, direction=dir, release_id=release_id)
     return {"rollouts": [{k: r[k] for k in _ROLLOUT_ROW} for r in rows],
-            "total": ms.count_rollouts(product_id, principal.account_id, state, cohort)}
+            "total": ms.count_rollouts(product_id, principal.account_id, state, cohort,
+                                       release_id)}
 
 
 @admin.get("/rollouts/{rollout_id}/status", responses={200: {"model": RolloutStatus}})
@@ -850,14 +852,16 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
             cohort: str | None = None, offset: int = 0,
             q: str | None = Query(None, description="name-or-id substring, case-insensitive"),
             cohort_not: str | None = Query(None, description="exclude devices in this cohort"),
+            version: str | None = Query(None, description="only devices running this version"),
             sort: str | None = _sort_q("seen, device, product, version, cohort, first_seen"),
             dir: str = _DIR_Q,
             principal: Principal = Depends(require_scope("observe"))):
     ms = request.app.state.metastore
     return {"devices": _with_fallback_version(ms.list_devices(
                 product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset,
-                sort=sort, direction=dir, q=q, cohort_not=cohort_not)),
-            "total": ms.count_devices(product_id, principal.account_id, cohort, q, cohort_not)}
+                sort=sort, direction=dir, q=q, cohort_not=cohort_not, version=version)),
+            "total": ms.count_devices(product_id, principal.account_id, cohort, q, cohort_not,
+                                      version)}
 
 
 @admin.get("/products", responses={200: {"model": ProductList}})

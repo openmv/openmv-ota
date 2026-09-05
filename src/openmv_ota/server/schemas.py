@@ -356,6 +356,8 @@ class Advisory(_Row):
     last_seen: str = ""
     cleared_at: str | None = None
     account_id: str = ""
+    release_name: str = ""
+    """The release's display name ('' when unnamed) -- a label without a second lookup."""
 
 
 class AdvisoryList(BaseModel):

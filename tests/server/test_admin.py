@@ -227,6 +227,11 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     assert hidden["total"] == a["total"] - sum(1 for e in a["events"] if e["action"] == a["events"][0]["action"])
     assert all(e["action"] != a["events"][0]["action"] for e in hidden["events"])
     assert g("audit", newest="true")["events"][0]["seq"] == a["events"][-1]["seq"]
+    # devices ?version; rollouts ?release_id (both counted)
+    store.upsert_device(device_id="d1", product_id=BID, cohort="beta", current_version="2.0.0")
+    assert g("devices", version="2.0.0")["total"] == 1
+    assert [d["device_id"] for d in g("devices", version="2.0.0")["devices"]] == ["d1"]
+    assert g("rollouts", release_id="r1")["total"] == 2 and g("rollouts", release_id="nope")["total"] == 0
     # products: the directory
     prods = g("products")
     assert prods["total"] == 1 and prods["products"][0] == {
@@ -243,7 +248,10 @@ def test_advisories_list_contract(tmp_path):
     ], account_id="")
     c = TestClient(app)
     g = lambda **q: c.get("/api/v1/admin/advisories", headers=AUTH, params=q).json()  # noqa: E731
-    assert [a["vuln_id"] for a in g(sort="severity", dir="asc")["advisories"]] == ["CVE-2", "CVE-3", "CVE-1"]
+    store.set_release_name("r1", "Night vision")
+    rows = g(sort="severity", dir="asc")["advisories"]
+    assert [a["vuln_id"] for a in rows] == ["CVE-2", "CVE-3", "CVE-1"]
+    assert all(a["release_name"] == "Night vision" for a in rows)            # no second lookup
     body = g(sort="advisory", dir="asc", limit=2)
     assert [a["vuln_id"] for a in body["advisories"]] == ["CVE-1", "CVE-2"] and body["total"] == 3
     assert g(release_id="r1", offset=2, sort="advisory")["advisories"][0]["vuln_id"] == "CVE-3"

@@ -175,6 +175,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_rol.add_argument("--state", choices=("active", "paused", "stopped"),
                        help="only rollouts in this state")
     p_rol.add_argument("--cohort", help="only rollouts targeting this cohort")
+    p_rol.add_argument("--release-id", metavar="RELEASE_ID", help="only rollouts of this release")
     _list_flags(p_rol, "created, percent, state, cohort, product, name, devices, rollout")
     _creds(p_rol)
     p_rol.set_defaults(func=cmd_rollouts, _command="client rollout list")
@@ -256,6 +257,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_dvl.add_argument("--not-cohort", dest="cohort_not", metavar="COHORT",
                        help="exclude devices in this cohort")
     p_dvl.add_argument("--q", metavar="TEXT", help="name-or-id substring, case-insensitive")
+    p_dvl.add_argument("--version", help="only devices running this version")
     _list_flags(p_dvl, "seen, device, product, version, cohort, first_seen")
     _creds(p_dvl)
     p_dvl.set_defaults(func=cmd_devices, _command="client device list")
@@ -860,7 +862,8 @@ def cmd_devices(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.devices(args.product_id, cohort=args.cohort,
                                                limit=args.limit, offset=args.offset,
                                                sort=args.sort, direction=args.dir,
-                                               q=args.q, cohort_not=args.cohort_not))
+                                               q=args.q, cohort_not=args.cohort_not,
+                                               version=args.version))
 
 
 def cmd_releases(args: argparse.Namespace) -> int:
@@ -873,7 +876,8 @@ def cmd_rollouts(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.list_rollouts(args.product_id, limit=args.limit,
                                                      offset=args.offset, state=args.state,
                                                      cohort=args.cohort, sort=args.sort,
-                                                     direction=args.dir))
+                                                     direction=args.dir,
+                                                     release_id=args.release_id))
 
 
 def cmd_audit(args: argparse.Namespace) -> int:

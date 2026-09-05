@@ -136,8 +136,10 @@ class Api:
         return self._req("GET", "/api/v1/admin/products")
 
     def list_rollouts(self, product_id=None, limit=None, offset=None, state=None,
-                      cohort=None, sort=None, direction=None):
+                      cohort=None, sort=None, direction=None, release_id=None):
         params = self._page({}, None, None, sort, direction)
+        if release_id is not None:
+            params["release_id"] = release_id
         if product_id is not None:
             params["product_id"] = product_id
         if state is not None:
@@ -255,8 +257,10 @@ class Api:
         return self._req("GET", "/api/v1/admin/fleet", params=params)
 
     def devices(self, product_id=None, cohort=None, limit=None, offset=None, sort=None,
-                direction=None, q=None, cohort_not=None):
+                direction=None, q=None, cohort_not=None, version=None):
         params = {}
+        if version is not None:
+            params["version"] = version
         if product_id is not None:
             params["product_id"] = product_id
         if cohort is not None:

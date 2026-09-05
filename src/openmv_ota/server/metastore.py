@@ -358,26 +358,29 @@ class SqlMetadataStore:
                      "devices": "cohort_devices", "rollout": "r.rollout_id"}
 
     @staticmethod
-    def _rollouts_where(account_id, product_id, state, cohort) -> tuple[str, tuple]:
+    def _rollouts_where(account_id, product_id, state, cohort, release_id=None) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id)
         where = where.replace("account_id", "r.account_id").replace("product_id", "r.product_id")
         if state is not None:
             where, params = _and(where, "r.state = ?"), (*params, state)
         if cohort is not None:                       # "what targets this cohort"
             where, params = _and(where, "r.cohort = ?"), (*params, cohort)
+        if release_id is not None:                   # "what ships this release"
+            where, params = _and(where, "r.release_id = ?"), (*params, release_id)
         return where, params
 
-    def count_rollouts(self, product_id=None, account_id=None, state=None, cohort=None) -> int:
-        where, params = self._rollouts_where(account_id, product_id, state, cohort)
+    def count_rollouts(self, product_id=None, account_id=None, state=None, cohort=None,
+                       release_id=None) -> int:
+        where, params = self._rollouts_where(account_id, product_id, state, cohort, release_id)
         return self.query_one("SELECT COUNT(*) AS n FROM rollouts r " + where, params)["n"]
 
     def list_rollouts(self, product_id: int | None = None, account_id=None, limit=None,
                       offset=0, state: str | None = None, cohort: str | None = None,
-                      sort=None, direction=None) -> list[dict]:
+                      sort=None, direction=None, release_id: str | None = None) -> list[dict]:
         # cohort_devices: how many devices sit in each rollout's (product, cohort) RIGHT NOW --
         # the audience its percent applies to. Computed live rather than stored, because cohort
         # membership shifts under the rollout (assignments, first check-ins).
-        where, params = self._rollouts_where(account_id, product_id, state, cohort)
+        where, params = self._rollouts_where(account_id, product_id, state, cohort, release_id)
         sql = ("SELECT r.*, (SELECT COUNT(*) FROM devices d WHERE d.product_id = r.product_id "
                "AND d.cohort = r.cohort AND d.account_id = r.account_id) AS cohort_devices "
                "FROM rollouts r " + where
@@ -567,10 +570,13 @@ class SqlMetadataStore:
                     "first_seen": "first_seen"}
 
     @staticmethod
-    def _devices_where(account_id, product_id, cohort, q, cohort_not) -> tuple[str, tuple]:
+    def _devices_where(account_id, product_id, cohort, q, cohort_not,
+                       version=None) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id)
         if cohort is not None:
             where, params = _and(where, "cohort = ?"), (*params, cohort)
+        if version is not None:                      # "running exactly this version"
+            where, params = _and(where, "current_version = ?"), (*params, version)
         if cohort_not is not None:                   # a picker: everything NOT yet in it
             where, params = _and(where, "cohort != ?"), (*params, cohort_not)
         if q:                                        # name-or-id substring, case-insensitive
@@ -580,14 +586,16 @@ class SqlMetadataStore:
         return where, params
 
     def count_devices(self, product_id=None, account_id=None, cohort=None, q=None,
-                      cohort_not=None) -> int:
-        where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not)
+                      cohort_not=None, version=None) -> int:
+        where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
+                                            version)
         return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
 
     def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
                      cohort=None, offset: int = 0, sort=None, direction=None, q=None,
-                     cohort_not=None) -> list[dict]:
-        where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not)
+                     cohort_not=None, version=None) -> list[dict]:
+        where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
+                                            version)
         rows = self.query_all("SELECT * FROM devices " + where
                               + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
                               + " LIMIT ? OFFSET ?", (*params, limit, offset))
@@ -819,31 +827,36 @@ class SqlMetadataStore:
             "AND cleared_at IS NULL", (account_id,))]
 
     ADVISORY_SORTS = {
-        "severity": ("CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' "
+        "severity": ("CASE a.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' "
                      "THEN 2 WHEN 'low' THEN 3 ELSE 4 END"),
-        "advisory": "vuln_id", "component": "component", "release": "release_id",
-        "first_seen": "first_seen", "last_seen": "last_seen"}
+        "advisory": "a.vuln_id", "component": "a.component",
+        "release": "COALESCE(NULLIF(r.display_name, ''), a.release_id)",
+        "first_seen": "a.first_seen", "last_seen": "a.last_seen"}
 
     @staticmethod
     def _advisories_where(account_id, release_id, active_only) -> tuple[str, tuple]:
-        sql = "WHERE account_id = ?"
+        sql = "WHERE a.account_id = ?"
         params: tuple = (account_id,)
         if release_id is not None:
-            sql, params = sql + " AND release_id = ?", (*params, release_id)
+            sql, params = sql + " AND a.release_id = ?", (*params, release_id)
         if active_only:
-            sql += " AND cleared_at IS NULL"
+            sql += " AND a.cleared_at IS NULL"
         return sql, params
 
     def count_advisories(self, account_id: str = "", release_id=None, active_only=True) -> int:
         where, params = self._advisories_where(account_id, release_id, active_only)
-        return self.query_one("SELECT COUNT(*) AS n FROM advisories " + where, params)["n"]
+        return self.query_one("SELECT COUNT(*) AS n FROM advisories a " + where, params)["n"]
 
     def list_advisories(self, account_id: str = "", release_id: str | None = None,
                         active_only: bool = True, sort=None, direction=None, limit=None,
                         offset: int = 0) -> list[dict]:
+        """Each row carries ``release_name`` (the release's display name, '' if none) so
+        a finding can be labelled without a second lookup."""
         where, params = self._advisories_where(account_id, release_id, active_only)
-        sql = ("SELECT * FROM advisories " + where
-               + _order(sort, direction, self.ADVISORY_SORTS, "first_seen DESC, vuln_id", "vuln_id"))
+        sql = ("SELECT a.*, COALESCE(r.display_name, '') AS release_name FROM advisories a "
+               "LEFT JOIN releases r ON r.release_id = a.release_id " + where
+               + _order(sort, direction, self.ADVISORY_SORTS, "a.first_seen DESC, a.vuln_id",
+                        "a.vuln_id"))
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params = (*params, limit, offset)

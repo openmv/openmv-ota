@@ -280,6 +280,9 @@ def test_list_flags_and_product_list(wired, tmp_path, capsys):
     assert [d["device_id"] for d in out["devices"]] == ["d2"] and out["total"] == 1
     assert main(["client", "device", "list", "--not-cohort", "beta"]) == 0
     assert [d["device_id"] for d in json.loads(capsys.readouterr().out)["devices"]] == ["d2"]
+    store.upsert_device(device_id="d3", product_id=BID, current_version="9.9.9")
+    assert main(["client", "device", "list", "--version", "9.9.9"]) == 0
+    assert [d["device_id"] for d in json.loads(capsys.readouterr().out)["devices"]] == ["d3"]
     assert main(["client", "product", "list"]) == 0
     prods = json.loads(capsys.readouterr().out)
     assert prods["total"] == 1 and prods["products"][0]["product_id"] == BID
