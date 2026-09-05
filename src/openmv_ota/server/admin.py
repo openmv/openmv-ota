@@ -393,7 +393,12 @@ def assign_cohort(body: CohortAssign, request: Request,
                             detail="pass exactly one of device_ids or product_id")
     if body.device_ids is not None:
         n = ms.assign_cohort(body.device_ids, body.cohort, account_id=principal.account_id)
-        data = {"assigned": n, "requested": len(body.device_ids)}
+        # the WHICH, not just the how-many: a history view lists the devices moved
+        # (bounded, so a giant bulk assign can't bloat one audit row)
+        data = {"assigned": n, "requested": len(body.device_ids),
+                "device_ids": body.device_ids[:100]}
+        if len(body.device_ids) > 100:
+            data["truncated"] = len(body.device_ids) - 100
     else:
         n = ms.assign_cohort_product(body.product_id, body.cohort,
                                      account_id=principal.account_id)

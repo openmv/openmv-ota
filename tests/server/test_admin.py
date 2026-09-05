@@ -164,6 +164,24 @@ def test_cohort_list_shows_pins(tmp_path):
     assert rows["beta"]["pins"] == {}
 
 
+def test_cohort_assign_audit_lists_the_devices(tmp_path):
+    """The audit row for an assign names the devices (capped at 100 with a
+    truncated count), so a history view can say WHAT moved, not just how many."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="d1", product_id=BID)
+    c = TestClient(app)
+    c.post("/api/v1/admin/cohorts/assign", headers=AUTH,
+           json={"cohort": "beta", "device_ids": ["d1", "ghost"]})
+    ev = [e for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
+          if e["action"] == "cohort.assign"][-1]
+    assert ev["data"]["device_ids"] == ["d1", "ghost"] and "truncated" not in ev["data"]
+    big = ["d%03d" % i for i in range(130)]
+    c.post("/api/v1/admin/cohorts/assign", headers=AUTH, json={"cohort": "beta", "device_ids": big})
+    ev = [e for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
+          if e["action"] == "cohort.assign"][-1]
+    assert len(ev["data"]["device_ids"]) == 100 and ev["data"]["truncated"] == 30
+
+
 def test_cohort_assign_requires_scope(tmp_path):
     app, store = _app(tmp_path, scopes=("observe",))
     r = TestClient(app).post("/api/v1/admin/cohorts/assign", headers=AUTH,
