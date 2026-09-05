@@ -166,6 +166,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_rol.add_argument("--product-id", type=int, help="only this product")
     p_rol.add_argument("--state", choices=("active", "paused", "stopped"),
                        help="only rollouts in this state")
+    p_rol.add_argument("--cohort", help="only rollouts targeting this cohort")
     p_rol.add_argument("--limit", type=int, help="page size")
     p_rol.add_argument("--offset", type=int, help="page offset")
     _creds(p_rol)
@@ -840,7 +841,8 @@ def cmd_releases(args: argparse.Namespace) -> int:
 
 def cmd_rollouts(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.list_rollouts(args.product_id, limit=args.limit,
-                                                     offset=args.offset, state=args.state))
+                                                     offset=args.offset, state=args.state,
+                                                     cohort=args.cohort))
 
 
 def cmd_audit(args: argparse.Namespace) -> int:

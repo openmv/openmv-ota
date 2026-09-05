@@ -331,7 +331,8 @@ class SqlMetadataStore:
             "AND state = 'active' ORDER BY created_at DESC LIMIT 1", (account_id, product_id, cohort)))
 
     def list_rollouts(self, product_id: int | None = None, account_id=None, limit=None,
-                      offset=0, state: str | None = None) -> list[dict]:
+                      offset=0, state: str | None = None,
+                      cohort: str | None = None) -> list[dict]:
         # cohort_devices: how many devices sit in each rollout's (product, cohort) RIGHT NOW --
         # the audience its percent applies to. Computed live rather than stored, because cohort
         # membership shifts under the rollout (assignments, first check-ins).
@@ -339,6 +340,9 @@ class SqlMetadataStore:
         if state is not None:
             where = (where + " AND state = ?") if where else "WHERE state = ?"
             params = (*params, state)
+        if cohort is not None:                       # "what targets this cohort"
+            where = (where + " AND r.cohort = ?") if where else "WHERE r.cohort = ?"
+            params = (*params, cohort)
         sql = ("SELECT r.*, (SELECT COUNT(*) FROM devices d WHERE d.product_id = r.product_id "
                "AND d.cohort = r.cohort AND d.account_id = r.account_id) AS cohort_devices "
                "FROM rollouts r " + where.replace("account_id", "r.account_id")

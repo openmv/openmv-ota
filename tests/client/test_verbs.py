@@ -250,6 +250,23 @@ def test_cohort_list_and_assign(wired, tmp_path, capsys):
         {"cohort": "beta", "devices": 1, "by_product": {str(BID): 1}, "pins": {}}]}
 
 
+def test_rollout_list_cohort_filter(wired, tmp_path, capsys):
+    import json
+    store, _ = wired
+    from tests.server.test_admin import _seed_release  # noqa: F401  (same fixture shape)
+    store.add_release(release_id="r1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=10, representations=[{"format": "full", "url": "x", "size": 9}],
+                      manifest_key="m/r1", image_key="i/r1")
+    store.add_rollout(rollout_id="ro_a", release_id="r1", product_id=BID, cohort="beta",
+                      percent=10, state="active")
+    store.add_rollout(rollout_id="ro_c", release_id="r1", product_id=BID, cohort="canary",
+                      percent=10, state="active")
+    assert main(["client", "rollout", "list", "--cohort", "beta"]) == 0
+    rows = json.loads(capsys.readouterr().out)["rollouts"]
+    assert [r["rollout_id"] for r in rows] == ["ro_a"]
+
+
 def test_cohort_create_verb(wired, tmp_path, capsys):
     import json
     assert main(["client", "cohort", "create", "--cohort", "staging"]) == 0

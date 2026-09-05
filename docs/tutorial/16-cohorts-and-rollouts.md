@@ -209,6 +209,10 @@ $ openmv-ota client rollout status --rollout-id ro_1c3f88ba90d2e644
 }
 ```
 
+`--cohort beta` narrows the list to the rollouts targeting one label across
+products, and `--state active` (or `paused`, `stopped`) to one state — together
+they answer "what is live on `beta` right now" versus its history.
+
 `staged_devices` is the current target — `percent` of the audience (an estimate:
 membership is a hash, not a list) — and `rates` reads each counter against it, so
 "how far through this stage is the fleet, and how is it going" is one glance:

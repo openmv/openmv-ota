@@ -343,11 +343,13 @@ _ROLLOUT_ROW = ("rollout_id", "release_id", "product_id", "cohort", "percent", "
 
 @admin.get("/rollouts", responses={200: {"model": RolloutList}})
 def list_rollouts(request: Request, product_id: int | None = None, limit: int = _PAGE,
-                  offset: int = 0, state: str | None = None,
+                  offset: int = 0, state: str | None = None, cohort: str | None = None,
                   principal: Principal = Depends(require_scope("observe"))):
+    """``cohort`` narrows to the rollouts targeting one label (any product) -- the
+    question a cohort's page asks; combine with ``state`` for "live" vs "history"."""
     ms = request.app.state.metastore
     rows = ms.list_rollouts(product_id, account_id=principal.account_id,
-                            limit=limit, offset=offset, state=state)
+                            limit=limit, offset=offset, state=state, cohort=cohort)
     return {"rollouts": [{k: r[k] for k in _ROLLOUT_ROW} for r in rows],
             "total": ms.count_scoped("rollouts", product_id, principal.account_id)}
 

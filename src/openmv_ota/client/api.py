@@ -123,12 +123,15 @@ class Api:
     def stop_rollout(self, rollout_id: str):
         return self._req("POST", "/api/v1/admin/rollouts/%s/stop" % rollout_id)
 
-    def list_rollouts(self, product_id=None, limit=None, offset=None, state=None):
+    def list_rollouts(self, product_id=None, limit=None, offset=None, state=None,
+                      cohort=None):
         params = {}
         if product_id is not None:
             params["product_id"] = product_id
         if state is not None:
             params["state"] = state
+        if cohort is not None:
+            params["cohort"] = cohort
         if limit is not None:
             params["limit"] = limit
         if offset is not None:

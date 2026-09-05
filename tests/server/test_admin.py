@@ -313,6 +313,24 @@ def test_stop(tmp_path):
 
 # --- observability --------------------------------------------------------------------------
 
+def test_list_rollouts_cohort_filter(tmp_path):
+    """?cohort narrows to the rollouts targeting one label (any product); with
+    ?state it separates a cohort's live rollouts from its history."""
+    app, store = _app(tmp_path)
+    _seed_release(store, "r1")
+    for rid, cohort, state in (("ro_a", "beta", "active"), ("ro_b", "beta", "stopped"),
+                               ("ro_c", "canary", "active")):
+        store.add_rollout(rollout_id=rid, release_id="r1", product_id=BID, cohort=cohort,
+                          percent=10, state=state)
+    c = TestClient(app)
+    def ids(q):
+        return sorted(r["rollout_id"] for r in
+                      c.get("/api/v1/admin/rollouts", headers=AUTH, params=q).json()["rollouts"])
+    assert ids({"cohort": "beta"}) == ["ro_a", "ro_b"]
+    assert ids({"cohort": "beta", "state": "active"}) == ["ro_a"]
+    assert ids({"cohort": "nope"}) == []
+
+
 def test_list_rollouts_and_status(tmp_path):
     app, store = _app(tmp_path)
     c = TestClient(app)
