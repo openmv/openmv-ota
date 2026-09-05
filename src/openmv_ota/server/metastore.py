@@ -204,6 +204,17 @@ _MIGRATIONS: list[list[str]] = [
         )""",
         "CREATE INDEX idx_advisories_account ON advisories (account_id, cleared_at)",
     ],
+    [   # v17 -- cohorts become first-class: a declared label can exist with NO devices in it
+        # (created ahead of its first assign). The list is the union of declared labels and
+        # the labels found on device rows, so `assign` still springs a cohort into being
+        # implicitly (it auto-declares) and a declaration is never required to use one.
+        """CREATE TABLE cohorts (
+            account_id TEXT NOT NULL DEFAULT '',
+            cohort TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (account_id, cohort)
+        )""",
+    ],
 ]
 
 
@@ -340,11 +351,27 @@ class SqlMetadataStore:
 
     def cohort_in_use(self, cohort: str, account_id: str = "") -> bool:
         """Whether any device, rollout, or pin in the account uses ``cohort``."""
-        for table in ("devices", "rollouts", "cohort_pins"):
+        for table in ("devices", "rollouts", "cohort_pins", "cohorts"):
             if self.query_one("SELECT 1 AS x FROM %s WHERE account_id = ? AND cohort = ? "
                               "LIMIT 1" % table, (account_id, cohort)):
                 return True
         return False
+
+    def create_cohort(self, cohort: str, account_id: str = "") -> None:
+        """Declare a label so it exists with no devices yet. Validation (non-empty, not
+        __default__, not already in use) is the caller's."""
+        self.execute("INSERT INTO cohorts (account_id, cohort, created_at) VALUES (?, ?, ?)",
+                     (account_id, cohort, _now_iso()))
+
+    def declare_cohort(self, cohort: str, account_id: str = "") -> None:
+        """Idempotent declaration -- what `assign` does implicitly so a label that sprang
+        into being on a device row is also on the books. __default__ is never declared."""
+        if cohort == "__default__" or account_id is None:
+            return
+        if not self.query_one("SELECT 1 AS x FROM cohorts WHERE account_id = ? AND cohort = ?",
+                              (account_id, cohort)):
+            self.execute("INSERT INTO cohorts (account_id, cohort, created_at) VALUES (?, ?, ?)",
+                         (account_id, cohort, _now_iso()))
 
     def rename_cohort(self, old: str, new: str, account_id: str = "") -> dict:
         """Relabel a cohort everywhere it is referenced -- device rows, rollouts, pins --
@@ -361,6 +388,11 @@ class SqlMetadataStore:
                     "UPDATE %s SET cohort = ? WHERE account_id = ? AND cohort = ?" % table),
                     (new, account_id, old))
                 counts[key] = cur.rowcount
+            # the declaration follows the label (the target was verified unused)
+            cur.execute(self._sql("DELETE FROM cohorts WHERE account_id = ? AND cohort = ?"),
+                        (account_id, old))
+            cur.execute(self._sql("INSERT INTO cohorts (account_id, cohort, created_at) "
+                                  "VALUES (?, ?, ?)"), (account_id, new, _now_iso()))
             self._conn.commit()
         return counts
 
@@ -382,6 +414,8 @@ class SqlMetadataStore:
             cur.execute(self._sql("DELETE FROM cohort_pins WHERE account_id = ? AND cohort = ?"),
                         (account_id, cohort))
             counts["pins"] = cur.rowcount
+            cur.execute(self._sql("DELETE FROM cohorts WHERE account_id = ? AND cohort = ?"),
+                        (account_id, cohort))
             self._conn.commit()
         return counts
 
@@ -565,7 +599,12 @@ class SqlMetadataStore:
                                              "by_product": {}})
             c["devices"] += r["devices"]
             c["by_product"][str(r["product_id"])] = r["devices"]
-        return list(out.values())
+        # declared-but-empty labels (created ahead of their first device) show with 0
+        dwhere, dparams = _scope(account_id)
+        for r in self.query_all("SELECT cohort FROM cohorts " + dwhere + " ORDER BY cohort",
+                                dparams):
+            out.setdefault(r["cohort"], {"cohort": r["cohort"], "devices": 0, "by_product": {}})
+        return sorted(out.values(), key=lambda c: c["cohort"])
 
     def assign_cohort(self, device_ids: list, cohort: str, account_id=None) -> int:
         """Move the given (already-registered) devices into ``cohort``; returns how many existed.
@@ -578,6 +617,7 @@ class SqlMetadataStore:
         if account_id is not None:
             sql += " AND account_id = ?"
             params.append(account_id)
+        self.declare_cohort(cohort, account_id)
         return self.execute(sql, tuple(params)).rowcount
 
     def assign_cohort_product(self, product_id: int, cohort: str, account_id=None) -> int:
@@ -589,6 +629,7 @@ class SqlMetadataStore:
         if account_id is not None:
             sql += " AND account_id = ?"
             params.append(account_id)
+        self.declare_cohort(cohort, account_id)
         return self.execute(sql, tuple(params)).rowcount
 
     # --- version pins (device / cohort, override rollouts) ----------------------------------

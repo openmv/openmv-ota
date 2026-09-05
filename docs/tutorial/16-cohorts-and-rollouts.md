@@ -52,21 +52,26 @@ the per-device rows ([page 17](17-watching-the-fleet.md) shows them in full). As
 `__default__` — and it counts only the devices that exist and are yours: the `1/1` in
 the summary is what makes a typo'd id visible.
 
-The rest of a label's lifecycle — a name springs into being on first `assign`,
-`rename` relabels it everywhere at once (devices, rollouts, pins — a mid-flight
-rollout keeps its audience under the new name), and `delete` retires it:
+The rest of a label's lifecycle — a name springs into being on first `assign`, or
+can be declared empty ahead of that with `create` (so it exists to assign into,
+and shows in `list` with 0 devices); `rename` relabels it everywhere at once
+(devices, rollouts, pins — a mid-flight rollout keeps its audience under the new
+name), and `delete` retires it:
 
 ```
-$ openmv-ota client cohort rename --cohort beta --name pilot
-cohort beta renamed to pilot (412 device(s), 1 rollout(s), 1 pin(s))
+$ openmv-ota client cohort create --cohort pilot
+cohort pilot created (no devices yet)
 
-$ openmv-ota client cohort delete --cohort pilot
-cohort pilot deleted (412 device(s) back to __default__, 1 pin(s) dropped)
+$ openmv-ota client cohort rename --cohort beta --name early-access
+cohort beta renamed to early-access (412 device(s), 1 rollout(s), 1 pin(s))
+
+$ openmv-ota client cohort delete --cohort early-access
+cohort early-access deleted (412 device(s) back to __default__, 1 pin(s) dropped)
 ```
 
-Renaming onto a name already in use is refused (merging is `assign`), delete is
-refused while an active rollout still targets the cohort, and `__default__` can be
-neither renamed nor deleted.
+Creating or renaming onto a name already in use is refused (merging is `assign`),
+delete is refused while an active rollout still targets the cohort, and
+`__default__` can be neither created, renamed nor deleted — it always exists.
 
 ## Staging a rollout
 

@@ -178,12 +178,16 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_ron)
     p_ron.set_defaults(func=cmd_rollout_rename, _command="client rollout rename")
 
-    p_co = sub.add_parser("cohort", help="list / assign / rename / delete / pin cohorts")
+    p_co = sub.add_parser("cohort", help="list / create / assign / rename / delete / pin cohorts")
     cosub = p_co.add_subparsers(dest="_co")
     p_col = cosub.add_parser("list", help="list cohorts in use, with a device count each")
     p_col.add_argument("--product-id", type=int, help="only this product's cohorts")
     _creds(p_col)
     p_col.set_defaults(func=cmd_cohort, _command="client cohort list", action="list")
+    p_coc = cosub.add_parser("create", help="declare an empty cohort to assign devices into later")
+    p_coc.add_argument("--cohort", required=True, help="the label to create")
+    _creds(p_coc)
+    p_coc.set_defaults(func=cmd_cohort, _command="client cohort create", action="create")
     p_coa = cosub.add_parser("assign", help="move devices into a cohort (by id, or a whole product)")
     p_coa.add_argument("--cohort", required=True, help="cohort to move the devices into")
     ga = p_coa.add_mutually_exclusive_group(required=True)   # surgical or bulk, exactly one
@@ -591,6 +595,9 @@ def cmd_cohort(args: argparse.Namespace) -> int:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "list":
             print(json.dumps(api.list_cohorts(args.product_id), indent=2))
+        elif args.action == "create":
+            res = api.create_cohort(args.cohort)
+            return _emit(args, res, "cohort %s created (no devices yet)" % res["cohort"])
         elif args.action == "rename":
             res = api.rename_cohort(args.cohort, args.name)
             return _emit(args, res, "cohort %s renamed to %s (%d device(s), %d rollout(s), "

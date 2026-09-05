@@ -150,6 +150,9 @@ class Api:
             body["product_id"] = product_id
         return self._req("POST", "/api/v1/admin/cohorts/assign", json=body)
 
+    def create_cohort(self, cohort):
+        return self._req("POST", "/api/v1/admin/cohorts/create", json={"cohort": cohort})
+
     def rename_cohort(self, cohort, name):
         return self._req("POST", "/api/v1/admin/cohorts/rename",
                          json={"cohort": cohort, "name": name})

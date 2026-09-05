@@ -25,6 +25,7 @@ from .schemas import (
     CohortList,
     CohortPinned,
     CohortDeleted,
+    CohortCreated,
     CohortRenamed,
     Device,
     DeviceBound,
@@ -85,6 +86,10 @@ class CohortAssign(BaseModel):
     cohort: str
     device_ids: list[str] | None = None    # surgical: these exact devices
     product_id: int | None = None          # bulk: every device of this product
+
+
+class CohortCreate(BaseModel):
+    cohort: str                            # the label to declare (no devices yet)
 
 
 class CohortRename(BaseModel):
@@ -396,6 +401,28 @@ def assign_cohort(body: CohortAssign, request: Request,
     ms.append_audit(actor=principal.name, action="cohort.assign", entity_type="cohort",
                     entity_id=body.cohort, data=data, account_id=principal.account_id)
     return {"cohort": body.cohort, "assigned": n}
+
+
+@admin.post("/cohorts/create", responses={200: {"model": CohortCreated}})
+def create_cohort(body: CohortCreate, request: Request,
+                  principal: Principal = Depends(require_scope("manage"))):
+    """Declare a cohort ahead of its first device, so an empty label exists to assign
+    into (a label also springs into being implicitly on `assign`). ``__default__`` is
+    refused (it always exists), and so is a name already in use anywhere -- on devices,
+    rollouts, pins, or declared -- because two things called `beta` is a merge, not a
+    creation."""
+    ms = request.app.state.metastore
+    cohort = (body.cohort or "").strip()
+    if not cohort:
+        raise HTTPException(status_code=400, detail="cohort name is required")
+    if cohort == "__default__":
+        raise HTTPException(status_code=400, detail="__default__ always exists")
+    if ms.cohort_in_use(cohort, account_id=principal.account_id):
+        raise HTTPException(status_code=409, detail="cohort %r is already in use" % cohort)
+    ms.create_cohort(cohort, account_id=principal.account_id)
+    ms.append_audit(actor=principal.name, action="cohort.create", entity_type="cohort",
+                    entity_id=cohort, data={}, account_id=principal.account_id)
+    return {"cohort": cohort}
 
 
 @admin.post("/cohorts/rename", responses={200: {"model": CohortRenamed}})

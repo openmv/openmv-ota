@@ -305,6 +305,11 @@ class CohortDeleted(BaseModel):
     pins: int
 
 
+class CohortCreated(BaseModel):
+    cohort: str
+    """The declared label, empty until its first assign."""
+
+
 class CohortRenamed(BaseModel):
     cohort: str
     """The new label."""

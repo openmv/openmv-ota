@@ -113,6 +113,39 @@ def test_cohort_rename_and_delete_validation(tmp_path):
     assert c.post(dl, headers=AUTH, json={"cohort": ""}).status_code == 400
 
 
+def test_cohort_create_declares_an_empty_label(tmp_path):
+    """A declared label exists with 0 devices (it shows in list), is refused when the
+    name is in use anywhere (device rows, rollouts, pins, or declared) or is __default__,
+    follows a rename, and goes away on delete. `assign` auto-declares, so a label that
+    sprang into being on a device row is on the books the same way."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="d1", product_id=BID)
+    c = TestClient(app)
+    cr = "/api/v1/admin/cohorts/create"
+    assert c.post(cr, headers=AUTH, json={"cohort": "staging"}).json() == {"cohort": "staging"}
+    rows = {x["cohort"]: x for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}
+    assert rows["staging"] == {"cohort": "staging", "devices": 0, "by_product": {}}
+    assert c.post(cr, headers=AUTH, json={"cohort": "staging"}).status_code == 409     # declared
+    assert c.post(cr, headers=AUTH, json={"cohort": "__default__"}).status_code == 400
+    assert c.post(cr, headers=AUTH, json={"cohort": " "}).status_code == 400
+    # a label in use only on device rows is just as taken
+    c.post("/api/v1/admin/cohorts/assign", headers=AUTH, json={"cohort": "beta", "device_ids": ["d1"]})
+    assert c.post(cr, headers=AUTH, json={"cohort": "beta"}).status_code == 409
+    # rename carries the declaration; delete drops it
+    c.post("/api/v1/admin/cohorts/rename", headers=AUTH, json={"cohort": "staging", "name": "pilot"})
+    names = {x["cohort"] for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}
+    assert "pilot" in names and "staging" not in names
+    c.post("/api/v1/admin/cohorts/delete", headers=AUTH, json={"cohort": "pilot"})
+    names = {x["cohort"] for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}
+    assert "pilot" not in names
+    # the auto-declared 'beta' survives its devices leaving (still listed, at 0)
+    c.post("/api/v1/admin/cohorts/assign", headers=AUTH,
+           json={"cohort": "__default__", "device_ids": ["d1"]})
+    rows = {x["cohort"]: x for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}
+    assert rows["beta"]["devices"] == 0
+    assert "__default__" not in {r for r in rows if rows[r]["devices"] == 0 and r != "beta"}
+
+
 def test_cohort_assign_requires_scope(tmp_path):
     app, store = _app(tmp_path, scopes=("observe",))
     r = TestClient(app).post("/api/v1/admin/cohorts/assign", headers=AUTH,
