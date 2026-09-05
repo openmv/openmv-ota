@@ -68,7 +68,7 @@ def test_cohorts_list_and_assign(tmp_path):
     c = TestClient(app)
     assert c.get("/api/v1/admin/cohorts", headers=AUTH).json() == {
         "cohorts": [{"cohort": "__default__", "devices": 2,
-                     "by_product": {str(BID): 2}, "pins": {}}]}
+                     "by_product": {str(BID): 2}, "pins": {}}], "total": 1}
     r = c.post("/api/v1/admin/cohorts/assign", headers=AUTH,
                json={"cohort": "beta", "device_ids": ["d1", "ghost"]})   # ghost doesn't exist
     assert r.json() == {"cohort": "beta", "assigned": 1}                 # only d1 was updated
@@ -180,6 +180,70 @@ def test_cohort_assign_audit_lists_the_devices(tmp_path):
     ev = [e for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
           if e["action"] == "cohort.assign"][-1]
     assert len(ev["data"]["device_ids"]) == 100 and ev["data"]["truncated"] == 30
+
+
+def test_list_contract_sort_page_and_filtered_totals(tmp_path):
+    """Every collection endpoint: ?sort/?dir order (whitelisted -- an unknown key falls
+    back to natural order, never an error), ?limit/?offset page, and `total` counts
+    the FILTERED set. Devices also take ?q (name-or-id substring) and ?cohort_not."""
+    app, store = _app(tmp_path)
+    for i, (rid, pv) in enumerate((("r1", 0x01000000), ("r2", 0x03000000), ("r3", 0x02000000))):
+        _seed_release(store, rid, pv=pv)
+    for d, cohort in (("d1", "beta"), ("d2", "__default__"), ("d3", "beta")):
+        store.upsert_device(device_id=d, product_id=BID, cohort=cohort)
+    store.set_device_name("d2", "Dock east")
+    for rid, cohort, state in (("ro_a", "beta", "active"), ("ro_b", "beta", "stopped")):
+        store.add_rollout(rollout_id=rid, release_id="r1", product_id=BID, cohort=cohort,
+                          percent=10, state=state)
+    c = TestClient(app)
+    g = lambda path, **q: c.get("/api/v1/admin/" + path, headers=AUTH, params=q).json()  # noqa: E731
+    # releases: sort asc/desc by version, paged, total = all
+    body = g("releases", sort="version", dir="asc", limit=2)
+    assert [r["release_id"] for r in body["releases"]] == ["r1", "r3"] and body["total"] == 3
+    assert [r["release_id"] for r in g("releases", sort="version", dir="desc")["releases"]] == ["r2", "r3", "r1"]
+    assert g("releases", sort="bogus")["releases"][0]["release_id"] == "r2"   # natural order
+    assert g("releases", offset=2, limit=2)["releases"] == g("releases")["releases"][2:]
+    # rollouts: total respects state + cohort
+    assert g("rollouts", cohort="beta")["total"] == 2
+    assert g("rollouts", cohort="beta", state="stopped")["total"] == 1
+    assert g("rollouts", sort="state", dir="asc")["rollouts"][0]["state"] == "active"
+    # devices: q, cohort_not, sort by device name (display name counts), filtered total
+    assert [d["device_id"] for d in g("devices", q="dock")["devices"]] == ["d2"]
+    assert g("devices", q="D")["total"] == 3                                    # case-insensitive
+    assert sorted(d["device_id"] for d in g("devices", cohort_not="beta")["devices"]) == ["d2"]
+    assert g("devices", cohort="beta")["total"] == 2                            # not the fleet
+    names = [d["device_id"] for d in g("devices", sort="device", dir="asc")["devices"]]
+    assert names[0] == "d1" and "d2" in names                                    # 'dock east' sorts after 'd1'
+    # cohorts: sort by devices, paged, total
+    body = g("cohorts", sort="devices", dir="desc", limit=1)
+    assert body["cohorts"][0]["cohort"] == "beta" and body["total"] == 2
+    # audit: total + offset + sort by action; newest still works
+    a = g("audit")
+    assert a["total"] == len(a["events"]) > 0
+    assert g("audit", sort="action", dir="asc")["events"][0]["action"] <= \
+        g("audit", sort="action", dir="desc")["events"][0]["action"]
+    assert g("audit", offset=1)["events"] == a["events"][1:]
+    assert g("audit", newest="true")["events"][0]["seq"] == a["events"][-1]["seq"]
+    # products: the directory
+    prods = g("products")
+    assert prods["total"] == 1 and prods["products"][0] == {
+        "product_id": BID, "product": "P", "devices": 3, "releases": 3}
+
+
+def test_advisories_list_contract(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store, "r1")
+    store.upsert_advisories("r1", [
+        {"vuln_id": "CVE-1", "component": "a", "version": "1", "severity": "low", "summary": ""},
+        {"vuln_id": "CVE-2", "component": "b", "version": "1", "severity": "critical", "summary": ""},
+        {"vuln_id": "CVE-3", "component": "c", "version": "1", "severity": "medium", "summary": ""},
+    ], account_id="")
+    c = TestClient(app)
+    g = lambda **q: c.get("/api/v1/admin/advisories", headers=AUTH, params=q).json()  # noqa: E731
+    assert [a["vuln_id"] for a in g(sort="severity", dir="asc")["advisories"]] == ["CVE-2", "CVE-3", "CVE-1"]
+    body = g(sort="advisory", dir="asc", limit=2)
+    assert [a["vuln_id"] for a in body["advisories"]] == ["CVE-1", "CVE-2"] and body["total"] == 3
+    assert g(release_id="r1", offset=2, sort="advisory")["advisories"][0]["vuln_id"] == "CVE-3"
 
 
 def test_cohort_assign_requires_scope(tmp_path):

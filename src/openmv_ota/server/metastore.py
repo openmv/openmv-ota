@@ -29,6 +29,20 @@ def _d(row) -> dict | None:
     return dict(row) if row is not None else None
 
 
+def _order(sort, direction, allowed: dict, default: str, tiebreak: str) -> str:
+    """An ``ORDER BY`` from a whitelisted sort key. ``allowed`` maps public keys to SQL
+    expressions; an unknown key falls back to ``default`` (the list's natural order),
+    so user input never reaches the SQL. ``tiebreak`` keeps pages stable."""
+    if sort in allowed:
+        d = "DESC" if str(direction).lower() == "desc" else "ASC"
+        return " ORDER BY %s %s, %s" % (allowed[sort], d, tiebreak)
+    return " ORDER BY " + default
+
+
+def _and(where: str, clause: str) -> str:
+    return (where + " AND " + clause) if where else "WHERE " + clause
+
+
 def _scope(account_id=None, product_id=None) -> tuple[str, tuple]:
     """A ``WHERE`` clause + params for the optional (account_id, product_id) filters -- the
     building block for account-scoped admin reads. Either/both may be None (no filter)."""
@@ -294,9 +308,18 @@ class SqlMetadataStore:
             r["representations"] = json.loads(r["representations"])
         return r
 
-    def list_releases(self, product_id=None, account_id=None, limit=None, offset=0) -> list[dict]:
+    RELEASE_SORTS = {"version": "payload_version", "product": "product", "size": "image_size",
+                     "uploaded": "uploaded_at", "name": "display_name", "release": "release_id"}
+
+    def count_releases(self, product_id=None, account_id=None) -> int:
         where, params = _scope(account_id, product_id)
-        sql = "SELECT * FROM releases " + where + " ORDER BY payload_version DESC"
+        return self.query_one("SELECT COUNT(*) AS n FROM releases " + where, params)["n"]
+
+    def list_releases(self, product_id=None, account_id=None, limit=None, offset=0,
+                      sort=None, direction=None) -> list[dict]:
+        where, params = _scope(account_id, product_id)
+        sql = ("SELECT * FROM releases " + where
+               + _order(sort, direction, self.RELEASE_SORTS, "payload_version DESC", "release_id"))
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params = (*params, limit, offset)
@@ -330,24 +353,35 @@ class SqlMetadataStore:
             "SELECT * FROM rollouts WHERE account_id = ? AND product_id = ? AND cohort = ? "
             "AND state = 'active' ORDER BY created_at DESC LIMIT 1", (account_id, product_id, cohort)))
 
+    ROLLOUT_SORTS = {"created": "r.created_at", "percent": "r.percent", "state": "r.state",
+                     "cohort": "r.cohort", "product": "r.product_id", "name": "r.display_name",
+                     "devices": "cohort_devices", "rollout": "r.rollout_id"}
+
+    @staticmethod
+    def _rollouts_where(account_id, product_id, state, cohort) -> tuple[str, tuple]:
+        where, params = _scope(account_id, product_id)
+        where = where.replace("account_id", "r.account_id").replace("product_id", "r.product_id")
+        if state is not None:
+            where, params = _and(where, "r.state = ?"), (*params, state)
+        if cohort is not None:                       # "what targets this cohort"
+            where, params = _and(where, "r.cohort = ?"), (*params, cohort)
+        return where, params
+
+    def count_rollouts(self, product_id=None, account_id=None, state=None, cohort=None) -> int:
+        where, params = self._rollouts_where(account_id, product_id, state, cohort)
+        return self.query_one("SELECT COUNT(*) AS n FROM rollouts r " + where, params)["n"]
+
     def list_rollouts(self, product_id: int | None = None, account_id=None, limit=None,
-                      offset=0, state: str | None = None,
-                      cohort: str | None = None) -> list[dict]:
+                      offset=0, state: str | None = None, cohort: str | None = None,
+                      sort=None, direction=None) -> list[dict]:
         # cohort_devices: how many devices sit in each rollout's (product, cohort) RIGHT NOW --
         # the audience its percent applies to. Computed live rather than stored, because cohort
         # membership shifts under the rollout (assignments, first check-ins).
-        where, params = _scope(account_id, product_id)
-        if state is not None:
-            where = (where + " AND state = ?") if where else "WHERE state = ?"
-            params = (*params, state)
-        if cohort is not None:                       # "what targets this cohort"
-            where = (where + " AND r.cohort = ?") if where else "WHERE r.cohort = ?"
-            params = (*params, cohort)
+        where, params = self._rollouts_where(account_id, product_id, state, cohort)
         sql = ("SELECT r.*, (SELECT COUNT(*) FROM devices d WHERE d.product_id = r.product_id "
                "AND d.cohort = r.cohort AND d.account_id = r.account_id) AS cohort_devices "
-               "FROM rollouts r " + where.replace("account_id", "r.account_id")
-                                         .replace("product_id", "r.product_id")
-               + " ORDER BY r.created_at DESC")
+               "FROM rollouts r " + where
+               + _order(sort, direction, self.ROLLOUT_SORTS, "r.created_at DESC", "r.rollout_id"))
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params = (*params, limit, offset)
@@ -528,15 +562,55 @@ class SqlMetadataStore:
         rebind so the fleet views reflect the new account immediately, not on the next check-in."""
         self.execute("UPDATE devices SET account_id = ? WHERE device_id = ?", (account_id, device_id))
 
-    def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
-                     cohort=None, offset: int = 0) -> list[dict]:
+    DEVICE_SORTS = {"seen": "last_seen", "device": "COALESCE(NULLIF(display_name, ''), device_id)",
+                    "product": "product_id", "version": "current_version", "cohort": "cohort",
+                    "first_seen": "first_seen"}
+
+    @staticmethod
+    def _devices_where(account_id, product_id, cohort, q, cohort_not) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id)
         if cohort is not None:
-            where = (where + " AND cohort = ?") if where else "WHERE cohort = ?"
-            params = (*params, cohort)
+            where, params = _and(where, "cohort = ?"), (*params, cohort)
+        if cohort_not is not None:                   # a picker: everything NOT yet in it
+            where, params = _and(where, "cohort != ?"), (*params, cohort_not)
+        if q:                                        # name-or-id substring, case-insensitive
+            like = "%" + q.lower() + "%"
+            where = _and(where, "(LOWER(device_id) LIKE ? OR LOWER(display_name) LIKE ?)")
+            params = (*params, like, like)
+        return where, params
+
+    def count_devices(self, product_id=None, account_id=None, cohort=None, q=None,
+                      cohort_not=None) -> int:
+        where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not)
+        return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
+
+    def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
+                     cohort=None, offset: int = 0, sort=None, direction=None, q=None,
+                     cohort_not=None) -> list[dict]:
+        where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not)
         rows = self.query_all("SELECT * FROM devices " + where
-                              + " ORDER BY last_seen DESC LIMIT ? OFFSET ?", (*params, limit, offset))
+                              + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
+                              + " LIMIT ? OFFSET ?", (*params, limit, offset))
         return [_d(r) for r in rows]
+
+    def list_products(self, account_id=None) -> list[dict]:
+        """The account's products: every product id seen on a device or a release, with
+        the friendly name from its newest release (None until one is published) and
+        device / release counts. The dashboard's product directory."""
+        where, params = _scope(account_id)
+        devs = {r["product_id"]: r["n"] for r in self.query_all(
+            "SELECT product_id, COUNT(*) AS n FROM devices " + where + " GROUP BY product_id",
+            params)}
+        rels = {r["product_id"]: r["n"] for r in self.query_all(
+            "SELECT product_id, COUNT(*) AS n FROM releases " + where + " GROUP BY product_id",
+            params)}
+        names = {}
+        for r in self.query_all("SELECT product_id, product FROM releases " + where
+                                + " ORDER BY payload_version DESC", params):
+            names.setdefault(r["product_id"], r["product"])
+        return [{"product_id": pid, "product": names.get(pid), "devices": devs.get(pid, 0),
+                 "releases": rels.get(pid, 0)}
+                for pid in sorted({*devs, *rels}, key=lambda x: (names.get(x) or "", x))]
 
     def fleet_summary(self, product_id: int | None = None, account_id=None,
                       cohort: str | None = None) -> dict:
@@ -617,6 +691,23 @@ class SqlMetadataStore:
                                              "by_product": {}, "pins": {}})
             c["pins"][str(r["product_id"])] = r["release_id"]
         return sorted(out.values(), key=lambda c: c["cohort"])
+
+    COHORT_SORTS = {"cohort": lambda c: (c["cohort"] == "__default__", c["cohort"].lower()),
+                    "devices": lambda c: c["devices"],
+                    "products": lambda c: len(c["by_product"]),
+                    "pins": lambda c: len(c["pins"])}
+
+    def page_cohorts(self, product_id=None, account_id=None, sort=None, direction=None,
+                     limit=None, offset=0) -> tuple[list[dict], int]:
+        """``list_cohorts`` on the list contract: (page, total). The set is small and
+        aggregated, so it is sorted here, with the same whitelist idea as the SQL lists."""
+        rows = self.list_cohorts(product_id, account_id=account_id)
+        key = self.COHORT_SORTS.get(sort or "cohort", self.COHORT_SORTS["cohort"])
+        rows.sort(key=key, reverse=(str(direction).lower() == "desc"))
+        total = len(rows)
+        if limit is not None:
+            rows = rows[offset: offset + limit]
+        return rows, total
 
     def assign_cohort(self, device_ids: list, cohort: str, account_id=None) -> int:
         """Move the given (already-registered) devices into ``cohort``; returns how many existed.
@@ -727,16 +818,35 @@ class SqlMetadataStore:
             "SELECT DISTINCT release_id FROM advisories WHERE account_id = ? "
             "AND cleared_at IS NULL", (account_id,))]
 
-    def list_advisories(self, account_id: str = "", release_id: str | None = None,
-                        active_only: bool = True) -> list[dict]:
-        sql = "SELECT * FROM advisories WHERE account_id = ?"
+    ADVISORY_SORTS = {
+        "severity": ("CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' "
+                     "THEN 2 WHEN 'low' THEN 3 ELSE 4 END"),
+        "advisory": "vuln_id", "component": "component", "release": "release_id",
+        "first_seen": "first_seen", "last_seen": "last_seen"}
+
+    @staticmethod
+    def _advisories_where(account_id, release_id, active_only) -> tuple[str, tuple]:
+        sql = "WHERE account_id = ?"
         params: tuple = (account_id,)
         if release_id is not None:
-            sql += " AND release_id = ?"
-            params = (*params, release_id)
+            sql, params = sql + " AND release_id = ?", (*params, release_id)
         if active_only:
             sql += " AND cleared_at IS NULL"
-        sql += " ORDER BY first_seen DESC, vuln_id"
+        return sql, params
+
+    def count_advisories(self, account_id: str = "", release_id=None, active_only=True) -> int:
+        where, params = self._advisories_where(account_id, release_id, active_only)
+        return self.query_one("SELECT COUNT(*) AS n FROM advisories " + where, params)["n"]
+
+    def list_advisories(self, account_id: str = "", release_id: str | None = None,
+                        active_only: bool = True, sort=None, direction=None, limit=None,
+                        offset: int = 0) -> list[dict]:
+        where, params = self._advisories_where(account_id, release_id, active_only)
+        sql = ("SELECT * FROM advisories " + where
+               + _order(sort, direction, self.ADVISORY_SORTS, "first_seen DESC, vuln_id", "vuln_id"))
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params = (*params, limit, offset)
         return [_d(r) for r in self.query_all(sql, params)]
 
     def set_device_pin(self, device_id: str, release_id: str | None) -> None:
@@ -869,11 +979,11 @@ class SqlMetadataStore:
             (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry, account_id))
         return seq
 
-    def read_audit(self, limit: int = 100, since_seq: int = 0, account_id=None,
-                   entity_id: str | None = None, newest: bool = False) -> list[dict]:
-        """``newest`` flips the window to the most RECENT events (a history
-        view); the default keeps append order (a log tail via ``since``)."""
-        sql = "SELECT * FROM audit WHERE seq > ?"
+    AUDIT_SORTS = {"when": "seq", "action": "action", "actor": "actor", "entity": "entity_id"}
+
+    @staticmethod
+    def _audit_where(since_seq, account_id, entity_id) -> tuple[str, list]:
+        sql = "WHERE seq > ?"
         params = [since_seq]
         if account_id is not None:
             sql += " AND account_id = ?"
@@ -881,13 +991,25 @@ class SqlMetadataStore:
         if entity_id is not None:
             sql += " AND entity_id = ?"
             params.append(entity_id)
-        if newest:
-            rows = [_d(r) for r in self.query_all(
-                sql + " ORDER BY seq DESC LIMIT ?", (*params, limit))]
-            for r in rows:
-                r["data"] = json.loads(r["data"])
-            return rows
-        rows = [_d(r) for r in self.query_all(sql + " ORDER BY seq LIMIT ?", (*params, limit))]
+        return sql, params
+
+    def count_audit(self, since_seq: int = 0, account_id=None, entity_id=None) -> int:
+        where, params = self._audit_where(since_seq, account_id, entity_id)
+        return self.query_one("SELECT COUNT(*) AS n FROM audit " + where, tuple(params))["n"]
+
+    def read_audit(self, limit: int = 100, since_seq: int = 0, account_id=None,
+                   entity_id: str | None = None, newest: bool = False, sort=None,
+                   direction=None, offset: int = 0) -> list[dict]:
+        """``newest`` flips the window to the most RECENT events (a history view);
+        the default keeps append order (a log tail via ``since``). ``sort``/``direction``
+        (when/action/actor/entity) generalise both; ``offset`` pages."""
+        where, params = self._audit_where(since_seq, account_id, entity_id)
+        sql = "SELECT * FROM audit " + where
+        if sort in self.AUDIT_SORTS:
+            sql += _order(sort, direction, self.AUDIT_SORTS, "seq", "seq")
+        else:
+            sql += " ORDER BY seq DESC" if newest else " ORDER BY seq"
+        rows = [_d(r) for r in self.query_all(sql + " LIMIT ? OFFSET ?", (*params, limit, offset))]
         for r in rows:
             r["data"] = json.loads(r["data"])
         return rows

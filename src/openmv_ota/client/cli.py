@@ -29,6 +29,15 @@ from . import config
 from .errors import ClientError
 
 
+def _list_flags(p: argparse.ArgumentParser, cols: str, paging: bool = True) -> None:
+    """The list contract every `list` verb shares: --sort/--dir, --limit/--offset."""
+    p.add_argument("--sort", metavar="COL", help="sort column: " + cols)
+    p.add_argument("--dir", choices=("asc", "desc"), default=None, help="sort direction")
+    if paging:
+        p.add_argument("--limit", type=int, help="page size")
+        p.add_argument("--offset", type=int, help="page offset")
+
+
 def _creds(p: argparse.ArgumentParser) -> None:
     p.add_argument("--server", help="server URL (else OPENMV_OTA_SERVER / saved profile)")
     p.add_argument("--token", help="admin token (else OPENMV_OTA_TOKEN / saved profile)")
@@ -91,8 +100,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_pub.set_defaults(func=cmd_publish, _command="client release publish")
     p_rll = rlsub.add_parser("list", help="the publish history, newest first (JSON)")
     p_rll.add_argument("--product-id", type=int, help="only this product")
-    p_rll.add_argument("--limit", type=int, help="page size")
-    p_rll.add_argument("--offset", type=int, help="page offset")
+    _list_flags(p_rll, "version, product, size, uploaded, name, release")
     _creds(p_rll)
     p_rll.set_defaults(func=cmd_releases, _command="client release list")
     p_rsh = rlsub.add_parser("show", help="one release (JSON)")
@@ -167,8 +175,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_rol.add_argument("--state", choices=("active", "paused", "stopped"),
                        help="only rollouts in this state")
     p_rol.add_argument("--cohort", help="only rollouts targeting this cohort")
-    p_rol.add_argument("--limit", type=int, help="page size")
-    p_rol.add_argument("--offset", type=int, help="page offset")
+    _list_flags(p_rol, "created, percent, state, cohort, product, name, devices, rollout")
     _creds(p_rol)
     p_rol.set_defaults(func=cmd_rollouts, _command="client rollout list")
     p_ron = rsub.add_parser("rename", help="set a rollout's display name (a label; --clear removes)")
@@ -179,10 +186,17 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_ron)
     p_ron.set_defaults(func=cmd_rollout_rename, _command="client rollout rename")
 
+    p_pr = sub.add_parser("product", help="the account's products")
+    prsub = p_pr.add_subparsers(dest="_pr")
+    p_prl = prsub.add_parser("list", help="every product: id, friendly name, device/release counts (JSON)")
+    _creds(p_prl)
+    p_prl.set_defaults(func=cmd_products, _command="client product list")
+
     p_co = sub.add_parser("cohort", help="list / create / assign / rename / delete / pin cohorts")
     cosub = p_co.add_subparsers(dest="_co")
     p_col = cosub.add_parser("list", help="list cohorts in use, with a device count each")
     p_col.add_argument("--product-id", type=int, help="only this product's cohorts")
+    _list_flags(p_col, "cohort, devices, products, pins")
     _creds(p_col)
     p_col.set_defaults(func=cmd_cohort, _command="client cohort list", action="list")
     p_coc = cosub.add_parser("create", help="declare an empty cohort to assign devices into later")
@@ -239,8 +253,10 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_dvl = dsub.add_parser("list", help="the per-device rows (JSON)")
     p_dvl.add_argument("--product-id", type=int, help="only this product")
     p_dvl.add_argument("--cohort", help="only devices in this cohort")
-    p_dvl.add_argument("--limit", type=int, help="page size")
-    p_dvl.add_argument("--offset", type=int, help="page offset")
+    p_dvl.add_argument("--not-cohort", dest="cohort_not", metavar="COHORT",
+                       help="exclude devices in this cohort")
+    p_dvl.add_argument("--q", metavar="TEXT", help="name-or-id substring, case-insensitive")
+    _list_flags(p_dvl, "seen, device, product, version, cohort, first_seen")
     _creds(p_dvl)
     p_dvl.set_defaults(func=cmd_devices, _command="client device list")
     p_dvs = dsub.add_parser("show", help="one device (JSON)")
@@ -326,6 +342,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     advsub = p_adv.add_subparsers(dest="_adv")
     p_advl = advsub.add_parser("list", help="the account's findings (JSON)")
     p_advl.add_argument("--release-id", metavar="RELEASE_ID", help="only this release")
+    _list_flags(p_advl, "severity, advisory, component, release, first_seen, last_seen")
     p_advl.add_argument("--all", action="store_true",
                         help="include cleared findings (the monitoring history)")
     _creds(p_advl)
@@ -344,6 +361,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_au = sub.add_parser("audit", help="the append-only audit log (JSON)")
     p_au.add_argument("--entity-id", metavar="ID",
                       help="only events for one release/rollout/device id")
+    _list_flags(p_au, "when, action, actor, entity")
     p_au.add_argument("--since", type=int, default=0, metavar="SEQ",
                       help="only events after this sequence number (a cursor, not an offset)")
     _creds(p_au)
@@ -595,7 +613,9 @@ def cmd_cohort(args: argparse.Namespace) -> int:
     try:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "list":
-            print(json.dumps(api.list_cohorts(args.product_id), indent=2))
+            print(json.dumps(api.list_cohorts(args.product_id, limit=args.limit,
+                                              offset=args.offset, sort=args.sort,
+                                              direction=args.dir), indent=2))
         elif args.action == "create":
             res = api.create_cohort(args.cohort)
             return _emit(args, res, "cohort %s created (no devices yet)" % res["cohort"])
@@ -774,8 +794,9 @@ def cmd_advisories(args: argparse.Namespace) -> int:
                 lines.append("  NEW %s  %s  %s %s" % (f["vuln_id"], f.get("severity", "?"),
                                                       f["component"], f.get("version", "")))
             return _emit(args, out, *lines)
-        print(json.dumps(api.advisories(args.release_id, active_only=not args.all),
-                         indent=2))
+        print(json.dumps(api.advisories(args.release_id, active_only=not args.all,
+                                        limit=args.limit, offset=args.offset,
+                                        sort=args.sort, direction=args.dir), indent=2))
         return 0
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -829,21 +850,31 @@ def cmd_fleet(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.fleet(args.product_id, cohort=args.cohort))
 
 
+def cmd_products(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.products())
+
+
 def cmd_devices(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.devices(args.product_id, cohort=args.cohort,
-                                               limit=args.limit, offset=args.offset))
+                                               limit=args.limit, offset=args.offset,
+                                               sort=args.sort, direction=args.dir,
+                                               q=args.q, cohort_not=args.cohort_not))
 
 
 def cmd_releases(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.releases(args.product_id, limit=args.limit,
-                                                offset=args.offset))
+                                                offset=args.offset, sort=args.sort,
+                                                direction=args.dir))
 
 
 def cmd_rollouts(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.list_rollouts(args.product_id, limit=args.limit,
                                                      offset=args.offset, state=args.state,
-                                                     cohort=args.cohort))
+                                                     cohort=args.cohort, sort=args.sort,
+                                                     direction=args.dir))
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.audit(args.since, entity_id=args.entity_id))
+    return _read(args, lambda api: api.audit(args.since, entity_id=args.entity_id,
+                                             limit=args.limit, offset=args.offset,
+                                             sort=args.sort, direction=args.dir))

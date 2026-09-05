@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
 from pydantic import BaseModel
 
 from . import live as live_mod
@@ -19,6 +19,7 @@ from .schemas import (
     AccountList,
     AccountNamed,
     AdvisoryList,
+    ProductList,
     AdvisoryScan,
     AuditList,
     CohortAssigned,
@@ -55,6 +56,16 @@ admin = APIRouter(prefix="/api/v1/admin")
 # them in one response. Same number everywhere is the point -- a caller should not have to
 # remember which collection happens to be unbounded.
 _PAGE = 100
+
+# The list contract every collection endpoint follows (documented on the API page via
+# these Query descriptions): ?sort=<column>&dir=asc|desc&limit&offset plus the list's
+# own filters, returning the page and a `total` that respects those filters. Unknown
+# sort keys fall back to the list's natural order -- never an error, never raw SQL.
+def _sort_q(cols: str):
+    return Query(None, description="sort column: one of " + cols)
+
+
+_DIR_Q = Query("asc", description="sort direction: asc or desc (with sort)")
 
 
 def new_id(prefix: str) -> str:
@@ -344,14 +355,19 @@ _ROLLOUT_ROW = ("rollout_id", "release_id", "product_id", "cohort", "percent", "
 @admin.get("/rollouts", responses={200: {"model": RolloutList}})
 def list_rollouts(request: Request, product_id: int | None = None, limit: int = _PAGE,
                   offset: int = 0, state: str | None = None, cohort: str | None = None,
+                  sort: str | None = _sort_q("created, percent, state, cohort, product, name, "
+                                             "devices, rollout"),
+                  dir: str = _DIR_Q,
                   principal: Principal = Depends(require_scope("observe"))):
     """``cohort`` narrows to the rollouts targeting one label (any product) -- the
-    question a cohort's page asks; combine with ``state`` for "live" vs "history"."""
+    question a cohort's page asks; combine with ``state`` for "live" vs "history".
+    ``total`` counts what the filters match, not the whole table."""
     ms = request.app.state.metastore
     rows = ms.list_rollouts(product_id, account_id=principal.account_id,
-                            limit=limit, offset=offset, state=state, cohort=cohort)
+                            limit=limit, offset=offset, state=state, cohort=cohort,
+                            sort=sort, direction=dir)
     return {"rollouts": [{k: r[k] for k in _ROLLOUT_ROW} for r in rows],
-            "total": ms.count_scoped("rollouts", product_id, principal.account_id)}
+            "total": ms.count_rollouts(product_id, principal.account_id, state, cohort)}
 
 
 @admin.get("/rollouts/{rollout_id}/status", responses={200: {"model": RolloutStatus}})
@@ -378,9 +394,14 @@ def rollout_status(rollout_id: str, request: Request,
 
 @admin.get("/cohorts", responses={200: {"model": CohortList}})
 def list_cohorts(request: Request, product_id: int | None = None,
+                 limit: int | None = None, offset: int = 0,
+                 sort: str | None = _sort_q("cohort, devices, products, pins"),
+                 dir: str = _DIR_Q,
                  principal: Principal = Depends(require_scope("observe"))):
-    return {"cohorts": request.app.state.metastore.list_cohorts(
-        product_id, account_id=principal.account_id)}
+    rows, total = request.app.state.metastore.page_cohorts(
+        product_id, account_id=principal.account_id, sort=sort, direction=dir,
+        limit=limit, offset=offset)
+    return {"cohorts": rows, "total": total}
 
 
 @admin.post("/cohorts/assign", responses={200: {"model": CohortAssigned}})
@@ -649,11 +670,14 @@ def fleet_bases(request: Request, product_id: int | None = None,
 
 @admin.get("/releases", responses={200: {"model": ReleaseList}})
 def releases(request: Request, product_id: int | None = None, limit: int = _PAGE,
-             offset: int = 0, principal: Principal = Depends(require_scope("observe"))):
+             offset: int = 0,
+             sort: str | None = _sort_q("version, product, size, uploaded, name, release"),
+             dir: str = _DIR_Q,
+             principal: Principal = Depends(require_scope("observe"))):
     ms = request.app.state.metastore
     return {"releases": ms.list_releases(product_id, account_id=principal.account_id,
-                                         limit=limit, offset=offset),
-            "total": ms.count_scoped("releases", product_id, principal.account_id)}
+                                         limit=limit, offset=offset, sort=sort, direction=dir),
+            "total": ms.count_releases(product_id, principal.account_id)}
 
 
 def _with_fallback_version(rows: list[dict]) -> list[dict]:
@@ -721,7 +745,10 @@ def release_image(release_id: str, request: Request,
 
 @admin.get("/advisories", responses={200: {"model": AdvisoryList}})
 def list_advisories(request: Request, release_id: str | None = None,
-                    active_only: bool = True,
+                    active_only: bool = True, limit: int | None = None, offset: int = 0,
+                    sort: str | None = _sort_q("severity, advisory, component, release, "
+                                               "first_seen, last_seen"),
+                    dir: str = _DIR_Q,
                     principal: Principal = Depends(require_scope("observe"))):
     """The account's CVE findings from SBOM scans -- active by default;
     ``active_only=false`` includes cleared rows (the monitoring history)."""
@@ -729,8 +756,10 @@ def list_advisories(request: Request, release_id: str | None = None,
     if release_id is not None:
         _owned(ms.get_release(release_id), principal)
     return {"advisories": ms.list_advisories(account_id=principal.account_id,
-                                             release_id=release_id,
-                                             active_only=active_only)}
+                                             release_id=release_id, active_only=active_only,
+                                             sort=sort, direction=dir, limit=limit,
+                                             offset=offset),
+            "total": ms.count_advisories(principal.account_id, release_id, active_only)}
 
 
 class AdvisoryScanRequest(BaseModel):
@@ -819,14 +848,24 @@ def release_sbom(release_id: str, request: Request,
 @admin.get("/devices", responses={200: {"model": DeviceList}})
 def devices(request: Request, product_id: int | None = None, limit: int = 100,
             cohort: str | None = None, offset: int = 0,
+            q: str | None = Query(None, description="name-or-id substring, case-insensitive"),
+            cohort_not: str | None = Query(None, description="exclude devices in this cohort"),
+            sort: str | None = _sort_q("seen, device, product, version, cohort, first_seen"),
+            dir: str = _DIR_Q,
             principal: Principal = Depends(require_scope("observe"))):
     ms = request.app.state.metastore
     return {"devices": _with_fallback_version(ms.list_devices(
-                product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset)),
-            # `total` ignores the cohort filter only when one is not given; with one it still
-            # counts the scoped set, so a cohort page reports the fleet total. Documented rather
-            # than silently wrong: cohort sizes come from GET /cohorts, which counts per cohort.
-            "total": ms.count_scoped("devices", product_id, principal.account_id)}
+                product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset,
+                sort=sort, direction=dir, q=q, cohort_not=cohort_not)),
+            "total": ms.count_devices(product_id, principal.account_id, cohort, q, cohort_not)}
+
+
+@admin.get("/products", responses={200: {"model": ProductList}})
+def products(request: Request, principal: Principal = Depends(require_scope("observe"))):
+    """The account's product directory: every product id seen on a device or a
+    release, its friendly name (from the newest release), and device / release counts."""
+    rows = request.app.state.metastore.list_products(account_id=principal.account_id)
+    return {"products": rows, "total": len(rows)}
 
 
 @admin.post("/devices/{device_id}/viewer-grant", responses={200: {"model": ViewerGrant}})
@@ -860,12 +899,16 @@ def viewer_grant(device_id: str, request: Request,
 
 
 @admin.get("/audit", responses={200: {"model": AuditList}})
-def audit(request: Request, since: int = 0, limit: int = 100,
+def audit(request: Request, since: int = 0, limit: int = 100, offset: int = 0,
           entity_id: str | None = None, newest: bool = False,
+          sort: str | None = _sort_q("when, action, actor, entity"), dir: str = _DIR_Q,
           principal: Principal = Depends(require_scope("observe"))):
     """The append-only record. ``entity_id`` narrows it to one release, rollout,
     or device -- a dashboard's per-entity history. ``newest`` returns the most
-    recent events first (otherwise: append order from ``since``, a log tail)."""
-    return {"events": request.app.state.metastore.read_audit(
-        limit, since, account_id=principal.account_id, entity_id=entity_id,
-        newest=newest)}
+    recent events first (otherwise: append order from ``since``, a log tail);
+    ``sort``/``dir`` generalise both, ``offset`` pages, ``total`` counts the filter."""
+    ms = request.app.state.metastore
+    return {"events": ms.read_audit(limit, since, account_id=principal.account_id,
+                                    entity_id=entity_id, newest=newest, sort=sort,
+                                    direction=dir, offset=offset),
+            "total": ms.count_audit(since, principal.account_id, entity_id)}

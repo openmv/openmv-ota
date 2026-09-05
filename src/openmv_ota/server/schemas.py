@@ -196,10 +196,12 @@ class DeviceList(BaseModel):
 
 class CohortList(BaseModel):
     cohorts: list[Cohort]
+    total: int = 0
 
 
 class AuditList(BaseModel):
     events: list[AuditEvent]
+    total: int = 0
 
 
 # --- summaries + action results -----------------------------------------------------------------
@@ -358,6 +360,20 @@ class Advisory(_Row):
 
 class AdvisoryList(BaseModel):
     advisories: list[Advisory]
+    total: int = 0
+
+
+class Product(BaseModel):
+    product_id: int
+    product: str | None = None
+    """Friendly name from the newest release; None until one is published."""
+    devices: int = 0
+    releases: int = 0
+
+
+class ProductList(BaseModel):
+    products: list[Product]
+    total: int = 0
 
 
 class AdvisoryScan(BaseModel):

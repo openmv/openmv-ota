@@ -54,6 +54,17 @@ has no fallback by design. `--product-id` narrows `products` to one entry, and
 `--cohort` scopes every number to that cohort — `client fleet --cohort beta` is the
 dashboard for exactly the audiences your `beta` rollouts reach.
 
+## Listing conventions
+
+Every `list` verb (`device`, `release`, `rollout`, `cohort`, `product`, `advisories`,
+and `audit`) follows one contract: `--sort COL --dir asc|desc` orders the rows,
+`--limit N --offset N` pages them, and each verb's own filters narrow them. The
+JSON always carries a `total` that counts what the filters matched, not the whole
+table, so a full page is never mistaken for a complete list. `--help` names the
+sortable columns for each verb; the API reference documents the same query
+parameters. `client product list` is the directory those filters key on — every
+product id the account has seen, with its friendly name and device/release counts.
+
 ## The per-device rows
 
 `client device list` is the same picture one camera at a time — everything the device

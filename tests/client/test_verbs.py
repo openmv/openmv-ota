@@ -247,7 +247,7 @@ def test_cohort_list_and_assign(wired, tmp_path, capsys):
     assert "assigned 1/1 device(s) to cohort beta" in capsys.readouterr().out
     assert main(["client", "cohort", "list"]) == 0
     assert json.loads(capsys.readouterr().out) == {"cohorts": [
-        {"cohort": "beta", "devices": 1, "by_product": {str(BID): 1}, "pins": {}}]}
+        {"cohort": "beta", "devices": 1, "by_product": {str(BID): 1}, "pins": {}}], "total": 1}
 
 
 def test_rollout_list_cohort_filter(wired, tmp_path, capsys):
@@ -267,13 +267,35 @@ def test_rollout_list_cohort_filter(wired, tmp_path, capsys):
     assert [r["rollout_id"] for r in rows] == ["ro_a"]
 
 
+def test_list_flags_and_product_list(wired, tmp_path, capsys):
+    """The CLI exposes the list contract: --sort/--dir/--limit/--offset on every list
+    verb, --q/--not-cohort on devices, and `product list` for the directory."""
+    import json
+    store, _ = wired
+    for d, cohort in (("d1", "beta"), ("d2", "__default__")):
+        store.upsert_device(device_id=d, product_id=BID, cohort=cohort)
+    store.set_device_name("d2", "Dock east")
+    assert main(["client", "device", "list", "--q", "dock", "--sort", "device", "--dir", "asc"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [d["device_id"] for d in out["devices"]] == ["d2"] and out["total"] == 1
+    assert main(["client", "device", "list", "--not-cohort", "beta"]) == 0
+    assert [d["device_id"] for d in json.loads(capsys.readouterr().out)["devices"]] == ["d2"]
+    assert main(["client", "product", "list"]) == 0
+    prods = json.loads(capsys.readouterr().out)
+    assert prods["total"] == 1 and prods["products"][0]["product_id"] == BID
+    assert main(["client", "audit", "--sort", "action", "--dir", "desc", "--limit", "1"]) == 0
+    assert len(json.loads(capsys.readouterr().out)["events"]) <= 1
+    assert main(["client", "release", "list", "--sort", "version", "--dir", "asc", "--limit", "5"]) == 0
+    assert "total" in json.loads(capsys.readouterr().out)
+
+
 def test_cohort_create_verb(wired, tmp_path, capsys):
     import json
     assert main(["client", "cohort", "create", "--cohort", "staging"]) == 0
     assert "cohort staging created (no devices yet)" in capsys.readouterr().out
     assert main(["client", "cohort", "list"]) == 0
     assert json.loads(capsys.readouterr().out) == {"cohorts": [
-        {"cohort": "staging", "devices": 0, "by_product": {}, "pins": {}}]}
+        {"cohort": "staging", "devices": 0, "by_product": {}, "pins": {}}], "total": 1}
     assert main(["client", "cohort", "create", "--cohort", "staging"]) != 0   # 409 surfaced
     assert "already in use" in capsys.readouterr().err
 

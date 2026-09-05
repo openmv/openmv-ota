@@ -123,9 +123,21 @@ class Api:
     def stop_rollout(self, rollout_id: str):
         return self._req("POST", "/api/v1/admin/rollouts/%s/stop" % rollout_id)
 
+    @staticmethod
+    def _page(params: dict, limit, offset, sort=None, direction=None) -> dict:
+        """The list contract's paging/sorting knobs, added only when given."""
+        for k, v in (("limit", limit), ("offset", offset), ("sort", sort), ("dir", direction)):
+            if v is not None:
+                params[k] = v
+        return params
+
+    def products(self):
+        """The account's product directory (id, friendly name, device/release counts)."""
+        return self._req("GET", "/api/v1/admin/products")
+
     def list_rollouts(self, product_id=None, limit=None, offset=None, state=None,
-                      cohort=None):
-        params = {}
+                      cohort=None, sort=None, direction=None):
+        params = self._page({}, None, None, sort, direction)
         if product_id is not None:
             params["product_id"] = product_id
         if state is not None:
@@ -141,9 +153,10 @@ class Api:
     def rollout_status(self, rollout_id: str):
         return self._req("GET", "/api/v1/admin/rollouts/%s/status" % rollout_id)
 
-    def list_cohorts(self, product_id=None):
+    def list_cohorts(self, product_id=None, limit=None, offset=None, sort=None, direction=None):
         params = {"product_id": product_id} if product_id is not None else {}
-        return self._req("GET", "/api/v1/admin/cohorts", params=params)
+        return self._req("GET", "/api/v1/admin/cohorts",
+                         params=self._page(params, limit, offset, sort, direction))
 
     def assign_cohort(self, cohort, device_ids=None, product_id=None):
         body = {"cohort": cohort}
@@ -172,12 +185,14 @@ class Api:
         return self._req("PATCH", "/api/v1/admin/devices/%s/name" % device_id,
                          json={"name": name})
 
-    def advisories(self, release_id=None, active_only=True):
+    def advisories(self, release_id=None, active_only=True, limit=None, offset=None, sort=None,
+                   direction=None):
         """The account's CVE findings from SBOM scans (active by default)."""
         params = {"active_only": "true" if active_only else "false"}
         if release_id is not None:
             params["release_id"] = release_id
-        return self._req("GET", "/api/v1/admin/advisories", params=params)
+        return self._req("GET", "/api/v1/admin/advisories",
+                         params=self._page(params, limit, offset, sort, direction))
 
     def scan_advisories(self, release_id=None):
         """Run a scan now: one release, or every release the fleet still runs."""
@@ -239,27 +254,26 @@ class Api:
             params["cohort"] = cohort
         return self._req("GET", "/api/v1/admin/fleet", params=params)
 
-    def devices(self, product_id=None, cohort=None, limit=None, offset=None):
+    def devices(self, product_id=None, cohort=None, limit=None, offset=None, sort=None,
+                direction=None, q=None, cohort_not=None):
         params = {}
         if product_id is not None:
             params["product_id"] = product_id
         if cohort is not None:
             params["cohort"] = cohort
-        if limit is not None:
-            params["limit"] = limit
-        if offset is not None:
-            params["offset"] = offset
+        if q:
+            params["q"] = q
+        if cohort_not is not None:
+            params["cohort_not"] = cohort_not
+        self._page(params, limit, offset, sort, direction)
         return self._req("GET", "/api/v1/admin/devices", params=params)
 
-    def releases(self, product_id=None, limit=None, offset=None):
+    def releases(self, product_id=None, limit=None, offset=None, sort=None, direction=None):
         params = {}
         if product_id is not None:
             params["product_id"] = product_id
-        if limit is not None:
-            params["limit"] = limit
-        if offset is not None:
-            params["offset"] = offset
-        return self._req("GET", "/api/v1/admin/releases", params=params)
+        return self._req("GET", "/api/v1/admin/releases",
+                         params=self._page(params, limit, offset, sort, direction))
 
     def device(self, device_id: str):
         """One device. The detail read behind a UI's device page -- `devices()` can only page a
@@ -270,8 +284,12 @@ class Api:
         """One release, same reasoning as `device()`."""
         return self._req("GET", "/api/v1/admin/releases/%s" % release_id)
 
-    def audit(self, since: int = 0, entity_id: str | None = None):
+    def audit(self, since: int = 0, entity_id: str | None = None, limit=None, offset=None,
+              sort=None, direction=None, newest=None):
         params = {"since": since}
         if entity_id is not None:
             params["entity_id"] = entity_id
-        return self._req("GET", "/api/v1/admin/audit", params=params)
+        if newest:
+            params["newest"] = "true"
+        return self._req("GET", "/api/v1/admin/audit",
+                         params=self._page(params, limit, offset, sort, direction))
