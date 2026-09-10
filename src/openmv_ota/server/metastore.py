@@ -571,12 +571,15 @@ class SqlMetadataStore:
 
     @staticmethod
     def _devices_where(account_id, product_id, cohort, q, cohort_not,
-                       version=None) -> tuple[str, tuple]:
+                       version=None, older_than_pv=None) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id)
         if cohort is not None:
             where, params = _and(where, "cohort = ?"), (*params, cohort)
         if version is not None:                      # "running exactly this version"
             where, params = _and(where, "current_version = ?"), (*params, version)
+        if older_than_pv is not None:                # "not yet on (or past) this release"
+            where = _and(where, "(current_payload_version IS NULL OR current_payload_version < ?)")
+            params = (*params, older_than_pv)
         if cohort_not is not None:                   # a picker: everything NOT yet in it
             where, params = _and(where, "cohort != ?"), (*params, cohort_not)
         if q:                                        # name-or-id substring, case-insensitive
@@ -586,16 +589,16 @@ class SqlMetadataStore:
         return where, params
 
     def count_devices(self, product_id=None, account_id=None, cohort=None, q=None,
-                      cohort_not=None, version=None) -> int:
+                      cohort_not=None, version=None, older_than_pv=None) -> int:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
-                                            version)
+                                            version, older_than_pv)
         return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
 
     def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
                      cohort=None, offset: int = 0, sort=None, direction=None, q=None,
-                     cohort_not=None, version=None) -> list[dict]:
+                     cohort_not=None, version=None, older_than_pv=None) -> list[dict]:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
-                                            version)
+                                            version, older_than_pv)
         rows = self.query_all("SELECT * FROM devices " + where
                               + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
                               + " LIMIT ? OFFSET ?", (*params, limit, offset))

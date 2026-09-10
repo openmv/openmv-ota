@@ -283,6 +283,12 @@ def test_list_flags_and_product_list(wired, tmp_path, capsys):
     store.upsert_device(device_id="d3", product_id=BID, current_version="9.9.9")
     assert main(["client", "device", "list", "--version", "9.9.9"]) == 0
     assert [d["device_id"] for d in json.loads(capsys.readouterr().out)["devices"]] == ["d3"]
+    store.add_release(release_id="r9", product_id=BID, product="P", version="5.0.0",
+                      payload_version=0x05000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=10, representations=[{"format": "full", "url": "x", "size": 9}],
+                      manifest_key="m/r9", image_key="i/r9")
+    assert main(["client", "device", "list", "--older-than-release", "r9"]) == 0
+    assert [d["device_id"] for d in json.loads(capsys.readouterr().out)["devices"]] == ["d3"]
     assert main(["client", "product", "list"]) == 0
     prods = json.loads(capsys.readouterr().out)
     assert prods["total"] == 1 and prods["products"][0]["product_id"] == BID

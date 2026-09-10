@@ -853,15 +853,22 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
             q: str | None = Query(None, description="name-or-id substring, case-insensitive"),
             cohort_not: str | None = Query(None, description="exclude devices in this cohort"),
             version: str | None = Query(None, description="only devices running this version"),
+            older_than_release: str | None = Query(
+                None, description="only devices running something older than this release "
+                                  "(by payload version) -- a rollout's not-yet-updated set"),
             sort: str | None = _sort_q("seen, device, product, version, cohort, first_seen"),
             dir: str = _DIR_Q,
             principal: Principal = Depends(require_scope("observe"))):
     ms = request.app.state.metastore
+    older_pv = None
+    if older_than_release is not None:
+        older_pv = _owned(ms.get_release(older_than_release), principal)["payload_version"]
     return {"devices": _with_fallback_version(ms.list_devices(
                 product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset,
-                sort=sort, direction=dir, q=q, cohort_not=cohort_not, version=version)),
+                sort=sort, direction=dir, q=q, cohort_not=cohort_not, version=version,
+                older_than_pv=older_pv)),
             "total": ms.count_devices(product_id, principal.account_id, cohort, q, cohort_not,
-                                      version)}
+                                      version, older_pv)}
 
 
 @admin.get("/products", responses={200: {"model": ProductList}})

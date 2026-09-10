@@ -257,10 +257,13 @@ class Api:
         return self._req("GET", "/api/v1/admin/fleet", params=params)
 
     def devices(self, product_id=None, cohort=None, limit=None, offset=None, sort=None,
-                direction=None, q=None, cohort_not=None, version=None):
+                direction=None, q=None, cohort_not=None, version=None,
+                older_than_release=None):
         params = {}
         if version is not None:
             params["version"] = version
+        if older_than_release is not None:
+            params["older_than_release"] = older_than_release
         if product_id is not None:
             params["product_id"] = product_id
         if cohort is not None:

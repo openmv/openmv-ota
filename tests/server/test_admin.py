@@ -232,6 +232,16 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     assert g("devices", version="2.0.0")["total"] == 1
     assert [d["device_id"] for d in g("devices", version="2.0.0")["devices"]] == ["d1"]
     assert g("rollouts", release_id="r1")["total"] == 2 and g("rollouts", release_id="nope")["total"] == 0
+    # devices ?older_than_release: running something older than a release (NULL counts
+    # as older; an unknown/foreign release is a 404)
+    store.upsert_device(device_id="d2", product_id=BID, cohort="__default__",
+                        current_payload_version=0x01000000)         # older than r3 (0x02..)
+    store.upsert_device(device_id="d3", product_id=BID, cohort="__default__",
+                        current_payload_version=0x03000000)         # newer
+    older = g("devices", older_than_release="r3")
+    assert older["total"] == 2 and sorted(d["device_id"] for d in older["devices"]) == ["d1", "d2"]
+    assert c.get("/api/v1/admin/devices", headers=AUTH,
+                 params={"older_than_release": "nope"}).status_code == 404
     # products: the directory
     prods = g("products")
     assert prods["total"] == 1 and prods["products"][0] == {

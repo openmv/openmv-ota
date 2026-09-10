@@ -258,6 +258,8 @@ def register(parser: argparse.ArgumentParser) -> None:
                        help="exclude devices in this cohort")
     p_dvl.add_argument("--q", metavar="TEXT", help="name-or-id substring, case-insensitive")
     p_dvl.add_argument("--version", help="only devices running this version")
+    p_dvl.add_argument("--older-than-release", metavar="RELEASE_ID",
+                       help="only devices running something older than this release")
     _list_flags(p_dvl, "seen, device, product, version, cohort, first_seen")
     _creds(p_dvl)
     p_dvl.set_defaults(func=cmd_devices, _command="client device list")
@@ -863,7 +865,8 @@ def cmd_devices(args: argparse.Namespace) -> int:
                                                limit=args.limit, offset=args.offset,
                                                sort=args.sort, direction=args.dir,
                                                q=args.q, cohort_not=args.cohort_not,
-                                               version=args.version))
+                                               version=args.version,
+                                               older_than_release=args.older_than_release))
 
 
 def cmd_releases(args: argparse.Namespace) -> int:
