@@ -300,6 +300,19 @@ def test_list_flags_and_product_list(wired, tmp_path, capsys):
     assert "total" in json.loads(capsys.readouterr().out)
 
 
+def test_rollout_limit_verb(wired, tmp_path, capsys):
+    store, _ = wired
+    store.add_release(release_id="r1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=10, representations=[{"format": "full", "url": "x", "size": 9}],
+                      manifest_key="m/r1", image_key="i/r1")
+    store.add_rollout(rollout_id="ro_a", release_id="r1", product_id=BID, cohort="beta",
+                      percent=10, state="active")
+    assert main(["client", "rollout", "limit", "--rollout-id", "ro_a", "20"]) == 0
+    assert "rollout ro_a limit -> 20%" in capsys.readouterr().out
+    assert store.get_rollout("ro_a")["failure_threshold"] == 0.2
+
+
 def test_cohort_create_verb(wired, tmp_path, capsys):
     import json
     assert main(["client", "cohort", "create", "--cohort", "staging"]) == 0

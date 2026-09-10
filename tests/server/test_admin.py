@@ -267,6 +267,24 @@ def test_advisories_list_contract(tmp_path):
     assert g(release_id="r1", offset=2, sort="advisory")["advisories"][0]["vuln_id"] == "CVE-3"
 
 
+def test_rollout_patch_failure_threshold(tmp_path):
+    """The limit is changeable mid-rollout (0..1, validated) and audited; changing it
+    on a paused rollout does NOT resume it."""
+    app, store = _app(tmp_path)
+    _seed_release(store, "r1")
+    store.add_rollout(rollout_id="ro_a", release_id="r1", product_id=BID, cohort="beta",
+                      percent=10, state="paused")
+    c = TestClient(app)
+    r = c.patch("/api/v1/admin/rollouts/ro_a", headers=AUTH, json={"failure_threshold": 0.2})
+    assert r.status_code == 200 and r.json()["failure_threshold"] == 0.2
+    assert r.json()["state"] == "paused"                                   # still paused
+    assert c.patch("/api/v1/admin/rollouts/ro_a", headers=AUTH,
+                   json={"failure_threshold": 1.5}).status_code == 400
+    ev = [e for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
+          if e["action"] == "rollout.update"][-1]
+    assert ev["data"] == {"failure_threshold": 0.2}
+
+
 def test_cohort_assign_requires_scope(tmp_path):
     app, store = _app(tmp_path, scopes=("observe",))
     r = TestClient(app).post("/api/v1/admin/cohorts/assign", headers=AUTH,

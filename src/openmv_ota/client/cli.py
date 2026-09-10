@@ -151,6 +151,12 @@ def register(parser: argparse.ArgumentParser) -> None:
                       help="display name for the rollout (a label; rename any time)")
     _creds(p_rc)
     p_rc.set_defaults(func=cmd_rollout, _command="client rollout create", action="create")
+    p_rl = rsub.add_parser("limit", help="set the auto-pause failure limit (percent of offered devices)")
+    p_rl.add_argument("--rollout-id", required=True, metavar="ROLLOUT_ID",
+                      help="the rollout to act on (ids come from `client rollout list`)")
+    p_rl.add_argument("percent", type=float, help="failures allowed before auto-pause, 0-100")
+    _creds(p_rl)
+    p_rl.set_defaults(func=cmd_rollout, _command="client rollout limit", action="limit")
     for action, needs_pct, blurb in (
             ("raise", True, "widen the rollout to --percent of the cohort"),
             ("pause", False, "stop offering it (it auto-pauses on failures too)"),
@@ -602,6 +608,10 @@ def cmd_rollout(args: argparse.Namespace) -> int:
             return 0
         if args.action == "raise":
             ro = api.patch_rollout(args.rollout_id, percent=args.percent)
+        elif args.action == "limit":
+            ro = api.patch_rollout(args.rollout_id, failure_threshold=args.percent / 100)
+            return _emit(args, ro, "rollout %s limit -> %g%%"
+                         % (args.rollout_id, ro["failure_threshold"] * 100))
         elif args.action == "pause":
             ro = api.patch_rollout(args.rollout_id, state="paused")
         elif args.action == "resume":

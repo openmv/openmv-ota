@@ -163,6 +163,7 @@ openmv-ota client rollout stop --rollout-id ro_1c3f88ba90d2e644
 | `raise N` | widen the staged slice to N percent. Percent is **monotonic** — lowering it is refused, because devices already offered the release can't be un-offered |
 | `pause` | stop offering; resumable. The server also **auto-pauses** a rollout whose fallback rate among offered devices crosses its failure threshold (5% by default) and records an audit event |
 | `resume` | start offering again |
+| `limit N` | set the auto-pause failure limit to N percent of offered devices (5 by default, or `--failure-threshold` at create). Raise it after diagnosing spurious fallbacks, tighten it for a risky build. It is only the limit: a rollout the old limit paused stays paused until you `resume` |
 | `stop` | stop offering **permanently** (a stopped rollout can't be resumed — create a new one). Devices that already took the release keep it — the server never downgrades a camera; the device's own anti-rollback wouldn't accept one anyway |
 
 Two reads split the work. **`rollout list` is pure enumeration** — just enough to find
