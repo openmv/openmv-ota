@@ -280,15 +280,19 @@ def test_list_flags_and_product_list(wired, tmp_path, capsys):
     assert [d["device_id"] for d in out["devices"]] == ["d2"] and out["total"] == 1
     assert main(["client", "device", "list", "--not-cohort", "beta"]) == 0
     assert [d["device_id"] for d in json.loads(capsys.readouterr().out)["devices"]] == ["d2"]
-    store.upsert_device(device_id="d3", product_id=BID, current_version="9.9.9")
+    store.upsert_device(device_id="d3", product_id=BID, current_version="9.9.9",
+                        current_payload_version=0x09090900)
     assert main(["client", "device", "list", "--version", "9.9.9"]) == 0
     assert [d["device_id"] for d in json.loads(capsys.readouterr().out)["devices"]] == ["d3"]
+    # older than 5.0.0: d1 (1.0.0) and d2 (nothing reported yet); d3 is past it
+    store.upsert_device(device_id="d1", product_id=BID, current_version="1.0.0",
+                        current_payload_version=0x01000000)
     store.add_release(release_id="r9", product_id=BID, product="P", version="5.0.0",
                       payload_version=0x05000000, min_platform_version=0, image_sha256="ab" * 32,
                       image_size=10, representations=[{"format": "full", "url": "x", "size": 9}],
                       manifest_key="m/r9", image_key="i/r9")
-    assert main(["client", "device", "list", "--older-than-release", "r9"]) == 0
-    assert [d["device_id"] for d in json.loads(capsys.readouterr().out)["devices"]] == ["d3"]
+    assert main(["client", "device", "list", "--older-than-release", "r9", "--sort", "device", "--dir", "asc"]) == 0
+    assert [d["device_id"] for d in json.loads(capsys.readouterr().out)["devices"]] == ["d1", "d2"]
     assert main(["client", "product", "list"]) == 0
     prods = json.loads(capsys.readouterr().out)
     assert prods["total"] == 1 and prods["products"][0]["product_id"] == BID
@@ -597,6 +601,12 @@ def test_rollout_create_status_and_list(wired, tmp_path, capsys):
                  "--offset", "0", "--state", "active"]) == 0
     body = json.loads(capsys.readouterr().out)
     assert body["total"] == 1 and body["rollouts"][0]["release_id"] == rel
+    # --release-id narrows to one release's rollouts (a release page's list); a
+    # release nothing targets is an empty list, not an error
+    assert main(["client", "rollout", "list", "--release-id", rel]) == 0
+    assert json.loads(capsys.readouterr().out)["total"] == 1
+    assert main(["client", "rollout", "list", "--release-id", "rel_nothing"]) == 0
+    assert json.loads(capsys.readouterr().out)["total"] == 0
     # the list is the INVENTORY: identity/state/dial/audience -- the counters are status's
     row = body["rollouts"][0]
     assert "attempted" not in row and "cohort_devices" in row

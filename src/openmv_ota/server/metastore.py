@@ -39,6 +39,16 @@ def _order(sort, direction, allowed: dict, default: str, tiebreak: str) -> str:
     return " ORDER BY " + default
 
 
+def _limit(sql: str, params: tuple, limit, offset: int) -> tuple[str, tuple]:
+    """Append the page clause. A limit pages; an offset alone still skips rows
+    (SQLite reads ``LIMIT -1`` as no cap); neither leaves the query whole."""
+    if limit is not None:
+        return sql + " LIMIT ? OFFSET ?", (*params, limit, offset)
+    if offset:
+        return sql + " LIMIT -1 OFFSET ?", (*params, offset)
+    return sql, params
+
+
 def _and(where: str, clause: str) -> str:
     return (where + " AND " + clause) if where else "WHERE " + clause
 
@@ -309,7 +319,7 @@ class SqlMetadataStore:
         return r
 
     RELEASE_SORTS = {"version": "payload_version", "product": "product", "size": "image_size",
-                     "uploaded": "uploaded_at", "name": "display_name", "release": "release_id"}
+                     "uploaded": "uploaded_at", "name": "display_name COLLATE NOCASE", "release": "release_id"}
 
     def count_releases(self, product_id=None, account_id=None) -> int:
         where, params = _scope(account_id, product_id)
@@ -320,9 +330,7 @@ class SqlMetadataStore:
         where, params = _scope(account_id, product_id)
         sql = ("SELECT * FROM releases " + where
                + _order(sort, direction, self.RELEASE_SORTS, "payload_version DESC", "release_id"))
-        if limit is not None:
-            sql += " LIMIT ? OFFSET ?"
-            params = (*params, limit, offset)
+        sql, params = _limit(sql, params, limit, offset)
         rows = [_d(r) for r in self.query_all(sql, params)]
         for r in rows:
             r["representations"] = json.loads(r["representations"])
@@ -354,7 +362,7 @@ class SqlMetadataStore:
             "AND state = 'active' ORDER BY created_at DESC LIMIT 1", (account_id, product_id, cohort)))
 
     ROLLOUT_SORTS = {"created": "r.created_at", "percent": "r.percent", "state": "r.state",
-                     "cohort": "r.cohort", "product": "r.product_id", "name": "r.display_name",
+                     "cohort": "r.cohort", "product": "r.product_id", "name": "r.display_name COLLATE NOCASE",
                      "devices": "cohort_devices", "rollout": "r.rollout_id"}
 
     @staticmethod
@@ -385,9 +393,7 @@ class SqlMetadataStore:
                "AND d.cohort = r.cohort AND d.account_id = r.account_id) AS cohort_devices "
                "FROM rollouts r " + where
                + _order(sort, direction, self.ROLLOUT_SORTS, "r.created_at DESC", "r.rollout_id"))
-        if limit is not None:
-            sql += " LIMIT ? OFFSET ?"
-            params = (*params, limit, offset)
+        sql, params = _limit(sql, params, limit, offset)
         return [_d(r) for r in self.query_all(sql, params)]
 
     def cohort_in_use(self, cohort: str, account_id: str = "") -> bool:
@@ -565,7 +571,7 @@ class SqlMetadataStore:
         rebind so the fleet views reflect the new account immediately, not on the next check-in."""
         self.execute("UPDATE devices SET account_id = ? WHERE device_id = ?", (account_id, device_id))
 
-    DEVICE_SORTS = {"seen": "last_seen", "device": "COALESCE(NULLIF(display_name, ''), device_id)",
+    DEVICE_SORTS = {"seen": "last_seen", "device": "COALESCE(NULLIF(display_name, ''), device_id) COLLATE NOCASE",
                     "product": "product_id", "version": "current_version", "cohort": "cohort",
                     "first_seen": "first_seen"}
 
@@ -716,8 +722,7 @@ class SqlMetadataStore:
         key = self.COHORT_SORTS.get(sort or "cohort", self.COHORT_SORTS["cohort"])
         rows.sort(key=key, reverse=(str(direction).lower() == "desc"))
         total = len(rows)
-        if limit is not None:
-            rows = rows[offset: offset + limit]
+        rows = rows[offset: offset + limit] if limit is not None else rows[offset:]
         return rows, total
 
     def assign_cohort(self, device_ids: list, cohort: str, account_id=None) -> int:
@@ -833,7 +838,7 @@ class SqlMetadataStore:
         "severity": ("CASE a.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' "
                      "THEN 2 WHEN 'low' THEN 3 ELSE 4 END"),
         "advisory": "a.vuln_id", "component": "a.component",
-        "release": "COALESCE(NULLIF(r.display_name, ''), a.release_id)",
+        "release": "COALESCE(NULLIF(r.display_name, ''), a.release_id) COLLATE NOCASE",
         "first_seen": "a.first_seen", "last_seen": "a.last_seen"}
 
     @staticmethod
@@ -860,9 +865,7 @@ class SqlMetadataStore:
                "LEFT JOIN releases r ON r.release_id = a.release_id " + where
                + _order(sort, direction, self.ADVISORY_SORTS, "a.first_seen DESC, a.vuln_id",
                         "a.vuln_id"))
-        if limit is not None:
-            sql += " LIMIT ? OFFSET ?"
-            params = (*params, limit, offset)
+        sql, params = _limit(sql, params, limit, offset)
         return [_d(r) for r in self.query_all(sql, params)]
 
     def set_device_pin(self, device_id: str, release_id: str | None) -> None:
@@ -914,21 +917,6 @@ class SqlMetadataStore:
 
     def get_account(self, account_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM accounts WHERE account_id = ?", (account_id,)))
-
-    def count_scoped(self, table: str, product_id=None, account_id=None) -> int:
-        """How many rows a scoped list would return WITHOUT its page limit.
-
-        Exists so a paginated response can carry a `total`. Without one a caller cannot tell a
-        page that happens to be full from a list that was truncated, which is the silent-cap
-        trap: `limit=100` on a fleet with 400 releases looks exactly like a fleet with 100.
-        A UI also needs it to render "page 2 of N" at all.
-
-        ``table`` is never caller-supplied -- the endpoints pass a literal -- so the f-string
-        cannot be an injection point; the filters go through `_scope`'s placeholders as usual."""
-        if table not in ("releases", "rollouts", "devices"):    # belt: only the paginated ones
-            raise ValueError("count_scoped: unsupported table %r" % table)
-        where, params = _scope(account_id, product_id)
-        return self.query_one("SELECT COUNT(*) AS n FROM %s %s" % (table, where), params)["n"]
 
     def list_accounts(self) -> list[dict]:
         return [_d(r) for r in self.query_all("SELECT * FROM accounts ORDER BY created_at")]

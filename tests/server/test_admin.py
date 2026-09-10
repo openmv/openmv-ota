@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 from openmv_ota.server.app import create_app
@@ -217,9 +216,12 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     # cohorts: sort by devices, paged, total
     body = g("cohorts", sort="devices", dir="desc", limit=1)
     assert body["cohorts"][0]["cohort"] == "beta" and body["total"] == 2
-    # audit: total + offset + sort by action; newest still works
+    # audit: total + offset + sort by action; newest still works. Store-seeded rows
+    # write no audit, so two API actions make the entries.
+    assert c.post("/api/v1/admin/cohorts/create", headers=AUTH, json={"cohort": "staging"}).status_code == 200
+    assert c.patch("/api/v1/admin/rollouts/ro_a", headers=AUTH, json={"percent": 50}).status_code == 200
     a = g("audit")
-    assert a["total"] == len(a["events"]) > 0
+    assert a["total"] == len(a["events"]) == 2
     assert g("audit", sort="action", dir="asc")["events"][0]["action"] <= \
         g("audit", sort="action", dir="desc")["events"][0]["action"]
     assert g("audit", offset=1)["events"] == a["events"][1:]
@@ -982,13 +984,6 @@ def test_total_is_account_scoped_like_the_rows_it_counts(tmp_path):
     body = TestClient(app).get("/api/v1/admin/releases", headers=AUTH).json()
     assert [r["release_id"] for r in body["releases"]] == ["mine"]
     assert body["total"] == 1, "counts what this caller may see, not the table"
-
-
-def test_count_scoped_refuses_a_table_it_does_not_paginate(tmp_path):
-    """The table name is interpolated, so it is restricted to the literals the endpoints pass."""
-    _, store = _app(tmp_path)
-    with pytest.raises(ValueError, match="unsupported table"):
-        store.count_scoped("admin_tokens; DROP TABLE devices--")
 
 
 def test_fleet_bases_names_the_bytes_a_release_must_cover(tmp_path):

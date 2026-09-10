@@ -292,13 +292,11 @@ class Api:
         return self._req("GET", "/api/v1/admin/releases/%s" % release_id)
 
     def audit(self, since: int = 0, entity_id: str | None = None, limit=None, offset=None,
-              sort=None, direction=None, newest=None, action_not=None):
+              sort=None, direction=None, action_not=None):
         params = {"since": since}
         if entity_id is not None:
             params["entity_id"] = entity_id
         if action_not is not None:
             params["action_not"] = action_not
-        if newest:
-            params["newest"] = "true"
         return self._req("GET", "/api/v1/admin/audit",
                          params=self._page(params, limit, offset, sort, direction))
