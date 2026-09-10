@@ -424,6 +424,30 @@ def _cherry_pick_was_empty(mpy: Path) -> bool:
     return not any(line[:2].strip() and line[:2] != "??" for line in out.splitlines())
 
 
+def _fetch_feature_commits(mpy: Path, feat: dict) -> None:
+    """Bring a feature's pinned commits into lib/micropython. Fetch the SHAs THEMSELVES first
+    (GitHub serves any commit reachable from a ref, so this works whether the PR is open, or
+    merged and its branch deleted); fall back to the PR head only if that is refused. Either
+    way ``--recurse-submodules=no``: git's on-demand recursion would otherwise chase the
+    fetched commits' submodule pointers into lib/axtls & co., and a pointer an old PR history
+    carried but the submodule's remote no longer serves ("upload-pack: not our ref ...")
+    fails the whole fetch -- which is exactly how #19348's carry broke in CI once its merged
+    branch was GC'd. The cherry-picks never need those submodules."""
+    pr = feat["pr"]
+    try:
+        gitrepo.run_git(mpy, "fetch", "--quiet", "--recurse-submodules=no", _MP_REMOTE,
+                        *feat["commits"])
+    except ProjectError as by_sha:
+        try:
+            gitrepo.run_git(mpy, "fetch", "--quiet", "--recurse-submodules=no", _MP_REMOTE,
+                            "pull/%s/head" % pr)
+        except ProjectError as by_ref:
+            raise ProjectError(
+                "could not fetch micropython#%s's commits: by SHA (%s) nor by PR head (%s). If "
+                "the PR was rebased upstream, update its `commits` in project.py._FW_FEATURES."
+                % (pr, by_sha, by_ref), exit_code=1) from None
+
+
 def _carry_feature(repo: Path, mpy: Path, feat: dict) -> None:
     """Cherry-pick ``feat``'s pinned commits into lib/micropython, apply any fork-compat fixups, and
     commit the submodule bump so the checkout stays clean (the lock/verify guard refuses a dirty tree).
@@ -434,7 +458,7 @@ def _carry_feature(repo: Path, mpy: Path, feat: dict) -> None:
           "checkout stays clean." % (pr, feat["summary"], feat["why"]))
     ident = ("-c", "user.name=openmv-ota", "-c", "user.email=build@openmv.io")
     if gitrepo.run_git(mpy, "cat-file", "-e", feat["commits"][-1] + "^{commit}", check=False) is None:
-        gitrepo.run_git(mpy, "fetch", "--quiet", _MP_REMOTE, "pull/%s/head" % pr)
+        _fetch_feature_commits(mpy, feat)
     try:
         # ONE COMMIT AT A TIME, TOLERATING THE ONES UPSTREAM HAS SINCE MERGED. A carry is a list of
         # pinned SHAs, and upstream merges them one by one -- when it does, cherry-picking that SHA

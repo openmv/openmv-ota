@@ -964,6 +964,49 @@ def test_ota_fw_features_cherry_picks_when_absent(tmp_path, monkeypatch, capsys)
         assert "carrying micropython#%s" % feat["pr"] in out
 
 
+def test_ota_fw_features_fetches_pinned_shas_without_submodule_recursion(tmp_path, monkeypatch):
+    """The fetch asks for the pinned SHAs themselves (works for an open PR AND a merged one whose
+    branch was deleted) and NEVER recurses into micropython's submodules -- on-demand recursion
+    chasing an old PR history's lib/axtls pointer is what broke the #19348 carry in CI."""
+    run = _fake_run_git(present=False)
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    proj._ensure_ota_firmware_features(_fw_repo(tmp_path, vfs=_NO_SENTINEL), apply=True)
+    fetches = [c for c in run.calls if "fetch" in c]
+    assert len(fetches) == len(proj._FW_FEATURES)          # one per feature, no fallback needed
+    for feat, call in zip(proj._FW_FEATURES, fetches):
+        assert "--recurse-submodules=no" in call
+        assert not any(a.startswith("pull/") for a in call)
+        assert call[-len(feat["commits"]):] == list(feat["commits"])
+
+
+def test_ota_fw_features_falls_back_to_pr_head_when_sha_fetch_refused(tmp_path, monkeypatch):
+    """A remote that will not serve loose SHAs (or a not-yet-pushed rebase) -> the PR head is the
+    fallback, still without submodule recursion; both refused -> a clear error naming both."""
+    base = _fake_run_git(present=False)
+    state = {"sha_fetches": 0, "refuse_ref_too": False}
+
+    def run(repo, *args, check=True):
+        if "fetch" in args and not any(a.startswith("pull/") for a in args):
+            state["sha_fetches"] += 1
+            base.calls.append(list(args))
+            raise ProjectError("git fetch failed: not our ref")
+        if "fetch" in args and state["refuse_ref_too"]:
+            base.calls.append(list(args))
+            raise ProjectError("git fetch failed: ref gone")
+        return base(repo, *args, check=check)
+    monkeypatch.setattr(proj.gitrepo, "run_git", run)
+    proj._ensure_ota_firmware_features(_fw_repo(tmp_path, vfs=_NO_SENTINEL), apply=True)
+    ref_fetches = [c for c in base.calls if "fetch" in c and any(a.startswith("pull/") for a in c)]
+    assert state["sha_fetches"] == len(proj._FW_FEATURES) == len(ref_fetches)
+    assert all("--recurse-submodules=no" in c for c in ref_fetches)
+    assert [c[-1] for c in ref_fetches] == ["pull/%s/head" % f["pr"] for f in proj._FW_FEATURES]
+    # both refused, on the REQUIRED feature -> fatal, and the message names both attempts
+    state["refuse_ref_too"] = True
+    with pytest.raises(ProjectError) as ei:
+        proj._ensure_ota_firmware_features(_fw_repo(tmp_path / "again", vfs=_NO_SENTINEL), apply=True)
+    assert "by SHA" in str(ei.value) and "by PR head" in str(ei.value) and "#19348" in str(ei.value)
+
+
 def test_ota_fw_features_skips_fetch_when_objects_present(tmp_path, monkeypatch):
     run = _fake_run_git(present=True)
     monkeypatch.setattr(proj.gitrepo, "run_git", run)
