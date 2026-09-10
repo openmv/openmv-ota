@@ -303,6 +303,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_acl = acsub.add_parser("list", help="list accounts")
     _creds(p_acl)
     p_acl.set_defaults(func=cmd_account, _command="client account list", action="list")
+    p_acl2 = acsub.add_parser("limit", help="set an account's device entitlement (operator)")
+    p_acl2.add_argument("--account-id", required=True, metavar="ACCOUNT_ID", help="the account")
+    g = p_acl2.add_mutually_exclusive_group(required=True)
+    g.add_argument("--devices", type=int, help="max registered devices")
+    g.add_argument("--unlimited", action="store_true", help="lift the limit")
+    _creds(p_acl2)
+    p_acl2.set_defaults(func=cmd_account, _command="client account limit", action="limit")
     p_acr = acsub.add_parser("rename", help="rename an account")
     p_acr.add_argument("--account-id", required=True, metavar="ACCOUNT_ID", help="account to rename")
     p_acr.add_argument("--name", required=True, help="the new name")
@@ -696,6 +703,11 @@ def cmd_account(args: argparse.Namespace) -> int:
             # it exists, and a script that cannot capture it has to mint another account.
             return _emit(args, res, "account %s created" % res["account_id"],
                          "working token (store it now -- not recoverable): %s" % res["token"])
+        elif args.action == "limit":
+            res = api.set_account_limit(args.account_id, None if args.unlimited else args.devices)
+            lim = "unlimited" if res["device_limit"] is None else str(res["device_limit"])
+            return _emit(args, res, f"account {res['account_id']} device limit: {lim} "
+                                    f"({res['devices']} registered)")
         elif args.action == "rename":
             res = api.rename_account(args.account_id, args.name)
             return _emit(args, res, "account %s renamed to %s" % (args.account_id, args.name))

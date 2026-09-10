@@ -418,6 +418,12 @@ def test_account_lifecycle_verbs(tmp_path, monkeypatch, capsys):
     store.add_token(hash_token("x"), "t", ["observe"], account_id="acctA")   # a token to revoke
     assert main(["client", "account", "rename", "--account-id", "acctA", "--name", "New"]) == 0
     assert "renamed to New" in capsys.readouterr().out
+    assert main(["client", "account", "limit", "--account-id", "acctA", "--devices", "5"]) == 0
+    assert "device limit: 5 (0 registered)" in capsys.readouterr().out
+    assert store.get_account("acctA")["device_limit"] == 5
+    assert main(["client", "account", "limit", "--account-id", "acctA", "--unlimited"]) == 0
+    assert "device limit: unlimited" in capsys.readouterr().out
+    assert store.get_account("acctA")["device_limit"] is None
     assert main(["client", "account", "deactivate", "--account-id", "acctA"]) == 0
     assert "deactivated" in capsys.readouterr().out and store.get_account("acctA")["active"] == 0
     assert main(["client", "account", "activate", "--account-id", "acctA"]) == 0

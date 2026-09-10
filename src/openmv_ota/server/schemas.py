@@ -40,6 +40,8 @@ class Account(_Row):
     name: str = ""
     created_at: str = ""
     active: int = 1
+    device_limit: int | None = None
+    """Max registered devices (an entitlement set by the operator); null = unlimited."""
 
 
 class TokenInfo(_Row):
@@ -157,6 +159,13 @@ class AuditEvent(_Row):
 # --- collections ------------------------------------------------------------------------------
 # `total` is the count the page was drawn from, so a FULL page can be told apart from a
 # TRUNCATED list; it is account-scoped like the rows, and never discloses another tenant's size.
+
+class AccountLimited(BaseModel):
+    account_id: str
+    device_limit: int | None = None
+    devices: int = 0
+    """Registered devices right now, so the caller sees headroom (or the overrun)."""
+
 
 class AccountList(BaseModel):
     accounts: list[Account]

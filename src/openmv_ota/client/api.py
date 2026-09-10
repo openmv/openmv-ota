@@ -155,6 +155,11 @@ class Api:
     def rollout_status(self, rollout_id: str):
         return self._req("GET", "/api/v1/admin/rollouts/%s/status" % rollout_id)
 
+    def set_account_limit(self, account_id, device_limit):
+        """Operator: the account's device entitlement (None = unlimited)."""
+        return self._req("PUT", f"/api/v1/admin/accounts/{account_id}/limit",
+                         json={"device_limit": device_limit})
+
     def list_cohorts(self, product_id=None, limit=None, offset=None, sort=None, direction=None):
         params = {"product_id": product_id} if product_id is not None else {}
         return self._req("GET", "/api/v1/admin/cohorts",

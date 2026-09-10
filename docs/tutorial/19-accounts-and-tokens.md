@@ -141,3 +141,19 @@ does *not* guarantee is listed in [residual threats](../compliance/residual-thre
 ---
 
 *[← 18 · Building deltas](18-building-deltas.md) · [Index](00-introduction.md) · [20 · The update server →](20-update-server.md)*
+
+## Device limits
+
+An account can carry a device entitlement -- the most devices it may register:
+
+```
+$ openmv-ota client account limit --account-id acct_... --devices 10
+account acct_... device limit: 10 (7 registered)
+$ openmv-ota client account limit --account-id acct_... --unlimited
+```
+
+It is enforced for *new* devices at check-in: past the limit, an unknown device is
+not registered and is served nothing (zero footprint, exactly like an unregistered
+id), and a `device.refused` audit row records it once per device id. Devices already
+in the fleet are never affected -- they keep checking in and updating. This is the
+hook a hosting layer uses to map a plan onto an account.

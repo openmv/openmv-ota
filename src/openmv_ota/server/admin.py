@@ -16,6 +16,7 @@ from .auth import Principal, hash_token, require_scope
 from .schemas import (
     AccountActive,
     AccountCreated,
+    AccountLimited,
     AccountList,
     AccountNamed,
     AdvisoryList,
@@ -173,6 +174,29 @@ def patch_account(account_id: str, body: AccountPatch, request: Request,
     ms.append_audit(actor=principal.name, action="account.rename", entity_type="account",
                     entity_id=account_id, data={"name": name}, account_id=principal.account_id)
     return {"account_id": account_id, "name": name}
+
+
+class AccountLimit(BaseModel):
+    device_limit: int | None = None        # null = unlimited
+
+
+@admin.put("/accounts/{account_id}/limit", responses={200: {"model": AccountLimited}})
+def set_account_limit(account_id: str, body: AccountLimit, request: Request,
+                      principal: Principal = Depends(require_scope("accounts"))):
+    """The account's device entitlement (operator-only): how many devices may register.
+    Enforced for NEW devices at check-in; devices already registered are never dropped.
+    ``null`` lifts the limit."""
+    ms = request.app.state.metastore
+    if ms.get_account(account_id) is None:
+        raise HTTPException(status_code=404)
+    if body.device_limit is not None and body.device_limit < 0:
+        raise HTTPException(status_code=400, detail="device_limit must be >= 0 or null")
+    ms.set_device_limit(account_id, body.device_limit)
+    ms.append_audit(actor=principal.name, action="account.limit", entity_type="account",
+                    entity_id=account_id, data={"device_limit": body.device_limit},
+                    account_id=principal.account_id)
+    return {"account_id": account_id, "device_limit": body.device_limit,
+            "devices": ms.device_count(account_id)}
 
 
 @admin.post("/accounts/{account_id}/deactivate", responses={200: {"model": AccountActive}})

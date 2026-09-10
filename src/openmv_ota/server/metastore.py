@@ -239,6 +239,13 @@ _MIGRATIONS: list[list[str]] = [
             PRIMARY KEY (account_id, cohort)
         )""",
     ],
+    [   # v18 -- per-account device limit (entitlement). NULL = unlimited. Enforced at
+        # check-in for NEW devices only: a fleet that has grown past its plan keeps every
+        # device it already has (they keep checking in and updating); the (limit+1)th device
+        # is simply not registered -- zero footprint, same as an unregistered id -- and the
+        # refusal is audited once per device id so the operator can see it.
+        "ALTER TABLE accounts ADD COLUMN device_limit INTEGER",
+    ],
 ]
 
 
@@ -930,6 +937,26 @@ class SqlMetadataStore:
 
     def rename_account(self, account_id: str, name: str) -> None:
         self.execute("UPDATE accounts SET name = ? WHERE account_id = ?", (name, account_id))
+
+    def set_device_limit(self, account_id: str, limit: int | None) -> None:
+        self.execute("UPDATE accounts SET device_limit = ? WHERE account_id = ?",
+                     (limit, account_id))
+
+    def device_count(self, account_id: str) -> int:
+        return self.query_one("SELECT COUNT(*) AS n FROM devices WHERE account_id = ?",
+                              (account_id,))["n"]
+
+    def limit_refusal_seen(self, account_id: str, device_id: str) -> bool:
+        """Whether this device's limit refusal is already in the audit (one row per id)."""
+        return self.query_one(
+            "SELECT 1 AS x FROM audit WHERE account_id = ? AND action = 'device.refused' "
+            "AND entity_id = ? LIMIT 1", (account_id, device_id)) is not None
+
+    def over_device_limit(self, account_id: str) -> bool:
+        """Whether registering ONE MORE device would exceed the account's limit."""
+        acct = self.get_account(account_id) if account_id else None
+        limit = (acct or {}).get("device_limit")
+        return limit is not None and self.device_count(account_id) >= limit
 
     def set_account_active(self, account_id: str, active: bool) -> None:
         self.execute("UPDATE accounts SET active = ? WHERE account_id = ?",

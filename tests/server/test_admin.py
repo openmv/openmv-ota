@@ -287,6 +287,27 @@ def test_rollout_patch_failure_threshold(tmp_path):
     assert ev["data"] == {"failure_threshold": 0.2}
 
 
+def test_account_device_limit_is_set_by_operator(tmp_path):
+    """PUT /accounts/{id}/limit sets the entitlement (null lifts it, negatives are a 400);
+    over_device_limit answers 'would one more exceed it'."""
+    app, store = _app(tmp_path, scopes=("accounts",))          # operator token
+    c = TestClient(app)
+    aid = c.post("/api/v1/admin/accounts", headers=AUTH, json={"name": "Lim"}).json()["account_id"]
+    for d in ("d1", "d2"):
+        store.upsert_device(device_id=d, product_id=BID, account_id=aid)
+    r = c.put(f"/api/v1/admin/accounts/{aid}/limit", headers=AUTH, json={"device_limit": 2})
+    assert r.json() == {"account_id": aid, "device_limit": 2, "devices": 2}
+    assert store.over_device_limit(aid) is True
+    assert c.put(f"/api/v1/admin/accounts/{aid}/limit", headers=AUTH,
+                 json={"device_limit": -1}).status_code == 400
+    assert c.put("/api/v1/admin/accounts/nope/limit", headers=AUTH,
+                 json={"device_limit": 1}).status_code == 404
+    r = c.put(f"/api/v1/admin/accounts/{aid}/limit", headers=AUTH, json={"device_limit": None})
+    assert r.json()["device_limit"] is None and store.over_device_limit(aid) is False
+    assert store.over_device_limit("") is False               # no account: never limited
+    assert [e for e in store.read_audit(100) if e["action"] == "account.limit"]
+
+
 def test_cohort_assign_requires_scope(tmp_path):
     app, store = _app(tmp_path, scopes=("observe",))
     r = TestClient(app).post("/api/v1/admin/cohorts/assign", headers=AUTH,

@@ -87,6 +87,27 @@ def test_unregistered_gets_nothing_and_writes_nothing(tmp_path):
     assert store.get_rollout("ro1")["attempted"] == 0
 
 
+def test_new_device_past_the_account_limit_is_refused_but_the_fleet_keeps_working(tmp_path):
+    """A device limit binds NEW registrations only: the (limit+1)th id is served nothing
+    and never written (zero footprint), audited once; devices already in keep checking
+    in. Lifting the limit lets the refused device in on its next check-in."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+    store.add_account("acctL", "Limited")
+    c.post("/api/v1/check", json=_checkin("dev1", account_id="acctL"))   # learned binding
+    store.set_device_limit("acctL", 1)
+    for _ in range(2):                                        # refused, and refused again
+        assert c.post("/api/v1/check", json=_checkin("dev2", account_id="acctL")).json()["update"] is False
+    assert store.get_device("dev2") is None
+    refusals = [e for e in store.read_audit(100, account_id="acctL") if e["action"] == "device.refused"]
+    assert len(refusals) == 1 and refusals[0]["entity_id"] == "dev2"     # audited ONCE
+    assert c.post("/api/v1/check", json=_checkin("dev1", account_id="acctL")).status_code == 200
+    assert store.get_device("dev1") is not None               # existing: unaffected
+    store.set_device_limit("acctL", None)
+    c.post("/api/v1/check", json=_checkin("dev2", account_id="acctL"))
+    assert store.get_device("dev2") is not None               # lifted -> registers
+
+
 def test_registered_no_rollout_writes_registry(tmp_path):
     app, store, storage, v = _app(tmp_path)
     assert TestClient(app).post("/api/v1/check", json=_checkin()).json()["update"] is False

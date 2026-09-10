@@ -533,6 +533,16 @@ def check(checkin: CheckIn, request: Request):
     ms = st.metastore
     account_id = _effective_account(ms, checkin)                # sticky binding, not the raw report
     existing = ms.get_device(checkin.device_id)
+    if existing is None and ms.over_device_limit(account_id):
+        # A NEW device past the account's entitlement: not registered (zero footprint,
+        # like an unregistered id), served nothing, and audited once so the overrun is
+        # visible to the operator. Every device already in the fleet is unaffected.
+        if not ms.limit_refusal_seen(account_id, checkin.device_id):
+            ms.append_audit(actor="checkin", action="device.refused", entity_type="device",
+                            entity_id=checkin.device_id,
+                            data={"reason": "device_limit", "product_id": checkin.product_id},
+                            account_id=account_id)
+        return nothing
     cohort = existing["cohort"] if existing else "__default__"
     ro, rel, offered, manifest_url = _decide(st, checkin, cohort, existing, account_id)
     _account(ms, ro, rel, checkin, existing, offered)
