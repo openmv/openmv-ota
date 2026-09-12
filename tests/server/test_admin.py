@@ -528,6 +528,17 @@ def test_token_management_api(tmp_path):
     # audited under the token's account (the caller is an operator with no account)
     assert [(e["action"], e["entity_id"]) for e in store.read_audit(account_id="acctA")] \
         == [("token.issue", th)]
+    ev = store.read_audit(account_id="acctA")[0]
+    assert ev["actor"] == "ci" and "via" not in ev["data"]             # the operator itself
+    # on a person's behalf (a web console): actor is the person, via is the operator
+    hinted = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                    json={"name": "for-kwabena", "actor": "kwabena"}).json()["token_hash"]
+    ev = next(e for e in store.read_audit(account_id="acctA") if e["entity_id"] == hinted)
+    assert ev["actor"] == "kwabena" and ev["data"]["via"] == "ci"
+    assert c.post("/api/v1/admin/tokens/%s/revoke" % hinted, headers=AUTH,
+                  json={"actor": "kwabena"}).json()["revoked"] is True
+    ev = [e for e in store.read_audit(account_id="acctA") if e["action"] == "token.revoke"][-1]
+    assert ev["actor"] == "kwabena" and ev["data"] == {"name": "for-kwabena", "via": "ci"}
     # explicit scopes, a bad scope, and a missing account
     assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                   json={"name": "ro", "scopes": ["observe"]}).json()["scopes"] == ["observe"]
@@ -546,7 +557,7 @@ def test_token_management_api(tmp_path):
                   json={"name": "x"}).status_code == 404
     # list is metadata only -- never the secret
     toks = c.get("/api/v1/admin/accounts/acctA/tokens", headers=AUTH).json()["tokens"]
-    assert len(toks) == 3 and all("token" not in t for t in toks)
+    assert len(toks) == 4 and all("token" not in t for t in toks)
     ops = next(x for x in toks if x["name"] == "ops")["token_hash"]
     assert c.post("/api/v1/admin/tokens/%s/revoke" % ops, headers=AUTH).status_code == 200
     assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
@@ -567,7 +578,10 @@ def test_token_rotate_api(tmp_path):
     c = TestClient(app)
     th = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                 json={"name": "ci", "scopes": ["manage"]}).json()["token_hash"]
-    new = c.post("/api/v1/admin/tokens/%s/rotate" % th, headers=AUTH).json()
+    new = c.post("/api/v1/admin/tokens/%s/rotate" % th, headers=AUTH,
+                 json={"actor": "kwabena"}).json()
+    rot = [e for e in store.read_audit(account_id="acctA") if e["action"] == "token.rotate"][-1]
+    assert rot["actor"] == "kwabena" and rot["data"]["via"] == "ci"
     assert new["token"] and new["scopes"] == ["manage", "observe"] and new["account_id"] == "acctA"
     assert new["token_hash"] != th
     assert store.get_token(th)["revoked"] == 1                  # old revoked

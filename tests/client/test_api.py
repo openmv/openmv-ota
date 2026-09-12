@@ -212,6 +212,13 @@ def test_token_calls():
     assert c.calls[2][:2] == ("GET", "/api/v1/admin/accounts/acctA/tokens")
     assert c.calls[3][:2] == ("POST", "/api/v1/admin/tokens/th/revoke")
     assert c.calls[4][:2] == ("POST", "/api/v1/admin/tokens/th/rotate")
+    assert "json" not in c.calls[3][2] and "json" not in c.calls[4][2]
+    # on someone's behalf: the actor hint rides in the body
+    api.issue_token("acctA", "ci", actor="kwabena")
+    api.revoke_token("th", actor="kwabena")
+    api.rotate_token("th", actor="kwabena")
+    assert c.calls[5][2]["json"] == {"name": "ci", "actor": "kwabena"}
+    assert c.calls[6][2]["json"] == {"actor": "kwabena"} and c.calls[7][2]["json"] == {"actor": "kwabena"}
 
 
 def test_empty_body_returns_empty_dict():

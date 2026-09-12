@@ -236,16 +236,31 @@ def activate_account(account_id: str, request: Request,
 class TokenIssue(BaseModel):
     name: str
     scopes: list[str] | None = None        # default: the worker set (publish/manage/observe)
+    actor: str | None = None
+    """Who is really doing this, for the audit log, when an operator credential acts on a
+    person's behalf (a web console). The operator's own name is kept as ``via``."""
 
 
-def _mint(ms, principal, name, scopes, account_id, action, extra=None):
+class TokenActor(BaseModel):
+    actor: str | None = None               # same as TokenIssue.actor, for revoke/rotate
+
+
+def _audit_actor(principal, hint):
+    """(actor, extra): the person named by ``hint`` acting via the operator, else the operator."""
+    if hint:
+        return hint, {"via": principal.name}
+    return principal.name, {}
+
+
+def _mint(ms, principal, name, scopes, account_id, action, extra=None, actor=None):
     token = secrets.token_urlsafe(32)
     th = hash_token(token)
     ms.add_token(th, name, scopes, account_id=account_id)
+    who, via = _audit_actor(principal, actor)
     # Recorded under the TOKEN's account, not the caller's: tokens are minted by an operator
     # credential (account "" ), and the tenant is who needs to see it in their audit log.
-    ms.append_audit(actor=principal.name, action=action, entity_type="token", entity_id=th,
-                    data={"account_id": account_id, "name": name, **(extra or {})},
+    ms.append_audit(actor=who, action=action, entity_type="token", entity_id=th,
+                    data={"account_id": account_id, "name": name, **via, **(extra or {})},
                     account_id=account_id)
     return {"token_hash": th, "name": name, "scopes": scopes, "account_id": account_id, "token": token}
 
@@ -272,7 +287,8 @@ def issue_token(account_id: str, body: TokenIssue, request: Request,
         raise HTTPException(status_code=400, detail="unknown scope(s): %s" % ", ".join(bad))
     if ms.token_name_in_use(account_id, body.name):
         raise HTTPException(status_code=409, detail="token name already in use: %s" % body.name)
-    return _mint(ms, principal, body.name, expand(scopes), account_id, "token.issue")
+    return _mint(ms, principal, body.name, expand(scopes), account_id, "token.issue",
+                 actor=body.actor)
 
 
 @admin.get("/accounts/{account_id}/tokens", responses={200: {"model": TokenList}})
@@ -285,21 +301,22 @@ def list_account_tokens(account_id: str, request: Request,
 
 
 @admin.post("/tokens/{token_hash}/revoke", responses={200: {"model": TokenRevoked}})
-def revoke_token(token_hash: str, request: Request,
+def revoke_token(token_hash: str, request: Request, body: TokenActor | None = None,
                  principal: Principal = Depends(require_scope("accounts"))):
     ms = request.app.state.metastore
     old = ms.get_token(token_hash)
     if old is None:
         raise HTTPException(status_code=404)
     ms.revoke_token(token_hash)
-    ms.append_audit(actor=principal.name, action="token.revoke", entity_type="token",
-                    entity_id=token_hash, data={"name": old["name"]},
+    who, via = _audit_actor(principal, body.actor if body else None)
+    ms.append_audit(actor=who, action="token.revoke", entity_type="token",
+                    entity_id=token_hash, data={"name": old["name"], **via},
                     account_id=old["account_id"])                # the token's account, see _mint
     return {"token_hash": token_hash, "revoked": True}
 
 
 @admin.post("/tokens/{token_hash}/rotate", responses={200: {"model": TokenIssued}})
-def rotate_token(token_hash: str, request: Request,
+def rotate_token(token_hash: str, request: Request, body: TokenActor | None = None,
                  principal: Principal = Depends(require_scope("accounts"))):
     """Issue a replacement (same name/scopes/account) and revoke the old one -- the recovery path
     for a lost/leaked token. Returns the new secret once."""
@@ -309,7 +326,7 @@ def rotate_token(token_hash: str, request: Request,
         raise HTTPException(status_code=404)
     _active_account(ms, old["account_id"])                     # can't rotate into a deactivated account
     fresh = _mint(ms, principal, old["name"], expand(old["scopes"]), old["account_id"], "token.rotate",
-                  extra={"replaced": token_hash})
+                  extra={"replaced": token_hash}, actor=body.actor if body else None)
     ms.revoke_token(token_hash)
     return fresh
 

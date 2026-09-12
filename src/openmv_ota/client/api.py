@@ -234,20 +234,26 @@ class Api:
     def activate_account(self, account_id):
         return self._req("POST", "/api/v1/admin/accounts/%s/activate" % account_id)
 
-    def issue_token(self, account_id, name, scopes=None):
+    def issue_token(self, account_id, name, scopes=None, actor=None):
+        """``actor``: the person this is done for, recorded as the audit actor (an operator
+        acting on someone's behalf); omitted, the token's own name is the actor."""
         body = {"name": name}
         if scopes is not None:
             body["scopes"] = scopes
+        if actor:
+            body["actor"] = actor
         return self._req("POST", "/api/v1/admin/accounts/%s/tokens" % account_id, json=body)
 
     def list_account_tokens(self, account_id):
         return self._req("GET", "/api/v1/admin/accounts/%s/tokens" % account_id)
 
-    def revoke_token(self, token_hash):
-        return self._req("POST", "/api/v1/admin/tokens/%s/revoke" % token_hash)
+    def revoke_token(self, token_hash, actor=None):
+        return self._req("POST", "/api/v1/admin/tokens/%s/revoke" % token_hash,
+                         **({"json": {"actor": actor}} if actor else {}))
 
-    def rotate_token(self, token_hash):
-        return self._req("POST", "/api/v1/admin/tokens/%s/rotate" % token_hash)
+    def rotate_token(self, token_hash, actor=None):
+        return self._req("POST", "/api/v1/admin/tokens/%s/rotate" % token_hash,
+                         **({"json": {"actor": actor}} if actor else {}))
 
     def pin_cohort(self, product_id, cohort, release_id):
         return self._req("POST", "/api/v1/admin/cohorts/pin",
