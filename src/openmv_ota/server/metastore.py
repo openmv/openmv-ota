@@ -974,6 +974,13 @@ class SqlMetadataStore:
             r["scopes"] = r["scopes"].split(",") if r["scopes"] else []
         return r
 
+    def token_name_in_use(self, account_id: str, name: str) -> bool:
+        """Whether an account already has a LIVE token called ``name`` (revoked ones free the
+        name). Names are what the audit log records as the actor, so two live tokens with
+        one name would be indistinguishable there."""
+        return self.query_one("SELECT 1 FROM admin_tokens WHERE account_id = ? AND name = ? "
+                              "AND revoked = 0", (account_id, name)) is not None
+
     def revoke_token(self, token_hash: str) -> None:
         self.execute("UPDATE admin_tokens SET revoked = 1 WHERE token_hash = ?", (token_hash,))
 

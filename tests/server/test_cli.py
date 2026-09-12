@@ -129,8 +129,13 @@ def test_token_issue_list_revoke(tmp_path, monkeypatch, capsys):
     assert main(["server", "token", "list"]) == 0
     listed = capsys.readouterr().out
     assert thash[:16] in listed and "ci" in listed and "publish" in listed
+    # a live name can't be reused
+    assert main(["server", "token", "issue", "--name", "ci"]) == 2
+    assert "already in use" in capsys.readouterr().err
     assert main(["server", "token", "revoke", thash]) == 0
     assert "revoked" in capsys.readouterr().out
+    assert main(["server", "token", "issue", "--name", "ci"]) == 0   # freed by the revoke
+    capsys.readouterr()
     s2 = _store(tmp_path)
     assert s2.get_token(thash)["revoked"] == 1
     s2.close()

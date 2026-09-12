@@ -268,6 +268,8 @@ def issue_token(account_id: str, body: TokenIssue, request: Request,
     bad = [s for s in scopes if s not in ALL_SCOPES]
     if bad:
         raise HTTPException(status_code=400, detail="unknown scope(s): %s" % ", ".join(bad))
+    if ms.token_name_in_use(account_id, body.name):
+        raise HTTPException(status_code=409, detail="token name already in use: %s" % body.name)
     return _mint(ms, principal, body.name, expand(scopes), account_id, "token.issue")
 
 

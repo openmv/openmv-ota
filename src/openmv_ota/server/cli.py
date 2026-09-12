@@ -123,6 +123,10 @@ def cmd_token_issue(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     from .auth import hash_token
+    if store.token_name_in_use(args.account_id, args.name):
+        store.close()
+        print("error: token name already in use: %s" % args.name, file=sys.stderr)
+        return 2
     token = secrets.token_urlsafe(32)
     store.add_token(hash_token(token), args.name, expand(args.scope or SCOPES),
                     account_id=args.account_id)

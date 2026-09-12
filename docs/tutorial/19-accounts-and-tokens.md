@@ -99,8 +99,9 @@ token 3f2a9c1e77d0b4a8 issued for acct_7bd21c50e83a94f1
 token (store it now -- not recoverable): xK9pW2qL5mR8tV1zC4nB7dF0gJ3hS6yA_eU2iO5rT8wQ
 ```
 
-The secret is shown **once** — the server stores only a hash, so `list` shows
-metadata and hashes, never secrets. The hash is the id you revoke or rotate by:
+A name is unique among an account's live tokens (it is what the audit log records as
+the actor); revoking a token frees its name. The secret is shown **once** — the server
+stores only a hash, so `list` shows metadata and hashes, never secrets. The hash is the id you revoke or rotate by:
 
 ```
 $ openmv-ota client token list --account-id acct_7bd21c50e83a94f1

@@ -531,6 +531,12 @@ def test_token_management_api(tmp_path):
     # the ladder: naming a rung stores the rungs below it too
     assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                   json={"name": "ops", "scopes": ["manage"]}).json()["scopes"] == ["manage", "observe"]
+    # names are unique among an account's LIVE tokens (the audit actor); revoking frees one
+    dup = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH, json={"name": "ops"})
+    assert dup.status_code == 409 and "ops" in dup.json()["detail"]
+    store.add_account("acctB", "B")
+    assert c.post("/api/v1/admin/accounts/acctB/tokens", headers=AUTH,
+                  json={"name": "ops"}).status_code == 200          # other account: fine
     assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                   json={"name": "x", "scopes": ["god"]}).status_code == 400
     assert c.post("/api/v1/admin/accounts/ghost/tokens", headers=AUTH,
@@ -538,6 +544,10 @@ def test_token_management_api(tmp_path):
     # list is metadata only -- never the secret
     toks = c.get("/api/v1/admin/accounts/acctA/tokens", headers=AUTH).json()["tokens"]
     assert len(toks) == 3 and all("token" not in t for t in toks)
+    ops = next(x for x in toks if x["name"] == "ops")["token_hash"]
+    assert c.post("/api/v1/admin/tokens/%s/revoke" % ops, headers=AUTH).status_code == 200
+    assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                  json={"name": "ops"}).status_code == 200          # name freed by the revoke
     assert c.get("/api/v1/admin/accounts/ghost/tokens", headers=AUTH).status_code == 404
     # revoke
     assert c.post("/api/v1/admin/tokens/%s/revoke" % th, headers=AUTH).json()["revoked"] is True
