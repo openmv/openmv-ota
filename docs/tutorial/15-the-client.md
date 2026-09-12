@@ -22,15 +22,17 @@ server issues its own.
 defaults to the OpenMV-hosted service, so out of the box only the token is needed:
 
 ```
-$ openmv-ota client login --token <admin-token>
+$ openmv-ota client login
+token: <paste it; nothing is echoed>
 saved /home/you/.config/openmv-ota/client.toml
 
 $ openmv-ota client logout
 removed /home/you/.config/openmv-ota/client.toml
 ```
 
-The token can also arrive on stdin or from `OPENMV_OTA_TOKEN`, so it never has to appear
-in shell history. Every verb resolves its credentials the same way:
+At a terminal `login` prompts for the token and hides what you paste, so the secret
+never lands in shell history. It can also arrive as `--token`, on stdin (a pipe), or from
+`OPENMV_OTA_TOKEN`. Every verb resolves its credentials the same way:
 
 | source | when it wins |
 |---|---|

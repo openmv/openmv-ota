@@ -70,7 +70,8 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_login.add_argument("--server",
                          help="server base URL (else OPENMV_OTA_SERVER; default: %s)"
                               % config.DEFAULT_SERVER_URL)
-    p_login.add_argument("--token", help="admin API token (else OPENMV_OTA_TOKEN, else stdin)")
+    p_login.add_argument("--token", help="admin API token (else OPENMV_OTA_TOKEN, else prompted "
+                                          "at a terminal / read from stdin)")
     p_login.add_argument("--json", action="store_true",
                          help="print the saved profile as JSON instead of a summary")
     p_login.set_defaults(func=cmd_login, _command="client login")
@@ -400,9 +401,18 @@ def cmd_login(args: argparse.Namespace) -> int:
     # would not take it -- and a fresh pip install has neither, which is what the
     # hosted default is for.
     server = args.server or os.environ.get("OPENMV_OTA_SERVER") or config.DEFAULT_SERVER_URL
-    token = args.token or os.environ.get("OPENMV_OTA_TOKEN") or sys.stdin.readline().strip()
+    token = args.token or os.environ.get("OPENMV_OTA_TOKEN")
     if not token:
-        print("error: no token (pass --token, set OPENMV_OTA_TOKEN, or pipe it on stdin)",
+        # No flag, no env: prompt (hidden) at a terminal, else read one line from stdin.
+        # Either way the secret stays out of shell history and the process list.
+        if sys.stdin.isatty():
+            import getpass
+            token = getpass.getpass("token: ").strip()
+        else:
+            token = sys.stdin.readline().strip()
+    if not token:
+        print("error: no token (paste it at the prompt, pass --token, set OPENMV_OTA_TOKEN, "
+              "or pipe it on stdin)",
               file=sys.stderr)
         return 2
     # login/logout are LOCAL (they write the saved profile, they do not call the API), but they

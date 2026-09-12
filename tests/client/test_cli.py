@@ -35,6 +35,21 @@ def test_login_token_from_stdin(tmp_path, monkeypatch):
     assert config.load().token == "stdintok"
 
 
+def test_login_prompts_hidden_at_a_terminal(tmp_path, monkeypatch, capsys):
+    """No flag, no env, stdin is a TTY: a hidden getpass prompt, so the secret never lands
+    in shell history (the website's 'use it' snippet relies on this)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENMV_OTA_TOKEN", raising=False)
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+    monkeypatch.setattr("sys.stdin", Tty("not-read\n"))
+    monkeypatch.setattr("getpass.getpass", lambda prompt: " prompted-tok \n")
+    assert main(["client", "login", "--server", "https://ota"]) == 0
+    assert config.load().token == "prompted-tok"
+
+
 def test_login_no_token_errors(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("OPENMV_OTA_TOKEN", raising=False)
