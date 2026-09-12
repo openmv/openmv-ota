@@ -242,9 +242,11 @@ def _mint(ms, principal, name, scopes, account_id, action, extra=None):
     token = secrets.token_urlsafe(32)
     th = hash_token(token)
     ms.add_token(th, name, scopes, account_id=account_id)
+    # Recorded under the TOKEN's account, not the caller's: tokens are minted by an operator
+    # credential (account "" ), and the tenant is who needs to see it in their audit log.
     ms.append_audit(actor=principal.name, action=action, entity_type="token", entity_id=th,
                     data={"account_id": account_id, "name": name, **(extra or {})},
-                    account_id=principal.account_id)
+                    account_id=account_id)
     return {"token_hash": th, "name": name, "scopes": scopes, "account_id": account_id, "token": token}
 
 
@@ -286,11 +288,13 @@ def list_account_tokens(account_id: str, request: Request,
 def revoke_token(token_hash: str, request: Request,
                  principal: Principal = Depends(require_scope("accounts"))):
     ms = request.app.state.metastore
-    if ms.get_token(token_hash) is None:
+    old = ms.get_token(token_hash)
+    if old is None:
         raise HTTPException(status_code=404)
     ms.revoke_token(token_hash)
     ms.append_audit(actor=principal.name, action="token.revoke", entity_type="token",
-                    entity_id=token_hash, account_id=principal.account_id)
+                    entity_id=token_hash, data={"name": old["name"]},
+                    account_id=old["account_id"])                # the token's account, see _mint
     return {"token_hash": token_hash, "revoked": True}
 
 

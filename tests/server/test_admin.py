@@ -525,6 +525,9 @@ def test_token_management_api(tmp_path):
     assert body["scopes"] == ["publish", "manage", "observe"] and body["account_id"] == "acctA"
     th = body["token_hash"]
     assert body["token"] and store.get_token(th)["account_id"] == "acctA"
+    # audited under the token's account (the caller is an operator with no account)
+    assert [(e["action"], e["entity_id"]) for e in store.read_audit(account_id="acctA")] \
+        == [("token.issue", th)]
     # explicit scopes, a bad scope, and a missing account
     assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                   json={"name": "ro", "scopes": ["observe"]}).json()["scopes"] == ["observe"]
@@ -552,6 +555,9 @@ def test_token_management_api(tmp_path):
     # revoke
     assert c.post("/api/v1/admin/tokens/%s/revoke" % th, headers=AUTH).json()["revoked"] is True
     assert store.get_token(th)["revoked"] == 1
+    assert [(e["action"], e["data"]["name"]) for e in store.read_audit(account_id="acctA")
+            if e["action"] == "token.revoke" and e["entity_id"] == th] \
+        == [("token.revoke", "ci")]                              # also under the token's account
     assert c.post("/api/v1/admin/tokens/ghosthash/revoke", headers=AUTH).status_code == 404
 
 
