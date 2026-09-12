@@ -82,10 +82,16 @@ account acct_7bd21c50e83a94f1 activated
 
 ## Tokens and scopes
 
-A token acts for one account and carries **scopes** — `publish` (publish releases),
-`manage` (rollouts, cohorts, pins, binds), `observe` (read everything), and the
-operator scope `accounts`. `issue` defaults to the worker set (publish, manage,
-observe); give a CI machine only what it needs:
+A token acts for one account and carries **scopes**, which form a ladder — each rung
+includes the ones below it:
+
+- `observe` — read everything
+- `manage` — observe, plus rollouts, cohorts, pins, binds
+- `publish` — manage, plus publishing releases
+
+Name the highest rung you need; the server fills in the rest (a `publish` token is
+stored, listed, and checked as `publish, manage, observe`). `accounts` is the separate
+operator scope. `issue` defaults to the top rung; give a CI machine only what it needs:
 
 ```
 $ openmv-ota client token issue --account-id acct_7bd21c50e83a94f1 --name ci --scope publish

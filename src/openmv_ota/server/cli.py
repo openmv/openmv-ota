@@ -16,7 +16,7 @@ import secrets
 import sys
 
 from .errors import ServerError
-from .scopes import ALL_SCOPES, SCOPES
+from .scopes import ALL_SCOPES, SCOPES, expand
 
 
 def register(parser: argparse.ArgumentParser) -> None:
@@ -41,7 +41,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_ti = tsub.add_parser("issue", help="mint a scoped admin token (printed once)")
     p_ti.add_argument("--name", required=True, help="label for the token, e.g. ci")
     p_ti.add_argument("--scope", action="append", default=[], choices=ALL_SCOPES,
-                      help="repeatable; default: all scopes")
+                      help="the highest rung (implies the ones below); default: all scopes")
     p_ti.add_argument("--account-id", default="",
                       help="account this token acts for (default: the implicit '' account)")
     p_ti.set_defaults(func=cmd_token_issue, _command="server token issue")
@@ -124,7 +124,7 @@ def cmd_token_issue(args: argparse.Namespace) -> int:
         return e.exit_code
     from .auth import hash_token
     token = secrets.token_urlsafe(32)
-    store.add_token(hash_token(token), args.name, args.scope or list(SCOPES),
+    store.add_token(hash_token(token), args.name, expand(args.scope or SCOPES),
                     account_id=args.account_id)
     store.close()
     print("token issued (store it now -- it is not recoverable):", file=sys.stderr)

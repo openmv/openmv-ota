@@ -29,7 +29,7 @@ def _req(auth, header=""):
 
 def test_authenticate_valid():
     p = TokenAuth(_store(("publish", "observe"))).authenticate("Bearer secret-token")
-    assert p.name == "ci" and set(p.scopes) == {"publish", "observe"}
+    assert p.name == "ci" and set(p.scopes) == {"publish", "manage", "observe"}   # ladder-expanded
 
 
 def test_authenticate_missing_or_wrong_scheme():
@@ -64,3 +64,21 @@ def test_require_scope_missing():
 
 def test_scopes_constant():
     assert SCOPES == ("publish", "manage", "observe")
+
+
+def test_scope_ladder_implies_lower_rungs():
+    """publish > manage > observe: a token satisfies every check at or below its rung, and
+    authenticate() reports the expanded set (so legacy publish-only tokens read too)."""
+    from openmv_ota.server.scopes import expand
+    assert expand(["publish"]) == ["publish", "manage", "observe"]
+    assert expand(["manage"]) == ["manage", "observe"]
+    assert expand(["observe"]) == ["observe"]
+    assert expand(["accounts"]) == ["accounts"]
+    assert expand(["observe", "accounts", "manage"]) == ["manage", "observe", "accounts"]
+    assert expand([]) == []
+    p = require_scope("observe")(_req(TokenAuth(_store(("manage",))), "Bearer secret-token"))
+    assert p.scopes == ["manage", "observe"]
+    assert require_scope("manage")(_req(TokenAuth(_store(("publish",))), "Bearer secret-token"))
+    with pytest.raises(HTTPException) as e:
+        require_scope("publish")(_req(TokenAuth(_store(("manage",))), "Bearer secret-token"))
+    assert e.value.status_code == 403

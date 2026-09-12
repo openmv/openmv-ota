@@ -338,7 +338,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     # prompt. scopes.py is dependency-free precisely so the client can import it on a base
     # install -- it just was not doing so.
     p_tki.add_argument("--scope", action="append", default=[], choices=ALL_SCOPES,
-                       help="repeatable; default: the worker scopes (%s)" % ", ".join(SCOPES))
+                       help="the highest rung, implying the ones below (%s); default: all" % " > ".join(SCOPES))
     _creds(p_tki)
     p_tki.set_defaults(func=cmd_token, _command="client token issue", action="issue")
     p_tkl = tksub.add_parser("list", help="list an account's tokens (metadata only, no secrets)")

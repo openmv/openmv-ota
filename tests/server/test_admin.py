@@ -528,13 +528,16 @@ def test_token_management_api(tmp_path):
     # explicit scopes, a bad scope, and a missing account
     assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                   json={"name": "ro", "scopes": ["observe"]}).json()["scopes"] == ["observe"]
+    # the ladder: naming a rung stores the rungs below it too
+    assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                  json={"name": "ops", "scopes": ["manage"]}).json()["scopes"] == ["manage", "observe"]
     assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                   json={"name": "x", "scopes": ["god"]}).status_code == 400
     assert c.post("/api/v1/admin/accounts/ghost/tokens", headers=AUTH,
                   json={"name": "x"}).status_code == 404
     # list is metadata only -- never the secret
     toks = c.get("/api/v1/admin/accounts/acctA/tokens", headers=AUTH).json()["tokens"]
-    assert len(toks) == 2 and all("token" not in t for t in toks)
+    assert len(toks) == 3 and all("token" not in t for t in toks)
     assert c.get("/api/v1/admin/accounts/ghost/tokens", headers=AUTH).status_code == 404
     # revoke
     assert c.post("/api/v1/admin/tokens/%s/revoke" % th, headers=AUTH).json()["revoked"] is True
@@ -549,7 +552,7 @@ def test_token_rotate_api(tmp_path):
     th = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                 json={"name": "ci", "scopes": ["manage"]}).json()["token_hash"]
     new = c.post("/api/v1/admin/tokens/%s/rotate" % th, headers=AUTH).json()
-    assert new["token"] and new["scopes"] == ["manage"] and new["account_id"] == "acctA"
+    assert new["token"] and new["scopes"] == ["manage", "observe"] and new["account_id"] == "acctA"
     assert new["token_hash"] != th
     assert store.get_token(th)["revoked"] == 1                  # old revoked
     assert store.get_token(new["token_hash"])["revoked"] == 0   # replacement live
@@ -879,7 +882,7 @@ def test_viewer_grant_returns_watch_and_read_urls(tmp_path):
 
 
 def test_viewer_grant_needs_the_observe_scope(tmp_path):
-    app, store = _live_app(tmp_path, scopes=("publish",))
+    app, store = _live_app(tmp_path, scopes=("accounts",))     # off the ladder: no observe
     _seed_device(store)
     r = TestClient(app).post("/api/v1/admin/devices/dev1/viewer-grant", headers=AUTH)
     assert r.status_code == 403
@@ -942,7 +945,7 @@ def test_release_detail_returns_the_release(tmp_path):
 
 
 def test_detail_reads_need_observe_scope(tmp_path):
-    app, store = _app(tmp_path, scopes=("manage",))
+    app, store = _app(tmp_path, scopes=("accounts",))          # off the ladder: no observe
     store.upsert_device(device_id="d1", product_id=BID)
     _seed_release(store)
     c = TestClient(app)

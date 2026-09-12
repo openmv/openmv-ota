@@ -8,7 +8,8 @@ Everything the `client` verb does is a call to this API — so anything the CLI 
 your scripts, CI, and dashboards can do too.
 
 Requests carry `Authorization: Bearer <token>`. A token belongs to an **account** and
-carries **scopes** (`publish`, `manage`, `observe`, `accounts`); every read and write
+carries **scopes** (`publish` > `manage` > `observe`, each including the rungs below
+it, plus the operator scope `accounts`); every read and write
 is scoped to the token's account, and anything belonging to another account answers
 **404** — indistinguishable from "doesn't exist", so the API can't be used to probe
 other tenants.

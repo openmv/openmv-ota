@@ -123,7 +123,7 @@ def test_token_issue_list_revoke(tmp_path, monkeypatch, capsys):
     assert token and "store it now" in out.err
     s = _store(tmp_path)
     t = s.get_token(hash_token(token))
-    assert t["name"] == "ci" and t["scopes"] == ["publish"]
+    assert t["name"] == "ci" and t["scopes"] == ["publish", "manage", "observe"]   # the ladder
     thash = t["token_hash"]
     s.close()
     assert main(["server", "token", "list"]) == 0

@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
-# Flat operation names -- a token's scope list reads like a to-do list of what it can do:
-# publish  -> publish releases
-# manage   -> all fleet changes: rollouts (create/raise/pause/stop), cohorts, pins, device binds
+# Operation names, and a LADDER -- each rung includes the ones below it:
 # observe  -> read everything (fleet, releases, rollouts, devices, audit)
-# These are the per-account operations; an account's tokens carry (a subset of) them.
+# manage   -> observe, plus all fleet changes: rollouts (create/raise/pause/stop), cohorts,
+#             pins, device binds
+# publish  -> manage, plus publishing releases
+# A token names its highest rung (the API still takes a list); ``expand`` fills in the
+# implied rungs, so a "publish" token can also list the releases it just published.
 SCOPES = ("publish", "manage", "observe")
+LADDER = ("observe", "manage", "publish")
+
+
+def expand(scopes) -> list[str]:
+    """The closure of ``scopes`` down the ladder, in SCOPES order; other scopes (``accounts``)
+    pass through unchanged."""
+    top = max((LADDER.index(s) for s in scopes if s in LADDER), default=-1)
+    implied = [s for s in SCOPES if LADDER.index(s) <= top]
+    return implied + [s for s in scopes if s not in LADDER]
 
 # accounts is a *privileged operator* scope -- it mints/lists accounts, so it is NOT part of the
 # per-account default set (an account admin must not be able to create other accounts). Only the

@@ -47,7 +47,7 @@ from .schemas import (
     TokenRevoked,
     ViewerGrant,
 )
-from .scopes import ALL_SCOPES, SCOPES
+from .scopes import ALL_SCOPES, SCOPES, expand
 
 admin = APIRouter(prefix="/api/v1/admin")
 
@@ -268,7 +268,7 @@ def issue_token(account_id: str, body: TokenIssue, request: Request,
     bad = [s for s in scopes if s not in ALL_SCOPES]
     if bad:
         raise HTTPException(status_code=400, detail="unknown scope(s): %s" % ", ".join(bad))
-    return _mint(ms, principal, body.name, scopes, account_id, "token.issue")
+    return _mint(ms, principal, body.name, expand(scopes), account_id, "token.issue")
 
 
 @admin.get("/accounts/{account_id}/tokens", responses={200: {"model": TokenList}})
@@ -302,7 +302,7 @@ def rotate_token(token_hash: str, request: Request,
     if old is None:
         raise HTTPException(status_code=404)
     _active_account(ms, old["account_id"])                     # can't rotate into a deactivated account
-    fresh = _mint(ms, principal, old["name"], old["scopes"], old["account_id"], "token.rotate",
+    fresh = _mint(ms, principal, old["name"], expand(old["scopes"]), old["account_id"], "token.rotate",
                   extra={"replaced": token_hash})
     ms.revoke_token(token_hash)
     return fresh
