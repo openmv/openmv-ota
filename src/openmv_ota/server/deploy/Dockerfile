@@ -15,5 +15,7 @@ RUN useradd --create-home --uid 10001 app
 USER app
 # Render/Fly inject $PORT; server run binds it (falls back to 8080). `init` is idempotent.
 ENV PORT=8080
+# init's progress (migrations, lock hygiene) shows in the platform log as it happens
+ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 CMD ["sh", "-c", "openmv-ota server init && openmv-ota server run --host 0.0.0.0 --port ${PORT}"]

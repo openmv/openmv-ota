@@ -89,3 +89,67 @@ def test_build_metastore_postgres_dispatches(monkeypatch):
 def test_build_metastore_unsupported_url():
     with pytest.raises(ServerError, match="unsupported database_url"):
         build_metastore(_settings(database_url="mysql://x"))
+
+
+class _Recorder:
+    """A DBAPI-shaped connection that records every statement and commit, answering the
+    Postgres-only lock-hygiene query with a canned count."""
+
+    def __init__(self, idle=0):
+        self.sql, self.commits, self.idle = [], 0, idle
+
+    def cursor(self):
+        rec = self
+
+        class Cur:
+            rowcount = 0
+
+            def execute(self, sql, params=()):
+                rec.sql.append(sql)
+
+            def fetchone(self):
+                if "pg_stat_activity" in rec.sql[-1]:
+                    return {"n": rec.idle}
+                return {"value": None} if "FROM meta" in rec.sql[-1] else None
+
+            def fetchall(self):
+                return []
+        return Cur()
+
+    def commit(self):
+        self.commits += 1
+
+    def close(self):
+        pass
+
+
+def test_reads_end_their_transaction():
+    """A SELECT must not leave the connection idle-in-transaction (on Postgres that holds
+    a share lock forever and blocks the next deploy's schema change)."""
+    conn = _Recorder()
+    s = PostgresMetadataStore("postgresql://x", connect=lambda: conn)
+    s.query_one("SELECT 1")
+    s.query_all("SELECT 1")
+    assert conn.commits == 2
+
+
+def test_postgres_migrate_clears_blockers_and_caps_the_lock_wait(monkeypatch, capsys):
+    monkeypatch.setattr(ms, "_MIGRATIONS", [["CREATE TABLE t1 (id INTEGER)"]])
+    conn = _Recorder(idle=2)
+    s = PostgresMetadataStore("postgresql://x", connect=lambda: conn)
+    assert s.migrate() == 1
+    joined = "\n".join(conn.sql)
+    i_kill, i_cap, i_ddl, i_reset = (joined.index("pg_terminate_backend"),
+                                     joined.index("SET lock_timeout = '30s'"),
+                                     joined.index("CREATE TABLE t1"),
+                                     joined.index("RESET lock_timeout"))
+    assert i_kill < i_cap < i_ddl < i_reset                  # hygiene, cap, DDL, restore
+    assert "idle in transaction" in joined and "pid <> pg_backend_pid()" in joined
+    assert "ended 2 idle-in-transaction" in capsys.readouterr().err
+    # nothing pending: no hygiene, no lock games -- token ops call migrate() routinely
+    conn2 = _Recorder(idle=5)
+    s2 = PostgresMetadataStore("postgresql://x", connect=lambda: conn2)
+    monkeypatch.setattr(ms, "_MIGRATIONS", [])
+    s2.migrate()
+    assert not any("pg_terminate_backend" in q or "lock_timeout" in q for q in conn2.sql)
+    assert "ended" not in capsys.readouterr().err

@@ -135,7 +135,10 @@ The [deploy/](../../src/openmv_ota/server/deploy/) directory ships turnkey artif
 - **`Dockerfile`** — multi-stage build; the entrypoint runs `server init` (idempotent)
   then `server run`. This is the whole deployment story: any platform that runs a
   container image can host the server — bring a Postgres, an S3-compatible bucket, and
-  the settings above.
+  the settings above. On Postgres, a schema change first ends any connection of the
+  database left idle in a transaction (a stale share lock would block the migration, and
+  the deploy, silently) and waits at most 30 s for its lock, so a blocked migration fails
+  in the log instead of hanging.
 - **`docker-compose.yml`** — a full local stack (server + Postgres + MinIO) for
   evaluation: `SWD_IDS_VERIFY_URL=… SWD_IDS_VERIFY_TOKEN=… docker compose up --build`.
 

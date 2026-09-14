@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import threading
 from datetime import datetime, timezone
 
@@ -273,26 +274,39 @@ class SqlMetadataStore:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(self._sql(sql), params)
-            return cur.fetchone()
+            row = cur.fetchone()
+            self._conn.commit()          # a read ends its transaction: no lock outlives it
+            return row
 
     def query_all(self, sql: str, params: tuple = ()) -> list:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(self._sql(sql), params)
-            return list(cur.fetchall())
+            rows = list(cur.fetchall())
+            self._conn.commit()          # (a DBAPI connection opens one on the first statement)
+            return rows
 
     def migrate(self) -> int:
         """Create the ``meta`` table and apply any migrations past the recorded ``schema_version``.
         Returns the resulting schema version. Idempotent."""
         self.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         current = int(self.get_meta("schema_version") or 0)
-        for version, statements in enumerate(_MIGRATIONS, start=1):
-            if version > current:
+        pending = [(v, s) for v, s in enumerate(_MIGRATIONS, start=1) if v > current]
+        if pending:
+            self._before_migrations()
+            for version, statements in pending:
                 for stmt in statements:
                     self.execute(stmt)
                 current = version
+            self._after_migrations()
         self.set_meta("schema_version", str(current))
         return current
+
+    def _before_migrations(self) -> None:
+        """Backend hook run once before pending migrations apply (Postgres: lock hygiene)."""
+
+    def _after_migrations(self) -> None:
+        """Backend hook run once after pending migrations applied."""
 
     def get_meta(self, key: str) -> str | None:
         row = self.query_one("SELECT value FROM meta WHERE key = ?", (key,))
@@ -1086,6 +1100,30 @@ class PostgresMetadataStore(SqlMetadataStore):
 
     def __init__(self, dsn: str, connect=None):
         super().__init__((connect or self._default_connect(dsn))())
+
+    # A schema change takes an exclusive table lock. A connection that read the table
+    # and never ended its transaction ("idle in transaction" -- what this store's reads
+    # did before 2026-09-13, and what any leaked client transaction does) holds a share
+    # lock indefinitely, and the migration -- so the deploy -- waits behind it forever
+    # with nothing in the log. Two guards: clear such backends of THIS database first
+    # (same role, so permitted; only ones idle for a while, never a transaction in
+    # flight), then cap the lock wait so a still-blocked migration fails loudly.
+    _STALE_IDLE = "5 seconds"
+    _LOCK_TIMEOUT = "30s"
+
+    def _before_migrations(self) -> None:
+        n = self.query_one(
+            "SELECT COUNT(*) AS n FROM (SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+            "AND state = 'idle in transaction' "
+            "AND state_change < now() - interval '%s') AS t" % self._STALE_IDLE)["n"]
+        if n:
+            print("migrate: ended %d idle-in-transaction connection(s) holding locks" % n,
+                  file=sys.stderr, flush=True)
+        self.execute("SET lock_timeout = '%s'" % self._LOCK_TIMEOUT)
+
+    def _after_migrations(self) -> None:
+        self.execute("RESET lock_timeout")
 
     @staticmethod
     def _default_connect(dsn: str):
