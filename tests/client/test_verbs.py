@@ -299,6 +299,15 @@ def test_list_flags_and_product_list(wired, tmp_path, capsys):
     assert main(["client", "product", "list"]) == 0
     prods = json.loads(capsys.readouterr().out)
     assert prods["total"] == 1 and prods["products"][0]["product_id"] == BID
+    # rename: a label over the manifest name, --clear brings the manifest name back
+    assert main(["client", "product", "rename", "--product-id", str(BID), "--name", "Orchard"]) == 0
+    assert "named 'Orchard'" in capsys.readouterr().out
+    assert main(["client", "product", "list"]) == 0
+    assert json.loads(capsys.readouterr().out)["products"][0]["product"] == "Orchard"
+    assert main(["client", "product", "rename", "--product-id", str(BID), "--clear"]) == 0
+    assert "name cleared" in capsys.readouterr().out
+    assert main(["client", "product", "rename", "--product-id", "999", "--name", "x"]) == 1
+    capsys.readouterr()
     assert main(["client", "audit", "--not-action", "device.rename", "--limit", "3"]) == 0
     assert all(e["action"] != "device.rename" for e in json.loads(capsys.readouterr().out)["events"])
     assert main(["client", "audit", "--sort", "action", "--dir", "desc", "--limit", "1"]) == 0

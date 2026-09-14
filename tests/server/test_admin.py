@@ -253,8 +253,19 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     # products: the directory
     prods = g("products")
     assert prods["total"] == 1 and prods["products"][0] == {
-        "product_id": BID, "product": "P", "devices": 3, "releases": 3,
+        "product_id": BID, "product": "P", "display_name": "", "manifest_name": "P",
+        "devices": 3, "releases": 3,
         "newest_version": "2.0.0", "newest_payload_version": 0x03000000}   # the seed stamps every release 2.0.0
+    # a display name is the label shown; clearing it brings the manifest name back;
+    # an id the account never saw is a 404; every change is audited
+    r = c.patch(f"/api/v1/admin/products/{BID}/name", headers=AUTH, json={"name": "Orchard"})
+    assert r.status_code == 200 and r.json() == {"product_id": BID, "display_name": "Orchard"}
+    row = g("products")["products"][0]
+    assert row["product"] == "Orchard" and row["display_name"] == "Orchard" and row["manifest_name"] == "P"
+    assert c.patch(f"/api/v1/admin/products/{BID}/name", headers=AUTH, json={"name": ""}).status_code == 200
+    assert g("products")["products"][0]["product"] == "P"
+    assert c.patch("/api/v1/admin/products/999/name", headers=AUTH, json={"name": "x"}).status_code == 404
+    assert [e["action"] for e in store.read_audit()].count("product.rename") == 2
 
 
 def test_advisories_list_contract(tmp_path):

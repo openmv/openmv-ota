@@ -201,6 +201,15 @@ def register(parser: argparse.ArgumentParser) -> None:
     _list_flags(p_prl, "product, devices, releases, newest")
     _creds(p_prl)
     p_prl.set_defaults(func=cmd_products, _command="client product list")
+    p_prn = prsub.add_parser("rename", help="set a product's display name (a label; --clear "
+                                            "shows the manifest name again)")
+    p_prn.add_argument("--product-id", required=True, type=int, metavar="PRODUCT_ID",
+                       help="product to rename")
+    gpn = p_prn.add_mutually_exclusive_group(required=True)
+    gpn.add_argument("--name", help="the display name (max 64 chars)")
+    gpn.add_argument("--clear", action="store_true", help="remove the display name")
+    _creds(p_prn)
+    p_prn.set_defaults(func=cmd_product_rename, _command="client product rename")
 
     p_co = sub.add_parser("cohort", help="list / create / assign / rename / delete / pin cohorts")
     cosub = p_co.add_subparsers(dest="_co")
@@ -855,6 +864,20 @@ def cmd_release_rename(args: argparse.Namespace) -> int:
     if name:
         return _emit(args, out, "release %s named %r" % (args.release_id, name))
     return _emit(args, out, "release %s name cleared" % args.release_id)
+
+
+def cmd_product_rename(args: argparse.Namespace) -> int:
+    """Set (or --clear) a product's display name -- a label; the id stays the identity."""
+    name = "" if args.clear else args.name
+    try:
+        out = _make_api(config.resolve(args.server, args.token)).rename_product(
+            args.product_id, name)
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if name:
+        return _emit(args, out, "product %s named %r" % (args.product_id, name))
+    return _emit(args, out, "product %s name cleared" % args.product_id)
 
 
 def cmd_rollout_rename(args: argparse.Namespace) -> int:

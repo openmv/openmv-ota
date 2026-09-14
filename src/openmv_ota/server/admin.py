@@ -20,7 +20,7 @@ from .schemas import (
     AccountList,
     AccountNamed,
     AdvisoryList,
-    ProductList,
+    ProductList, ProductRenamed,
     AdvisoryScan,
     AuditList,
     CohortAssigned,
@@ -936,6 +936,24 @@ def products(request: Request, limit: int | None = None, offset: int = 0,
     rows, total = request.app.state.metastore.page_products(
         account_id=principal.account_id, sort=sort, direction=dir, limit=limit, offset=offset)
     return {"products": rows, "total": total}
+
+
+@admin.patch("/products/{product_id}/name", responses={200: {"model": ProductRenamed}})
+def rename_product(product_id: int, body: DeviceName, request: Request,
+                   principal: Principal = Depends(require_scope("manage"))):
+    """Set a product's display name -- a label for dashboards and lists; the product
+    id stays the identity and the manifest's own name shows again when cleared ('').
+    A product the account has never seen (no device, no release) is a 404."""
+    name = _label(body.name)
+    ms = request.app.state.metastore
+    if not any(p["product_id"] == product_id
+               for p in ms.list_products(account_id=principal.account_id)):
+        raise HTTPException(status_code=404)
+    ms.set_product_name(product_id, name, account_id=principal.account_id)
+    ms.append_audit(actor=principal.name, action="product.rename", entity_type="product",
+                    entity_id=str(product_id), data={"name": name},
+                    account_id=principal.account_id)
+    return {"product_id": product_id, "display_name": name}
 
 
 @admin.post("/devices/{device_id}/viewer-grant", responses={200: {"model": ViewerGrant}})

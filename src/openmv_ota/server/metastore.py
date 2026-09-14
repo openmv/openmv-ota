@@ -247,6 +247,13 @@ _MIGRATIONS: list[list[str]] = [
         # refusal is audited once per device id so the operator can see it.
         "ALTER TABLE accounts ADD COLUMN device_limit INTEGER",
     ],
+    [   # v19 -- a product's own display name. Products are not entities of their own
+        # (an id seen on devices and releases); this is the one thing an operator SETS
+        # about one, so it gets a row. Empty/no row = the newest release's manifest name.
+        "CREATE TABLE IF NOT EXISTS products ("
+        "account_id TEXT NOT NULL DEFAULT '', product_id INTEGER NOT NULL, "
+        "display_name TEXT NOT NULL DEFAULT '', PRIMARY KEY (account_id, product_id))",
+    ],
 ]
 
 
@@ -646,12 +653,32 @@ class SqlMetadataStore:
         for r in self.query_all("SELECT product_id, product, version, payload_version FROM releases "
                                 + where + " ORDER BY payload_version DESC", params):
             newest.setdefault(r["product_id"], _d(r))
-        return [{"product_id": pid, "product": (newest.get(pid) or {}).get("product"),
-                 "devices": devs.get(pid, 0), "releases": rels.get(pid, 0),
-                 "newest_version": (newest.get(pid) or {}).get("version"),
-                 "newest_payload_version": (newest.get(pid) or {}).get("payload_version")}
-                for pid in sorted({*devs, *rels},
-                                  key=lambda x: ((newest.get(x) or {}).get("product") or "", x))]
+        labels = self.product_names(account_id)
+        rows = []
+        for pid in {*devs, *rels}:
+            manifest = (newest.get(pid) or {}).get("product")
+            rows.append({"product_id": pid, "product": labels.get(pid) or manifest,
+                         "display_name": labels.get(pid, ""), "manifest_name": manifest,
+                         "devices": devs.get(pid, 0), "releases": rels.get(pid, 0),
+                         "newest_version": (newest.get(pid) or {}).get("version"),
+                         "newest_payload_version": (newest.get(pid) or {}).get("payload_version")})
+        rows.sort(key=lambda p: ((p["product"] or "").lower(), p["product_id"]))
+        return rows
+
+    def product_names(self, account_id=None) -> dict:
+        """product_id -> the operator's display name (only products with one set)."""
+        where, params = _scope(account_id)
+        return {r["product_id"]: r["display_name"] for r in self.query_all(
+            "SELECT product_id, display_name FROM products " + where, params)
+            if r["display_name"]}
+
+    def set_product_name(self, product_id: int, name: str, account_id: str = "") -> None:
+        """Set a product's display name (empty = clear). A label only: the product id
+        stays the identity, and the manifest name shows again when cleared."""
+        self.execute(
+            "INSERT INTO products (account_id, product_id, display_name) VALUES (?, ?, ?) "
+            "ON CONFLICT (account_id, product_id) DO UPDATE SET display_name = excluded.display_name",
+            (account_id, product_id, name))
 
     PRODUCT_SORTS = {"product": lambda p: ((p["product"] or "").lower(), p["product_id"]),
                      "devices": lambda p: p["devices"], "releases": lambda p: p["releases"],

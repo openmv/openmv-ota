@@ -378,6 +378,12 @@ class Product(BaseModel):
     product_id: int
     product: str | None = None
     """Friendly name from the newest release; None until one is published."""
+    """The label to show: the operator's display name, else the newest release's
+    manifest name; None until either exists."""
+    display_name: str = ""
+    """The operator's own label ('' = none set)."""
+    manifest_name: str | None = None
+    """The product name the newest release's manifest carries."""
     devices: int = 0
     releases: int = 0
     newest_version: str | None = None
@@ -388,6 +394,11 @@ class Product(BaseModel):
 class ProductList(BaseModel):
     products: list[Product]
     total: int = 0
+
+
+class ProductRenamed(BaseModel):
+    product_id: int
+    display_name: str
 
 
 class AdvisoryScan(BaseModel):

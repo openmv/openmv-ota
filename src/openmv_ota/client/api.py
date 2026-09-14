@@ -213,6 +213,11 @@ class Api:
         return self._req("PATCH", "/api/v1/admin/releases/%s/name" % release_id,
                          json={"name": name})
 
+    def rename_product(self, product_id, name):
+        """Set a product's display name ('' clears; the manifest name shows again)."""
+        return self._req("PATCH", "/api/v1/admin/products/%s/name" % product_id,
+                         json={"name": name})
+
     def rename_rollout(self, rollout_id, name):
         """Set a rollout's display name ('' clears). A label, never identity."""
         return self._req("PATCH", "/api/v1/admin/rollouts/%s/name" % rollout_id,
