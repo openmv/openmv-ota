@@ -91,6 +91,9 @@ $ curl -s -X POST -H "Authorization: Bearer $OPENMV_OTA_TOKEN" \
 }
 ```
 
+A server with a datalake but no live relay answers the same way with an empty
+`token` and `streams`; only a server with neither configured refuses (503).
+
 Then the read, under the datalake token, at the URL the grant named (`logs_url` and
 `series_url` take `/{topic}` on the end):
 

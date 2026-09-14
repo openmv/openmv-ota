@@ -245,5 +245,18 @@ def test_viewer_grant_omits_the_datalake_half_without_its_secret():
     assert "datalake" not in live.viewer_grant(_settings(), "dev1")
 
 
-def test_viewer_grant_is_none_when_live_is_unconfigured():
+def test_viewer_grant_is_none_when_neither_read_side_is_configured():
     assert live.viewer_grant(ServerSettings(base_url="https://ota.test"), "dev1") is None
+    # a datalake secret alone is not a datalake: the URL has to be passed too
+    s = ServerSettings(base_url="https://ota.test", datalake_token_secret="dl")
+    assert live.viewer_grant(s, "dev1") is None
+
+
+def test_viewer_grant_opens_the_datalake_without_a_relay():
+    """A dashboard that only charts data (no live video) must not need Live configured:
+    the datalake half stands alone, the relay half is simply empty."""
+    s = ServerSettings(base_url="https://ota.test", datalake_token_secret="dl-secret")
+    g = live.viewer_grant(s, "dev1", ["0"], datalake_url="https://data.test")
+    assert g["token"] == "" and g["streams"] == {}
+    assert g["datalake"]["topics_url"] == "https://data.test/api/v1/topics/dev1"
+    assert g["expires_in_s"] == g["datalake"]["expires_in_s"] == 300

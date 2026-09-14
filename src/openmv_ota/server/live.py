@@ -62,22 +62,27 @@ def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "")
 
     Note the asymmetry with :func:`camera_grant`: a camera's token also covers
     ``/poll`` (role ``camera``), while a viewer may only watch. A viewer token
-    can never publish frames or ingest data."""
-    if not (settings.live_relay_url and settings.live_token_secret):
+    can never publish frames or ingest data.
+
+    Each half stands alone: a deployment with a datalake but no relay still
+    gets a grant (empty ``token``/``streams``, the datalake half filled), and
+    vice versa. None only when neither read side is configured."""
+    relay_on = bool(settings.live_relay_url and settings.live_token_secret)
+    lake_on = bool(datalake_url and settings.datalake_token_secret)
+    if not (relay_on or lake_on):
         return None
-    token = mint_token(settings.live_token_secret, "viewer", device_id,
-                       settings.viewer_token_ttl)
-    base = settings.live_relay_url.rstrip("/")
-    ws_base = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
-    grant = {
-        "token": token,
-        "streams": {
+    grant: dict = {"token": "", "streams": {}, "expires_in_s": settings.viewer_token_ttl}
+    if relay_on:
+        token = mint_token(settings.live_token_secret, "viewer", device_id,
+                           settings.viewer_token_ttl)
+        base = settings.live_relay_url.rstrip("/")
+        ws_base = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+        grant["token"] = token
+        grant["streams"] = {
             s: {"watch_url": "%s/watch/%s/%s?token=%s" % (ws_base, device_id, s, token)}
             for s in _clean_streams(streams)
-        },
-        "expires_in_s": settings.viewer_token_ttl,
-    }
-    if datalake_url and settings.datalake_token_secret:
+        }
+    if lake_on:
         # The read side: topics for the pane list, logs/{topic} for backscroll --
         # bearer-authed with the DATALAKE's own viewer token, not the relay's.
         dl = datalake_url.rstrip("/")
