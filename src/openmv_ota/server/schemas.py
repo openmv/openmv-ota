@@ -380,6 +380,9 @@ class Product(BaseModel):
     """Friendly name from the newest release; None until one is published."""
     devices: int = 0
     releases: int = 0
+    newest_version: str | None = None
+    """The newest release's version string; None until one is published."""
+    newest_payload_version: int | None = None
 
 
 class ProductList(BaseModel):

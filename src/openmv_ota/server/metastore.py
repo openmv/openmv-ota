@@ -642,13 +642,31 @@ class SqlMetadataStore:
         rels = {r["product_id"]: r["n"] for r in self.query_all(
             "SELECT product_id, COUNT(*) AS n FROM releases " + where + " GROUP BY product_id",
             params)}
-        names = {}
-        for r in self.query_all("SELECT product_id, product FROM releases " + where
-                                + " ORDER BY payload_version DESC", params):
-            names.setdefault(r["product_id"], r["product"])
-        return [{"product_id": pid, "product": names.get(pid), "devices": devs.get(pid, 0),
-                 "releases": rels.get(pid, 0)}
-                for pid in sorted({*devs, *rels}, key=lambda x: (names.get(x) or "", x))]
+        newest = {}                       # product_id -> its newest release's (name, version, pv)
+        for r in self.query_all("SELECT product_id, product, version, payload_version FROM releases "
+                                + where + " ORDER BY payload_version DESC", params):
+            newest.setdefault(r["product_id"], _d(r))
+        return [{"product_id": pid, "product": (newest.get(pid) or {}).get("product"),
+                 "devices": devs.get(pid, 0), "releases": rels.get(pid, 0),
+                 "newest_version": (newest.get(pid) or {}).get("version"),
+                 "newest_payload_version": (newest.get(pid) or {}).get("payload_version")}
+                for pid in sorted({*devs, *rels},
+                                  key=lambda x: ((newest.get(x) or {}).get("product") or "", x))]
+
+    PRODUCT_SORTS = {"product": lambda p: ((p["product"] or "").lower(), p["product_id"]),
+                     "devices": lambda p: p["devices"], "releases": lambda p: p["releases"],
+                     "newest": lambda p: p["newest_payload_version"] or -1}
+
+    def page_products(self, account_id=None, sort=None, direction=None, limit=None,
+                      offset=0) -> tuple[list[dict], int]:
+        """``list_products`` on the list contract: (page, total). Small and aggregated,
+        so sorted here with the same whitelist idea as the SQL lists."""
+        rows = self.list_products(account_id=account_id)
+        key = self.PRODUCT_SORTS.get(sort or "product", self.PRODUCT_SORTS["product"])
+        rows.sort(key=key, reverse=(str(direction).lower() == "desc"))
+        total = len(rows)
+        rows = rows[offset: offset + limit] if limit is not None else rows[offset:]
+        return rows, total
 
     def fleet_summary(self, product_id: int | None = None, account_id=None,
                       cohort: str | None = None) -> dict:

@@ -216,6 +216,12 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     # cohorts: sort by devices, paged, total
     body = g("cohorts", sort="devices", dir="desc", limit=1)
     assert body["cohorts"][0]["cohort"] == "beta" and body["total"] == 2
+    # products: the directory on the contract too -- sort by device count, page, total,
+    # and the newest release's version rides along
+    body = g("products", sort="devices", dir="desc", limit=1)
+    assert body["total"] == 1 and body["products"][0]["devices"] == 3
+    assert body["products"][0]["newest_version"] == g("releases", sort="version", dir="desc")["releases"][0]["version"]
+    assert g("products", offset=1)["products"] == []
     # audit: total + offset + sort by action; newest still works. Store-seeded rows
     # write no audit, so two API actions make the entries.
     assert c.post("/api/v1/admin/cohorts/create", headers=AUTH, json={"cohort": "staging"}).status_code == 200
@@ -247,7 +253,8 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     # products: the directory
     prods = g("products")
     assert prods["total"] == 1 and prods["products"][0] == {
-        "product_id": BID, "product": "P", "devices": 3, "releases": 3}
+        "product_id": BID, "product": "P", "devices": 3, "releases": 3,
+        "newest_version": "2.0.0", "newest_payload_version": 0x03000000}   # the seed stamps every release 2.0.0
 
 
 def test_advisories_list_contract(tmp_path):

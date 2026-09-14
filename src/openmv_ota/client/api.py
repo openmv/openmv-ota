@@ -131,9 +131,11 @@ class Api:
                 params[k] = v
         return params
 
-    def products(self):
-        """The account's product directory (id, friendly name, device/release counts)."""
-        return self._req("GET", "/api/v1/admin/products")
+    def products(self, limit=None, offset=None, sort=None, direction=None):
+        """The account's product directory (id, friendly name, newest version, device/release
+        counts), on the list contract."""
+        return self._req("GET", "/api/v1/admin/products",
+                         params=self._page({}, limit, offset, sort, direction))
 
     def list_rollouts(self, product_id=None, limit=None, offset=None, state=None,
                       cohort=None, sort=None, direction=None, release_id=None):

@@ -927,11 +927,15 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
 
 
 @admin.get("/products", responses={200: {"model": ProductList}})
-def products(request: Request, principal: Principal = Depends(require_scope("observe"))):
+def products(request: Request, limit: int | None = None, offset: int = 0,
+             sort: str | None = _sort_q("product, devices, releases, newest"), dir: str = _DIR_Q,
+             principal: Principal = Depends(require_scope("observe"))):
     """The account's product directory: every product id seen on a device or a
-    release, its friendly name (from the newest release), and device / release counts."""
-    rows = request.app.state.metastore.list_products(account_id=principal.account_id)
-    return {"products": rows, "total": len(rows)}
+    release, its friendly name and newest version (from the newest release), and
+    device / release counts. On the list contract like every collection."""
+    rows, total = request.app.state.metastore.page_products(
+        account_id=principal.account_id, sort=sort, direction=dir, limit=limit, offset=offset)
+    return {"products": rows, "total": total}
 
 
 @admin.post("/devices/{device_id}/viewer-grant", responses={200: {"model": ViewerGrant}})

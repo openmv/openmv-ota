@@ -293,6 +293,9 @@ def test_list_flags_and_product_list(wired, tmp_path, capsys):
                       manifest_key="m/r9", image_key="i/r9")
     assert main(["client", "device", "list", "--older-than-release", "r9", "--sort", "device", "--dir", "asc"]) == 0
     assert [d["device_id"] for d in json.loads(capsys.readouterr().out)["devices"]] == ["d1", "d2"]
+    assert main(["client", "product", "list", "--sort", "newest", "--dir", "desc", "--limit", "1"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["total"] == 1 and out["products"][0]["newest_version"] == "5.0.0"
     assert main(["client", "product", "list"]) == 0
     prods = json.loads(capsys.readouterr().out)
     assert prods["total"] == 1 and prods["products"][0]["product_id"] == BID

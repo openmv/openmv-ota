@@ -196,7 +196,9 @@ def register(parser: argparse.ArgumentParser) -> None:
 
     p_pr = sub.add_parser("product", help="the account's products")
     prsub = p_pr.add_subparsers(dest="_pr")
-    p_prl = prsub.add_parser("list", help="every product: id, friendly name, device/release counts (JSON)")
+    p_prl = prsub.add_parser("list", help="every product: id, friendly name, newest version, "
+                                          "device/release counts (JSON)")
+    _list_flags(p_prl, "product, devices, releases, newest")
     _creds(p_prl)
     p_prl.set_defaults(func=cmd_products, _command="client product list")
 
@@ -938,7 +940,8 @@ def cmd_fleet(args: argparse.Namespace) -> int:
 
 
 def cmd_products(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.products())
+    return _read(args, lambda api: api.products(limit=args.limit, offset=args.offset,
+                                                sort=args.sort, direction=args.dir))
 
 
 def cmd_devices(args: argparse.Namespace) -> int:
