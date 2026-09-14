@@ -216,6 +216,9 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     # cohorts: sort by devices, paged, total
     body = g("cohorts", sort="devices", dir="desc", limit=1)
     assert body["cohorts"][0]["cohort"] == "beta" and body["total"] == 2
+    # the fleet summary links each version string to its release (newest when republished)
+    assert g("fleet")["products"][str(BID)]["releases"] == {
+        "2.0.0": {"release_id": "r2", "display_name": ""}}
     # products: the directory on the contract too -- sort by device count, page, total,
     # and the newest release's version rides along
     body = g("products", sort="devices", dir="desc", limit=1)
@@ -757,7 +760,7 @@ def test_fleet_breakdowns_and_cohort_filter(tmp_path):
     assert body["products"][str(BID)]["by_version"] == {"1.2.0": 1, "1.1.0": 1}
     assert body["products"][str(BID + 1)] == {
         "total": 1, "by_version": {"3.0.0": 1}, "by_fallback": {"unknown": 1},
-        "by_cohort": {"beta": 1}, "fell_back": 0, "unconfirmed": 0}
+        "by_cohort": {"beta": 1}, "releases": {}, "fell_back": 0, "unconfirmed": 0}
     scoped = c.get("/api/v1/admin/fleet?cohort=beta&product_id=%d" % BID, headers=AUTH).json()
     assert scoped["total"] == 1
     assert scoped["products"][str(BID)]["by_version"] == {"1.2.0": 1}

@@ -26,6 +26,8 @@ $ openmv-ota client fleet
       "by_version": { "1.2.0": 361, "1.1.0": 51 },
       "by_fallback": { "1.1.0": 358, "unknown": 54 },
       "by_cohort": { "__default__": 404, "beta": 8 },
+      "releases": { "1.2.0": { "release_id": "rel_1f9c…", "display_name": "Night vision tuning" },
+                    "1.1.0": { "release_id": "rel_0a41…", "display_name": "" } },
       "fell_back": 2,
       "unconfirmed": 7
     },
@@ -34,6 +36,7 @@ $ openmv-ota client fleet
       "by_version": { "3.0.1": 538 },
       "by_fallback": { "3.0.0": 538 },
       "by_cohort": { "__default__": 530, "beta": 8 },
+      "releases": { "3.0.1": { "release_id": "rel_77b0…", "display_name": "" } },
       "fell_back": 0,
       "unconfirmed": 2
     }
@@ -46,6 +49,7 @@ $ openmv-ota client fleet
 | `by_version` | what this product's devices are running |
 | `by_fallback` | what they would fall back **to**. A fleet whose devices all have the previous release behind them is in a very different position from one where half report `unknown` — and that is invisible in `by_version` |
 | `by_cohort` | how the product's devices are grouped |
+| `releases` | each published version's release id and display name, so a version in `by_version` links to its release (the newest when a version was republished) |
 | `fell_back` | devices whose last boot rejected a slot — the direct rollout alarm |
 | `unconfirmed` | devices mid-trial. They are also the devices deferring further updates until they settle |
 

@@ -223,6 +223,9 @@ class ProductFleet(BaseModel):
     by_version: dict[str, int]
     by_fallback: dict[str, int]
     by_cohort: dict[str, int]
+    releases: dict[str, dict] = {}
+    """version string -> ``{release_id, display_name}`` for the product's published
+    releases (newest when a version was republished): links a running version to its release."""
     fell_back: int
     unconfirmed: int
 

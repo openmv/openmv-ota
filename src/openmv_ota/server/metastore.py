@@ -727,6 +727,14 @@ class SqlMetadataStore:
         by_version = _grouped("current_version")
         by_fallback = _grouped("fallback_payload_version")
         by_cohort = _grouped("cohort")
+        # version string -> the release behind it (newest when a version was republished),
+        # so a dashboard can link a running version to its release without a second read
+        releases: dict[int, dict] = {}
+        rel_where, rel_params = _scope(account_id, product_id)      # releases have no cohort
+        for r in self.query_all("SELECT product_id, version, release_id, display_name FROM releases "
+                                + rel_where + " ORDER BY payload_version DESC", rel_params):
+            releases.setdefault(r["product_id"], {}).setdefault(
+                r["version"], {"release_id": r["release_id"], "display_name": r["display_name"] or ""})
         products: dict[str, dict] = {}
         total = fell_back = unconfirmed = 0
         for r in self.query_all(
@@ -739,6 +747,7 @@ class SqlMetadataStore:
                 "total": r["n"], "by_version": by_version.get(pid, {}),
                 "by_fallback": by_fallback.get(pid, {}),
                 "by_cohort": by_cohort.get(pid, {}),
+                "releases": releases.get(pid, {}),
                 "fell_back": r["fb"], "unconfirmed": r["uc"]}
             total += r["n"]
             fell_back += r["fb"]
