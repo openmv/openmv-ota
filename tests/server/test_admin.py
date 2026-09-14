@@ -202,7 +202,12 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     assert [r["release_id"] for r in g("releases", sort="version", dir="desc")["releases"]] == ["r2", "r3", "r1"]
     assert g("releases", sort="bogus")["releases"][0]["release_id"] == "r2"   # natural order
     assert g("releases", offset=2, limit=2)["releases"] == g("releases")["releases"][2:]
-    # rollouts: total respects state + cohort
+    # rollouts: total respects state + cohort; up_to_date counts the audience on the
+    # release or newer (d1 runs past r1; d3 has reported nothing yet)
+    store.upsert_device(device_id="d1", product_id=BID, cohort="beta",
+                        current_payload_version=0x02000000)
+    row = next(r for r in g("rollouts", cohort="beta", state="active")["rollouts"])
+    assert row["cohort_devices"] == 2 and row["up_to_date"] == 1
     assert g("rollouts", cohort="beta")["total"] == 2
     assert g("rollouts", cohort="beta", state="stopped")["total"] == 1
     assert g("rollouts", sort="state", dir="asc")["rollouts"][0]["state"] == "active"

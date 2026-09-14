@@ -80,6 +80,8 @@ class Rollout(_Row):
     cohort: str = ""
     percent: float = 0.0
     cohort_devices: int = 0
+    up_to_date: int = 0
+    """Of those, the devices running this rollout's release or newer -- its real progress."""
     """Devices in this rollout's (product, cohort) right now -- the audience its percent
     applies to. Computed live on list reads; cohort membership shifts under the rollout."""
     state: str = ""

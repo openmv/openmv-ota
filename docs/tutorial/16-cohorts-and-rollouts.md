@@ -182,7 +182,8 @@ $ openmv-ota client rollout list
       "cohort": "beta",
       "percent": 5.0,
       "state": "active",
-      "cohort_devices": 412
+      "cohort_devices": 412,
+      "up_to_date": 21
     }
   ],
   "total": 1

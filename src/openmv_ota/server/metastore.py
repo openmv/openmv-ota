@@ -416,9 +416,16 @@ class SqlMetadataStore:
         # cohort_devices: how many devices sit in each rollout's (product, cohort) RIGHT NOW --
         # the audience its percent applies to. Computed live rather than stored, because cohort
         # membership shifts under the rollout (assignments, first check-ins).
+        # up_to_date: how many of those devices run the rollout's release or something
+        # newer -- the progress a list can show honestly (the offer percent is a dial, and
+        # the counters count transitions, not devices).
         where, params = self._rollouts_where(account_id, product_id, state, cohort, release_id)
         sql = ("SELECT r.*, (SELECT COUNT(*) FROM devices d WHERE d.product_id = r.product_id "
-               "AND d.cohort = r.cohort AND d.account_id = r.account_id) AS cohort_devices "
+               "AND d.cohort = r.cohort AND d.account_id = r.account_id) AS cohort_devices, "
+               "(SELECT COUNT(*) FROM devices d JOIN releases rel ON rel.release_id = r.release_id "
+               "WHERE d.product_id = r.product_id AND d.cohort = r.cohort "
+               "AND d.account_id = r.account_id "
+               "AND d.current_payload_version >= rel.payload_version) AS up_to_date "
                "FROM rollouts r " + where
                + _order(sort, direction, self.ROLLOUT_SORTS, "r.created_at DESC", "r.rollout_id"))
         sql, params = _limit(sql, params, limit, offset)
