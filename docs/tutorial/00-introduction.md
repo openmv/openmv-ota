@@ -80,6 +80,7 @@ Every command and flag on these pages exists — the test suite holds the CLI to
 | [21 · Self-hosting](21-self-hosting.md) | `openmv-ota server` — running your own: lifecycle, settings, deploy artifacts |
 | [22 · The device API](22-device-api.md) | what a camera speaks: check-in, downloads, feedback |
 | [23 · The admin API](23-admin-api.md) | the auth model and API conventions — the endpoint reference lives at your server's `/docs` |
+| [24 · Pulling device data](24-pulling-device-data.md) | console lines and telemetry out of the datalake, by CLI or by two curl calls |
 
 Not part of the walkthrough, but referenced from it:
 

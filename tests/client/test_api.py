@@ -264,3 +264,44 @@ def test_fleet_cohort_filter_rides_as_a_param():
     api, c = _api(_Resp(200, {}))
     api.fleet(7, cohort="beta")
     assert c.calls[0][2]["params"] == {"product_id": 7, "cohort": "beta"}
+
+
+def test_data_reads_ride_a_viewer_grant():
+    """Reading device data: the admin token buys a grant from the server, and the grant's
+    OWN token opens the datalake URLs it names."""
+    grant = {"token": "relay", "datalake": {"token": "lake-tok", "topics_url": "https://lake/api/v1/topics/d1",
+                                              "logs_url": "https://lake/api/v1/logs/d1",
+                                              "series_url": "https://lake/api/v1/series/d1", "expires_in_s": 300}}
+
+    class _Seq(_Client):
+        def request(self, method, path, **kw):
+            self.calls.append((method, path, kw))
+            return _Resp(200, grant if path.endswith("/viewer-grant") else {"ok": path})
+    c = _Seq(None)
+    api = Api(_cfg(), client=c)
+    assert api.viewer_grant("d1") == grant
+    assert c.calls[-1][:2] == ("POST", "/api/v1/admin/devices/d1/viewer-grant")
+    assert api.data_topics("d1") == {"ok": "https://lake/api/v1/topics/d1"}
+    assert c.calls[-1][2]["headers"] == {"Authorization": "Bearer lake-tok"}     # the grant's token
+    api.data_logs("d1", "console", sid="ab12", before_seq=40, limit=10)
+    assert c.calls[-1][1] == "https://lake/api/v1/logs/d1/console"
+    assert c.calls[-1][2]["params"] == {"limit": 10, "sid": "ab12", "before_seq": 40}
+    api.data_series("d1", "telemetry", "imu.ax", since=1.0, until=2.0, buckets=50)
+    assert c.calls[-1][1] == "https://lake/api/v1/series/d1/telemetry"
+    assert c.calls[-1][2]["params"] == {"field": "imu.ax", "buckets": 50, "since": 1.0, "until": 2.0}
+    api.data_series("d1", "telemetry", "fps")
+    assert c.calls[-1][2]["params"] == {"field": "fps", "buckets": 200}
+
+    class _Bad(_Seq):
+        def request(self, method, path, **kw):
+            if path.startswith("https://lake"):
+                return _Resp(403, {"detail": "bad or expired token"})
+            return super().request(method, path, **kw)
+    with pytest.raises(ClientError, match="403"):
+        Api(_cfg(), client=_Bad(None)).data_topics("d1")
+
+    class _NoLake(_Seq):
+        def request(self, method, path, **kw):
+            return _Resp(200, {"token": "relay"})
+    with pytest.raises(ClientError, match="no datalake"):
+        Api(_cfg(), client=_NoLake(None)).data_logs("d1")

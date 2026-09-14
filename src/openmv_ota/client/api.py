@@ -293,6 +293,58 @@ class Api:
         return self._req("GET", "/api/v1/admin/releases",
                          params=self._page(params, limit, offset, sort, direction))
 
+    def viewer_grant(self, device_id: str):
+        """A short-lived read credential for one device: the live relay's watch token and,
+        when the server has a datalake, the datalake's own viewer token plus the URLs it
+        opens (topics, logs, series). The ONLY way to read device data with an admin
+        token: the datalake never accepts admin tokens itself."""
+        return self._req("POST", "/api/v1/admin/devices/%s/viewer-grant" % device_id)
+
+    def _lake(self, device_id: str) -> dict:
+        grant = self.viewer_grant(device_id)
+        lake = grant.get("datalake")
+        if not lake:
+            raise ClientError("the server has no datalake configured: nothing to read", exit_code=1)
+        return lake
+
+    def _lake_get(self, url: str, token: str, params=None):
+        """A datalake read: an absolute URL from the grant, under the grant's own token."""
+        resp = self._client.request("GET", url, headers={"Authorization": "Bearer " + token},
+                                    params=params or {})
+        if resp.status_code >= 400:
+            raise ClientError("GET %s -> %d: %s" % (url, resp.status_code, _detail(resp)),
+                              exit_code=1)
+        return resp.json()
+
+    def data_topics(self, device_id: str):
+        """The device's topics with their fields (typed from the records' JSON) and latest values."""
+        lake = self._lake(device_id)
+        return self._lake_get(lake["topics_url"], lake["token"])
+
+    def data_logs(self, device_id: str, topic: str = "console", sid=None, before_seq=None,
+                  limit: int = 200):
+        """A page of a text topic's records, newest session by default; ``before_seq`` pages
+        back within the session (``next_before_seq`` in the answer)."""
+        lake = self._lake(device_id)
+        params = {"limit": limit}
+        if sid is not None:
+            params["sid"] = sid
+        if before_seq is not None:
+            params["before_seq"] = before_seq
+        return self._lake_get("%s/%s" % (lake["logs_url"], topic), lake["token"], params)
+
+    def data_series(self, device_id: str, topic: str, field: str, since=None, until=None,
+                    buckets: int = 200):
+        """A numeric field downsampled into time buckets (min/avg/max/n each), over the
+        topic's whole span or ``since``..``until`` (epoch seconds)."""
+        lake = self._lake(device_id)
+        params = {"field": field, "buckets": buckets}
+        if since is not None:
+            params["since"] = since
+        if until is not None:
+            params["until"] = until
+        return self._lake_get("%s/%s" % (lake["series_url"], topic), lake["token"], params)
+
     def device(self, device_id: str):
         """One device. The detail read behind a UI's device page -- `devices()` can only page a
         list, which is a lot of requests to answer "show me this one"."""

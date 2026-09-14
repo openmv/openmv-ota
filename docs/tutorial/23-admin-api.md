@@ -1,6 +1,6 @@
 # The admin API
 
-*[← 22 · The device API](22-device-api.md) · [Index](00-introduction.md)*
+*[← 22 · The device API](22-device-api.md) · [Index](00-introduction.md) · [24 · Pulling device data →](24-pulling-device-data.md)*
 
 ---
 
@@ -56,4 +56,4 @@ incomplete doc, never lost data.
 
 ---
 
-*[← 22 · The device API](22-device-api.md) · [Index](00-introduction.md)*
+*[← 22 · The device API](22-device-api.md) · [Index](00-introduction.md) · [24 · Pulling device data →](24-pulling-device-data.md)*

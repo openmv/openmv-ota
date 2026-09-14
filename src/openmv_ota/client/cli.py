@@ -294,6 +294,36 @@ def register(parser: argparse.ArgumentParser) -> None:
                         help="device to bind to the caller's account")
     _creds(p_bind)
     p_bind.set_defaults(func=cmd_bind, _command="client device bind")
+    p_dvg = dsub.add_parser("grant", help="mint a short-lived viewer credential for one device "
+                                          "(the relay watch token + the datalake token and URLs)")
+    p_dvg.add_argument("--device-id", required=True, metavar="DEVICE_ID",
+                       help="the device to read")
+    _creds(p_dvg)
+    p_dvg.set_defaults(func=cmd_device_grant, _command="client device grant")
+
+    p_data = sub.add_parser("data", help="read a device's data from the datalake (JSON)")
+    dasub = p_data.add_subparsers(dest="_data")
+    p_dat = dasub.add_parser("topics", help="the device's topics: fields, types, latest values")
+    p_dat.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="the device to read")
+    _creds(p_dat)
+    p_dat.set_defaults(func=cmd_data_topics, _command="client data topics")
+    p_dal = dasub.add_parser("logs", help="a page of a text topic's records (newest session)")
+    p_dal.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="the device to read")
+    p_dal.add_argument("--topic", default="console", help="the topic (default: console)")
+    p_dal.add_argument("--sid", help="a boot session id (default: the newest)")
+    p_dal.add_argument("--before-seq", type=int, help="page back: records with seq below this")
+    p_dal.add_argument("--limit", type=int, default=200, help="records per page (default 200)")
+    _creds(p_dal)
+    p_dal.set_defaults(func=cmd_data_logs, _command="client data logs")
+    p_das = dasub.add_parser("series", help="a numeric field downsampled into time buckets")
+    p_das.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="the device to read")
+    p_das.add_argument("--topic", required=True, help="the topic, e.g. telemetry")
+    p_das.add_argument("--field", required=True, help="the field under data, dotted for nested (imu.ax)")
+    p_das.add_argument("--since", type=float, help="window start, epoch seconds (default: the data's span)")
+    p_das.add_argument("--until", type=float, help="window end, epoch seconds (default: the data's span)")
+    p_das.add_argument("--buckets", type=int, default=200, help="time buckets across the window (default 200)")
+    _creds(p_das)
+    p_das.set_defaults(func=cmd_data_series, _command="client data series")
 
     p_acct = sub.add_parser("account", help="create/list tenant accounts (needs accounts)")
     acsub = p_acct.add_subparsers(dest="_acct")
@@ -774,6 +804,25 @@ def cmd_release_show(args: argparse.Namespace) -> int:
 
 def cmd_device_show(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.device(args.device_id))
+
+
+def cmd_device_grant(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.viewer_grant(args.device_id))
+
+
+def cmd_data_topics(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.data_topics(args.device_id))
+
+
+def cmd_data_logs(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.data_logs(args.device_id, args.topic, sid=args.sid,
+                                                 before_seq=args.before_seq, limit=args.limit))
+
+
+def cmd_data_series(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.data_series(args.device_id, args.topic, args.field,
+                                                   since=args.since, until=args.until,
+                                                   buckets=args.buckets))
 
 
 def cmd_device_rename(args: argparse.Namespace) -> int:

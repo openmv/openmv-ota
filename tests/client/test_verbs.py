@@ -1122,3 +1122,40 @@ def test_device_rename_errors(wired, tmp_path, capsys):
     assert main(["client", "device", "rename", "--device-id", "d1",
                  "--name", "x" * 65]) == 1                         # 400 too long
     assert "400" in capsys.readouterr().err
+
+
+def test_device_grant_and_data_verbs(wired, tmp_path, capsys, monkeypatch):
+    """`device grant` prints the server's grant; `data topics|logs|series` mint one and
+    read the datalake with it (the datalake itself is faked here)."""
+    store, _ = wired
+    store.upsert_device(device_id="d1", product_id=BID)
+    from openmv_ota.client import api as api_mod
+    grant = {"token": "relay", "streams": {}, "expires_in_s": 60,
+             "datalake": {"token": "lake-tok", "topics_url": "https://lake/api/v1/topics/d1",
+                          "logs_url": "https://lake/api/v1/logs/d1",
+                          "series_url": "https://lake/api/v1/series/d1", "expires_in_s": 300}}
+    seen = []
+    monkeypatch.setattr(api_mod.Api, "viewer_grant", lambda self, d: grant)
+    monkeypatch.setattr(api_mod.Api, "_lake_get",
+                        lambda self, url, token, params=None: seen.append((url, token, params)) or {"url": url})
+    assert main(["client", "device", "grant", "--device-id", "d1"]) == 0
+    assert json.loads(capsys.readouterr().out)["datalake"]["token"] == "lake-tok"
+    assert main(["client", "data", "topics", "--device-id", "d1"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"url": "https://lake/api/v1/topics/d1"}
+    assert main(["client", "data", "logs", "--device-id", "d1", "--topic", "console",
+                 "--sid", "ab12", "--before-seq", "9", "--limit", "5"]) == 0
+    assert seen[-1] == ("https://lake/api/v1/logs/d1/console", "lake-tok",
+                        {"limit": 5, "sid": "ab12", "before_seq": 9})
+    assert main(["client", "data", "series", "--device-id", "d1", "--topic", "telemetry",
+                 "--field", "fps", "--since", "10", "--until", "20", "--buckets", "4"]) == 0
+    assert seen[-1] == ("https://lake/api/v1/series/d1/telemetry", "lake-tok",
+                        {"field": "fps", "buckets": 4, "since": 10.0, "until": 20.0})
+    capsys.readouterr()
+
+
+def test_device_grant_against_the_real_server(wired, tmp_path, capsys):
+    """Without live/datalake configured the server says so (503), and the CLI relays it."""
+    store, _ = wired
+    store.upsert_device(device_id="d1", product_id=BID)
+    assert main(["client", "device", "grant", "--device-id", "d1"]) == 1
+    assert "503" in capsys.readouterr().err
