@@ -55,8 +55,10 @@ def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "")
     The relay half rides ``token``; when the datalake is configured, its read
     endpoints get their OWN ``viewer`` token under ``datalake`` -- the two
     services sign with separate secrets, deliberately, so they rotate and fail
-    independently. Every token is scoped to ONE device and expires, so the grant
-    is safe to hand to a browser; the signing secrets never leave the server.
+    independently. Every token is scoped to ONE device and expires in minutes
+    (``viewer_token_ttl``, not the day-long device grants: a viewer credential
+    leaves the server for a browser or a script and cannot be recalled), so the
+    grant is safe to hand out; the signing secrets never leave the server.
 
     Note the asymmetry with :func:`camera_grant`: a camera's token also covers
     ``/poll`` (role ``camera``), while a viewer may only watch. A viewer token
@@ -64,7 +66,7 @@ def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "")
     if not (settings.live_relay_url and settings.live_token_secret):
         return None
     token = mint_token(settings.live_token_secret, "viewer", device_id,
-                       settings.live_token_ttl)
+                       settings.viewer_token_ttl)
     base = settings.live_relay_url.rstrip("/")
     ws_base = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
     grant = {
@@ -73,7 +75,7 @@ def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "")
             s: {"watch_url": "%s/watch/%s/%s?token=%s" % (ws_base, device_id, s, token)}
             for s in _clean_streams(streams)
         },
-        "expires_in_s": settings.live_token_ttl,
+        "expires_in_s": settings.viewer_token_ttl,
     }
     if datalake_url and settings.datalake_token_secret:
         # The read side: topics for the pane list, logs/{topic} for backscroll --
@@ -81,11 +83,11 @@ def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "")
         dl = datalake_url.rstrip("/")
         grant["datalake"] = {
             "token": mint_token(settings.datalake_token_secret, "viewer", device_id,
-                                settings.datalake_token_ttl),
+                                settings.viewer_token_ttl),
             "topics_url": "%s/api/v1/topics/%s" % (dl, device_id),
             "logs_url": "%s/api/v1/logs/%s" % (dl, device_id),      # + /{topic}
             "series_url": "%s/api/v1/series/%s" % (dl, device_id),  # + /{topic}
-            "expires_in_s": settings.datalake_token_ttl,
+            "expires_in_s": settings.viewer_token_ttl,
         }
     return grant
 

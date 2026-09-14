@@ -88,6 +88,11 @@ class ServerSettings(BaseSettings):
         validation_alias=AliasChoices("OPENMV_OTA_DATALAKE_TOKEN_SECRET",
                                       "OPENMV_DATALAKE_TOKEN_SECRET"))
     datalake_token_ttl: int = 86400        # seconds; renewed each check-in, like Live's
+    # A dashboard's viewer grant (relay watch token + datalake read token) is handed to a
+    # browser or a script and cannot be revoked short of rotating a secret, so it lives
+    # MINUTES, not the day a sleeping camera's own grant needs. One TTL covers both halves:
+    # the grant is one credential for one sitting.
+    viewer_token_ttl: int = 300
     # Browser origins allowed to call this API cross-origin, comma-separated, e.g.
     # OPENMV_OTA_CORS_ALLOW_ORIGINS="https://cloud.openmv.io,https://staging.openmv.io".
     # EMPTY BY DEFAULT, which means no CORS headers at all -- a browser on another origin simply

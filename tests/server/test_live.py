@@ -7,6 +7,7 @@ The token algorithm must stay in lockstep with the relay's verifier
 
 import hashlib
 import hmac
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +21,7 @@ from openmv_ota.server.verify import Registration
 
 RELAY = "https://live.cloud.openmv.io"
 SECRET = "live-test-secret"
+DATALAKE = "https://data.cloud.openmv.io"
 
 
 class _Verifier:
@@ -216,6 +218,24 @@ def test_viewer_grant_includes_the_datalake_half_with_its_own_token():
     want = hmac.new(b"dl-secret", b"viewer:dev1:%d" % int(exp),
                     hashlib.sha256).hexdigest()
     assert mac == want                            # signed with the DATALAKE's secret
+
+
+def test_viewer_grant_lives_minutes_whatever_the_device_grants_do():
+    """A viewer credential leaves the server (browser, script) and can't be recalled, so
+    its lifetime is its own short setting, not the day-long camera/ingest TTLs."""
+    settings = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
+                              live_relay_url=RELAY, live_token_secret=SECRET,
+                              datalake_token_secret=SECRET,
+                              live_token_ttl=86400, datalake_token_ttl=86400)
+    g = live.viewer_grant(settings, "cam-42", datalake_url=DATALAKE)
+    assert g["expires_in_s"] == g["datalake"]["expires_in_s"] == 300
+    short = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
+                           live_relay_url=RELAY, live_token_secret=SECRET,
+                           datalake_token_secret=SECRET, viewer_token_ttl=60)
+    g = live.viewer_grant(short, "cam-42", datalake_url=DATALAKE)
+    assert g["expires_in_s"] == g["datalake"]["expires_in_s"] == 60
+    exp = int(g["datalake"]["token"].split(".")[0])
+    assert exp - time.time() <= 60
 
 
 def test_viewer_grant_omits_the_datalake_half_without_its_secret():
