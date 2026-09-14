@@ -291,6 +291,24 @@ def test_data_reads_ride_a_viewer_grant():
     assert c.calls[-1][2]["params"] == {"field": "imu.ax", "buckets": 50, "since": 1.0, "until": 2.0}
     api.data_series("d1", "telemetry", "fps")
     assert c.calls[-1][2]["params"] == {"field": "fps", "buckets": 200}
+    # a product's reads ride the product grant instead
+    pgrant = {"datalake": {"token": "prod-tok", "topics_url": "https://lake/api/v1/products/a/7/topics",
+                           "series_url": "https://lake/api/v1/products/a/7/series", "expires_in_s": 300},
+              "expires_in_s": 300}
+
+    class _Prod(_Seq):
+        def request(self, method, path, **kw):
+            self.calls.append((method, path, kw))
+            return _Resp(200, pgrant if path.endswith("/7/viewer-grant") else {"ok": path})
+    c = _Prod(None)
+    api = Api(_cfg(), client=c)
+    assert api.product_grant(7) == pgrant
+    assert c.calls[-1][:2] == ("POST", "/api/v1/admin/products/7/viewer-grant")
+    assert api.data_topics(product_id=7) == {"ok": "https://lake/api/v1/products/a/7/topics"}
+    assert c.calls[-1][2]["headers"] == {"Authorization": "Bearer prod-tok"}
+    api.data_series(product_id=7, topic="telemetry", field="temp_c", buckets=8)
+    assert c.calls[-1][1] == "https://lake/api/v1/products/a/7/series/telemetry"
+    assert c.calls[-1][2]["params"] == {"field": "temp_c", "buckets": 8}
 
     class _Bad(_Seq):
         def request(self, method, path, **kw):

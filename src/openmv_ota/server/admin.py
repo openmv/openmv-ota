@@ -11,6 +11,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
 from pydantic import BaseModel
 
+from . import datalog as datalog_mod
 from . import live as live_mod
 from .auth import Principal, hash_token, require_scope
 from .schemas import (
@@ -20,7 +21,7 @@ from .schemas import (
     AccountList,
     AccountNamed,
     AdvisoryList,
-    ProductList, ProductRenamed,
+    ProductList, ProductRenamed, ProductViewerGrant,
     AdvisoryScan,
     AuditList,
     CohortAssigned,
@@ -954,6 +955,23 @@ def rename_product(product_id: int, body: DeviceName, request: Request,
                     entity_id=str(product_id), data={"name": name},
                     account_id=principal.account_id)
     return {"product_id": product_id, "display_name": name}
+
+
+@admin.post("/products/{product_id}/viewer-grant", responses={200: {"model": ProductViewerGrant}})
+def product_viewer_grant(product_id: int, request: Request,
+                         principal: Principal = Depends(require_scope("observe"))):
+    """Mint a short-lived read credential for a product's data across ALL its devices:
+    the datalake's product viewer token and the URLs it opens (topics, series). The
+    product must be one of the account's (seen on a device or a release), else 404;
+    a server with no datalake answers 503."""
+    st = request.app.state
+    if not any(p["product_id"] == product_id
+               for p in st.metastore.list_products(account_id=principal.account_id)):
+        raise HTTPException(status_code=404)
+    grant = datalog_mod.product_grant(st.settings, principal.account_id, product_id)
+    if grant is None:
+        raise HTTPException(status_code=503, detail="the datalake is not configured")
+    return grant
 
 
 @admin.post("/devices/{device_id}/viewer-grant", responses={200: {"model": ViewerGrant}})

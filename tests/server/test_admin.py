@@ -924,6 +924,32 @@ def _seed_device(store, device_id="dev1", account_id="", streams="0,thermal"):
     return device_id
 
 
+def test_product_viewer_grant_opens_a_products_data(tmp_path):
+    """One credential for a product's data across all its devices: the datalake's
+    product token and its two URLs. Only the account's own products; a server without
+    a datalake says so."""
+    app, store = _live_app(tmp_path)
+    _seed_device(store)
+    c = TestClient(app)
+    r = c.post("/api/v1/admin/products/%d/viewer-grant" % BID, headers=AUTH)
+    assert r.status_code == 200
+    dl = r.json()["datalake"]
+    assert dl["topics_url"] == "https://data.test/api/v1/products/default/%d/topics" % BID
+    assert dl["series_url"].endswith("/products/default/%d/series" % BID)
+    assert dl["token"] and dl["expires_in_s"] == r.json()["expires_in_s"] > 0
+    assert c.post("/api/v1/admin/products/999/viewer-grant", headers=AUTH).status_code == 404
+    app2, store2 = _app(_mk(tmp_path, "plain"))
+    _seed_device(store2)
+    assert TestClient(app2).post("/api/v1/admin/products/%d/viewer-grant" % BID,
+                                 headers=AUTH).status_code == 503
+
+
+def _mk(tmp_path, name):
+    d = tmp_path / name
+    d.mkdir()
+    return d
+
+
 def test_viewer_grant_returns_watch_and_read_urls(tmp_path):
     app, store = _live_app(tmp_path)
     _seed_device(store)

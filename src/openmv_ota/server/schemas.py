@@ -435,6 +435,15 @@ class ViewerGrant(_Row):
     configured; absent otherwise."""
 
 
+class ProductViewerGrant(BaseModel):
+    """A short-lived read credential for one product's data across all its devices:
+    the datalake's product ``viewer`` token under ``datalake`` with the URLs it opens
+    (``topics_url``; ``series_url`` + ``/{topic}``)."""
+
+    datalake: dict
+    expires_in_s: int = 0
+
+
 # --- device-facing ------------------------------------------------------------------------------
 
 class CheckAnswer(_Row):

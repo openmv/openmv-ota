@@ -307,8 +307,14 @@ class Api:
         token: the datalake never accepts admin tokens itself."""
         return self._req("POST", "/api/v1/admin/devices/%s/viewer-grant" % device_id)
 
-    def _lake(self, device_id: str) -> dict:
-        grant = self.viewer_grant(device_id)
+    def product_grant(self, product_id):
+        """A short-lived read credential for a product's data across all its devices: the
+        datalake's product viewer token plus the topics/series URLs it opens."""
+        return self._req("POST", "/api/v1/admin/products/%s/viewer-grant" % product_id)
+
+    def _lake(self, device_id=None, product_id=None) -> dict:
+        grant = (self.product_grant(product_id) if product_id is not None
+                 else self.viewer_grant(device_id))
         lake = grant.get("datalake")
         if not lake:
             raise ClientError("the server has no datalake configured: nothing to read", exit_code=1)
@@ -323,9 +329,11 @@ class Api:
                               exit_code=1)
         return resp.json()
 
-    def data_topics(self, device_id: str):
-        """The device's topics with their fields (typed from the records' JSON) and latest values."""
-        lake = self._lake(device_id)
+    def data_topics(self, device_id=None, product_id=None):
+        """The device's topics with their fields (typed from the records' JSON) and latest
+        values -- or, with ``product_id``, the same across every device of the product
+        (``latest`` is the fleet's reading, ``spread`` its min/max/devices)."""
+        lake = self._lake(device_id, product_id)
         return self._lake_get(lake["topics_url"], lake["token"])
 
     def data_logs(self, device_id: str, topic: str = "console", sid=None, before_seq=None,
@@ -340,11 +348,12 @@ class Api:
             params["before_seq"] = before_seq
         return self._lake_get("%s/%s" % (lake["logs_url"], topic), lake["token"], params)
 
-    def data_series(self, device_id: str, topic: str, field: str, since=None, until=None,
-                    buckets: int = 200):
+    def data_series(self, device_id=None, topic: str = "", field: str = "", since=None,
+                    until=None, buckets: int = 200, product_id=None):
         """A numeric field downsampled into time buckets (min/avg/max/n each), over the
-        topic's whole span or ``since``..``until`` (epoch seconds)."""
-        lake = self._lake(device_id)
+        topic's whole span or ``since``..``until`` (epoch seconds); with ``product_id``
+        the buckets pool every device of the product."""
+        lake = self._lake(device_id, product_id)
         params = {"field": field, "buckets": buckets}
         if since is not None:
             params["since"] = since

@@ -69,6 +69,41 @@ hit the server's object cap for one request: narrow the window rather than trust
 partial chart.
 
 
+## A whole product at once
+
+The same two reads answer for every device of a product together, from the
+product's viewer grant instead of a device's. `topics` keeps the device shape, but
+`latest` is the fleet's reading — the average of each device's latest number, or how
+many devices report true for a bool — and `spread` carries the min, the max and how
+many devices are behind each figure:
+
+```
+$ openmv-ota client data topics --product-id 396486252
+{
+  "topics": [
+    { "topic": "telemetry", "objects": 5120, "bytes": 3218902, "records": 51200, "devices": 412,
+      "fields": { "temp_c": "number", "fps": "number", "ok": "bool" },
+      "latest": { "temp_c": 34.1, "fps": 26.8, "ok": 409 },
+      "spread": { "temp_c": { "min": 29.6, "max": 41.2, "n": 412 },
+                  "fps": { "min": 19.0, "max": 30.1, "n": 412 }, "ok": { "n": 412, "true": 409 } },
+      "latest_ts": 1789339520.0, "truncated": false }
+  ]
+}
+```
+
+`series --product-id` pools every device's samples into each bucket, so the band
+between `min` and `max` is the fleet's spread and `devices` counts the contributors:
+
+```
+$ openmv-ota client data series --product-id 396486252 --topic telemetry --field temp_c --buckets 4
+{ "field": "temp_c", "since": 1789253120.0, "until": 1789339520.0, "truncated": false, "devices": 412,
+  "buckets": [ { "t": 1789253120.0, "n": 39552, "min": 28.9, "max": 42.0, "avg": 34.6 }, ... ] }
+```
+
+Strings do not aggregate, so a product's `fields` carries numbers and bools only.
+`client product grant --product-id ...` prints the grant itself.
+
+
 ## Without the CLI
 
 Two calls. First the grant, with any admin token that has `observe` — it is scoped to
@@ -101,6 +136,10 @@ Then the read, under the datalake token, at the URL the grant named (`logs_url` 
 $ curl -s -H "Authorization: Bearer $LAKE_TOKEN" \
       "https://data.cloud.openmv.io/api/v1/series/cam-0f3a/telemetry?field=fps&buckets=50"
 ```
+
+A product's grant is `POST .../admin/products/{product_id}/viewer-grant`: its `datalake`
+half names a `topics_url` and a `series_url` (`+ /{topic}`) under
+`/api/v1/products/{account}/{product}/...`, opened by that grant's own token.
 
 Grants expire in minutes by design: mint one per run, not one per month. `client device
 grant --device-id ...` prints exactly this grant if you want the CLI to do only that half.

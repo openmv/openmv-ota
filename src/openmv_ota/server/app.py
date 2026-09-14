@@ -568,7 +568,8 @@ def check(checkin: CheckIn, request: Request):
     if grant is not None:
         resp["live"] = grant
     # Datalake: registered devices get a fresh ingest grant each check-in too.
-    ingest = datalog_mod.ingest_grant(st.settings, account_id, checkin.device_id)
+    ingest = datalog_mod.ingest_grant(st.settings, account_id, checkin.device_id,
+                                      checkin.product_id)
     if ingest is not None:
         resp["ingest"] = ingest
     return resp

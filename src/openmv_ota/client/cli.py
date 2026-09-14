@@ -201,6 +201,12 @@ def register(parser: argparse.ArgumentParser) -> None:
     _list_flags(p_prl, "product, devices, releases, newest")
     _creds(p_prl)
     p_prl.set_defaults(func=cmd_products, _command="client product list")
+    p_prg = prsub.add_parser("grant", help="a short-lived read credential for the product's data "
+                                           "across all its devices (the datalake token + URLs)")
+    p_prg.add_argument("--product-id", required=True, type=int, metavar="PRODUCT_ID",
+                       help="the product to read")
+    _creds(p_prg)
+    p_prg.set_defaults(func=cmd_product_grant, _command="client product grant")
     p_prn = prsub.add_parser("rename", help="set a product's display name (a label; --clear "
                                             "shows the manifest name again)")
     p_prn.add_argument("--product-id", required=True, type=int, metavar="PRODUCT_ID",
@@ -312,10 +318,15 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_dvg)
     p_dvg.set_defaults(func=cmd_device_grant, _command="client device grant")
 
-    p_data = sub.add_parser("data", help="read a device's data from the datalake (JSON)")
+    p_data = sub.add_parser("data", help="read device data from the datalake: one device, "
+                                         "or a whole product's devices together (JSON)")
     dasub = p_data.add_subparsers(dest="_data")
-    p_dat = dasub.add_parser("topics", help="the device's topics: fields, types, latest values")
-    p_dat.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="the device to read")
+    p_dat = dasub.add_parser("topics", help="topics: fields, types, latest values (a device's, "
+                                            "or the fleet's across a product)")
+    gdt = p_dat.add_mutually_exclusive_group(required=True)
+    gdt.add_argument("--device-id", metavar="DEVICE_ID", help="the device to read")
+    gdt.add_argument("--product-id", type=int, metavar="PRODUCT_ID",
+                     help="every device of this product together")
     _creds(p_dat)
     p_dat.set_defaults(func=cmd_data_topics, _command="client data topics")
     p_dal = dasub.add_parser("logs", help="a page of a text topic's records (newest session)")
@@ -326,8 +337,12 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_dal.add_argument("--limit", type=int, default=200, help="records per page (default 200)")
     _creds(p_dal)
     p_dal.set_defaults(func=cmd_data_logs, _command="client data logs")
-    p_das = dasub.add_parser("series", help="a numeric field downsampled into time buckets")
-    p_das.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="the device to read")
+    p_das = dasub.add_parser("series", help="a numeric field downsampled into time buckets "
+                                            "(a device's, or pooled across a product)")
+    gds = p_das.add_mutually_exclusive_group(required=True)
+    gds.add_argument("--device-id", metavar="DEVICE_ID", help="the device to read")
+    gds.add_argument("--product-id", type=int, metavar="PRODUCT_ID",
+                     help="every device of this product together")
     p_das.add_argument("--topic", required=True, help="the topic, e.g. telemetry")
     p_das.add_argument("--field", required=True, help="the field under data, dotted for nested (imu.ax)")
     p_das.add_argument("--since", type=float, help="window start, epoch seconds (default: the data's span)")
@@ -822,7 +837,7 @@ def cmd_device_grant(args: argparse.Namespace) -> int:
 
 
 def cmd_data_topics(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.data_topics(args.device_id))
+    return _read(args, lambda api: api.data_topics(args.device_id, product_id=args.product_id))
 
 
 def cmd_data_logs(args: argparse.Namespace) -> int:
@@ -833,7 +848,8 @@ def cmd_data_logs(args: argparse.Namespace) -> int:
 def cmd_data_series(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.data_series(args.device_id, args.topic, args.field,
                                                    since=args.since, until=args.until,
-                                                   buckets=args.buckets))
+                                                   buckets=args.buckets,
+                                                   product_id=args.product_id))
 
 
 def cmd_device_rename(args: argparse.Namespace) -> int:
@@ -864,6 +880,10 @@ def cmd_release_rename(args: argparse.Namespace) -> int:
     if name:
         return _emit(args, out, "release %s named %r" % (args.release_id, name))
     return _emit(args, out, "release %s name cleared" % args.release_id)
+
+
+def cmd_product_grant(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.product_grant(args.product_id))
 
 
 def cmd_product_rename(args: argparse.Namespace) -> int:

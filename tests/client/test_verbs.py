@@ -1163,6 +1163,20 @@ def test_device_grant_and_data_verbs(wired, tmp_path, capsys, monkeypatch):
     assert seen[-1] == ("https://lake/api/v1/series/d1/telemetry", "lake-tok",
                         {"field": "fps", "buckets": 4, "since": 10.0, "until": 20.0})
     capsys.readouterr()
+    # the same verbs read a whole product through the product grant
+    pgrant = {"datalake": {"token": "prod-tok", "topics_url": "https://lake/api/v1/products/a/1/topics",
+                           "series_url": "https://lake/api/v1/products/a/1/series", "expires_in_s": 300},
+              "expires_in_s": 300}
+    monkeypatch.setattr(api_mod.Api, "product_grant", lambda self, p: pgrant)
+    assert main(["client", "product", "grant", "--product-id", "1"]) == 0
+    assert json.loads(capsys.readouterr().out)["datalake"]["token"] == "prod-tok"
+    assert main(["client", "data", "topics", "--product-id", "1"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"url": "https://lake/api/v1/products/a/1/topics"}
+    assert main(["client", "data", "series", "--product-id", "1", "--topic", "telemetry",
+                 "--field", "temp_c"]) == 0
+    assert seen[-1] == ("https://lake/api/v1/products/a/1/series/telemetry", "prod-tok",
+                        {"field": "temp_c", "buckets": 200})
+    capsys.readouterr()
 
 
 def test_device_grant_against_the_real_server(wired, tmp_path, capsys):

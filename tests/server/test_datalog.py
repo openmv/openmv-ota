@@ -61,26 +61,42 @@ def relay_verify(token, role, subject):
 ])
 def test_ingest_grant_none_unless_configured(overrides):
     s = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t", **overrides)
-    assert datalog.ingest_grant(s, "acct1", "cam-42") is None
+    assert datalog.ingest_grant(s, "acct1", "cam-42", 7) is None
+    assert datalog.product_grant(s, "acct1", 7) is None
 
 
 def test_ingest_grant_binds_account_in_the_token():
     s = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
                        datalake_url=DATALAKE + "/", datalake_token_secret=SECRET,
                        datalake_token_ttl=1234)
-    g = datalog.ingest_grant(s, "acct1", "cam-42")
+    g = datalog.ingest_grant(s, "acct1", "cam-42", 7)
     assert g["expires_in_s"] == 1234
-    assert g["url"] == "https://data.cloud.openmv.io/api/v1/ingest/acct1/cam-42"
-    assert relay_verify(g["token"], "ingest", "acct1/cam-42")
-    assert not relay_verify(g["token"], "ingest", "other/cam-42")   # account bound
+    assert g["url"] == "https://data.cloud.openmv.io/api/v1/ingest/acct1/7/cam-42"
+    assert relay_verify(g["token"], "ingest", "acct1/7/cam-42")
+    assert not relay_verify(g["token"], "ingest", "other/7/cam-42")   # account bound
+    assert not relay_verify(g["token"], "ingest", "acct1/8/cam-42")   # and the product too
 
 
 def test_ingest_grant_empty_account_falls_back_to_default():
     s = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
                        datalake_url=DATALAKE, datalake_token_secret=SECRET)
-    g = datalog.ingest_grant(s, "", "cam-42")
-    assert g["url"].endswith("/api/v1/ingest/default/cam-42")
-    assert relay_verify(g["token"], "ingest", "default/cam-42")
+    g = datalog.ingest_grant(s, "", "cam-42", 7)
+    assert g["url"].endswith("/api/v1/ingest/default/7/cam-42")
+    assert relay_verify(g["token"], "ingest", "default/7/cam-42")
+
+
+def test_product_grant_opens_a_products_reads_for_minutes():
+    s = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
+                       datalake_url=DATALAKE, datalake_token_secret=SECRET, viewer_token_ttl=90)
+    g = datalog.product_grant(s, "acct1", 7)
+    dl = g["datalake"]
+    assert dl["topics_url"] == "https://data.cloud.openmv.io/api/v1/products/acct1/7/topics"
+    assert dl["series_url"] == "https://data.cloud.openmv.io/api/v1/products/acct1/7/series"
+    assert g["expires_in_s"] == dl["expires_in_s"] == 90
+    assert relay_verify(dl["token"], "viewer", "acct1/7")
+    assert not relay_verify(dl["token"], "viewer", "acct1/8")
+    assert not relay_verify(dl["token"], "viewer", "cam-42")          # not a device token
+    assert datalog.product_grant(s, "", 7)["datalake"]["topics_url"].endswith("/products/default/7/topics")
 
 
 # --- the check-in integration ------------------------------------------------
@@ -90,8 +106,8 @@ def test_checkin_carries_ingest_grant_when_configured(tmp_path):
     r = TestClient(app).post("/api/v1/check", json=CHECKIN)
     assert r.status_code == 200
     g = r.json()["ingest"]
-    assert g["url"].endswith("/cam-42")
-    assert relay_verify(g["token"], "ingest", "default/cam-42")  # no account bound yet -> default
+    assert g["url"].endswith("/%d/cam-42" % CHECKIN["product_id"])
+    assert relay_verify(g["token"], "ingest", "default/%d/cam-42" % CHECKIN["product_id"])  # no account bound yet -> default
 
 
 def test_checkin_without_datalake_config_omits_ingest(tmp_path):
