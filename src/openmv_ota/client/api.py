@@ -138,10 +138,13 @@ class Api:
                          params=self._page({}, limit, offset, sort, direction))
 
     def list_rollouts(self, product_id=None, limit=None, offset=None, state=None,
-                      cohort=None, sort=None, direction=None, release_id=None):
+                      cohort=None, sort=None, direction=None, release_id=None,
+                      pause_reason=None):
         params = self._page({}, None, None, sort, direction)
         if release_id is not None:
             params["release_id"] = release_id
+        if pause_reason is not None:
+            params["pause_reason"] = pause_reason
         if product_id is not None:
             params["product_id"] = product_id
         if state is not None:
@@ -276,8 +279,15 @@ class Api:
 
     def devices(self, product_id=None, cohort=None, limit=None, offset=None, sort=None,
                 direction=None, q=None, cohort_not=None, version=None,
-                older_than_release=None):
+                older_than_release=None, fell_back=False, unconfirmed=False,
+                not_seen_since=None):
         params = {}
+        if fell_back:
+            params["fell_back"] = "true"
+        if unconfirmed:
+            params["unconfirmed"] = "true"
+        if not_seen_since is not None:
+            params["not_seen_since"] = not_seen_since
         if version is not None:
             params["version"] = version
         if older_than_release is not None:

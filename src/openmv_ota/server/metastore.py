@@ -40,6 +40,13 @@ def _order(sort, direction, allowed: dict, default: str, tiebreak: str) -> str:
     return " ORDER BY " + default
 
 
+def _iso_at(epoch: float) -> str:
+    """An epoch as the ISO-8601 UTC string the store keeps timestamps in (so string
+    comparison in SQL orders by time)."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(float(epoch), timezone.utc).isoformat()
+
+
 def _limit(sql: str, params: tuple, limit, offset: int) -> tuple[str, tuple]:
     """Append the page clause. A limit pages; an offset alone still skips rows
     (SQLite reads ``LIMIT -1`` as no cap); neither leaves the query whole."""
@@ -254,6 +261,11 @@ _MIGRATIONS: list[list[str]] = [
         "account_id TEXT NOT NULL DEFAULT '', product_id INTEGER NOT NULL, "
         "display_name TEXT NOT NULL DEFAULT '', PRIMARY KEY (account_id, product_id))",
     ],
+    [   # v20 -- why a rollout is paused: 'operator' (PATCH state=paused), 'superseded' (a
+        # newer rollout took its (product, cohort)), or 'failure_limit' (auto-pause). NULL
+        # while active/stopped. A dashboard's "needs attention" is the failure_limit ones.
+        "ALTER TABLE rollouts ADD COLUMN pause_reason TEXT",
+    ],
 ]
 
 
@@ -394,11 +406,14 @@ class SqlMetadataStore:
                      "devices": "cohort_devices", "rollout": "r.rollout_id"}
 
     @staticmethod
-    def _rollouts_where(account_id, product_id, state, cohort, release_id=None) -> tuple[str, tuple]:
+    def _rollouts_where(account_id, product_id, state, cohort, release_id=None,
+                        pause_reason=None) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id)
         where = where.replace("account_id", "r.account_id").replace("product_id", "r.product_id")
         if state is not None:
             where, params = _and(where, "r.state = ?"), (*params, state)
+        if pause_reason is not None:                 # "paused by the failure limit" etc.
+            where, params = _and(where, "r.pause_reason = ?"), (*params, pause_reason)
         if cohort is not None:                       # "what targets this cohort"
             where, params = _and(where, "r.cohort = ?"), (*params, cohort)
         if release_id is not None:                   # "what ships this release"
@@ -406,20 +421,23 @@ class SqlMetadataStore:
         return where, params
 
     def count_rollouts(self, product_id=None, account_id=None, state=None, cohort=None,
-                       release_id=None) -> int:
-        where, params = self._rollouts_where(account_id, product_id, state, cohort, release_id)
+                       release_id=None, pause_reason=None) -> int:
+        where, params = self._rollouts_where(account_id, product_id, state, cohort, release_id,
+                                             pause_reason)
         return self.query_one("SELECT COUNT(*) AS n FROM rollouts r " + where, params)["n"]
 
     def list_rollouts(self, product_id: int | None = None, account_id=None, limit=None,
                       offset=0, state: str | None = None, cohort: str | None = None,
-                      sort=None, direction=None, release_id: str | None = None) -> list[dict]:
+                      sort=None, direction=None, release_id: str | None = None,
+                      pause_reason: str | None = None) -> list[dict]:
         # cohort_devices: how many devices sit in each rollout's (product, cohort) RIGHT NOW --
         # the audience its percent applies to. Computed live rather than stored, because cohort
         # membership shifts under the rollout (assignments, first check-ins).
         # up_to_date: how many of those devices run the rollout's release or something
         # newer -- the progress a list can show honestly (the offer percent is a dial, and
         # the counters count transitions, not devices).
-        where, params = self._rollouts_where(account_id, product_id, state, cohort, release_id)
+        where, params = self._rollouts_where(account_id, product_id, state, cohort, release_id,
+                                             pause_reason)
         sql = ("SELECT r.*, (SELECT COUNT(*) FROM devices d WHERE d.product_id = r.product_id "
                "AND d.cohort = r.cohort AND d.account_id = r.account_id) AS cohort_devices, "
                "(SELECT COUNT(*) FROM devices d JOIN releases rel ON rel.release_id = r.release_id "
@@ -612,10 +630,18 @@ class SqlMetadataStore:
 
     @staticmethod
     def _devices_where(account_id, product_id, cohort, q, cohort_not,
-                       version=None, older_than_pv=None) -> tuple[str, tuple]:
+                       version=None, older_than_pv=None, fell_back=None, unconfirmed=None,
+                       not_seen_since=None) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id)
         if cohort is not None:
             where, params = _and(where, "cohort = ?"), (*params, cohort)
+        if fell_back:                                # last boot rejected a slot
+            where = _and(where, "fallback_reason IS NOT NULL")
+        if unconfirmed:                              # mid-trial: deferring further updates
+            where = _and(where, "confirmed = 0")
+        if not_seen_since is not None:               # quiet: no check-in since this instant
+            where = _and(where, "(last_seen IS NULL OR last_seen < ?)")
+            params = (*params, _iso_at(not_seen_since))
         if version is not None:                      # "running exactly this version"
             where, params = _and(where, "current_version = ?"), (*params, version)
         if older_than_pv is not None:                # "not yet on (or past) this release"
@@ -630,16 +656,19 @@ class SqlMetadataStore:
         return where, params
 
     def count_devices(self, product_id=None, account_id=None, cohort=None, q=None,
-                      cohort_not=None, version=None, older_than_pv=None) -> int:
+                      cohort_not=None, version=None, older_than_pv=None, fell_back=None,
+                      unconfirmed=None, not_seen_since=None) -> int:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
-                                            version, older_than_pv)
+                                            version, older_than_pv, fell_back, unconfirmed,
+                                            not_seen_since)
         return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
 
     def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
                      cohort=None, offset: int = 0, sort=None, direction=None, q=None,
-                     cohort_not=None, version=None, older_than_pv=None) -> list[dict]:
+                     cohort_not=None, version=None, older_than_pv=None,
+                     fell_back=None, unconfirmed=None, not_seen_since=None) -> list[dict]:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
-                                            version, older_than_pv)
+                                            version, older_than_pv, fell_back, unconfirmed, not_seen_since)
         rows = self.query_all("SELECT * FROM devices " + where
                               + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
                               + " LIMIT ? OFFSET ?", (*params, limit, offset))
@@ -661,14 +690,22 @@ class SqlMetadataStore:
                                 + where + " ORDER BY payload_version DESC", params):
             newest.setdefault(r["product_id"], _d(r))
         labels = self.product_names(account_id)
+        # devices at or past the newest release: adoption in one figure per product
+        by_pv: dict = {}
+        for r in self.query_all("SELECT product_id, current_payload_version AS pv, COUNT(*) AS n "
+                                "FROM devices " + where + " GROUP BY product_id, pv", params):
+            by_pv.setdefault(r["product_id"], []).append((r["pv"], r["n"]))
         rows = []
         for pid in {*devs, *rels}:
             manifest = (newest.get(pid) or {}).get("product")
+            npv = (newest.get(pid) or {}).get("payload_version")
+            up = (sum(n for pv, n in by_pv.get(pid, []) if pv is not None and pv >= npv)
+                  if npv is not None else 0)
             rows.append({"product_id": pid, "product": labels.get(pid) or manifest,
                          "display_name": labels.get(pid, ""), "manifest_name": manifest,
                          "devices": devs.get(pid, 0), "releases": rels.get(pid, 0),
                          "newest_version": (newest.get(pid) or {}).get("version"),
-                         "newest_payload_version": (newest.get(pid) or {}).get("payload_version")})
+                         "newest_payload_version": npv, "up_to_date": up})
         rows.sort(key=lambda p: ((p["product"] or "").lower(), p["product_id"]))
         return rows
 
@@ -689,7 +726,9 @@ class SqlMetadataStore:
 
     PRODUCT_SORTS = {"product": lambda p: ((p["product"] or "").lower(), p["product_id"]),
                      "devices": lambda p: p["devices"], "releases": lambda p: p["releases"],
-                     "newest": lambda p: p["newest_payload_version"] or -1}
+                     "newest": lambda p: p["newest_payload_version"] or -1,
+                     "up_to_date": lambda p: p["up_to_date"],
+                     "share": lambda p: (p["up_to_date"] / p["devices"]) if p["devices"] else -1.0}
 
     def page_products(self, account_id=None, sort=None, direction=None, limit=None,
                       offset=0) -> tuple[list[dict], int]:

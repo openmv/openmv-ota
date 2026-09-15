@@ -83,7 +83,7 @@ separate from the release it carries. It binds together:
 - **one cohort** — the group of devices to distribute it to (`__default__` when you
   don't pass `--cohort`);
 - **a percentage** — how much of that cohort is currently offered it;
-- **a state** — `active`, `paused`, or `stopped`;
+- **a state** — `active`, `paused`, or `stopped` — and, while paused, a `pause_reason`: `operator`, `superseded` (a newer rollout took its cohort) or `failure_limit` (auto-paused). `rollout list --pause-reason failure_limit` is the list that needs attention;
 - **counters** — how many devices it was offered to (`attempted`), how many now run it
   (`updated`), how many fell back off it (`failures`).
 
@@ -183,7 +183,8 @@ $ openmv-ota client rollout list
       "percent": 5.0,
       "state": "active",
       "cohort_devices": 412,
-      "up_to_date": 21
+      "up_to_date": 21,
+      "pause_reason": null
     }
   ],
   "total": 1

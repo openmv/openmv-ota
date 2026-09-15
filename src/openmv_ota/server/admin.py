@@ -341,7 +341,7 @@ def create_rollout(body: RolloutCreate, request: Request,
     account_id = principal.account_id                      # the rollout inherits the caller's account
     prior = ms.active_rollout(product_id, body.cohort, account_id=account_id)   # one active per (account, product, cohort)
     if prior is not None:
-        ms.update_rollout(prior["rollout_id"], state="paused")
+        ms.update_rollout(prior["rollout_id"], state="paused", pause_reason="superseded")
         ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
                         entity_id=prior["rollout_id"], account_id=account_id)
     display_name = _label(body.display_name)
@@ -384,7 +384,9 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
         changes["state"] = body.state
     if not changes:
         raise HTTPException(status_code=400, detail="nothing to change")
-    ms.update_rollout(rollout_id, **changes)
+    ms.update_rollout(rollout_id, **changes,
+                      **({"pause_reason": "operator" if body.state == "paused" else None}
+                         if body.state is not None else {}))
     ms.append_audit(actor=principal.name, action="rollout.update", entity_type="rollout",
                     entity_id=rollout_id, data=changes, account_id=principal.account_id)
     return ms.get_rollout(rollout_id)
@@ -395,7 +397,7 @@ def stop_rollout(rollout_id: str, request: Request,
                      principal: Principal = Depends(require_scope("manage"))):
     ms = request.app.state.metastore
     _owned(ms.get_rollout(rollout_id), principal)
-    ms.update_rollout(rollout_id, state="stopped")       # stops offering; does not downgrade
+    ms.update_rollout(rollout_id, state="stopped", pause_reason=None)   # stops offering; does not downgrade
     ms.append_audit(actor=principal.name, action="rollout.stop", entity_type="rollout",
                     entity_id=rollout_id, account_id=principal.account_id)
     return {"rollout_id": rollout_id, "state": "stopped"}
@@ -405,13 +407,16 @@ def stop_rollout(rollout_id: str, request: Request,
 # /status is the complete single-rollout read (identity, policy, timestamps, counters,
 # derived score). Everything specific to one rollout lives there, once.
 _ROLLOUT_ROW = ("rollout_id", "release_id", "product_id", "cohort", "percent", "state",
-                "cohort_devices", "up_to_date", "display_name")
+                "cohort_devices", "up_to_date", "pause_reason", "display_name")
 
 
 @admin.get("/rollouts", responses={200: {"model": RolloutList}})
 def list_rollouts(request: Request, product_id: int | None = None, limit: int = _PAGE,
                   offset: int = 0, state: str | None = None, cohort: str | None = None,
                   release_id: str | None = Query(None, description="only rollouts of this release"),
+                  pause_reason: str | None = Query(
+                      None, description="only rollouts paused for this reason: operator, "
+                                        "superseded, failure_limit"),
                   sort: str | None = _sort_q("created, percent, state, cohort, product, name, "
                                              "devices, rollout"),
                   dir: str = _DIR_Q,
@@ -422,10 +427,11 @@ def list_rollouts(request: Request, product_id: int | None = None, limit: int = 
     ms = request.app.state.metastore
     rows = ms.list_rollouts(product_id, account_id=principal.account_id,
                             limit=limit, offset=offset, state=state, cohort=cohort,
-                            sort=sort, direction=dir, release_id=release_id)
+                            sort=sort, direction=dir, release_id=release_id,
+                            pause_reason=pause_reason)
     return {"rollouts": [{k: r[k] for k in _ROLLOUT_ROW} for r in rows],
             "total": ms.count_rollouts(product_id, principal.account_id, state, cohort,
-                                       release_id)}
+                                       release_id, pause_reason)}
 
 
 @admin.get("/rollouts/{rollout_id}/status", responses={200: {"model": RolloutStatus}})
@@ -912,6 +918,10 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
             older_than_release: str | None = Query(
                 None, description="only devices running something older than this release "
                                   "(by payload version) -- a rollout's not-yet-updated set"),
+            fell_back: bool = Query(False, description="only devices whose last boot rejected a slot"),
+            unconfirmed: bool = Query(False, description="only devices mid-trial (install unconfirmed)"),
+            not_seen_since: float | None = Query(
+                None, description="only devices with no check-in since this epoch second"),
             sort: str | None = _sort_q("seen, device, product, version, cohort, first_seen"),
             dir: str = _DIR_Q,
             principal: Principal = Depends(require_scope("observe"))):
@@ -922,9 +932,11 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
     return {"devices": _with_fallback_version(ms.list_devices(
                 product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset,
                 sort=sort, direction=dir, q=q, cohort_not=cohort_not, version=version,
-                older_than_pv=older_pv)),
+                older_than_pv=older_pv, fell_back=fell_back or None, unconfirmed=unconfirmed or None,
+                not_seen_since=not_seen_since)),
             "total": ms.count_devices(product_id, principal.account_id, cohort, q, cohort_not,
-                                      version, older_pv)}
+                                      version, older_pv, fell_back or None, unconfirmed or None,
+                                      not_seen_since)}
 
 
 @admin.get("/products", responses={200: {"model": ProductList}})

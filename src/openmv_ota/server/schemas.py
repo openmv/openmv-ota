@@ -82,6 +82,9 @@ class Rollout(_Row):
     cohort_devices: int = 0
     up_to_date: int = 0
     """Of those, the devices running this rollout's release or newer -- its real progress."""
+    pause_reason: str | None = None
+    """Why it is paused: ``operator``, ``superseded`` (a newer rollout took its cohort) or
+    ``failure_limit`` (auto-paused); None while active or stopped."""
     """Devices in this rollout's (product, cohort) right now -- the audience its percent
     applies to. Computed live on list reads; cohort membership shifts under the rollout."""
     state: str = ""
@@ -394,6 +397,8 @@ class Product(BaseModel):
     newest_version: str | None = None
     """The newest release's version string; None until one is published."""
     newest_payload_version: int | None = None
+    up_to_date: int = 0
+    """Devices running the newest release or past it -- the product's adoption in one figure."""
 
 
 class ProductList(BaseModel):

@@ -207,8 +207,24 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     store.upsert_device(device_id="d1", product_id=BID, cohort="beta",
                         current_payload_version=0x02000000)
     row = next(r for r in g("rollouts", cohort="beta", state="active")["rollouts"])
-    assert row["cohort_devices"] == 2 and row["up_to_date"] == 1
+    assert row["cohort_devices"] == 2 and row["up_to_date"] == 1 and row["pause_reason"] is None
     assert g("rollouts", cohort="beta")["total"] == 2
+    # why a rollout is paused rides on the row, and filters: an operator's pause, a
+    # supersession, and (elsewhere) the failure limit; resuming or stopping clears it
+    assert c.patch("/api/v1/admin/rollouts/ro_a", headers=AUTH, json={"state": "paused"}).status_code == 200
+    assert g("rollouts", pause_reason="operator")["total"] == 1
+    assert g("rollouts", pause_reason="operator")["rollouts"][0]["rollout_id"] == "ro_a"
+    assert c.patch("/api/v1/admin/rollouts/ro_a", headers=AUTH, json={"state": "active"}).status_code == 200
+    assert g("rollouts", pause_reason="operator")["total"] == 0
+    assert c.post("/api/v1/admin/rollouts", headers=AUTH,
+                  json={"release_id": "r2", "cohort": "beta", "percent": 5}).status_code == 200
+    assert g("rollouts", state="paused", pause_reason="superseded")["rollouts"][0]["rollout_id"] == "ro_a"
+    # devices: the attention filters (fell back, unconfirmed, quiet since an instant)
+    store.upsert_device(device_id="d2", product_id=BID, fallback_reason="A:body-sha", confirmed=0)
+    assert [d["device_id"] for d in g("devices", fell_back="true")["devices"]] == ["d2"]
+    assert g("devices", unconfirmed="true")["total"] == 1
+    assert g("devices", not_seen_since=2_000_000_000)["total"] == 3          # nobody seen after 2033
+    assert g("devices", not_seen_since=0)["total"] == 0                      # everyone since 1970
     assert g("rollouts", cohort="beta", state="stopped")["total"] == 1
     assert g("rollouts", sort="state", dir="asc")["rollouts"][0]["state"] == "active"
     # devices: q, cohort_not, sort by device name (display name counts), filtered total
@@ -225,9 +241,13 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     assert g("fleet")["products"][str(BID)]["releases"] == {
         "2.0.0": {"release_id": "r2", "display_name": ""}}
     # products: the directory on the contract too -- sort by device count, page, total,
-    # and the newest release's version rides along
+    # the newest release's version rides along, and up_to_date counts devices at or
+    # past it (d1 runs 0x02000000 = r1... the newest is r2 at 0x03000000: none yet)
     body = g("products", sort="devices", dir="desc", limit=1)
     assert body["total"] == 1 and body["products"][0]["devices"] == 3
+    assert body["products"][0]["up_to_date"] == 0
+    store.upsert_device(device_id="d3", product_id=BID, cohort="beta", current_payload_version=0x03000000)
+    assert g("products", sort="share", dir="desc")["products"][0]["up_to_date"] == 1
     assert body["products"][0]["newest_version"] == g("releases", sort="version", dir="desc")["releases"][0]["version"]
     assert g("products", offset=1)["products"] == []
     # audit: total + offset + sort by action; newest still works. Store-seeded rows
@@ -235,7 +255,7 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     assert c.post("/api/v1/admin/cohorts/create", headers=AUTH, json={"cohort": "staging"}).status_code == 200
     assert c.patch("/api/v1/admin/rollouts/ro_a", headers=AUTH, json={"percent": 50}).status_code == 200
     a = g("audit")
-    assert a["total"] == len(a["events"]) == 2
+    assert a["total"] == len(a["events"]) >= 2
     assert g("audit", sort="action", dir="asc")["events"][0]["action"] <= \
         g("audit", sort="action", dir="desc")["events"][0]["action"]
     assert g("audit", offset=1)["events"] == a["events"][1:]
@@ -262,7 +282,7 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     prods = g("products")
     assert prods["total"] == 1 and prods["products"][0] == {
         "product_id": BID, "product": "P", "display_name": "", "manifest_name": "P",
-        "devices": 3, "releases": 3,
+        "devices": 3, "releases": 3, "up_to_date": 1,                     # d3 reached r2 above
         "newest_version": "2.0.0", "newest_payload_version": 0x03000000}   # the seed stamps every release 2.0.0
     # a display name is the label shown; clearing it brings the manifest name back;
     # an id the account never saw is a 404; every change is audited

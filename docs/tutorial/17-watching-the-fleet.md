@@ -73,7 +73,7 @@ device/release counts. The name comes from the newest release's manifest unless
 
 ## The per-device rows
 
-`client device list` is the same picture one camera at a time — everything the device
+`client device list` is the same picture one camera at a time. Its filters include the three a dashboard's attention list is made of: `--fell-back` (the last boot rejected a slot), `--unconfirmed` (mid-trial) and `--not-seen-since EPOCH` (no check-in since). `client product list` rows carry `up_to_date`, the devices at or past the product's newest release. It — everything the device
 reported at its last check-in, plus what the server decided about it:
 
 ```

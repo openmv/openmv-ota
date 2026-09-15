@@ -450,7 +450,7 @@ def test_autopause_on_fallback_threshold(tmp_path):
     for d in ("d1", "d2"):                                    # 2 fall back -> 2/3 > 0.4 -> paused
         c.post("/api/v1/check", json=_checkin(dev=d, pv=0x01000000, fallback_reason="crc"))
     ro = store.get_rollout("ro1")
-    assert ro["failures"] == 2 and ro["state"] == "paused"
+    assert ro["failures"] == 2 and ro["state"] == "paused" and ro["pause_reason"] == "failure_limit"
     assert any(e["action"] == "rollout.autopause" for e in store.read_audit())
 
 

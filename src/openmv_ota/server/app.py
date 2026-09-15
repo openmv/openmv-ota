@@ -460,7 +460,7 @@ def _account(ms, ro, rel, checkin, existing, offered):
         fresh = ms.get_rollout(rid)
         if fresh["state"] == "active" and should_autopause(
                 fresh["failures"], fresh["attempted"], fresh["failure_threshold"]):
-            ms.update_rollout(rid, state="paused")
+            ms.update_rollout(rid, state="paused", pause_reason="failure_limit")
             ms.append_audit(actor="system", action="rollout.autopause", entity_type="rollout",
                             entity_id=rid, account_id=ro.get("account_id", ""),
                             data={"failures": fresh["failures"], "attempted": fresh["attempted"]})

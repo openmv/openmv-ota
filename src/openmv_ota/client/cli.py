@@ -183,6 +183,8 @@ def register(parser: argparse.ArgumentParser) -> None:
                        help="only rollouts in this state")
     p_rol.add_argument("--cohort", help="only rollouts targeting this cohort")
     p_rol.add_argument("--release-id", metavar="RELEASE_ID", help="only rollouts of this release")
+    p_rol.add_argument("--pause-reason", choices=("operator", "superseded", "failure_limit"),
+                       help="only rollouts paused for this reason")
     _list_flags(p_rol, "created, percent, state, cohort, product, name, devices, rollout")
     _creds(p_rol)
     p_rol.set_defaults(func=cmd_rollouts, _command="client rollout list")
@@ -282,6 +284,10 @@ def register(parser: argparse.ArgumentParser) -> None:
                        help="exclude devices in this cohort")
     p_dvl.add_argument("--q", metavar="TEXT", help="name-or-id substring, case-insensitive")
     p_dvl.add_argument("--version", dest="running_version", help="only devices running this version")
+    p_dvl.add_argument("--fell-back", action="store_true", help="only devices whose last boot rejected a slot")
+    p_dvl.add_argument("--unconfirmed", action="store_true", help="only devices mid-trial (install unconfirmed)")
+    p_dvl.add_argument("--not-seen-since", type=float, metavar="EPOCH",
+                       help="only devices with no check-in since this epoch second")
     p_dvl.add_argument("--older-than-release", metavar="RELEASE_ID",
                        help="only devices running something older than this release")
     _list_flags(p_dvl, "seen, device, product, version, cohort, first_seen")
@@ -993,7 +999,9 @@ def cmd_devices(args: argparse.Namespace) -> int:
                                                sort=args.sort, direction=args.dir,
                                                q=args.q, cohort_not=args.cohort_not,
                                                version=args.running_version,
-                                               older_than_release=args.older_than_release))
+                                               older_than_release=args.older_than_release,
+                                               fell_back=args.fell_back, unconfirmed=args.unconfirmed,
+                                               not_seen_since=args.not_seen_since))
 
 
 def cmd_releases(args: argparse.Namespace) -> int:
@@ -1007,7 +1015,8 @@ def cmd_rollouts(args: argparse.Namespace) -> int:
                                                      offset=args.offset, state=args.state,
                                                      cohort=args.cohort, sort=args.sort,
                                                      direction=args.dir,
-                                                     release_id=args.release_id))
+                                                     release_id=args.release_id,
+                                                     pause_reason=args.pause_reason))
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
