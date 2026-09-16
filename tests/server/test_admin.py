@@ -794,7 +794,7 @@ def test_fleet_breakdowns_and_cohort_filter(tmp_path):
     assert body["products"][str(BID + 1)] == {
         "total": 1, "by_version": {"3.0.0": 1}, "by_fallback": {"unknown": 1},
         "by_cohort": {"beta": 1}, "releases": {}, "fell_back": 0, "unconfirmed": 0,
-        "up_to_date": 0}
+        "up_to_date": 0, "measured": 0}
     scoped = c.get("/api/v1/admin/fleet?cohort=beta&product_id=%d" % BID, headers=AUTH).json()
     assert scoped["total"] == 1
     assert scoped["products"][str(BID)]["by_version"] == {"1.2.0": 1}
@@ -843,11 +843,16 @@ def test_fleet_summary_counts_adoption_per_product_and_account_wide(tmp_path):
     assert body["products"][str(BID)]["up_to_date"] == 2
     assert body["products"][str(BID + 1)]["up_to_date"] == 0
     assert body["total"] == 4 and body["up_to_date"] == 2
+    # the unpublished product's device is OUTSIDE the ratio: 2 of the 3 measured, not
+    # 2 of 4. Nothing published means nothing to be behind of.
+    assert body["measured"] == 3
+    assert body["products"][str(BID)]["measured"] == 3
+    assert body["products"][str(BID + 1)]["measured"] == 0
     # totals: the same four numbers without shipping a breakdown per product. An account
     # with thousands of products would otherwise send all of them to render an overview.
     only = TestClient(app).get("/api/v1/admin/fleet?totals=true", headers=AUTH).json()
     assert only == {"total": 4, "fell_back": 0, "unconfirmed": 0, "up_to_date": 2,
-                    "products": {}}
+                    "measured": 3, "products": {}}
 
 
 # --- account isolation (adversarial: B must never see or touch A's data) --------------------

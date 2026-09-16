@@ -247,6 +247,9 @@ class ProductFleet(BaseModel):
     unconfirmed: int
     up_to_date: int
     """Devices at or past this product's newest release."""
+    measured: int
+    """The devices that count toward that: `total` once anything is published, 0 while
+    nothing is (with no newest release, a device is outside adoption, not behind it)."""
 
 
 class FleetSummary(BaseModel):
@@ -259,6 +262,9 @@ class FleetSummary(BaseModel):
     unconfirmed: int
     up_to_date: int
     """Account-wide adoption: devices at or past their own product's newest release."""
+    measured: int
+    """Adoption's denominator: the devices whose product HAS a newest release. Devices in
+    a product with nothing published are outside the ratio, never 0% of it."""
     products: dict[str, ProductFleet]
     """Empty when the read asked for `totals`: the counters above are all it returns."""
 

@@ -969,6 +969,10 @@ class SqlMetadataStore:
           up_to_date   -- devices at or past the product's newest release. Summed at the
                           top level too, so a dashboard reads fleet adoption without
                           paging every product and adding it up itself.
+          measured     -- the devices that COUNT toward that: a product with nothing
+                          published yet has no newest release to be behind of, so its
+                          devices are outside the ratio rather than 0% of it. Summed at
+                          the top level too; that sum is adoption's denominator.
 
         ``totals`` returns the account-wide counters ALONE (``products`` empty). An
         overview reads four numbers; an account with thousands of products would ship it
@@ -1013,7 +1017,7 @@ class SqlMetadataStore:
                                 "FROM devices " + where + " GROUP BY product_id, pv", params):
             by_pv.setdefault(r["product_id"], []).append((r["pv"], r["n"]))
         products: dict[str, dict] = {}
-        total = fell_back = unconfirmed = up_to_date = 0
+        total = fell_back = unconfirmed = up_to_date = measured = 0
         for r in self.query_all(
                 "SELECT product_id, COUNT(*) AS n, "
                 "SUM(CASE WHEN fallback_reason IS NOT NULL THEN 1 ELSE 0 END) AS fb, "
@@ -1029,13 +1033,15 @@ class SqlMetadataStore:
                     "by_fallback": by_fallback.get(pid, {}),
                     "by_cohort": by_cohort.get(pid, {}),
                     "releases": releases.get(pid, {}),
-                    "fell_back": r["fb"], "unconfirmed": r["uc"], "up_to_date": up}
+                    "fell_back": r["fb"], "unconfirmed": r["uc"], "up_to_date": up,
+                    "measured": r["n"] if npv is not None else 0}
             total += r["n"]
             fell_back += r["fb"]
             unconfirmed += r["uc"]
             up_to_date += up
+            measured += r["n"] if npv is not None else 0
         return {"total": total, "fell_back": fell_back, "unconfirmed": unconfirmed,
-                "up_to_date": up_to_date, "products": products}
+                "up_to_date": up_to_date, "measured": measured, "products": products}
 
     def list_cohorts(self, product_id: int | None = None, account_id=None,
                      products=None) -> list[dict]:

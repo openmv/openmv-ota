@@ -230,7 +230,7 @@ def test_fleet_devices_audit(wired, tmp_path, capsys):
     assert main(["client", "fleet", "--totals"]) == 0            # counters, no breakdown
     assert json.loads(capsys.readouterr().out) == {"total": 1, "fell_back": 0,
                                                    "unconfirmed": 0, "up_to_date": 0,
-                                                   "products": {}}
+                                                   "measured": 0, "products": {}}
     assert main(["client", "device", "list", "--product-id", str(BID)]) == 0
     assert json.loads(capsys.readouterr().out)["devices"][0]["device_id"] == "d1"
     store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",

@@ -14,6 +14,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which is keyed by version STRING (`"2.0.0"` against `"10.0.0"` is not a text
   comparison), so a dashboard would otherwise have to page every product and
   compare packed versions itself.
+- **`measured` on `GET /admin/fleet`**, per product and account-wide: the
+  devices adoption is measured over. A product with nothing published has no
+  newest release to be behind of, so its devices sit outside the ratio rather
+  than at 0% of it, and `measured` is the denominator that says so.
 - **`totals` on `GET /admin/fleet`** (`client fleet --totals`): the account-wide
   counters alone, with an empty `products`. An overview reads four numbers, and
   an account with thousands of products should not be sent every product's
