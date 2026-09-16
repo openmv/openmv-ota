@@ -409,6 +409,13 @@ class SqlMetadataStore:
                 self.execute(self._dialect(stmt))
                 return
             except Exception as e:                                   # noqa: BLE001
+                # A failed statement ABORTS the transaction in Postgres: every later
+                # command raises InFailedSqlTransaction until a rollback. So tolerating
+                # or retrying is only half the job -- without this the next statement
+                # fails for a different reason, which is exactly how the first version
+                # of this tolerance turned a DuplicateColumn into an aborted-transaction
+                # crash one line later.
+                self._rollback()
                 if self._is_already_applied(e):
                     # The object this statement creates is already there, so the
                     # statement's work is done. That state is reachable: each statement
@@ -426,6 +433,13 @@ class SqlMetadataStore:
                       % (attempt, self._LOCK_RETRIES, self._LOCK_BACKOFF_S, stmt[:60]),
                       file=sys.stderr, flush=True)
                 time.sleep(self._LOCK_BACKOFF_S)
+
+    def _rollback(self) -> None:
+        """Make the connection usable again after a failed statement."""
+        try:
+            self._conn.rollback()
+        except Exception:                      # pragma: no cover - driver without rollback
+            pass
 
     # Postgres SQLSTATEs for "the thing you are creating already exists": duplicate
     # column, table, object, index. sqlite says it in words instead.

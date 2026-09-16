@@ -234,6 +234,9 @@ def test_parameterless_sql_is_executed_without_a_parameter_sequence():
         def commit(self):
             pass
 
+        def rollback(self):
+            pass
+
     conn = _Conn()
     store = SqlMetadataStore(conn)
     store.execute("UPDATE devices SET x = 1 WHERE device_id NOT LIKE '%:%'")
@@ -364,3 +367,93 @@ def test_already_applied_is_recognised_by_sqlstate_as_well_as_by_words():
 
 class _Lock_like(Exception):
     sqlstate = "55P03"                        # a lock problem is not "already applied"
+
+
+def test_a_tolerated_or_retried_statement_rolls_the_transaction_back(monkeypatch):
+    """Postgres aborts the WHOLE transaction when a statement fails: every later command
+    raises InFailedSqlTransaction until a rollback. Skipping an already-applied
+    statement without rolling back therefore just moves the crash one line down -- which
+    is precisely what the first version of this tolerance did in production, turning a
+    DuplicateColumn into an aborted-transaction failure on the very next write."""
+    from openmv_ota.server.metastore import SqlMetadataStore
+
+    class _Dup(Exception):
+        sqlstate = "42701"
+
+    class _Lock(Exception):
+        sqlstate = "55P03"
+
+    class _Store(SqlMetadataStore):
+        def __init__(self, exc, times):
+            self.exc, self.times, self.rollbacks, self.ran = exc, times, 0, 0
+
+        def execute(self, sql, params=()):       # type: ignore[override]
+            self.ran += 1
+            if self.times > 0:
+                self.times -= 1
+                raise self.exc("boom")
+
+        def _rollback(self):                     # type: ignore[override]
+            self.rollbacks += 1
+
+    monkeypatch.setattr("openmv_ota.server.metastore.time.sleep", lambda _s: None)
+
+    dup = _Store(_Dup, 1)
+    dup._migrate_stmt("ALTER TABLE admin_tokens ADD COLUMN products TEXT")
+    assert (dup.ran, dup.rollbacks) == (1, 1)    # skipped, and the connection is usable
+
+    lock = _Store(_Lock, 2)
+    lock._migrate_stmt("ALTER TABLE releases ALTER COLUMN product_id TYPE BIGINT")
+    assert (lock.ran, lock.rollbacks) == (3, 2)  # every failed attempt rolled back
+
+
+class _PostgresManners(SqliteMetadataStore):
+    """sqlite that enforces Postgres' transaction rule.
+
+    The suite runs on sqlite, and sqlite forgives things Postgres does not -- which is
+    how three Postgres-only failures reached production in a row: an empty parameter
+    sequence turning a literal `%` into a format string, a duplicate column ending a
+    migration, and then a failed statement poisoning the transaction so that the NEXT
+    command failed instead. Only the last is about semantics rather than syntax, and
+    this is the smallest thing that reproduces it: after a failed statement, every
+    command raises until a rollback.
+    """
+
+    aborted = False
+
+    def _run(self, cur, sql, params):
+        if self.aborted:
+            raise RuntimeError("current transaction is aborted, commands ignored")
+        try:
+            return super()._run(cur, sql, params)
+        except Exception:
+            self.aborted = True
+            raise
+
+    def _rollback(self):
+        self.aborted = False
+        super()._rollback()
+
+
+def test_migrations_survive_postgres_transaction_semantics(tmp_path):
+    """Production's exact state, with Postgres' manners: schema_version says 21 while
+    v22's column is already there, and any failed statement aborts the transaction. This
+    is the test that would have caught the aborted-transaction crash before the deploy
+    rather than after it."""
+    from openmv_ota.server import metastore as M
+
+    db = str(tmp_path / "prod.db")
+    full = M._MIGRATIONS
+    try:
+        M._MIGRATIONS = full[:21]
+        seeded = _PostgresManners(db)
+        assert seeded.migrate() == 21
+        seeded.execute("ALTER TABLE admin_tokens ADD COLUMN products TEXT")
+    finally:
+        M._MIGRATIONS = full
+
+    store = _PostgresManners(db)
+    assert store.migrate() == 23             # walks past the orphaned column
+    store.add_token("h", "t", ["observe"], account_id="a", products=[7])
+    assert store.get_token("h")["products"] == [7]
+    assert _PostgresManners(db).migrate() == 23        # and is idempotent
