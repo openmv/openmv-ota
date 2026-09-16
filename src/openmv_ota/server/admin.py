@@ -34,8 +34,10 @@ from .schemas import (
     DeviceBound,
     DeviceList,
     DevicePinned,
+    ActivityList,
     FleetBases,
     FleetSummary,
+    InstallDays,
     Release,
     ReleaseList,
     Rollout,
@@ -811,6 +813,35 @@ def fleet(request: Request, product_id: int | None = None, cohort: str | None = 
     return summary
 
 
+@admin.get("/activity", responses={200: {"model": ActivityList}})
+def activity(request: Request, limit: int = Query(6, ge=1, le=50),
+             action_not: str | None = Query(None, description="hide one action, e.g. the "
+                                                              "periodic `advisory.scan`"),
+             principal: Principal = Depends(require_scope("observe"))):
+    """What has been happening, grouped: the newest event of each (action, actor) with
+    how many times that pair appears, newest group first.
+
+    This is what an overview wants, and a tail of `/audit` is not it: onboarding four
+    hundred devices writes four hundred consecutive rows, so the newest N of anything is
+    that one act repeated, with everything before it out of view no matter how deep the
+    caller pages. Use `/audit` for the log itself."""
+    return {"events": request.app.state.metastore.recent_activity(
+        limit=limit, account_id=principal.account_id, action_not=action_not)}
+
+
+@admin.get("/fleet/installs", responses={200: {"model": InstallDays}})
+def fleet_installs(request: Request, days: int = Query(14, ge=1, le=90),
+                   product_id: int | None = None,
+                   principal: Principal = Depends(require_scope("observe"))):
+    """Installs and failures per UTC day over the last `days` -- whether updates are
+    actually landing, which no other read answers: `/fleet` is the fleet as it stands
+    right now, and a rollout's counters are one release's story. Every day in the window
+    comes back, zero included, oldest first, so the series can be drawn as given."""
+    return request.app.state.metastore.installs_by_day(
+        days=days, product_id=product_id, account_id=principal.account_id,
+        products=principal.scoped())
+
+
 @admin.get("/fleet/bases", responses={200: {"model": FleetBases}})
 def fleet_bases(request: Request, product_id: int | None = None,
                 principal: Principal = Depends(require_scope("observe"))):
@@ -1033,6 +1064,11 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
                                                         "product's newest release -- the "
                                                         "complement of behind among devices "
                                                         "whose product has published one"),
+            installed_on: str | None = Query(None, description="only devices whose deployment "
+                                                               "was last reported installed on "
+                                                               "this UTC day (YYYY-MM-DD) -- one "
+                                                               "column of /fleet/installs"),
+            failed_on: str | None = Query(None, description="the same for a reported failure"),
             sort: str | None = _sort_q("seen, device, product, version, cohort, first_seen"),
             dir: str = _DIR_Q,
             principal: Principal = Depends(require_scope("observe"))):
@@ -1042,7 +1078,8 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
     `version` and `older_than_release` to find what is behind, `fell_back` and
     `unconfirmed` for devices that need attention, `not_seen_since` / `seen_since` (an
     epoch second) for the ones that have gone quiet, or are alive, and `behind` /
-    `up_to_date` for the two halves of the adoption the fleet summary counts."""
+    `up_to_date` for the two halves of the adoption the fleet summary counts, and
+    `installed_on` / `failed_on` for one day of the install series as a list."""
     ms = request.app.state.metastore
     older_pv = None
     if older_than_release is not None:
@@ -1053,12 +1090,14 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
                 older_than_pv=older_pv, fell_back=fell_back or None, unconfirmed=unconfirmed or None,
                 not_seen_since=not_seen_since, products=principal.scoped(),
                 seen_since=seen_since, behind=behind or None,
-                up_to_date=up_to_date or None)),
+                up_to_date=up_to_date or None, installed_on=installed_on,
+                failed_on=failed_on)),
             "total": ms.count_devices(product_id, principal.account_id, cohort, q, cohort_not,
                                       version, older_pv, fell_back or None, unconfirmed or None,
                                       not_seen_since, products=principal.scoped(),
                                       seen_since=seen_since, behind=behind or None,
-                                      up_to_date=up_to_date or None)}
+                                      up_to_date=up_to_date or None,
+                                      installed_on=installed_on, failed_on=failed_on)}
 
 
 @admin.get("/products", responses={200: {"model": ProductList}})

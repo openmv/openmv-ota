@@ -227,6 +227,17 @@ def test_fleet_devices_audit(wired, tmp_path, capsys):
     store.append_audit(actor="ci", action="release.publish")
     assert main(["client", "fleet"]) == 0
     assert json.loads(capsys.readouterr().out)["total"] == 1
+    # what has been happening, grouped, and the two day filters behind the chart
+    assert main(["client", "activity", "--limit", "3", "--not-action", "advisory.scan"]) == 0
+    assert "events" in json.loads(capsys.readouterr().out)
+    assert main(["client", "device", "list", "--installed-on", "2026-09-16",
+                 "--failed-on", "2026-09-16"]) == 0
+    assert json.loads(capsys.readouterr().out)["total"] == 0
+    assert main(["client", "installs", "--days", "3"]) == 0
+    series = json.loads(capsys.readouterr().out)
+    assert len(series["days"]) == 3 and series["installed"] == 0
+    assert main(["client", "installs", "--days", "3", "--product-id", str(BID)]) == 0
+    assert len(json.loads(capsys.readouterr().out)["days"]) == 3
     assert main(["client", "fleet", "--totals"]) == 0            # counters, no breakdown
     assert json.loads(capsys.readouterr().out) == {"total": 1, "fell_back": 0,
                                                    "unconfirmed": 0, "up_to_date": 0,

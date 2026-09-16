@@ -294,6 +294,10 @@ def register(parser: argparse.ArgumentParser) -> None:
                        help="only devices with a newer release published for their product")
     p_dvl.add_argument("--up-to-date", action="store_true",
                        help="only devices at or past their product's newest release")
+    p_dvl.add_argument("--installed-on", metavar="YYYY-MM-DD",
+                       help="only devices whose install was reported on this UTC day")
+    p_dvl.add_argument("--failed-on", metavar="YYYY-MM-DD",
+                       help="only devices whose failure was reported on this UTC day")
     p_dvl.add_argument("--older-than-release", metavar="RELEASE_ID",
                        help="only devices running something older than this release")
     _list_flags(p_dvl, "seen, device, product, version, cohort, first_seen")
@@ -445,6 +449,19 @@ def register(parser: argparse.ArgumentParser) -> None:
                       help="the account-wide counters alone, without the per-product breakdown")
     _creds(p_fl)
     p_fl.set_defaults(func=cmd_fleet, _command="client fleet")
+
+    p_ac = sub.add_parser("activity", help="what has been happening, grouped (JSON)")
+    p_ac.add_argument("--limit", type=int, default=6, help="how many groups (default 6)")
+    p_ac.add_argument("--not-action", dest="action_not", metavar="ACTION",
+                      help="hide one action, e.g. advisory.scan")
+    _creds(p_ac)
+    p_ac.set_defaults(func=cmd_activity, _command="client activity")
+
+    p_in = sub.add_parser("installs", help="installs and failures per day (JSON)")
+    p_in.add_argument("--days", type=int, default=14, help="how many days back (default 14)")
+    p_in.add_argument("--product-id", type=int, help="only this product")
+    _creds(p_in)
+    p_in.set_defaults(func=cmd_installs, _command="client installs")
 
     p_au = sub.add_parser("audit", help="the append-only audit log (JSON)")
     p_au.add_argument("--entity-id", metavar="ID",
@@ -993,6 +1010,14 @@ def cmd_release_sbom(args: argparse.Namespace) -> int:
         return e.exit_code
 
 
+def cmd_activity(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.activity(limit=args.limit, action_not=args.action_not))
+
+
+def cmd_installs(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.installs(days=args.days, product_id=args.product_id))
+
+
 def cmd_fleet(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.fleet(args.product_id, cohort=args.cohort,
                                             totals=args.totals))
@@ -1014,7 +1039,9 @@ def cmd_devices(args: argparse.Namespace) -> int:
                                                not_seen_since=args.not_seen_since,
                                                seen_since=args.seen_since,
                                                behind=args.behind,
-                                               up_to_date=args.up_to_date))
+                                               up_to_date=args.up_to_date,
+                                               installed_on=args.installed_on,
+                                               failed_on=args.failed_on))
 
 
 def cmd_releases(args: argparse.Namespace) -> int:

@@ -269,6 +269,18 @@ class Api:
         return self._req("POST", "/api/v1/admin/cohorts/pin",
                          json={"product_id": product_id, "cohort": cohort, "release_id": release_id})
 
+    def activity(self, limit=6, action_not=None):
+        params = {"limit": limit}
+        if action_not is not None:
+            params["action_not"] = action_not
+        return self._req("GET", "/api/v1/admin/activity", params=params)
+
+    def installs(self, days=14, product_id=None):
+        params = {"days": days}
+        if product_id is not None:
+            params["product_id"] = product_id
+        return self._req("GET", "/api/v1/admin/fleet/installs", params=params)
+
     def fleet(self, product_id=None, cohort=None, totals=False):
         params = {}
         if product_id is not None:
@@ -282,7 +294,8 @@ class Api:
     def devices(self, product_id=None, cohort=None, limit=None, offset=None, sort=None,
                 direction=None, q=None, cohort_not=None, version=None,
                 older_than_release=None, fell_back=False, unconfirmed=False,
-                not_seen_since=None, seen_since=None, behind=False, up_to_date=False):
+                not_seen_since=None, seen_since=None, behind=False, up_to_date=False,
+                installed_on=None, failed_on=None):
         params = {}
         if fell_back:
             params["fell_back"] = "true"
@@ -296,6 +309,10 @@ class Api:
             params["behind"] = "true"
         if up_to_date:
             params["up_to_date"] = "true"
+        if installed_on is not None:
+            params["installed_on"] = installed_on
+        if failed_on is not None:
+            params["failed_on"] = failed_on
         if version is not None:
             params["version"] = version
         if older_than_release is not None:

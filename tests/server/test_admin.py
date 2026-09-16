@@ -864,6 +864,70 @@ def test_fleet_summary_counts_adoption_per_product_and_account_wide(tmp_path):
                     "measured": 3, "products": {}}
 
 
+def test_activity_groups_a_burst_instead_of_being_buried_by_it(tmp_path):
+    """Onboarding a fleet writes one audit row per device. A tail of the log is then
+    that one act repeated, however deep you page, and everything before it is out of
+    view. Grouped, it is one row carrying its count, and the rest is still there."""
+    app, store = _app(tmp_path)
+    # nothing has happened yet: an empty log is an empty panel, not an error
+    assert TestClient(app).get("/api/v1/admin/activity", headers=AUTH).json() == {"events": []}
+    store.append_audit(actor="ci", action="release.publish", entity_type="release",
+                       entity_id="rel_a")
+    for i in range(40):                                   # the burst, newest in the log
+        store.append_audit(actor="kwabena", action="cohort.assign", entity_type="cohort",
+                           entity_id="beta", data={"device_ids": ["d%d" % i]})
+    store.append_audit(actor="scheduler", action="advisory.scan", entity_type="release",
+                       entity_id="rel_a")
+    c = TestClient(app)
+    events = c.get("/api/v1/admin/activity", headers=AUTH).json()["events"]
+    assert [(e["action"], e["count"]) for e in events] == [
+        ("advisory.scan", 1), ("cohort.assign", 40), ("release.publish", 1)]
+    # the row carried is the group's NEWEST, with its data intact
+    burst = events[1]
+    assert burst["data"] == {"device_ids": ["d39"]} and burst["actor"] == "kwabena"
+    # the periodic scan can be left out, and the same actor doing two things is two rows
+    quiet = c.get("/api/v1/admin/activity?action_not=advisory.scan", headers=AUTH).json()
+    assert [e["action"] for e in quiet["events"]] == ["cohort.assign", "release.publish"]
+    assert c.get("/api/v1/admin/activity?limit=1", headers=AUTH).json()["events"][0][
+        "action"] == "advisory.scan"
+    assert c.get("/api/v1/admin/activity?limit=0", headers=AUTH).status_code == 422
+
+
+def test_fleet_installs_is_a_zero_filled_series_oldest_first(tmp_path):
+    """Whether updates are LANDING, which no other read answers. Every day in the
+    window comes back so the caller draws the series as given: a quiet day is a zero
+    column, not a missing one that shortens the chart."""
+    app, store = _app(tmp_path)
+    for d in ("a", "b", "c"):                     # the rows the series is about
+        store.upsert_device(device_id=d, product_id=BID, current_version="1.0.0")
+    store.record_deployment(device_id="a", release_id="r1", product_id=BID, status="installed")
+    store.record_deployment(device_id="b", release_id="r1", product_id=BID, status="installed")
+    store.record_deployment(device_id="c", release_id="r1", product_id=BID, status="failed")
+    c = TestClient(app)
+    body = c.get("/api/v1/admin/fleet/installs?days=7", headers=AUTH).json()
+    assert len(body["days"]) == 7
+    assert [d["day"] for d in body["days"]] == sorted(d["day"] for d in body["days"])
+    assert body["installed"] == 2 and body["failed"] == 1
+    today = body["days"][-1]                      # recorded now: the newest column
+    assert today["installed"] == 2 and today["failed"] == 1
+    assert sum(d["installed"] + d["failed"] for d in body["days"][:-1]) == 0
+    # and each column is a LIST: the same day, as devices
+    import datetime
+    day = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    devs = c.get("/api/v1/admin/devices?installed_on=" + day, headers=AUTH).json()
+    assert {d["device_id"] for d in devs["devices"]} == {"a", "b"} and devs["total"] == 2
+    bad = c.get("/api/v1/admin/devices?failed_on=" + day, headers=AUTH).json()
+    assert {d["device_id"] for d in bad["devices"]} == {"c"}
+    assert c.get("/api/v1/admin/devices?installed_on=1999-01-01", headers=AUTH).json()["total"] == 0
+    # the window is the caller's, within bounds the server states
+    assert len(c.get("/api/v1/admin/fleet/installs?days=1", headers=AUTH).json()["days"]) == 1
+    assert c.get("/api/v1/admin/fleet/installs?days=0", headers=AUTH).status_code == 422
+    assert c.get("/api/v1/admin/fleet/installs?days=91", headers=AUTH).status_code == 422
+    # and it is scoped to the product when asked
+    assert c.get("/api/v1/admin/fleet/installs?product_id=%d" % (BID + 1),
+                 headers=AUTH).json()["installed"] == 0
+
+
 # --- account isolation (adversarial: B must never see or touch A's data) --------------------
 
 def _two_accounts(tmp_path):

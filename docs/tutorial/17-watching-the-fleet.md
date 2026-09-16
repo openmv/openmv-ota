@@ -71,6 +71,34 @@ overview that draws "950 devices, 94% on the newest release" needs those five nu
 not every product's version and cohort breakdown; on an account with thousands of
 products, that is the difference between a small response and a large one.
 
+## Is the fleet moving?
+
+`client fleet` is the fleet as it STANDS. Two reads say what it has been doing.
+
+`client installs --days 14` counts installs and failures per UTC day, oldest first,
+with every day in the window present (a quiet day is a zero, not a gap):
+
+```
+$ openmv-ota client installs --days 3
+{
+  "days": [ { "day": "2026-09-14", "installed": 0,  "failed": 0 },
+            { "day": "2026-09-15", "installed": 18, "failed": 1 },
+            { "day": "2026-09-16", "installed": 42, "failed": 0 } ],
+  "installed": 60,
+  "failed": 1
+}
+```
+
+`client device list --installed-on 2026-09-16` (and `--failed-on`) turns any one of
+those days back into the devices behind it.
+
+`client activity` is what has been happening, grouped: the newest event of each
+(action, actor), with how many times that pair appears. Grouping is the point --
+onboarding four hundred devices writes four hundred consecutive audit rows, so the
+newest N of *anything* is that one act repeated, and paging deeper only buys more of
+it. `--not-action advisory.scan` drops the periodic scan, which is a timer rather than
+the fleet doing something. For the log itself, in order, use `client audit`.
+
 ## Listing conventions
 
 Every `list` verb (`device`, `release`, `rollout`, `cohort`, `product`, `advisories`,

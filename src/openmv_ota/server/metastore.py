@@ -18,7 +18,7 @@ import json
 import sys
 import time
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .errors import ServerError
 
@@ -818,7 +818,8 @@ class SqlMetadataStore:
     def _devices_where(account_id, product_id, cohort, q, cohort_not,
                        version=None, older_than_pv=None, fell_back=None, unconfirmed=None,
                        not_seen_since=None, products=None, seen_since=None,
-                       behind=None, up_to_date=None) -> tuple[str, tuple]:
+                       behind=None, up_to_date=None, installed_on=None,
+                       failed_on=None) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id, products)
         if cohort is not None:
             where, params = _and(where, "cohort = ?"), (*params, cohort)
@@ -847,6 +848,15 @@ class SqlMetadataStore:
             where = _and(where, _NEWER)
         if up_to_date:
             where = _and(where, _ANY_REL + " AND NOT " + _NEWER)
+        # the install series' columns as lists: the devices whose deployment for some
+        # release was last reported installed (or failed) on that UTC day
+        for day, status in ((installed_on, "installed"), (failed_on, "failed")):
+            if day is not None:
+                where = _and(where, "EXISTS (SELECT 1 FROM deployments dp "
+                                    "WHERE dp.device_id = devices.device_id "
+                                    "AND dp.account_id = devices.account_id "
+                                    "AND dp.status = ? AND substr(dp.reported_at, 1, 10) = ?)")
+                params = (*params, status, day)
         if version is not None:                      # "running exactly this version"
             where, params = _and(where, "current_version = ?"), (*params, version)
         if older_than_pv is not None:                # "not yet on (or past) this release"
@@ -863,11 +873,12 @@ class SqlMetadataStore:
     def count_devices(self, product_id=None, account_id=None, cohort=None, q=None,
                       cohort_not=None, version=None, older_than_pv=None, fell_back=None,
                       unconfirmed=None, not_seen_since=None, products=None,
-                      seen_since=None, behind=None, up_to_date=None) -> int:
+                      seen_since=None, behind=None, up_to_date=None,
+                      installed_on=None, failed_on=None) -> int:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
                                             version, older_than_pv, fell_back, unconfirmed,
                                             not_seen_since, products, seen_since,
-                                            behind, up_to_date)
+                                            behind, up_to_date, installed_on, failed_on)
         return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
 
     def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
@@ -875,11 +886,11 @@ class SqlMetadataStore:
                      cohort_not=None, version=None, older_than_pv=None,
                      fell_back=None, unconfirmed=None, not_seen_since=None,
                      products=None, seen_since=None, behind=None,
-                     up_to_date=None) -> list[dict]:
+                     up_to_date=None, installed_on=None, failed_on=None) -> list[dict]:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
                                             version, older_than_pv, fell_back, unconfirmed,
                                             not_seen_since, products, seen_since,
-                                            behind, up_to_date)
+                                            behind, up_to_date, installed_on, failed_on)
         rows = self.query_all("SELECT * FROM devices " + where
                               + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
                               + " LIMIT ? OFFSET ?", (*params, limit, offset))
@@ -1288,6 +1299,37 @@ class SqlMetadataStore:
             "account_id = excluded.account_id, reported_at = excluded.reported_at",
             (device_id, release_id, product_id, status, reason, account_id, _now_iso()))
 
+    def installs_by_day(self, days: int = 14, product_id=None, account_id=None,
+                        products=None) -> dict:
+        """Installs and failures per UTC day, oldest first, over the last ``days``.
+
+        Every day in the window is present, zero-filled: the caller draws the series
+        without inventing the gaps, and a quiet Sunday is a zero column rather than a
+        missing one that silently shortens the chart.
+
+        It counts DEPLOYMENT ROWS -- one per (device, release) pair -- on the day they
+        were last reported. A device reporting the same release twice moves its own row
+        instead of adding one, so this is outcomes as they landed, which is what a fleet
+        chart wants and all the table can honestly answer."""
+        where, params = _scope(account_id, product_id, products)
+        start = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
+        where = _and(where, "reported_at >= ?")     # ISO text: a date prefix compares
+        params = (*params, start.isoformat())
+        by: dict[str, dict] = {}
+        for r in self.query_all("SELECT substr(reported_at, 1, 10) AS day, status, "
+                                "COUNT(*) AS n FROM deployments " + where
+                                + " GROUP BY substr(reported_at, 1, 10), status", params):
+            by.setdefault(r["day"], {})[r["status"]] = r["n"]
+        out, installed, failed = [], 0, 0
+        for i in range(days):
+            day = (start + timedelta(days=i)).isoformat()
+            got = by.get(day) or {}
+            ins, fail = int(got.get("installed") or 0), int(got.get("failed") or 0)
+            out.append({"day": day, "installed": ins, "failed": fail})
+            installed += ins
+            failed += fail
+        return {"days": out, "installed": installed, "failed": failed}
+
     def deployment_counts(self, release_id: str) -> dict:
         """Reported {installed, failed} counts for a release (from explicit /feedback)."""
         rows = self.query_all(
@@ -1424,6 +1466,35 @@ class SqlMetadataStore:
             sql += " AND action != ?"
             params.append(action_not)
         return sql, params
+
+    def recent_activity(self, limit: int = 6, account_id=None, action_not=None) -> list[dict]:
+        """What has been happening, GROUPED: the newest event of each (action, actor),
+        carrying how many times that pair appears in the log, newest group first.
+
+        A plain tail of the audit log is not this. Onboarding four hundred devices
+        writes four hundred consecutive rows, so the last N of anything is that one act,
+        four hundred times, and everything before it is invisible -- the deeper a caller
+        pages, the more of the same it gets. Grouping is the only way to answer "what has
+        been going on" in a fixed number of rows, and SQL is where it belongs: the group
+        is computed over the whole log, not over whatever window a caller happened to
+        read."""
+        where, params = self._audit_where(0, account_id, None, action_not, None)
+        groups = self.query_all(
+            "SELECT action, actor, COUNT(*) AS n, MAX(seq) AS newest FROM audit " + where
+            + " GROUP BY action, actor ORDER BY MAX(seq) DESC LIMIT ?", (*params, limit))
+        if not groups:
+            return []
+        seqs = [g["newest"] for g in groups]
+        marks = ",".join("?" * len(seqs))
+        rows = {r["seq"]: _d(r) for r in self.query_all(
+            "SELECT * FROM audit WHERE seq IN (%s)" % marks, tuple(seqs))}
+        out = []
+        for g in groups:                             # the newest row of each group, + count
+            row = rows[g["newest"]]
+            row["data"] = json.loads(row["data"])
+            row["count"] = g["n"]
+            out.append(row)
+        return out
 
     def count_audit(self, since_seq: int = 0, account_id=None, entity_id=None,
                     action_not=None, action=None) -> int:

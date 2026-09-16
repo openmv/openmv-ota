@@ -14,6 +14,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which is keyed by version STRING (`"2.0.0"` against `"10.0.0"` is not a text
   comparison), so a dashboard would otherwise have to page every product and
   compare packed versions itself.
+- **`GET /admin/fleet/installs`** (`client installs --days N`): installs and
+  failures per UTC day, every day in the window present and zero-filled, oldest
+  first. Whether updates are LANDING, which nothing else answered: `/fleet` is
+  the fleet as it stands now, and a rollout's counters are one release's story.
+- **`GET /admin/activity`** (`client activity`): what has been happening,
+  grouped -- the newest event of each (action, actor) with its count. A tail of
+  `/audit` cannot answer this: onboarding four hundred devices writes four
+  hundred consecutive rows, so the newest N of anything is that one act
+  repeated, with everything before it out of reach however deep a caller pages.
+- **`installed_on` / `failed_on` on `GET /admin/devices`**: one column of the
+  install series as a list of devices.
 - **`measured` on `GET /admin/fleet`**, per product and account-wide: the
   devices adoption is measured over. A product with nothing published has no
   newest release to be behind of, so its devices sit outside the ratio rather

@@ -146,6 +146,24 @@ class FleetBases(BaseModel):
     bases: list[FleetBase] = []
 
 
+class InstallDay(BaseModel):
+    """One UTC day of the install series. Every day in the window is present, zero
+    included, so a caller draws the series without inventing the gaps."""
+
+    day: str = ""
+    """The UTC date, ``YYYY-MM-DD``."""
+    installed: int = 0
+    failed: int = 0
+
+
+class InstallDays(BaseModel):
+    days: list[InstallDay] = []
+    """Oldest first."""
+    installed: int = 0
+    failed: int = 0
+    """Totals over the whole window."""
+
+
 class Cohort(_Row):
     cohort: str = ""
     devices: int = 0
@@ -155,6 +173,27 @@ class Cohort(_Row):
     pins: dict[str, str] = {}
     """Release id the cohort is pinned to, per product id -- devices there stay on it
     and rollouts don't move them. Absent product = not pinned."""
+
+
+class ActivityEvent(_Row):
+    """The newest event of one (action, actor) pair, with how many times that pair
+    appears in the log. An overview draws a fixed number of these; a burst of one act
+    is one row carrying its count, not the whole panel."""
+
+    seq: int = 0
+    ts: str = ""
+    actor: str = ""
+    action: str = ""
+    entity_type: str = ""
+    entity_id: str = ""
+    data: Any = None
+    count: int = 0
+    """Occurrences of this (action, actor) in the log."""
+
+
+class ActivityList(BaseModel):
+    events: list[ActivityEvent] = []
+    """Newest group first."""
 
 
 class AuditEvent(_Row):
