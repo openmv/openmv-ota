@@ -129,7 +129,8 @@ def test_checkin_carries_live_grant_when_configured(tmp_path):
     assert r.status_code == 200
     g = r.json()["live"]
     url = g["streams"]["0"]["camera_url"]
-    assert relay_verify(url.rsplit("token=", 1)[1], "camera", "cam-42")
+    # the grant's subject is the board-qualified identity the server stores
+    assert relay_verify(url.rsplit("token=", 1)[1], "camera", "OPENMV_N6:cam-42")
 
 
 def test_checkin_reported_streams_shape_the_grant(tmp_path):

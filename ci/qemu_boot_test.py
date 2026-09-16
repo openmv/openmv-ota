@@ -47,7 +47,8 @@ from openmv_ota.romfs.builder import build_image
 BOOT_PY = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
            / "build" / "device" / "boot.py")
 BLOCK = 4096
-BOARD = 0x1234            # the trailer product_id the path cases use (a test value)
+BOARD = 0x1234_5678_9ABC  # the trailer product_id the path cases use: a 64-bit
+                          # value, so a narrowed field would fail here too
 PLAT = 5 << 24
 V1 = 1 << 24
 
@@ -65,7 +66,7 @@ def _trailer(body, *, board=BOARD, minplat=0, pv=V1, body_size=None, key_id=0x10
     t = host_trailer.Trailer(
         body_size=len(body) if body_size is None else body_size, pad_size=0,
         meta={"k": 1}, product_id=board, min_platform_version=minplat, payload_version=pv,
-        reserved0=0, key_id=key_id, sig_alg=ES256,
+        key_id=key_id, sig_alg=ES256,
         body_sha256=hashlib.sha256(body).digest())
     t.signature = b"\x11" * spec.sig_size       # arbitrary; verify is injected on-device
     return host_trailer.pack_trailer(t)

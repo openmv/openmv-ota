@@ -274,10 +274,10 @@ _MIGRATIONS: list[list[str]] = [
         "account_id TEXT NOT NULL DEFAULT '', product_id BIGINT NOT NULL, "
         "display_name TEXT NOT NULL DEFAULT '', PRIMARY KEY (account_id, product_id))",
     ],
-    [   # v22 -- a token may be limited to some of its account's products. Empty/NULL is
-        # the ordinary case: the whole account. Stored as a comma-separated id list beside
-        # the scopes, which say what a token may DO; this says what it may do it TO.
-        "ALTER TABLE admin_tokens ADD COLUMN products TEXT",
+    [   # v20 -- why a rollout is paused: 'operator' (PATCH state=paused), 'superseded' (a
+        # newer rollout took its (product, cohort)), or 'failure_limit' (auto-pause). NULL
+        # while active/stopped. A dashboard's "needs attention" is the failure_limit ones.
+        "ALTER TABLE rollouts ADD COLUMN pause_reason TEXT",
     ],
     [   # v21 -- product_id widens to 64 bits. It was a crc32, and 32 bits collide at a
         # few thousand products (birthday bound) -- fatal for a platform minting one per
@@ -288,14 +288,36 @@ _MIGRATIONS: list[list[str]] = [
         "-- postgres: ALTER TABLE releases ALTER COLUMN product_id TYPE BIGINT",
         "-- postgres: ALTER TABLE rollouts ALTER COLUMN product_id TYPE BIGINT",
         "-- postgres: ALTER TABLE devices ALTER COLUMN product_id TYPE BIGINT",
-        "-- postgres: ALTER TABLE device_pins ALTER COLUMN product_id TYPE BIGINT",
+        "-- postgres: ALTER TABLE deployments ALTER COLUMN product_id TYPE BIGINT",
         "-- postgres: ALTER TABLE cohort_pins ALTER COLUMN product_id TYPE BIGINT",
         "-- postgres: ALTER TABLE products ALTER COLUMN product_id TYPE BIGINT",
     ],
-    [   # v20 -- why a rollout is paused: 'operator' (PATCH state=paused), 'superseded' (a
-        # newer rollout took its (product, cohort)), or 'failure_limit' (auto-pause). NULL
-        # while active/stopped. A dashboard's "needs attention" is the failure_limit ones.
-        "ALTER TABLE rollouts ADD COLUMN pause_reason TEXT",
+    [   # v22 -- a token may be limited to some of its account's products. Empty/NULL is
+        # the ordinary case: the whole account. Stored as a comma-separated id list beside
+        # the scopes, which say what a token may DO; this says what it may do it TO.
+        "ALTER TABLE admin_tokens ADD COLUMN products TEXT",
+    ],
+    [   # v23 -- device ids become board-qualified. machine.unique_id() is unique among
+        # boards of one TYPE (it is the MCU die id) and not across types, so two cameras
+        # could share a row: the sticky account binding would hand the second one the
+        # first's account, and its live view and telemetry would open onto the first's.
+        # Existing rows carry their board, so they are rekeyed in place.
+        #
+        # ORDER MATTERS. The tables that REFER to a device are rewritten first, while
+        # devices still holds the old key to join on; rekeying devices first would strand
+        # every binding and every install record against an id that no longer exists.
+        "UPDATE device_accounts SET device_id = ("
+        "  SELECT d.board || ':' || d.device_id FROM devices d "
+        "  WHERE d.device_id = device_accounts.device_id) "
+        "WHERE EXISTS (SELECT 1 FROM devices d WHERE d.device_id = device_accounts.device_id "
+        "              AND d.board IS NOT NULL AND d.board != '')",
+        "UPDATE deployments SET device_id = ("
+        "  SELECT d.board || ':' || d.device_id FROM devices d "
+        "  WHERE d.device_id = deployments.device_id) "
+        "WHERE EXISTS (SELECT 1 FROM devices d WHERE d.device_id = deployments.device_id "
+        "              AND d.board IS NOT NULL AND d.board != '')",
+        "UPDATE devices SET device_id = board || ':' || device_id "
+        "WHERE board IS NOT NULL AND board != '' AND device_id NOT LIKE '%:%'",
     ],
 ]
 

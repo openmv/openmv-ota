@@ -440,6 +440,25 @@ class Feedback(BaseModel):
     reason: str | None = None
 
 
+def _identity(req) -> str:
+    """The device identity this server stores, keyed by BOARD as well as unit.
+
+    ``machine.unique_id()`` is unique among boards of the same type -- it is the MCU's
+    die id -- and nothing makes it unique ACROSS types: two different parts can report
+    the same bytes. That id is the primary key of the device table, the subject of a
+    viewer grant, the relay's room name and the datalake's path segment, so a clash is
+    not cosmetic: two physical cameras become one row, the sticky account binding hands
+    the second device the first's account, and one customer's live view and telemetry
+    open onto another's.
+
+    The registration gate already keys on (board, id) -- the registry has always known
+    this -- so the fix is to key the same way here. Qualify the raw unit id with the
+    board it came from, after the gate has run on the raw parts. Devices that report no
+    board cannot be registered anyway, so they keep the raw id and are served read-only.
+    """
+    return "%s:%s" % (req.board, req.device_id) if req.board else req.device_id
+
+
 def _media_type(filename: str) -> str:
     return _MEDIA.get(filename, "application/gzip")
 
@@ -599,6 +618,7 @@ def check(checkin: CheckIn, request: Request):
         # is written: no device registry, no telemetry, no grants. Data collection is
         # the registration gate's privilege, because without the gate every row would
         # be attacker-growable.
+        checkin.device_id = _identity(checkin)     # board-qualified from here down
         _, rel, offered, manifest_url = _decide(st, checkin, "__default__",
                                                 account_id=checkin.account_id)
         if manifest_url:
@@ -612,6 +632,7 @@ def check(checkin: CheckIn, request: Request):
         # that set; we keep no copy). Serve OTA READ-ONLY: offers work, but no
         # device-registry write, so a fake id can't grow the DB -- zero footprint,
         # at the cost of no fleet tracking for these boards.
+        checkin.device_id = _identity(checkin)     # board-qualified from here down
         _, rel, offered, manifest_url = _decide(st, checkin, "__default__")
         if manifest_url:
             return {"update": True, "manifest_url": manifest_url,
@@ -619,6 +640,7 @@ def check(checkin: CheckIn, request: Request):
         return nothing
     if not reg.registered:
         return nothing                                          # ZERO footprint for unregistered ids
+    checkin.device_id = _identity(checkin)   # board-qualified: the registry ran on the raw parts
     ms = st.metastore
     account_id = _effective_account(ms, checkin)                # sticky binding, not the raw report
     existing = ms.get_device(checkin.device_id)
@@ -681,6 +703,7 @@ def feedback(report: Feedback, request: Request):
     reg = _verify(st, report)
     if reg.unregistered_board_type or not reg.registered:
         return {"ok": False}                                    # untracked / unregistered -> no write
+    report.device_id = _identity(report)     # the same board-qualified key check-in writes
     st.metastore.record_deployment(
         device_id=report.device_id, release_id=report.release_id, product_id=report.product_id,
         status=report.status, reason=report.reason, account_id=report.account_id)

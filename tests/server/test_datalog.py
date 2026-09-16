@@ -106,8 +106,10 @@ def test_checkin_carries_ingest_grant_when_configured(tmp_path):
     r = TestClient(app).post("/api/v1/check", json=CHECKIN)
     assert r.status_code == 200
     g = r.json()["ingest"]
-    assert g["url"].endswith("/%d/cam-42" % CHECKIN["product_id"])
-    assert relay_verify(g["token"], "ingest", "default/%d/cam-42" % CHECKIN["product_id"])  # no account bound yet -> default
+    # the ingest path and the token's subject both carry the board-qualified identity
+    assert g["url"].endswith("/%d/OPENMV_N6:cam-42" % CHECKIN["product_id"])
+    assert relay_verify(g["token"], "ingest",
+                        "default/%d/OPENMV_N6:cam-42" % CHECKIN["product_id"])  # no account yet -> default
 
 
 def test_checkin_without_datalake_config_omits_ingest(tmp_path):

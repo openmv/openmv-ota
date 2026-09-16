@@ -153,3 +153,51 @@ def test_postgres_migrate_clears_blockers_and_caps_the_lock_wait(monkeypatch, ca
     s2.migrate()
     assert not any("pg_terminate_backend" in q or "lock_timeout" in q for q in conn2.sql)
     assert "ended" not in capsys.readouterr().err
+
+
+def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
+    """Two things this pins, both learned the hard way.
+
+    **Order is identity.** A migration's version IS its position in the list, and a
+    deployed server records the last one it ran. Inserting a new migration ABOVE an old
+    one renumbers history: the server's next deploy skips the new work and re-applies
+    something it already did -- here, adding a column twice, which fails the migration
+    and takes the boot down with it. New migrations append.
+
+    **Dependants are rewritten before the thing they point at.** v23 board-qualifies
+    device ids; the binding and the install history join on the OLD key, so they move
+    first. Rekeying devices first would strand both against an id that no longer exists.
+    """
+    from openmv_ota.server import metastore as M
+
+    assert "pause_reason" in M._MIGRATIONS[19][0]          # v20, as production recorded it
+    assert "product_id TYPE BIGINT" in M._MIGRATIONS[20][0]
+    assert "admin_tokens ADD COLUMN products" in M._MIGRATIONS[21][0]
+    assert "device_accounts" in M._MIGRATIONS[22][0]       # dependants first
+    assert "UPDATE devices SET device_id" in M._MIGRATIONS[22][-1]
+
+    db = str(tmp_path / "prod.db")
+    full = M._MIGRATIONS
+    try:                                                   # a server last deployed at v20
+        M._MIGRATIONS = full[:20]
+        old = M.SqliteMetadataStore(db)
+        assert old.migrate() == 20
+        old.upsert_device(device_id="3c0021000c51", product_id=7, board="OPENMV_N6",
+                          account_id="acct")
+        old.bind_device_account("3c0021000c51", "acct", source="learned")
+        old.record_deployment(device_id="3c0021000c51", release_id="rel_1", product_id=7,
+                              status="installed", reason=None)
+        old.upsert_device(device_id="noboard", product_id=7, board=None, account_id="acct")
+    finally:
+        M._MIGRATIONS = full
+
+    store = M.SqliteMetadataStore(db)
+    assert store.migrate() == 23                           # the deploy applies 21, 22, 23
+    assert sorted(d["device_id"] for d in store.list_devices()) == [
+        "OPENMV_N6:3c0021000c51", "noboard"]               # board-less rows are left alone
+    assert store.device_account("OPENMV_N6:3c0021000c51")["account_id"] == "acct"
+    assert store.query_all("SELECT device_id FROM deployments")[0]["device_id"] == \
+        "OPENMV_N6:3c0021000c51"
+    store.add_token("h", "t", ["observe"], account_id="acct", products=[7])
+    assert store.get_token("h")["products"] == [7]
+    assert M.SqliteMetadataStore(db).migrate() == 23        # idempotent

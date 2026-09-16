@@ -22,9 +22,11 @@ class _Verifier:
                                  unregistered_board_type=unregistered_type)
         self.calls = 0
         self.last_board = None
+        self.last_device_id = None      # the registry must see the RAW unit id
 
     def verify(self, board, device_id):
         self.calls += 1
+        self.last_device_id = device_id
         self.last_board = board
         return self._reg
 
@@ -128,7 +130,46 @@ def test_firmware_board_sent_to_the_registry_verbatim(tmp_path):
     app, store, storage, v = _app(tmp_path)
     TestClient(app).post("/api/v1/check", json=_checkin(board="OPENMV_N6"))
     assert v.last_board == "OPENMV_N6"                       # verbatim, no translation
-    assert store.get_device("dev1")["board"] == "OPENMV_N6"  # and stored as reported
+    # The registry is asked about the RAW unit id; the device is STORED under a
+    # board-qualified one, because machine.unique_id() is only unique per board type.
+    assert v.last_device_id == "dev1"
+    assert store.get_device("dev1") is None
+    assert store.get_device("OPENMV_N6:dev1")["board"] == "OPENMV_N6"
+
+
+def test_two_board_types_may_share_a_unit_id_and_stay_two_devices(tmp_path):
+    """`machine.unique_id()` is the MCU die id: unique among boards of ITS type, and
+    nothing makes it unique across types. Two different cameras can report the same
+    bytes, and this id keys the device table, the viewer grant's subject, the relay's
+    room and the datalake's path -- so a clash would merge two cameras into one row and
+    let one customer's live view and telemetry open onto another's.
+
+    The registry has always keyed on (board, id); the server now stores the same way."""
+    app, store, _storage, v = _app(tmp_path)
+    c = TestClient(app)
+    same_uid = "3c0021000c51"
+    for board in ("OPENMV_N6", "OPENMV_RT1062"):
+        assert c.post("/api/v1/check", json=_checkin(dev=same_uid, board=board)).status_code == 200
+
+    # two rows, not one, and each remembers which board it is
+    assert store.get_device(same_uid) is None            # never the bare unit id
+    n6 = store.get_device("OPENMV_N6:" + same_uid)
+    rt = store.get_device("OPENMV_RT1062:" + same_uid)
+    assert n6 is not None and rt is not None
+    assert (n6["board"], rt["board"]) == ("OPENMV_N6", "OPENMV_RT1062")
+    assert store.count_devices() == 2
+
+    # and the registry still sees the raw unit id, which is what it stores
+    assert v.last_device_id == same_uid
+
+
+def test_a_device_that_reports_no_board_keeps_its_raw_id(tmp_path):
+    """Nothing to qualify with. Such a device cannot pass the registration gate anyway
+    (the registry is asked about a board), so it is served read-only and never stored --
+    this pins that the fallback does not invent a key like ':abc'."""
+    app, store, _storage, _v = _app(tmp_path, registered=False)
+    assert TestClient(app).post("/api/v1/check", json=_checkin(dev="abc")).status_code == 200
+    assert store.count_devices() == 0
 
 
 def test_unregistered_board_type_served_readonly_zero_footprint(tmp_path):
