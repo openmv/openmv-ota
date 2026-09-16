@@ -350,17 +350,30 @@ class SqlMetadataStore:
     def _sql(self, sql: str) -> str:
         return sql if self.paramstyle == "?" else sql.replace("?", "%s")
 
+    def _run(self, cur, sql: str, params: tuple):
+        """Execute, passing NO parameter sequence when there are none.
+
+        psycopg treats an empty sequence as "interpolate this", so a literal ``%`` in
+        the SQL -- ``LIKE '%:%'`` in a migration, say -- raises before the statement
+        ever reaches the server. sqlite3 ignores the distinction, so the failure exists
+        only in production, which is exactly where a migration must not fail."""
+        if params:
+            cur.execute(self._sql(sql), params)
+        else:
+            cur.execute(self._sql(sql))
+        return cur
+
     def execute(self, sql: str, params: tuple = ()):
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(self._sql(sql), params)
+            self._run(cur, sql, params)
             self._conn.commit()
             return cur
 
     def query_one(self, sql: str, params: tuple = ()):
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(self._sql(sql), params)
+            self._run(cur, sql, params)
             row = cur.fetchone()
             self._conn.commit()          # a read ends its transaction: no lock outlives it
             return row
@@ -368,7 +381,7 @@ class SqlMetadataStore:
     def query_all(self, sql: str, params: tuple = ()) -> list:
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(self._sql(sql), params)
+            self._run(cur, sql, params)
             rows = list(cur.fetchall())
             self._conn.commit()          # (a DBAPI connection opens one on the first statement)
             return rows

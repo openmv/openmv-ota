@@ -201,3 +201,48 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
     store.add_token("h", "t", ["observe"], account_id="acct", products=[7])
     assert store.get_token("h")["products"] == [7]
     assert M.SqliteMetadataStore(db).migrate() == 23        # idempotent
+
+
+def test_parameterless_sql_is_executed_without_a_parameter_sequence():
+    """psycopg reads an empty parameter sequence as "interpolate me", so a literal `%`
+    in the SQL raises before the statement reaches the server -- and migration v23
+    carries one, in `LIKE '%:%'`. sqlite3 ignores paramstyle entirely, so the failure
+    exists ONLY in production, on the one code path that must never fail: the migration
+    that runs at boot. Pin the contract here, where it can be seen."""
+    from openmv_ota.server.metastore import SqlMetadataStore
+
+    class _Cursor:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, *args):
+            self.calls.append(args)
+
+        def fetchone(self):
+            return None
+
+        def fetchall(self):
+            return []
+
+    class _Conn:
+        def __init__(self):
+            self.cur = _Cursor()
+
+        def cursor(self):
+            return self.cur
+
+        def commit(self):
+            pass
+
+    conn = _Conn()
+    store = SqlMetadataStore(conn)
+    store.execute("UPDATE devices SET x = 1 WHERE device_id NOT LIKE '%:%'")
+    store.execute("UPDATE devices SET cohort = ? WHERE device_id = ?", ("beta", "d1"))
+    store.query_one("SELECT 1 AS x")
+    store.query_all("SELECT 1 AS x")
+
+    noparams = [c for c in conn.cur.calls if len(c) == 1]
+    withparams = [c for c in conn.cur.calls if len(c) == 2]
+    assert len(noparams) == 3, "parameterless SQL must not be handed an empty sequence"
+    assert len(withparams) == 1 and withparams[0][1] == ("beta", "d1")
+    assert "'%:%'" in noparams[0][0]              # the literal survives untouched
