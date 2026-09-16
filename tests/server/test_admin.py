@@ -848,6 +848,15 @@ def test_fleet_summary_counts_adoption_per_product_and_account_wide(tmp_path):
     assert body["measured"] == 3
     assert body["products"][str(BID)]["measured"] == 3
     assert body["products"][str(BID + 1)]["measured"] == 0
+    # the two halves of that ratio are device filters too, so a dashboard's bar can be
+    # clicked: behind + up_to_date partition exactly the `measured` devices, and the
+    # unpublished product's device is in neither
+    g = lambda **kw: TestClient(app).get(  # noqa: E731 - one-line query helper
+        "/api/v1/admin/devices", headers=AUTH, params=kw).json()
+    assert g(behind=True)["total"] == 1
+    assert g(up_to_date=True)["total"] == 2
+    assert {d["device_id"] for d in g(behind=True)["devices"]} == {"behind"}
+    assert {d["device_id"] for d in g(up_to_date=True)["devices"]} == {"cur", "ahead"}
     # totals: the same four numbers without shipping a breakdown per product. An account
     # with thousands of products would otherwise send all of them to render an overview.
     only = TestClient(app).get("/api/v1/admin/fleet?totals=true", headers=AUTH).json()

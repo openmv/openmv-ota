@@ -307,6 +307,16 @@ def test_list_flags_and_product_list(wired, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["total"] == 3
     assert main(["client", "device", "list", "--seen-since", "2000000000"]) == 0
     assert json.loads(capsys.readouterr().out)["total"] == 0        # the exact complement
+    # the adoption halves, against the product's newest release (5.0.0): d3 runs 9.9.9
+    # and is past it, everyone else is behind, and the two filters partition the fleet
+    assert main(["client", "device", "list", "--up-to-date"]) == 0
+    up = json.loads(capsys.readouterr().out)
+    assert [d["device_id"] for d in up["devices"]] == ["d3"]
+    assert main(["client", "device", "list", "--behind"]) == 0
+    behind = json.loads(capsys.readouterr().out)
+    assert "d3" not in [d["device_id"] for d in behind["devices"]]
+    assert main(["client", "device", "list"]) == 0
+    assert behind["total"] + up["total"] == json.loads(capsys.readouterr().out)["total"]
     assert main(["client", "rollout", "list", "--pause-reason", "failure_limit"]) == 0
     assert json.loads(capsys.readouterr().out)["total"] == 0
     assert main(["client", "audit", "--action", "device.rename"]) == 0

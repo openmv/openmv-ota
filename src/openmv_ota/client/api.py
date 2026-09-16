@@ -282,7 +282,7 @@ class Api:
     def devices(self, product_id=None, cohort=None, limit=None, offset=None, sort=None,
                 direction=None, q=None, cohort_not=None, version=None,
                 older_than_release=None, fell_back=False, unconfirmed=False,
-                not_seen_since=None, seen_since=None):
+                not_seen_since=None, seen_since=None, behind=False, up_to_date=False):
         params = {}
         if fell_back:
             params["fell_back"] = "true"
@@ -292,6 +292,10 @@ class Api:
             params["not_seen_since"] = not_seen_since
         if seen_since is not None:
             params["seen_since"] = seen_since
+        if behind:
+            params["behind"] = "true"
+        if up_to_date:
+            params["up_to_date"] = "true"
         if version is not None:
             params["version"] = version
         if older_than_release is not None:

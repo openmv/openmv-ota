@@ -91,7 +91,10 @@ reported at its last check-in, plus what the server decided about it. Its filter
 include the ones a dashboard's attention list is made of — `--fell-back` (the last
 boot rejected a slot), `--unconfirmed` (mid-trial), `--not-seen-since EPOCH` (no
 check-in since then) and its exact complement `--seen-since EPOCH` (checked in since
-then, which is how you count a day's live fleet in one read):
+then, which is how you count a day's live fleet in one read). `--behind` and
+`--up-to-date` are the two halves of the adoption above, each device measured against
+its own product's newest release, so the fleet summary's numbers are lists you can
+open:
 
 ```
 $ openmv-ota client device list --cohort beta --limit 1

@@ -290,6 +290,10 @@ def register(parser: argparse.ArgumentParser) -> None:
                        help="only devices with no check-in since this epoch second")
     p_dvl.add_argument("--seen-since", type=float, metavar="EPOCH",
                        help="only devices that HAVE checked in since this epoch second")
+    p_dvl.add_argument("--behind", action="store_true",
+                       help="only devices with a newer release published for their product")
+    p_dvl.add_argument("--up-to-date", action="store_true",
+                       help="only devices at or past their product's newest release")
     p_dvl.add_argument("--older-than-release", metavar="RELEASE_ID",
                        help="only devices running something older than this release")
     _list_flags(p_dvl, "seen, device, product, version, cohort, first_seen")
@@ -1008,7 +1012,9 @@ def cmd_devices(args: argparse.Namespace) -> int:
                                                older_than_release=args.older_than_release,
                                                fell_back=args.fell_back, unconfirmed=args.unconfirmed,
                                                not_seen_since=args.not_seen_since,
-                                               seen_since=args.seen_since))
+                                               seen_since=args.seen_since,
+                                               behind=args.behind,
+                                               up_to_date=args.up_to_date))
 
 
 def cmd_releases(args: argparse.Namespace) -> int:

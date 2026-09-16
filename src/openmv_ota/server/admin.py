@@ -1027,6 +1027,12 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
             seen_since: float | None = Query(
                 None, description="only devices that HAVE checked in since this epoch second "
                                   "-- the exact complement of not_seen_since"),
+            behind: bool = Query(False, description="only devices with a newer release "
+                                                    "published for their own product"),
+            up_to_date: bool = Query(False, description="only devices at or past their own "
+                                                        "product's newest release -- the "
+                                                        "complement of behind among devices "
+                                                        "whose product has published one"),
             sort: str | None = _sort_q("seen, device, product, version, cohort, first_seen"),
             dir: str = _DIR_Q,
             principal: Principal = Depends(require_scope("observe"))):
@@ -1034,8 +1040,9 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
     in. On the list contract (`limit`, `offset`, `sort`, `dir`, `total`), plus the
     filters a fleet view actually needs: `product_id` and `cohort` to narrow,
     `version` and `older_than_release` to find what is behind, `fell_back` and
-    `unconfirmed` for devices that need attention, and `not_seen_since` /
-    `seen_since` (an epoch second) for the ones that have gone quiet, or are alive."""
+    `unconfirmed` for devices that need attention, `not_seen_since` / `seen_since` (an
+    epoch second) for the ones that have gone quiet, or are alive, and `behind` /
+    `up_to_date` for the two halves of the adoption the fleet summary counts."""
     ms = request.app.state.metastore
     older_pv = None
     if older_than_release is not None:
@@ -1045,11 +1052,13 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
                 sort=sort, direction=dir, q=q, cohort_not=cohort_not, version=version,
                 older_than_pv=older_pv, fell_back=fell_back or None, unconfirmed=unconfirmed or None,
                 not_seen_since=not_seen_since, products=principal.scoped(),
-                seen_since=seen_since)),
+                seen_since=seen_since, behind=behind or None,
+                up_to_date=up_to_date or None)),
             "total": ms.count_devices(product_id, principal.account_id, cohort, q, cohort_not,
                                       version, older_pv, fell_back or None, unconfirmed or None,
                                       not_seen_since, products=principal.scoped(),
-                                      seen_since=seen_since)}
+                                      seen_since=seen_since, behind=behind or None,
+                                      up_to_date=up_to_date or None)}
 
 
 @admin.get("/products", responses={200: {"model": ProductList}})

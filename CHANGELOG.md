@@ -22,6 +22,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counters alone, with an empty `products`. An overview reads four numbers, and
   an account with thousands of products should not be sent every product's
   version and cohort breakdown to render them.
+- **`behind` / `up_to_date` on `GET /admin/devices`** (`--behind` /
+  `--up-to-date`): the two halves of the fleet summary's adoption as device
+  lists, each device measured against its OWN product's newest release.
+  `older_than_release` could not express this -- it takes one release id, and a
+  fleet spans products with separate version histories.
 - **`seen_since` on `GET /admin/devices`** (`--seen-since` on `client device
   list`): the exact complement of `not_seen_since`, so "checked in since X" is
   one count from the server instead of a subtraction in a caller.

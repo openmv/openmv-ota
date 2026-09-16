@@ -817,7 +817,8 @@ class SqlMetadataStore:
     @staticmethod
     def _devices_where(account_id, product_id, cohort, q, cohort_not,
                        version=None, older_than_pv=None, fell_back=None, unconfirmed=None,
-                       not_seen_since=None, products=None, seen_since=None) -> tuple[str, tuple]:
+                       not_seen_since=None, products=None, seen_since=None,
+                       behind=None, up_to_date=None) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id, products)
         if cohort is not None:
             where, params = _and(where, "cohort = ?"), (*params, cohort)
@@ -831,6 +832,21 @@ class SqlMetadataStore:
         if seen_since is not None:                   # the exact complement: alive since then
             where = _and(where, "last_seen >= ?")
             params = (*params, _iso_at(seen_since))
+        # behind / up_to_date: measured against the device's OWN product's newest release,
+        # which `older_than_release` cannot express (it takes one release id, and a fleet
+        # spans products with separate version histories). "Behind" is "a newer release
+        # exists for my product"; "up to date" is its complement AMONG devices whose
+        # product has published something -- a product with no release leaves its devices
+        # in neither set, exactly as the fleet summary's `measured` counts them.
+        _NEWER = ("EXISTS (SELECT 1 FROM releases r WHERE r.product_id = devices.product_id "
+                  "AND r.account_id = devices.account_id "
+                  "AND r.payload_version > COALESCE(devices.current_payload_version, -1))")
+        _ANY_REL = ("EXISTS (SELECT 1 FROM releases r WHERE r.product_id = devices.product_id "
+                    "AND r.account_id = devices.account_id)")
+        if behind:
+            where = _and(where, _NEWER)
+        if up_to_date:
+            where = _and(where, _ANY_REL + " AND NOT " + _NEWER)
         if version is not None:                      # "running exactly this version"
             where, params = _and(where, "current_version = ?"), (*params, version)
         if older_than_pv is not None:                # "not yet on (or past) this release"
@@ -847,20 +863,23 @@ class SqlMetadataStore:
     def count_devices(self, product_id=None, account_id=None, cohort=None, q=None,
                       cohort_not=None, version=None, older_than_pv=None, fell_back=None,
                       unconfirmed=None, not_seen_since=None, products=None,
-                      seen_since=None) -> int:
+                      seen_since=None, behind=None, up_to_date=None) -> int:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
                                             version, older_than_pv, fell_back, unconfirmed,
-                                            not_seen_since, products, seen_since)
+                                            not_seen_since, products, seen_since,
+                                            behind, up_to_date)
         return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
 
     def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
                      cohort=None, offset: int = 0, sort=None, direction=None, q=None,
                      cohort_not=None, version=None, older_than_pv=None,
                      fell_back=None, unconfirmed=None, not_seen_since=None,
-                     products=None, seen_since=None) -> list[dict]:
+                     products=None, seen_since=None, behind=None,
+                     up_to_date=None) -> list[dict]:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
                                             version, older_than_pv, fell_back, unconfirmed,
-                                            not_seen_since, products, seen_since)
+                                            not_seen_since, products, seen_since,
+                                            behind, up_to_date)
         rows = self.query_all("SELECT * FROM devices " + where
                               + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
                               + " LIMIT ? OFFSET ?", (*params, limit, offset))
