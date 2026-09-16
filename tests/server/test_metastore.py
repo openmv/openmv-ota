@@ -292,3 +292,75 @@ def test_a_migration_retries_while_the_lock_is_held_and_raises_on_anything_else(
     with pytest.raises(ValueError):              # not a lock problem: no retries at all
         broken._migrate_stmt("ALTER TABLE nope")
     assert len(broken.ran) == 1
+
+
+def test_a_migration_that_fails_partway_records_what_it_finished(tmp_path):
+    """Each statement commits as it runs, but schema_version used to be written only
+    after the WHOLE pending list. A failure partway therefore left real changes behind a
+    version that denied them, and the next deploy replayed an ADD COLUMN that could only
+    fail: production sat on an old build for a day over exactly that.
+
+    Two defences, both pinned here: progress is recorded per version, and a statement
+    whose object already exists is treated as done rather than fatal."""
+    from openmv_ota.server import metastore as M
+
+    db = str(tmp_path / "part.db")
+    full = M._MIGRATIONS
+    boom = "SELECT this is not valid sql"
+    try:
+        M._MIGRATIONS = [*full[:20], ["ALTER TABLE rollouts ADD COLUMN extra_a TEXT"],
+                         ["ALTER TABLE rollouts ADD COLUMN extra_b TEXT", boom]]
+        store = M.SqliteMetadataStore(db)
+        with pytest.raises(Exception):
+            store.migrate()
+        # the version that DID finish is recorded, so the next run resumes after it
+        assert store.get_meta("schema_version") == "21"
+        cols = [r["name"] for r in store.query_all("PRAGMA table_info(rollouts)")]
+        assert "extra_b" in cols          # the statement that ran is committed
+
+        # the next deploy replays version 22, whose first statement is already applied
+        M._MIGRATIONS = [*full[:20], ["ALTER TABLE rollouts ADD COLUMN extra_a TEXT"],
+                         ["ALTER TABLE rollouts ADD COLUMN extra_b TEXT"]]
+        assert M.SqliteMetadataStore(db).migrate() == 22
+    finally:
+        M._MIGRATIONS = full
+
+
+def test_a_genuinely_broken_migration_is_still_loud(tmp_path):
+    """The tolerance is narrow on purpose: only "already exists" on a create or add. A
+    half-applied schema hiding behind a green deploy is worse than a failed deploy."""
+    from openmv_ota.server import metastore as M
+
+    full = M._MIGRATIONS
+    try:
+        M._MIGRATIONS = [*full[:20], ["ALTER TABLE rollouts ADD COLUMN x TEXT",
+                                      "ALTER TABLE nonexistent_table ADD COLUMN y TEXT"]]
+        store = M.SqliteMetadataStore(str(tmp_path / "loud.db"))
+        with pytest.raises(Exception, match="no such table"):
+            store.migrate()
+    finally:
+        M._MIGRATIONS = full
+
+
+def test_already_applied_is_recognised_by_sqlstate_as_well_as_by_words():
+    """Production speaks SQLSTATE: psycopg raises DuplicateColumn with 42701, and the
+    message wording is the driver's to change. sqlite only says it in words. Both have
+    to be understood, and sqlite alone can never exercise the first."""
+    from openmv_ota.server.metastore import SqlMetadataStore as S
+
+    class _Pg(Exception):
+        sqlstate = "42701"                    # duplicate_column, as psycopg raises it
+
+    class _Diag(Exception):
+        class diag:                           # psycopg2 hangs it off .diag instead
+            sqlstate = "42P07"                # duplicate_table
+
+    assert S._is_already_applied(_Pg("column \"products\" ... already exists"))
+    assert S._is_already_applied(_Diag("relation ... already exists"))
+    assert S._is_already_applied(Exception("duplicate column name: products"))  # sqlite
+    assert not S._is_already_applied(Exception("no such table: nope"))
+    assert not S._is_already_applied(_Lock_like())
+
+
+class _Lock_like(Exception):
+    sqlstate = "55P03"                        # a lock problem is not "already applied"

@@ -409,12 +409,41 @@ class SqlMetadataStore:
                 self.execute(self._dialect(stmt))
                 return
             except Exception as e:                                   # noqa: BLE001
+                if self._is_already_applied(e):
+                    # The object this statement creates is already there, so the
+                    # statement's work is done. That state is reachable: each statement
+                    # commits as it runs, but schema_version is only written after the
+                    # WHOLE pending list succeeds -- so a migration that fails partway
+                    # leaves real changes behind a version number that denies them, and
+                    # every deploy after it re-runs an ADD COLUMN that cannot succeed.
+                    # Production sat on an old build for a day over exactly this.
+                    print("migrate: already applied, skipping -- %s" % stmt[:70],
+                          file=sys.stderr, flush=True)
+                    return
                 if not self._is_lock_error(e) or attempt == self._LOCK_RETRIES:
                     raise
                 print("migrate: lock busy (attempt %d/%d), retrying in %ds -- %s"
                       % (attempt, self._LOCK_RETRIES, self._LOCK_BACKOFF_S, stmt[:60]),
                       file=sys.stderr, flush=True)
                 time.sleep(self._LOCK_BACKOFF_S)
+
+    # Postgres SQLSTATEs for "the thing you are creating already exists": duplicate
+    # column, table, object, index. sqlite says it in words instead.
+    _ALREADY = ("42701", "42P07", "42710", "42P16")
+
+    @classmethod
+    def _is_already_applied(cls, exc: Exception) -> bool:
+        """Whether a failed migration statement failed because its work is already done.
+
+        Narrow on purpose: only "already exists" on a create/add. A migration that is
+        wrong in any other way must still be loud, because a silently half-applied
+        schema is worse than a failed deploy."""
+        state = getattr(exc, "sqlstate", None) or getattr(
+            getattr(exc, "diag", None), "sqlstate", None)
+        if state in cls._ALREADY:
+            return True
+        text = str(exc).lower()
+        return ("already exists" in text or "duplicate column" in text)
 
     @staticmethod
     def _is_lock_error(exc: Exception) -> bool:
@@ -439,6 +468,13 @@ class SqlMetadataStore:
                 for stmt in statements:
                     self._migrate_stmt(stmt)
                 current = version
+                # Record progress per VERSION, not once at the end. Each statement
+                # commits as it runs, so a failure partway through the list used to
+                # leave real schema changes behind a version number that still denied
+                # them -- and the next deploy would replay an ADD COLUMN that could only
+                # fail. Recording here means a half-finished migration resumes from
+                # where it stopped instead of from the beginning.
+                self.set_meta("schema_version", str(current))
             self._after_migrations()
         self.set_meta("schema_version", str(current))
         return current
