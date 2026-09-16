@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import time
 import threading
 from datetime import datetime, timezone
 
@@ -386,6 +387,46 @@ class SqlMetadataStore:
             self._conn.commit()          # (a DBAPI connection opens one on the first statement)
             return rows
 
+    _LOCK_RETRIES = 10
+    _LOCK_BACKOFF_S = 6
+
+    def _migrate_stmt(self, stmt: str) -> None:
+        """Run one migration statement, retrying while the lock is held elsewhere.
+
+        A type change takes an ACCESS EXCLUSIVE lock, and a zero-downtime deploy runs
+        this while the PREVIOUS instance is still serving: its ordinary short reads are
+        enough to keep the lock away, and the bounded ``lock_timeout`` then fails the
+        statement rather than queue behind them forever. Failing means the container
+        exits, the platform keeps the old instance, and the deploy silently never
+        happens -- the failure mode this whole migration path already cost us once.
+
+        So a lock refusal is retried, not fatal: each attempt is still bounded, and a
+        minute of retries crosses the gap between one instance's requests. Anything that
+        is not a lock problem raises immediately, because a broken migration must be
+        loud."""
+        for attempt in range(1, self._LOCK_RETRIES + 1):
+            try:
+                self.execute(self._dialect(stmt))
+                return
+            except Exception as e:                                   # noqa: BLE001
+                if not self._is_lock_error(e) or attempt == self._LOCK_RETRIES:
+                    raise
+                print("migrate: lock busy (attempt %d/%d), retrying in %ds -- %s"
+                      % (attempt, self._LOCK_RETRIES, self._LOCK_BACKOFF_S, stmt[:60]),
+                      file=sys.stderr, flush=True)
+                time.sleep(self._LOCK_BACKOFF_S)
+
+    @staticmethod
+    def _is_lock_error(exc: Exception) -> bool:
+        """Whether an exception is "someone else holds the lock", not "this SQL is wrong".
+        Matched on SQLSTATE 55P03 (lock_not_available) with a message fallback, so it
+        works whichever driver raised it."""
+        if getattr(exc, "sqlstate", None) == "55P03" or getattr(
+                getattr(exc, "diag", None), "sqlstate", None) == "55P03":
+            return True
+        text = str(exc).lower()
+        return "lock timeout" in text or "lock_not_available" in text
+
     def migrate(self) -> int:
         """Create the ``meta`` table and apply any migrations past the recorded ``schema_version``.
         Returns the resulting schema version. Idempotent."""
@@ -396,7 +437,7 @@ class SqlMetadataStore:
             self._before_migrations()
             for version, statements in pending:
                 for stmt in statements:
-                    self.execute(self._dialect(stmt))
+                    self._migrate_stmt(stmt)
                 current = version
             self._after_migrations()
         self.set_meta("schema_version", str(current))

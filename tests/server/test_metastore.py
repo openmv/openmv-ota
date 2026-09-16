@@ -246,3 +246,49 @@ def test_parameterless_sql_is_executed_without_a_parameter_sequence():
     assert len(noparams) == 3, "parameterless SQL must not be handed an empty sequence"
     assert len(withparams) == 1 and withparams[0][1] == ("beta", "d1")
     assert "'%:%'" in noparams[0][0]              # the literal survives untouched
+
+
+def test_a_migration_retries_while_the_lock_is_held_and_raises_on_anything_else(monkeypatch):
+    """A type change needs an ACCESS EXCLUSIVE lock, and a zero-downtime deploy runs it
+    while the PREVIOUS instance still serves traffic -- whose ordinary reads keep the
+    lock away until the bounded lock_timeout fails the statement. A failed migration
+    exits the container, the platform keeps the old instance, and the deploy silently
+    never happened. So lock refusals retry; everything else is loud immediately."""
+    from openmv_ota.server.metastore import SqlMetadataStore
+
+    class _Lock(Exception):
+        sqlstate = "55P03"
+
+    class _Store(SqlMetadataStore):
+        def __init__(self):
+            self.ran, self.fail_times = [], 0
+
+        def execute(self, sql, params=()):      # type: ignore[override]
+            self.ran.append(sql)
+            if self.fail_times > 0:
+                self.fail_times -= 1
+                raise _Lock("canceling statement due to lock timeout")
+
+    slept = []
+    monkeypatch.setattr("openmv_ota.server.metastore.time.sleep", slept.append)
+
+    store = _Store()
+    store.fail_times = 2                         # busy twice, then the lock frees
+    store._migrate_stmt("ALTER TABLE releases ALTER COLUMN product_id TYPE BIGINT")
+    assert len(store.ran) == 3 and slept == [store._LOCK_BACKOFF_S] * 2
+
+    store = _Store()
+    store.fail_times = 999                       # never frees: give up rather than hang
+    with pytest.raises(_Lock):
+        store._migrate_stmt("ALTER TABLE releases ALTER COLUMN product_id TYPE BIGINT")
+    assert len(store.ran) == store._LOCK_RETRIES
+
+    class _Broken(_Store):
+        def execute(self, sql, params=()):       # type: ignore[override]
+            self.ran.append(sql)
+            raise ValueError("syntax error at or near")
+
+    broken = _Broken()
+    with pytest.raises(ValueError):              # not a lock problem: no retries at all
+        broken._migrate_stmt("ALTER TABLE nope")
+    assert len(broken.ran) == 1
