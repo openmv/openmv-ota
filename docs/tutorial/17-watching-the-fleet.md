@@ -233,7 +233,9 @@ $ openmv-ota client audit --since 41
 
 It pages by `--since SEQ` — a sequence **cursor**, not an offset — so a poller resumes
 exactly where it left off and never skips or repeats entries when new ones land
-mid-page.
+mid-page. `--action ACTION` narrows it to one kind (`--not-action` hides one), and the
+`total` counts what matched — so "how many devices has the plan's limit turned away"
+is `client audit --action device.refused --limit 1`.
 
 ## Scripting: `--json`
 

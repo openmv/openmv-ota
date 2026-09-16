@@ -256,6 +256,9 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     assert c.patch("/api/v1/admin/rollouts/ro_a", headers=AUTH, json={"percent": 50}).status_code == 200
     a = g("audit")
     assert a["total"] == len(a["events"]) >= 2
+    assert g("audit", action="cohort.create")["total"] == 1
+    assert g("audit", action="cohort.create")["events"][0]["action"] == "cohort.create"
+    assert g("audit", action="nope")["total"] == 0
     assert g("audit", sort="action", dir="asc")["events"][0]["action"] <= \
         g("audit", sort="action", dir="desc")["events"][0]["action"]
     assert g("audit", offset=1)["events"] == a["events"][1:]

@@ -442,6 +442,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_au.add_argument("--entity-id", metavar="ID",
                       help="only events for one release/rollout/device id")
     _list_flags(p_au, "when, action, actor, entity")
+    p_au.add_argument("--action", metavar="ACTION", help="only this action, e.g. device.refused")
     p_au.add_argument("--not-action", dest="action_not", metavar="ACTION",
                       help="hide one action (e.g. advisory.scan)")
     p_au.add_argument("--since", type=int, default=0, metavar="SEQ",
@@ -1023,4 +1024,4 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.audit(args.since, entity_id=args.entity_id,
                                              limit=args.limit, offset=args.offset,
                                              sort=args.sort, direction=args.dir,
-                                             action_not=args.action_not))
+                                             action_not=args.action_not, action=args.action))

@@ -1134,7 +1134,8 @@ class SqlMetadataStore:
     AUDIT_SORTS = {"when": "seq", "action": "action", "actor": "actor", "entity": "entity_id"}
 
     @staticmethod
-    def _audit_where(since_seq, account_id, entity_id, action_not=None) -> tuple[str, list]:
+    def _audit_where(since_seq, account_id, entity_id, action_not=None,
+                     action=None) -> tuple[str, list]:
         sql = "WHERE seq > ?"
         params = [since_seq]
         if account_id is not None:
@@ -1143,23 +1144,27 @@ class SqlMetadataStore:
         if entity_id is not None:
             sql += " AND entity_id = ?"
             params.append(entity_id)
+        if action is not None:                       # e.g. count only device.refused
+            sql += " AND action = ?"
+            params.append(action)
         if action_not is not None:                   # e.g. hide the daily advisory.scan rows
             sql += " AND action != ?"
             params.append(action_not)
         return sql, params
 
     def count_audit(self, since_seq: int = 0, account_id=None, entity_id=None,
-                    action_not=None) -> int:
-        where, params = self._audit_where(since_seq, account_id, entity_id, action_not)
+                    action_not=None, action=None) -> int:
+        where, params = self._audit_where(since_seq, account_id, entity_id, action_not, action)
         return self.query_one("SELECT COUNT(*) AS n FROM audit " + where, tuple(params))["n"]
 
     def read_audit(self, limit: int = 100, since_seq: int = 0, account_id=None,
                    entity_id: str | None = None, newest: bool = False, sort=None,
-                   direction=None, offset: int = 0, action_not=None) -> list[dict]:
+                   direction=None, offset: int = 0, action_not=None,
+                   action=None) -> list[dict]:
         """``newest`` flips the window to the most RECENT events (a history view);
         the default keeps append order (a log tail via ``since``). ``sort``/``direction``
         (when/action/actor/entity) generalise both; ``offset`` pages."""
-        where, params = self._audit_where(since_seq, account_id, entity_id, action_not)
+        where, params = self._audit_where(since_seq, account_id, entity_id, action_not, action)
         sql = "SELECT * FROM audit " + where
         if sort in self.AUDIT_SORTS:
             sql += _order(sort, direction, self.AUDIT_SORTS, "seq", "seq")
