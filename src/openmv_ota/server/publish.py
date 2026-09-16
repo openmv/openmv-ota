@@ -89,6 +89,28 @@ async def publish_release(request: Request, background: BackgroundTasks,
                           sbom: UploadFile | None = File(None),
                           allow_republish: bool = False, display_name: str = "",
                           principal: Principal = Depends(require_scope("publish"))):
+    """Upload a signed release built by `openmv-ota build`, as `multipart/form-data`.
+
+    The **manifest** is the contract and everything else is checked against it: the
+    `image` must match its digest and size, each `delta` must name a base the manifest
+    declares, and anything that fails is a 400 with nothing stored. The server never
+    signs -- it distributes what your keys already signed, and it never holds them.
+
+    The manifest carries the `product_id` and `payload_version`, so this call is also
+    what brings a product into existence: publish a release for a product id and the
+    product appears in `GET /api/v1/admin/products`, ready to be renamed and rolled
+    out. `payload_version` must exceed the account's newest for that product, which is
+    the anti-rollback floor; pass `allow_republish=true` to overwrite a version during
+    development.
+
+    Publishing does not stage anything: a release sits there until a rollout offers
+    it. `openmv-ota client release publish --percent` looks like one step, but the CLI
+    is making two calls -- this one, then `POST /api/v1/admin/rollouts` with the
+    `release_id` it got back. An integration does the same two calls.
+
+    The response carries `release_id`, `product_id`, `version` and the
+    `representations` the release covers; keep the `release_id` if you intend to roll
+    it out, pin it, or read its SBOM."""
     ms = request.app.state.metastore
     storage = request.app.state.storage
     manifest_bytes = await manifest.read()

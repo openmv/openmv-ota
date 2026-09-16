@@ -157,6 +157,8 @@ def create_account(body: AccountCreate, request: Request,
 @admin.get("/accounts", responses={200: {"model": AccountList}})
 def list_accounts(request: Request,
                   principal: Principal = Depends(require_scope("accounts"))):
+    """The operator's account directory. Operator scope, not an account credential:
+    a normal account token can neither list accounts nor see another one exists."""
     return {"accounts": request.app.state.metastore.list_accounts()}
 
 
@@ -167,6 +169,7 @@ class AccountPatch(BaseModel):
 @admin.patch("/accounts/{account_id}", responses={200: {"model": AccountNamed}})
 def patch_account(account_id: str, body: AccountPatch, request: Request,
                   principal: Principal = Depends(require_scope("accounts"))):
+    """Rename an account or change its contact address. Operator scope."""
     ms = request.app.state.metastore
     if ms.get_account(account_id) is None:
         raise HTTPException(status_code=404)
@@ -280,6 +283,13 @@ def _active_account(ms, account_id):
 @admin.post("/accounts/{account_id}/tokens", responses={200: {"model": TokenIssued}})
 def issue_token(account_id: str, body: TokenIssue, request: Request,
                 principal: Principal = Depends(require_scope("accounts"))):
+    """Mint an admin token for an account. The token is returned **once, in full** --
+    only its hash is stored, so a lost token is rotated, never recovered.
+
+    `scopes` defaults to every scope; pass the narrowest that works. The ladder is
+    `publish` > `manage` > `observe`, so a CI job that only publishes needs `publish`,
+    and a dashboard that only reads needs `observe`. `accounts` is the operator scope
+    and is not implied by any of the others."""
     ms = request.app.state.metastore
     _active_account(ms, account_id)                            # 404 missing / 409 deactivated
     scopes = body.scopes if body.scopes is not None else list(SCOPES)
@@ -295,6 +305,8 @@ def issue_token(account_id: str, body: TokenIssue, request: Request,
 @admin.get("/accounts/{account_id}/tokens", responses={200: {"model": TokenList}})
 def list_account_tokens(account_id: str, request: Request,
                         principal: Principal = Depends(require_scope("accounts"))):
+    """The account's tokens: name, scopes, when issued, whether revoked -- never the
+    token itself, which exists only in the response that created it."""
     ms = request.app.state.metastore
     if ms.get_account(account_id) is None:
         raise HTTPException(status_code=404)
@@ -304,6 +316,8 @@ def list_account_tokens(account_id: str, request: Request,
 @admin.post("/tokens/{token_hash}/revoke", responses={200: {"model": TokenRevoked}})
 def revoke_token(token_hash: str, request: Request, body: TokenActor | None = None,
                  principal: Principal = Depends(require_scope("accounts"))):
+    """Revoke a token by its hash. Immediate: the next request carrying it is 401.
+    Revocation is recorded in the audit log with the actor who did it."""
     ms = request.app.state.metastore
     old = ms.get_token(token_hash)
     if old is None:
@@ -335,6 +349,17 @@ def rotate_token(token_hash: str, request: Request, body: TokenActor | None = No
 @admin.post("/rollouts", responses={200: {"model": RolloutCreated}})
 def create_rollout(body: RolloutCreate, request: Request,
                    principal: Principal = Depends(require_scope("manage"))):
+    """Offer an already-published release to a cohort, a percentage at a time.
+
+    One active rollout per product and cohort: creating a second supersedes the first,
+    which is paused with `pause_reason: "superseded"` rather than deleted, so the
+    history stays readable. `percent` is the share of that cohort offered the release
+    now -- raise it with `PATCH /rollouts/{rollout_id}` as the numbers come in.
+
+    `failure_threshold` is the fraction of offered devices that may fall back before
+    the rollout pauses itself (`pause_reason: "failure_limit"`). It is the safety net
+    that makes a staged rollout meaningfully different from flipping every device at
+    once; the default is 0.05."""
     ms = request.app.state.metastore
     rel = _owned(ms.get_release(body.release_id), principal)   # 404 if missing or another account's
     product_id = rel["product_id"]
@@ -360,6 +385,10 @@ def create_rollout(body: RolloutCreate, request: Request,
 @admin.patch("/rollouts/{rollout_id}", responses={200: {"model": Rollout}})
 def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
                   principal: Principal = Depends(require_scope("manage"))):
+    """Change a live rollout: raise `percent`, adjust `failure_threshold`, or move
+    `state` between `active` and `paused`. Pausing by hand records
+    `pause_reason: "operator"`, which is how the dashboard tells your decision apart
+    from the auto-pause."""
     ms = request.app.state.metastore
     ro = _owned(ms.get_rollout(rollout_id), principal)
     changes: dict = {}
@@ -395,6 +424,9 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
 @admin.post("/rollouts/{rollout_id}/stop", responses={200: {"model": RolloutState}})
 def stop_rollout(rollout_id: str, request: Request,
                      principal: Principal = Depends(require_scope("manage"))):
+    """Stop offering a release for good. Devices that already took it keep it -- this
+    is not a downgrade, and there is no way to pull an installed release back. To move
+    a fleet off a bad build, publish one that supersedes it."""
     ms = request.app.state.metastore
     _owned(ms.get_rollout(rollout_id), principal)
     ms.update_rollout(rollout_id, state="stopped", pause_reason=None)   # stops offering; does not downgrade
@@ -437,6 +469,9 @@ def list_rollouts(request: Request, product_id: int | None = None, limit: int = 
 @admin.get("/rollouts/{rollout_id}/status", responses={200: {"model": RolloutStatus}})
 def rollout_status(rollout_id: str, request: Request,
                    principal: Principal = Depends(require_scope("observe"))):
+    """One rollout's numbers: how many devices the cohort holds, how many were
+    offered the release, how many confirmed it, and how many fell back. This is what to
+    poll while a rollout is live, and what the failure threshold is measured against."""
     ms = request.app.state.metastore
     ro = _owned(ms.get_rollout(rollout_id), principal)
     cohort_devices = ms.cohort_device_count(ro["product_id"], ro["cohort"],
@@ -462,6 +497,8 @@ def list_cohorts(request: Request, product_id: int | None = None,
                  sort: str | None = _sort_q("cohort, devices, products, pins"),
                  dir: str = _DIR_Q,
                  principal: Principal = Depends(require_scope("observe"))):
+    """The account's cohorts with a device count each. A cohort is a label on a
+    device (`__default__` until you assign one), and it is the unit a rollout targets."""
     rows, total = request.app.state.metastore.page_cohorts(
         product_id, account_id=principal.account_id, sort=sort, direction=dir,
         limit=limit, offset=offset)
@@ -652,6 +689,10 @@ def rename_rollout(rollout_id: str, body: DeviceName, request: Request,
 @admin.patch("/devices/{device_id}/pin", responses={200: {"model": DevicePinned}})
 def pin_device(device_id: str, body: DevicePin, request: Request,
                principal: Principal = Depends(require_scope("manage"))):
+    """Pin one device to a release, overriding any rollout, or clear the pin with
+    `{"release_id": null}`. The pin wins over cohort pins and rollouts both, so this is
+    how you hold a single unit on a known build -- a device on a bench, or one a
+    customer is mid-incident with."""
     ms = request.app.state.metastore
     _owned(ms.get_device(device_id), principal)              # 404 if missing or another account's
     _check_pin_release(ms, body.release_id, principal)
@@ -686,6 +727,10 @@ def bind_device(device_id: str, request: Request,
 @admin.post("/cohorts/pin", responses={200: {"model": CohortPinned}})
 def pin_cohort(body: CohortPin, request: Request,
                principal: Principal = Depends(require_scope("manage"))):
+    """Pin a whole cohort of a product to a release, or clear it with
+    `{"release_id": null}`. A cohort pin beats a rollout but loses to a device pin, so
+    a pinned cohort is a fleet-wide hold that individual devices can still be excepted
+    from."""
     ms = request.app.state.metastore
     _check_pin_release(ms, body.release_id, principal)
     ms.set_cohort_pin(body.product_id, body.cohort, body.release_id,
@@ -700,6 +745,10 @@ def pin_cohort(body: CohortPin, request: Request,
 @admin.get("/fleet", responses={200: {"model": FleetSummary}})
 def fleet(request: Request, product_id: int | None = None, cohort: str | None = None,
           principal: Principal = Depends(require_scope("observe"))):
+    """The fleet summary behind a dashboard: device counts by product, how each
+    product splits across versions, which release each version maps to, how many devices
+    are mid-trial or fell back, and when they were last seen. Filter to one product or
+    one cohort with the query parameters."""
     from openmv_ota.ota.version import decode_app_version
 
     summary = request.app.state.metastore.fleet_summary(product_id,
@@ -738,6 +787,9 @@ def releases(request: Request, product_id: int | None = None, limit: int = _PAGE
              sort: str | None = _sort_q("version, product, size, uploaded, name, release"),
              dir: str = _DIR_Q,
              principal: Principal = Depends(require_scope("observe"))):
+    """The account's publish history, newest first. On the list contract like every
+    collection: `limit`, `offset`, `sort`, `dir`, and a filter-aware `total` beside the
+    rows, so a full page is never mistaken for a complete list."""
     ms = request.app.state.metastore
     return {"releases": ms.list_releases(product_id, account_id=principal.account_id,
                                          limit=limit, offset=offset, sort=sort, direction=dir),
@@ -925,6 +977,12 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
             sort: str | None = _sort_q("seen, device, product, version, cohort, first_seen"),
             dir: str = _DIR_Q,
             principal: Principal = Depends(require_scope("observe"))):
+    """Every device in the account, with what it is running and when it last checked
+    in. On the list contract (`limit`, `offset`, `sort`, `dir`, `total`), plus the
+    filters a fleet view actually needs: `product_id` and `cohort` to narrow,
+    `version` and `older_than_release` to find what is behind, `fell_back` and
+    `unconfirmed` for devices that need attention, and `not_seen_since` (hours) for
+    ones that have gone quiet."""
     ms = request.app.state.metastore
     older_pv = None
     if older_than_release is not None:

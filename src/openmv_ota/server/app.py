@@ -69,6 +69,54 @@ the bundle over a short-lived link, then reports the result at
 
 Self-hosting and operations are covered in the
 [server manual](https://github.com/openmv/openmv-ota/blob/main/docs/tutorial/21-self-hosting.md).
+
+## The objects, and where they come from
+
+**Account** — the tenant. Every token belongs to one, and every read and write is
+scoped to it: another account's release, device or rollout answers **404**, the same
+as one that does not exist. There is no product-scoped token, so a platform that
+resells this to its own customers holds one account and enforces per-customer
+boundaries on its side.
+
+**Product** — a `(product, board)` pair, identified by a 32-bit `product_id` that is
+**computed, not assigned**: `crc32("<product>:<board>")`, so the same name and board
+always give the same id, on any machine, without a round trip. Two consequences worth
+planning around: one product line built for two camera models is **two products**
+here, and you may override the id in the project config if you would rather map it
+onto your own identifiers.
+
+There is no "create product" call. A product exists once something refers to it —
+publishing a release for that id, or a device checking in reporting it — and then
+appears in `GET /api/v1/admin/products`, where `PATCH .../name` gives it a label for
+humans.
+
+**Device** — a camera. It is not enrolled through this API: `account_id` and
+`product_id` are built into the firmware it ships with, and the first valid check-in
+*learns* the binding, which is then sticky. `POST /devices/{device_id}/account` is the
+operator override for recovering a device bound to the wrong account.
+`GET /api/v1/admin/devices` is the fleet view, with the filters a support workflow
+needs (`fell_back`, `unconfirmed`, `not_seen_since`).
+
+**Cohort** — a label on a device within a product (`__default__` until you set one),
+and the unit a rollout targets. `pilot`, `early`, `rest`, or one per customer site.
+
+**Release → rollout** — publishing uploads signed bytes; it does not ship them.
+`POST /api/v1/admin/rollouts` offers a release to a cohort at a percentage, raises it
+as the numbers hold, and pauses itself if failures cross the threshold you set.
+
+## Reading collections
+
+Every collection read (`/releases`, `/rollouts`, `/devices`, `/products`, `/audit`)
+takes `limit`, `offset`, `sort` and `dir`, and answers with the rows **and a
+filter-aware `total`**. Page on `total`, never on "a short page means the end".
+
+## Reaching the other services
+
+Live video and device data are separate services, and this server is what authorises
+them: `POST /devices/{device_id}/viewer-grant` and
+`POST /products/{product_id}/viewer-grant` mint short-lived tokens for the live relay
+and the datalake. A camera gets its ingest credential the same way, in the answer to
+its check-in. Nothing else hands out those tokens.
 """
 
 _OPENAPI_TAGS = [
@@ -490,11 +538,30 @@ def _effective_account(ms, checkin):
 
 @router.get("/healthz", tags=["Health"], responses={200: {"model": Health}})
 def healthz():
+    """Liveness. No token, no database read -- a load balancer can poll it freely."""
     return {"ok": True}
 
 
 @router.post("/api/v1/check", tags=["Device API"], responses={200: {"model": CheckAnswer}})
 def check(checkin: CheckIn, request: Request):
+    """A camera asks whether there is an update for it. This is the only endpoint a
+    device calls on a schedule, and the whole device-side protocol besides the
+    download and `/api/v1/feedback`.
+
+    The body reports who the device is (`device_id`, `board`, `product_id`) and what it
+    is running (`version`, `payload_version`, slot state); the answer is either
+    `{"update": false, "poll_after_s": n}` or an offer carrying a manifest and a
+    one-time download URL under `/d/{token}/...`.
+
+    **No bearer token.** A device holds no account credential: it is gated by the
+    registration verifier (an unregistered board is answered but never stored), by a
+    per-IP rate limit, and by the signature its firmware checks on whatever it
+    downloads. The account a device belongs to is *learned* from the first valid
+    check-in that reports one, and that binding is sticky -- see
+    `POST /api/v1/admin/devices/{device_id}/account` for the operator override.
+
+    `poll_after_s` is the server pacing the fleet; respect it rather than polling on a
+    fixed timer, so a large fleet does not arrive in step."""
     st = request.app.state
     nothing = {"update": False, "poll_after_s": st.settings.poll_after_s}
     ip = request.client.host if request.client else "-"
@@ -600,6 +667,14 @@ def feedback(report: Feedback, request: Request):
 
 @router.get("/d/{token}/{filename}", tags=["Device API"], responses={200: {"content": {"application/gzip": {}}, "description": "the artifact bytes"}})
 def artifact(token: str, filename: str, request: Request):
+    """Download an artifact named by an offer. The token in the path IS the
+    authorisation: a capability minted for one release when the offer was made, so no
+    credential travels with the request and a leaked URL grants nothing else. Unknown,
+    tampered or expired tokens are 404, never 403, so the URL space cannot be probed.
+
+    On S3-style storage the answer is a 302 to a short-lived presigned URL; on local
+    storage the bytes stream from here. Responses are resumable: an interrupted
+    download continues from its byte offset rather than starting again."""
     st = request.app.state
     release_id = capability.verify(st.secret, token)
     if release_id is None:
@@ -711,8 +786,15 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
 
     def _openapi():
         """The stock schema plus this deployment's public server URL (when ``base_url``
-        is configured) so examples show real endpoints. No x-logo: the page's header
-        bar carries the wordmark, so the sidebar starts at search."""
+        is configured) so examples show real endpoints, plus the bearer requirement
+        every admin route carries. No x-logo: the page's header bar carries the
+        wordmark, so the sidebar starts at search.
+
+        The auth is added here because ``require_scope`` reads the Authorization header
+        itself: FastAPI sees an ordinary dependency and infers nothing, so a generated
+        client would send no credentials. Each route's dependency carries its scope
+        (``openmv_scope``), which becomes the operation's security requirement and a
+        line in its description."""
         if app.openapi_schema:
             return app.openapi_schema
         schema = get_openapi(title=app.title, version=app.version,
@@ -720,6 +802,35 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
                              tags=_OPENAPI_TAGS)
         if settings.base_url:
             schema["servers"] = [{"url": settings.base_url}]
+        schema.setdefault("components", {})["securitySchemes"] = {
+            "bearerAuth": {
+                "type": "http", "scheme": "bearer",
+                "description": (
+                    "An account's admin token: `Authorization: Bearer <token>`. Tokens are "
+                    "issued by `POST /api/v1/admin/accounts/{account_id}/tokens` and carry "
+                    "scopes on a ladder -- `publish` implies `manage` implies `observe` -- "
+                    "plus the operator scope `accounts`. Every read and write is scoped to "
+                    "the token's account; anything belonging to another account answers 404, "
+                    "which is indistinguishable from 'does not exist'."),
+            },
+        }
+        # Walk the routers we included, not app.routes: FastAPI wraps an included
+        # router in a lazy object whose real routes are not reachable from there.
+        for included in (router, admin, publish):
+            for route in included.routes:
+                deps = getattr(getattr(route, "dependant", None), "dependencies", [])
+                scope = next((s for s in (getattr(d.call, "openmv_scope", None) for d in deps)
+                              if s is not None), None)
+                if scope is None:
+                    continue
+                for method in route.methods:      # route.path already carries the prefix
+                    op = schema["paths"].get(route.path, {}).get(method.lower())
+                    if op is None:                  # pragma: no cover - not in the schema
+                        continue
+                    op["security"] = [{"bearerAuth": []}]
+                    note = "**Requires scope:** `%s`" % scope
+                    op["description"] = (op["description"] + "\n\n" + note
+                                         if op.get("description") else note)
         app.openapi_schema = schema
         return schema
 

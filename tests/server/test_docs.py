@@ -93,3 +93,57 @@ def test_openapi_schema_is_cached(tmp_path):
     client = TestClient(app)
     first = client.get("/openapi.json").json()
     assert client.get("/openapi.json").json() == first
+
+
+def test_openapi_declares_the_bearer_scheme_and_every_route_that_needs_it(tmp_path):
+    """`require_scope` reads the Authorization header itself, so FastAPI infers no
+    security and a client generated from the schema would send no credentials at all.
+    The hook adds it back: every guarded operation carries bearerAuth and names the
+    scope it needs, and the handful that take no token stay open on purpose."""
+    schema = TestClient(_app(tmp_path)).get("/openapi.json").json()
+    scheme = schema["components"]["securitySchemes"]["bearerAuth"]
+    assert scheme["type"] == "http" and scheme["scheme"] == "bearer"
+    assert "publish" in scheme["description"] and "404" in scheme["description"]
+
+    open_ops, guarded = set(), {}
+    for path, ops in schema["paths"].items():
+        for method, op in ops.items():
+            if "security" in op:
+                assert op["security"] == [{"bearerAuth": []}], path
+                assert "**Requires scope:**" in op["description"], path
+                guarded[(method, path)] = op["description"]
+            else:
+                open_ops.add((method.upper(), path))
+    # Open by design: liveness, the two device endpoints (gated by registration and
+    # rate limit, never by an account credential), and the capability download URL.
+    assert open_ops == {("GET", "/healthz"), ("POST", "/api/v1/check"),
+                        ("POST", "/api/v1/feedback"), ("GET", "/d/{token}/{filename}")}
+    assert len(guarded) == 44
+    assert "`observe`" in guarded[("get", "/api/v1/admin/devices")]
+    assert "`publish`" in guarded[("post", "/api/v1/admin/releases")]
+    assert "`accounts`" in guarded[("post", "/api/v1/admin/accounts")]
+
+
+def test_every_operation_says_what_it_does(tmp_path):
+    """A reference with bare endpoints is not a reference: 19 operations once showed a
+    name and a parameter list and nothing else, including publish, rollout create and
+    the device list. Descriptions come from the handler docstrings, so this fails the
+    moment a route is added without one."""
+    schema = TestClient(_app(tmp_path)).get("/openapi.json").json()
+    bare = [f"{m.upper()} {p}" for p, ops in schema["paths"].items() for m, op in ops.items()
+            if len((op.get("description") or "").replace("**Requires scope:**", "").strip()) < 40]
+    assert not bare, "operations with no real description: %s" % bare
+
+
+def test_the_reference_explains_how_the_objects_map(tmp_path):
+    """An integrator's first questions are what a product is, where its id comes from,
+    and how a device ends up in their account -- none of which are visible from the
+    endpoint list, because none of them are API calls."""
+    schema = TestClient(_app(tmp_path)).get("/openapi.json").json()
+    desc = schema["info"]["description"]
+    assert 'crc32("<product>:<board>")' in desc          # ids are computed, not assigned
+    assert "two products" in desc                        # one line, two boards
+    assert "no \"create product\" call" in desc
+    assert "learns" in desc and "sticky" in desc         # how a device joins an account
+    assert "no product-scoped token" in desc             # the multi-tenant caveat
+    assert "filter-aware `total`" in desc                # how to page

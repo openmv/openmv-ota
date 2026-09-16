@@ -45,11 +45,18 @@ class TokenAuth:
 
 
 def require_scope(scope: str):
-    """A FastAPI dependency: authenticate the request, then require ``scope``."""
+    """A FastAPI dependency: authenticate the request, then require ``scope``.
+
+    The scope is stamped onto the returned function as ``openmv_scope``: the OpenAPI
+    hook reads it back off the route to publish the bearer requirement and name the
+    scope in the reference. Without that, a client generated from the schema sends no
+    Authorization header at all, because this dependency reads the header by hand and
+    FastAPI has nothing to infer a security scheme from."""
     def dep(request: Request) -> Principal:
         principal = request.app.state.admin_auth.authenticate(
             request.headers.get("Authorization", ""))
         if scope not in expand(principal.scopes):     # the ladder: publish implies manage, observe
             raise HTTPException(status_code=403, detail="missing scope: %s" % scope)
         return principal
+    dep.openmv_scope = scope
     return dep
