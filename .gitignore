@@ -36,3 +36,5 @@ keys/private/
 .DS_Store
 Thumbs.db
 .coverage.*
+# scratch databases from ad-hoc server probes
+*.db
