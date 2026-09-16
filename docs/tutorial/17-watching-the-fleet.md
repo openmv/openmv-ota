@@ -20,9 +20,13 @@ $ openmv-ota client fleet
   "total": 950,
   "fell_back": 2,
   "unconfirmed": 9,
+  "up_to_date": 899,
+  "measured": 950,
   "products": {
     "5553380507785669254": {
       "total": 412,
+      "up_to_date": 361,
+      "measured": 412,
       "by_version": { "1.2.0": 361, "1.1.0": 51 },
       "by_fallback": { "1.1.0": 358, "unknown": 54 },
       "by_cohort": { "__default__": 404, "beta": 8 },
@@ -33,6 +37,8 @@ $ openmv-ota client fleet
     },
     "646934278": {
       "total": 538,
+      "up_to_date": 538,
+      "measured": 538,
       "by_version": { "3.0.1": 538 },
       "by_fallback": { "3.0.0": 538 },
       "by_cohort": { "__default__": 530, "beta": 8 },
@@ -46,6 +52,8 @@ $ openmv-ota client fleet
 
 | per-product field | what it answers |
 |---|---|
+| `up_to_date` | devices at or past this product's **newest release** — adoption in one number. The server counts it because you cannot: `by_version` is keyed by version *string*, and `"2.0.0"` against `"10.0.0"` is not a comparison |
+| `measured` | the devices that count toward `up_to_date` — `total`, or 0 while the product has published nothing. A product with no release has nothing to be behind of, so its devices sit outside the ratio rather than at 0% of it. Account-wide, this is adoption's denominator |
 | `by_version` | what this product's devices are running |
 | `by_fallback` | what they would fall back **to**. A fleet whose devices all have the previous release behind them is in a very different position from one where half report `unknown` — and that is invisible in `by_version` |
 | `by_cohort` | how the product's devices are grouped |
@@ -57,6 +65,11 @@ $ openmv-ota client fleet
 has no fallback by design. `--product-id` narrows `products` to one entry, and
 `--cohort` scopes every number to that cohort — `client fleet --cohort beta` is the
 dashboard for exactly the audiences your `beta` rollouts reach.
+
+`--totals` returns the five account-wide counters alone, with `products` empty. An
+overview that draws "950 devices, 94% on the newest release" needs those five numbers,
+not every product's version and cohort breakdown; on an account with thousands of
+products, that is the difference between a small response and a large one.
 
 ## Listing conventions
 
@@ -73,8 +86,12 @@ device/release counts. The name comes from the newest release's manifest unless
 
 ## The per-device rows
 
-`client device list` is the same picture one camera at a time. Its filters include the three a dashboard's attention list is made of: `--fell-back` (the last boot rejected a slot), `--unconfirmed` (mid-trial) and `--not-seen-since EPOCH` (no check-in since). `client product list` rows carry `up_to_date`, the devices at or past the product's newest release. It — everything the device
-reported at its last check-in, plus what the server decided about it:
+`client device list` is the same picture one camera at a time: everything the device
+reported at its last check-in, plus what the server decided about it. Its filters
+include the ones a dashboard's attention list is made of — `--fell-back` (the last
+boot rejected a slot), `--unconfirmed` (mid-trial), `--not-seen-since EPOCH` (no
+check-in since then) and its exact complement `--seen-since EPOCH` (checked in since
+then, which is how you count a day's live fleet in one read):
 
 ```
 $ openmv-ota client device list --cohort beta --limit 1
