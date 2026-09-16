@@ -412,7 +412,8 @@ def create_rollout(body: RolloutCreate, request: Request,
     ms.append_audit(actor=principal.name, action="rollout.create", entity_type="rollout",
                     entity_id=rid, data={"release_id": body.release_id, "cohort": body.cohort,
                                          "percent": body.percent}, account_id=account_id)
-    return {"rollout_id": rid, "product_id": product_id, "cohort": body.cohort,
+    return {"rollout_id": rid, "product_id": product_id, "product_id_str": str(product_id),
+            "cohort": body.cohort,
             "percent": body.percent, "state": "active", "display_name": display_name}
 
 
@@ -472,7 +473,8 @@ def stop_rollout(rollout_id: str, request: Request,
 # The list is pure ENUMERATION -- enough to find and recognize a rollout -- while
 # /status is the complete single-rollout read (identity, policy, timestamps, counters,
 # derived score). Everything specific to one rollout lives there, once.
-_ROLLOUT_ROW = ("rollout_id", "release_id", "product_id", "cohort", "percent", "state",
+_ROLLOUT_ROW = ("rollout_id", "release_id", "product_id", "product_id_str", "cohort",
+                "percent", "state",
                 "cohort_devices", "up_to_date", "pause_reason", "display_name")
 
 
@@ -776,7 +778,8 @@ def pin_cohort(body: CohortPin, request: Request,
                     entity_id=body.cohort, data={"product_id": body.product_id,
                                                  "release_id": body.release_id},
                     account_id=principal.account_id)
-    return {"product_id": body.product_id, "cohort": body.cohort, "release_id": body.release_id}
+    return {"product_id": body.product_id, "product_id_str": str(body.product_id),
+            "cohort": body.cohort, "release_id": body.release_id}
 
 
 @admin.get("/fleet", responses={200: {"model": FleetSummary}})
@@ -1067,7 +1070,7 @@ def rename_product(product_id: int, body: DeviceName, request: Request,
     ms.append_audit(actor=principal.name, action="product.rename", entity_type="product",
                     entity_id=str(product_id), data={"name": name},
                     account_id=principal.account_id)
-    return {"product_id": product_id, "display_name": name}
+    return {"product_id": product_id, "product_id_str": str(product_id), "display_name": name}
 
 
 @admin.post("/products/{product_id}/viewer-grant", responses={200: {"model": ProductViewerGrant}})

@@ -171,3 +171,31 @@ def test_a_limited_token_cannot_also_be_an_operator(tmp_path):
                 json={"name": "partner", "scopes": ["observe"], "products": [MINE]},
                 headers=op)
     assert ok.status_code == 200 and ok.json()["products"] == [MINE]
+
+
+def test_every_product_id_is_also_a_string(tmp_path):
+    """JSON numbers are IEEE doubles in JavaScript, so a 63-bit product id is rounded by
+    JSON.parse -- silently, and every lookup with the rounded value misses. Python and
+    MicroPython are exact, so nothing in this stack would ever notice; an integrator's
+    Node service would. Each response carrying the number carries the exact string too.
+    """
+    c, store = _app(tmp_path)
+    big = (1 << 62) + 12345                       # far above 2**53
+    store.add_release(release_id="rel_big", product_id=big, product="huge", version="1.0.0",
+                      payload_version=9, min_platform_version=0, image_sha256="x", image_size=1,
+                      representations=[], manifest_key="m", image_key="i", account_id=ACCOUNT)
+    store.upsert_device(device_id="dev_big", product_id=big, board="OPENMV_N6",
+                        account_id=ACCOUNT)
+
+    for path, key in (("/api/v1/admin/releases", "releases"),
+                      ("/api/v1/admin/devices", "devices"),
+                      ("/api/v1/admin/products", "products")):
+        row = next(r for r in c.get(path, headers=WHOLE).json()[key]
+                   if r["product_id"] == big)
+        assert row["product_id_str"] == str(big), path
+        # the string survives what the number does not
+        assert int(float(row["product_id"])) != big or big < (1 << 53)
+
+    renamed = c.patch("/api/v1/admin/products/%d/name" % big, json={"name": "Huge"},
+                      headers=WHOLE).json()
+    assert renamed["product_id_str"] == str(big)

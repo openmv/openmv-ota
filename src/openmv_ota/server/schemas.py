@@ -58,6 +58,9 @@ class TokenInfo(_Row):
 class Release(_Row):
     release_id: str = ""
     product_id: int = 0
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
     product: str = ""
     version: str = ""
     payload_version: int = 0
@@ -77,6 +80,9 @@ class Rollout(_Row):
     rollout_id: str = ""
     release_id: str = ""
     product_id: int = 0
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
     cohort: str = ""
     percent: float = 0.0
     cohort_devices: int = 0
@@ -100,6 +106,9 @@ class Rollout(_Row):
 class Device(_Row):
     device_id: str = ""
     product_id: int = 0
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
     board: str = ""
     cohort: str = ""
     current_version: str = ""
@@ -192,6 +201,9 @@ class RolloutRow(_Row):
     rollout_id: str = ""
     release_id: str = ""
     product_id: int = 0
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
     cohort: str = ""
     percent: float = 0.0
     state: str = ""
@@ -282,6 +294,9 @@ class TokenRevoked(BaseModel):
 class RolloutCreated(BaseModel):
     rollout_id: str
     product_id: int
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
     cohort: str
     percent: float
     state: str
@@ -298,6 +313,9 @@ class RolloutStatus(BaseModel):
     rollout_id: str
     release_id: str = ""
     product_id: int = 0
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
     cohort: str = ""
     state: str
     percent: float
@@ -358,6 +376,9 @@ class DeviceBound(BaseModel):
 
 class CohortPinned(BaseModel):
     product_id: int
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
     cohort: str
     release_id: str | None = None
 
@@ -384,6 +405,9 @@ class AdvisoryList(BaseModel):
 
 class Product(BaseModel):
     product_id: int
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
     product: str | None = None
     """Friendly name from the newest release; None until one is published."""
     """The label to show: the operator's display name, else the newest release's
@@ -408,6 +432,9 @@ class ProductList(BaseModel):
 
 class ProductRenamed(BaseModel):
     product_id: int
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
     display_name: str
 
 
@@ -420,6 +447,9 @@ class AdvisoryScan(BaseModel):
 class Published(BaseModel):
     release_id: str
     product_id: int
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
     version: str | None = None
     payload_version: int
     representations: list[str]

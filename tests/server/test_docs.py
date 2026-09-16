@@ -147,5 +147,6 @@ def test_the_reference_explains_how_the_objects_map(tmp_path):
     assert "no \"create product\" call" in desc
     assert "learns" in desc and "sticky" in desc         # how a device joins an account
     assert "list of products" in desc                    # the per-customer credential
+    assert "product_id_str" in desc and "2^53" in desc   # and the JS precision trap
     assert "404" in desc                                 # and how it answers outside them
     assert "filter-aware `total`" in desc                # how to page

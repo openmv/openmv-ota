@@ -97,6 +97,13 @@ to another's devices. Two consequences worth planning around: one product line b
 for two camera models is **two products** here, and you may override the id in the
 project config if you would rather map it onto your own identifiers.
 
+**Reading a product id from JavaScript.** The id is 63 bits, and JSON numbers are
+IEEE doubles in JS: anything above 2^53 is rounded by `JSON.parse`, silently, and a
+lookup with the rounded value simply misses. Every response that carries
+`product_id` also carries **`product_id_str`**, the same value as a string — read
+that one from JS or TS (or parse with a reviver that yields `BigInt`). Python and
+MicroPython are exact and can use either.
+
 There is no "create product" call. A product exists once something refers to it —
 publishing a release for that id, or a device checking in reporting it — and then
 appears in `GET /api/v1/admin/products`, where `PATCH .../name` gives it a label for

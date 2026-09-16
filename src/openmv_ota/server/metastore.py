@@ -27,7 +27,22 @@ def _now_iso() -> str:
 
 
 def _d(row) -> dict | None:
-    return dict(row) if row is not None else None
+    """A store row as a dict, with ``product_id_str`` beside any ``product_id``.
+
+    A product id is 63 bits, and JSON numbers are IEEE doubles in JavaScript: anything
+    above 2**53 loses precision the moment a JS or TS client calls ``JSON.parse``, and
+    it loses it SILENTLY -- the id comes back rounded and every lookup with it misses.
+    Python and MicroPython are fine, so nothing in this stack notices; an integrator's
+    Node service would. The string is the exact value, always safe to read.
+
+    Added here rather than in each handler so it cannot be added to nine responses and
+    forgotten on the tenth."""
+    if row is None:
+        return None
+    d = dict(row)
+    if "product_id" in d and d["product_id"] is not None:
+        d["product_id_str"] = str(d["product_id"])
+    return d
 
 
 def _order(sort, direction, allowed: dict, default: str, tiebreak: str) -> str:
@@ -770,7 +785,9 @@ class SqlMetadataStore:
             npv = (newest.get(pid) or {}).get("payload_version")
             up = (sum(n for pv, n in by_pv.get(pid, []) if pv is not None and pv >= npv)
                   if npv is not None else 0)
-            rows.append({"product_id": pid, "product": labels.get(pid) or manifest,
+            # built by hand rather than from a row, so the JS-safe string is explicit
+            rows.append({"product_id": pid, "product_id_str": str(pid),
+                         "product": labels.get(pid) or manifest,
                          "display_name": labels.get(pid, ""), "manifest_name": manifest,
                          "devices": devs.get(pid, 0), "releases": rels.get(pid, 0),
                          "newest_version": (newest.get(pid) or {}).get("version"),

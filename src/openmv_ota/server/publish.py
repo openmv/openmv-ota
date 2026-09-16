@@ -207,6 +207,7 @@ async def publish_release(request: Request, background: BackgroundTasks,
             except Exception as e:                            # noqa: BLE001
                 print("publish-time advisory scan failed: %s" % e, file=sys.stderr)
         background.add_task(_scan_quietly)
-    return {"release_id": release_id, "product_id": product_id, "version": body.get("version"),
+    return {"release_id": release_id, "product_id": product_id,
+            "product_id_str": str(product_id), "version": body.get("version"),
             "payload_version": payload_version, "representations": [r["format"] for r in reps],
             "display_name": display_name}
