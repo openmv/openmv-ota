@@ -416,8 +416,12 @@ def test_ota_trailer_meta_mirrors_system_json(make_project):
     assert info["ota"] is True and info["product_id"] == 42 and info["app_version"] == "1.2.3"
 
 
-def test_ota_build_stamps_reserved0_zero(make_project):
+def test_ota_build_stamps_a_64_bit_product_id(make_project):
+    """The reserved word that used to sit beside product_id is now part of it: the id is
+    64-bit, because a 32-bit one (a crc32) collides at a few thousand products and the id
+    is the device's cross-flash guard."""
     from openmv_ota.ota import parse_trailer
+    from openmv_ota.ota.trailer import HEADER_SIZE, HEADER_VERSION
     from openmv_ota.ota.version import encode_app_version
 
     root, repo, app = _build_ota(
@@ -425,8 +429,9 @@ def test_ota_build_stamps_reserved0_zero(make_project):
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
     t = parse_trailer(_read_bundle(r)[1])
-    assert t.reserved0 == 0
     assert t.payload_version == encode_app_version("2.5.0")
+    assert t.product_id.bit_length() > 32          # a real 64-bit id, not the old crc32
+    assert (HEADER_SIZE, HEADER_VERSION) == (80, 2)
 
 
 def test_ota_build_warns_on_unset_product_id(make_project, capsys):

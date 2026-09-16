@@ -466,3 +466,4 @@ class Ok(BaseModel):
 
 class Health(BaseModel):
     ok: bool
+    commit: str = ""        # the deployment's build commit, when the host provides one

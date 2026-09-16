@@ -176,7 +176,6 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_si
         product_id=int(system_info["product_id"]),
         min_platform_version=int(p.lock.firmware.get("version_code", 0)),
         payload_version=signer.payload_version,
-        reserved0=0,
         key_id=signer.key_id,
         sig_alg=signer.sig_alg,
         body_sha256=hashlib.sha256(body).digest(),

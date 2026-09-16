@@ -150,7 +150,10 @@ _SLOT_READ = _COUNTER_OFF + _COUNTER_LEN         # markers + repr + counter
 # decision -- the sha lets the fleet see which exact BYTES each slot holds (the operator's
 # answer to "which delta bases must this release cover?").
 _TRAILER_MAGIC = b"OMVR"
-_TRAILER_VERSION_OFF = 32                        # payload_version (pinned by a test)
+_TRAILER_VERSION_OFF = 36                        # payload_version (pinned by a test)
+# 36, not 32: product_id is 64-bit as of header version 2, which pushed this and
+# min_platform_version four bytes later. Everything from key_id on kept its offset,
+# because the widening consumed the reserved0 that used to sit here.
 _TRAILER_SHA_OFF = 48                            # body_sha256, 32 raw bytes (pinned by a test)
 _TRAILER_READ = _TRAILER_SHA_OFF + 32
 

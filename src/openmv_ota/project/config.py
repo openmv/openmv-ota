@@ -8,7 +8,7 @@ dependency is needed.
 
 from __future__ import annotations
 
-import binascii
+import hashlib
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -149,8 +149,24 @@ def derive_product_id(product: str, board: str) -> int:
     distinct per board within a project, and reproducible (two machines, or a lost
     config, regenerate the same value). It is written into the config once at
     ``new`` and is the cross-flash guard, so keep it stable once devices ship; it
-    stays overridable. Never 0 (0 means "unset")."""
-    bid = binascii.crc32(("%s:%s" % (product, board)).encode("utf-8")) & 0xFFFFFFFF
+    stays overridable. Never 0 (0 means "unset").
+
+    **64 bits of SHA-256, not a CRC.** The id was a crc32, and 32 bits is not a
+    number space you can auto-assign from: the birthday bound puts a collision at
+    evens by ~77k products and at 1% by ~9k, and a collision is not a cosmetic
+    clash -- two product lines sharing an id means one line's devices accept the
+    other's firmware, because the id IS the cross-flash guard. A platform minting
+    a product per end customer reaches those numbers. With 64 bits, a million
+    products collide with probability ~3e-8, and the server refuses a second
+    product name on an id it already knows, so the residual case is a clear error
+    rather than a silent merge.
+
+    Sixty-THREE bits, not 64: the id lives in a signed 64-bit database column
+    (Postgres ``bigint``), so the top bit is dropped rather than risking a value the
+    catalogue cannot store. It costs nothing that matters -- a million products still
+    collide with probability ~5e-8."""
+    digest = hashlib.sha256(("%s:%s" % (product, board)).encode("utf-8")).digest()
+    bid = int.from_bytes(digest[:8], "big") & 0x7FFF_FFFF_FFFF_FFFF
     return bid or 1
 
 

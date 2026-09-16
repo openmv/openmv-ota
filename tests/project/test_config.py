@@ -132,7 +132,10 @@ def test_derive_product_id_distinct_and_stable():
     b = cfg.derive_product_id("prod", "OPENMV_AE3")
     assert a != b
     assert a == cfg.derive_product_id("prod", "OPENMV_N6")  # deterministic
-    assert a != 0 and 0 < a <= 0xFFFFFFFF
+    # 63 bits: wide enough that a platform minting a product per customer never
+    # collides, and still a positive value for a signed BIGINT column.
+    assert a != 0 and 0 < a <= 0x7FFF_FFFF_FFFF_FFFF
+    assert a.bit_length() > 32                     # not the old crc32 space
 
 
 def test_render_config_no_vendor(tmp_path):

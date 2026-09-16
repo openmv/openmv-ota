@@ -506,7 +506,7 @@ _MANIFEST_MAX = 8192
 _ALG_SIG_SIZE = {-7: 64, -35: 96, -36: 132}
 # Image trailer header (mirror of openmv_ota.ota.trailer) -- only payload_version is read.
 _TRAILER_MAGIC = b"OMVR"
-_TRAILER_HEADER_STRUCT = "<4sIIIIIIIIIIi32s"
+_TRAILER_HEADER_STRUCT = "<4sIIIIIQIIIi32s"   # header v2: product_id is 64-bit
 
 
 def _manifest_parse(data):
@@ -605,7 +605,7 @@ def _trailer_body_sha(trailer):
     fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
     if fields[0] != _TRAILER_MAGIC:
         return ""
-    return binascii.hexlify(fields[12]).decode()  # body_sha256 (13th header field)
+    return binascii.hexlify(fields[11]).decode()  # body_sha256 (12th: reserved0 is gone)
 
 
 # --- pure: A/B slot arithmetic (mirror of boot.py; pinned by a test) ---------

@@ -56,8 +56,8 @@ except ImportError:                    # host / tests / a build without logging 
 # --- Trailer format (mirror of openmv_ota.ota.trailer) ----------------------
 
 MAGIC = b"OMVR"                         # ROMFS application image
-HEADER_VERSION = 1
-_HEADER_STRUCT = "<4sIIIIIIIIIIi32s"
+HEADER_VERSION = 2
+_HEADER_STRUCT = "<4sIIIIIQIIIi32s"
 _HEADER_SIZE = struct.calcsize(_HEADER_STRUCT)   # 80
 _META_SIZE_OFFSET = struct.calcsize("<4sIII")    # 16
 _CRC_SIZE = 4
@@ -163,7 +163,7 @@ def parse_trailer(data):
     if len(data) < _HEADER_SIZE:
         raise OtaReject("trunc")
     (magic, header_version, body_size, pad_size, meta_size, sig_size, product_id,
-     min_platform_version, payload_version, _reserved0, key_id, sig_alg,
+     min_platform_version, payload_version, key_id, sig_alg,
      body_sha256) = struct.unpack_from(_HEADER_STRUCT, data, 0)
     if magic != MAGIC:
         raise OtaReject("magic")

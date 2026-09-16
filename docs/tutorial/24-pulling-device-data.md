@@ -78,7 +78,7 @@ many devices report true for a bool — and `spread` carries the min, the max an
 many devices are behind each figure:
 
 ```
-$ openmv-ota client data topics --product-id 396486252
+$ openmv-ota client data topics --product-id 5553380507785669254
 {
   "topics": [
     { "topic": "telemetry", "objects": 5120, "bytes": 3218902, "records": 51200, "devices": 412,
@@ -95,7 +95,7 @@ $ openmv-ota client data topics --product-id 396486252
 between `min` and `max` is the fleet's spread and `devices` counts the contributors:
 
 ```
-$ openmv-ota client data series --product-id 396486252 --topic telemetry --field temp_c --buckets 4
+$ openmv-ota client data series --product-id 5553380507785669254 --topic telemetry --field temp_c --buckets 4
 { "field": "temp_c", "since": 1789253120.0, "until": 1789339520.0, "truncated": false, "devices": 412,
   "buckets": [ { "t": 1789253120.0, "n": 39552, "min": 28.9, "max": 42.0, "avg": 34.6 }, ... ] }
 ```

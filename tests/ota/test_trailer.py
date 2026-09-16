@@ -30,7 +30,6 @@ def _trailer(**over) -> Trailer:
         product_id=0x1234,
         min_platform_version=(5 << 24),
         payload_version=7,
-        reserved0=0,
         key_id=0x10,
         sig_alg=ES256,
         body_sha256=bytes(range(32)),
@@ -43,15 +42,16 @@ def _trailer(**over) -> Trailer:
 def _raw_header(**over) -> bytes:
     """A raw 80-byte header with valid-ES256 defaults; override any field."""
     f = dict(
-        magic=MAGIC_ROMFS_APP, header_version=1, body_size=0, pad_size=0, meta_size=0,
+        magic=MAGIC_ROMFS_APP, header_version=trailer_mod.HEADER_VERSION, body_size=0,
+        pad_size=0, meta_size=0,
         sig_size=64, product_id=0, min_platform_version=0, payload_version=0,
-        reserved0=0, key_id=0, sig_alg=ES256, body_sha256=b"\x00" * 32,
+        key_id=0, sig_alg=ES256, body_sha256=b"\x00" * 32,
     )
     f.update(over)
     return struct.pack(
         trailer_mod.HEADER_STRUCT, f["magic"], f["header_version"], f["body_size"],
         f["pad_size"], f["meta_size"], f["sig_size"], f["product_id"],
-        f["min_platform_version"], f["payload_version"], f["reserved0"],
+        f["min_platform_version"], f["payload_version"],
         f["key_id"], f["sig_alg"], f["body_sha256"],
     )
 
@@ -140,11 +140,16 @@ def test_pack_bad_body_sha_length():
         pack_trailer(_trailer(body_sha256=b"\x00" * 10))
 
 
-def test_pack_nonzero_reserved0_rejected():
-    # reserved0 is signed headroom: writers must stamp 0 so the field can gain a
-    # meaning later without a header_version bump. Readers stay permissive.
-    with pytest.raises(OtaError, match="reserved0 must be 0"):
-        pack_trailer(_trailer(reserved0=7))
+def test_product_id_is_64_bit_and_the_header_is_still_80_bytes():
+    """A 32-bit product id collides at a few thousand products (birthday bound), and a
+    collision means one product line's devices accept another's firmware. The field is
+    64-bit, which consumed the four reserved bytes beside it -- so the header is the
+    same 80 bytes and header_version went to 2 to say the layout changed."""
+    from openmv_ota.ota.trailer import HEADER_SIZE, HEADER_VERSION
+
+    assert HEADER_SIZE == 80 and HEADER_VERSION == 2
+    big = (1 << 64) - 1                       # the widest id the field can carry
+    assert parse_trailer(pack_trailer(_trailer(product_id=big))).product_id == big
 
 
 def test_pack_unsupported_algorithm():
@@ -171,8 +176,12 @@ def test_parse_bad_magic():
 
 
 def test_parse_bad_header_version():
-    with pytest.raises(OtaError, match="unsupported header_version 2"):
-        parse_trailer(_assemble(header_version=2))
+    # 1 is the OLD layout: a 32-bit product id with four reserved bytes beside it.
+    # A reader that accepted it would misread every field after the id.
+    with pytest.raises(OtaError, match="unsupported header_version 1"):
+        parse_trailer(_assemble(header_version=1))
+    with pytest.raises(OtaError, match="unsupported header_version 3"):
+        parse_trailer(_assemble(header_version=3))
 
 
 def test_parse_unknown_algorithm():

@@ -17,6 +17,7 @@ hints under ``from __future__ import annotations``; per-request collaborators co
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -74,16 +75,27 @@ Self-hosting and operations are covered in the
 
 **Account** — the tenant. Every token belongs to one, and every read and write is
 scoped to it: another account's release, device or rollout answers **404**, the same
-as one that does not exist. There is no product-scoped token, so a platform that
-resells this to its own customers holds one account and enforces per-customer
-boundaries on its side.
+as one that does not exist.
+
+A token may be narrowed further to a **list of products** (`products` on
+`POST /accounts/{account_id}/tokens`). Then every collection read is filtered to
+that list, every entity outside it answers 404 — the same answer another account's
+would give, so the error cannot be used to discover product ids — and any write
+naming another product is refused. That is the credential a platform hands its own
+customer: `scopes` says what it may do, `products` says what it may do it to. The
+audit log is the one exception: its rows record actions, not products, so a
+product-limited token is refused it (403) rather than shown the account's whole
+history. Such a token cannot also carry the operator `accounts` scope.
 
 **Product** — a `(product, board)` pair, identified by a 32-bit `product_id` that is
-**computed, not assigned**: `crc32("<product>:<board>")`, so the same name and board
-always give the same id, on any machine, without a round trip. Two consequences worth
-planning around: one product line built for two camera models is **two products**
-here, and you may override the id in the project config if you would rather map it
-onto your own identifiers.
+**computed, not assigned**: the low 63 bits of `sha256("<product>:<board>")`, so the
+same name and board always give the same id, on any machine, without a round trip. A
+million products collide with probability around 5e-8, and publishing a second product
+name onto an id the account already knows is refused rather than merged -- the id is a
+device's cross-flash guard, so a silent merge would offer one product line's firmware
+to another's devices. Two consequences worth planning around: one product line built
+for two camera models is **two products** here, and you may override the id in the
+project config if you would rather map it onto your own identifiers.
 
 There is no "create product" call. A product exists once something refers to it —
 publishing a release for that id, or a device checking in reporting it — and then
@@ -176,6 +188,11 @@ _REDOC_HTML = """<!DOCTYPE html>
     color: #e7eefb;
   }
   :root[data-theme="dark"] .react-tabs__tab--selected.tab-success { color: #34d399; }
+  /* ReDoc draws the heading anchor as a DARK glyph inside a base64 background-image,
+     so on a dark page it is a dark smudge on dark. Invert it rather than swap in our
+     own icon: it stays ReDoc's mark, just legible. */
+  :root[data-theme="dark"] .share-link::before { filter: invert(1); opacity: 0.55; }
+  :root[data-theme="dark"] .share-link:hover::before { opacity: 0.95; }
   :root[data-theme="dark"] .react-tabs__tab--selected.tab-error { color: #f87171; }
   /* Deep-link anchor icon in section/tag headings: ReDoc's default (~#9E9EFF)
      is too low-contrast on the dark slate -- use the theme accent. */
@@ -538,8 +555,13 @@ def _effective_account(ms, checkin):
 
 @router.get("/healthz", tags=["Health"], responses={200: {"model": Health}})
 def healthz():
-    """Liveness. No token, no database read -- a load balancer can poll it freely."""
-    return {"ok": True}
+    """Liveness. No token, no database read -- a load balancer can poll it freely.
+
+    `commit` is the build this process came from, when the host sets it (Render's
+    `RENDER_GIT_COMMIT`). It exists so a deploy that silently never happened can be
+    seen from outside: a platform that skips a service whose files did not change, and
+    does not retry one it skipped, can leave a green repo serving an older build."""
+    return {"ok": True, "commit": os.environ.get("RENDER_GIT_COMMIT", "")[:7]}
 
 
 @router.post("/api/v1/check", tags=["Device API"], responses={200: {"model": CheckAnswer}})

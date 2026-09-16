@@ -21,12 +21,15 @@ verifier trusts comes from authenticated fields, not from the flexible blob.
 The fixed header, in order (``docs/reference/trailer.md`` has per-field semantics)::
 
     magic(4s) header_version body_size pad_size meta_size sig_size
-    product_id min_platform_version payload_version reserved0
+    product_id(uint64) min_platform_version payload_version
     key_id sig_alg(int32) body_sha256(32s)
 
-``reserved0`` is four bytes of signed headroom for a future field: writers must
-stamp ``0`` (enforced), readers ignore it — so it can later gain a meaning
-without a ``header_version`` bump.
+``product_id`` is **64-bit**. It was 32 with four bytes of ``reserved0`` beside
+it; widening it consumed exactly that headroom, so the header is still 80 bytes.
+A 32-bit id is derived from a hash of the product name, and at a few thousand
+products the birthday bound makes a collision likely — two product lines sharing
+an id means one line's devices accept the other's firmware. The header version
+went to 2 with the width.
 
 ``magic`` doubles as the payload-kind discriminator (``OMVR`` = ROMFS app,
 ``OMVF`` = firmware, reserved). The lone signed field ``sig_alg`` is placed just
@@ -48,7 +51,7 @@ from .errors import OtaError
 MAGIC_ROMFS_APP = b"OMVR"   # ROMFS application image
 MAGIC_FIRMWARE = b"OMVF"    # firmware image (reserved; a future payload kind)
 
-HEADER_VERSION = 1
+HEADER_VERSION = 2
 # Maximum packed trailer size == the on-flash trailer sector: the build pads the
 # trailer with 0xFF to exactly one control block, and control_block() is 4 KiB on
 # every board -- deliberately NOT the erase block (see openmv_ota.ota.geometry), so
@@ -57,7 +60,7 @@ TRAILER_SZ = 4096
 CRC_SIZE = 4
 
 # Fixed trust-header. The single signed field (sig_alg) is the lone "i".
-HEADER_STRUCT = "<4sIIIIIIIIIIi32s"
+HEADER_STRUCT = "<4sIIIIIQIIIi32s"
 HEADER_SIZE = struct.calcsize(HEADER_STRUCT)            # 80
 _META_SIZE_OFFSET = struct.calcsize("<4sIII")           # magic, version, body, pad => 16
 
@@ -73,7 +76,6 @@ class Trailer:
     product_id: int
     min_platform_version: int
     payload_version: int
-    reserved0: int
     key_id: int
     sig_alg: int
     body_sha256: bytes
@@ -95,8 +97,6 @@ def _build_signed_region(t: Trailer) -> tuple[bytes, AlgSpec]:
     spec = algorithm_for(t.sig_alg)
     if len(t.body_sha256) != 32:
         raise OtaError("body_sha256 must be 32 bytes, got %d" % len(t.body_sha256))
-    if t.reserved0:
-        raise OtaError("reserved0 must be 0, got %d" % t.reserved0)
     meta_bytes = _serialize_meta(t.meta)
     header = struct.pack(
         HEADER_STRUCT,
@@ -109,7 +109,6 @@ def _build_signed_region(t: Trailer) -> tuple[bytes, AlgSpec]:
         t.product_id,
         t.min_platform_version,
         t.payload_version,
-        t.reserved0,
         t.key_id,
         t.sig_alg,
         t.body_sha256,
@@ -176,7 +175,6 @@ def parse_trailer(data: bytes) -> Trailer:
         product_id,
         min_platform_version,
         payload_version,
-        reserved0,
         key_id,
         sig_alg,
         body_sha256,
@@ -215,7 +213,6 @@ def parse_trailer(data: bytes) -> Trailer:
         product_id=product_id,
         min_platform_version=min_platform_version,
         payload_version=payload_version,
-        reserved0=reserved0,
         key_id=key_id,
         sig_alg=sig_alg,
         body_sha256=bytes(body_sha256),

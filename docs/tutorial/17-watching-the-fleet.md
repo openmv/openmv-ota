@@ -21,7 +21,7 @@ $ openmv-ota client fleet
   "fell_back": 2,
   "unconfirmed": 9,
   "products": {
-    "396486252": {
+    "5553380507785669254": {
       "total": 412,
       "by_version": { "1.2.0": 361, "1.1.0": 51 },
       "by_fallback": { "1.1.0": 358, "unknown": 54 },
@@ -82,7 +82,7 @@ $ openmv-ota client device list --cohort beta --limit 1
   "devices": [
     {
       "device_id": "30003d000851303436313832",
-      "product_id": 396486252,
+      "product_id": 5553380507785669254,
       "board": "OPENMV_N6",
       "cohort": "beta",
       "current_version": "1.2.0",
@@ -128,7 +128,7 @@ $ openmv-ota client release list --limit 1
   "releases": [
     {
       "release_id": "rel_4f9c2a81d06b73ee",
-      "product_id": 396486252,
+      "product_id": 5553380507785669254,
       "product": "my-product",
       "version": "1.2.0",
       "payload_version": 16908288,

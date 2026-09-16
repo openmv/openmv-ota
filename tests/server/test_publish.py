@@ -89,6 +89,52 @@ def test_publish_full_release(tmp_path):
     assert any(e["action"] == "release.publish" for e in store.read_audit())
 
 
+def test_a_product_limited_token_publishes_only_into_its_own_products(tmp_path):
+    """The manifest names the product, so publish is a write into one. A credential
+    limited to other products is answered 404 -- the same as a product that does not
+    exist, so the error cannot be used to map the account's product ids."""
+    app, store, _ = _app(tmp_path, account="acct")
+    store.add_token(hash_token("limited"), "partner", ["publish", "observe"],
+                    account_id="acct", products=[BID + 1])     # NOT the BID we publish
+    img = b"\xA5" * 64
+    body = _body(img)
+    body["account_id"] = "acct"
+    files = _files(_manifest(body), _gz(img))
+    resp = TestClient(app).post("/api/v1/admin/releases", files=files,
+                                headers={"Authorization": "Bearer limited"})
+    assert resp.status_code == 404
+    assert store.list_releases() == []                          # nothing stored
+
+    # the same token publishing into a product it DOES hold goes through
+    store.add_token(hash_token("mine"), "partner2", ["publish", "observe"],
+                    account_id="acct", products=[BID])
+    ok = TestClient(app).post("/api/v1/admin/releases", files=_files(_manifest(body), _gz(img)),
+                              headers={"Authorization": "Bearer mine"})
+    assert ok.status_code == 200
+
+
+def test_a_colliding_product_id_is_refused_not_merged(tmp_path):
+    """A product id is crc32("<product>:<board>"), so two product names CAN hash to the
+    same id -- a real prospect for a platform minting thousands of them. Merging them
+    would offer one product line's firmware to the other's devices, silently. The second
+    name is refused with the id and both names in the message, and nothing is stored."""
+    app, store, _ = _app(tmp_path)
+    img = b"\xA5" * 64
+    assert _post(app, _manifest(_body(img)), _gz(img)).status_code == 200      # product "P"
+
+    other = _body(img, pv=0x02010000)
+    other["product"] = "Q"                       # same BID, different product name
+    resp = _post(app, _manifest(other), _gz(other and img))
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "'P'" in detail and "'Q'" in detail and str(BID) in detail
+    assert "product_id" in detail                # tells them how to fix it
+    assert store.list_releases(product_id=BID) and len(store.list_releases()) == 1
+
+    # The same name keeps publishing: this guards collisions, not new versions.
+    assert _post(app, _manifest(_body(img, pv=0x02020000)), _gz(img)).status_code == 200
+
+
 def test_publish_stores_dev_flag(tmp_path):
     app, store, storage = _app(tmp_path)
     img = b"\xA5" * 64

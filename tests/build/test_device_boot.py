@@ -47,7 +47,7 @@ def _trailer(priv, key_id, body, *, product_id=PRODUCT_ID, min_platform=0,
         body_size=len(body) if body_size is None else body_size,
         pad_size=0, meta=meta if meta is not None else {"k": 1},
         product_id=product_id, min_platform_version=min_platform,
-        payload_version=payload_version, reserved0=0,
+        payload_version=payload_version,
         key_id=key_id, sig_alg=alg, body_sha256=hashlib.sha256(body).digest())
     t.signature = sign.sign_region(priv, host_trailer.signed_region(t), spec)
     return host_trailer.pack_trailer(t)
@@ -146,7 +146,7 @@ def test_parse_trailer_too_short():
 
 @pytest.mark.parametrize(("mutate", "reason"), [
     (lambda b: b"XXXX" + b[4:], "magic"),                         # bad magic
-    (lambda b: b[:4] + b"\x02" + b[5:], "version"),               # header_version=2
+    (lambda b: b[:4] + b"\x01" + b[5:], "version"),               # header_version=1 (the 32-bit id)
     (lambda b: b[:44] + b"\x00\x00\x00\x00" + b[48:], "alg"),     # sig_alg -> 0 (unknown)
     (lambda b: b[:20] + b"\x20\x00\x00\x00" + b[24:], "alg"),     # sig_size -> 32 (!=64)
     (lambda b: b[:90], "trunc"),                                  # chop below body_end

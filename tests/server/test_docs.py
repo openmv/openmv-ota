@@ -141,9 +141,11 @@ def test_the_reference_explains_how_the_objects_map(tmp_path):
     endpoint list, because none of them are API calls."""
     schema = TestClient(_app(tmp_path)).get("/openapi.json").json()
     desc = schema["info"]["description"]
-    assert 'crc32("<product>:<board>")' in desc          # ids are computed, not assigned
+    assert 'sha256("<product>:<board>")' in desc         # ids are computed, not assigned
+    assert "63 bits" in desc                             # and wide enough not to collide
     assert "two products" in desc                        # one line, two boards
     assert "no \"create product\" call" in desc
     assert "learns" in desc and "sticky" in desc         # how a device joins an account
-    assert "no product-scoped token" in desc             # the multi-tenant caveat
+    assert "list of products" in desc                    # the per-customer credential
+    assert "404" in desc                                 # and how it answers outside them
     assert "filter-aware `total`" in desc                # how to page

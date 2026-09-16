@@ -16,7 +16,7 @@ server never holds signing keys. So the client asks and fetches, and the build s
 local (`build` never talks to the server):
 
 ```
-$ openmv-ota client release bases --fleet -b OPENMV_N6 --product-id 396486252 -o build/bases
+$ openmv-ota client release bases --fleet -b OPENMV_N6 --product-id 5553380507785669254 -o build/bases
 build/bases/OPENMV_N6-base-1.1.0.img.gz  (1.1.0, 358 device(s), 731648 bytes)
 build/bases/OPENMV_N6-base-1.0.0.img.gz  (1.0.0, 51 device(s), 730112 bytes)
 

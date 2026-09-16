@@ -66,9 +66,16 @@ def _checkin(dev="dev1", product_id=BID, pv=0x01000000, **kw):
 
 # --- health + validation --------------------------------------------------------------------
 
-def test_healthz(tmp_path):
+def test_healthz(tmp_path, monkeypatch):
+    """Liveness, plus the build commit when the host sets one. The commit is how a
+    deploy that never ran becomes visible: a platform that skips a service whose files
+    did not change -- and does not retry one it skipped after a red run -- otherwise
+    leaves a green repo serving an older build, with nothing to see from outside."""
     app, *_ = _app(tmp_path)
-    assert TestClient(app).get("/healthz").json() == {"ok": True}
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    assert TestClient(app).get("/healthz").json() == {"ok": True, "commit": ""}
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "0123456789abcdef")
+    assert TestClient(app).get("/healthz").json() == {"ok": True, "commit": "0123456"}
 
 
 def test_check_requires_device_id_and_board(tmp_path):
@@ -578,7 +585,7 @@ def test_create_app_builds_defaults(tmp_path):
                               storage_location=str(tmp_path / "blobs"),
                               swd_ids_verify_url="u", swd_ids_verify_token="t")
     app = create_app(settings)                               # builds storage/metastore/verifier
-    assert TestClient(app).get("/healthz").json() == {"ok": True}
+    assert TestClient(app).get("/healthz").json()["ok"] is True
 
 
 # --- CORS -------------------------------------------------------------------------------------

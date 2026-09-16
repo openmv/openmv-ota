@@ -61,9 +61,16 @@ def _and(where: str, clause: str) -> str:
     return (where + " AND " + clause) if where else "WHERE " + clause
 
 
-def _scope(account_id=None, product_id=None) -> tuple[str, tuple]:
+def _scope(account_id=None, product_id=None, products=None) -> tuple[str, tuple]:
     """A ``WHERE`` clause + params for the optional (account_id, product_id) filters -- the
-    building block for account-scoped admin reads. Either/both may be None (no filter)."""
+    building block for account-scoped admin reads. Either/both may be None (no filter).
+
+    ``products`` is a credential's product allow-list, and it is a different thing from
+    ``product_id``: that is a caller ASKING for one product, this is a token being
+    ALLOWED only some. ``None`` is an ordinary token (the whole account); a list narrows
+    every read to those ids. An empty list is a token scoped to nothing and must see
+    nothing -- written out because ``IN ()`` is a syntax error, and the tempting shortcut
+    of skipping the clause turns "allowed nothing" into "allowed everything"."""
     conds, params = [], []
     if account_id is not None:
         conds.append("account_id = ?")
@@ -71,6 +78,12 @@ def _scope(account_id=None, product_id=None) -> tuple[str, tuple]:
     if product_id is not None:
         conds.append("product_id = ?")
         params.append(product_id)
+    if products is not None:
+        if products:
+            conds.append("product_id IN (%s)" % ",".join(["?"] * len(products)))
+            params.extend(products)
+        else:
+            conds.append("1 = 0")
     return (("WHERE " + " AND ".join(conds)) if conds else ""), tuple(params)
 
 
@@ -87,20 +100,20 @@ _MIGRATIONS: list[list[str]] = [
         # product_id (not a camera-model string), and the device check-in sends the same value, so
         # it's the reliable release<->device join. product/board are display-only.
         """CREATE TABLE releases (
-            release_id TEXT PRIMARY KEY, product_id INTEGER NOT NULL, product TEXT,
+            release_id TEXT PRIMARY KEY, product_id BIGINT NOT NULL, product TEXT,
             version TEXT NOT NULL, payload_version INTEGER NOT NULL,
             min_platform_version INTEGER NOT NULL DEFAULT 0,
             image_sha256 TEXT NOT NULL, image_size INTEGER NOT NULL, representations TEXT NOT NULL,
             manifest_key TEXT NOT NULL, image_key TEXT NOT NULL, delta_key TEXT,  -- delta_key: unused since a release carries N deltas, keyed by name
             key_id INTEGER, uploaded_by TEXT, uploaded_at TEXT NOT NULL)""",
         """CREATE TABLE rollouts (
-            rollout_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, product_id INTEGER NOT NULL,
+            rollout_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, product_id BIGINT NOT NULL,
             cohort TEXT NOT NULL, percent REAL NOT NULL, state TEXT NOT NULL,
             failure_threshold REAL NOT NULL DEFAULT 0.05, attempted INTEGER NOT NULL DEFAULT 0,
             updated INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
         """CREATE TABLE devices (
-            device_id TEXT PRIMARY KEY, product_id INTEGER NOT NULL, board TEXT,
+            device_id TEXT PRIMARY KEY, product_id BIGINT NOT NULL, board TEXT,
             cohort TEXT NOT NULL DEFAULT '__default__', current_version TEXT,
             current_payload_version INTEGER, slot TEXT, representation TEXT, fallback_reason TEXT,
             confirmed INTEGER, last_offered_release_id TEXT, owner_ref TEXT,
@@ -119,7 +132,7 @@ _MIGRATIONS: list[list[str]] = [
     [   # v2 -- explicit device->server outcome reports (POST /feedback). One authoritative row per
         # (device_id, release_id); bounded by the registered fleet x releases, so still zero-footprint.
         """CREATE TABLE deployments (
-            device_id TEXT NOT NULL, release_id TEXT NOT NULL, product_id INTEGER NOT NULL,
+            device_id TEXT NOT NULL, release_id TEXT NOT NULL, product_id BIGINT NOT NULL,
             status TEXT NOT NULL, reason TEXT, reported_at TEXT NOT NULL,
             PRIMARY KEY (device_id, release_id))""",
         "CREATE INDEX idx_deployments_release ON deployments (release_id, status)",
@@ -127,7 +140,7 @@ _MIGRATIONS: list[list[str]] = [
     [   # v3 -- version pins: force a specific device or cohort onto a release, overriding rollouts.
         "ALTER TABLE devices ADD COLUMN pinned_release_id TEXT",
         """CREATE TABLE cohort_pins (
-            product_id INTEGER NOT NULL, cohort TEXT NOT NULL, release_id TEXT NOT NULL,
+            product_id BIGINT NOT NULL, cohort TEXT NOT NULL, release_id TEXT NOT NULL,
             PRIMARY KEY (product_id, cohort))""",
     ],
     [   # v4 -- account scoping: a product_id is unique only *within* a maker's account, so
@@ -142,7 +155,7 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE deployments ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE cohort_pins RENAME TO cohort_pins_v3",
         """CREATE TABLE cohort_pins (
-            account_id TEXT NOT NULL DEFAULT '', product_id INTEGER NOT NULL, cohort TEXT NOT NULL,
+            account_id TEXT NOT NULL DEFAULT '', product_id BIGINT NOT NULL, cohort TEXT NOT NULL,
             release_id TEXT NOT NULL, PRIMARY KEY (account_id, product_id, cohort))""",
         "INSERT INTO cohort_pins (product_id, cohort, release_id) "
         "SELECT product_id, cohort, release_id FROM cohort_pins_v3",
@@ -258,8 +271,26 @@ _MIGRATIONS: list[list[str]] = [
         # (an id seen on devices and releases); this is the one thing an operator SETS
         # about one, so it gets a row. Empty/no row = the newest release's manifest name.
         "CREATE TABLE IF NOT EXISTS products ("
-        "account_id TEXT NOT NULL DEFAULT '', product_id INTEGER NOT NULL, "
+        "account_id TEXT NOT NULL DEFAULT '', product_id BIGINT NOT NULL, "
         "display_name TEXT NOT NULL DEFAULT '', PRIMARY KEY (account_id, product_id))",
+    ],
+    [   # v22 -- a token may be limited to some of its account's products. Empty/NULL is
+        # the ordinary case: the whole account. Stored as a comma-separated id list beside
+        # the scopes, which say what a token may DO; this says what it may do it TO.
+        "ALTER TABLE admin_tokens ADD COLUMN products TEXT",
+    ],
+    [   # v21 -- product_id widens to 64 bits. It was a crc32, and 32 bits collide at a
+        # few thousand products (birthday bound) -- fatal for a platform minting one per
+        # end customer, because the id IS the device's cross-flash guard: a collision
+        # offers one product line's firmware to another's devices. sqlite's INTEGER is
+        # already 64-bit and it cannot ALTER a column type, so these run on Postgres only
+        # (see _widen_statements).
+        "-- postgres: ALTER TABLE releases ALTER COLUMN product_id TYPE BIGINT",
+        "-- postgres: ALTER TABLE rollouts ALTER COLUMN product_id TYPE BIGINT",
+        "-- postgres: ALTER TABLE devices ALTER COLUMN product_id TYPE BIGINT",
+        "-- postgres: ALTER TABLE device_pins ALTER COLUMN product_id TYPE BIGINT",
+        "-- postgres: ALTER TABLE cohort_pins ALTER COLUMN product_id TYPE BIGINT",
+        "-- postgres: ALTER TABLE products ALTER COLUMN product_id TYPE BIGINT",
     ],
     [   # v20 -- why a rollout is paused: 'operator' (PATCH state=paused), 'superseded' (a
         # newer rollout took its (product, cohort)), or 'failure_limit' (auto-pause). NULL
@@ -315,11 +346,19 @@ class SqlMetadataStore:
             self._before_migrations()
             for version, statements in pending:
                 for stmt in statements:
-                    self.execute(stmt)
+                    self.execute(self._dialect(stmt))
                 current = version
             self._after_migrations()
         self.set_meta("schema_version", str(current))
         return current
+
+    def _dialect(self, stmt: str) -> str:
+        """A migration step written for one backend only.
+
+        ``-- postgres: <sql>`` runs as ``<sql>`` on Postgres and stays a comment (a
+        no-op) on sqlite, which is how a column-type widening ships: sqlite's INTEGER is
+        already 64-bit and sqlite has no ALTER COLUMN TYPE at all."""
+        return stmt
 
     def _before_migrations(self) -> None:
         """Backend hook run once before pending migrations apply (Postgres: lock hygiene)."""
@@ -361,13 +400,13 @@ class SqlMetadataStore:
     RELEASE_SORTS = {"version": "payload_version", "product": "product", "size": "image_size",
                      "uploaded": "uploaded_at", "name": "display_name COLLATE NOCASE", "release": "release_id"}
 
-    def count_releases(self, product_id=None, account_id=None) -> int:
-        where, params = _scope(account_id, product_id)
+    def count_releases(self, product_id=None, account_id=None, products=None) -> int:
+        where, params = _scope(account_id, product_id, products)
         return self.query_one("SELECT COUNT(*) AS n FROM releases " + where, params)["n"]
 
     def list_releases(self, product_id=None, account_id=None, limit=None, offset=0,
-                      sort=None, direction=None) -> list[dict]:
-        where, params = _scope(account_id, product_id)
+                      sort=None, direction=None, products=None) -> list[dict]:
+        where, params = _scope(account_id, product_id, products)
         sql = ("SELECT * FROM releases " + where
                + _order(sort, direction, self.RELEASE_SORTS, "payload_version DESC", "release_id"))
         sql, params = _limit(sql, params, limit, offset)
@@ -407,8 +446,8 @@ class SqlMetadataStore:
 
     @staticmethod
     def _rollouts_where(account_id, product_id, state, cohort, release_id=None,
-                        pause_reason=None) -> tuple[str, tuple]:
-        where, params = _scope(account_id, product_id)
+                        pause_reason=None, products=None) -> tuple[str, tuple]:
+        where, params = _scope(account_id, product_id, products)
         where = where.replace("account_id", "r.account_id").replace("product_id", "r.product_id")
         if state is not None:
             where, params = _and(where, "r.state = ?"), (*params, state)
@@ -421,15 +460,15 @@ class SqlMetadataStore:
         return where, params
 
     def count_rollouts(self, product_id=None, account_id=None, state=None, cohort=None,
-                       release_id=None, pause_reason=None) -> int:
+                       release_id=None, pause_reason=None, products=None) -> int:
         where, params = self._rollouts_where(account_id, product_id, state, cohort, release_id,
-                                             pause_reason)
+                                             pause_reason, products)
         return self.query_one("SELECT COUNT(*) AS n FROM rollouts r " + where, params)["n"]
 
     def list_rollouts(self, product_id: int | None = None, account_id=None, limit=None,
                       offset=0, state: str | None = None, cohort: str | None = None,
                       sort=None, direction=None, release_id: str | None = None,
-                      pause_reason: str | None = None) -> list[dict]:
+                      pause_reason: str | None = None, products=None) -> list[dict]:
         # cohort_devices: how many devices sit in each rollout's (product, cohort) RIGHT NOW --
         # the audience its percent applies to. Computed live rather than stored, because cohort
         # membership shifts under the rollout (assignments, first check-ins).
@@ -437,7 +476,7 @@ class SqlMetadataStore:
         # newer -- the progress a list can show honestly (the offer percent is a dial, and
         # the counters count transitions, not devices).
         where, params = self._rollouts_where(account_id, product_id, state, cohort, release_id,
-                                             pause_reason)
+                                             pause_reason, products)
         sql = ("SELECT r.*, (SELECT COUNT(*) FROM devices d WHERE d.product_id = r.product_id "
                "AND d.cohort = r.cohort AND d.account_id = r.account_id) AS cohort_devices, "
                "(SELECT COUNT(*) FROM devices d JOIN releases rel ON rel.release_id = r.release_id "
@@ -573,7 +612,7 @@ class SqlMetadataStore:
                  ",".join(streams) if streams else None, fallback_payload_version, body_sha256,
                  now, device_id))
 
-    def fleet_bases(self, product_id=None, account_id="") -> list[dict]:
+    def fleet_bases(self, product_id=None, account_id="", products=None) -> list[dict]:
         """The distinct (payload_version, body_sha256) bases the fleet is RUNNING, with device
         counts -- the answer to "which delta bases must this release cover?". Grouped by exact
         bytes, not just version: two groups for one version means a republish split the fleet,
@@ -585,6 +624,12 @@ class SqlMetadataStore:
         if account_id:
             where.append("account_id = ?")
             args.append(account_id)
+        if products is not None:                 # a product-limited credential
+            if products:
+                where.append("product_id IN (%s)" % ",".join(["?"] * len(products)))
+                args.extend(products)
+            else:
+                where.append("1 = 0")
         rows = self.query_all(
             "SELECT current_payload_version AS payload_version, "
             "COALESCE(body_sha256, '') AS body_sha256, COUNT(*) AS devices "
@@ -631,8 +676,8 @@ class SqlMetadataStore:
     @staticmethod
     def _devices_where(account_id, product_id, cohort, q, cohort_not,
                        version=None, older_than_pv=None, fell_back=None, unconfirmed=None,
-                       not_seen_since=None) -> tuple[str, tuple]:
-        where, params = _scope(account_id, product_id)
+                       not_seen_since=None, products=None) -> tuple[str, tuple]:
+        where, params = _scope(account_id, product_id, products)
         if cohort is not None:
             where, params = _and(where, "cohort = ?"), (*params, cohort)
         if fell_back:                                # last boot rejected a slot
@@ -657,28 +702,30 @@ class SqlMetadataStore:
 
     def count_devices(self, product_id=None, account_id=None, cohort=None, q=None,
                       cohort_not=None, version=None, older_than_pv=None, fell_back=None,
-                      unconfirmed=None, not_seen_since=None) -> int:
+                      unconfirmed=None, not_seen_since=None, products=None) -> int:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
                                             version, older_than_pv, fell_back, unconfirmed,
-                                            not_seen_since)
+                                            not_seen_since, products)
         return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
 
     def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
                      cohort=None, offset: int = 0, sort=None, direction=None, q=None,
                      cohort_not=None, version=None, older_than_pv=None,
-                     fell_back=None, unconfirmed=None, not_seen_since=None) -> list[dict]:
+                     fell_back=None, unconfirmed=None, not_seen_since=None,
+                     products=None) -> list[dict]:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
-                                            version, older_than_pv, fell_back, unconfirmed, not_seen_since)
+                                            version, older_than_pv, fell_back, unconfirmed,
+                                            not_seen_since, products)
         rows = self.query_all("SELECT * FROM devices " + where
                               + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
                               + " LIMIT ? OFFSET ?", (*params, limit, offset))
         return [_d(r) for r in rows]
 
-    def list_products(self, account_id=None) -> list[dict]:
+    def list_products(self, account_id=None, products=None) -> list[dict]:
         """The account's products: every product id seen on a device or a release, with
         the friendly name from its newest release (None until one is published) and
         device / release counts. The dashboard's product directory."""
-        where, params = _scope(account_id)
+        where, params = _scope(account_id, products=products)
         devs = {r["product_id"]: r["n"] for r in self.query_all(
             "SELECT product_id, COUNT(*) AS n FROM devices " + where + " GROUP BY product_id",
             params)}
@@ -709,6 +756,20 @@ class SqlMetadataStore:
         rows.sort(key=lambda p: ((p["product"] or "").lower(), p["product_id"]))
         return rows
 
+    def product_manifest_name(self, product_id: int, account_id=None) -> str | None:
+        """The manifest product name already recorded against this product id, or None.
+
+        A product id is **64 bits of sha256("<product>:<board>")**, so two names landing
+        on one id is remote rather than likely (it was a 32-bit crc32, where a few
+        thousand products made it a coin flip). Publishing under a colliding id would
+        silently merge two product lines: one line's devices would be offered the
+        other's firmware. This is what publish compares against to refuse that."""
+        where, params = _scope(account_id, product_id)
+        row = self.query_one("SELECT product FROM releases " + where
+                             + " AND product IS NOT NULL AND product != '' "
+                             "ORDER BY payload_version DESC LIMIT 1", params)
+        return row["product"] if row else None
+
     def product_names(self, account_id=None) -> dict:
         """product_id -> the operator's display name (only products with one set)."""
         where, params = _scope(account_id)
@@ -731,17 +792,18 @@ class SqlMetadataStore:
                      "share": lambda p: (p["up_to_date"] / p["devices"]) if p["devices"] else -1.0}
 
     def page_products(self, account_id=None, sort=None, direction=None, limit=None,
+                      products=None,
                       offset=0) -> tuple[list[dict], int]:
         """``list_products`` on the list contract: (page, total). Small and aggregated,
         so sorted here with the same whitelist idea as the SQL lists."""
-        rows = self.list_products(account_id=account_id)
+        rows = self.list_products(account_id=account_id, products=products)
         key = self.PRODUCT_SORTS.get(sort or "product", self.PRODUCT_SORTS["product"])
         rows.sort(key=key, reverse=(str(direction).lower() == "desc"))
         total = len(rows)
         rows = rows[offset: offset + limit] if limit is not None else rows[offset:]
         return rows, total
 
-    def fleet_summary(self, product_id: int | None = None, account_id=None,
+    def fleet_summary(self, product_id: int | None = None, account_id=None, products=None,
                       cohort: str | None = None) -> dict:
         """The fleet, structured PER PRODUCT -- a dashboard's shape, not a flat rollup.
 
@@ -757,7 +819,7 @@ class SqlMetadataStore:
           by_cohort    -- how the product's devices are grouped
           fell_back    -- devices whose last boot REJECTED a slot. The direct alarm.
           unconfirmed  -- devices mid-trial (also the devices deferring updates)."""
-        where, params = _scope(account_id, product_id)
+        where, params = _scope(account_id, product_id, products)
         if cohort is not None:                       # scope to one rollout's audience
             where = (where + " AND cohort = ?") if where else "WHERE cohort = ?"
             params = (*params, cohort)
@@ -801,11 +863,12 @@ class SqlMetadataStore:
         return {"total": total, "fell_back": fell_back, "unconfirmed": unconfirmed,
                 "products": products}
 
-    def list_cohorts(self, product_id: int | None = None, account_id=None) -> list[dict]:
+    def list_cohorts(self, product_id: int | None = None, account_id=None,
+                     products=None) -> list[dict]:
         """The cohorts in use, each with its device count AND its per-product breakdown --
         a cohort name spans products (it is a label on devices), so the flat count alone
         hides composition a `(product, cohort)`-targeted rollout or pin cares about."""
-        where, params = _scope(account_id, product_id)
+        where, params = _scope(account_id, product_id, products)
         rows = self.query_all(
             "SELECT cohort, product_id, COUNT(*) AS devices FROM devices " + where
             + " GROUP BY cohort, product_id ORDER BY cohort, product_id", params)
@@ -816,6 +879,9 @@ class SqlMetadataStore:
             c["devices"] += r["devices"]
             c["by_product"][str(r["product_id"])] = r["devices"]
         # declared-but-empty labels (created ahead of their first device) show with 0
+        # NOT product-scoped: a declared cohort label has no product column. The device
+        # counts above are what a limited token must not see beyond its products, and
+        # those are already filtered; a label is just a name.
         dwhere, dparams = _scope(account_id)
         for r in self.query_all("SELECT cohort FROM cohorts " + dwhere + " ORDER BY cohort",
                                 dparams):
@@ -836,10 +902,11 @@ class SqlMetadataStore:
                     "pins": lambda c: len(c["pins"])}
 
     def page_cohorts(self, product_id=None, account_id=None, sort=None, direction=None,
+                     products=None,
                      limit=None, offset=0) -> tuple[list[dict], int]:
         """``list_cohorts`` on the list contract: (page, total). The set is small and
         aggregated, so it is sorted here, with the same whitelist idea as the SQL lists."""
-        rows = self.list_cohorts(product_id, account_id=account_id)
+        rows = self.list_cohorts(product_id, account_id=account_id, products=products)
         key = self.COHORT_SORTS.get(sort or "cohort", self.COHORT_SORTS["cohort"])
         rows.sort(key=key, reverse=(str(direction).lower() == "desc"))
         total = len(rows)
@@ -1078,14 +1145,21 @@ class SqlMetadataStore:
 
     # --- admin tokens (stored hashed) -------------------------------------------------------
 
-    def add_token(self, token_hash: str, name: str, scopes: list[str], account_id: str = "") -> None:
-        self.execute("INSERT INTO admin_tokens (token_hash, name, scopes, created_at, account_id) "
-                     "VALUES (?,?,?,?,?)", (token_hash, name, ",".join(scopes), _now_iso(), account_id))
+    def add_token(self, token_hash: str, name: str, scopes: list[str], account_id: str = "",
+                  products=()) -> None:
+        """Store a token. ``products`` limits it to those product ids; empty is the whole
+        account, which is what an unscoped token gets."""
+        self.execute("INSERT INTO admin_tokens (token_hash, name, scopes, created_at, account_id, "
+                     "products) VALUES (?,?,?,?,?,?)",
+                     (token_hash, name, ",".join(scopes), _now_iso(), account_id,
+                      ",".join(str(int(p)) for p in products)))
 
     def get_token(self, token_hash: str) -> dict | None:
         r = _d(self.query_one("SELECT * FROM admin_tokens WHERE token_hash = ?", (token_hash,)))
         if r is not None:
             r["scopes"] = r["scopes"].split(",") if r["scopes"] else []
+            raw = r.get("products") or ""
+            r["products"] = [int(p) for p in raw.split(",") if p]
         return r
 
     def token_name_in_use(self, account_id: str, name: str) -> bool:
@@ -1202,6 +1276,13 @@ class SqliteMetadataStore(SqlMetadataStore):
 
 class PostgresMetadataStore(SqlMetadataStore):
     paramstyle = "%s"
+
+    _POSTGRES_ONLY = "-- postgres: "
+
+    def _dialect(self, stmt: str) -> str:
+        """Run the Postgres half of a dialect-split migration step (see the base)."""
+        return (stmt[len(self._POSTGRES_ONLY):]
+                if stmt.startswith(self._POSTGRES_ONLY) else stmt)
 
     def __init__(self, dsn: str, connect=None):
         super().__init__((connect or self._default_connect(dsn))())

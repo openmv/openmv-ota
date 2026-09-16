@@ -119,7 +119,7 @@ separate, read-only **`system.json`** into every image at
 {
   "product": "orchard-sentry",
   "board": "OPENMV_N6",
-  "product_id": 2937722637,
+  "product_id": 5553380507785669254,
   "board_name": "OrchardSentry Pro",
   "app_version": "1.0.0",
   "vendor": "Acme Robotics",
@@ -146,9 +146,14 @@ relate depends on how many boards a project targets:
   target, never renamed.
 - **`product`** is your project/product name (`[product].name`, defaulting to the
   directory name). It is the same for every board the project builds.
-- **`product_id`** is a number derived *for* you — the CRC32 of
-  `"product:board"` — so it is stable, distinct per board, and reproducible: two
-  machines (or a rebuilt config) derive the same value. You never invent it.
+- **`product_id`** is a number derived *for* you — the low 63 bits of
+  `sha256("product:board")` — so it is stable, distinct per board, and reproducible:
+  two machines (or a rebuilt config) derive the same value. You never invent it.
+  It is 64-bit rather than the 32-bit CRC it began as, because the id is the
+  device's cross-flash guard: at 32 bits a few thousand products collide by the
+  birthday bound, and two products sharing an id means one's devices accept the
+  other's firmware. You may still set it by hand if you'd rather map it onto ids
+  of your own — the server refuses a second product name on an id it already knows.
 - **`board_name`** is a human label, set per board under `[targets.<BOARD>]`. If
   you don't set it, it **defaults to `product`**.
 
@@ -167,11 +172,11 @@ name = "my-product"          # product, shared by every board
 boards = ["OPENMV_N6", "OPENMV_AE3"]
 
 [targets.OPENMV_N6]
-product_id   = 396486252     # stable product id (auto-assigned; keep it once devices ship)
+product_id   = 5553380507785669254  # stable product id (auto-assigned; keep it once devices ship)
 board_name = "My Product Pro"
 
 [targets.OPENMV_AE3]
-product_id   = 646934278
+product_id   = 7668274361416763064
 board_name = "My Product Lite"
 ```
 

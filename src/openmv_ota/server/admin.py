@@ -74,10 +74,29 @@ def new_id(prefix: str) -> str:
     return "%s_%s" % (prefix, secrets.token_hex(8))
 
 
+def _may_product(product_id, principal):
+    """404 unless this credential may act on ``product_id``.
+
+    For paths where the caller NAMES a product rather than fetching an entity that
+    carries one: assigning a cohort by product, pinning one, renaming a product, minting
+    a product grant, publishing. 404 rather than 403, so a limited token cannot use the
+    error to learn which products exist."""
+    if not principal.may(product_id):
+        raise HTTPException(status_code=404)
+    return product_id
+
+
 def _owned(entity, principal):
-    """Return ``entity`` iff it belongs to the caller's account; else 404 -- a missing entity and
-    another account's entity are indistinguishable, so cross-account probing leaks nothing."""
+    """Return ``entity`` iff this credential may act on it; else 404 -- a missing entity and
+    one the caller may not see are indistinguishable, so probing leaks nothing.
+
+    Two gates, not one. The account gate keeps tenants apart. The product gate keeps a
+    product-limited token inside its products: a platform that models each of its own
+    customers as a product can hand out a credential per customer, and this is what makes
+    that boundary real for entities fetched by id, where no list filter applies."""
     if entity is None or entity.get("account_id", "") != principal.account_id:
+        raise HTTPException(status_code=404)
+    if "product_id" in entity and not principal.may(entity["product_id"]):
         raise HTTPException(status_code=404)
     return entity
 
@@ -240,6 +259,12 @@ def activate_account(account_id: str, request: Request,
 class TokenIssue(BaseModel):
     name: str
     scopes: list[str] | None = None        # default: the worker set (publish/manage/observe)
+    products: list[int] | None = None
+    """Limit the token to these product ids. Omitted (or empty) is the whole account,
+    which is what an ordinary token wants. A platform that models each of its own
+    customers as a product issues one limited token per customer: `scopes` says what it
+    may do, `products` says what it may do it to. Every read is filtered to the list and
+    anything outside it answers 404, exactly as another account's would."""
     actor: str | None = None
     """Who is really doing this, for the audit log, when an operator credential acts on a
     person's behalf (a web console). The operator's own name is kept as ``via``."""
@@ -256,17 +281,19 @@ def _audit_actor(principal, hint):
     return principal.name, {}
 
 
-def _mint(ms, principal, name, scopes, account_id, action, extra=None, actor=None):
+def _mint(ms, principal, name, scopes, account_id, action, extra=None, actor=None,
+          products=()):
     token = secrets.token_urlsafe(32)
     th = hash_token(token)
-    ms.add_token(th, name, scopes, account_id=account_id)
+    ms.add_token(th, name, scopes, account_id=account_id, products=products)
     who, via = _audit_actor(principal, actor)
     # Recorded under the TOKEN's account, not the caller's: tokens are minted by an operator
     # credential (account "" ), and the tenant is who needs to see it in their audit log.
     ms.append_audit(actor=who, action=action, entity_type="token", entity_id=th,
                     data={"account_id": account_id, "name": name, **via, **(extra or {})},
                     account_id=account_id)
-    return {"token_hash": th, "name": name, "scopes": scopes, "account_id": account_id, "token": token}
+    return {"token_hash": th, "name": name, "scopes": scopes, "account_id": account_id,
+            "products": list(products), "token": token}
 
 
 def _active_account(ms, account_id):
@@ -298,8 +325,15 @@ def issue_token(account_id: str, body: TokenIssue, request: Request,
         raise HTTPException(status_code=400, detail="unknown scope(s): %s" % ", ".join(bad))
     if ms.token_name_in_use(account_id, body.name):
         raise HTTPException(status_code=409, detail="token name already in use: %s" % body.name)
+    products = body.products or []
+    if products and "accounts" in expand(scopes):
+        # The operator scope acts across accounts, where a product list means nothing --
+        # allowing both would read as a limit that is not one.
+        raise HTTPException(status_code=400,
+                            detail="a product-scoped token cannot carry the accounts scope")
     return _mint(ms, principal, body.name, expand(scopes), account_id, "token.issue",
-                 actor=body.actor)
+                 actor=body.actor, products=products,
+                 extra={"products": products} if products else None)
 
 
 @admin.get("/accounts/{account_id}/tokens", responses={200: {"model": TokenList}})
@@ -460,10 +494,10 @@ def list_rollouts(request: Request, product_id: int | None = None, limit: int = 
     rows = ms.list_rollouts(product_id, account_id=principal.account_id,
                             limit=limit, offset=offset, state=state, cohort=cohort,
                             sort=sort, direction=dir, release_id=release_id,
-                            pause_reason=pause_reason)
+                            pause_reason=pause_reason, products=principal.scoped())
     return {"rollouts": [{k: r[k] for k in _ROLLOUT_ROW} for r in rows],
             "total": ms.count_rollouts(product_id, principal.account_id, state, cohort,
-                                       release_id, pause_reason)}
+                                       release_id, pause_reason, products=principal.scoped())}
 
 
 @admin.get("/rollouts/{rollout_id}/status", responses={200: {"model": RolloutStatus}})
@@ -501,7 +535,7 @@ def list_cohorts(request: Request, product_id: int | None = None,
     device (`__default__` until you assign one), and it is the unit a rollout targets."""
     rows, total = request.app.state.metastore.page_cohorts(
         product_id, account_id=principal.account_id, sort=sort, direction=dir,
-        limit=limit, offset=offset)
+        limit=limit, offset=offset, products=principal.scoped())
     return {"cohorts": rows, "total": total}
 
 
@@ -515,6 +549,8 @@ def assign_cohort(body: CohortAssign, request: Request,
     if (body.device_ids is None) == (body.product_id is None):
         raise HTTPException(status_code=400,
                             detail="pass exactly one of device_ids or product_id")
+    if body.product_id is not None:
+        _may_product(body.product_id, principal)
     if body.device_ids is not None:
         n = ms.assign_cohort(body.device_ids, body.cohort, account_id=principal.account_id)
         # the WHICH, not just the how-many: a history view lists the devices moved
@@ -732,6 +768,7 @@ def pin_cohort(body: CohortPin, request: Request,
     a pinned cohort is a fleet-wide hold that individual devices can still be excepted
     from."""
     ms = request.app.state.metastore
+    _may_product(body.product_id, principal)
     _check_pin_release(ms, body.release_id, principal)
     ms.set_cohort_pin(body.product_id, body.cohort, body.release_id,
                       account_id=principal.account_id)       # account from the token, not the body
@@ -753,7 +790,8 @@ def fleet(request: Request, product_id: int | None = None, cohort: str | None = 
 
     summary = request.app.state.metastore.fleet_summary(product_id,
                                                         account_id=principal.account_id,
-                                                        cohort=cohort)
+                                                        cohort=cohort,
+                                                        products=principal.scoped())
     # by_fallback is keyed by the packed uint32 the device reports; render it the way
     # by_version already reads. "unknown" is the device that did not say -- a single-image
     # board, or one on a payload from before the slots field existed.
@@ -775,7 +813,8 @@ def fleet_bases(request: Request, product_id: int | None = None,
     from openmv_ota.ota.version import decode_app_version
 
     rows = request.app.state.metastore.fleet_bases(product_id,
-                                                   account_id=principal.account_id)
+                                                   account_id=principal.account_id,
+                                                   products=principal.scoped())
     for r in rows:
         r["version"] = decode_app_version(r["payload_version"])
     return {"bases": rows}
@@ -792,8 +831,10 @@ def releases(request: Request, product_id: int | None = None, limit: int = _PAGE
     rows, so a full page is never mistaken for a complete list."""
     ms = request.app.state.metastore
     return {"releases": ms.list_releases(product_id, account_id=principal.account_id,
-                                         limit=limit, offset=offset, sort=sort, direction=dir),
-            "total": ms.count_releases(product_id, principal.account_id)}
+                                         limit=limit, offset=offset, sort=sort, direction=dir,
+                                         products=principal.scoped()),
+            "total": ms.count_releases(product_id, principal.account_id,
+                                       products=principal.scoped())}
 
 
 def _with_fallback_version(rows: list[dict]) -> list[dict]:
@@ -991,10 +1032,10 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
                 product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset,
                 sort=sort, direction=dir, q=q, cohort_not=cohort_not, version=version,
                 older_than_pv=older_pv, fell_back=fell_back or None, unconfirmed=unconfirmed or None,
-                not_seen_since=not_seen_since)),
+                not_seen_since=not_seen_since, products=principal.scoped())),
             "total": ms.count_devices(product_id, principal.account_id, cohort, q, cohort_not,
                                       version, older_pv, fell_back or None, unconfirmed or None,
-                                      not_seen_since)}
+                                      not_seen_since, products=principal.scoped())}
 
 
 @admin.get("/products", responses={200: {"model": ProductList}})
@@ -1005,7 +1046,8 @@ def products(request: Request, limit: int | None = None, offset: int = 0,
     release, its friendly name and newest version (from the newest release), and
     device / release counts. On the list contract like every collection."""
     rows, total = request.app.state.metastore.page_products(
-        account_id=principal.account_id, sort=sort, direction=dir, limit=limit, offset=offset)
+        account_id=principal.account_id, sort=sort, direction=dir, limit=limit, offset=offset,
+        products=principal.scoped())
     return {"products": rows, "total": total}
 
 
@@ -1017,6 +1059,7 @@ def rename_product(product_id: int, body: DeviceName, request: Request,
     A product the account has never seen (no device, no release) is a 404."""
     name = _label(body.name)
     ms = request.app.state.metastore
+    _may_product(product_id, principal)
     if not any(p["product_id"] == product_id
                for p in ms.list_products(account_id=principal.account_id)):
         raise HTTPException(status_code=404)
@@ -1035,6 +1078,7 @@ def product_viewer_grant(product_id: int, request: Request,
     product must be one of the account's (seen on a device or a release), else 404;
     a server with no datalake answers 503."""
     st = request.app.state
+    _may_product(product_id, principal)
     if not any(p["product_id"] == product_id
                for p in st.metastore.list_products(account_id=principal.account_id)):
         raise HTTPException(status_code=404)
@@ -1086,6 +1130,12 @@ def audit(request: Request, since: int = 0, limit: int = 100, offset: int = 0,
     recent events first (otherwise: append order from ``since``, a log tail);
     ``sort``/``dir`` generalise both, ``offset`` pages, ``total`` counts the filter."""
     ms = request.app.state.metastore
+    # An audit row records an action, not a product, so there is nothing to filter it by.
+    # A product-limited credential therefore cannot read the log at all, rather than be
+    # shown the whole account's history: 403, since the caller knows its own limits.
+    if principal.products:
+        raise HTTPException(status_code=403,
+                            detail="a product-scoped token cannot read the audit log")
     return {"events": ms.read_audit(limit, since, account_id=principal.account_id,
                                     entity_id=entity_id, newest=newest, sort=sort,
                                     direction=dir, offset=offset, action_not=action_not,

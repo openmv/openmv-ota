@@ -36,13 +36,13 @@ assigned 1/1 device(s) to cohort beta
 $ openmv-ota client cohort list
 {
   "cohorts": [
-    { "cohort": "__default__", "devices": 404, "by_product": { "396486252": 404 }, "pins": {} },
-    { "cohort": "beta", "devices": 8, "by_product": { "396486252": 8 }, "pins": {} }
+    { "cohort": "__default__", "devices": 404, "by_product": { "5553380507785669254": 404 }, "pins": {} },
+    { "cohort": "beta", "devices": 8, "by_product": { "5553380507785669254": 8 }, "pins": {} }
   ]
 }
 
-$ openmv-ota client cohort assign --cohort beta --product-id 396486252
-assigned 412 device(s) (product 396486252) to cohort beta
+$ openmv-ota client cohort assign --cohort beta --product-id 5553380507785669254
+assigned 412 device(s) (product 5553380507785669254) to cohort beta
 ```
 
 `assign` takes exactly one selector: `--device-id` (repeatable) moves those exact
@@ -178,7 +178,7 @@ $ openmv-ota client rollout list
     {
       "rollout_id": "ro_1c3f88ba90d2e644",
       "release_id": "rel_4f9c2a81d06b73ee",
-      "product_id": 396486252,
+      "product_id": 5553380507785669254,
       "cohort": "beta",
       "percent": 5.0,
       "state": "active",
@@ -194,7 +194,7 @@ $ openmv-ota client rollout status --rollout-id ro_1c3f88ba90d2e644
 {
   "rollout_id": "ro_1c3f88ba90d2e644",
   "release_id": "rel_4f9c2a81d06b73ee",
-  "product_id": 396486252,
+  "product_id": 5553380507785669254,
   "cohort": "beta",
   "percent": 5.0,
   "state": "active",
@@ -229,7 +229,7 @@ this release":
 ```
 openmv-ota client device pin --device-id 30003d000851303436313832 --release-id rel_4f9c2a81d06b73ee
 openmv-ota client device pin --device-id 30003d000851303436313832 --clear
-openmv-ota client cohort pin --product-id 396486252 --cohort beta --release-id rel_4f9c2a81d06b73ee
+openmv-ota client cohort pin --product-id 5553380507785669254 --cohort beta --release-id rel_4f9c2a81d06b73ee
 ```
 
 A device pin beats a cohort pin, and either beats the rollout. A pin only ever produces
@@ -239,7 +239,7 @@ already runs (or older) simply holds it — no rollout reaches it, nothing downg
 `cohort pin` names the product because a cohort can hold devices of **several
 products** — your `OPENMV_N6`s and `OPENMV_RT1060`s can all carry the label `beta` —
 while the pin carries a release, and a release only fits one product. So pinning
-`--product-id 396486252 --cohort beta` freezes only beta's N6 devices; beta's RT1060s
+`--product-id 5553380507785669254 --cohort beta` freezes only beta's N6 devices; beta's RT1060s
 keep following their own rollouts until you pin them too, with the RT release. (Rollouts
 work the same way — targeting is always the `(product, cohort)` pair.) A device pin
 needs no product: the device id alone is unique.

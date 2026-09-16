@@ -22,6 +22,22 @@ class Principal:
     name: str
     scopes: list
     account_id: str = ""       # the account this admin credential acts for (the website injects it)
+    products: tuple = ()       # product ids this credential is limited to; () = the whole account
+
+    def may(self, product_id) -> bool:
+        """Whether this credential may touch ``product_id``.
+
+        A token with no allow-list acts for the whole account, which is the ordinary
+        case. A limited token is how a platform hands its own customer a credential for
+        one product without giving away the fleet; `products` says what it may act on,
+        `scopes` says what it may do."""
+        return not self.products or int(product_id) in self.products
+
+    def scoped(self):
+        """The allow-list in the shape the metastore reads take: ``None`` for a token that
+        sees the whole account, a list for one that does not. It is deliberately not the
+        empty list for the unlimited case -- there, an empty list means "sees nothing"."""
+        return list(self.products) or None
 
 
 def hash_token(token: str) -> str:
@@ -41,7 +57,8 @@ class TokenAuth:
         if row is None or row["revoked"]:
             raise HTTPException(status_code=401, detail="invalid token")
         return Principal(name=row["name"], scopes=expand(row["scopes"]),
-                         account_id=row.get("account_id", "") or "")
+                         account_id=row.get("account_id", "") or "",
+                         products=tuple(row.get("products") or ()))
 
 
 def require_scope(scope: str):
