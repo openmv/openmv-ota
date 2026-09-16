@@ -225,6 +225,9 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     assert g("devices", unconfirmed="true")["total"] == 1
     assert g("devices", not_seen_since=2_000_000_000)["total"] == 3          # nobody seen after 2033
     assert g("devices", not_seen_since=0)["total"] == 0                      # everyone since 1970
+    # seen_since is its exact complement: the two always partition the fleet
+    assert g("devices", seen_since=0)["total"] == 3
+    assert g("devices", seen_since=2_000_000_000)["total"] == 0
     assert g("rollouts", cohort="beta", state="stopped")["total"] == 1
     assert g("rollouts", sort="state", dir="asc")["rollouts"][0]["state"] == "active"
     # devices: q, cohort_not, sort by device name (display name counts), filtered total
@@ -790,7 +793,8 @@ def test_fleet_breakdowns_and_cohort_filter(tmp_path):
     assert body["products"][str(BID)]["by_version"] == {"1.2.0": 1, "1.1.0": 1}
     assert body["products"][str(BID + 1)] == {
         "total": 1, "by_version": {"3.0.0": 1}, "by_fallback": {"unknown": 1},
-        "by_cohort": {"beta": 1}, "releases": {}, "fell_back": 0, "unconfirmed": 0}
+        "by_cohort": {"beta": 1}, "releases": {}, "fell_back": 0, "unconfirmed": 0,
+        "up_to_date": 0}
     scoped = c.get("/api/v1/admin/fleet?cohort=beta&product_id=%d" % BID, headers=AUTH).json()
     assert scoped["total"] == 1
     assert scoped["products"][str(BID)]["by_version"] == {"1.2.0": 1}
@@ -813,6 +817,37 @@ def test_fleet_summary_reports_exposure_not_slot_names(tmp_path):
     # decoded, and a device that did not report its slots reads as "unknown" -- never as 0.0.0
     assert prod["by_fallback"] == {"1.0.0": 2, "unknown": 1}
     assert prod["by_version"] == {"1.1.0": 2, "1.0.0": 1}
+
+
+def test_fleet_summary_counts_adoption_per_product_and_account_wide(tmp_path):
+    """Adoption is COUNTED HERE, not derived by the caller: by_version is keyed by version
+    string, and "2.0.0" vs "10.0.0" cannot be compared as text. Each product measures against
+    its OWN newest release (five products have five version histories), and the top level
+    carries the sum so a dashboard reads fleet adoption in one call."""
+    app, store = _app(tmp_path)
+    for rid, ver, pv in (("old", "1.0.0", 0x01000000), ("new", "2.0.0", 0x02000000)):
+        store.add_release(release_id=rid, product_id=BID, product="P", version=ver,
+                          payload_version=pv, min_platform_version=0, image_sha256="ab" * 32,
+                          image_size=1, representations=[], manifest_key="m/" + rid,
+                          image_key="i/" + rid)
+    store.upsert_device(device_id="cur", product_id=BID, current_version="2.0.0",
+                        current_payload_version=0x02000000)
+    store.upsert_device(device_id="ahead", product_id=BID, current_version="2.1.0",
+                        current_payload_version=0x02010000)   # past it: still up to date
+    store.upsert_device(device_id="behind", product_id=BID, current_version="1.0.0",
+                        current_payload_version=0x01000000)
+    # a product with devices but nothing published yet: nothing to be up to date WITH
+    store.upsert_device(device_id="unpub", product_id=BID + 1, current_version="9.9.9",
+                        current_payload_version=0x09090900)
+    body = TestClient(app).get("/api/v1/admin/fleet", headers=AUTH).json()
+    assert body["products"][str(BID)]["up_to_date"] == 2
+    assert body["products"][str(BID + 1)]["up_to_date"] == 0
+    assert body["total"] == 4 and body["up_to_date"] == 2
+    # totals: the same four numbers without shipping a breakdown per product. An account
+    # with thousands of products would otherwise send all of them to render an overview.
+    only = TestClient(app).get("/api/v1/admin/fleet?totals=true", headers=AUTH).json()
+    assert only == {"total": 4, "fell_back": 0, "unconfirmed": 0, "up_to_date": 2,
+                    "products": {}}
 
 
 # --- account isolation (adversarial: B must never see or touch A's data) --------------------

@@ -245,6 +245,8 @@ class ProductFleet(BaseModel):
     releases (newest when a version was republished): links a running version to its release."""
     fell_back: int
     unconfirmed: int
+    up_to_date: int
+    """Devices at or past this product's newest release."""
 
 
 class FleetSummary(BaseModel):
@@ -255,7 +257,10 @@ class FleetSummary(BaseModel):
     total: int
     fell_back: int
     unconfirmed: int
+    up_to_date: int
+    """Account-wide adoption: devices at or past their own product's newest release."""
     products: dict[str, ProductFleet]
+    """Empty when the read asked for `totals`: the counters above are all it returns."""
 
 
 class AccountCreated(BaseModel):

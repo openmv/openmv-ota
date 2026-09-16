@@ -288,6 +288,8 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_dvl.add_argument("--unconfirmed", action="store_true", help="only devices mid-trial (install unconfirmed)")
     p_dvl.add_argument("--not-seen-since", type=float, metavar="EPOCH",
                        help="only devices with no check-in since this epoch second")
+    p_dvl.add_argument("--seen-since", type=float, metavar="EPOCH",
+                       help="only devices that HAVE checked in since this epoch second")
     p_dvl.add_argument("--older-than-release", metavar="RELEASE_ID",
                        help="only devices running something older than this release")
     _list_flags(p_dvl, "seen, device, product, version, cohort, first_seen")
@@ -435,6 +437,8 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_fl = sub.add_parser("fleet", help="the fleet summary (JSON)")
     p_fl.add_argument("--product-id", type=int, help="only this product")
     p_fl.add_argument("--cohort", help="only devices in this cohort")
+    p_fl.add_argument("--totals", action="store_true",
+                      help="the account-wide counters alone, without the per-product breakdown")
     _creds(p_fl)
     p_fl.set_defaults(func=cmd_fleet, _command="client fleet")
 
@@ -986,7 +990,8 @@ def cmd_release_sbom(args: argparse.Namespace) -> int:
 
 
 def cmd_fleet(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.fleet(args.product_id, cohort=args.cohort))
+    return _read(args, lambda api: api.fleet(args.product_id, cohort=args.cohort,
+                                            totals=args.totals))
 
 
 def cmd_products(args: argparse.Namespace) -> int:
@@ -1002,7 +1007,8 @@ def cmd_devices(args: argparse.Namespace) -> int:
                                                version=args.running_version,
                                                older_than_release=args.older_than_release,
                                                fell_back=args.fell_back, unconfirmed=args.unconfirmed,
-                                               not_seen_since=args.not_seen_since))
+                                               not_seen_since=args.not_seen_since,
+                                               seen_since=args.seen_since))
 
 
 def cmd_releases(args: argparse.Namespace) -> int:

@@ -784,17 +784,23 @@ def pin_cohort(body: CohortPin, request: Request,
 
 @admin.get("/fleet", responses={200: {"model": FleetSummary}})
 def fleet(request: Request, product_id: int | None = None, cohort: str | None = None,
+          totals: bool = Query(False, description="the account-wide counters alone, with an "
+                                                  "empty `products` -- an overview need not "
+                                                  "receive every product's breakdown"),
           principal: Principal = Depends(require_scope("observe"))):
     """The fleet summary behind a dashboard: device counts by product, how each
     product splits across versions, which release each version maps to, how many devices
-    are mid-trial or fell back, and when they were last seen. Filter to one product or
-    one cohort with the query parameters."""
+    are mid-trial or fell back, and when they were last seen. `up_to_date` is the adoption
+    count, per product and account-wide: devices at or past that product's OWN newest
+    release (a version string cannot be compared, so the server counts it). Filter to one
+    product or one cohort with the query parameters, or ask for `totals` alone."""
     from openmv_ota.ota.version import decode_app_version
 
     summary = request.app.state.metastore.fleet_summary(product_id,
                                                         account_id=principal.account_id,
                                                         cohort=cohort,
-                                                        products=principal.scoped())
+                                                        products=principal.scoped(),
+                                                        totals=totals)
     # by_fallback is keyed by the packed uint32 the device reports; render it the way
     # by_version already reads. "unknown" is the device that did not say -- a single-image
     # board, or one on a payload from before the slots field existed.
@@ -1018,6 +1024,9 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
             unconfirmed: bool = Query(False, description="only devices mid-trial (install unconfirmed)"),
             not_seen_since: float | None = Query(
                 None, description="only devices with no check-in since this epoch second"),
+            seen_since: float | None = Query(
+                None, description="only devices that HAVE checked in since this epoch second "
+                                  "-- the exact complement of not_seen_since"),
             sort: str | None = _sort_q("seen, device, product, version, cohort, first_seen"),
             dir: str = _DIR_Q,
             principal: Principal = Depends(require_scope("observe"))):
@@ -1025,8 +1034,8 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
     in. On the list contract (`limit`, `offset`, `sort`, `dir`, `total`), plus the
     filters a fleet view actually needs: `product_id` and `cohort` to narrow,
     `version` and `older_than_release` to find what is behind, `fell_back` and
-    `unconfirmed` for devices that need attention, and `not_seen_since` (hours) for
-    ones that have gone quiet."""
+    `unconfirmed` for devices that need attention, and `not_seen_since` /
+    `seen_since` (an epoch second) for the ones that have gone quiet, or are alive."""
     ms = request.app.state.metastore
     older_pv = None
     if older_than_release is not None:
@@ -1035,10 +1044,12 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
                 product_id, limit, account_id=principal.account_id, cohort=cohort, offset=offset,
                 sort=sort, direction=dir, q=q, cohort_not=cohort_not, version=version,
                 older_than_pv=older_pv, fell_back=fell_back or None, unconfirmed=unconfirmed or None,
-                not_seen_since=not_seen_since, products=principal.scoped())),
+                not_seen_since=not_seen_since, products=principal.scoped(),
+                seen_since=seen_since)),
             "total": ms.count_devices(product_id, principal.account_id, cohort, q, cohort_not,
                                       version, older_pv, fell_back or None, unconfirmed or None,
-                                      not_seen_since, products=principal.scoped())}
+                                      not_seen_since, products=principal.scoped(),
+                                      seen_since=seen_since)}
 
 
 @admin.get("/products", responses={200: {"model": ProductList}})

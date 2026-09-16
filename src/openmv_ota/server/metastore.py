@@ -817,7 +817,7 @@ class SqlMetadataStore:
     @staticmethod
     def _devices_where(account_id, product_id, cohort, q, cohort_not,
                        version=None, older_than_pv=None, fell_back=None, unconfirmed=None,
-                       not_seen_since=None, products=None) -> tuple[str, tuple]:
+                       not_seen_since=None, products=None, seen_since=None) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id, products)
         if cohort is not None:
             where, params = _and(where, "cohort = ?"), (*params, cohort)
@@ -828,6 +828,9 @@ class SqlMetadataStore:
         if not_seen_since is not None:               # quiet: no check-in since this instant
             where = _and(where, "(last_seen IS NULL OR last_seen < ?)")
             params = (*params, _iso_at(not_seen_since))
+        if seen_since is not None:                   # the exact complement: alive since then
+            where = _and(where, "last_seen >= ?")
+            params = (*params, _iso_at(seen_since))
         if version is not None:                      # "running exactly this version"
             where, params = _and(where, "current_version = ?"), (*params, version)
         if older_than_pv is not None:                # "not yet on (or past) this release"
@@ -843,20 +846,21 @@ class SqlMetadataStore:
 
     def count_devices(self, product_id=None, account_id=None, cohort=None, q=None,
                       cohort_not=None, version=None, older_than_pv=None, fell_back=None,
-                      unconfirmed=None, not_seen_since=None, products=None) -> int:
+                      unconfirmed=None, not_seen_since=None, products=None,
+                      seen_since=None) -> int:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
                                             version, older_than_pv, fell_back, unconfirmed,
-                                            not_seen_since, products)
+                                            not_seen_since, products, seen_since)
         return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
 
     def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
                      cohort=None, offset: int = 0, sort=None, direction=None, q=None,
                      cohort_not=None, version=None, older_than_pv=None,
                      fell_back=None, unconfirmed=None, not_seen_since=None,
-                     products=None) -> list[dict]:
+                     products=None, seen_since=None) -> list[dict]:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
                                             version, older_than_pv, fell_back, unconfirmed,
-                                            not_seen_since, products)
+                                            not_seen_since, products, seen_since)
         rows = self.query_all("SELECT * FROM devices " + where
                               + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
                               + " LIMIT ? OFFSET ?", (*params, limit, offset))
@@ -947,7 +951,7 @@ class SqlMetadataStore:
         return rows, total
 
     def fleet_summary(self, product_id: int | None = None, account_id=None, products=None,
-                      cohort: str | None = None) -> dict:
+                      cohort: str | None = None, totals: bool = False) -> dict:
         """The fleet, structured PER PRODUCT -- a dashboard's shape, not a flat rollup.
 
         Version strings, fallbacks, and cohort compositions only mean anything within
@@ -961,7 +965,14 @@ class SqlMetadataStore:
                           very different position from one reporting nothing.
           by_cohort    -- how the product's devices are grouped
           fell_back    -- devices whose last boot REJECTED a slot. The direct alarm.
-          unconfirmed  -- devices mid-trial (also the devices deferring updates)."""
+          unconfirmed  -- devices mid-trial (also the devices deferring updates).
+          up_to_date   -- devices at or past the product's newest release. Summed at the
+                          top level too, so a dashboard reads fleet adoption without
+                          paging every product and adding it up itself.
+
+        ``totals`` returns the account-wide counters ALONE (``products`` empty). An
+        overview reads four numbers; an account with thousands of products would ship it
+        a per-product breakdown, with every version and cohort in it, to get them."""
         where, params = _scope(account_id, product_id, products)
         if cohort is not None:                       # scope to one rollout's audience
             where = (where + " AND cohort = ?") if where else "WHERE cohort = ?"
@@ -975,36 +986,56 @@ class SqlMetadataStore:
                 out.setdefault(r["product_id"], {})[r["k"]] = r["n"]
             return out
 
-        by_version = _grouped("current_version")
-        by_fallback = _grouped("fallback_payload_version")
-        by_cohort = _grouped("cohort")
+        by_version = {} if totals else _grouped("current_version")
+        by_fallback = {} if totals else _grouped("fallback_payload_version")
+        by_cohort = {} if totals else _grouped("cohort")
         # version string -> the release behind it (newest when a version was republished),
         # so a dashboard can link a running version to its release without a second read
         releases: dict[int, dict] = {}
+        newest_pv: dict[int, int] = {}           # product_id -> its newest release's payload version
         rel_where, rel_params = _scope(account_id, product_id)      # releases have no cohort
-        for r in self.query_all("SELECT product_id, version, release_id, display_name FROM releases "
-                                + rel_where + " ORDER BY payload_version DESC", rel_params):
-            releases.setdefault(r["product_id"], {}).setdefault(
-                r["version"], {"release_id": r["release_id"], "display_name": r["display_name"] or ""})
+        if totals:                               # adoption needs the newest payload version alone
+            for r in self.query_all("SELECT product_id, MAX(payload_version) AS pv FROM releases "
+                                    + rel_where + " GROUP BY product_id", rel_params):
+                newest_pv[r["product_id"]] = r["pv"]
+        else:
+            for r in self.query_all("SELECT product_id, version, release_id, display_name, "
+                                    "payload_version FROM releases " + rel_where
+                                    + " ORDER BY payload_version DESC", rel_params):
+                releases.setdefault(r["product_id"], {}).setdefault(
+                    r["version"],
+                    {"release_id": r["release_id"], "display_name": r["display_name"] or ""})
+                newest_pv.setdefault(r["product_id"], r["payload_version"])
+        # adoption: devices at or past that newest release. Counted here rather than left
+        # to the caller -- by_version is keyed by version STRING, which cannot be compared.
+        by_pv: dict[int, list] = {}
+        for r in self.query_all("SELECT product_id, current_payload_version AS pv, COUNT(*) AS n "
+                                "FROM devices " + where + " GROUP BY product_id, pv", params):
+            by_pv.setdefault(r["product_id"], []).append((r["pv"], r["n"]))
         products: dict[str, dict] = {}
-        total = fell_back = unconfirmed = 0
+        total = fell_back = unconfirmed = up_to_date = 0
         for r in self.query_all(
                 "SELECT product_id, COUNT(*) AS n, "
                 "SUM(CASE WHEN fallback_reason IS NOT NULL THEN 1 ELSE 0 END) AS fb, "
                 "SUM(CASE WHEN confirmed = 0 THEN 1 ELSE 0 END) AS uc "
                 "FROM devices " + where + " GROUP BY product_id", params):
             pid = r["product_id"]
-            products[str(pid)] = {
-                "total": r["n"], "by_version": by_version.get(pid, {}),
-                "by_fallback": by_fallback.get(pid, {}),
-                "by_cohort": by_cohort.get(pid, {}),
-                "releases": releases.get(pid, {}),
-                "fell_back": r["fb"], "unconfirmed": r["uc"]}
+            npv = newest_pv.get(pid)
+            up = (sum(n for pv, n in by_pv.get(pid, []) if pv is not None and pv >= npv)
+                  if npv is not None else 0)
+            if not totals:
+                products[str(pid)] = {
+                    "total": r["n"], "by_version": by_version.get(pid, {}),
+                    "by_fallback": by_fallback.get(pid, {}),
+                    "by_cohort": by_cohort.get(pid, {}),
+                    "releases": releases.get(pid, {}),
+                    "fell_back": r["fb"], "unconfirmed": r["uc"], "up_to_date": up}
             total += r["n"]
             fell_back += r["fb"]
             unconfirmed += r["uc"]
+            up_to_date += up
         return {"total": total, "fell_back": fell_back, "unconfirmed": unconfirmed,
-                "products": products}
+                "up_to_date": up_to_date, "products": products}
 
     def list_cohorts(self, product_id: int | None = None, account_id=None,
                      products=None) -> list[dict]:

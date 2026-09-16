@@ -269,18 +269,20 @@ class Api:
         return self._req("POST", "/api/v1/admin/cohorts/pin",
                          json={"product_id": product_id, "cohort": cohort, "release_id": release_id})
 
-    def fleet(self, product_id=None, cohort=None):
+    def fleet(self, product_id=None, cohort=None, totals=False):
         params = {}
         if product_id is not None:
             params["product_id"] = product_id
         if cohort is not None:
             params["cohort"] = cohort
+        if totals:
+            params["totals"] = "true"
         return self._req("GET", "/api/v1/admin/fleet", params=params)
 
     def devices(self, product_id=None, cohort=None, limit=None, offset=None, sort=None,
                 direction=None, q=None, cohort_not=None, version=None,
                 older_than_release=None, fell_back=False, unconfirmed=False,
-                not_seen_since=None):
+                not_seen_since=None, seen_since=None):
         params = {}
         if fell_back:
             params["fell_back"] = "true"
@@ -288,6 +290,8 @@ class Api:
             params["unconfirmed"] = "true"
         if not_seen_since is not None:
             params["not_seen_since"] = not_seen_since
+        if seen_since is not None:
+            params["seen_since"] = seen_since
         if version is not None:
             params["version"] = version
         if older_than_release is not None:

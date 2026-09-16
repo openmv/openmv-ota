@@ -6,6 +6,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Fleet adoption is counted server-side**: `GET /admin/fleet` now reports
+  `up_to_date` per product and account-wide, the devices at or past that
+  product's newest release. A caller cannot derive this from `by_version`,
+  which is keyed by version STRING (`"2.0.0"` against `"10.0.0"` is not a text
+  comparison), so a dashboard would otherwise have to page every product and
+  compare packed versions itself.
+- **`totals` on `GET /admin/fleet`** (`client fleet --totals`): the account-wide
+  counters alone, with an empty `products`. An overview reads four numbers, and
+  an account with thousands of products should not be sent every product's
+  version and cohort breakdown to render them.
+- **`seen_since` on `GET /admin/devices`** (`--seen-since` on `client device
+  list`): the exact complement of `not_seen_since`, so "checked in since X" is
+  one count from the server instead of a subtraction in a caller.
+
 ## [1.0.0] - 2026-09-16
 
 The version the code reports moves off the `0.0.0` placeholder. No tag and no
