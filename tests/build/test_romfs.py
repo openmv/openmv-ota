@@ -865,8 +865,60 @@ def test_build_manifest_roundtrip(make_project):
 
     rep = select_representation(body, delta_capable=False, golden_payload_version=0)
     assert rep["format"] == "full"
-    assert rep["url"] == _URL + "/OPENMV_N6-ota.img.gz"
-    assert rep["size"] == img.stat().st_size
+    # what a device downloads is the ENCRYPTED artifact, and the size it picks a
+    # transport by is that file's
+    assert rep["url"] == _URL + "/OPENMV_N6-ota.img.gz" + build_mod.ENC_SUFFIX
+    enc_path = img.with_name(img.name + build_mod.ENC_SUFFIX)
+    assert rep["size"] == enc_path.stat().st_size
+
+
+def test_the_published_image_is_not_readable_without_the_board_key(make_project):
+    """The point of the whole feature, in one test: what sits behind the URL is not
+    the image, and the only thing that turns it back into one is the key that board's
+    firmware was built with."""
+    import gzip
+    import os
+
+    import hashlib as _hashlib
+
+    from openmv_ota.ota import payload
+    from openmv_ota.ota.manifest import parse_manifest
+    from openmv_ota.project import payload_keys as pk
+    from openmv_ota.project.project import ProjectPaths
+
+    root, repo = _build_n6_ota_artifacts(make_project)
+    [r] = build_mod.build_manifest(root, firmware=repo)
+    body = parse_manifest(r.output.read_bytes()).body
+    rep = body["representations"][0]
+
+    published = (root / "build" / rep["url"]).read_bytes()
+    plain = (root / "build" / "OPENMV_N6-ota.img.gz").read_bytes()
+    assert published != plain
+    assert not published.startswith(b"\x1f\x8b")          # not even recognisable as a gzip
+    with pytest.raises(gzip.BadGzipFile):
+        gzip.decompress(published)
+
+    keys = pk.read(ProjectPaths(root).private_keys_dir,
+                   os.environ["OPENMV_OTA_KEY_PASSPHRASE"])["OPENMV_N6"]
+    assert payload.decrypt_artifact(published, keys, rep["enc"]) == plain
+    # ...and the image digest the device checks after decrypting is still the
+    # plaintext image's, unchanged by any of this
+    assert body["sha256"] == _hashlib.sha256(gzip.decompress(plain)).hexdigest()
+    # the server's check is the ciphertext's, because it cannot read the plaintext
+    assert rep["enc"]["sha256"] == _hashlib.sha256(published).hexdigest()
+
+
+def test_another_projects_key_does_not_open_this_release(make_project):
+    from openmv_ota.ota import payload
+    from openmv_ota.ota.manifest import parse_manifest
+
+    root, repo = _build_n6_ota_artifacts(make_project)
+    [r] = build_mod.build_manifest(root, firmware=repo)
+    rep = parse_manifest(r.output.read_bytes()).body["representations"][0]
+    published = (root / "build" / rep["url"]).read_bytes()
+    stranger = {1: payload.new_key()}
+    assert payload.decrypt_artifact(published, stranger, rep["enc"]) \
+        != (root / "build" / "OPENMV_N6-ota.img.gz").read_bytes()
 
 
 def test_build_manifest_requires_https_url(make_project):
@@ -965,7 +1017,10 @@ def test_build_manifest_with_delta_rep(make_project):
     rep = select_representation(body, delta_capable=True,
                                golden_payload_version=encode_app_version("1.0.0"),
                                base_body_sha256=base_sha)
-    assert rep["format"] == "ocdl" and rep["url"] == _URL + "/" + delta_path.name
+    # a delta is a diff of two images -- it leaks what changed, so it is encrypted too
+    assert rep["format"] == "ocdl"
+    assert rep["url"] == _URL + "/" + delta_path.name + build_mod.ENC_SUFFIX
+    assert rep["enc"]["size"] == delta_path.stat().st_size
 
 
 def test_build_manifest_delta_size_mismatch(make_project):
@@ -1024,7 +1079,8 @@ def test_build_ota_romfs_relative_default(make_project):
     [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
     assert r.image.name == "OPENMV_N6-ota.img.gz" and r.deltas == []
     body = parse_manifest(r.manifest.read_bytes()).body
-    assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"   # relative filename
+    # relative filename, and it names the encrypted artifact -- the one that is published
+    assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz.enc"
 
 
 def test_build_ota_romfs_with_delta_from_file(make_project):
@@ -1242,7 +1298,7 @@ def test_build_manifest_relative_default(make_project):
     root, repo = _build_n6_ota_artifacts(make_project)
     [r] = build_mod.build_manifest(root, firmware=repo)     # no url_base -> relative
     body = parse_manifest(r.output.read_bytes()).body
-    assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"
+    assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz.enc"
 
 
 def test_reject_unsupported_board():

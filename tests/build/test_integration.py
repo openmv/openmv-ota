@@ -10,6 +10,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -87,7 +88,9 @@ def test_publish_and_consume_end_to_end(make_project):
     assert ok
     body = parse_manifest(manifest_bytes).body
     assert body["sha256"] == hashlib.sha256(new_img).hexdigest()
-    assert body["representations"][0]["url"] == r.image.name   # relative (host-portable)
+    # relative (host-portable), and naming the ENCRYPTED artifact: that is the file
+    # that gets published; the plaintext .gz beside it never leaves this machine
+    assert body["representations"][0]["url"] == r.image.name + ".enc"
 
     # the delta's base is the provisioned version, read from slot B's trailer
     back_tr = next(tr for lbl, _b, tr in partition.slots(factory) if lbl == "B")
@@ -106,7 +109,18 @@ def test_publish_and_consume_end_to_end(make_project):
     assert rep["format"] == "ocdl"
     # the relative URL resolves against the manifest's own URL
     assert (inst._resolve_url("https://dl.x.io/fw/OPENMV_N6-manifest.bin", rep["url"])
-            == "https://dl.x.io/fw/" + delta_path.name)
+            == "https://dl.x.io/fw/" + delta_path.name + ".enc")
+    # what sits at that URL is ciphertext, and it is the plaintext delta under this
+    # board's payload key -- the one its firmware was built with
+    from openmv_ota.ota import payload as _payload
+    from openmv_ota.project import payload_keys as _pk
+    published = (delta_path.parent / (delta_path.name + ".enc")).read_bytes()
+    board_keys = _pk.read(ProjectPaths(root).private_keys_dir,
+                          os.environ["OPENMV_OTA_KEY_PASSPHRASE"])["OPENMV_N6"]
+    assert published != delta_path.read_bytes()
+    assert _payload.decrypt_artifact(published, board_keys, rep["enc"]) \
+        == delta_path.read_bytes()
+
     # reconstruct exactly as install() does: stream the patch against the device's base
     delta = gzip.decompress(delta_path.read_bytes())
     gen = inst._delta_stream(inst._PatchReader(_SrcOf(delta)),

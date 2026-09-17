@@ -61,7 +61,7 @@ def test_build_ota_romfs_cli_relative_urls(make_project, capsys):
     out = capsys.readouterr().out
     assert "OPENMV_N6-ota.img.gz" in out and "OPENMV_N6-manifest.bin" in out
     body = parse_manifest((root / "build" / "OPENMV_N6-manifest.bin").read_bytes()).body
-    assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz"   # relative
+    assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz.enc"   # relative
     # the build is recorded in the project's operations history
     from openmv_ota.project import history
     ev = history.read(root)

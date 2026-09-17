@@ -558,7 +558,8 @@ def build_factory_romfs(
         results.append(_factory_one(
             p, t, app_dir, out_dir, ctx, mpy_cmd, signer,
             signer.app_version, signer.vendor, convert_models=convert_models,
-            mpy_extra=list(mpy_extra or []), keep_build_dir=keep_build_dir, inject=inject))
+            mpy_extra=list(mpy_extra or []), keep_build_dir=keep_build_dir, inject=inject,
+            key_passphrase_file=key_passphrase_file))
     _record_goldens(p.root, [r for r in results if r.target in main_names], signer)
     return results
 
@@ -610,7 +611,8 @@ def provision_slots(partition_size: int, erase_size: int, single_image: bool = F
 
 
 def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vendor, *,
-                 convert_models, mpy_extra, keep_build_dir, inject=None) -> BuildResult:
+                 convert_models, mpy_extra, keep_build_dir, inject=None,
+                 key_passphrase_file=None) -> BuildResult:
     from openmv_ota.ota import status
 
     body, system_info, tmp = _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor,
@@ -677,6 +679,10 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         reps = [{"format": "full", "url": img_path.name, "size": len(gz)}]
         if single:
             reps[0]["wbits"] = SINGLE_WBITS
+        # Published like any other release, so encrypted like any other release: these
+        # are the bytes a factory-fresh fleet's first delta is built against, and they
+        # sit in the same bucket behind the same URL as everything else.
+        _encrypt_rep(reps[0], gz, img_path, _payload_keys_for(p, t.name, key_passphrase_file))
         m = Manifest(body=_manifest_body(p, parse_trailer(trailer0), dl, reps),
                      key_id=signer.key_id, sig_alg=signer.sig_alg)
         m.signature = signer.backend.sign(signed_region(m))
@@ -866,6 +872,47 @@ def build_delta(base: str | Path, target: str | Path,
     return OtaDeltaResult(out, len(patch), len(gz), len(target_bytes))
 
 
+# What a device downloads is ciphertext (see openmv_ota.ota.payload). The plaintext
+# artifact stays on the build machine -- `build manifest` reads it, and the maker
+# built it from their own source anyway -- and the ".enc" beside it is the one that
+# is published. Naming it apart from the .gz keeps a file that is not a gzip from
+# being called one, and makes a second `build manifest` run encrypt the image again
+# rather than encrypt its own ciphertext.
+ENC_SUFFIX = ".enc"
+
+
+def _payload_keys_for(p, board: str, key_passphrase_file) -> dict:
+    """This board's payload keys -- the ones its firmware was built with."""
+    from openmv_ota.project import passphrase as passphrase_mod
+    from openmv_ota.project import payload_keys as payload_mod
+
+    try:
+        phrase, _ = passphrase_mod.resolve_passphrase(p.root, passphrase_file=key_passphrase_file)
+        private = ProjectPaths(p.root).private_keys_dir
+        payload_mod.ensure_boards(private, [board], phrase)
+        return payload_mod.read(private, phrase)[board]
+    except ProjectError as e:
+        raise BuildError(str(e), exit_code=e.exit_code) from None
+
+
+def _encrypt_rep(rep: dict, data: bytes, path: Path, board_keys: dict) -> Path:
+    """Encrypt one representation's artifact in place in the manifest: write the
+    ciphertext beside the plaintext, and point the (about to be signed) rep at it.
+
+    ``size`` becomes the ciphertext's, because that is what a device downloads and
+    what it is choosing the cheapest transport by. The plaintext length lives in the
+    ``enc`` block, which is how the device knows where the artifact ends."""
+    from openmv_ota.ota import payload
+
+    ciphertext, enc = payload.encrypt_artifact(data, board_keys)
+    out = path.with_name(path.name + ENC_SUFFIX)
+    out.write_bytes(ciphertext)
+    rep["url"] = rep["url"] + ENC_SUFFIX
+    rep["size"] = len(ciphertext)
+    rep["enc"] = enc
+    return out
+
+
 def _manifest_body(p, tr, image: bytes, reps: list[dict]) -> dict:
     """The manifest's signed body dict for ``image`` (the decompressed download image),
     identity bound from its trailer ``tr``. Shared by ``build_manifest`` and the factory
@@ -967,8 +1014,10 @@ def build_manifest(
         except OtaError as e:
             raise BuildError(str(e), exit_code=1) from None
 
+        board_keys = _payload_keys_for(p, t.name, key_passphrase_file)
         reps = [{"format": "full", "url": _rep_url(img_path.name),
                  "size": img_path.stat().st_size}]
+        _encrypt_rep(reps[0], img_path.read_bytes(), img_path, board_keys)
         if geometry.resolve_mode(t.partition_size, t.erase_size,
                                  p.config.single_image) == geometry.SINGLE:
             # A single-image device inflates with a SMALL window (the renderer
@@ -986,14 +1035,18 @@ def build_manifest(
                                      % (delta_target_size(patch), len(image)), exit_code=1)
             except OtaError as e:
                 raise BuildError("bad delta: %s" % e, exit_code=1) from None
-            reps.append({"format": DELTA_FORMAT,
-                         "url": _rep_url(delta_path.name),
-                         "size": delta_path.stat().st_size,
-                         "base_payload_version": encode_app_version(base_version),
-                         # the base's trailer body_sha256: the device applies this delta
-                         # only when its RUNNING slot carries these exact bytes (version
-                         # alone stopped being an identity when --allow-republish arrived)
-                         "base_body_sha256": base_body_sha})
+            rep = {"format": DELTA_FORMAT,
+                   "url": _rep_url(delta_path.name),
+                   "size": delta_path.stat().st_size,
+                   "base_payload_version": encode_app_version(base_version),
+                   # the base's trailer body_sha256: the device applies this delta
+                   # only when its RUNNING slot carries these exact bytes (version
+                   # alone stopped being an identity when --allow-republish arrived)
+                   "base_body_sha256": base_body_sha}
+            # A delta is a diff of two images: it leaks the parts that changed, which is
+            # most of what an attacker wanted from the image. Encrypted like the image.
+            _encrypt_rep(rep, delta_path.read_bytes(), delta_path, board_keys)
+            reps.append(rep)
 
         body = _manifest_body(p, tr, image, reps)
         m = Manifest(body=body, key_id=signer.key_id, sig_alg=signer.sig_alg)
