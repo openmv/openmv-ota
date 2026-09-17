@@ -260,6 +260,60 @@ def test_ota_config_values(make_project, monkeypatch):
         assert isinstance(kid, int) and isinstance(pub, bytes) and pub[0] == 0x04
 
 
+def test_ota_config_carries_the_payload_keys_and_the_romfs_does_not(make_project, monkeypatch):
+    """The payload key is SECRET, unlike the trusted set beside it. It is baked into
+    the firmware and deliberately not into the romfs -- the romfs is the thing being
+    downloaded, so a key inside it would be a key anyone who can reach the artifact
+    already has."""
+    import os
+
+    from openmv_ota.project import payload_keys as pk
+    from openmv_ota.project.project import ProjectPaths
+
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+    ns = {}
+    exec((r.build_dir / "_ota_config.py").read_text(), ns)  # noqa: S102 (generated code)
+
+    mine = pk.read(ProjectPaths(root).private_keys_dir, os.environ["OPENMV_OTA_KEY_PASSPHRASE"])
+    assert ns["PAYLOAD_KEYS"] == mine["OPENMV_N6"]        # this board's, not another board's
+    assert all(len(k) == 32 for k in ns["PAYLOAD_KEYS"].values())
+
+
+def test_a_board_added_after_the_project_was_created_gets_a_payload_key(make_project, monkeypatch):
+    """Adding a board is an ordinary edit, not a key ceremony."""
+    import os
+
+    from openmv_ota.project import payload_keys as pk
+    from openmv_ota.project.project import ProjectPaths
+
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)
+    private = ProjectPaths(root).private_keys_dir
+    phrase = os.environ["OPENMV_OTA_KEY_PASSPHRASE"]
+    keys = pk.read(private, phrase)
+    del keys["OPENMV_N6"]                                  # as if the board were added later
+    keys["OPENMV_AE3"] = {1: b"k" * 32}
+    pk.write(private, keys, phrase)
+
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+    ns = {}
+    exec((r.build_dir / "_ota_config.py").read_text(), ns)  # noqa: S102
+    assert ns["PAYLOAD_KEYS"] == pk.read(private, phrase)["OPENMV_N6"]
+    assert ns["PAYLOAD_KEYS"] != {1: b"k" * 32}            # its own key, not the other board's
+
+
+def test_a_non_ota_project_needs_no_payload_keys_and_no_passphrase(make_project, monkeypatch):
+    """A plain firmware build has nothing to decrypt, so it must not start asking for
+    a passphrase to unlock keys that were never minted."""
+    monkeypatch.delenv("OPENMV_OTA_KEY_PASSPHRASE", raising=False)
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=False)
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+    assert r.ota is False and r.build_dir is None
+
+
 def test_ota_config_excludes_revoked_keys(make_project, monkeypatch):
     from openmv_ota.ota.keys import read_trusted_keys, write_trusted_keys
     from openmv_ota.project.project import ProjectPaths
@@ -282,8 +336,8 @@ def test_build_firmware_ota_cleans_wrapper(make_project, monkeypatch):
     captured = {}
     real_writer = fw._write_wrapper_manifest
 
-    def spy(p, repo, name):
-        d = real_writer(p, repo, name)
+    def spy(p, repo, name, payload_keys):
+        d = real_writer(p, repo, name, payload_keys)
         captured["dir"] = d
         return d
 

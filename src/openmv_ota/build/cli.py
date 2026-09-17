@@ -75,6 +75,13 @@ def register(build_parser: argparse.ArgumentParser):
     p_fw.add_argument("--incremental", action="store_true",
                       help="skip the clean rebuild (faster; only when the tree is known good)")
     p_fw.add_argument("-f", "--firmware", help="firmware checkout override")
+    # Not a signing flag here: firmware is not signed. It is the same project
+    # passphrase, because the payload keys this build bakes in are encrypted at rest
+    # under it.
+    p_fw.add_argument("--key-passphrase-file", metavar="FILE",
+                      help="passphrase (from a file) that decrypts the project's payload keys "
+                           "(else the OPENMV_OTA_KEY_PASSPHRASE env var, or an interactive "
+                           "prompt)")
     p_fw.add_argument("--keep-build-dir", action="store_true",
                       help="keep the generated wrapper manifest dir (OTA builds) for inspection")
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
@@ -280,6 +287,7 @@ def cmd_firmware(args: argparse.Namespace) -> int:
         results = firmware_mod.build_firmware(
             args.project, output=args.output, boards=args.board, firmware=args.firmware,
             jobs=args.jobs, incremental=args.incremental, keep_build_dir=args.keep_build_dir,
+            key_passphrase_file=args.key_passphrase_file,
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)

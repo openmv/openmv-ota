@@ -37,6 +37,7 @@ from pathlib import Path
 
 from openmv_ota.project import load_project
 from openmv_ota.project.errors import ProjectError
+from openmv_ota.project.project import ProjectPaths
 
 from .errors import BuildError
 
@@ -92,6 +93,7 @@ def build_firmware(
     jobs: int | None = None,
     incremental: bool = False,
     keep_build_dir: bool = False,
+    key_passphrase_file: str | Path | None = None,
 ) -> list[FirmwareResult]:
     project = Path(project)
     try:
@@ -109,11 +111,33 @@ def build_firmware(
 
     repo = p.firmware_path
     out_dir.mkdir(parents=True, exist_ok=True)
+    payload = _payload_keys(p, names, key_passphrase_file)
     return [
         _build_one(p, repo, name, out_dir, jobs=jobs, incremental=incremental,
-                   keep_build_dir=keep_build_dir)
+                   keep_build_dir=keep_build_dir, payload_keys=payload.get(name, {}))
         for name in names
     ]
+
+
+def _payload_keys(p, names: list[str], key_passphrase_file) -> dict[str, dict[int, bytes]]:
+    """``{board: {key_id: key}}`` for the boards being built -- the constants this
+    firmware will be able to decrypt payloads with.
+
+    A board added to the project after it was created has no key yet; it gets one
+    here rather than failing the build, because adding a board is a normal edit and
+    should not be a key ceremony. Non-OTA projects have no payload keys at all."""
+    if not p.config.ota:
+        return {}
+    from openmv_ota.project import passphrase as passphrase_mod
+    from openmv_ota.project import payload_keys as payload_mod
+
+    try:
+        phrase, _ = passphrase_mod.resolve_passphrase(p.root, passphrase_file=key_passphrase_file)
+        private = ProjectPaths(p.root).private_keys_dir
+        payload_mod.ensure_boards(private, names, phrase)
+        return payload_mod.read(private, phrase)
+    except ProjectError as e:
+        raise BuildError(str(e), exit_code=e.exit_code) from None
 
 
 def _select_boards(targets, boards: list[str] | None) -> list[str]:
@@ -127,14 +151,14 @@ def _select_boards(targets, boards: list[str] | None) -> list[str]:
 
 
 def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
-               keep_build_dir) -> FirmwareResult:
+               keep_build_dir, payload_keys=None) -> FirmwareResult:
     ota = p.config.ota
     tmp: Path | None = None
     cmod: Path | None = None
     try:
         build_args = ["TARGET=%s" % name, "-j%d" % (jobs or os.cpu_count() or 1)]
         if ota:
-            tmp = _write_wrapper_manifest(p, repo, name)
+            tmp = _write_wrapper_manifest(p, repo, name, payload_keys or {})
             build_args.append("FROZEN_MANIFEST=%s" % (tmp / "manifest.py").as_posix())
             cmod = _install_verify_module(repo)
             pem_arg = _pem_config_arg(repo, tmp, name)
@@ -198,13 +222,15 @@ def _pem_config_arg(repo: Path, tmp: Path, board: str) -> str | None:
     return 'MBEDTLS_CONFIG_FILE=\\"%s\\"' % dst.as_posix()
 
 
-def _write_wrapper_manifest(p, repo: Path, name: str) -> Path:
+def _write_wrapper_manifest(p, repo: Path, name: str,
+                            payload_keys: dict[int, bytes]) -> Path:
     """A temp dir holding the OTA ``boot.py``, its generated ``_ota_config.py``, and
     a wrapper ``manifest.py`` that includes the board's own manifest and freezes both.
     Returns the temp dir (the caller removes it)."""
     tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-fw-"))
     shutil.copy2(_BOOT_PY, tmp / "boot.py")
-    (tmp / "_ota_config.py").write_text(_render_ota_config(p, name), encoding="utf-8")
+    (tmp / "_ota_config.py").write_text(_render_ota_config(p, name, payload_keys),
+                                        encoding="utf-8")
     freezes = ['freeze("%s", "boot.py")\n' % tmp.as_posix(),
                'freeze("%s", "_ota_config.py")\n' % tmp.as_posix()]
     # Editable device modules (logger + watchdog) frozen so boot.py / the installer / the
@@ -272,7 +298,7 @@ def _recovery_ca(p, t) -> bytes:
         "the root(s) your server's certificate chains to (a few KB)." % t.name)
 
 
-def _render_ota_config(p, name: str) -> str:
+def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
     """Generate ``_ota_config.py`` -- the build-time constants the frozen ``boot.py``
     reads: the partition geometry, this device's ``product_id`` + the running firmware's
     platform version (both exactly as the romfs build stamps them into trailers), and
@@ -292,6 +318,12 @@ def _render_ota_config(p, name: str) -> str:
         "    0x%x: %r,\n" % (k.key_id, bytes.fromhex(k.pubkey))
         for k in read_trusted_keys(ProjectPaths(p.root).trusted_keys) if not k.revoked
     )
+    # The PAYLOAD keys, which are SECRET -- unlike the trusted set above, which is
+    # public and committed. They are here, in the firmware, and deliberately not in
+    # the romfs: the romfs is the thing being downloaded, so a key inside it would
+    # be a key anyone who can reach the artifact already has. Reading them out of a
+    # frozen module means reading the flash off a board.
+    payload = "".join("    %d: %r,\n" % (kid, key) for kid, key in sorted(payload_keys.items()))
     return (
         "# Generated by `openmv-ota build firmware` -- do not edit.\n"
         "# Build-time constants the frozen boot.py reads.\n"
@@ -326,6 +358,7 @@ def _render_ota_config(p, name: str) -> str:
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
         + "BUILD_TIME = %d\n" % _build_time(p)
         + "TRUSTED_KEYS = {\n%s}\n" % keys
+        + "PAYLOAD_KEYS = {\n%s}\n" % payload
     )
 
 
