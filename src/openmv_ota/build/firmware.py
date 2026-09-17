@@ -179,6 +179,18 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+# Ports that build one firmware per CPU core from the same frozen manifest, and the names
+# their `$(MCU_CORE)` path variable takes. Only the main core runs OTA.
+_MULTI_CORE_PORTS = ("alif",)
+_MAIN_CORE, _HELPER_CORE = "hp", "he"
+
+
+def _per_core_freeze(repo: Path, board: str) -> bool:
+    """Whether this board's port builds several cores from one manifest, so the frozen set
+    has to be chosen per core rather than baked into every core it builds."""
+    return _board_port(repo, board) in _MULTI_CORE_PORTS
+
+
 def _board_port(repo: Path, board: str) -> str | None:
     """The micropython port (stm32 / alif / mimxrt) a board builds on, from its
     ``boards/<board>/board_config.mk`` (``PORT=...``)."""
@@ -228,17 +240,30 @@ def _write_wrapper_manifest(p, repo: Path, name: str,
     a wrapper ``manifest.py`` that includes the board's own manifest and freezes both.
     Returns the temp dir (the caller removes it)."""
     tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-fw-"))
-    shutil.copy2(_BOOT_PY, tmp / "boot.py")
-    (tmp / "_ota_config.py").write_text(_render_ota_config(p, name, payload_keys),
-                                        encoding="utf-8")
-    freezes = ['freeze("%s", "boot.py")\n' % tmp.as_posix(),
-               'freeze("%s", "_ota_config.py")\n' % tmp.as_posix()]
+    # On a multi-core board only the MAIN core does OTA. The helper core has no mbedtls,
+    # never verifies a signature and is never updated on its own (its partition is a plain
+    # romfs the main core writes), so freezing boot.py, the installer and the rest into it
+    # costs ~25 KB of a core that has none to spare -- the AE3's M55_HE overflowed its
+    # FLASH_TEXT by 480 bytes carrying an 18 KB installer it cannot run. `mods` is the
+    # directory the modules go in, and on such a port the manifest freezes
+    # `$(MCU_CORE)` -- a path variable the port sets per core -- so the main core gets the
+    # directory with the modules and the helper core gets an empty one.
+    mods, core_split = tmp, _per_core_freeze(repo, name)
+    if core_split:
+        mods = tmp / _MAIN_CORE
+        mods.mkdir()
+        (tmp / _HELPER_CORE).mkdir()
+    shutil.copy2(_BOOT_PY, mods / "boot.py")
+    (mods / "_ota_config.py").write_text(_render_ota_config(p, name, payload_keys),
+                                         encoding="utf-8")
+    freezes = ['freeze("%s", "boot.py")\n' % mods.as_posix(),
+               'freeze("%s", "_ota_config.py")\n' % mods.as_posix()]
     # Editable device modules (logger + watchdog) frozen so boot.py / the installer / the
     # app share them; prefer the project's copy, fall back to the bundled default.
     for mod in _FROZEN_DEVICE_MODULES:
         src = p.root / "device" / mod
-        shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, tmp / mod)
-        freezes.append('freeze("%s", "%s")\n' % (tmp.as_posix(), mod))
+        shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, mods / mod)
+        freezes.append('freeze("%s", "%s")\n' % (mods.as_posix(), mod))
     # The project's OWN TLS roots, frozen as `openmv_ca` -- present only when `project new --ca`
     # supplied them. There is deliberately no default here: the PUBLIC bundle is ~186 KB and
     # freezing that overflows FLASH_TEXT on every 1792 KB board (H7 Plus 106.85%, PureThermal
@@ -247,14 +272,19 @@ def _write_wrapper_manifest(p, repo: Path, name: str,
     # copy, which is also what a project created before `--ca` existed keeps doing.
     ca_mod = p.root / "device" / _CA_MODULE
     if ca_mod.exists():
-        shutil.copy2(ca_mod, tmp / _CA_MODULE)
-        freezes.append('freeze("%s", "%s")\n' % (tmp.as_posix(), _CA_MODULE))
+        shutil.copy2(ca_mod, mods / _CA_MODULE)
+        freezes.append('freeze("%s", "%s")\n' % (mods.as_posix(), _CA_MODULE))
     # The installer, frozen as `openmv_installer`. It is the SAME source the romfs ships and
     # openmv_ota.install() exec's into RAM -- one implementation, so a fix cannot land on the
     # normal path and miss the recovery one. The romfs copy stays: on a healthy device it is
     # OTA-updatable, while this one is the floor that a bad update cannot erase.
-    shutil.copy2(_DEVICE_DIR / "openmv_ota" / "data" / "installer.py", tmp / "openmv_installer.py")
-    freezes.append('freeze("%s", "openmv_installer.py")\n' % tmp.as_posix())
+    shutil.copy2(_DEVICE_DIR / "openmv_ota" / "data" / "installer.py", mods / "openmv_installer.py")
+    freezes.append('freeze("%s", "openmv_installer.py")\n' % mods.as_posix())
+    if core_split:
+        # One freeze of the per-core directory replaces the per-file list: for the main core
+        # `$(MCU_CORE)` names the directory holding every module above, for the helper core
+        # it names the empty one beside it.
+        freezes = ['freeze("%s/$(MCU_CORE)")\n' % tmp.as_posix()]
     board_manifest = repo / "boards" / name / "manifest.py"
     (tmp / "manifest.py").write_text(
         'include("%s")\n' % board_manifest.as_posix() + "".join(freezes),

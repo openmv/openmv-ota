@@ -632,3 +632,34 @@ def test_build_firmware_freezes_a_supplied_trust_store(make_project, monkeypatch
     manifest = (r.build_dir / "manifest.py").read_text()
     assert "openmv_ca.py" in manifest
     assert (r.build_dir / "openmv_ca.py").read_text() == ca.read_text()
+
+
+def test_a_multi_core_board_freezes_the_ota_modules_into_the_main_core_only(make_project,
+                                                                            monkeypatch):
+    """The AE3's helper core has no mbedtls, never verifies a signature and is never
+    updated on its own -- and it was carrying an 18 KB installer it cannot run, which is
+    how it came to overflow its FLASH_TEXT by 480 bytes. The port builds both cores from
+    one manifest, so the choice has to be made inside it, through the `$(MCU_CORE)` path
+    variable the port sets per core."""
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware_M55_HP.bin",
+                                                     "bin/firmware_M55_HE.bin"]))
+    root, repo, _app = make_project(ota=True, boards=["OPENMV_AE3"])
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+
+    manifest = (r.build_dir / "manifest.py").read_text()
+    assert manifest.count("freeze(") == 1                  # one directory, not nine files
+    assert '/$(MCU_CORE)")' in manifest
+    # the modules are in the main core's directory, and the helper core's is empty
+    assert (r.build_dir / "hp" / "boot.py").exists()
+    assert (r.build_dir / "hp" / "openmv_installer.py").exists()
+    assert (r.build_dir / "hp" / "_ota_config.py").exists()
+    assert list((r.build_dir / "he").iterdir()) == []
+
+
+def test_a_single_core_board_freezes_by_name_as_before(make_project, monkeypatch):
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)              # OPENMV_N6 -> stm32
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+    manifest = (r.build_dir / "manifest.py").read_text()
+    assert "$(MCU_CORE)" not in manifest
+    assert (r.build_dir / "boot.py").exists() and not (r.build_dir / "hp").exists()
