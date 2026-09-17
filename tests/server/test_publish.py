@@ -57,19 +57,20 @@ def _manifest(body):
 
 
 DELTA_NAME = "x-ota.delta.gz"          # must equal the rep url the manifest declares
+ENC_DELTA_NAME = "x-ota.delta.gz.enc"  # ...and the encrypted release declares this one
 
 
-def _files(manifest, image_gz, delta_gz=None):
+def _files(manifest, image_gz, delta_gz=None, delta_name=DELTA_NAME):
     files = {"manifest": ("manifest.bin", manifest, "application/octet-stream"),
              "image": ("img.gz", image_gz, "application/gzip")}
     if delta_gz is not None:
-        files["delta"] = (DELTA_NAME, delta_gz, "application/gzip")
+        files["delta"] = (delta_name, delta_gz, "application/gzip")
     return files
 
 
-def _post(app, manifest, image_gz, delta_gz=None, query=""):
+def _post(app, manifest, image_gz, delta_gz=None, query="", delta_name=DELTA_NAME):
     return TestClient(app).post("/api/v1/admin/releases" + query, headers=AUTH,
-                                files=_files(manifest, image_gz, delta_gz))
+                                files=_files(manifest, image_gz, delta_gz, delta_name))
 
 
 # --- happy paths ----------------------------------------------------------------------------
@@ -373,3 +374,101 @@ def test_publish_without_sbom_records_none(tmp_path):
     img = b"\xA5" * 64
     r = _post(app, _manifest(_body(img)), _gz(img))
     assert store.get_release(r.json()["release_id"])["sbom_key"] is None
+
+
+# --- encrypted artifacts ----------------------------------------------------
+#
+# The server stores what a camera downloads, and that is ciphertext. It cannot check
+# the image digest any more -- it cannot read the image -- so what it checks is the
+# ciphertext digest out of the same signed manifest. The plaintext check moves to the
+# device, which is the only party holding the key.
+
+def _encrypted(image, *, pv=0x02000000, with_delta=False):
+    """``(body, image_ciphertext, delta_ciphertext, keys)`` for an encrypted release."""
+    from openmv_ota.ota import payload
+
+    keys = {1: payload.new_key()}
+    image_ct, image_enc = payload.encrypt_artifact(_gz(image), keys)
+    reps = [{"format": "full", "url": "x-ota.img.gz.enc", "size": len(image_ct),
+             "enc": image_enc}]
+    delta_ct = None
+    if with_delta:
+        patch = _gz(delta_codec.make_delta(b"\x00" * len(image), image))
+        delta_ct, delta_enc = payload.encrypt_artifact(patch, keys)
+        reps.append({"format": DELTA_FORMAT, "url": "x-ota.delta.gz.enc",
+                     "size": len(delta_ct), "base_payload_version": 0x01000000,
+                     "base_body_sha256": "ab" * 32, "enc": delta_enc})
+    body = {"schema": 1, "product_id": BID, "product": "P", "version": "2.0.0",
+            "payload_version": pv, "min_platform_version": 0, "size": len(image),
+            "sha256": hashlib.sha256(image).hexdigest(), "representations": reps}
+    return body, image_ct, delta_ct, keys
+
+
+def test_an_encrypted_release_publishes_and_the_store_never_sees_the_image(tmp_path):
+    image = b"\xA5" * 512
+    body, image_ct, _d, _k = _encrypted(image)
+    app, store, storage = _app(tmp_path)
+    resp = _post(app, _manifest(body), image_ct)
+    assert resp.status_code == 200, resp.text
+
+    rel = store.get_release(resp.json()["release_id"])
+    stored = storage.get(rel["image_key"])
+    assert stored == image_ct
+    assert image not in stored                       # the bytes at rest are not the image
+    assert _gz(image) not in stored
+
+
+def test_an_encrypted_artifact_that_does_not_match_its_manifest_is_refused(tmp_path):
+    """The check the server can still make: these bytes belong to this manifest."""
+    image = b"\xA5" * 512
+    body, image_ct, _d, _k = _encrypted(image)
+    app, _store, _storage = _app(tmp_path)
+    resp = _post(app, _manifest(body), image_ct[:-16] + b"\x00" * 16)
+    assert resp.status_code == 400
+    assert "sha256 does not match" in resp.json()["detail"]
+
+
+def test_an_encrypted_artifact_of_the_wrong_length_is_refused(tmp_path):
+    image = b"\xA5" * 512
+    body, image_ct, _d, _k = _encrypted(image)
+    body["representations"][0]["size"] = len(image_ct) + 16
+    app, _store, _storage = _app(tmp_path)
+    resp = _post(app, _manifest(body), image_ct)
+    assert resp.status_code == 400
+    assert "size does not match" in resp.json()["detail"]
+
+
+def test_an_artifact_that_is_not_whole_blocks_is_refused(tmp_path):
+    """A release nobody could decrypt is refused at publish, not discovered by a fleet."""
+    image = b"\xA5" * 512
+    body, image_ct, _d, _k = _encrypted(image)
+    short = image_ct[:-1]
+    body["representations"][0]["size"] = len(short)
+    body["representations"][0]["enc"]["sha256"] = hashlib.sha256(short).hexdigest()
+    app, _store, _storage = _app(tmp_path)
+    resp = _post(app, _manifest(body), short)
+    assert resp.status_code == 400
+    assert "well-formed encrypted artifact" in resp.json()["detail"]
+
+
+def test_a_declared_plaintext_length_past_the_ciphertext_is_refused(tmp_path):
+    image = b"\xA5" * 512
+    body, image_ct, _d, _k = _encrypted(image)
+    body["representations"][0]["enc"]["size"] = len(image_ct) + 1
+    app, _store, _storage = _app(tmp_path)
+    resp = _post(app, _manifest(body), image_ct)
+    assert resp.status_code == 400
+    assert "well-formed encrypted artifact" in resp.json()["detail"]
+
+
+def test_an_encrypted_delta_is_checked_the_same_way(tmp_path):
+    image = b"\xA5" * 512
+    body, image_ct, delta_ct, _k = _encrypted(image, with_delta=True)
+    app, _store, _storage = _app(tmp_path)
+    ok = _post(app, _manifest(body), image_ct, delta_ct, delta_name=ENC_DELTA_NAME)
+    assert ok.status_code == 200, ok.text
+
+    bad = _post(app, _manifest(body), image_ct, delta_ct[:-16] + b"\x00" * 16,
+                query="?allow_republish=1", delta_name=ENC_DELTA_NAME)
+    assert bad.status_code == 400
+    assert "x-ota.delta.gz.enc sha256 does not match" in bad.json()["detail"]

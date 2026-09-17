@@ -271,6 +271,13 @@ def register(parser: argparse.ArgumentParser) -> None:
                     help="how many recent releases to fetch (default: 3)")
     p_bases.add_argument("-o", "--output", default="build/bases",
                          help="directory to write into (default: build/bases)")
+    # Stored releases are encrypted; a delta is built against the plaintext, and the
+    # project is where the key that opens them lives.
+    p_bases.add_argument("--project", default=".",
+                         help="project whose payload keys decrypt the bases (default: .)")
+    p_bases.add_argument("--key-passphrase-file", metavar="FILE",
+                         help="passphrase (from a file) for the project's payload keys (else "
+                              "the OPENMV_OTA_KEY_PASSPHRASE env var, or an interactive prompt)")
     _creds(p_bases)
     p_bases.set_defaults(func=cmd_bases, _command="client release bases")
 
@@ -523,6 +530,29 @@ def _make_api(cfg):
     return Api(cfg)
 
 
+def _declared_image(manifest: Path, out: Path) -> bytes:
+    """The full-image artifact this manifest declares.
+
+    Read from the SIGNED manifest rather than assumed from the board name: the file
+    that gets published is the encrypted one, and the manifest is the only authority
+    on which bytes belong to this release."""
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.manifest import parse_manifest
+
+    try:
+        body = parse_manifest(manifest.read_bytes()).body
+    except OtaError as e:
+        raise ClientError("unreadable manifest %s: %s" % (manifest, e)) from None
+    rep = next((r for r in body.get("representations", []) if r.get("format") == "full"), None)
+    if rep is None:
+        raise ClientError("%s declares no full image to publish" % manifest.name)
+    path = out / rep["url"].rsplit("/", 1)[-1]
+    if not path.exists():
+        raise ClientError("%s declares image %s but %s is missing -- rebuild with "
+                          "`build ota-romfs`" % (manifest.name, path.name, path))
+    return path.read_bytes()
+
+
 def _declared_deltas(manifest: Path, out: Path) -> dict:
     """The delta files this manifest declares, as ``{filename: bytes}``.
 
@@ -553,6 +583,55 @@ def _declared_deltas(manifest: Path, out: Path) -> dict:
 BASE_PREFIX = "-base-"       # <board>-base-<version>.img.gz, what `build --delta-from <dir>` picks up
 
 
+class _BaseDecryptor:
+    """Turns a stored release back into the image bytes a delta is built against.
+
+    Published artifacts are encrypted, so the copies the server keeps are ciphertext.
+    A delta has to be computed against the plaintext, and the only place the key
+    exists is the project -- which is why this verb takes one. The project's keys are
+    read ONCE, and only if something actually needs decrypting, so a release published
+    before any of this still downloads without a passphrase prompt."""
+
+    def __init__(self, project, board: str, key_passphrase_file):
+        self._project, self._board = project, board
+        self._passphrase_file = key_passphrase_file
+        self._keys = None
+
+    def _board_keys(self):
+        if self._keys is None:
+            from openmv_ota.project import passphrase as passphrase_mod
+            from openmv_ota.project import payload_keys as payload_mod
+            from openmv_ota.project.errors import ProjectError
+            from openmv_ota.project.project import ProjectPaths
+
+            try:
+                phrase, _ = passphrase_mod.resolve_passphrase(
+                    self._project, passphrase_file=self._passphrase_file)
+                keys = payload_mod.read(ProjectPaths(Path(self._project)).private_keys_dir, phrase)
+            except ProjectError as e:
+                raise ClientError(str(e), exit_code=e.exit_code) from None
+            if self._board not in keys:
+                raise ClientError("%s has no payload key in this project -- these bases were "
+                                  "published by a project that has one" % self._board)
+            self._keys = keys[self._board]
+        return self._keys
+
+    def __call__(self, data: bytes, rel: dict) -> bytes:
+        from openmv_ota.ota import payload
+        from openmv_ota.ota.errors import OtaError
+
+        reps = rel.get("representations") or []
+        rep = next((r for r in reps if isinstance(r, dict) and r.get("format") == "full"), None)
+        enc = (rep or {}).get("enc")
+        if not enc:
+            return data
+        try:
+            return payload.decrypt_artifact(data, self._board_keys(), enc)
+        except OtaError as e:
+            raise ClientError("release %s does not decrypt with this project's payload keys: %s"
+                              % (rel.get("release_id", "?"), e)) from None
+
+
 def cmd_bases(args: argparse.Namespace) -> int:
     """Download recent release images to build deltas FROM.
 
@@ -565,8 +644,9 @@ def cmd_bases(args: argparse.Namespace) -> int:
         api = _make_api(cfg)
         out = Path(args.output)
         out.mkdir(parents=True, exist_ok=True)
+        plain = _BaseDecryptor(args.project, args.board, args.key_passphrase_file)
         if args.fleet:
-            return _fleet_bases(args, api, out)
+            return _fleet_bases(args, api, out, plain)
         releases = api.releases(args.product_id, limit=args.last)["releases"]
         if not releases:
             raise ClientError("no retained releases to use as delta bases")
@@ -576,7 +656,7 @@ def cmd_bases(args: argparse.Namespace) -> int:
         got, lines = [], []
         for rel in releases:
             path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, rel["version"]))
-            path.write_bytes(api.release_image(rel["release_id"]))
+            path.write_bytes(plain(api.release_image(rel["release_id"]), rel))
             got.append({"path": str(path), "release_id": rel["release_id"],
                         "version": rel["version"], "bytes": path.stat().st_size})
             lines.append("%s  (%s, %d bytes)" % (path, rel["version"], path.stat().st_size))
@@ -587,7 +667,7 @@ def cmd_bases(args: argparse.Namespace) -> int:
     return 0
 
 
-def _fleet_bases(args: argparse.Namespace, api, out: Path) -> int:
+def _fleet_bases(args: argparse.Namespace, api, out: Path, plain) -> int:
     """``release bases --fleet``: ask the server which (version, exact-bytes) bases the
     fleet is RUNNING (its check-ins report each slot's body sha) and download the stored
     release matching each -- the curated base set ``build ota-romfs --delta-from`` wants.
@@ -616,7 +696,7 @@ def _fleet_bases(args: argparse.Namespace, api, out: Path) -> int:
                   "-- they will take the full image" % (row["devices"], row["version"]),
                   file=sys.stderr)
             continue
-        data = api.release_image(rel["release_id"])
+        data = plain(api.release_image(rel["release_id"]), rel)
         try:
             stored_sha = parse_trailer(
                 gzip.decompress(data)[-geometry.control_block():]).body_sha256.hex()
@@ -644,10 +724,10 @@ def cmd_publish(args: argparse.Namespace) -> int:
         cfg = config.resolve(args.server, args.token)
         out = Path(args.output) if args.output else Path(args.project) / "build"
         manifest = out / ("%s-manifest.bin" % args.board)
-        image = out / ("%s-ota.img.gz" % args.board)
-        if not manifest.exists() or not image.exists():
+        if not manifest.exists():
             raise ClientError("no built release for %s in %s -- run `build ota-romfs` first"
                               % (args.board, out))
+        image_bytes = _declared_image(manifest, out)
         if args.cohort is not None and args.percent is None:
             raise ClientError("--cohort stages a rollout only with --percent (how much of it)")
         api = _make_api(cfg)
@@ -661,7 +741,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
             sbom_bytes = render_sbom(args.project).encode()
         except Exception as e:                                    # noqa: BLE001
             print("warning: no SBOM attached (%s)" % e, file=sys.stderr)
-        res = api.publish_release(manifest.read_bytes(), image.read_bytes(),
+        res = api.publish_release(manifest.read_bytes(), image_bytes,
                                   _declared_deltas(manifest, out), args.allow_republish,
                                   sbom=sbom_bytes, display_name=args.name)
         lines = ["published %s  version %s  (%s)" % (res["release_id"], res.get("version"),

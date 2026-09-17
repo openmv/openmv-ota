@@ -49,15 +49,18 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
     a release now carries one delta per base version and a set matched only by count could
     store them under each other's names."""
     reps = body["representations"]
-    if _rep(reps, "full") is None:
+    full = _rep(reps, "full")
+    if full is None:
         raise HTTPException(status_code=400, detail="manifest has no 'full' representation")
-    raw = _gunzip(image_bytes)
-    if raw is None:
-        raise HTTPException(status_code=400, detail="image is not gzip")
-    if hashlib.sha256(raw).hexdigest() != body["sha256"]:
-        raise HTTPException(status_code=400, detail="image sha256 does not match the manifest")
-    if len(raw) != body["size"]:
-        raise HTTPException(status_code=400, detail="image size does not match the manifest")
+    if not _verify_encrypted(full, image_bytes, "image"):
+        raw = _gunzip(image_bytes)
+        if raw is None:
+            raise HTTPException(status_code=400, detail="image is not gzip")
+        if hashlib.sha256(raw).hexdigest() != body["sha256"]:
+            raise HTTPException(status_code=400,
+                                detail="image sha256 does not match the manifest")
+        if len(raw) != body["size"]:
+            raise HTTPException(status_code=400, detail="image size does not match the manifest")
     declared = {rep["url"].rsplit("/", 1)[-1] for rep in reps if rep["format"] == DELTA_FORMAT}
     missing = sorted(declared - set(deltas))
     if missing:
@@ -69,7 +72,10 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
         raise HTTPException(status_code=400,
                             detail="delta(s) uploaded that the manifest does not declare: %s"
                                    % ", ".join(extra))
+    by_name = {rep["url"].rsplit("/", 1)[-1]: rep for rep in reps}
     for filename in sorted(declared):
+        if _verify_encrypted(by_name[filename], deltas[filename], filename):
+            continue
         patch = _gunzip(deltas[filename])
         if patch is None:
             raise HTTPException(status_code=400, detail="%s is not gzip" % filename)
@@ -79,6 +85,32 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
                                     detail="%s target size != manifest size" % filename)
         except OtaError:
             raise HTTPException(status_code=400, detail="%s is malformed" % filename) from None
+
+
+def _verify_encrypted(rep: dict, data: bytes, what: str) -> bool:
+    """Check an encrypted artifact against its signed manifest entry. ``False`` means
+    this representation is not encrypted and the plaintext checks still apply.
+
+    The server cannot read these bytes, and should not be able to -- that is the whole
+    point -- so the digest it checks is the CIPHERTEXT's, out of the same signed
+    manifest that carries the plaintext digest for the camera. That still catches
+    exactly what this check was for: an upload that does not belong to the manifest it
+    arrived with, or that was mangled on the way. What moves is WHERE the plaintext is
+    verified -- on the device, which is the only party that can."""
+    enc = rep.get("enc")
+    if not isinstance(enc, dict):
+        return False
+    if hashlib.sha256(data).hexdigest() != enc.get("sha256"):
+        raise HTTPException(status_code=400,
+                            detail="%s sha256 does not match the manifest" % what)
+    if len(data) != rep.get("size"):
+        raise HTTPException(status_code=400,
+                            detail="%s size does not match the manifest" % what)
+    size = enc.get("size")
+    if len(data) % 16 or not isinstance(size, int) or not 0 <= size <= len(data):
+        raise HTTPException(status_code=400,
+                            detail="%s is not a well-formed encrypted artifact" % what)
+    return True
 
 
 async def _read_capped(upload: UploadFile, limit: int, what: str) -> bytes:
