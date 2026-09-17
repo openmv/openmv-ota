@@ -137,12 +137,18 @@ openmv-ota project keys restore keys-backup.bin
 ```
 
 **`backup` / `restore`** — the off-machine copy, and the way back. `backup`
-writes every private PEM into one integrity-checked file, `keys-backup.bin` —
+writes every private key file into one integrity-checked file, `keys-backup.bin` —
 the same file `new` already wrote, since the key set never changes. `restore`
 rebuilds `keys/private/` from it on a replacement machine. Neither takes a
-passphrase: the PEMs are archived exactly as they sit on disk, already
+passphrase: the files are archived exactly as they sit on disk, already
 encrypted. A `--dev` project is refused — its passphrase is cached beside the
 keys, so a copy would be plaintext in effect.
+
+That archive also carries the project's **payload keys** — the board keys that
+encrypt what a camera downloads ([release artifacts](08-release-artifacts.md#encryption)).
+They are minted with the signing keys, encrypted at rest under the same passphrase,
+and they fail the same way: lose the signing key and you cannot sign an update the
+fleet will accept; lose the board key and you cannot encrypt one the fleet can read.
 
 ### External backends (HSM / cloud KMS)
 

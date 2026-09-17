@@ -2057,7 +2057,9 @@ def publish_update(board, version, variant="delta"):
             if _s.get("delta_gz") and _s.get("full_img_gz") else "")))
     subprocess.run([ota("openmv-ota"), "client", "release", "publish", CFG["project"], "-b", board,
                     "--server", CFG["server"], "--token", CFG["token"], "--allow-republish",
-                    "--rollout", "__default__:100"], env=penv, check=True, timeout=180)
+                    # stage it to the whole default cohort: --percent is the trigger, and
+                    # the cohort defaults to __default__ (the devices nobody assigned)
+                    "--percent", "100"], env=penv, check=True, timeout=180)
     if variant == "corrupt":
         _tamper(board, "image")        # post-erase integrity failure -> retry -> golden BACK
     elif variant == "corrupt_sha":

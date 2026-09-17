@@ -18,6 +18,7 @@ internally (same flags), then renders what a camera actually downloads:
 ```bash
 openmv-ota build ota-romfs ./my-product
 # -> build/<board>-ota.img.gz       the gzipped slot-sized image
+#    build/<board>-ota.img.gz.enc   the same image, encrypted -- this is what you publish
 #    build/<board>-manifest.bin     the signed manifest install() fetches first
 ```
 
@@ -62,6 +63,34 @@ Representation URLs inside it are **relative filenames**, resolved on-device
 against the manifest's own location — host the artifacts beside each other and the
 signed manifest moves between hosts without re-signing.
 
+### Encryption
+
+Signing says who made an image. It says nothing about who may **read** one — and an
+account id is not a secret, so without encryption anyone holding one could ask the
+server for the release it offers and read your application out of it.
+
+So every artifact a camera downloads is encrypted, and the `.enc` file is the one
+that gets published. There is nothing to turn on and no key to manage: the project
+was created with a **board key** per board target, `build firmware` bakes it into
+that board's firmware, and each artifact is encrypted under a fresh key wrapped for
+whichever board keys are live. The plaintext `.gz` beside it stays on your build
+machine.
+
+Be clear about what this buys. It puts the store, the URL, a leaked bucket and a
+copy of a backup out of reach — everything cheaper than holding one of your boards.
+It does not survive someone reading the flash off a board: the key is a constant in
+the firmware, and one firmware image serves a board type. That boundary is recorded
+in [the residual-threats register](../compliance/residual-threats.md).
+
+Two things follow from "the key lives in the firmware":
+
+- **Back up `keys/private/`.** `project keys backup` archives the payload keys
+  beside the signing PEMs. Without the board key you cannot publish anything the
+  fielded fleet can read, and the only fix is a firmware update by hand.
+- **A rotation is a firmware update.** `build firmware` bakes every live board key,
+  and a release carries one wrap per live key, so a fleet keeps updating while the
+  new firmware reaches it. Retire the old key once nothing is running it.
+
 ### Deltas (`--delta-from`)
 
 ```bash
@@ -91,6 +120,10 @@ Two properties keep deltas safe:
 - **A delta is pure transport.** The reconstructed slot is verified against the
   manifest's sha256 and its own signed trailer, exactly like a full download — a
   bad patch cannot produce an installable image.
+- **A delta is encrypted too.** It is a diff of two images, so it leaks the part
+  that changed. `client release bases`, which pulls older releases back to build
+  deltas against, decrypts them with the project's keys — which is why that verb
+  takes a `--project`.
 
 `--allow-republish` permits re-signing a version at or below this project's last
 published one — a dev-loop convenience; the server enforces the same rule on

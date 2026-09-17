@@ -70,8 +70,10 @@ Lettered per the regulation (Annex I Part I point (2)).
 Where the harmonised standards specify test cases, this stack maps onto them:
 - EN 18031-1 (general): update mechanism, integrity protection, secure storage of
   cryptographic material.
-- EN 18031-2 (data confidentiality): transit is covered (TLS); at-rest image
-  encryption is planned — see [the residual-threats register](residual-threats.md).
+- EN 18031-2 (data confidentiality): transit is covered (TLS), and the published
+  artifact is encrypted at rest under a key that exists only in the firmware — what
+  remains is a physical board dump, recorded in
+  [the residual-threats register](residual-threats.md).
 - EN 18031-3 (fraud prevention): signature verification + anti-rollback covers
   the relevant test cases.
 

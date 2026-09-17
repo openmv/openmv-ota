@@ -4,9 +4,13 @@ To-do only. Done work is in `git log`; deliberate non-goals are in
 [docs/compliance/residual-threats.md](docs/compliance/residual-threats.md); this
 file's own history has the longer design notes behind each line.
 
-- **On-device image encryption** — images are signed, not confidential
-  (residual-threats: planned). The trailer's `reserved0` field is the headroom
-  for its metadata.
+- **Verify the coprocessor image still installs (AE3)** — the OTA modules are no
+  longer frozen into the M55_HE core (it has no mbedtls, verifies nothing, and was
+  carrying an 18 KB installer it cannot run — see `_per_core_freeze`). Its romfs
+  should mount by MicroPython's own auto-mount, and the scaffolded coprocessor app
+  imports nothing of ours, but that has never been exercised end to end: flash an
+  AE3, run `openmv_ota.sync()`, and prove the helper partition is written and the
+  helper core boots its app.
 - **Device lockdown** — debug-port and boot protection (residual-threats:
   planned); until then bench/bus access is accepted.
 - **Firmware updates via the ROMFS** — bootloader as *reconciler*: copy a

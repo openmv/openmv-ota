@@ -10,7 +10,7 @@ after.
 its baked key can unwrap, so a project that cannot reproduce its board key cannot
 publish an installable release for the boards already in the field -- only new
 firmware would fix it, which is a hands-on visit. So the file is archived by
-``project backup-keys`` alongside the signing PEMs, and for the same reason it is
+``project keys backup`` alongside the signing PEMs, and for the same reason it is
 encrypted at rest: it lives in a repo-shaped directory next to code, and the one
 thing that must never happen is a board key reaching a bucket, a CI log, or a
 laptop backup in the clear.
@@ -115,7 +115,7 @@ def read(private_keys_dir: str | Path, passphrase: str) -> dict[str, dict[int, b
         raise ProjectError(
             "no payload keys in %s -- every OTA project is created with them, so this "
             "project's are lost or were never copied here. Restore them with `openmv-ota "
-            "project restore-keys` (they are in the key backup); without them a camera in "
+            "project keys restore <file>` (they are in the key backup); without them a camera in "
             "the field cannot decrypt anything you publish." % blob.parent, exit_code=1)
     return _load(blob.read_bytes(), passphrase)
 
