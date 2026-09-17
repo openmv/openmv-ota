@@ -15,7 +15,15 @@ from openmv_ota.ota import geometry
 from openmv_ota.ota.algorithms import ES256, algorithm_for
 from openmv_ota.romfs import boards as boards_mod
 
-from . import cache, config as config_mod, gitrepo, lock as lock_mod, passphrase as passphrase_mod, sdk_install
+from . import (
+    cache,
+    config as config_mod,
+    gitrepo,
+    lock as lock_mod,
+    passphrase as passphrase_mod,
+    payload_keys,
+    sdk_install,
+)
 from .config import LOCAL_NAME, OtaConfig
 from .errors import ProjectError
 from .resolve import firmware as fw_res
@@ -641,6 +649,10 @@ def create_project(
     lock_mod.write(paths.lock, lock)
     if provisioned is not None:
         _write_keys(paths, provisioned)
+        # The payload keys, minted in the same breath as the signing keys and for the
+        # same reason: a project should arrive with confidentiality rather than with a
+        # decision about it. One per board target -- see project/payload_keys.
+        payload_keys.mint(paths.private_keys_dir, boards, key_passphrase)
         if dev:
             dp = passphrase_mod.dev_passphrase_path(root)
             dp.write_text(key_passphrase, encoding="utf-8")
@@ -700,11 +712,15 @@ KEY_BACKUP_NAME = "keys-backup.bin"
 
 
 def backup_private_keys(root: str | Path) -> Path:
-    """Archive every private signing PEM (already encrypted at rest) to
+    """Archive every private key file (already encrypted at rest) to
     ``<root>/keys-backup.bin`` -- the operator then moves it off-machine. Raises
     ``ProjectError`` if there are no private keys, or for a ``--dev`` project (its cached
     throwaway passphrase sits beside the keys, so a copy is effectively plaintext -- and dev
-    keys are disposable anyway)."""
+    keys are disposable anyway).
+
+    That is the signing PEMs **and the payload keys**. They fail differently and both
+    fail terminally: without the signing key you cannot sign an update the fleet will
+    accept, and without the board key you cannot encrypt one the fleet can read."""
     from . import keybackup, passphrase
 
     if passphrase.dev_passphrase_path(root).exists():
@@ -715,6 +731,9 @@ def backup_private_keys(root: str | Path) -> Path:
     pem_dir = ProjectPaths(Path(root)).private_keys_dir
     pems = ({p.name: p.read_bytes() for p in sorted(pem_dir.glob("*.pem"))}
             if pem_dir.exists() else {})
+    payload_blob = payload_keys.path_for(pem_dir)
+    if payload_blob.exists():
+        pems[payload_blob.name] = payload_blob.read_bytes()
     if not pems:
         raise ProjectError("no private keys in %s to back up" % pem_dir, exit_code=1)
     out = Path(root) / KEY_BACKUP_NAME
@@ -723,7 +742,7 @@ def backup_private_keys(root: str | Path) -> Path:
 
 
 def restore_private_keys(root: str | Path, blob: bytes) -> list[str]:
-    """Unpack a backup ``blob`` and write its PEMs (still encrypted at rest, exactly as
+    """Unpack a backup ``blob`` and write its files (still encrypted at rest, exactly as
     archived) into the project's private-key dir, returning the restored filenames. Raises
     ``ProjectError`` on a corrupt backup (recovery fails loudly)."""
     from . import keybackup
