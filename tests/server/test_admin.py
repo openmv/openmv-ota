@@ -1210,13 +1210,18 @@ def test_list_endpoints_are_bounded_by_default_and_report_the_total(tmp_path):
     body = c.get("/api/v1/admin/releases?limit=3", headers=AUTH).json()
     assert len(body["releases"]) == 3, "the page is honoured"
     assert body["total"] == 7, "...and the caller can see what it is a page OF"
-    # the default is a bound, not unlimited
+    # the default is a bound, not unlimited -- and so is the ceiling. Without one,
+    # `?limit=100000000` builds a hundred million rows on a server every other fleet
+    # shares, so one account's token is a denial of service for all of them.
+    for path in ("releases", "rollouts", "devices", "products", "audit", "cohorts"):
+        over = c.get(f"/api/v1/admin/{path}?limit=100000000", headers=AUTH)
+        assert over.status_code == 422, path
+    assert c.get("/api/v1/admin/releases?limit=1000", headers=AUTH).status_code == 200
     import inspect
 
     from openmv_ota.server import admin
-    assert inspect.signature(admin.releases).parameters["limit"].default == admin._PAGE
-    assert inspect.signature(admin.list_rollouts).parameters["limit"].default == admin._PAGE
-    assert inspect.signature(admin.devices).parameters["limit"].default == admin._PAGE
+    for fn in (admin.releases, admin.list_rollouts, admin.devices):
+        assert inspect.signature(fn).parameters["limit"].default.default == admin._PAGE
 
 
 def test_total_is_account_scoped_like_the_rows_it_counts(tmp_path):

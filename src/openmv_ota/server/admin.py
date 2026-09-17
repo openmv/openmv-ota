@@ -60,6 +60,12 @@ admin = APIRouter(prefix="/api/v1/admin")
 # them in one response. Same number everywhere is the point -- a caller should not have to
 # remember which collection happens to be unbounded.
 _PAGE = 100
+# The most rows one request may ask for. Without a ceiling, `?limit=100000000` makes
+# the server build a hundred million dicts -- on a SHARED server, so one account's
+# token can starve every other fleet's update service. Paging past it with `offset`
+# still reads everything; asking for all of it in one breath does not.
+_MAX_PAGE = 1000
+_LIMIT_Q = Query(_PAGE, ge=1, le=_MAX_PAGE, description="rows per page (max %d)" % _MAX_PAGE)
 
 # The list contract every collection endpoint follows (documented on the API page via
 # these Query descriptions): ?sort=<column>&dir=asc|desc&limit&offset plus the list's
@@ -481,7 +487,7 @@ _ROLLOUT_ROW = ("rollout_id", "release_id", "product_id", "product_id_str", "coh
 
 
 @admin.get("/rollouts", responses={200: {"model": RolloutList}})
-def list_rollouts(request: Request, product_id: int | None = None, limit: int = _PAGE,
+def list_rollouts(request: Request, product_id: int | None = None, limit: int = _LIMIT_Q,
                   offset: int = 0, state: str | None = None, cohort: str | None = None,
                   release_id: str | None = Query(None, description="only rollouts of this release"),
                   pause_reason: str | None = Query(
@@ -531,7 +537,8 @@ def rollout_status(rollout_id: str, request: Request,
 
 @admin.get("/cohorts", responses={200: {"model": CohortList}})
 def list_cohorts(request: Request, product_id: int | None = None,
-                 limit: int | None = None, offset: int = 0,
+                 limit: int | None = Query(None, ge=1, le=_MAX_PAGE),
+                 offset: int = 0,
                  sort: str | None = _sort_q("cohort, devices, products, pins"),
                  dir: str = _DIR_Q,
                  principal: Principal = Depends(require_scope("observe"))):
@@ -861,7 +868,7 @@ def fleet_bases(request: Request, product_id: int | None = None,
 
 
 @admin.get("/releases", responses={200: {"model": ReleaseList}})
-def releases(request: Request, product_id: int | None = None, limit: int = _PAGE,
+def releases(request: Request, product_id: int | None = None, limit: int = _LIMIT_Q,
              offset: int = 0,
              sort: str | None = _sort_q("version, product, size, uploaded, name, release"),
              dir: str = _DIR_Q,
@@ -942,7 +949,9 @@ def release_image(release_id: str, request: Request,
 
 @admin.get("/advisories", responses={200: {"model": AdvisoryList}})
 def list_advisories(request: Request, release_id: str | None = None,
-                    active_only: bool = True, limit: int | None = None, offset: int = 0,
+                    active_only: bool = True,
+                    limit: int | None = Query(None, ge=1, le=_MAX_PAGE),
+                    offset: int = 0,
                     sort: str | None = _sort_q("severity, advisory, component, release, "
                                                "first_seen, last_seen"),
                     dir: str = _DIR_Q,
@@ -1043,7 +1052,8 @@ def release_sbom(release_id: str, request: Request,
 
 
 @admin.get("/devices", responses={200: {"model": DeviceList}})
-def devices(request: Request, product_id: int | None = None, limit: int = 100,
+def devices(request: Request, product_id: int | None = None,
+            limit: int = Query(100, ge=1, le=_MAX_PAGE),
             cohort: str | None = None, offset: int = 0,
             q: str | None = Query(None, description="name-or-id substring, case-insensitive"),
             cohort_not: str | None = Query(None, description="exclude devices in this cohort"),
@@ -1101,7 +1111,8 @@ def devices(request: Request, product_id: int | None = None, limit: int = 100,
 
 
 @admin.get("/products", responses={200: {"model": ProductList}})
-def products(request: Request, limit: int | None = None, offset: int = 0,
+def products(request: Request, limit: int | None = Query(None, ge=1, le=_MAX_PAGE),
+             offset: int = 0,
              sort: str | None = _sort_q("product, devices, releases, newest"), dir: str = _DIR_Q,
              principal: Principal = Depends(require_scope("observe"))):
     """The account's product directory: every product id seen on a device or a
@@ -1181,7 +1192,8 @@ def viewer_grant(device_id: str, request: Request,
 
 
 @admin.get("/audit", responses={200: {"model": AuditList}})
-def audit(request: Request, since: int = 0, limit: int = 100, offset: int = 0,
+def audit(request: Request, since: int = 0,
+          limit: int = Query(100, ge=1, le=_MAX_PAGE), offset: int = 0,
           entity_id: str | None = None, newest: bool = False,
           action: str | None = Query(None, description="only this action, e.g. device.refused"),
           action_not: str | None = Query(None, description="hide one action, e.g. advisory.scan"),
