@@ -81,6 +81,29 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
             raise HTTPException(status_code=400, detail="%s is malformed" % filename) from None
 
 
+async def _read_capped(upload: UploadFile, limit: int, what: str) -> bytes:
+    """Read an upload, refusing past ``limit``.
+
+    `await upload.read()` allocates whatever the caller sent. On a server every tenant
+    shares, that hands one publish token an out-of-memory button for everybody -- and it
+    is the same rule the device code lives by, applied in the one place it was not.
+
+    Content-Length is checked first because it is free, and then the read is capped
+    anyway: the header is the uploader's claim about the uploader's own body."""
+    read = 0
+    chunks = []
+    while True:
+        chunk = await upload.read(1024 * 1024)
+        if not chunk:
+            break
+        read += len(chunk)
+        if read > limit:
+            raise HTTPException(status_code=413,
+                                detail="%s is larger than the %d byte limit" % (what, limit))
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @publish.post("/releases", responses={200: {"model": Published}})
 async def publish_release(request: Request, background: BackgroundTasks,
                           manifest: UploadFile = File(...),
@@ -113,7 +136,8 @@ async def publish_release(request: Request, background: BackgroundTasks,
     it out, pin it, or read its SBOM."""
     ms = request.app.state.metastore
     storage = request.app.state.storage
-    manifest_bytes = await manifest.read()
+    settings = request.app.state.settings
+    manifest_bytes = await _read_capped(manifest, settings.max_manifest_bytes, "manifest")
     try:
         parsed = parse_manifest(manifest_bytes)
         body = parsed.body
@@ -150,19 +174,21 @@ async def publish_release(request: Request, background: BackgroundTasks,
         raise HTTPException(status_code=409, detail="payload_version %d <= latest %d "
                             "(pass allow_republish=true to override)" % (payload_version, latest))
 
-    image_bytes = await image.read()
+    image_bytes = await _read_capped(image, settings.max_image_bytes, "image")
     # REPEATABLE. A release ships one delta per base version still in the field, because a
     # device patches against the release it is RUNNING -- one delta reaches only the devices
     # that never updated. Each is matched to its representation by filename.
     uploads = list(delta or [])
-    deltas = {(u.filename or "").rsplit("/", 1)[-1]: await u.read() for u in uploads}
+    deltas = {(u.filename or "").rsplit("/", 1)[-1]:
+              await _read_capped(u, settings.max_image_bytes, "delta") for u in uploads}
     _verify_artifacts(body, image_bytes, deltas)
 
     # The SBOM rides beside the artifacts when the client sends one: the dependency evidence
     # for the exact bytes this release ships, served per release instead of living only on the
     # build machine. Validated as JSON only -- the render is the build's job, and a schema gate
     # here would reject evidence over formatting.
-    sbom_bytes = await sbom.read() if sbom is not None else None
+    sbom_bytes = (await _read_capped(sbom, settings.max_sbom_bytes, "sbom")
+                  if sbom is not None else None)
     if sbom_bytes is not None:
         try:
             json.loads(sbom_bytes)

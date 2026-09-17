@@ -63,6 +63,15 @@ class ServerSettings(BaseSettings):
     test_offer_downgrades: bool = False
     checkin_rate_per_min: int = 60         # per-IP device check-in rate limit (0 = disabled)
     poll_after_s: int = 3600               # backoff the device is told to wait before polling again
+    # Upload ceilings. A publish token is a tenant's credential on a SHARED server, and
+    # `await upload.read()` is an allocation sized by whoever is uploading -- the same
+    # rule the device code is held to ("no allocation sized by anything we do not
+    # control"), which the server was quietly breaking. Firmware images are single-digit
+    # megabytes; these are generous by comparison and still bounded.
+    max_image_bytes: int = 512 * 1024 * 1024
+    max_manifest_bytes: int = 1024 * 1024
+    max_sbom_bytes: int = 32 * 1024 * 1024
+
     capability_ttl: int = 3600             # lifetime of an artifact capability token
     # OpenMV Live: when BOTH are set, every registered device's check-in response carries a
     # `live` grant (ready-made relay URLs + a camera token). The secret is shared with the

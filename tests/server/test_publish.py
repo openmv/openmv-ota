@@ -162,6 +162,33 @@ def test_publish_with_delta(tmp_path):
 
 # --- auth + scopes --------------------------------------------------------------------------
 
+def test_an_upload_larger_than_the_limit_is_refused_not_read(tmp_path):
+    """`await upload.read()` allocates whatever the caller sent, and a publish token is
+    a tenant's credential on a server every other fleet shares -- so without a ceiling
+    one token is an out-of-memory button for all of them. It is the rule the device code
+    lives by, applied where the server was not applying it."""
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    store.set_meta("capability_secret", "x")
+    store.add_token(hash_token("tok"), "ci", ["publish", "observe"])
+    storage = LocalArtifactStorage(str(tmp_path / "blobs"))
+    app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
+                                    swd_ids_verify_token="t",
+                                    max_image_bytes=2048, max_manifest_bytes=512),
+                     metastore=store, storage=storage, verifier=_Verifier())
+    img = b"\xA5" * 64
+    big = b"\x00" * 4096
+    r = TestClient(app).post("/api/v1/admin/releases", headers=AUTH,
+                             files=_files(_manifest(_body(img)), big))
+    assert r.status_code == 413 and "image is larger" in r.json()["detail"]
+    r = TestClient(app).post("/api/v1/admin/releases", headers=AUTH,
+                             files=_files(big, _gz(img)))
+    assert r.status_code == 413 and "manifest is larger" in r.json()["detail"]
+    assert store.list_releases() == []          # nothing was stored on the way to refusing
+    # and the ordinary case still goes through
+    assert _post(app, _manifest(_body(img)), _gz(img)).status_code == 200
+
+
 def test_publish_no_token_401(tmp_path):
     app, store, storage = _app(tmp_path)
     img = b"\xA5" * 64
