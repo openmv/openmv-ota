@@ -231,18 +231,27 @@ def set_account_limit(account_id: str, body: AccountLimit, request: Request,
 
 
 @admin.post("/accounts/{account_id}/deactivate", responses={200: {"model": AccountActive}})
-def deactivate_account(account_id: str, request: Request,
+def deactivate_account(account_id: str, request: Request, body: TokenActor | None = None,
                        principal: Principal = Depends(require_scope("accounts"))):
     """Soft off-switch: revoke every token + set active=0. Admin access dies; fielded devices keep
     being served (a billing lapse doesn't brick a fleet), and no new token can be minted until the
-    account is reactivated."""
+    account is reactivated.
+
+    `actor` names the person on whose behalf an operator credential is calling, as
+    token revoke and rotate already do; the operator is kept as `via`."""
     ms = request.app.state.metastore
     if ms.get_account(account_id) is None:
         raise HTTPException(status_code=404)
     n = ms.revoke_account_tokens(account_id)
     ms.set_account_active(account_id, False)
-    ms.append_audit(actor=principal.name, action="account.deactivate", entity_type="account",
-                    entity_id=account_id, data={"tokens_revoked": n}, account_id=principal.account_id)
+    # `actor` names the PERSON, the way revoke and rotate already allow: a console
+    # calls this with an operator credential, and "the operator retired the account"
+    # loses the one fact worth keeping about the end of a tenant -- who ended it. This
+    # log is also the only one that survives it, since the tenant's own rows go too.
+    who, via = _audit_actor(principal, body.actor if body else None)
+    ms.append_audit(actor=who, action="account.deactivate", entity_type="account",
+                    entity_id=account_id, data={"tokens_revoked": n, **via},
+                    account_id=principal.account_id)
     return {"account_id": account_id, "active": False, "tokens_revoked": n}
 
 

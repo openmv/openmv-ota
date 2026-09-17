@@ -654,8 +654,14 @@ def test_account_lifecycle_api(tmp_path):
     assert c.patch("/api/v1/admin/accounts/ghost", headers=AUTH, json={"name": "x"}).status_code == 404
     # deactivate -> revokes the account's tokens + flips active; then no mint (issue/rotate -> 409)
     th = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH, json={"name": "ci"}).json()["token_hash"]
-    d = c.post("/api/v1/admin/accounts/acctA/deactivate", headers=AUTH).json()
+    d = c.post("/api/v1/admin/accounts/acctA/deactivate", headers=AUTH,
+               json={"actor": "kwabena@openmv.io"}).json()
     assert d["active"] is False and d["tokens_revoked"] == 1
+    # who ended the tenant, not just which credential made the call. A console drives
+    # this with an operator token, and after the tenant's own rows are gone this log is
+    # the only place the answer survives.
+    ended = next(e for e in store.read_audit() if e["action"] == "account.deactivate")
+    assert ended["actor"] == "kwabena@openmv.io" and ended["data"]["via"] == "ci"
     assert store.get_token(th)["revoked"] == 1 and store.get_account("acctA")["active"] == 0
     assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                   json={"name": "x"}).status_code == 409
