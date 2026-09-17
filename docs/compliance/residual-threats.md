@@ -13,7 +13,7 @@ account/binding trust story ([accounts and tokens](../tutorial/19-accounts-and-t
 
 | Threat | Status | The exposure, and what bounds it |
 |---|---|---|
-| **Image confidentiality** | **Planned** | Images are signed, not encrypted: the application is readable by anyone holding the bytes — a download capability, or the flash itself. Integrity and authenticity are unaffected. On-device image encryption is planned. |
+| **Image confidentiality against a board dump** | Accepted | Published artifacts are encrypted (a board key per project per board target, baked into that board's firmware; a fresh content key per artifact, wrapped under it). So the store, the URL, a leaked bucket and a copy of a backup all yield ciphertext. What remains is the board itself: the key is a constant in the firmware, one firmware image serves a board type, and anyone who can read a board's flash has that board type's key. Closing that needs readout protection and fuses — see *local bus access* below. |
 | **Local bus access** (USB / SWD / JTAG, DFU reflash) | **Planned** | Anyone with the hardware on a bench can read flash, reflash it, or lift what `/flash` holds. Today that is accepted; device lockdown (debug-port and boot protection) is planned. |
 | **Hardware fault injection / side channels** | Accepted | Out of scope for this device class. |
 | **Compromise of the signing infrastructure** | Accepted (operational) | Tooling cannot defend the machine that signs. The controls are operational — encrypted-at-rest keys, external signing backends, and a manufacturer who receives only the finished signed binary — plus `keys revoke` to bound the blast radius after the fact. |
