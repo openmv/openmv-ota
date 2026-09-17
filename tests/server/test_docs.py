@@ -95,6 +95,25 @@ def test_openapi_schema_is_cached(tmp_path):
     assert client.get("/openapi.json").json() == first
 
 
+def test_security_headers_are_strict_for_json_and_workable_for_the_docs(tmp_path):
+    """A JSON answer should load nothing, frame nothing and post nowhere, so it gets
+    `default-src 'none'`. The ReDoc page styles itself at runtime and carries its own
+    theme script, so it keeps inline -- a policy that broke it would hide the API
+    reference from the people integrating against it."""
+    c = TestClient(_app(tmp_path))
+    api = c.get("/healthz")
+    assert api.headers["x-content-type-options"] == "nosniff"
+    assert api.headers["x-frame-options"] == "DENY"
+    assert api.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert api.headers["content-security-policy"] == (
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+    docs = c.get("/docs")
+    assert "default-src 'self'" in docs.headers["content-security-policy"]
+    assert "'unsafe-inline'" in docs.headers["content-security-policy"]
+    assert "strict-transport-security" in c.get("https://testserver/healthz").headers
+    assert "strict-transport-security" not in c.get("http://testserver/healthz").headers
+
+
 def test_openapi_declares_the_bearer_scheme_and_every_route_that_needs_it(tmp_path):
     """`require_scope` reads the Authorization header itself, so FastAPI infers no
     security and a client generated from the schema would send no credentials at all.

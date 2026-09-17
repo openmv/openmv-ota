@@ -50,6 +50,14 @@ _MEDIA = {"manifest.bin": "application/octet-stream"}
 
 _DOCS_DIR = Path(__file__).parent / "docs_static"
 
+# JSON answers: nothing to load, nothing to frame, nothing to post to.
+_API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+# The self-hosted ReDoc page: same origin for everything it fetches, plus the inline
+# style and script ReDoc and the theme toggle need.
+_DOCS_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
+             "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+             "object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+
 _API_DESCRIPTION = """\
 The OpenMV OTA update server delivers **signed over-the-air updates** to OpenMV
 cameras. Update bundles are signed at build time and verified on-device; the
@@ -808,6 +816,26 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min)
     from .advisor import OsvClient
     app.state.osv = osv if osv is not None else OsvClient()
+
+    @app.middleware("http")
+    async def _security_headers(request, call_next):
+        """Browser-facing headers on every response.
+
+        An API answer is JSON that nothing should ever load resources from or frame, so
+        it gets `default-src 'none'`. The docs page is the exception: ReDoc styles
+        itself at runtime and this server's page carries its own inline theme script,
+        so that one keeps inline script and style rather than shipping a policy that
+        silently breaks the API reference for whoever is reading it."""
+        resp = await call_next(request)
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        html = resp.headers.get("content-type", "").startswith("text/html")
+        resp.headers.setdefault("Content-Security-Policy", _DOCS_CSP if html else _API_CSP)
+        if request.url.scheme == "https":
+            resp.headers.setdefault("Strict-Transport-Security",
+                                    "max-age=31536000; includeSubDomains")
+        return resp
 
     origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
     if "*" in origins:
