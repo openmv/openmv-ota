@@ -210,14 +210,38 @@ def _handshake_key(rand16):
     return binascii.b2a_base64(rand16)[:-1].decode()
 
 
+def _split_token(path):
+    """``(path_without_token, token)``.
+
+    The relay's URLs carry `?token=` because a browser cannot put a header on a
+    WebSocket. A device is not a browser: it can send Authorization, and should --
+    a URL is the one place a credential is guaranteed to be written down, in proxy
+    logs and in anything that records where a request went. The token is moved out
+    of the URL here rather than in the URL the server mints, so an OLD device and a
+    NEW one can be served by the same relay."""
+    head, sep, query = path.partition("?")
+    if not sep:
+        return path, ""
+    keep, token = [], ""
+    for field in query.split("&"):
+        if field.startswith("token="):
+            token = field[6:]
+        elif field:
+            keep.append(field)
+    return (head + "?" + "&".join(keep) if keep else head), token
+
+
 def _handshake_request(host, path, key):
+    path, token = _split_token(path)
+    auth = "Authorization: Bearer %s\r\n" % token if token else ""
     return ("GET %s HTTP/1.1\r\n"
             "Host: %s\r\n"
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
             "User-Agent: %s\r\n"
+            "%s"
             "Sec-WebSocket-Key: %s\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n" % (path, host, _UA, key)).encode()
+            "Sec-WebSocket-Version: 13\r\n\r\n" % (path, host, _UA, auth, key)).encode()
 
 
 def _handshake_ok(status_line):

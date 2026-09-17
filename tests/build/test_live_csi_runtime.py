@@ -85,13 +85,25 @@ def test_handshake_request_and_key():
     key = rt._handshake_key(bytes(range(16)))
     assert "\n" not in key
     req = rt._handshake_request("relay.example", "/camera/d1/0?token=t", key)
-    assert req.startswith(b"GET /camera/d1/0?token=t HTTP/1.1\r\n")
+    # the token leaves the URL and rides in a header: a URL is the one place a
+    # credential is guaranteed to be written down -- proxy logs, anything that
+    # records where a request went. A device can send Authorization; a browser cannot.
+    assert req.startswith(b"GET /camera/d1/0 HTTP/1.1\r\n")
+    assert b"Authorization: Bearer t\r\n" in req
+    assert b"token=t" not in req.split(b"\r\n")[0]
     assert b"Host: relay.example\r\n" in req
     assert b"Upgrade: websocket\r\n" in req
     assert ("Sec-WebSocket-Key: %s\r\n" % key).encode() in req
     # Cloudflare bot protection rejects default library UAs -- pin ours in place.
     assert b"User-Agent: openmv-cam/1.0\r\n" in req
     assert req.endswith(b"\r\n\r\n")
+
+    # other query fields stay where they are, and a URL with no token is untouched
+    keeps = rt._handshake_request("relay.example", "/camera/d1/0?x=1&token=t&y=2", key)
+    assert keeps.startswith(b"GET /camera/d1/0?x=1&y=2 HTTP/1.1\r\n")
+    assert b"Authorization: Bearer t\r\n" in keeps
+    plain = rt._handshake_request("relay.example", "/poll/d1/0", key)
+    assert plain.startswith(b"GET /poll/d1/0 HTTP/1.1\r\n") and b"Authorization" not in plain
 
 
 @pytest.mark.parametrize(("line", "ok"), [
