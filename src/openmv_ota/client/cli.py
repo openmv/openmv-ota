@@ -530,19 +530,24 @@ def _make_api(cfg):
     return Api(cfg)
 
 
+def _manifest_body(manifest: Path) -> dict:
+    """The signed body of a built manifest, or a ClientError naming the file."""
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.manifest import parse_manifest
+
+    try:
+        return parse_manifest(manifest.read_bytes()).body
+    except OtaError as e:
+        raise ClientError("unreadable manifest %s: %s" % (manifest, e)) from None
+
+
 def _declared_image(manifest: Path, out: Path) -> bytes:
     """The full-image artifact this manifest declares.
 
     Read from the SIGNED manifest rather than assumed from the board name: the file
     that gets published is the encrypted one, and the manifest is the only authority
     on which bytes belong to this release."""
-    from openmv_ota.ota.errors import OtaError
-    from openmv_ota.ota.manifest import parse_manifest
-
-    try:
-        body = parse_manifest(manifest.read_bytes()).body
-    except OtaError as e:
-        raise ClientError("unreadable manifest %s: %s" % (manifest, e)) from None
+    body = _manifest_body(manifest)
     rep = next((r for r in body.get("representations", []) if r.get("format") == "full"), None)
     if rep is None:
         raise ClientError("%s declares no full image to publish" % manifest.name)
@@ -560,13 +565,9 @@ def _declared_deltas(manifest: Path, out: Path) -> dict:
     ships one delta per base version, so there is no single name to look for, and the manifest
     is the only authority on which artifacts belong to it. A declared file that is missing is
     an error here rather than a 400 from the server, because the fix is local."""
-    from openmv_ota.ota.errors import OtaError
-    from openmv_ota.ota.manifest import DELTA_FORMAT, parse_manifest
+    from openmv_ota.ota.manifest import DELTA_FORMAT
 
-    try:
-        body = parse_manifest(manifest.read_bytes()).body
-    except OtaError as e:
-        raise ClientError("unreadable manifest %s: %s" % (manifest, e)) from None
+    body = _manifest_body(manifest)
     deltas = {}
     for rep in body.get("representations", []):
         if rep.get("format") != DELTA_FORMAT:
@@ -617,6 +618,9 @@ class _BaseDecryptor:
         return self._keys
 
     def __call__(self, data: bytes, rel: dict) -> bytes:
+        import gzip
+        import hashlib
+
         from openmv_ota.ota import payload
         from openmv_ota.ota.errors import OtaError
 
@@ -626,10 +630,26 @@ class _BaseDecryptor:
         if not enc:
             return data
         try:
-            return payload.decrypt_artifact(data, self._board_keys(), enc)
+            plain = payload.decrypt_artifact(data, self._board_keys(), enc)
         except OtaError as e:
             raise ClientError("release %s does not decrypt with this project's payload keys: %s"
                               % (rel.get("release_id", "?"), e)) from None
+        # CBC does not fail on a wrong key, it produces noise -- and noise written into the
+        # base directory would surface as an unreadable delta days later, or as a delta
+        # built against the wrong bytes. The release row carries the image digest the
+        # manifest was signed with, so check it and fail here.
+        want = rel.get("image_sha256")
+        if want:
+            try:
+                got = hashlib.sha256(gzip.decompress(plain)).hexdigest()
+            except (OSError, EOFError):
+                got = ""
+            if got != want:
+                raise ClientError(
+                    "release %s does not decrypt with this project's payload keys (the image "
+                    "does not match its own digest) -- is this the project that published it?"
+                    % rel.get("release_id", "?"), exit_code=1)
+        return plain
 
 
 def cmd_bases(args: argparse.Namespace) -> int:

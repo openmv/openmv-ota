@@ -99,11 +99,16 @@ def unwrap_key(board_key: bytes, wrap: bytes) -> bytes:
     return dec.update(bytes(wrap[BLOCK:])) + dec.finalize()
 
 
-def encrypt(plaintext: bytes, key: bytes) -> tuple[bytes, bytes]:
+def encrypt(plaintext: bytes, key: bytes, iv: bytes | None = None) -> tuple[bytes, bytes]:
     """``(iv, ciphertext)`` for one artifact. The plaintext is zero-padded to the
     block size; the caller records ``len(plaintext)`` in the manifest, which is how
-    the device knows where the artifact really ends."""
-    iv = secrets.token_bytes(BLOCK)
+    the device knows where the artifact really ends.
+
+    ``iv`` is generated unless one is given. Passing one is for re-encrypting bytes a
+    SIGNED manifest already describes -- the HIL rig's tamper scenarios do exactly that
+    -- and never for a new artifact, which gets a fresh iv and a fresh content key."""
+    if iv is None:
+        iv = secrets.token_bytes(BLOCK)
     pad = -len(plaintext) % BLOCK
     enc = _cipher(key, iv).encryptor()
     return iv, enc.update(bytes(plaintext) + b"\0" * pad) + enc.finalize()

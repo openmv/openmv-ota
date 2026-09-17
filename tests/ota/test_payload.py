@@ -62,6 +62,16 @@ def test_the_wrong_board_key_does_not_recover_the_image():
     assert payload.decrypt_artifact(ciphertext, {1: payload.new_key()}, enc) != IMAGE
 
 
+def test_a_given_iv_is_used_as_given():
+    """Re-encrypting bytes a SIGNED manifest already describes -- what the HIL rig does to
+    build a tampered image that still decrypts. A new artifact never takes this path."""
+    key = payload.new_key()
+    iv, first = payload.encrypt(IMAGE, key)
+    again_iv, again = payload.encrypt(IMAGE, key, iv)
+    assert again_iv == iv and again == first
+    assert payload.encrypt(IMAGE, key)[1] != first          # ...and without one, fresh each time
+
+
 def test_an_empty_artifact_still_encrypts():
     keys = {1: payload.new_key()}
     ciphertext, enc = payload.encrypt_artifact(b"", keys)

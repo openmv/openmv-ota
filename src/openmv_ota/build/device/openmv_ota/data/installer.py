@@ -1239,6 +1239,109 @@ class _ResumingBody(io.IOBase):
             pass
 
 
+# The ciphertext window. A multiple of the AES block, fixed, and small: this sits
+# between the socket and DeflateIO's inflate window, on boards where that window is
+# already most of the free heap. Two buffers of this size is the whole cost of
+# decryption -- nothing here is sized by the image, the response, or a length field.
+_DEC_CHUNK = 256
+_AES_BLOCK = 16
+_AES_CBC = 2                 # cryptolib's MODE_CBC
+
+
+class _Decrypt(io.IOBase):
+    """The artifact arrives encrypted; this turns it back into the gzip stream.
+
+    Sits between the download body and ``DeflateIO``, which means the resume machinery
+    underneath is untouched: a dropped connection re-opens at a CIPHERTEXT offset and
+    the chain here keeps its state, exactly as the decompressor above does. CBC chains
+    block to block, so the only requirement is that the bytes arrive in order and whole
+    -- which is what the resume guarantees.
+
+    Subclasses ``io.IOBase`` for the same reason ``_Body`` does: on MicroPython that is
+    what makes an object usable as a C-level stream, and DeflateIO refuses anything less.
+
+    The plaintext length comes from the SIGNED manifest, so the artifact ends where the
+    manifest says rather than where a padding byte we just decrypted claims. Reading
+    stops at the block holding that byte."""
+
+    def __init__(self, src, key, iv, size, aes):
+        self._src = src
+        self._dec = aes(key, _AES_CBC, iv)
+        self._ct_left = (size + _AES_BLOCK - 1) & ~(_AES_BLOCK - 1)   # whole blocks owed
+        self._left = size                     # plaintext bytes still to hand upward
+        self._cbuf = bytearray(_DEC_CHUNK)    # ciphertext window
+        self._pbuf = bytearray(_DEC_CHUNK)    # its plaintext
+        self._have = 0
+        self._off = 0
+
+    def readinto(self, buf):
+        if self._have == 0:
+            self._fill()
+            if self._have == 0:
+                return 0
+        n = self._have
+        if n > len(buf):
+            n = len(buf)
+        buf[:n] = memoryview(self._pbuf)[self._off:self._off + n]
+        self._off += n
+        self._have -= n
+        return n
+
+    def _fill(self):
+        if self._left <= 0:
+            return
+        want = _DEC_CHUNK if self._ct_left > _DEC_CHUNK else self._ct_left
+        mv = memoryview(self._cbuf)
+        got = 0
+        while got < want:
+            n = self._src.readinto(mv[got:want])
+            if not n:
+                # The manifest said how long this artifact is, and it is shorter. That is
+                # a truncated download, not the end of anything.
+                raise ValueError("encrypted image ended early")
+            got += n
+        self._dec.decrypt(mv[:want], memoryview(self._pbuf)[:want])
+        self._ct_left -= want
+        self._off = 0
+        self._have = want if want < self._left else self._left
+        self._left -= self._have
+
+    def close(self):
+        self._src.close()
+
+
+def _unwrap_key(enc, payload_keys, aes):
+    """The content key for this artifact, out of the wrap made for a key we hold.
+
+    Newest first: a camera that has been through a key rotation uses the key it was
+    updated to, so the day the old wrap stops being published is a day nothing
+    notices. A device that holds none of the offered keys says so as itself, rather
+    than downloading an image it would decrypt into noise."""
+    wraps = enc.get("wraps") or {}
+    for key_id in sorted(payload_keys, reverse=True):
+        wrap = wraps.get(str(key_id))
+        if wrap is None:
+            continue
+        wrap = binascii.unhexlify(wrap)
+        if len(wrap) != _AES_BLOCK + 32:
+            raise ValueError("payload key wrap is %d bytes" % len(wrap))
+        return aes(payload_keys[key_id], _AES_CBC, wrap[:_AES_BLOCK]).decrypt(wrap[_AES_BLOCK:])
+    raise ValueError("no payload key for this image (have %s)" % sorted(payload_keys))
+
+
+def _decrypting(body, enc, payload_keys, aes):
+    """Wrap ``body`` so what comes out of it is the artifact. ``enc`` is the signed
+    manifest's encryption block; ``payload_keys`` are the constants this firmware was
+    built with."""
+    if enc.get("alg") != "aes-256-cbc":
+        raise ValueError("unsupported payload encryption %s" % enc.get("alg"))
+    size = enc.get("size")
+    if not isinstance(size, int) or size < 0:
+        raise ValueError("bad encrypted payload size %s" % (size,))
+    return _Decrypt(body, _unwrap_key(enc, payload_keys, aes),
+                    binascii.unhexlify(enc["iv"]), size, aes)
+
+
 def _open_body(image_url, ca_pem, socket, ssl, feed):
     """The image byte stream ``DeflateIO`` will decompress: for an on-disk image a plain
     file object (already a C-level stream, and file reads don't drop -- no resume
@@ -1341,11 +1444,13 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
     if fmt == _DELTA_FORMAT:
         for r in body_dict.get("representations", []):
             if r.get("format") == "full":
-                alt = (_resolve_url(manifest_url, r["url"]), r.get("wbits") or 0)
+                alt = (_resolve_url(manifest_url, r["url"]), r.get("wbits") or 0, r.get("enc"))
                 break
     # wbits: the deflate window the artifact was compressed with (small-heap boards
     # get small-window images; 0 = the format default). Signed like everything else.
-    return image_url, fmt, expect_sha, rep.get("wbits") or 0, alt
+    # enc: how to decrypt this artifact -- the wraps, the iv and the plaintext length.
+    # Signed too, which is what stops a key id or a length being swapped under us.
+    return image_url, fmt, expect_sha, rep.get("wbits") or 0, alt, rep.get("enc")
 
 
 def _reset():  # pragma: no cover
@@ -1774,12 +1879,12 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     log.info("install: fetching manifest %s" % manifest_url)
     try:
         if _is_path(manifest_url):                # a manifest file path (mounted FS, e.g. SD)
-            image_url, fmt, expect_sha, wbits, alt = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
+            image_url, fmt, expect_sha, wbits, alt, enc = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
                 manifest_url, cfg, verify,
                 floor=floor, base_version=base_version, delta_capable=delta_capable,
                 base_body_sha=base_body_sha)
         else:
-            image_url, fmt, expect_sha, wbits, alt = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
+            image_url, fmt, expect_sha, wbits, alt, enc = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
                 manifest_url, ca_pem, cfg, verify, socket, ssl, feed,
                 floor=floor, base_version=base_version, delta_capable=delta_capable,
                 base_body_sha=base_body_sha)
@@ -1848,6 +1953,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # socket is live after a resume (closing the original would leak the newer
             # one -- see _ResumingBody); for an on-disk image it is simply the open file.
             body = _open_body(image_url, ca_pem, socket, ssl, feed)
+            if enc:
+                # Decrypt UNDER the decompressor and OVER the resume: what arrives is
+                # ciphertext, what DeflateIO sees is the gzip stream, and a dropped link
+                # still re-opens at a byte offset neither layer has to know about.
+                import cryptolib
+                body = _decrypting(body, enc, getattr(cfg, "PAYLOAD_KEYS", {}), cryptolib.aes)
+                log.info("install: decrypting")   # the marker a HIL run sees on this path
             # Collect BEFORE building the decompress chain, unconditionally: DeflateIO
             # allocates its whole inflate window in one piece (8 KiB on small-window
             # images, 32 KiB default), and on a ~40 KB-heap classic the previous
@@ -1914,7 +2026,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # dropped link says nothing about the patch.
             if (fmt == _DELTA_FORMAT and alt is not None  # hil-residual: demote gate; needs a wrong-base/corrupt DELTA on the bench (the fleet's corrupt scenario ships a full image) -- the vet + demote pieces are host-tested (test_vet_manifest_hands_back_the_full_fallback...)
                     and "sha256 does not match" in str(e)):
-                image_url, wbits = alt  # hil-residual: demote to the full rep (host-tested via the vet's alt contract)
+                image_url, wbits, enc = alt  # hil-residual: demote to the full rep (host-tested via the vet's alt contract)
                 fmt = "full"  # hil-residual: demote to full (same host-tested path)
                 log.warning("install: delta failed integrity; demoting to the full image")  # hil-residual: witness line for the demote; no fleet scenario corrupts a delta yet
             if progress is not None:  # hil-residual: progress callback is unused on the bench (install() passes none), so this guard is False

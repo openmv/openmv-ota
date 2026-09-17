@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -139,6 +140,47 @@ def test_publish_rejects_an_unreadable_manifest(wired, tmp_path, capsys):
     (build / "OPENMV_N6-manifest.bin").write_bytes(b"not a manifest at all")
     assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 2
     assert "unreadable manifest" in capsys.readouterr().err
+
+
+def test_publish_uploads_the_artifact_the_manifest_names(wired, tmp_path, capsys):
+    """The published file is the ENCRYPTED one, and the manifest is the only authority on
+    which bytes belong to a release -- so publish follows it rather than the filename it
+    used to assume."""
+    from openmv_ota.ota import payload
+
+    store, _ = wired
+    project = tmp_path / "proj"
+    build = _build_release(project)
+    img = gzip.compress(b"\xA5" * 64, mtime=0)
+    keys = {1: payload.new_key()}
+    ciphertext, enc = payload.encrypt_artifact(img, keys)
+    (build / "OPENMV_N6-ota.img.gz.enc").write_bytes(ciphertext)
+    _rewrite_manifest(build, "OPENMV_N6", [{"format": "full", "url": "OPENMV_N6-ota.img.gz.enc",
+                                            "size": len(ciphertext), "enc": enc}])
+
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    capsys.readouterr()
+    [rel] = store.list_releases(BID)
+    assert store.get_release(rel["release_id"])["representations"][0]["enc"]["wraps"]
+
+
+def test_publish_says_which_declared_artifact_is_missing(wired, tmp_path, capsys):
+    _store, _ = wired
+    project = tmp_path / "proj"
+    build = _build_release(project)
+    (build / "OPENMV_N6-ota.img.gz").unlink()
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 2
+    err = capsys.readouterr().err
+    assert "declares image OPENMV_N6-ota.img.gz" in err and "rebuild with" in err
+
+
+def test_publish_refuses_a_manifest_with_nothing_to_publish(wired, tmp_path, capsys):
+    _store, _ = wired
+    project = tmp_path / "proj"
+    build = _build_release(project)
+    _rewrite_manifest(build, "OPENMV_N6", [])
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 2
+    assert "declares no full image" in capsys.readouterr().err
 
 
 def test_bases_downloads_retained_images_for_the_build_to_diff_against(wired, tmp_path, capsys):
@@ -1226,3 +1268,107 @@ def test_device_grant_against_the_real_server(wired, tmp_path, capsys):
     store.upsert_device(device_id="d1", product_id=BID)
     assert main(["client", "device", "grant", "--device-id", "d1"]) == 1
     assert "503" in capsys.readouterr().err
+
+
+# --- delta bases come back encrypted ----------------------------------------
+#
+# The server keeps what it was given, and what it was given is ciphertext. A delta is
+# computed against the plaintext, so `release bases` has to open them -- with the
+# project's own key, which is the only copy outside the fleet's firmware.
+
+def _publish_encrypted(project, keys, board="OPENMV_N6", pv=0x02000000):
+    """Build + publish an encrypted release, returning the plaintext image."""
+    from openmv_ota.ota import payload
+
+    build = _build_release(project, board=board, pv=pv)
+    image_gz = (build / ("%s-ota.img.gz" % board)).read_bytes()
+    ciphertext, enc = payload.encrypt_artifact(image_gz, keys)
+    (build / ("%s-ota.img.gz.enc" % board)).write_bytes(ciphertext)
+    _rewrite_manifest(build, board, [{"format": "full", "url": "%s-ota.img.gz.enc" % board,
+                                      "size": len(ciphertext), "enc": enc}])
+    assert main(["client", "release", "publish", str(project), "-b", board]) == 0
+    return image_gz
+
+
+def _project_with_keys(project, board="OPENMV_N6"):
+    from openmv_ota.ota import payload
+    from openmv_ota.project import payload_keys as pk
+
+    keys = {1: payload.new_key()}
+    pk.write(project / "keys" / "private", {board: keys},
+             os.environ["OPENMV_OTA_KEY_PASSPHRASE"])
+    return keys
+
+
+def test_bases_decrypt_with_the_projects_key(wired, tmp_path, capsys):
+    _store, _ = wired
+    project = tmp_path / "proj"
+    keys = _project_with_keys(project)
+    image_gz = _publish_encrypted(project, keys)
+    capsys.readouterr()
+
+    dest = tmp_path / "bases"
+    assert main(["client", "release", "bases", "-b", "OPENMV_N6", "-o", str(dest),
+                 "--project", str(project)]) == 0
+    # the file a delta build reads is the PLAINTEXT image, exactly as before encryption
+    assert (dest / "OPENMV_N6-base-2.0.0.img.gz").read_bytes() == image_gz
+
+
+def test_bases_say_so_when_this_project_cannot_open_them(wired, tmp_path, capsys):
+    """Someone else's release, or a project whose payload keys were restored from the
+    wrong backup. CBC does not fail on a wrong key -- it produces noise -- so this is
+    caught by the digest, not by the cipher: without the check the base directory would
+    fill with plausible-looking garbage and fail days later in a delta build."""
+    from openmv_ota.ota import payload
+
+    _store, _ = wired
+    project = tmp_path / "proj"
+    _publish_encrypted(project, {1: payload.new_key()})     # published under a key...
+    _project_with_keys(project)                             # ...the project no longer has
+    capsys.readouterr()
+    dest = tmp_path / "b"
+    assert main(["client", "release", "bases", "-b", "OPENMV_N6", "-o", str(dest),
+                 "--project", str(project)]) == 1
+    err = capsys.readouterr().err
+    assert "does not decrypt with this project's payload keys" in err
+    assert "is this the project that published it?" in err
+    assert not list(dest.iterdir())                         # and nothing was written
+
+
+def test_bases_for_a_board_this_project_has_no_key_for(wired, tmp_path, capsys):
+    _store, _ = wired
+    project = tmp_path / "proj"
+    keys = _project_with_keys(project, board="OPENMV_N6")
+    _publish_encrypted(project, keys)
+    capsys.readouterr()
+    # the same releases, asked for under another board's name
+    assert main(["client", "release", "bases", "-b", "OPENMV_AE3", "-o", str(tmp_path / "b"),
+                 "--project", str(project)]) == 2
+    assert "OPENMV_AE3 has no payload key in this project" in capsys.readouterr().err
+
+
+def test_bases_without_the_payload_keys_says_what_to_restore(wired, tmp_path, capsys):
+    from openmv_ota.ota import payload
+
+    _store, _ = wired
+    project = tmp_path / "proj"
+    _publish_encrypted(project, {1: payload.new_key()})
+    capsys.readouterr()                                 # ...and no keys in the project at all
+    assert main(["client", "release", "bases", "-b", "OPENMV_N6", "-o", str(tmp_path / "b"),
+                 "--project", str(project)]) == 1
+    assert "cannot decrypt anything you publish" in capsys.readouterr().err
+
+
+def test_a_base_that_is_not_a_whole_artifact_is_refused_before_it_is_written():
+    """The structural failure, the other half of the wrong-key one: bytes that cannot be
+    a CBC stream at all. The server refuses to store these, so this is the case where a
+    bucket or a proxy handed back something truncated."""
+    from openmv_ota.ota import payload
+
+    keys = {1: payload.new_key()}
+    ciphertext, enc = payload.encrypt_artifact(gzip.compress(b"image", mtime=0), keys)
+    dec = client_cli._BaseDecryptor(".", "OPENMV_N6", None)
+    dec._keys = keys                                      # already unlocked
+    rel = {"release_id": "rel_x", "representations": [{"format": "full", "enc": enc}]}
+    with pytest.raises(client_cli.ClientError, match="does not decrypt with this project"):
+        dec(ciphertext[:-1], rel)

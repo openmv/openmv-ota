@@ -1095,10 +1095,11 @@ def _sd_body(rep_url="img.gz", fmt="full", base=None):
 
 
 def test_vet_manifest_happy_path_resolves_beside_the_manifest():
-    url, fmt, sha, wbits, alt = inst("_vet_manifest")(
+    url, fmt, sha, wbits, alt, enc = inst("_vet_manifest")(
         "/sd/fw/m.bin", _host_manifest(body=_sd_body()), _vet_cfg(), lambda *a: True, 0, 0, True)
     assert (url, fmt, sha, wbits) == ("/sd/fw/img.gz", "full", "ab" * 32, 0)
     assert alt is None                                  # full chosen -> nothing to demote to
+    assert enc is None                                  # this manifest declares no encryption
 
 
 def test_vet_manifest_hands_back_the_full_fallback_when_a_delta_is_chosen():
@@ -1111,11 +1112,13 @@ def test_vet_manifest_hands_back_the_full_fallback_when_a_delta_is_chosen():
         {"format": inst("_DELTA_FORMAT"), "url": "d.gz", "size": 40,
          "base_payload_version": base_pv, "base_body_sha256": base_sha},
     ]
-    url, fmt, sha, wbits, alt = inst("_vet_manifest")(
+    url, fmt, sha, wbits, alt, _enc = inst("_vet_manifest")(
         "/sd/fw/m.bin", _host_manifest(body=body), _vet_cfg(), lambda *a: True,
         0, base_pv, True, base_sha)
     assert (url, fmt) == ("/sd/fw/d.gz", inst("_DELTA_FORMAT"))
-    assert alt == ("/sd/fw/img.gz", 13)                 # resolved like the chosen rep
+    # resolved like the chosen rep, and carrying how to decrypt it -- a demote that lost
+    # the enc block would download the full image and inflate ciphertext
+    assert alt == ("/sd/fw/img.gz", 13, None)
 
 
 def test_vet_manifest_requires_the_base_sha_for_a_delta():
@@ -1130,7 +1133,7 @@ def test_vet_manifest_requires_the_base_sha_for_a_delta():
     ]
     raw = _host_manifest(body=body)
     for device_sha in ("", "00" * 32):                  # unparseable trailer / different bytes
-        url, fmt, _sha, _wbits, alt = inst("_vet_manifest")(
+        url, fmt, _sha, _wbits, alt, _enc = inst("_vet_manifest")(
             "/sd/fw/m.bin", raw, _vet_cfg(), lambda *a: True, 0, base_pv, True, device_sha)
         assert fmt == "full" and alt is None
 
@@ -1162,7 +1165,8 @@ def test_vet_manifest_rejections():
 def test_fetch_manifest_file_end_to_end(tmp_path):
     p = tmp_path / "OPENMV_N6-manifest.bin"
     p.write_bytes(_host_manifest(body=_sd_body(rep_url="OPENMV_N6-ota.img.gz")))
-    url, fmt, sha, wbits, _alt = inst("_fetch_manifest_file")(str(p), _vet_cfg(), lambda *a: True)
+    url, fmt, sha, wbits, _alt, _enc = inst("_fetch_manifest_file")(
+        str(p), _vet_cfg(), lambda *a: True)
     assert url == str(tmp_path / "OPENMV_N6-ota.img.gz")  # resolved beside the manifest
     assert (fmt, sha, wbits) == ("full", "ab" * 32, 0)
 
@@ -1370,3 +1374,152 @@ def test_the_host_tick_fallbacks_are_usable():
     hardware, mid-install, which is the worst possible place to find out."""
     assert _mod.ticks_ms() == 0
     assert _mod.ticks_diff(7, 2) == 5
+
+
+# --- payload decryption -----------------------------------------------------
+#
+# The artifact a camera downloads is ciphertext. These pin the device side of that:
+# what arrives on the socket, what DeflateIO is handed, and what happens when the
+# stream is short, the algorithm is unknown, or this board holds none of the keys the
+# release was encrypted for.
+
+class _HostAes:
+    """cryptolib.aes, as CPython. Same constructor and the same two decrypt forms the
+    device uses -- ``decrypt(buf)`` for the key wrap, ``decrypt(in, out)`` for the
+    stream -- so the installer code under test is the device's, not a host variant."""
+
+    def __init__(self, key, mode, iv):
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        assert mode == inst("_AES_CBC")
+        self._d = Cipher(algorithms.AES(bytes(key)), modes.CBC(bytes(iv))).decryptor()
+
+    def decrypt(self, data, out=None):
+        plain = self._d.update(bytes(data))
+        if out is None:
+            return plain
+        out[:len(plain)] = plain
+        return len(plain)
+
+
+class _Dribble:
+    """A source that hands back at most ``n`` bytes per call -- what a real socket does,
+    and what the resume path produces after a dropped connection."""
+
+    def __init__(self, data, n=1):
+        self._data, self._n, self._pos = data, n, 0
+
+    def readinto(self, buf):
+        take = min(len(buf), self._n, len(self._data) - self._pos)
+        buf[:take] = self._data[self._pos:self._pos + take]
+        self._pos += take
+        return take
+
+    def close(self):
+        self._closed = True
+
+
+def _drain(stream, chunk=7):
+    out = bytearray()
+    buf = bytearray(chunk)
+    while True:
+        n = stream.readinto(buf)
+        if not n:
+            return bytes(out)
+        out += buf[:n]
+
+
+def test_the_artifact_comes_back_out_of_the_stream_byte_for_byte():
+    """Odd read sizes on both sides: the consumer asks for 7 bytes at a time, the socket
+    delivers 3. Neither is a multiple of the block, and the artifact is not block-aligned
+    either -- which is the case that would quietly hand DeflateIO a padded stream."""
+    import gzip
+
+    from openmv_ota.ota import payload
+
+    artifact = gzip.compress(b"slot image bytes" * 61, mtime=0)
+    keys = {1: payload.new_key()}
+    ciphertext, enc = payload.encrypt_artifact(artifact, keys)
+    assert len(artifact) % 16                            # the case that needs the size field
+
+    stream = inst("_decrypting")(_Dribble(ciphertext, 3), enc, keys, _HostAes)
+    out = _drain(stream)
+    assert out == artifact                               # no padding bytes, no short read
+    assert gzip.decompress(out) == b"slot image bytes" * 61
+
+
+def test_decryption_costs_the_same_memory_whatever_the_image_is():
+    """The RAM rule, at the layer that would be easiest to break it in: the buffers are
+    fixed, not sized by the image, the response, or a length field in the manifest."""
+    from openmv_ota.ota import payload
+
+    keys = {1: payload.new_key()}
+    small, enc_small = payload.encrypt_artifact(b"x" * 32, keys)
+    big, enc_big = payload.encrypt_artifact(b"y" * (4 * 1024 * 1024), keys)
+    a = inst("_decrypting")(_Dribble(small, 64), enc_small, keys, _HostAes)
+    b = inst("_decrypting")(_Dribble(big, 64), enc_big, keys, _HostAes)
+    for s in (a, b):
+        assert len(s._cbuf) == inst("_DEC_CHUNK") and len(s._pbuf) == inst("_DEC_CHUNK")
+
+
+def test_a_short_download_is_a_truncation_not_an_end_of_file():
+    """The manifest says how long the artifact is. A stream that stops earlier has been
+    cut off, and saying so beats handing the decompressor a plausible prefix."""
+    from openmv_ota.ota import payload
+
+    keys = {1: payload.new_key()}
+    ciphertext, enc = payload.encrypt_artifact(b"z" * 600, keys)
+    stream = inst("_decrypting")(_Dribble(ciphertext[:-16], 64), enc, keys, _HostAes)
+    with pytest.raises(ValueError, match="ended early"):
+        _drain(stream)
+
+
+def test_a_camera_uses_the_newest_key_both_sides_hold():
+    """Through a rotation a release carries a wrap per live key. A camera that has been
+    updated uses the one it was updated to, so dropping the old wrap later is a non-event."""
+    from openmv_ota.ota import payload
+
+    old, new = payload.new_key(), payload.new_key()
+    ciphertext, enc = payload.encrypt_artifact(b"payload" * 100, {1: old, 2: new})
+    for held in ({1: old}, {1: old, 2: new}, {2: new}):
+        stream = inst("_decrypting")(_Dribble(ciphertext, 128), enc, held, _HostAes)
+        assert _drain(stream) == b"payload" * 100
+    # and the newest is the one actually used
+    assert inst("_unwrap_key")(enc, {1: old, 2: new}, _HostAes) \
+        == payload.unwrap_key(new, bytes.fromhex(enc["wraps"]["2"]))
+
+
+def test_a_release_encrypted_for_keys_this_board_does_not_have_says_so():
+    """Better than downloading four megabytes and inflating noise: this is a device that
+    was never built for this release, and the message names what it does hold."""
+    from openmv_ota.ota import payload
+
+    _ct, enc = payload.encrypt_artifact(b"data", {7: payload.new_key()})
+    with pytest.raises(ValueError, match=r"no payload key for this image \(have \[1\]\)"):
+        inst("_unwrap_key")(enc, {1: payload.new_key()}, _HostAes)
+
+
+def test_an_unknown_algorithm_or_a_bad_length_is_refused_before_the_download():
+    from openmv_ota.ota import payload
+
+    keys = {1: payload.new_key()}
+    _ct, enc = payload.encrypt_artifact(b"data", keys)
+    bad_alg = dict(enc, alg="aes-256-gcm")
+    with pytest.raises(ValueError, match="unsupported payload encryption"):
+        inst("_decrypting")(None, bad_alg, keys, _HostAes)
+    for bad_size in (-1, "12", None):
+        with pytest.raises(ValueError, match="bad encrypted payload size"):
+            inst("_decrypting")(None, dict(enc, size=bad_size), keys, _HostAes)
+    with pytest.raises(ValueError, match="payload key wrap is 31 bytes"):
+        inst("_unwrap_key")({"wraps": {"1": "aa" * 31}}, keys, _HostAes)
+
+
+def test_closing_the_decrypting_stream_closes_the_socket_under_it():
+    """The retry path closes the body to release whichever socket a resume left it
+    holding. With a layer in between, that has to reach through it."""
+    from openmv_ota.ota import payload
+
+    keys = {1: payload.new_key()}
+    ciphertext, enc = payload.encrypt_artifact(b"q" * 64, keys)
+    src = _Dribble(ciphertext, 16)
+    inst("_decrypting")(src, enc, keys, _HostAes).close()
+    assert src._closed

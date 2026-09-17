@@ -908,6 +908,16 @@ def test_the_published_image_is_not_readable_without_the_board_key(make_project)
     assert rep["enc"]["sha256"] == _hashlib.sha256(published).hexdigest()
 
 
+def test_a_manifest_build_without_the_payload_keys_stops(make_project):
+    from openmv_ota.project import payload_keys as pk
+    from openmv_ota.project.project import ProjectPaths
+
+    root, repo = _build_n6_ota_artifacts(make_project)
+    pk.path_for(ProjectPaths(root).private_keys_dir).unlink()
+    with pytest.raises(BuildError, match="cannot decrypt anything you publish"):
+        build_mod.build_manifest(root, firmware=repo)
+
+
 def test_another_projects_key_does_not_open_this_release(make_project):
     from openmv_ota.ota import payload
     from openmv_ota.ota.manifest import parse_manifest

@@ -314,6 +314,19 @@ def test_a_non_ota_project_needs_no_payload_keys_and_no_passphrase(make_project,
     assert r.ota is False and r.build_dir is None
 
 
+def test_a_build_without_the_payload_keys_says_what_is_missing(make_project, monkeypatch):
+    """The file is the fleet's ability to receive updates. A build that cannot find it
+    stops and says so, rather than quietly producing firmware that can decrypt nothing."""
+    from openmv_ota.project import payload_keys as pk
+    from openmv_ota.project.project import ProjectPaths
+
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)
+    pk.path_for(ProjectPaths(root).private_keys_dir).unlink()
+    with pytest.raises(BuildError, match="Restore them with"):
+        fw.build_firmware(root, firmware=repo)
+
+
 def test_ota_config_excludes_revoked_keys(make_project, monkeypatch):
     from openmv_ota.ota.keys import read_trusted_keys, write_trusted_keys
     from openmv_ota.project.project import ProjectPaths

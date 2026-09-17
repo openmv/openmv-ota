@@ -261,10 +261,12 @@ def artifact_sizes(board):
     posting it on every real-hardware run makes bandwidth efficiency a TRACKED number, not a claim."""
     b = CFG["project"] + "/build"
     out = {}
-    for key, fn in (("manifest", "%s-manifest.bin" % board),      # signed metadata (per install)
-                    ("full_img_gz", "%s-ota.img.gz" % board),     # full-image download
-                    ("delta_gz", "%s-ota.delta.gz" % board),      # delta download (the efficient path)
-                    ("payload", "%s-ota.img" % board)):           # uncompressed image (-> flash)
+    # The ".enc" artifacts are the ones that cross the wire (the plaintext .gz stays on the
+    # build machine), so those are the sizes this report is about.
+    for key, fn in (("manifest", "%s-manifest.bin" % board),       # signed metadata (per install)
+                    ("full_img_gz", "%s-ota.img.gz.enc" % board),  # full-image download
+                    ("delta_gz", "%s-ota.delta.gz.enc" % board),   # delta download (the efficient path)
+                    ("payload", "%s-ota.img" % board)):            # uncompressed image (-> flash)
         p = os.path.join(b, fn)
         if os.path.exists(p):
             out[key] = os.path.getsize(p)
@@ -361,6 +363,10 @@ COVERAGE = {
     "install: floor carried": "install.floor",    # carried floor programmed FIRST (post blank-verify)
     "install: write path block-device": "install.blockdev",
     "install: write path XIP": "install.xip",
+    # Every published artifact is encrypted (the board key is baked into the firmware this
+    # rig builds), so this fires on every install leg -- and a fleet that stopped emitting
+    # it would be a fleet downloading images in the clear.
+    "install: decrypting": "install.decrypt",
     "install: representation delta": "install.delta",
     "install: representation full": "install.full",
     "install: attempt": "install.retry",
@@ -494,6 +500,9 @@ SCENARIOS = {
                    "status.slots", "install.survey", "install.start", "install.floor",
                    "{cov_write}",
                    "install.download",
+                   # the artifact is ciphertext on the wire: this marker is the fleet's
+                   # proof that a real board decrypted a real published release
+                   "install.decrypt",
                    "install.delta",
                    "install.writing", "write.ready", "write.erased", "write.wrote",
                    "write.readback", "write.backread", "write.complete", "install.committed",
@@ -505,7 +514,7 @@ SCENARIOS = {
     "full": {
         "desc": "full (non-delta) image install -> trial -> confirm -> promote",
         "publish": "full", "app": "confirm", "end": "promoted",
-        "expect": ["boot.mount", "run.offer", "install.start",
+        "expect": ["boot.mount", "run.offer", "install.start", "install.decrypt",
                    "{cov_write}", "install.full", "install.armed", "confirm.promoted"],
         "forbid": ["install.delta", "install.fallback", "install.reject"],
     },
@@ -2081,6 +2090,57 @@ def tamper_manifest_bytes(data, which):
     return off
 
 
+def _tamper_image_body(target, manifest_path, board):
+    """Make the stored image decrypt and decompress cleanly but hash differently.
+
+    The artifact is encrypted, so a flip in the file is noise (that is the `image` tamper).
+    To reach the SHA gate -- the boundary this scenario exists for -- the image has to come
+    apart and go back together: unwrap the content key with the project's board key, decrypt,
+    flip a byte in the decompressed image, re-gzip, and re-encrypt under the SAME key and iv,
+    because the manifest that names them is signed and must stay untouched.
+
+    The ciphertext has to stay the length the signed manifest declares. Recompressing a
+    changed image can come out longer, so the level is walked down until it fits and the
+    stream is zero-padded back to length -- trailing bytes after a gzip stream are never read.
+    """
+    import gzip
+
+    from openmv_ota.ota import payload
+    from openmv_ota.ota.manifest import parse_manifest
+    from openmv_ota.project import passphrase as passphrase_mod
+    from openmv_ota.project import payload_keys as payload_mod
+    from openmv_ota.project.project import ProjectPaths
+
+    body = parse_manifest(open(manifest_path, "rb").read()).body
+    name = os.path.basename(target)
+    rep = next(r for r in body["representations"] if r["url"].rsplit("/", 1)[-1] == name)
+    enc = rep["enc"]
+
+    phrase, _ = passphrase_mod.resolve_passphrase(CFG["project"])
+    keys = payload_mod.read(ProjectPaths(CFG["project"]).private_keys_dir, phrase)[board]
+    key_id, wrap = payload.select_wrap(enc["wraps"], keys)
+    content_key = payload.unwrap_key(keys[key_id], wrap)
+    iv = bytes.fromhex(enc["iv"])
+
+    with open(target, "rb") as f:
+        ciphertext = f.read()
+    gz = payload.decrypt(ciphertext, content_key, iv, enc["size"])
+    raw = bytearray(gzip.decompress(gz))
+    mid = len(raw) // 2
+    raw[mid] ^= 0xFF
+    for level in (9, 8, 7, 6, 5, 4, 3, 2, 1):
+        regz = gzip.compress(bytes(raw), level, mtime=0)
+        if len(regz) <= len(gz):
+            break
+    else:
+        raise RuntimeError("re-gzipped image will not fit the signed length")
+    regz += b"\x00" * (len(gz) - len(regz))
+    _iv, retamped = payload.encrypt(regz, content_key, iv)   # the signed iv, deliberately
+    with open(target, "wb") as f:
+        f.write(retamped)
+    return mid
+
+
 def _tamper(board, which):
     """Flip a byte in the JUST-published artifact in the LOCAL server store, to exercise a
     device integrity path that a clean release can't:
@@ -2092,7 +2152,7 @@ def _tamper(board, which):
     otherwise so a tamper scenario can't silently degrade into a clean install."""
     import glob
     root = CFG["artifacts"]
-    imgs = sorted(glob.glob("%s/artifacts/rel_*/%s-ota.*.gz" % (root, board)),
+    imgs = sorted(glob.glob("%s/artifacts/rel_*/%s-ota.*.gz*" % (root, board)),
                   key=os.path.getmtime)
     if not imgs:
         raise RuntimeError("no published artifact for %s under %s -- tamper scenarios need the "
@@ -2121,22 +2181,19 @@ def _tamper(board, which):
         # rejects it AFTER the FRONT erase -> retries exhaust -> golden BACK. Needs a full image
         # (see publish_update): a delta's decompressed patch has structure a flip would break at
         # the patch parser, not the sha. Size is unchanged (a 1-byte flip), so only the sha moves.
-        import gzip
         # Select the FULL image by its own name. "not *.delta.gz" was the v1 test and it no
         # longer excludes anything -- v2 deltas are named `-ota.delta-<base>.gz`.
         fulls = [p for p in imgs
-                 if os.path.dirname(p).endswith(rel) and p.endswith("-ota.img.gz")]
+                 if os.path.dirname(p).endswith(rel) and ".img.gz" in os.path.basename(p)]
         target = fulls[-1] if fulls else newest
-        with open(target, "rb") as f:
-            raw = bytearray(gzip.decompress(f.read()))
-        mid = len(raw) // 2
-        raw[mid] ^= 0xFF
-        with open(target, "wb") as f:
-            f.write(gzip.compress(bytes(raw)))
+        mid = _tamper_image_body(target, "%s/manifests/%s/manifest.bin" % (root, rel), board)
         log("  tampered image_body byte@%d of %s (re-gzipped; sha256 now mismatches)"
             % (mid, os.path.basename(target)))
         return
     # image: mid-stream flip -> the download decompress/sha256 fails AFTER the slot erase.
+    # The artifact is ciphertext, so a flipped byte lands in a CBC block and comes out of the
+    # decryptor as noise -- which is the same failure this ever tested ("the image this device
+    # downloads is corrupt"), reached one layer earlier.
     #
     # EVERY representation gets flipped, not just one. A v2 release ships a full image AND one
     # delta per base version, and the device picks whichever matches the release it is running
@@ -2240,9 +2297,18 @@ def file_prepare(board, checkout):
     _ensure_cdc(board, allow_erase=True)     # no-op today (no J-Link on these nodes); keeps the shape
 
 
+def _declared_full_name(manifest_path):
+    """The filename the signed manifest gives its full image."""
+    from openmv_ota.ota.manifest import parse_manifest
+
+    body = parse_manifest(open(manifest_path, "rb").read()).body
+    rep = next(r for r in body["representations"] if r["format"] == "full")
+    return rep["url"].rsplit("/", 1)[-1]
+
+
 def file_publish(board, version):
     """Build the signed update artifacts locally (there is no server to publish to):
-    <board>-manifest.bin + <board>-ota.img.gz in the project's build/. Always a FULL image --
+    <board>-manifest.bin + <board>-ota.img.gz.enc in the project's build/. Always a FULL image --
     single-image mode has no delta base to patch against after the slot is erased."""
     log("build: ota-romfs %s (update %s)" % (board, version))
     set_version(version)
@@ -2259,7 +2325,9 @@ def file_stage(board, tamper=None):
     the on-device manifest path install() is given."""
     bdir = "%s/build" % CFG["project"]
     man = "%s/%s-manifest.bin" % (bdir, board)
-    img = "%s/%s-ota.img.gz" % (bdir, board)
+    # The artifact the manifest names -- which is the ENCRYPTED one. Staging the plaintext
+    # .gz beside it would leave the device resolving a filename that is not there.
+    img = "%s/%s" % (bdir, _declared_full_name(man))
     if tamper is not None:
         data = bytearray(open(man, "rb").read())
         off = tamper_manifest_bytes(data, tamper)
