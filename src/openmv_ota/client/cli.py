@@ -435,6 +435,11 @@ def register(parser: argparse.ArgumentParser) -> None:
     # install -- it just was not doing so.
     p_tki.add_argument("--scope", action="append", default=[], choices=ALL_SCOPES,
                        help="the highest rung, implying the ones below (%s); default: all" % " > ".join(SCOPES))
+    # `--scope` says what the token may do; this says what it may do it TO. A platform
+    # with a product per end customer issues one limited token per customer.
+    p_tki.add_argument("--product-id", action="append", default=[], type=int, metavar="ID",
+                       help="limit the token to this product (repeatable); default: the "
+                            "whole account")
     _creds(p_tki)
     p_tki.set_defaults(func=cmd_token, _command="client token issue", action="issue")
     p_tkl = tksub.add_parser("list", help="list an account's tokens (metadata only, no secrets)")
@@ -973,7 +978,8 @@ def cmd_token(args: argparse.Namespace) -> int:
     try:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "issue":
-            res = api.issue_token(args.account_id, args.name, args.scope or None)
+            res = api.issue_token(args.account_id, args.name, args.scope or None,
+                                  products=args.product_id or None)
             return _emit(args, res,
                          "token %s issued for %s" % (res["token_hash"][:16], res["account_id"]),
                          "token (store it now -- not recoverable): %s" % res["token"])

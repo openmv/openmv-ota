@@ -50,6 +50,8 @@ class TokenInfo(_Row):
     token_hash: str = ""
     name: str = ""
     scopes: str | list[str] = ""
+    products: list[int] = []
+    """The product ids this token is limited to; empty is the whole account."""
     created_at: str = ""
     revoked: int = 0
     account_id: str = ""
@@ -204,6 +206,11 @@ class AuditEvent(_Row):
     entity_type: str = ""
     entity_id: str = ""
     data: Any = None
+    product_id: int | None = None
+    """The product this happened to, where there is one -- account-level acts (tokens,
+    limits) have none. It is what a product-limited credential's history is filtered by,
+    and it sits beside the hash chain rather than inside it: the chain covers what the
+    entry asserts, and this is an index onto the same act."""
     prev_hash: str = ""
     entry_hash: str = ""
     account_id: str = ""

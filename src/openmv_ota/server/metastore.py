@@ -343,9 +343,10 @@ _MIGRATIONS: list[list[str]] = [
         # both have a customer called "Acme", and the 409 that says so is a way to
         # enumerate the other platform's customers.
         #
-        # `client_ref` is the creator's own id for the account (a Roboflow workspace id,
-        # say). It makes creation idempotent: a retry after a timeout returns the
-        # account that already exists instead of a second one or an ambiguous 409.
+        # `client_ref` is the creator's own id for the account -- a workspace or tenant
+        # id in the platform provisioning it. It makes creation idempotent: a retry
+        # after a timeout returns the account that already exists instead of a second
+        # one, or an ambiguous 409.
         "ALTER TABLE accounts ADD COLUMN created_by TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE accounts ADD COLUMN client_ref TEXT NOT NULL DEFAULT ''",
         "CREATE UNIQUE INDEX IF NOT EXISTS accounts_client_ref "
@@ -1516,10 +1517,13 @@ class SqlMetadataStore:
     def list_tokens(self, account_id=None) -> list[dict]:
         where, params = ("WHERE account_id = ?", (account_id,)) if account_id is not None else ("", ())
         rows = [_d(r) for r in self.query_all(
-            "SELECT token_hash, name, scopes, account_id, created_at, revoked FROM admin_tokens "
-            + where + " ORDER BY created_at", params)]
+            "SELECT token_hash, name, scopes, products, account_id, created_at, revoked "
+            "FROM admin_tokens " + where + " ORDER BY created_at", params)]
         for r in rows:
             r["scopes"] = r["scopes"].split(",") if r["scopes"] else []
+            # the allow-list belongs in a listing: `scopes` alone cannot tell you whether
+            # a credential is the whole account or one customer's product
+            r["products"] = [int(p) for p in (r.get("products") or "").split(",") if p]
         return rows
 
     def revoke_account_tokens(self, account_id: str) -> int:

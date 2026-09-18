@@ -714,7 +714,7 @@ def test_response_schemas_document_but_do_not_filter(tmp_path):
         assert f in row, "%s is delivered by the store but was dropped in transit" % f
 
 
-# --- the reseller lifecycle primitives (Roboflow-class integrations) ----------------------------
+# --- the platform lifecycle primitives (one account, a product per end customer) ----------------------------
 # One partner account, a custom PRODUCT per end customer, stock hardware manufactured before any
 # customer exists. Claim, transfer and factory-reset are all the SAME primitive: a device pin to a
 # release of another product in the same account. These tests make that behavior contract rather

@@ -31,7 +31,7 @@ def _app(tmp_path):
     store.set_meta("capability_secret", "x")
     # the server's own root, and two platforms that resell it
     store.add_token(hash_token("root"), "openmv", ["accounts.all"])
-    store.add_token(hash_token("rf"), "roboflow", ["accounts"])
+    store.add_token(hash_token("rf"), "acme-platform", ["accounts"])
     store.add_token(hash_token("other"), "someone-else", ["accounts"])
     app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
                                     swd_ids_verify_token="t"),

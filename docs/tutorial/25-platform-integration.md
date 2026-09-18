@@ -4,295 +4,286 @@
 
 ---
 
-Every page before this one assumed you are the operator of your own fleet. This one is
-for a **platform**: a product with its own customers, its own accounts, and its own UI,
-that runs OpenMV cameras underneath and drives this service entirely through the API.
-Nobody on your side logs into the OpenMV website. Your server holds the credentials,
-your customers see your product, and the update service is plumbing.
+Every page before this one assumed you run your own fleet: one product, your devices,
+your releases. This page is about the other case — a **platform**, whose own customers
+run the cameras. Your product has its own accounts, its own UI and its own support, and
+this service is underneath it. Nobody on your side signs into the OpenMV website; your
+server holds the credentials and calls the [admin API](23-admin-api.md), and your
+customers never learn it is there.
 
-It is written to be read start to finish before you write anything, because three of the
-decisions here are hard to reverse once you have fielded cameras.
+Nothing on this page is a separate mode. It is the same accounts, products, cohorts and
+rollouts as everywhere else, arranged for that shape, plus the three things that only
+come up when you are operating on someone else's behalf: carving the account up,
+assigning hardware to a customer after it is built, and versioning across all of it.
 
-## What you are mapping onto
+## One account, products underneath
 
-Four nouns, and which of yours goes where is the first decision:
+You get **one account**. It is the tenancy boundary — releases, devices, cohorts,
+rollouts and the audit log all live inside it, and nothing crosses between accounts. Your
+customers are rows in your own database; this service never models them, authenticates
+them or knows they exist. The account's device limit is one number across everything you
+operate, and its audit log is the record of everything you did on their behalf.
 
-| Ours | What it is | Changing it later |
-|---|---|---|
-| **account** | the tenancy boundary. Releases, devices, cohorts, rollouts, audit — all namespaced by it. One account can never see another, and a cross-account lookup answers 404 rather than 403 | hard: devices rebind, releases do not move |
-| **product** | a line of firmware. Its id is the low 63 bits of `sha256("<product>:<board>")`, computed by your project config, and it is the device's cross-flash guard — a camera refuses an image whose product id is not its own | hard: it is baked into installed images |
-| **device** | one camera. Its id is `BOARD:<unique-id>` — board-qualified, because `machine.unique_id()` is only unique among boards of the same type | n/a |
-| **cohort** | a label on devices within an account (`beta`, `us-east`, a customer). Rollouts and pins target one | easy: it is a string on a row |
+Inside that account, the **product** is what you carve by. A product id is the low 63
+bits of `sha256("<product>:<board>")`, computed by your project config, and it is what a
+camera checks an update against before installing it — an image whose product id is not
+the device's own is refused on the device, not just on the server.
 
-Note what a product is **not**: it is not one per customer unless you build one image per
-customer. The id is derived from the project name and the board, so a single project that
-supports four boards is **four product ids**, and every camera of a given board across
-every customer running that image shares one.
+That gives you two ways to arrange customers, and they differ in how much of the camera's
+behaviour you are willing to make configuration.
 
-## The two shapes, and which one you want
+**A product per end customer.** Build the same project source under a per-customer product
+name, so each customer has their own product id on each board they use. Whatever varies
+between customers — Python code, a model, thresholds, an entire application — varies in
+the image, and you never have to design a settings format that anticipates it. Each
+customer gets their own release stream to roll out and pin against, and a credential
+limited to their products can be handed over if you ever want them to see their own
+fleet. With N customers on M boards that is N×M product ids under one account; the id is
+63 bits precisely so a platform can mint them at that rate.
 
-Most platforms arrive with one master project — a runtime that loads a workload, rather
-than a separate firmware per customer. That leaves two ways to slice it.
+**One product per board.** One image for everyone, with customers separated by
+[cohort](16-cohorts-and-rollouts.md), and per-customer behaviour arriving as data your
+application fetches at runtime. One build, one publish, one release stream. A cohort is a
+label on a device row, so it groups but does not isolate: there is no per-customer
+credential, and everything your customers do runs through one application you have to
+make configurable enough for all of them.
 
-### A · An account per customer
+Most platforms end up mixing the two — a shared runtime for the common case, a dedicated
+product for a customer who needs something the runtime cannot express.
 
-The one to pick if your customers' data must not mingle, or if you ever want to hand a
-customer a credential of their own.
+## Declaring a product before you build one
 
-```
-your platform ──(operator token)──> account "Acme"    ──> products {runner:N6, runner:RT1060, …}
-                                     account "Globex"  ──> the same product ids, its own devices
-```
-
-Isolation is total and it is the boundary the server is built around. The cost is real
-and you should price it in now: **a release belongs to an account**, so publishing your
-master project to fifty customers is fifty publishes of the same artifacts. That is fifty
-`POST /releases` calls and fifty copies in storage. The build happens once on your server;
-only the upload repeats.
-
-### B · One account, a cohort per customer
-
-One publish, then `cohort assign` each customer's devices and pin or roll out per cohort.
-Cheap, and the rollout machinery already does exactly this.
-
-What you give up: there is no boundary between your customers inside that account. A
-credential for it sees every device you operate. Do not hand one to a customer, and be
-aware that your own bugs are not contained by anything.
-
-**Pick A unless you are certain no customer will ever need visibility.** Moving from B to
-A later means rebinding every device and republishing every release.
-
-### The third option, when a customer really does need a login
-
-Within one account, a token can be limited to a subset of products
-(`products: [<id>, …]` when you issue it). That credential sees those products' releases,
-devices, rollouts and audit rows, and nothing else in the account. It is the right tool
-when a customer wants read-only visibility into their own line — but it slices by
-*product*, not by customer, so it only helps if each customer has their own product, which
-brings you back to one image per customer.
-
-## Credentials
-
-Three kinds. There is **no impersonation** — a token's account comes from the token, and
-there is no "act as" header — so your server holds one credential per account and picks
-the right one per call.
-
-| Token | Scope | What it does |
-|---|---|---|
-| your operator token | `accounts` | creates accounts, mints their tokens, sets device limits, deactivates |
-| an account's token | `publish` > `manage` > `observe` | everything inside one account |
-| a limited token | any of the above, plus `products: [...]` | the same, confined to some products |
-
-`accounts` lets you provision customers **and see only the ones you provisioned**. The
-wider `accounts.all` — the server's own root — sees every account on the server, and you
-will not be issued one. If `GET /accounts` returns accounts you did not create, you are
-holding the wrong token; say so.
-
-Store account tokens the way you store any customer secret. They are returned **once**,
-at creation, and only their hash is kept — a lost token is rotated, never recovered.
-
-## Provisioning a customer
+A product normally comes into existence when you publish to it. When you are provisioning
+in one order and building in another, declare it up front:
 
 ```bash
-openmv-ota client account create --name "Acme Robotics" --client-ref "ws_8a41f2" --json
+openmv-ota client product create --product-id 4242 --name "Acme Robotics (N6)"
 ```
 
-`--client-ref` is your own id for the account, and it is what makes this call **safe to
-retry**. Call it again with the same reference and you get the same account back with
-`"created": false` and `"token": null` — not a second account, and not a 409 you cannot
-tell apart from someone else owning the name. Use your workspace/tenant id. Without it, a
-timeout leaves you unable to tell whether the account exists.
+The id comes from the project's `ota.toml`, where it was computed — the server does not
+derive it, so the project stays the one place a product is named. Declaring is idempotent
+and gives you a product that appears in `client product list` with no releases and no
+devices, ready to be named and to have cameras bound to it.
 
-Account names are unique **within your operator**, so your customer called "Acme" does not
-collide with anyone else's.
+## Stock hardware, claimed later
 
-Then set the entitlement and mint the credentials your server will use:
+Cameras are usually built before anyone knows which customer will receive them. Give that
+hardware a **stock product** of its own, and build its firmware with a product id of `0`:
+
+```toml
+[targets.OPENMV_N6]
+product_id = 0
+```
+
+Zero turns the device's cross-product check off — the installer only compares product ids
+when it has one — so a stock unit will accept an image from any product. What it does
+**not** turn off is the account check: a stock camera is still confined to the account it
+is bound to, so "any product" means any of yours.
+
+Claiming one for a customer is then an ordinary device pin, to a release of a *different*
+product:
 
 ```bash
-openmv-ota client account limit --account-id acct_… --devices 250
-openmv-ota client token issue --account-id acct_… --name "platform-publish" --scope publish
-openmv-ota client token issue --account-id acct_… --name "platform-read"    --scope observe
+openmv-ota client device pin --device-id OPENMV_N6:3c0021000c51 --release-id cust_a_r1
 ```
 
-The device limit is enforced at check-in for **new** devices only; cameras already
-registered are never dropped when a plan shrinks. A refusal lands in the audit log as
-`device.refused`, once per device id — poll for it if you want to surface "you are at your
-limit" in your own UI.
+The pin checks that the release belongs to the account and that it is an upgrade. It
+deliberately does not check that it belongs to the device's current product — which is
+what makes one manufactured SKU able to become any customer's product after unboxing. The
+device takes it on its next check-in like any other update: downloaded, verified, staged
+into the other slot, rolled back if it does not boot.
 
-## Declaring the product, before there is an image
+**Claim, transfer and reset are the same primitive.** Moving a camera from one customer to
+another is a pin to the new customer's release. Taking it back is a pin to the current
+stock release. There is no separate verb, and no state the server has to keep in step.
 
-```bash
-openmv-ota client product create --product-id 4242 --name "Workflow runner (N6)"
-```
+One thing to build around: **a pin on a device the server has never seen does nothing.**
+The fleet row is created by the first check-in, so a claim issued before a camera has ever
+been powered on has nothing to attach to. Either claim at first check-in, or pin and let
+your flow tolerate the wait.
 
-The id comes from your project's `ota.toml`, where it was computed — the server does not
-derive it, so your project stays the one place a product is named. Declaring is
-idempotent, and it exists so you can create the project, name it, and bind its first
-cameras before you have built anything. Do this once per board you support, per account.
+## The build counter
 
-## Binding installs
+This is the one hard requirement of the arrangement, and it is worth getting right before
+you ship anything.
 
-A camera that checks in learns its account. You usually want to decide it instead:
+**Use a single, globally monotonic counter for `payload_version` across every product in
+your account.** Not one sequence per product — one sequence, shared.
+
+The reason is on the device. Its rollback floor rises with every install and is
+**product-agnostic**: it records the highest payload version the camera has ever run,
+without reference to which product that version belonged to. An offer below the floor is
+refused by the firmware itself, and the server's pin is upgrade-only besides. So if each
+product has its own independent version sequence, a camera that has run customer A's
+build 40 cannot be transferred to customer B whose stream is at 12 — not until B passes
+40, and not at all if B never does. The first transfer that crosses a numerically older
+stream wedges permanently, in the field, with no way back short of a depot visit.
+
+Your human-facing version numbers are unaffected: those live in your own metadata and in
+the release's display name. It is the packed `payload_version` — the number the device
+compares — that has to be the shared counter.
+
+De-association follows from the same rule. Returning a camera to stock is a pin to the
+**current** stock release, which under one counter is always newer than whatever the
+customer was running. It is a forward step, never a downgrade, and it is an ordinary OTA
+install rather than a reflash.
+
+The only true as-manufactured reset is `openmv-ota flash factory`, because it is the only
+thing that clears the rollback sectors. That needs the camera in hand, so it is a depot
+or RMA path, not something a customer does.
+
+One consequence to design for: an OTA reset replaces the application, not the filesystem.
+Whatever the previous customer left in `/flash` is still there when the next one powers
+the camera on. If your application keeps anything there — credentials, cached data,
+captures — clear it on first boot after a reset.
+
+## Binding and unbinding hardware
+
+A camera that checks in unbound is claimed by the account it talks to first, which is
+fine when you control the firmware it ships with and wrong when you do not. To decide it
+yourself:
 
 ```bash
 openmv-ota client device bind --device-id OPENMV_N6:3c0021000c51
 ```
 
-This works **before the camera has ever checked in** — an admin bind always wins over a
-learned one, so you can register an install at the moment you ship the hardware, and the
-first check-in lands in the right account. That is the only way to be sure: a camera that
-checks in unbound is claimed by whoever it talks to first.
+An administrative bind wins over a learned one and works **before the camera has ever
+checked in**, so you can register hardware at the moment it leaves your building and the
+first check-in lands where you expect.
 
-When an install ends:
+When a unit is retired:
 
 ```bash
 openmv-ota client device forget --device-id OPENMV_N6:3c0021000c51
 ```
 
-The device leaves the fleet and stops consuming the limit. Its **install history stays** —
-a deployment row records what happened on a day that has already passed, and rollout
-counters are built from those rows. The audit log keeps the removal. A camera that checks
-in again afterwards is simply a device the server has not seen: it enrols from scratch,
-learns a binding, and is not yours unless you bind it. This call is about the fleet, not
-about entitlement.
+It leaves the fleet and stops counting against the account's device limit. Its install
+history stays — a deployment row records what happened on a day that has already passed,
+and rollout counters are built from those rows — and the removal is in the audit log. A
+camera that checks in again afterwards is a device the server has not seen before: it
+enrols from scratch and is not yours again until you bind it.
 
-## Publishing
+## Building and publishing
 
-The build is **not** an API call. You install this package on your server and build there,
-because building needs two things the server must never hold:
+The build happens on your machines, not ours, because it needs two things the server must
+never hold: the project's **signing key**, which is what the device verifies before it
+installs anything, and its **payload keys**, if you are encrypting published artifacts
+(see [page 8](08-release-artifacts.md)). Both are made with the project, and the board key
+is baked into the firmware you build, so key material and image are produced together.
 
-- the project's **signing key**. The device verifies the signature itself; that is what
-  makes an update safe, and the server is not trusted with it. `openmv-ota` ships a
-  pluggable signer — an encrypted PEM at minimum, and PKCS#11, AWS/GCP/Azure KMS, or your
-  own hook. **Use a KMS.** One key per customer or one key for the platform is your call,
-  but a plaintext key on a build box is not.
-- the project's **payload keys**, if you want published artifacts encrypted at rest in the
-  store (see [page 8](08-release-artifacts.md)). The board key is baked into the firmware
-  you build, so key material and image are made together.
+The signer is pluggable — an encrypted PEM at minimum, and PKCS#11, AWS/GCP/Azure KMS, or
+your own hook ([page 5](05-signing-keys.md)). At platform scale, a key in a KMS is worth
+the setup: you will be signing unattended, on a schedule, for a long time.
 
-Then publish per account, with that account's `publish` token:
+Publishing is the same verb as anywhere:
 
 ```bash
-openmv-ota client release publish ./projects/runner -b OPENMV_N6
+openmv-ota client release publish ./projects/acme -b OPENMV_N6
 ```
 
-which uploads what you built for that board, under whichever account token is in the
-environment. Loop it over your accounts, changing only the credential.
+With a product per customer this runs once per customer per board, against the same
+account and the same shared counter.
 
-Publishing is also what a product's *name* comes from, if you never declared one.
+## Credentials
 
-### What your workload is, and what it costs you
+Your server holds an account token and uses it for everything. There is no impersonation —
+a token's account comes from the token itself, and there is no "act as" header — so if
+you are ever issued more than one account, you hold a credential for each and choose per
+call.
 
-If a customer's workload ships **as the image** — a Python app baked into the ROMFS — then
-every workload change is a release, a rollout, and a reboot into the new slot. Correct,
-atomic, rollback-protected, and heavier than a config change should be.
+Scopes are the ladder from [page 19](19-accounts-and-tokens.md): `publish` > `manage` >
+`observe`. Give a build pipeline `publish`, a dashboard `observe`, and keep them separate
+so a leak from one is not a leak from both.
 
-If the workload is **data the image loads** — a model and settings your runtime fetches —
-then the image changes rarely and workload updates are your own traffic, not ours. That
-keeps this service for what it is good at: shipping the runtime, safely, with rollback.
+A token can also be **limited to some products** when it is issued:
 
-Either works. The second means far fewer releases, and it moves the "did the workload
-apply?" question into your system, where you have better answers than a check-in can give.
-
-## Driving updates
-
-Per account, with its `manage` token. All of it is on [page 16](16-cohorts-and-rollouts.md);
-the platform-specific notes:
-
-- **`cohort assign`** takes a list of device ids or a whole product. A cohort is just a
-  label, so it is where your own grouping goes — a site, a tier, a canary set.
-- **`rollout create --percent 10`**, then raise it. A rollout auto-pauses when failures
-  cross its threshold, with `pause_reason: "failure_limit"` — that is the field your
-  dashboard's "needs attention" should watch.
-- **`device pin`** beats a cohort pin, which beats a rollout. Pin the one unit a customer
-  is mid-incident with; do not pin fleets.
-
-## Live video
-
-`POST /api/v1/admin/devices/{device_id}/viewer-grant` with the account's `observe` token
-returns a short-lived viewer credential and ready-made URLs. This endpoint exists for
-exactly your case: **you authenticate your own user however you like, then mint a grant
-and hand it to that user's browser.** The signing secret never leaves the OTA server, and
-the grant is scoped to one device and expires in minutes.
-
-The relay is a WebSocket. From a browser, the credential goes in the subprotocol; from
-your server, in a header:
-
-```
-new WebSocket(url, ["openmv.bearer", token])       // browser
-Authorization: Bearer <token>                       // your server
+```bash
+openmv-ota client token issue --account-id acct_… --name "acme-readonly" \
+    --scope observe --product-id 4242
 ```
 
-The `?token=` form in the URLs still works and has to — fielded cameras run firmware that
-sends it — but do not build new URLs that way. A credential in a URL lands in proxy logs,
-browser history and `Referer` headers.
+That credential sees those products' releases, devices, rollouts and audit history, and
+nothing else in the account — not the other products, and not the account-level record of
+tokens and limits. With a product per customer, it is how a customer gets a view of their
+own fleet without a view of everyone else's.
 
-Grants are minted per device and expire in minutes: **mint one per view, not one per
-month**, and do not cache them across users. There is no batch grant endpoint; if you are
-opening a hundred tiles, that is a hundred calls.
+## Live video and device data
 
-## Data
+`POST /api/v1/admin/devices/{device_id}/viewer-grant`, with an `observe` token, mints a
+short-lived credential for one device and returns ready-made URLs. This is the endpoint to
+build a customer-facing live view on: **you authenticate your own user however you like,
+then mint a grant and hand it to that user's browser.** The signing secret never leaves
+the OTA server, and the grant is scoped to one device and expires in minutes, so it is
+safe to give out and cannot be recalled — which is why it is short.
 
-`POST .../devices/{id}/viewer-grant` also carries the datalake half, and
-`POST .../products/{product_id}/viewer-grant` gives you one credential for a whole
-product's devices together. Read it as described on [page 24](24-pulling-device-data.md).
+The relay is a WebSocket. From a browser the credential rides in the subprotocol; from a
+server, in a header:
 
-Two shapes, and the difference matters when you plan:
+```js
+new WebSocket(url, ["openmv.bearer", token])    // browser
+```
+```
+Authorization: Bearer <token>                    // server to server
+```
 
-- **`logs/{topic}`** returns records with a `before_seq` cursor — a real backfill. Page it
-  and you have every line.
-- **`series/{topic}`** returns **aggregated buckets** (`t`, `n`, `min`, `max`, `avg`), not
-  samples. There is no raw-sample export for numeric telemetry. If your product needs
-  sample-level data, do not plan around pulling it out of here — have the device send it
-  where you want it, or tell us and we will talk about an export endpoint.
+The `?token=` form in the returned URLs still works, and has to — cameras in the field run
+firmware that sends it — but prefer the other two for anything you write. A credential in
+a URL ends up in proxy logs, browser history and `Referer` headers.
 
-## Watching, without webhooks
+Grants are per device and expire in minutes: mint one per view rather than caching them,
+and note there is no batch endpoint, so a page of a hundred tiles is a hundred calls.
 
-There are none. Poll, with cursors — they are there and they are cheap:
+Device data comes through the same grant, or through a product-wide one — the reads are
+on [page 24](24-pulling-device-data.md). Two shapes, and the difference matters when you
+plan a product around it: `logs/{topic}` returns records with a `before_seq` cursor, so it
+backfills completely; `series/{topic}` returns aggregated buckets (`t`, `n`, `min`, `max`,
+`avg`) rather than samples. There is no raw-sample export for numeric telemetry.
 
-| Want | Call |
+## Watching a fleet you do not sit in front of
+
+There are no webhooks. Everything is polled, and the reads are built for it:
+
+| To find | Call |
 |---|---|
-| everything that happened, in order | `GET /audit?since=<last_seq>` — append order, `seq` is the cursor |
-| devices that checked in recently | `GET /devices?seen_since=<epoch>` |
-| devices that have not | `GET /devices?not_seen_since=<epoch>` |
-| what is behind | `GET /devices?behind=true`, or `?older_than_release=<id>` |
+| everything that happened, in order | `GET /audit?since=<last_seq>` |
+| cameras that have checked in recently | `GET /devices?seen_since=<epoch>` |
+| cameras that have not | `GET /devices?not_seen_since=<epoch>` |
+| what is behind | `GET /devices?behind=true` or `?older_than_release=<id>` |
 | whether installs are landing | `GET /fleet/installs?days=14` |
 
-`/audit?since=` is the one to build on: it is an append-only log with a monotonic
-sequence, so a poller that remembers the last `seq` it saw never misses an event and never
-sees one twice. A product-limited token reads its own products' history; an account token
-reads the account's.
+`/audit?since=` is the one to build on. It is append-only with a monotonic sequence, so a
+poller that remembers the last `seq` it saw never misses an event and never sees one
+twice — including the ones you cannot get any other way, such as `device.refused`, which
+is written once per device when a camera is turned away for being over the account's
+limit. The admin API is not rate limited; only the device check-in edge is.
 
-The admin API is **not** rate limited (only the device check-in edge is), so poll at a
-sensible interval rather than a fearful one.
+## If you provision accounts as well
 
-## Failure modes worth handling on day one
+A platform that needs real separation between its customers — separate fleets, separate
+audit logs, separate credentials — can be issued an operator credential carrying the
+`accounts` scope, and create accounts of its own through the API.
 
-- **A 404 usually means "not yours"**, not "does not exist". The API refuses to confirm
-  existence across a boundary. If a device id you believe you own 404s, check which
-  account's token you used before you check your database.
-- **A 409 on account create** means the name is taken *among your own accounts*. With a
-  `--client-ref` you should never see it; without one, you cannot distinguish it from a
-  retry that already succeeded.
-- **The account token is returned once.** If your provisioning transaction fails after the
-  create call, you have an account you cannot use — recover with
-  `client account create --client-ref <same>` to identify it, then
-  `client token issue` to mint a fresh credential.
-- **Device ids are board-qualified.** `OPENMV_N6:3c0021000c51`, not `3c0021000c51`. An id
-  from a sticker or a serial-number system needs the board prefix before it will match.
-- **Product ids are 63-bit integers.** JSON numbers are doubles in JavaScript and lose
-  precision above 2^53 — every response that carries one also carries `product_id_str`.
-  Read that one from JS.
+```bash
+openmv-ota client account create --name "Acme Robotics" --client-ref "ws_8a41f2" --json
+openmv-ota client account limit --account-id acct_… --devices 250
+openmv-ota client token issue --account-id acct_… --name "platform" --scope publish
+```
 
-## The short version
+`--client-ref` is your own id for the account, and it makes the call safe to retry: asking
+again with the same reference returns the account you already made, with
+`"created": false` and no token, rather than a second account or a 409 you cannot tell
+apart from the name being taken. Account names are unique within your own accounts, not
+across the server.
 
-1. One account per customer, created with a `--client-ref` you can retry on.
-2. One product id per board of your master project, declared up front.
-3. Bind each install when you ship it; forget it when it ends.
-4. Build and sign on your own server, with a KMS; publish per account.
-5. Cohorts for grouping, rollouts for staging, pins for exceptions.
-6. Viewer grants for video and data, minted per view.
-7. Poll `/audit?since=` for everything else.
+An `accounts` credential sees and manages the accounts **it** created and no others;
+another operator's account answers 404, the same as one that does not exist. The account's
+first token is returned once, at creation, and only its hash is stored — a lost token is
+rotated, never recovered.
+
+Be aware of what this arrangement costs before choosing it: a release belongs to an
+account, so one project shipped to fifty customer accounts is fifty publishes of the same
+artifacts, and the claim-by-pin primitive above does not apply — a camera moving between
+accounts is a rebind, not a pin, and it crosses a boundary the device itself enforces.
 
 ---
 

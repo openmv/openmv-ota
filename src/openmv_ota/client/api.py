@@ -263,12 +263,17 @@ class Api:
     def activate_account(self, account_id):
         return self._req("POST", "/api/v1/admin/accounts/%s/activate" % account_id)
 
-    def issue_token(self, account_id, name, scopes=None, actor=None):
+    def issue_token(self, account_id, name, scopes=None, actor=None, products=None):
         """``actor``: the person this is done for, recorded as the audit actor (an operator
-        acting on someone's behalf); omitted, the token's own name is the actor."""
+        acting on someone's behalf); omitted, the token's own name is the actor.
+
+        ``products``: limit the token to these product ids. ``scopes`` says what it may
+        do; this says what it may do it to."""
         body = {"name": name}
         if scopes is not None:
             body["scopes"] = scopes
+        if products:
+            body["products"] = [int(p) for p in products]
         if actor:
             body["actor"] = actor
         return self._req("POST", "/api/v1/admin/accounts/%s/tokens" % account_id, json=body)

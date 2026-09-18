@@ -577,6 +577,16 @@ def test_token_verbs(tmp_path, monkeypatch, capsys):
     assert "revoked" in capsys.readouterr().out
 
 
+def test_token_issue_can_limit_the_products(tmp_path, monkeypatch, capsys):
+    """`--scope` says what a token may do; `--product-id` says what it may do it to."""
+    store = _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts",))
+    store.add_account(created_by="ci", account_id="acctA", name="A")
+    assert main(["client", "token", "issue", "--account-id", "acctA", "--name", "acme",
+                 "--scope", "observe", "--product-id", "4242", "--product-id", "77"]) == 0
+    assert "issued for acctA" in capsys.readouterr().out
+    assert store.list_tokens(account_id="acctA")[0]["products"] == [4242, 77]
+
+
 def test_token_verb_error_surfaced(tmp_path, monkeypatch, capsys):
     _wire_super_admin(tmp_path, monkeypatch, scopes=("manage",))    # no accounts scope -> 403
     assert main(["client", "token", "issue", "--account-id", "acctA", "--name", "x"]) == 1
