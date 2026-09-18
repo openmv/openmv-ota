@@ -434,11 +434,23 @@ def test_ota_build_stamps_a_64_bit_product_id(make_project):
     assert (HEADER_SIZE, HEADER_VERSION) == (96, 3)
 
 
-def test_ota_build_warns_on_unset_product_id(make_project, capsys):
+def test_product_id_zero_is_refused_unless_the_project_means_it(make_project, capsys):
+    """It turns the cross-flash guard off for the life of every camera built from it --
+    firmware is not replaced over the air, so that id is permanent. A real capability, and
+    one nobody should arrive at by editing a number to zero."""
+    from openmv_ota.build.errors import BuildError
+
     root, repo, app = _build_ota(make_project)
-    _set_product_id(root, 0)  # explicitly clear the auto-assigned id
+    _set_product_id(root, 0)
+    with pytest.raises(BuildError, match="turns the cross-flash guard off"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False,
+                              convert_models=False)
+
+    # ...and with `platform` it is what the project says it is, noted rather than refused
+    cfg = root / "openmv-ota.toml"
+    cfg.write_text(cfg.read_text().replace("[ota]", "[ota]\nplatform = true\n", 1))
     build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
-    assert "product_id 0" in capsys.readouterr().err
+    assert "cross-flash guard is off" in capsys.readouterr().err
 
 
 def test_build_warns_on_product_id_collision(capsys):

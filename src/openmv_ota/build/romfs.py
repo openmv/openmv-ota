@@ -349,11 +349,27 @@ def _rollback_key(system_info: dict, signer) -> int:
     return signer.payload_version
 
 
-def _warn_unset_product_id(t, system_info: dict) -> None:
-    if system_info["product_id"] == 0:
-        print("warning: %s has product_id 0 (unset); the cross-flash guard is off - set "
-              "product_id under [targets.%s] in openmv-ota.toml" % (t.name, t.name),
-              file=sys.stderr)
+def _check_product_id(p, t, system_info: dict) -> None:
+    """A product_id of 0 has to be something someone MEANT.
+
+    It turns the device's cross-flash guard off for the life of the camera -- firmware is
+    not replaced over the air, so the id baked in at manufacture is the one it has forever
+    -- and that is a real capability, not an oversight: it is how stock hardware becomes a
+    customer's unit after it ships. The same arrangement is what `platform` describes, and
+    those cameras order their images by the account's publish counter, which only a
+    platform project allocates. So the two go together, and 0 without it is a mistake the
+    build refuses rather than warns about."""
+    if system_info["product_id"] != 0:
+        return
+    if not p.config.platform:
+        raise BuildError(
+            "%s has product_id 0, which turns the cross-flash guard off for the life of "
+            "every camera built from it -- firmware is not replaced over the air, so that "
+            "id is permanent. Set a real product_id under [targets.%s], or set `platform = "
+            "true` under [ota] if you meant it: a fleet whose cameras move between product "
+            "lines." % (t.name, t.name), exit_code=1)
+    print("note: %s builds with product_id 0 -- the cross-flash guard is off and these "
+          "cameras order images by the account's publish counter" % t.name, file=sys.stderr)
 
 
 def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_models, mpy_extra,
@@ -469,7 +485,7 @@ def _build_one(p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, ve
         name = _target_name(t)
         if ota_signer is not None:
             from openmv_ota.ota import bundle
-            _warn_unset_product_id(t, system_info)
+            _check_product_id(p, t, system_info)
             pad_size = max(0, capacity - len(body))  # 0xFF gap to the FRONT status sector
             trailer_bytes = _build_trailer(ota_signer, p, body, system_info, pad_size)
             out_path = out_dir / (name + "-romfs.zip")  # body + trailer, one file
@@ -647,7 +663,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
             raise BuildError(
                 "%s image is %d bytes but a slot holds %d (%d over)"
                 % (t.name, len(body), smallest, len(body) - smallest), exit_code=1)
-        _warn_unset_product_id(t, system_info)
+        _check_product_id(p, t, system_info)
         # Both slots ship CONFIRMED: they have nothing to prove, having never been trialed.
         # There is no golden shape and no golden slot -- the difference between the two is one
         # number, the install counter, and after the first update they are just two images with
