@@ -7,7 +7,9 @@
 **openmv-ota** is OpenMV's tooling for updating cameras in the field. You build your
 MicroPython application into a signed image on your computer; a camera downloads that
 image over the network and installs it; and if the new image misbehaves, the camera
-falls back to the version that last worked.
+falls back to the version that last worked. What travels is encrypted, with a key that
+exists in your project and in your firmware and nowhere else — see
+[release artifacts](08-release-artifacts.md#encryption).
 
 Everything on these pages is driven by one command-line program — "the CLI" from
 here on:

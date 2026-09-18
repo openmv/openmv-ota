@@ -102,6 +102,14 @@ The project's OTA flag steers the build automatically:
   trial-boot machinery; its generated `_ota_config.py` (trusted keys, slot
   geometry, board/product ids) is frozen alongside it.
 
+  It also bakes in this board's **payload keys** — the secret half of
+  [release encryption](08-release-artifacts.md#encryption), which is why an OTA
+  firmware build asks for the project passphrase (`--key-passphrase-file`, the
+  `OPENMV_OTA_KEY_PASSPHRASE` env var, or a prompt). They go into the firmware and
+  never into the romfs: the romfs is the thing being downloaded, so a key inside it
+  would be a key anyone who can reach the artifact already has. On a multi-core board
+  only the main core carries any of this — the helper core runs no OTA.
+
 The build is **clean by default** (`make clean` first), so a stale tree can't
 turn into a confusing link-time failure; pass `--incremental` to skip the clean
 when the tree is known good. Building firmware needs the firmware toolchain
@@ -113,6 +121,7 @@ when the tree is known good. Building firmware needs the firmware toolchain
 | `-o, --output DIR` | Output directory (default: `<project>/build`). |
 | `-j, --jobs N` | Parallel make jobs (default: CPU count). |
 | `--incremental` | Skip the clean rebuild (only when the tree is known good). |
+| `--key-passphrase-file FILE` | Passphrase that decrypts the project's payload keys (OTA projects; else the env var or a prompt). |
 | `-f, --firmware PATH` | Firmware checkout override. |
 | `--keep-build-dir` | Keep the generated wrapper-manifest dir (OTA builds) for inspection. |
 

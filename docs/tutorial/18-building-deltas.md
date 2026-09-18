@@ -24,6 +24,13 @@ $ openmv-ota build ota-romfs . --delta-from build/bases   # one delta per fetche
 $ openmv-ota client release publish . -b OPENMV_N6        # uploads the image + every delta
 ```
 
+`release bases` runs from the project because published artifacts are encrypted and a
+delta is built against the plaintext: it decrypts what it fetches with the project's own
+payload keys, and checks each one against the digest its release recorded — a base that
+does not decrypt is reported, never written into the directory the build reads. Pass
+`--project <dir>` when you run it from somewhere else, and `--key-passphrase-file` where
+the passphrase is not already in the environment.
+
 `--fleet` warns at fetch time about any group of devices no base can cover (a version
 never published through the server, a republish that split the bytes) — those take the
 full image, never nothing.

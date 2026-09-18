@@ -18,6 +18,10 @@ Secure over-the-air updates for OpenMV cameras: build your application into a
 signed ROMFS image, publish it, and a camera downloads, verifies, and installs
 it — falling back to the last release that worked if anything goes wrong.
 
+What a camera downloads is **encrypted**, under a key minted with the project and
+baked into your own firmware, so a published release is ciphertext to the update
+server, to the store it sits in, and to anyone who gets hold of it.
+
 **Start with the [tutorial](docs/tutorial/00-introduction.md)** — the complete,
 navigable reference for every command and the update server's HTTP API, in the
 order you use them: install → project → build → flash → device runtime → update

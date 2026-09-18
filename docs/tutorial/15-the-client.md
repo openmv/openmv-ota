@@ -72,9 +72,16 @@ format's name). Step by step:
    be the reason a release doesn't ship.
 3. The server derives **all** release metadata (product, version, sizes, hashes, your
    account) from the signed manifest — never from anything the client asserts — and
-   refuses an upload whose artifacts don't match it: an image whose sha256 or size
+   refuses an upload whose artifacts don't match it: an artifact whose sha256 or size
    disagrees, a declared delta that didn't arrive, an extra delta the manifest never
    named, a delta whose target size is wrong.
+
+   The artifacts are [encrypted](08-release-artifacts.md#encryption), so what the server
+   checks them against is the **ciphertext** digest the signed manifest carries — the
+   only one it can, having no key. It also refuses an artifact that could not decrypt at
+   all (a length that is not whole blocks, a declared plaintext length that does not fit),
+   so a release nobody could install fails at publish rather than in the field. The
+   plaintext digest is verified on the camera, which is the only party that can.
 4. Publish-time anti-rollback: a `payload_version` at or below the newest already
    published for that product is refused. `--allow-republish` overrides it — the dev
    loop, where you rebuild the same version all afternoon.
