@@ -378,6 +378,15 @@ _MIGRATIONS: list[list[str]] = [
         # invalidate every entry already written.
         "ALTER TABLE audit ADD COLUMN product_id BIGINT",
     ],
+    [   # v26 -- the account's publish counter, and the counter each release carries.
+        # A camera built with product_id 0 can be moved between product lines, so its
+        # images cannot be ordered by a per-product version; they are ordered by this,
+        # which spans the account. The server allocates it because a counter is the one
+        # piece of a build that cannot be replicated the way a signing key can -- two
+        # concurrent builds must not take the same number.
+        "ALTER TABLE accounts ADD COLUMN publish_seq BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE releases ADD COLUMN publish_seq BIGINT NOT NULL DEFAULT 0",
+    ],
 ]
 
 
@@ -563,14 +572,16 @@ class SqlMetadataStore:
     def add_release(self, *, release_id, product_id, product, version, payload_version,
                     min_platform_version, image_sha256, image_size, representations,
                     manifest_key, image_key, delta_key=None, key_id=None, uploaded_by=None,
-                    account_id="", dev=0, sbom_key=None,
+                    account_id="", dev=0, sbom_key=None, publish_seq=0,
                     display_name="") -> None:
         self.execute(
             "INSERT INTO releases (release_id, product_id, product, version, payload_version, "
+            "publish_seq, "
             "min_platform_version, image_sha256, image_size, representations, manifest_key, "
             "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id, dev, sbom_key, "
-            "display_name) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (release_id, product_id, product, version, payload_version, min_platform_version,
+            "display_name) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (release_id, product_id, product, version, payload_version, publish_seq,
+             min_platform_version,
              image_sha256, image_size, json.dumps(representations), manifest_key, image_key,
              delta_key, key_id, uploaded_by, _now_iso(), account_id, dev, sbom_key,
              display_name))
@@ -1418,6 +1429,27 @@ class SqlMetadataStore:
         self.execute("INSERT INTO accounts (account_id, name, created_at, created_by, client_ref) "
                      "VALUES (?,?,?,?,?)",
                      (account_id, name, _now_iso(), created_by, client_ref))
+
+    def next_publish_seq(self, account_id: str) -> int | None:
+        """Allocate the account's next publish counter -- increment and return. None when
+        there is no such account (a self-host's implicit ``''`` has no row to count in).
+
+        Gaps are fine and expected: a build that fails after taking a number simply burns
+        it. What must never happen is two builds taking the SAME number, which is why the
+        increment is a single statement rather than a read followed by a write."""
+        if not self.execute(
+                "UPDATE accounts SET publish_seq = publish_seq + 1 WHERE account_id = ?",
+                (account_id,)).rowcount:
+            return None
+        row = self.query_one("SELECT publish_seq FROM accounts WHERE account_id = ?",
+                             (account_id,))
+        return int(row["publish_seq"])
+
+    def newest_publish_seq(self, product_id: int, account_id: str = "") -> int:
+        """The highest publish counter already published for this product (0 if none)."""
+        where, params = _scope(account_id, product_id)
+        row = self.query_one("SELECT MAX(publish_seq) AS n FROM releases " + where, params)
+        return int((row["n"] if row else None) or 0)
 
     def account_by_client_ref(self, created_by: str, client_ref: str) -> dict | None:
         """The account this operator already created under its own reference, or None.

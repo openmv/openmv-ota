@@ -432,6 +432,11 @@ class CheckIn(BaseModel):
     product: str | None = None
     app_version: str | None = None
     payload_version: int = 0
+    publish_seq: int = 0                     # the running image's account publish counter
+    orders_by_seq: bool = False              # ...and whether THIS camera compares it
+    #                                          (its firmware's PRODUCT_ID is 0, so it can be
+    #                                          moved between products and a per-product
+    #                                          version cannot order its images)
     slot: str | None = None
     representation: str | None = None
     fallback_reason: str | None = None
@@ -503,6 +508,19 @@ def _offer(state, rel):
     return "%s/d/%s/manifest.bin" % (state.settings.base_url.rstrip("/"), token)
 
 
+def _ordering(checkin, rel=None):
+    """``(what the camera is on, what the release is)`` in the units this camera orders by.
+
+    Anti-rollback lives on the device; this is the server declining to OFFER something the
+    device would refuse, which is where that decision reads better. A camera whose firmware
+    carries a real product id orders by payload_version -- it can only ever be offered its
+    own product's images. One built with PRODUCT_ID 0 can change product, so it orders by
+    the account's publish counter instead."""
+    if checkin.orders_by_seq:
+        return checkin.publish_seq, int((rel or {}).get("publish_seq", 0) or 0)
+    return checkin.payload_version, int((rel or {}).get("payload_version", 0) or 0)
+
+
 def _decide(state, checkin, cohort, existing=None, account_id=""):
     """The release to offer this device (a pin overrides the rollout) and whether to offer it.
     ``account_id`` is the device's *effective* account (its sticky binding, not the raw report).
@@ -518,8 +536,9 @@ def _decide(state, checkin, cohort, existing=None, account_id=""):
         # the admin-side pin check): a cross-account or missing/older pin just holds the device.
         # A pin overrides the ROLLOUT, not the device's own safety: a mid-trial device would
         # defer the install anyway, so offering here would only mint a token nobody uses.
+        on, offering = _ordering(checkin, rel)
         if (rel is None or rel["account_id"] != account_id
-                or rel["payload_version"] <= checkin.payload_version
+                or offering <= on
                 or not settled(checkin.slots)):
             return None, rel, False, None
         return None, rel, True, _offer(state, rel)
@@ -529,9 +548,10 @@ def _decide(state, checkin, cohort, existing=None, account_id=""):
     rel = ms.get_release(ro["release_id"])
     if rel is None:
         return ro, None, False, None
+    on, offering = _ordering(checkin, rel)
     offered = offers_update(
-        current_payload_version=checkin.payload_version,
-        release_payload_version=rel["payload_version"], rollout_state=ro["state"],
+        current_payload_version=on,
+        release_payload_version=offering, rollout_state=ro["state"],
         rollout_percent=ro["percent"], rollout_id=ro["rollout_id"], device_id=checkin.device_id,
         allow_downgrade=state.settings.test_offer_downgrades, slots=checkin.slots)
     if not offered:

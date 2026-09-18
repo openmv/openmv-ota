@@ -211,7 +211,8 @@ def _reset_checkin_registry():
 def test_checkin_body_maps_identity_and_status():
     info = {"device_id": "d1", "product_id": 7, "account_id": "acct",
             "board": "OPENMV_N6", "product": "robot", "app_version": "1.2.0"}
-    st = {"payload_version": 5, "slot": "A", "representation": "full",
+    st = {"payload_version": 5, "publish_seq": 900, "orders_by_seq": True,
+          "slot": "A", "representation": "full",
           "fallback_reason": None, "confirmed": True}
     reported = [{"slot": "A", "running": True, "payload_version": 5, "counter": 4,
                  "confirmed": True, "pending": True},
@@ -221,7 +222,8 @@ def test_checkin_body_maps_identity_and_status():
     assert body == {
         "device_id": "d1", "product_id": 7, "account_id": "acct",
         "board": "OPENMV_N6", "product": "robot", "app_version": "1.2.0",
-        "payload_version": 5, "slot": "A", "representation": "full",
+        "payload_version": 5, "publish_seq": 900, "orders_by_seq": True,
+        "slot": "A", "representation": "full",
         "fallback_reason": None, "confirmed": True, "slots": reported,
     }
 
@@ -229,6 +231,8 @@ def test_checkin_body_maps_identity_and_status():
 def test_checkin_body_defaults_for_missing_fields():
     body = rt._checkin_body({}, {})
     assert body["device_id"] == "" and body["product_id"] == 0
+    # an ordinary camera says so by omission: no counter, and it does not order by one
+    assert body["publish_seq"] == 0 and body["orders_by_seq"] is False
     assert body["account_id"] == "" and body["confirmed"] is False
     assert body["payload_version"] == 0
     assert body["slots"] == []          # an older/simpler caller still produces a valid body

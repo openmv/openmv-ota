@@ -1473,3 +1473,20 @@ def test_the_factory_floor_is_seeded_with_what_the_camera_orders_by():
     # a stock project that never opted in seeds 0: no floor, rather than a wrong one
     assert _rollback_key({"product_id": 0}, types.SimpleNamespace(
         payload_version=0x01020300, publish_seq=0)) == 0
+
+
+def test_a_platform_build_without_a_counter_is_refused(make_project):
+    """Fail closed. Cameras built with product_id 0 order their images by the account's
+    publish counter, so an image carrying none cannot be installed over anything -- and a
+    build that produced one anyway would hand back an artifact that is quietly useless."""
+    from openmv_ota.build.errors import BuildError
+    from openmv_ota.build.romfs import build_ota_romfs
+
+    root, repo, app = make_project(ota=True, dev=True, ca="tiny",
+                                   app_files={"main.py": "print(1)\n",
+                                              "settings.json": '{"app_version": "1.0.0"}\n'})
+    cfg = root / "openmv-ota.toml"
+    cfg.write_text(cfg.read_text().replace("[ota]", "[ota]\nplatform = true\n", 1))
+    with pytest.raises(BuildError, match="takes the account's next publish counter"):
+        build_ota_romfs(root, app=app, firmware=repo, compile_py=False,
+                        convert_models=False, allow_dev_key=True)

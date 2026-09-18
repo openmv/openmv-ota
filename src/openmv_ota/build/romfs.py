@@ -944,6 +944,10 @@ def _manifest_body(p, tr, image: bytes, reps: list[dict]) -> dict:
         "product": tr.meta.get("product", p.config.name),
         "version": decode_app_version(tr.payload_version),
         "payload_version": tr.payload_version,
+        # From the trailer, so the manifest cannot disagree with the image it describes.
+        # The installer vets from HERE -- before it has ever seen a trailer -- so the number
+        # a PRODUCT_ID 0 camera orders by has to be in both.
+        "publish_seq": tr.publish_seq,
         "min_platform_version": tr.min_platform_version,
         "size": len(image),
         "sha256": hashlib.sha256(image).hexdigest(),
@@ -1105,6 +1109,7 @@ def build_ota_romfs(
     allow_republish: bool = False,
     key_passphrase_file: str | Path | None = None,
     allow_dev_key: bool = False,
+    publish_seq: int | None = None,
 ) -> list[OtaRomfsResult]:
     """Produce the complete **cloud-published** OTA set per main board, from app source in
     one shot (like ``build factory-romfs``): compile + sign the romfs bundle, render the
@@ -1114,6 +1119,11 @@ def build_ota_romfs(
     ``<board>-factory-romfs.img`` or a directory of them); boards with no golden get
     image + manifest only. The golden is validated (board + older version) and the release
     is recorded -- a non-increasing version is refused unless ``allow_republish``.
+
+    ``publish_seq`` is the account's publish counter, required when the project sets
+    ``platform`` and ignored otherwise. It is passed in rather than fetched here: this
+    module builds, and taking a number is a call to the server. ``openmv-ota build
+    ota-romfs`` allocates it.
 
     Representation URLs are **relative filenames** -- artifacts are published together and the
     device resolves them against the manifest's own URL, so the signed manifest is
@@ -1131,6 +1141,12 @@ def build_ota_romfs(
     if not p.config.ota:
         raise BuildError("ota-romfs needs an OTA project (create with "
                          "`openmv-ota project new --ota`)", exit_code=1)
+    if p.config.platform and not publish_seq:
+        raise BuildError(
+            "this project sets `platform`, so every build takes the account's next publish "
+            "counter from the server -- log in (`openmv-ota client login`) and build again. "
+            "Cameras built with product_id 0 order their images by that counter, so a build "
+            "without one cannot be installed over anything.", exit_code=1)
     out_dir = Path(output) if output else project / "build"
     targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
     if not targets:
@@ -1155,6 +1171,7 @@ def build_ota_romfs(
     app_dir = Path(app) if app else project / "app"
     signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota",
                           key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
+    signer.publish_seq = int(publish_seq or 0)
     new_pv = signer.payload_version
 
     # 1) compile + sign the romfs bundle, then render the download image(s) from it.

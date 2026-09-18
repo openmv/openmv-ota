@@ -253,10 +253,38 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _publish_seq_for(project) -> int | None:
+    """The account's next publish counter, when this project needs one.
+
+    Only a project that sets ``platform`` does -- its cameras are built with product_id 0,
+    can be moved between product lines, and order their images by this rather than by a
+    per-product version. Allocated per build and as late as this, because the number has to
+    be close to publish order and must never be reused: a cached block of numbers would
+    break "freshly built implies higher", which is what a claim and a return rely on."""
+    from openmv_ota.client import config as client_config
+    from openmv_ota.client.api import Api
+    from openmv_ota.client.errors import ClientError
+    from openmv_ota.project.project import ProjectError, load_project
+
+    try:
+        p = load_project(Path(project))
+    except ProjectError:
+        return None                       # the build itself reports the real problem
+    if not p.config.platform:
+        return None
+    try:
+        return Api(client_config.resolve(None, None)).next_publish_seq()
+    except ClientError as e:
+        raise BuildError(
+            "this project sets `platform`, so the build needs the account's next publish "
+            "counter and the server would not give one: %s" % e, exit_code=e.exit_code) from None
+
+
 def cmd_ota_romfs(args: argparse.Namespace) -> int:
     try:
         results = build_mod.build_ota_romfs(
-            args.project, delta_from=args.delta_from, app=args.app,
+            args.project, publish_seq=_publish_seq_for(args.project),
+            delta_from=args.delta_from, app=args.app,
             output=args.output, boards=args.board, compile_py=args.compile_py,
             convert_models=args.convert_models, mpy_extra=args.mpy_arg,
             vela_extra=args.vela_arg, stedgeai_extra=args.stedgeai_arg,

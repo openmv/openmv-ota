@@ -60,6 +60,11 @@ class Api:
             params["display_name"] = display_name
         return self._req("POST", "/api/v1/admin/releases", files=files, params=params)
 
+    def next_publish_seq(self):
+        """Allocate this account's next publish counter -- the number a platform build
+        stamps into the image it is about to sign. See the admin API's ``/publish-seq``."""
+        return self._req("POST", "/api/v1/admin/publish-seq")["publish_seq"]
+
     def fleet_bases(self, product_id=None):
         """The distinct (version, body_sha256) bases the fleet is running, with device
         counts -- what `client release bases --fleet` plans deltas against."""

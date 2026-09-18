@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from openmv_ota.build import romfs as build_mod
 from openmv_ota.cli import main
 
@@ -521,3 +523,63 @@ def test_load_artifact_gz_not_delta(tmp_path):
     assert _load_artifact(tmp_path / "nope.bin") == (None, None)   # unreadable
     (tmp_path / "notgz.gz").write_bytes(b"\x1f\x8bnotgzip")        # gzip magic, bad stream
     assert _load_artifact(tmp_path / "notgz.gz") == (None, None)
+
+
+def test_publish_seq_is_taken_only_by_a_platform_project(make_project, monkeypatch):
+    """A project that does not set `platform` never talks to the server to build, which is
+    the point: the round trip is the cost of being able to move a camera between product
+    lines, and everyone else should not pay it."""
+    from openmv_ota.build import cli as build_cli
+
+    root, _repo, _app = make_project(ota=True, ca="tiny")
+    asked = []
+
+    class _Api:
+        def __init__(self, _cfg):
+            pass
+
+        def next_publish_seq(self):
+            asked.append(1)
+            return 7
+
+    monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
+    monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
+    monkeypatch.setattr("openmv_ota.client.api.Api", _Api)
+    assert build_cli._publish_seq_for(str(root)) is None and asked == []
+
+    cfg = root / "openmv-ota.toml"
+    cfg.write_text(cfg.read_text().replace("[ota]", "[ota]\nplatform = true\n", 1))
+    assert build_cli._publish_seq_for(str(root)) == 7 and asked == [1]
+
+
+def test_a_project_that_does_not_load_defers_to_the_build(tmp_path):
+    """`_publish_seq_for` runs before the build's own error reporting, so a broken project
+    must fall through rather than raise a worse message from the wrong place."""
+    from openmv_ota.build import cli as build_cli
+
+    assert build_cli._publish_seq_for(str(tmp_path / "nope")) is None
+
+
+def test_a_server_that_will_not_allocate_stops_the_build(make_project, monkeypatch):
+    """Failing closed. A platform build with no counter cannot be installed over anything,
+    so producing one would hand back an artifact that is quietly useless."""
+    from openmv_ota.build import cli as build_cli
+    from openmv_ota.build.errors import BuildError
+    from openmv_ota.client.errors import ClientError
+
+    root, _repo, _app = make_project(ota=True, ca="tiny")
+    cfg = root / "openmv-ota.toml"
+    cfg.write_text(cfg.read_text().replace("[ota]", "[ota]\nplatform = true\n", 1))
+
+    class _Api:
+        def __init__(self, _cfg):
+            pass
+
+        def next_publish_seq(self):
+            raise ClientError("401 not logged in")
+
+    monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
+    monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
+    monkeypatch.setattr("openmv_ota.client.api.Api", _Api)
+    with pytest.raises(BuildError, match="next publish counter"):
+        build_cli._publish_seq_for(str(root))

@@ -444,6 +444,12 @@ def status():  # pragma: no cover
     s["slot"] = slot
     s["fallback_reason"] = reason
     s["payload_version"] = version
+    # The running image's publish counter, and whether THIS camera orders by it. Only a
+    # PRODUCT_ID 0 camera does -- it can be moved between product lines, so a per-product
+    # version cannot order its images. Reported because the server cannot work it out:
+    # `product_id` in the check-in comes from the running image, not from the firmware.
+    s["publish_seq"] = int(getattr(_ota_config, "last_publish_seq", 0) or 0)
+    s["orders_by_seq"] = _ota_config.PRODUCT_ID == 0
     s["representation"] = _representation_of(sector)
     log.debug("status: read")                         # HIL path witness (runs every boot/checkin)
     return s  # hil-residual: bare return of the status dict
@@ -569,6 +575,12 @@ def _checkin_body(info, st, slot_states=None):
         "product": info.get("product"),
         "app_version": info.get("app_version"),
         "payload_version": int(st.get("payload_version", 0) or 0),
+        # WHICH NUMBER THIS CAMERA ORDERS BY, and the number itself. The server cannot
+        # infer it: `product_id` above comes from the RUNNING IMAGE's system.json, so a
+        # stock-lineage camera running some customer's image reports that customer's
+        # product and looks like any other. Only the firmware knows, so it says.
+        "publish_seq": int(st.get("publish_seq", 0) or 0),
+        "orders_by_seq": bool(st.get("orders_by_seq", False)),
         "slot": st.get("slot"),
         "representation": st.get("representation"),
         "fallback_reason": st.get("fallback_reason"),

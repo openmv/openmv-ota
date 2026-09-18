@@ -206,6 +206,21 @@ async def publish_release(request: Request, background: BackgroundTasks,
         raise HTTPException(status_code=409, detail="payload_version %d <= latest %d "
                             "(pass allow_republish=true to override)" % (payload_version, latest))
 
+    # The publish counter, when the build carries one. Checked per PRODUCT and not
+    # account-wide on purpose: concurrent builds finish out of order, and an account-wide
+    # gate would 409 a perfectly good publish for arriving second. Account-wide ordering is
+    # enforced where it actually matters -- at OFFER, where a release below a camera's floor
+    # is simply never handed to it.
+    publish_seq = int(body.get("publish_seq", 0) or 0)
+    if publish_seq:
+        seen = ms.newest_publish_seq(product_id, account_id=account_id)
+        if publish_seq <= seen:
+            raise HTTPException(
+                status_code=409,
+                detail="publish_seq %d <= this product's newest %d -- take a fresh one "
+                       "(each build allocates its own; reusing one means two artifacts a "
+                       "camera cannot order)" % (publish_seq, seen))
+
     image_bytes = await _read_capped(image, settings.max_image_bytes, "image")
     # REPEATABLE. A release ships one delta per base version still in the field, because a
     # device patches against the release it is RUNNING -- one delta reaches only the devices
@@ -242,6 +257,7 @@ async def publish_release(request: Request, background: BackgroundTasks,
 
     ms.add_release(release_id=release_id, product_id=product_id, product=body.get("product"),
                    version=body.get("version"), payload_version=payload_version,
+                   publish_seq=publish_seq,
                    min_platform_version=body.get("min_platform_version", 0),
                    image_sha256=body["sha256"], image_size=body["size"], representations=reps,
                    manifest_key=manifest_key, image_key=image_key,
