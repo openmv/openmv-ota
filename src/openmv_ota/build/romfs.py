@@ -35,6 +35,9 @@ class _OtaSigner:
     sig_alg: int        # COSE id
     alg: object         # AlgSpec
     backend: object     # a Signer (encrypted PEM / PKCS#11 / KMS / custom)
+    publish_seq: int = 0
+    """The account's publish counter for this build. 0 unless the project opts in --
+    only a platform building for PRODUCT_ID 0 cameras needs one."""
 
 
 def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
@@ -174,6 +177,7 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_si
         pad_size=pad_size,
         meta=system_info,
         product_id=int(system_info["product_id"]),
+        publish_seq=signer.publish_seq,
         min_platform_version=int(p.lock.firmware.get("version_code", 0)),
         payload_version=signer.payload_version,
         key_id=signer.key_id,
@@ -331,6 +335,18 @@ def _warn_stale_device_lib(p) -> None:
               "the bundled files over from the installed package "
               "(openmv_ota/build/device/openmv_ota/)." % ", ".join(stale),
               file=sys.stderr)
+
+
+def _rollback_key(system_info: dict, signer) -> int:
+    """What a camera running this image orders by -- the mirror of ``boot.rollback_key``.
+
+    A ``product_id`` of 0 turns the cross-flash guard off, so such a camera can be moved
+    between product lines and two products' version numbers say nothing about each other;
+    it orders by the account's publish counter instead. Every other camera orders by the
+    payload version, as it always has."""
+    if int(system_info["product_id"]) == 0:
+        return int(getattr(signer, "publish_seq", 0) or 0)
+    return signer.payload_version
 
 
 def _warn_unset_product_id(t, system_info: dict) -> None:
@@ -641,13 +657,13 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         for size, counter in slots:
             pad = size - overhead - len(body)
             # the status sector ships CONFIRMED + the counter + the anti-rollback floor
-            # seeded at the factory version (the device can never be downgraded below it;
-            # confirm() raises it as updates are kept)
+            # seeded at what the factory image orders by (the device can never be
+            # downgraded below it; confirm() raises it as updates are kept)
             image += _compose_slot(
                 body, pad,
                 status.build_status_sector(block, pending=False, tried=False, confirmed=True,
                                            counter=counter, stride=t.control_stride,
-                                           floor_version=signer.payload_version),
+                                           floor_key=_rollback_key(system_info, signer)),
                 _build_trailer(signer, p, body, system_info, pad), block, size)
 
         name = _target_name(t)

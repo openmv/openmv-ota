@@ -431,7 +431,7 @@ def test_ota_build_stamps_a_64_bit_product_id(make_project):
     t = parse_trailer(_read_bundle(r)[1])
     assert t.payload_version == encode_app_version("2.5.0")
     assert t.product_id.bit_length() > 32          # a real 64-bit id, not the old crc32
-    assert (HEADER_SIZE, HEADER_VERSION) == (80, 2)
+    assert (HEADER_SIZE, HEADER_VERSION) == (96, 3)
 
 
 def test_ota_build_warns_on_unset_product_id(make_project, capsys):
@@ -1456,3 +1456,20 @@ def test_dir_sourced_base_not_older_is_skipped_not_fatal(make_project, capsys):
                                   delta_from=bases / "OPENMV_N6-base-1.1.0.img.gz",
                                   compile_py=False, convert_models=False,
                                   allow_republish=True)
+
+
+def test_the_factory_floor_is_seeded_with_what_the_camera_orders_by():
+    """A stock build (product_id 0) can be moved between product lines, so it orders by
+    the account's publish counter; every other build orders by its payload version. The
+    factory sector seeds whichever one applies -- seed the wrong number and the first
+    update either sails past the floor or is refused by it."""
+    import types
+
+    from openmv_ota.build.romfs import _rollback_key
+
+    signer = types.SimpleNamespace(payload_version=0x01020300, publish_seq=4242)
+    assert _rollback_key({"product_id": 7}, signer) == 0x01020300
+    assert _rollback_key({"product_id": 0}, signer) == 4242
+    # a stock project that never opted in seeds 0: no floor, rather than a wrong one
+    assert _rollback_key({"product_id": 0}, types.SimpleNamespace(
+        payload_version=0x01020300, publish_seq=0)) == 0

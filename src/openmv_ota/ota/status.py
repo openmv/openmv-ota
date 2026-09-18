@@ -134,16 +134,18 @@ def encode_counter(value: int) -> bytes:
 
 def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bool,
                         counter: int | None = None, stride: int = DEFAULT_STRIDE,
-                        floor_version: int | None = None) -> bytes:
+                        floor_key: int | None = None) -> bytes:
     """A ``block``-sized status sector with the requested markers set (rest ``0xFF``).
 
     Under v2 both slots are real, updatable images and share one shape: an installed slot is
     ``pending`` (a trial) and becomes ``confirmed`` when the app keeps it. A provisioned board
     ships both slots already ``confirmed`` — they have nothing to prove — and ``counter`` orders
     them, so which one boots is decided by the same rule that decides it after every later
-    update rather than by a factory-only special case. ``floor_version`` seeds the
+    update rather than by a factory-only special case. ``floor_key`` seeds the
     anti-rollback floor region (``floor_offset``) with one entry — what the factory image
-    ships, and what the installer carries forward into every slot it writes."""
+    ships, and what the installer carries forward into every slot it writes. It is the
+    number this camera ORDERS by (``boot.rollback_key``): the image's ``payload_version``
+    normally, its ``publish_seq`` on a ``PRODUCT_ID = 0`` build."""
     from openmv_ota.ota import rollback
     sector = bytearray(b"\xff" * block)
     if pending:
@@ -158,7 +160,8 @@ def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bo
     if counter is not None:
         off = counter_offset(stride)
         sector[off:off + COUNTER_SIZE] = encode_counter(counter)
-    if floor_version is not None:
+    if floor_key is not None:
         off = floor_offset(stride)
-        sector[off:off + 8] = rollback.encode_entry(floor_version)
+        entry = rollback.encode_entry(floor_key)
+        sector[off:off + len(entry)] = entry
     return bytes(sector)

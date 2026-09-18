@@ -56,9 +56,9 @@ except ImportError:                    # host / tests / a build without logging 
 # --- Trailer format (mirror of openmv_ota.ota.trailer) ----------------------
 
 MAGIC = b"OMVR"                         # ROMFS application image
-HEADER_VERSION = 2
-_HEADER_STRUCT = "<4sIIIIIQIIIi32s"
-_HEADER_SIZE = struct.calcsize(_HEADER_STRUCT)   # 80
+HEADER_VERSION = 3
+_HEADER_STRUCT = "<4sIIIIIQQQIIIi32s"
+_HEADER_SIZE = struct.calcsize(_HEADER_STRUCT)   # 96
 _META_SIZE_OFFSET = struct.calcsize("<4sIII")    # 16
 _CRC_SIZE = 4
 # COSE alg id -> raw R||S signature length (mirror of openmv_ota.ota.algorithms).
@@ -111,8 +111,9 @@ _BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
 # Entries live in the TAIL of the status sector, past the attempt region (the mirror of
 # openmv_ota.ota.status.floor_offset) -- same writers, same 1->0 programming, and a sector
 # cycle only ever holds one or two entries (the carried floor + one raise).
-_ROLLBACK_ENTRY = 8                     # u32 version || u32 ~version
-_ROLLBACK_STRIDE = 8                    # entry spacing; stride-sized on ECC-word flash
+_ROLLBACK_ENTRY = 16                    # u64 key || u64 ~key (one flash write unit)
+_ROLLBACK_STRIDE = 16                   # entry spacing; stride-sized on ECC-word flash
+_MASK64 = 0xFFFFFFFFFFFFFFFF
 _FLOOR_OFF = 80 + 64 * 16               # attempts end; _set_stride re-derives
 
 
@@ -131,16 +132,30 @@ def _set_stride(stride):
 
 
 def _rollback_floor_of(sector):
-    """The highest valid version recorded in a rollback sector (0 if none)."""
+    """The highest valid key recorded in a rollback sector (0 if none)."""
     floor = 0
     i = 0
     n = len(sector)
     while i + _ROLLBACK_ENTRY <= n:  # entries sit _ROLLBACK_STRIDE apart
-        version, check = struct.unpack_from("<II", sector, i)
-        if (version ^ 0xFFFFFFFF) == check and version > floor:
-            floor = version
+        key, check = struct.unpack_from("<QQ", sector, i)
+        if (key ^ _MASK64) == check and key > floor:
+            floor = key
         i += _ROLLBACK_STRIDE
     return floor
+
+
+def rollback_key(t, product_id):
+    """The number this camera orders images by.
+
+    A camera built with a real ``product_id`` can never be offered another product's
+    image -- the cross-flash guard refuses it -- so its own product's version sequence
+    is a complete ordering, and that is what it has always used.
+
+    ``PRODUCT_ID = 0`` turns that guard off, which is how stock hardware becomes some
+    customer's unit after it ships. Such a camera CAN change product, and two product
+    lines' version numbers have nothing to say about each other -- so it orders by
+    ``publish_seq``, the account-wide publish counter, instead."""
+    return t.publish_seq if product_id == 0 else t.payload_version
 
 
 class OtaReject(Exception):
@@ -163,7 +178,7 @@ def parse_trailer(data):
     if len(data) < _HEADER_SIZE:
         raise OtaReject("trunc")
     (magic, header_version, body_size, pad_size, meta_size, sig_size, product_id,
-     min_platform_version, payload_version, key_id, sig_alg,
+     publish_seq, _reserved0, min_platform_version, payload_version, key_id, sig_alg,
      body_sha256) = struct.unpack_from(_HEADER_STRUCT, data, 0)
     if magic != MAGIC:
         raise OtaReject("magic")
@@ -183,6 +198,7 @@ def parse_trailer(data):
     t.body_size = body_size
     t.pad_size = pad_size
     t.product_id = product_id
+    t.publish_seq = publish_seq
     t.min_platform_version = min_platform_version
     t.payload_version = payload_version
     t.key_id = key_id
@@ -344,7 +360,7 @@ def evaluate_slot(body, status, trailer_bytes, rollback_floor,
         # security (an attacker who can force a trial to fail can force that downgrade anyway,
         # which the plan states outright as inherent to A/B) and costs the whole safety net.
         return t, False                                 # ran and was kept; boot it, consume nothing
-    if t.payload_version < rollback_floor:              # anti-rollback, for anything unproven
+    if rollback_key(t, product_id) < rollback_floor:    # anti-rollback, for anything unproven
         raise OtaReject("rollback")
     if pending:
         # A trial gets max_attempts boots to confirm, not one. The costs are lopsided: a FALSE
@@ -488,6 +504,8 @@ class OtaBoot:
 
 last_slot = None              # 'A' or 'B'
 last_payload_version = 0      # the mounted image's payload_version
+last_publish_seq = 0          # ...and its publish_seq; confirm() raises the floor to
+                              # whichever of the two this camera orders by
 last_failure_reason = None    # why the OTHER slot was rejected, if this one is a fallback
 
 
@@ -587,13 +605,14 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         log.warning("boot: rejected %s -> mounted %s (payload %d)"
                     % (reject_reason, slot, trailer.payload_version))
 
-    global last_slot, last_payload_version, last_failure_reason
-    last_slot, last_payload_version, last_failure_reason = (
-        slot, trailer.payload_version, reject_reason)
+    global last_slot, last_payload_version, last_publish_seq, last_failure_reason
+    last_slot, last_payload_version, last_publish_seq, last_failure_reason = (
+        slot, trailer.payload_version, trailer.publish_seq, reject_reason)
     # Mirror onto _ota_config, the module the app's openmv_ota lib reads (both import it,
     # and modules are cached, so this persists in-VM without re-running boot.py).
     cfg.last_slot = slot
     cfg.last_payload_version = trailer.payload_version
+    cfg.last_publish_seq = trailer.publish_seq
     cfg.last_failure_reason = reject_reason
 
     os.chdir("/rom")
