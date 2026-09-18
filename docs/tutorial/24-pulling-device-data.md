@@ -1,6 +1,6 @@
 # Pulling device data
 
-*[← 23 · The admin API](23-admin-api.md) · [Index](00-introduction.md)*
+*[← 23 · The admin API](23-admin-api.md) · [Index](00-introduction.md) · [25 · Integrating as a platform →](25-platform-integration.md)*
 
 ---
 
@@ -148,4 +148,4 @@ The datalake's own endpoint reference is at `https://data.cloud.openmv.io/docs`.
 
 ---
 
-*[← 23 · The admin API](23-admin-api.md) · [Index](00-introduction.md)*
+*[← 23 · The admin API](23-admin-api.md) · [Index](00-introduction.md) · [25 · Integrating as a platform →](25-platform-integration.md)*

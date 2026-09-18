@@ -311,8 +311,15 @@ class FleetSummary(BaseModel):
 class AccountCreated(BaseModel):
     account_id: str
     name: str
-    token: str
-    """The account's first admin token. Returned ONCE, here — it is not recoverable."""
+    token: str | None
+    """The account's first admin token. Returned ONCE, here — it is not recoverable.
+    ``null`` on a repeated create (see ``created``): the token was handed over on the
+    call that made the account, and minting a second one on a retry would leave a live
+    credential nobody is tracking."""
+    created: bool = True
+    """False when this call matched an existing ``client_ref`` and returned that account
+    instead of making another."""
+    client_ref: str = ""
 
 
 class AccountNamed(BaseModel):
@@ -478,6 +485,21 @@ class Product(BaseModel):
 class ProductList(BaseModel):
     products: list[Product]
     total: int = 0
+
+
+class ProductDeclared(BaseModel):
+    product_id: int
+    product_id_str: str = ""
+    """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
+    id loses precision in JSON.parse -- silently. Read this one from JS."""
+    display_name: str
+    created: bool = True
+    """False when the product was already known to this account."""
+
+
+class DeviceForgotten(BaseModel):
+    device_id: str
+    forgotten: bool = True
 
 
 class ProductRenamed(BaseModel):

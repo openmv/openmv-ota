@@ -483,6 +483,36 @@ def test_bind_device(wired, tmp_path, capsys):
     assert store.device_account("d1")["source"] == "admin"
 
 
+def test_forget_device(wired, tmp_path, capsys):
+    """The install ended. The device leaves the fleet; what it installed stays."""
+    store, _ = wired
+    store.upsert_device(device_id="d1", product_id=BID)
+    assert main(["client", "device", "forget", "--device-id", "d1"]) == 0
+    assert "device d1 removed from the fleet" in capsys.readouterr().out
+    assert store.get_device("d1") is None
+    assert main(["client", "device", "forget", "--device-id", "d1"]) == 1   # gone is a 404
+    assert "404" in capsys.readouterr().err
+
+
+def test_product_create(wired, tmp_path, capsys):
+    """Declared before anything is published to it, then declared again."""
+    store, _ = wired
+    assert main(["client", "product", "create", "--product-id", "4242",
+                 "--name", "Workflow runner"]) == 0
+    assert "product 4242 created" in capsys.readouterr().out
+    assert store.product_names()[4242] == "Workflow runner"
+    assert main(["client", "product", "create", "--product-id", "4242"]) == 0
+    assert "product 4242 already known" in capsys.readouterr().out
+
+
+def test_product_create_error_surfaced(wired, tmp_path, capsys, monkeypatch):
+    store, app = wired
+    store.add_token(hash_token("lim"), "partner", ["manage"], account_id="", products=[1])
+    monkeypatch.setenv("OPENMV_OTA_TOKEN", "lim")
+    assert main(["client", "product", "create", "--product-id", "4242"]) == 1
+    assert "404" in capsys.readouterr().err
+
+
 def _wire_super_admin(tmp_path, monkeypatch, scopes):
     app, store = _server(tmp_path, scopes=scopes)
     tc = TestClient(app)
@@ -499,6 +529,13 @@ def test_account_create_and_list(tmp_path, monkeypatch, capsys):
     assert "created" in out and "working token" in out
     assert main(["client", "account", "list"]) == 0
     assert "DroneCo" in capsys.readouterr().out
+    # a --client-ref makes the call safe to retry: the same account, and no second token
+    assert main(["client", "account", "create", "--name", "Acme",
+                 "--client-ref", "ws_42"]) == 0
+    assert "working token" in capsys.readouterr().out
+    assert main(["client", "account", "create", "--name", "Acme",
+                 "--client-ref", "ws_42"]) == 0
+    assert "already exists for that --client-ref" in capsys.readouterr().out
 
 
 def test_account_error_surfaced(tmp_path, monkeypatch, capsys):
@@ -509,7 +546,7 @@ def test_account_error_surfaced(tmp_path, monkeypatch, capsys):
 
 def test_account_lifecycle_verbs(tmp_path, monkeypatch, capsys):
     store = _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts",))
-    store.add_account("acctA", "A")
+    store.add_account(created_by="ci", account_id="acctA", name="A")
     store.add_token(hash_token("x"), "t", ["observe"], account_id="acctA")   # a token to revoke
     assert main(["client", "account", "rename", "--account-id", "acctA", "--name", "New"]) == 0
     assert "renamed to New" in capsys.readouterr().out
@@ -527,7 +564,7 @@ def test_account_lifecycle_verbs(tmp_path, monkeypatch, capsys):
 
 def test_token_verbs(tmp_path, monkeypatch, capsys):
     store = _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts",))
-    store.add_account("acctA", "A")
+    store.add_account(created_by="ci", account_id="acctA", name="A")
     assert main(["client", "token", "issue", "--account-id", "acctA", "--name", "ci"]) == 0
     assert "issued for acctA" in capsys.readouterr().out
     th = store.list_tokens(account_id="acctA")[0]["token_hash"]
@@ -626,8 +663,9 @@ def test_write_verbs_emit_the_servers_own_response(monkeypatch, capsys):
     from openmv_ota.client import cli as ccli
 
     class FakeApi:
-        def create_account(self, name):
-            return {"account_id": "acct_1", "name": name, "token": "SECRET", "extra": 1}
+        def create_account(self, name, client_ref=None):
+            return {"account_id": "acct_1", "name": name, "token": "SECRET", "extra": 1,
+                    "created": True, "client_ref": client_ref or ""}
 
     monkeypatch.setattr(ccli, "_make_api", lambda cfg: FakeApi())
     monkeypatch.setattr(ccli.config, "resolve",

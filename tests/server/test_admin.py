@@ -572,7 +572,7 @@ def test_accounts_endpoint_requires_super_admin(tmp_path):
 
 def test_token_management_api(tmp_path):
     app, store = _app(tmp_path, scopes=("accounts",))
-    store.add_account("acctA", "A")
+    store.add_account(created_by="ci", account_id="acctA", name="A")
     c = TestClient(app)
     # issue with default (worker) scopes; the secret is returned exactly here
     body = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH, json={"name": "ci"}).json()
@@ -602,7 +602,7 @@ def test_token_management_api(tmp_path):
     # names are unique among an account's LIVE tokens (the audit actor); revoking frees one
     dup = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH, json={"name": "ops"})
     assert dup.status_code == 409 and "ops" in dup.json()["detail"]
-    store.add_account("acctB", "B")
+    store.add_account(created_by="ci", account_id="acctB", name="B")
     assert c.post("/api/v1/admin/accounts/acctB/tokens", headers=AUTH,
                   json={"name": "ops"}).status_code == 200          # other account: fine
     assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
@@ -628,7 +628,7 @@ def test_token_management_api(tmp_path):
 
 def test_token_rotate_api(tmp_path):
     app, store = _app(tmp_path, scopes=("accounts",))
-    store.add_account("acctA", "A")
+    store.add_account(created_by="ci", account_id="acctA", name="A")
     c = TestClient(app)
     th = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                 json={"name": "ci", "scopes": ["manage"]}).json()["token_hash"]
@@ -645,7 +645,7 @@ def test_token_rotate_api(tmp_path):
 
 def test_account_lifecycle_api(tmp_path):
     app, store = _app(tmp_path, scopes=("accounts",))
-    store.add_account("acctA", "A")
+    store.add_account(created_by="ci", account_id="acctA", name="A")
     c = TestClient(app)
     # rename
     assert c.patch("/api/v1/admin/accounts/acctA", headers=AUTH,
@@ -681,7 +681,7 @@ def test_account_name_validation_api(tmp_path):
     assert c.post("/api/v1/admin/accounts", headers=AUTH, json={"name": "DroneCo"}).status_code == 200
     assert c.post("/api/v1/admin/accounts", headers=AUTH,       # case-insensitive dup
                   json={"name": "droneco"}).status_code == 409
-    store.add_account("acctX", "LockCo")
+    store.add_account(created_by="ci", account_id="acctX", name="LockCo")
     assert c.patch("/api/v1/admin/accounts/acctX", headers=AUTH, json={"name": " "}).status_code == 400
     assert c.patch("/api/v1/admin/accounts/acctX", headers=AUTH,
                    json={"name": "DroneCo"}).status_code == 409
@@ -692,7 +692,7 @@ def test_account_name_validation_api(tmp_path):
 def test_token_management_needs_accounts_scope(tmp_path):
     # a worker token (manage) must NOT mint/list/revoke/rotate -> a stolen worker token is a dead end
     app, store = _app(tmp_path, scopes=("manage", "observe"))
-    store.add_account("acctA", "A")
+    store.add_account(created_by="ci", account_id="acctA", name="A")
     c = TestClient(app)
     assert c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
                   json={"name": "x"}).status_code == 403

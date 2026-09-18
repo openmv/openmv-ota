@@ -252,7 +252,7 @@ async def publish_release(request: Request, background: BackgroundTasks,
     ms.append_audit(actor=principal.name, action="release.publish", entity_type="release",
                     entity_id=release_id, data={"product_id": product_id, "version": body.get("version"),
                                                 "payload_version": payload_version},
-                    account_id=account_id)
+                    account_id=account_id, product_id=product_id)
     # CVE monitoring starts NOW, not at the next daily pass: scan the new release's
     # SBOM in the background (a scan failure never touches the publish result).
     if sbom_key is not None:

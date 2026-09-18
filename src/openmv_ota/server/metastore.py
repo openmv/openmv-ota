@@ -335,6 +335,48 @@ _MIGRATIONS: list[list[str]] = [
         "UPDATE devices SET device_id = board || ':' || device_id "
         "WHERE board IS NOT NULL AND board != '' AND device_id NOT LIKE '%:%'",
     ],
+    [   # v24 -- an account remembers which operator credential created it, and the
+        # caller's own reference for it. A server can carry more than one operator: our
+        # own website, and a platform that resells the service to ITS customers. Without
+        # this, `GET /accounts` hands every operator the whole tenant directory, and
+        # account names have to be unique across all of them -- so two platforms cannot
+        # both have a customer called "Acme", and the 409 that says so is a way to
+        # enumerate the other platform's customers.
+        #
+        # `client_ref` is the creator's own id for the account (a Roboflow workspace id,
+        # say). It makes creation idempotent: a retry after a timeout returns the
+        # account that already exists instead of a second one or an ambiguous 409.
+        "ALTER TABLE accounts ADD COLUMN created_by TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE accounts ADD COLUMN client_ref TEXT NOT NULL DEFAULT ''",
+        "CREATE UNIQUE INDEX IF NOT EXISTS accounts_client_ref "
+        "ON accounts (created_by, client_ref) WHERE client_ref != ''",
+        # Existing accounts already know who made them: `account.create` records the
+        # calling credential's name as its actor. Without this backfill every account on
+        # a running server would be owned by nobody, and the website that created them
+        # would get a 404 the next time it set a device limit -- a filter added for a
+        # partner who is not onboarded yet, breaking the operator who is.
+        "UPDATE accounts SET created_by = COALESCE(("
+        "  SELECT a.actor FROM audit a WHERE a.action = 'account.create' "
+        "  AND a.entity_id = accounts.account_id ORDER BY a.seq LIMIT 1), '')",
+        # ...and an existing `accounts` token keeps the authority it already had. It
+        # could manage every account on this server a moment ago; a migration is not the
+        # place to take that away silently. New tokens get the narrower scope, which is
+        # what a partner is issued.
+        "UPDATE admin_tokens SET scopes = scopes || ',accounts.all' "
+        "WHERE scopes LIKE '%accounts%' AND scopes NOT LIKE '%accounts.all%'",
+    ],
+    [   # v25 -- an audit row remembers the product it happened to, where there is one.
+        # A product-limited token could not read the log AT ALL (an audit row records an
+        # action, not a product, so there was nothing to filter it by) -- which is the
+        # wrong answer for a platform that hands each of its customers a credential for
+        # one product: they got a fleet they could drive and no history of it.
+        #
+        # It is deliberately NOT part of the hash chain. The chain covers what the entry
+        # ASSERTS -- who did what, to which entity, when. This column is an index onto
+        # the same act, added so a read can be filtered; folding it into the hash would
+        # invalidate every entry already written.
+        "ALTER TABLE audit ADD COLUMN product_id BIGINT",
+    ],
 ]
 
 
@@ -782,6 +824,22 @@ class SqlMetadataStore:
     def get_device(self, device_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
 
+    def forget_device(self, device_id: str) -> None:
+        """Remove a device from the fleet: its row and its account binding.
+
+        What is NOT removed is its install history. A deployment row says what happened
+        on a day that has already passed, and rollout counters and `/fleet/installs` are
+        built from those rows -- deleting them would quietly restate history to say the
+        installs never happened. The device is gone; what it did is not.
+
+        Nor is the audit touched: it is append-only and hash-chained, and the removal is
+        itself an entry in it.
+
+        A camera that checks in again after this is simply a device the server has not
+        seen before -- it enrols from scratch, with a `learned` binding."""
+        self.execute("DELETE FROM device_accounts WHERE device_id = ?", (device_id,))
+        self.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
+
     # --- sticky device -> account binding (the authoritative account for the device path) ----
 
     def bind_device_account(self, device_id: str, account_id: str, *, source: str) -> None:
@@ -918,7 +976,11 @@ class SqlMetadataStore:
                                 "FROM devices " + where + " GROUP BY product_id, pv", params):
             by_pv.setdefault(r["product_id"], []).append((r["pv"], r["n"]))
         rows = []
-        for pid in {*devs, *rels}:
+        # The DECLARED products (POST /products) join the ones seen on a device or a
+        # release, so a project appears in the directory the moment it is created --
+        # before it has either, which is when a platform wants to name it and bind its
+        # first cameras. Declared ids go through the same allow-list as the rest.
+        for pid in {*devs, *rels, *self.declared_products(account_id, products=products)}:
             manifest = (newest.get(pid) or {}).get("product")
             npv = (newest.get(pid) or {}).get("payload_version")
             up = (sum(n for pv, n in by_pv.get(pid, []) if pv is not None and pv >= npv)
@@ -953,6 +1015,16 @@ class SqlMetadataStore:
         return {r["product_id"]: r["display_name"] for r in self.query_all(
             "SELECT product_id, display_name FROM products " + where, params)
             if r["display_name"]}
+
+    def declared_products(self, account_id=None, products=None) -> set:
+        """The product ids this account has DECLARED, named or not.
+
+        ``product_names`` cannot answer this: it drops rows with no display name, and a
+        product declared before it has a release often has no name yet -- declaring it is
+        how a platform reserves the id and starts binding cameras to it."""
+        where, params = _scope(account_id, products=products)
+        return {r["product_id"] for r in
+                self.query_all("SELECT product_id FROM products " + where, params)}
 
     def set_product_name(self, product_id: int, name: str, account_id: str = "") -> None:
         """Set a product's display name (empty = clear). A label only: the product id
@@ -1340,22 +1412,50 @@ class SqlMetadataStore:
 
     # --- accounts (tenants) -----------------------------------------------------------------
 
-    def add_account(self, account_id: str, name: str) -> None:
-        self.execute("INSERT INTO accounts (account_id, name, created_at) VALUES (?,?,?)",
-                     (account_id, name, _now_iso()))
+    def add_account(self, account_id: str, name: str, *, created_by: str = "",
+                    client_ref: str = "") -> None:
+        self.execute("INSERT INTO accounts (account_id, name, created_at, created_by, client_ref) "
+                     "VALUES (?,?,?,?,?)",
+                     (account_id, name, _now_iso(), created_by, client_ref))
+
+    def account_by_client_ref(self, created_by: str, client_ref: str) -> dict | None:
+        """The account this operator already created under its own reference, or None.
+
+        What makes creation safe to retry: the caller asks again with the same
+        ``client_ref`` and gets the same account back rather than a duplicate."""
+        return _d(self.query_one(
+            "SELECT * FROM accounts WHERE created_by = ? AND client_ref = ? AND client_ref != ''",
+            (created_by, client_ref)))
 
     def get_account(self, account_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM accounts WHERE account_id = ?", (account_id,)))
 
-    def list_accounts(self) -> list[dict]:
-        return [_d(r) for r in self.query_all("SELECT * FROM accounts ORDER BY created_at")]
+    def list_accounts(self, created_by: str | None = None) -> list[dict]:
+        """Every account, or only the ones ``created_by`` this operator credential.
 
-    def account_name_exists(self, name: str, except_id: str | None = None) -> bool:
-        """Whether another account already uses ``name`` (case-insensitive). ``except_id`` excludes
-        one account (so a rename to the same name is fine)."""
-        return self.query_one(
-            "SELECT 1 FROM accounts WHERE LOWER(name) = LOWER(?) AND account_id <> ?",
-            (name, except_id or "")) is not None
+        None is the server operator's view. A string is a tenant-of-a-tenant view: a
+        platform reselling this service sees the customers it provisioned and not that
+        anyone else exists."""
+        if created_by is None:
+            return [_d(r) for r in self.query_all("SELECT * FROM accounts ORDER BY created_at")]
+        return [_d(r) for r in self.query_all(
+            "SELECT * FROM accounts WHERE created_by = ? ORDER BY created_at", (created_by,))]
+
+    def account_name_exists(self, name: str, except_id: str | None = None,
+                            created_by: str | None = None) -> bool:
+        """Whether another account already uses ``name`` (case-insensitive). ``except_id``
+        excludes one account (so a rename to the same name is fine).
+
+        ``created_by`` narrows the question to one operator's own accounts, which is the
+        only scope in which it is a real answer: two platforms reselling this server have
+        no reason to share a namespace, and a 409 that crosses between them both blocks a
+        legitimate name and reveals that the other platform has a customer by that name."""
+        sql = "SELECT 1 FROM accounts WHERE LOWER(name) = LOWER(?) AND account_id <> ?"
+        params: list = [name, except_id or ""]
+        if created_by is not None:
+            sql += " AND created_by = ?"
+            params.append(created_by)
+        return self.query_one(sql, tuple(params)) is not None
 
     def rename_account(self, account_id: str, name: str) -> None:
         self.execute("UPDATE accounts SET name = ? WHERE account_id = ?", (name, account_id))
@@ -1433,7 +1533,11 @@ class SqlMetadataStore:
     # --- the hash-chained audit log ---------------------------------------------------------
 
     def append_audit(self, *, actor, action, entity_type=None, entity_id=None, data=None,
-                     account_id="") -> int:
+                     account_id="", product_id=None) -> int:
+        """Append one entry. ``product_id`` is the product the act happened to, where the
+        caller knows one -- it is what lets a product-limited credential read its own
+        history, and it is stored beside the chain rather than inside it (see the v25
+        migration)."""
         last = self.query_one("SELECT seq, entry_hash FROM audit ORDER BY seq DESC LIMIT 1")
         seq = (last["seq"] + 1) if last else 1
         prev = last["entry_hash"] if last else ""
@@ -1442,17 +1546,28 @@ class SqlMetadataStore:
         entry = _audit_hash(prev, ts, actor, action, entity_type, entity_id, payload)
         self.execute(
             "INSERT INTO audit (seq, ts, actor, action, entity_type, entity_id, data, prev_hash, "
-            "entry_hash, account_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry, account_id))
+            "entry_hash, account_id, product_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry, account_id,
+             None if product_id is None else int(product_id)))
         return seq
 
     AUDIT_SORTS = {"when": "seq", "action": "action", "actor": "actor", "entity": "entity_id"}
 
     @staticmethod
     def _audit_where(since_seq, account_id, entity_id, action_not=None,
-                     action=None) -> tuple[str, list]:
+                     action=None, products=None) -> tuple[str, list]:
         sql = "WHERE seq > ?"
         params = [since_seq]
+        if products is not None:
+            # A product-limited credential sees its products' history and nothing else --
+            # including nothing of the rows that belong to no product (account and token
+            # administration), which are the account's business, not its customer's. An
+            # empty allow-list is a token scoped to nothing, and `IN ()` is a syntax error.
+            if not products:
+                sql += " AND 1 = 0"
+            else:
+                sql += " AND product_id IN (%s)" % ",".join("?" * len(products))
+                params.extend(int(pid) for pid in products)
         if account_id is not None:
             sql += " AND account_id = ?"
             params.append(account_id)
@@ -1497,18 +1612,20 @@ class SqlMetadataStore:
         return out
 
     def count_audit(self, since_seq: int = 0, account_id=None, entity_id=None,
-                    action_not=None, action=None) -> int:
-        where, params = self._audit_where(since_seq, account_id, entity_id, action_not, action)
+                    action_not=None, action=None, products=None) -> int:
+        where, params = self._audit_where(since_seq, account_id, entity_id, action_not, action,
+                                          products)
         return self.query_one("SELECT COUNT(*) AS n FROM audit " + where, tuple(params))["n"]
 
     def read_audit(self, limit: int = 100, since_seq: int = 0, account_id=None,
                    entity_id: str | None = None, newest: bool = False, sort=None,
                    direction=None, offset: int = 0, action_not=None,
-                   action=None) -> list[dict]:
+                   action=None, products=None) -> list[dict]:
         """``newest`` flips the window to the most RECENT events (a history view);
         the default keeps append order (a log tail via ``since``). ``sort``/``direction``
         (when/action/actor/entity) generalise both; ``offset`` pages."""
-        where, params = self._audit_where(since_seq, account_id, entity_id, action_not, action)
+        where, params = self._audit_where(since_seq, account_id, entity_id, action_not, action,
+                                          products)
         sql = "SELECT * FROM audit " + where
         if sort in self.AUDIT_SORTS:
             sql += _order(sort, direction, self.AUDIT_SORTS, "seq", "seq")

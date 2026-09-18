@@ -21,7 +21,7 @@ from .schemas import (
     AccountList,
     AccountNamed,
     AdvisoryList,
-    ProductList, ProductRenamed, ProductViewerGrant,
+    ProductDeclared, ProductList, ProductRenamed, ProductViewerGrant,
     AdvisoryScan,
     AuditList,
     CohortAssigned,
@@ -32,6 +32,7 @@ from .schemas import (
     CohortRenamed,
     Device,
     DeviceBound,
+    DeviceForgotten,
     DeviceList,
     DevicePinned,
     ActivityList,
@@ -50,7 +51,7 @@ from .schemas import (
     TokenRevoked,
     ViewerGrant,
 )
-from .scopes import ALL_SCOPES, SCOPES, expand
+from .scopes import ACCOUNT_ROOT, ALL_SCOPES, SCOPES, expand
 
 admin = APIRouter(prefix="/api/v1/admin")
 
@@ -150,43 +151,98 @@ class CohortPin(BaseModel):
 
 class AccountCreate(BaseModel):
     name: str
+    client_ref: str | None = None
+    """The caller's own id for this account (a workspace id in the platform that is
+    provisioning it). Optional, and the thing that makes creation safe to retry: ask
+    again with the same `client_ref` and the account you already made comes back, with
+    `created: false` and no new token, instead of a second account or a 409 you cannot
+    tell apart from someone else's name."""
 
 
-def _clean_name(ms, name, except_id=None):
-    """A non-empty, unique (case-insensitive) account name, or an HTTPException (400 empty / 409
-    taken). Shared by create + rename so both enforce the same rule."""
+def _owner(principal) -> str | None:
+    """The operator identity accounts are filed under, or None for the server's own root.
+
+    A token with ``accounts.all`` is the operator of the SERVER and sees everything. Any
+    other ``accounts`` token is an operator of its own customers -- our website, or a
+    platform reselling this server -- and is filed under its token name."""
+    return None if ACCOUNT_ROOT in principal.scopes else principal.name
+
+
+def _clean_name(ms, name, except_id=None, owner=None):
+    """A non-empty account name, unique among ``owner``'s accounts (case-insensitive), or an
+    HTTPException (400 empty / 409 taken). Shared by create + rename so both enforce the same
+    rule.
+
+    Uniqueness stops at the operator who created the account. Server-wide uniqueness read as
+    one namespace for everyone, which is wrong twice over: two platforms reselling this
+    server cannot both have a customer called "Acme", and the 409 telling them so is a way
+    to ask whether the other platform has one."""
     name = (name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="account name must not be empty")
-    if ms.account_name_exists(name, except_id):
+    if ms.account_name_exists(name, except_id, created_by=owner):
         raise HTTPException(status_code=409, detail="an account named %r already exists" % name)
     return name
+
+
+def _owned_account(ms, account_id: str, principal):
+    """The account, or 404 unless this credential provisioned it.
+
+    404 and not 403: an operator must not be able to learn that another operator's
+    account exists by the shape of the refusal."""
+    acc = ms.get_account(account_id)
+    owner = _owner(principal)
+    if acc is None or (owner is not None and (acc.get("created_by") or "") != owner):
+        raise HTTPException(status_code=404)
+    return acc
 
 
 @admin.post("/accounts", responses={200: {"model": AccountCreated}})
 def create_account(body: AccountCreate, request: Request,
                    principal: Principal = Depends(require_scope("accounts"))):
     """Operator-only (``accounts``): create a tenant account + issue its first admin token.
-    The remote equivalent of ``server account create``; the website (or a self-host super-admin)
-    drives it. The token is returned once and only its hash is stored."""
+    The remote equivalent of ``server account create``; the website, a self-host
+    super-admin, or a platform provisioning its own customers drives it. The token is
+    returned once and only its hash is stored.
+
+    The account is filed under the credential that created it. That operator then sees it
+    in `GET /accounts` and may manage it; another operator on the same server cannot, and
+    cannot see that it exists.
+
+    Pass `client_ref` and the call becomes idempotent -- see the field."""
     ms = request.app.state.metastore
-    name = _clean_name(ms, body.name)
+    owner = _owner(principal) or principal.name
+    if body.client_ref:
+        seen = ms.account_by_client_ref(owner, body.client_ref)
+        if seen is not None:
+            # The token is NOT reissued: it was handed over once, the caller either kept
+            # it or rotates it, and minting a fresh one on a retry would leave a live
+            # credential nobody is tracking.
+            return {"account_id": seen["account_id"], "name": seen["name"], "token": None,
+                    "created": False, "client_ref": body.client_ref}
+    name = _clean_name(ms, body.name, owner=_owner(principal))
     account_id = "acct_" + secrets.token_hex(8)
     token = secrets.token_urlsafe(32)
-    ms.add_account(account_id, name)
+    ms.add_account(account_id, name, created_by=owner, client_ref=body.client_ref or "")
     ms.add_token(hash_token(token), name, list(SCOPES), account_id=account_id)
     ms.append_audit(actor=principal.name, action="account.create", entity_type="account",
                     entity_id=account_id, data={"name": name},
                     account_id=principal.account_id)
-    return {"account_id": account_id, "name": name, "token": token}
+    return {"account_id": account_id, "name": name, "token": token, "created": True,
+            "client_ref": body.client_ref or ""}
 
 
 @admin.get("/accounts", responses={200: {"model": AccountList}})
 def list_accounts(request: Request,
                   principal: Principal = Depends(require_scope("accounts"))):
     """The operator's account directory. Operator scope, not an account credential:
-    a normal account token can neither list accounts nor see another one exists."""
-    return {"accounts": request.app.state.metastore.list_accounts()}
+    a normal account token can neither list accounts nor see another one exists.
+
+    An `accounts` credential sees the accounts IT provisioned. Only `accounts.all` -- the
+    server's own root -- sees every account on the server. Without that split, handing a
+    partner the ability to create customers also hands them the customer list of everyone
+    else on the server."""
+    return {"accounts": request.app.state.metastore.list_accounts(created_by=_owner(principal))}
 
 
 class AccountPatch(BaseModel):
@@ -198,9 +254,8 @@ def patch_account(account_id: str, body: AccountPatch, request: Request,
                   principal: Principal = Depends(require_scope("accounts"))):
     """Rename an account or change its contact address. Operator scope."""
     ms = request.app.state.metastore
-    if ms.get_account(account_id) is None:
-        raise HTTPException(status_code=404)
-    name = _clean_name(ms, body.name, except_id=account_id)
+    _owned_account(ms, account_id, principal)
+    name = _clean_name(ms, body.name, except_id=account_id, owner=_owner(principal))
     ms.rename_account(account_id, name)
     ms.append_audit(actor=principal.name, action="account.rename", entity_type="account",
                     entity_id=account_id, data={"name": name}, account_id=principal.account_id)
@@ -218,8 +273,7 @@ def set_account_limit(account_id: str, body: AccountLimit, request: Request,
     Enforced for NEW devices at check-in; devices already registered are never dropped.
     ``null`` lifts the limit."""
     ms = request.app.state.metastore
-    if ms.get_account(account_id) is None:
-        raise HTTPException(status_code=404)
+    _owned_account(ms, account_id, principal)
     if body.device_limit is not None and body.device_limit < 0:
         raise HTTPException(status_code=400, detail="device_limit must be >= 0 or null")
     ms.set_device_limit(account_id, body.device_limit)
@@ -240,8 +294,7 @@ def deactivate_account(account_id: str, request: Request, body: TokenActor | Non
     `actor` names the person on whose behalf an operator credential is calling, as
     token revoke and rotate already do; the operator is kept as `via`."""
     ms = request.app.state.metastore
-    if ms.get_account(account_id) is None:
-        raise HTTPException(status_code=404)
+    _owned_account(ms, account_id, principal)
     n = ms.revoke_account_tokens(account_id)
     ms.set_account_active(account_id, False)
     # `actor` names the PERSON, the way revoke and rotate already allow: a console
@@ -260,8 +313,7 @@ def activate_account(account_id: str, request: Request,
                      principal: Principal = Depends(require_scope("accounts"))):
     """Re-enable an account (active=1). Does NOT un-revoke old tokens -- issue fresh ones."""
     ms = request.app.state.metastore
-    if ms.get_account(account_id) is None:
-        raise HTTPException(status_code=404)
+    _owned_account(ms, account_id, principal)
     ms.set_account_active(account_id, True)
     ms.append_audit(actor=principal.name, action="account.activate", entity_type="account",
                     entity_id=account_id, account_id=principal.account_id)
@@ -313,12 +365,12 @@ def _mint(ms, principal, name, scopes, account_id, action, extra=None, actor=Non
             "products": list(products), "token": token}
 
 
-def _active_account(ms, account_id):
-    """The account, requiring it to exist (404) and be active (409). Gate for minting tokens --
-    a deactivated account must never get a fresh working credential (issue *or* rotate)."""
-    acc = ms.get_account(account_id)
-    if acc is None:
-        raise HTTPException(status_code=404)
+def _active_account(ms, account_id, principal):
+    """The account, requiring that this credential provisioned it (404) and that it is active
+    (409). Gate for minting tokens -- a deactivated account must never get a fresh working
+    credential (issue *or* rotate), and one operator must never mint a credential into
+    another operator's account."""
+    acc = _owned_account(ms, account_id, principal)
     if not acc["active"]:
         raise HTTPException(status_code=409, detail="account is deactivated")
     return acc
@@ -335,7 +387,7 @@ def issue_token(account_id: str, body: TokenIssue, request: Request,
     and a dashboard that only reads needs `observe`. `accounts` is the operator scope
     and is not implied by any of the others."""
     ms = request.app.state.metastore
-    _active_account(ms, account_id)                            # 404 missing / 409 deactivated
+    _active_account(ms, account_id, principal)                 # 404 not ours / 409 deactivated
     scopes = body.scopes if body.scopes is not None else list(SCOPES)
     bad = [s for s in scopes if s not in ALL_SCOPES]
     if bad:
@@ -359,8 +411,7 @@ def list_account_tokens(account_id: str, request: Request,
     """The account's tokens: name, scopes, when issued, whether revoked -- never the
     token itself, which exists only in the response that created it."""
     ms = request.app.state.metastore
-    if ms.get_account(account_id) is None:
-        raise HTTPException(status_code=404)
+    _owned_account(ms, account_id, principal)
     return {"tokens": ms.list_tokens(account_id=account_id)}   # metadata only -- never the secret
 
 
@@ -373,6 +424,7 @@ def revoke_token(token_hash: str, request: Request, body: TokenActor | None = No
     old = ms.get_token(token_hash)
     if old is None:
         raise HTTPException(status_code=404)
+    _owned_account(ms, old["account_id"], principal)    # not ours: not even its existence
     ms.revoke_token(token_hash)
     who, via = _audit_actor(principal, body.actor if body else None)
     ms.append_audit(actor=who, action="token.revoke", entity_type="token",
@@ -390,7 +442,7 @@ def rotate_token(token_hash: str, request: Request, body: TokenActor | None = No
     old = ms.get_token(token_hash)
     if old is None:
         raise HTTPException(status_code=404)
-    _active_account(ms, old["account_id"])                     # can't rotate into a deactivated account
+    _active_account(ms, old["account_id"], principal)          # nor into one that is not ours
     fresh = _mint(ms, principal, old["name"], expand(old["scopes"]), old["account_id"], "token.rotate",
                   extra={"replaced": token_hash}, actor=body.actor if body else None)
     ms.revoke_token(token_hash)
@@ -419,7 +471,8 @@ def create_rollout(body: RolloutCreate, request: Request,
     if prior is not None:
         ms.update_rollout(prior["rollout_id"], state="paused", pause_reason="superseded")
         ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
-                        entity_id=prior["rollout_id"], account_id=account_id)
+                        entity_id=prior["rollout_id"], account_id=account_id,
+                        product_id=product_id)
     display_name = _label(body.display_name)
     rid = new_id("ro")
     ms.add_rollout(rollout_id=rid, release_id=body.release_id, product_id=product_id,
@@ -428,7 +481,8 @@ def create_rollout(body: RolloutCreate, request: Request,
                    display_name=display_name)
     ms.append_audit(actor=principal.name, action="rollout.create", entity_type="rollout",
                     entity_id=rid, data={"release_id": body.release_id, "cohort": body.cohort,
-                                         "percent": body.percent}, account_id=account_id)
+                                         "percent": body.percent}, account_id=account_id,
+                    product_id=product_id)
     return {"rollout_id": rid, "product_id": product_id, "product_id_str": str(product_id),
             "cohort": body.cohort,
             "percent": body.percent, "state": "active", "display_name": display_name}
@@ -469,7 +523,8 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
                       **({"pause_reason": "operator" if body.state == "paused" else None}
                          if body.state is not None else {}))
     ms.append_audit(actor=principal.name, action="rollout.update", entity_type="rollout",
-                    entity_id=rollout_id, data=changes, account_id=principal.account_id)
+                    entity_id=rollout_id, data=changes, account_id=principal.account_id,
+                    product_id=ro["product_id"])
     return ms.get_rollout(rollout_id)
 
 
@@ -480,10 +535,11 @@ def stop_rollout(rollout_id: str, request: Request,
     is not a downgrade, and there is no way to pull an installed release back. To move
     a fleet off a bad build, publish one that supersedes it."""
     ms = request.app.state.metastore
-    _owned(ms.get_rollout(rollout_id), principal)
+    ro = _owned(ms.get_rollout(rollout_id), principal)
     ms.update_rollout(rollout_id, state="stopped", pause_reason=None)   # stops offering; does not downgrade
     ms.append_audit(actor=principal.name, action="rollout.stop", entity_type="rollout",
-                    entity_id=rollout_id, account_id=principal.account_id)
+                    entity_id=rollout_id, account_id=principal.account_id,
+                    product_id=ro["product_id"])
     return {"rollout_id": rollout_id, "state": "stopped"}
 
 
@@ -584,7 +640,8 @@ def assign_cohort(body: CohortAssign, request: Request,
                                      account_id=principal.account_id)
         data = {"assigned": n, "product_id": body.product_id}
     ms.append_audit(actor=principal.name, action="cohort.assign", entity_type="cohort",
-                    entity_id=body.cohort, data=data, account_id=principal.account_id)
+                    entity_id=body.cohort, data=data, account_id=principal.account_id,
+                    product_id=body.product_id)
     return {"cohort": body.cohort, "assigned": n}
 
 
@@ -695,11 +752,11 @@ def rename_device(device_id: str, body: DeviceName, request: Request,
     device_id stays the identity everywhere). '' clears it."""
     name = _label(body.name)
     ms = request.app.state.metastore
-    _owned(ms.get_device(device_id), principal)              # 404 if missing or another account's
+    dev = _owned(ms.get_device(device_id), principal)        # 404 if missing or another account's
     ms.set_device_name(device_id, name)
     ms.append_audit(actor=principal.name, action="device.rename", entity_type="device",
                     entity_id=device_id, data={"name": name},
-                    account_id=principal.account_id)
+                    account_id=principal.account_id, product_id=dev["product_id"])
     return {"device_id": device_id, "display_name": name}
 
 
@@ -715,11 +772,11 @@ def rename_release(release_id: str, body: DeviceName, request: Request,
     identity (the release_id stays the key everywhere). '' clears it."""
     name = _label(body.name)
     ms = request.app.state.metastore
-    _owned(ms.get_release(release_id), principal)
+    rel = _owned(ms.get_release(release_id), principal)
     ms.set_release_name(release_id, name)
     ms.append_audit(actor=principal.name, action="release.rename", entity_type="release",
                     entity_id=release_id, data={"name": name},
-                    account_id=principal.account_id)
+                    account_id=principal.account_id, product_id=rel["product_id"])
     return {"release_id": release_id, "display_name": name}
 
 
@@ -734,11 +791,11 @@ def rename_rollout(rollout_id: str, body: DeviceName, request: Request,
     """Set a rollout's display name -- same label rules as releases."""
     name = _label(body.name)
     ms = request.app.state.metastore
-    _owned(ms.get_rollout(rollout_id), principal)
+    ro = _owned(ms.get_rollout(rollout_id), principal)
     ms.set_rollout_name(rollout_id, name)
     ms.append_audit(actor=principal.name, action="rollout.rename", entity_type="rollout",
                     entity_id=rollout_id, data={"name": name},
-                    account_id=principal.account_id)
+                    account_id=principal.account_id, product_id=ro["product_id"])
     return {"rollout_id": rollout_id, "display_name": name}
 
 
@@ -750,12 +807,12 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
     how you hold a single unit on a known build -- a device on a bench, or one a
     customer is mid-incident with."""
     ms = request.app.state.metastore
-    _owned(ms.get_device(device_id), principal)              # 404 if missing or another account's
+    dev = _owned(ms.get_device(device_id), principal)        # 404 if missing or another account's
     _check_pin_release(ms, body.release_id, principal)
     ms.set_device_pin(device_id, body.release_id)            # release_id=None unpins
     ms.append_audit(actor=principal.name, action="device.pin", entity_type="device",
                     entity_id=device_id, data={"release_id": body.release_id},
-                    account_id=principal.account_id)
+                    account_id=principal.account_id, product_id=dev["product_id"])
     return {"device_id": device_id, "pinned_release_id": body.release_id}
 
 
@@ -776,8 +833,41 @@ def bind_device(device_id: str, request: Request,
     ms.set_device_account(device_id, principal.account_id)   # sync the row so fleet views update now
     ms.append_audit(actor=principal.name, action="device.bind", entity_type="device",
                     entity_id=device_id, data={"account_id": principal.account_id},
-                    account_id=principal.account_id)
+                    account_id=principal.account_id,
+                    # None when the camera has not checked in yet: an install can be bound
+                    # before the device that will fill it exists
+                    product_id=(ms.get_device(device_id) or {}).get("product_id"))
     return {"device_id": device_id, "account_id": principal.account_id}
+
+
+@admin.delete("/devices/{device_id}", responses={200: {"model": DeviceForgotten}})
+def forget_device(device_id: str, request: Request,
+                  principal: Principal = Depends(require_scope("manage"))):
+    """Remove a device from the fleet: the install is gone and the camera is not coming
+    back.
+
+    This is the other half of binding one. A platform that maps each install of its
+    product to a device needs a way to say an install ended -- without it a decommissioned
+    camera stays in the fleet views for good and keeps consuming the account's device
+    limit.
+
+    What survives: its install history, because a deployment row records what happened on
+    a day that has already passed and rollout counters are built from those rows; and the
+    audit log, which is append-only and gains an entry for this.
+
+    A camera that DOES check in again is simply a device the server has not seen before:
+    it enrols from scratch. To stop one coming back, retire its registration -- this call
+    is about the fleet, not about entitlement."""
+    ms = request.app.state.metastore
+    dev = ms.get_device(device_id)
+    if dev is None or dev.get("account_id") != principal.account_id \
+            or not principal.may(dev.get("product_id")):
+        raise HTTPException(status_code=404)
+    ms.forget_device(device_id)
+    ms.append_audit(actor=principal.name, action="device.forget", entity_type="device",
+                    entity_id=device_id, data={"product_id": dev.get("product_id")},
+                    account_id=principal.account_id, product_id=dev.get("product_id"))
+    return {"device_id": device_id, "forgotten": True}
 
 
 @admin.post("/cohorts/pin", responses={200: {"model": CohortPinned}})
@@ -795,7 +885,7 @@ def pin_cohort(body: CohortPin, request: Request,
     ms.append_audit(actor=principal.name, action="cohort.pin", entity_type="cohort",
                     entity_id=body.cohort, data={"product_id": body.product_id,
                                                  "release_id": body.release_id},
-                    account_id=principal.account_id)
+                    account_id=principal.account_id, product_id=body.product_id)
     return {"product_id": body.product_id, "product_id_str": str(body.product_id),
             "cohort": body.cohort, "release_id": body.release_id}
 
@@ -1133,6 +1223,41 @@ def products(request: Request, limit: int | None = Query(None, ge=1, le=_MAX_PAG
     return {"products": rows, "total": total}
 
 
+class ProductDeclare(BaseModel):
+    product_id: int
+    """The id from the project's own config (`ota.toml`), which is where it is computed:
+    the low 63 bits of sha256("<product>:<board>"). The server does not derive it, so the
+    project stays the one place a product is named."""
+    display_name: str = ""
+
+
+@admin.post("/products", responses={200: {"model": ProductDeclared}})
+def declare_product(body: ProductDeclare, request: Request,
+                    principal: Principal = Depends(require_scope("manage"))):
+    """Declare a product for this account before anything has been published to it.
+
+    A product used to come into existence only as a side effect of publishing, which is
+    the wrong order for a platform: it wants to create the project, name it, and bind its
+    first cameras -- and only then build and publish an image for them. A declared
+    product appears in `GET /api/v1/admin/products` with no releases and no devices.
+
+    Idempotent: declaring a product that already exists sets its display name (when one
+    is given) and answers `created: false`."""
+    ms = request.app.state.metastore
+    _may_product(body.product_id, principal)
+    known = any(p["product_id"] == body.product_id
+                for p in ms.list_products(account_id=principal.account_id))
+    name = _label(body.display_name)
+    if not known or name:
+        ms.set_product_name(body.product_id, name, account_id=principal.account_id)
+    if not known:
+        ms.append_audit(actor=principal.name, action="product.create", entity_type="product",
+                        entity_id=str(body.product_id), data={"name": name},
+                        account_id=principal.account_id, product_id=body.product_id)
+    return {"product_id": body.product_id, "product_id_str": str(body.product_id),
+            "display_name": name, "created": not known}
+
+
 @admin.patch("/products/{product_id}/name", responses={200: {"model": ProductRenamed}})
 def rename_product(product_id: int, body: DeviceName, request: Request,
                    principal: Principal = Depends(require_scope("manage"))):
@@ -1148,7 +1273,7 @@ def rename_product(product_id: int, body: DeviceName, request: Request,
     ms.set_product_name(product_id, name, account_id=principal.account_id)
     ms.append_audit(actor=principal.name, action="product.rename", entity_type="product",
                     entity_id=str(product_id), data={"name": name},
-                    account_id=principal.account_id)
+                    account_id=principal.account_id, product_id=product_id)
     return {"product_id": product_id, "product_id_str": str(product_id), "display_name": name}
 
 
@@ -1211,16 +1336,19 @@ def audit(request: Request, since: int = 0,
     """The append-only record. ``entity_id`` narrows it to one release, rollout,
     or device -- a dashboard's per-entity history. ``newest`` returns the most
     recent events first (otherwise: append order from ``since``, a log tail);
-    ``sort``/``dir`` generalise both, ``offset`` pages, ``total`` counts the filter."""
+    ``sort``/``dir`` generalise both, ``offset`` pages, ``total`` counts the filter.
+
+    A product-limited credential reads the history of ITS products: the entries that
+    happened to one of them, and not the account-level ones (tokens, billing, other
+    products) that belong to whoever owns the account rather than to its customer."""
     ms = request.app.state.metastore
-    # An audit row records an action, not a product, so there is nothing to filter it by.
-    # A product-limited credential therefore cannot read the log at all, rather than be
-    # shown the whole account's history: 403, since the caller knows its own limits.
-    if principal.products:
-        raise HTTPException(status_code=403,
-                            detail="a product-scoped token cannot read the audit log")
+    # `scoped()` is None for an ordinary token (the whole account) and a list for a
+    # limited one -- deliberately not the empty list for the unlimited case, where empty
+    # would mean "allowed nothing".
+    products = principal.scoped()
     return {"events": ms.read_audit(limit, since, account_id=principal.account_id,
                                     entity_id=entity_id, newest=newest, sort=sort,
                                     direction=dir, offset=offset, action_not=action_not,
-                                    action=action),
-            "total": ms.count_audit(since, principal.account_id, entity_id, action_not, action)}
+                                    action=action, products=products),
+            "total": ms.count_audit(since, principal.account_id, entity_id, action_not, action,
+                                    products=products)}

@@ -108,13 +108,28 @@ def test_writes_into_another_product_are_refused(tmp_path):
                   headers=LIMITED).status_code == 404
 
 
-def test_the_audit_log_is_refused_outright(tmp_path):
-    """Audit rows record an action, not a product, so there is nothing to filter them by.
-    Showing a limited token the whole account's history would leak every other product's
-    activity, so it is refused instead -- 403, since the caller knows its own limits."""
-    c, _ = _app(tmp_path)
-    assert c.get("/api/v1/admin/audit", headers=WHOLE).status_code == 200
-    assert c.get("/api/v1/admin/audit", headers=LIMITED).status_code == 403
+def test_the_audit_log_is_filtered_to_the_allowed_products(tmp_path):
+    """A limited token reads its own products' history and nothing else.
+
+    An audit row now records the product it happened to, so there IS something to filter
+    by. What a limited credential must never see is the rest of the account: the other
+    products' activity, and the account-level rows (tokens, billing) that belong to
+    whoever owns the account rather than to its customer."""
+    c, store = _app(tmp_path)
+    store.append_audit(actor="ci", action="device.pin", entity_type="device",
+                       entity_id="dev_%d" % MINE, account_id=ACCOUNT, product_id=MINE)
+    store.append_audit(actor="ci", action="device.pin", entity_type="device",
+                       entity_id="dev_%d" % THEIRS, account_id=ACCOUNT, product_id=THEIRS)
+    store.append_audit(actor="ci", action="token.issue", entity_type="token",
+                       entity_id="h", account_id=ACCOUNT)          # no product: account-level
+
+    whole = c.get("/api/v1/admin/audit", headers=WHOLE).json()
+    assert {e["action"] for e in whole["events"]} == {"device.pin", "token.issue"}
+    assert whole["total"] == 3
+
+    mine = c.get("/api/v1/admin/audit", headers=LIMITED).json()
+    assert mine["total"] == 1 and len(mine["events"]) == 1
+    assert mine["events"][0]["entity_id"] == "dev_%d" % MINE
 
 
 def test_a_token_scoped_to_nothing_sees_nothing(tmp_path):
@@ -152,13 +167,18 @@ def test_an_empty_allow_list_is_not_a_wildcard(tmp_path):
     assert store.count_releases(account_id=ACCOUNT, products=[]) == 0
     assert store.list_devices(account_id=ACCOUNT, products=[]) == []
     assert store.fleet_bases(account_id=ACCOUNT, products=[]) == []
+    store.append_audit(actor="ci", action="device.pin", entity_type="device",
+                       entity_id="dev", account_id=ACCOUNT, product_id=MINE)
+    assert store.read_audit(account_id=ACCOUNT, products=[]) == []
+    assert store.count_audit(account_id=ACCOUNT, products=[]) == 0
+    assert store.count_audit(account_id=ACCOUNT, products=[MINE]) == 1
 
 
 def test_a_limited_token_cannot_also_be_an_operator(tmp_path):
     """`accounts` acts across accounts, where a product list means nothing. Issuing both
     would hand out a credential whose limit is not a limit."""
     c, store = _app(tmp_path)
-    store.add_account("other", name="Other")
+    store.add_account("other", name="Other", created_by="operator")
     store.add_token(hash_token("op"), "operator", ["accounts"], account_id="")
     op = {"Authorization": "Bearer op"}
     resp = c.post("/api/v1/admin/accounts/other/tokens",

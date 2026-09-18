@@ -562,7 +562,8 @@ def _account(ms, ro, rel, checkin, existing, offered):
             ms.update_rollout(rid, state="paused", pause_reason="failure_limit")
             ms.append_audit(actor="system", action="rollout.autopause", entity_type="rollout",
                             entity_id=rid, account_id=ro.get("account_id", ""),
-                            data={"failures": fresh["failures"], "attempted": fresh["attempted"]})
+                            data={"failures": fresh["failures"], "attempted": fresh["attempted"]},
+                            product_id=ro.get("product_id"))
 
 
 def _verify(state, req):
@@ -667,7 +668,7 @@ def check(checkin: CheckIn, request: Request):
             ms.append_audit(actor="checkin", action="device.refused", entity_type="device",
                             entity_id=checkin.device_id,
                             data={"reason": "device_limit", "product_id": checkin.product_id},
-                            account_id=account_id)
+                            account_id=account_id, product_id=checkin.product_id)
         return nothing
     cohort = existing["cohort"] if existing else "__default__"
     ro, rel, offered, manifest_url = _decide(st, checkin, cohort, existing, account_id)

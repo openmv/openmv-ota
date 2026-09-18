@@ -13,15 +13,29 @@ SCOPES = ("publish", "manage", "observe")
 LADDER = ("observe", "manage", "publish")
 
 
+# accounts is a *privileged operator* scope -- it mints/lists accounts, so it is NOT part of the
+# per-account default set (an account admin must not be able to create other accounts). Only the
+# root/bootstrap token (and tokens an operator explicitly issues it to) carries it.
+ACCOUNT_ADMIN = "accounts"
+
+# ...and `accounts.all` is the difference between the server's operator and a platform
+# reselling the server. `accounts` provisions customers and manages the ones it
+# provisioned; `accounts.all` sees and manages every account on the server, whoever made
+# it. A partner gets the first and not the second, or its account directory is ours.
+ACCOUNT_ROOT = "accounts.all"
+
+ALL_SCOPES = (*SCOPES, ACCOUNT_ADMIN, ACCOUNT_ROOT)
+
+
 def expand(scopes) -> list[str]:
     """The closure of ``scopes`` down the ladder, in SCOPES order; other scopes (``accounts``)
     pass through unchanged."""
     top = max((LADDER.index(s) for s in scopes if s in LADDER), default=-1)
     implied = [s for s in SCOPES if LADDER.index(s) <= top]
-    return implied + [s for s in scopes if s not in LADDER]
+    out = implied + [s for s in scopes if s not in LADDER]
+    # seeing every account implies being able to provision one: `accounts.all` is
+    # `accounts` without the ownership filter, not a different job.
+    if ACCOUNT_ROOT in out and ACCOUNT_ADMIN not in out:
+        out.append(ACCOUNT_ADMIN)
+    return out
 
-# accounts is a *privileged operator* scope -- it mints/lists accounts, so it is NOT part of the
-# per-account default set (an account admin must not be able to create other accounts). Only the
-# root/bootstrap token (and tokens an operator explicitly issues it to) carries it.
-ACCOUNT_ADMIN = "accounts"
-ALL_SCOPES = (*SCOPES, ACCOUNT_ADMIN)

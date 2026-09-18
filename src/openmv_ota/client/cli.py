@@ -203,6 +203,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     _list_flags(p_prl, "product, devices, releases, newest")
     _creds(p_prl)
     p_prl.set_defaults(func=cmd_products, _command="client product list")
+    p_prc = prsub.add_parser("create", help="declare a product before publishing to it, so it "
+                                            "can be named and have devices bound first")
+    p_prc.add_argument("--product-id", required=True, type=int, metavar="PRODUCT_ID",
+                       help="the id from the project's ota.toml")
+    p_prc.add_argument("--name", default=None, help="display name (optional)")
+    _creds(p_prc)
+    p_prc.set_defaults(func=cmd_product_create, _command="client product create")
     p_prg = prsub.add_parser("grant", help="a short-lived read credential for the product's data "
                                            "across all its devices (the datalake token + URLs)")
     p_prg.add_argument("--product-id", required=True, type=int, metavar="PRODUCT_ID",
@@ -334,6 +341,12 @@ def register(parser: argparse.ArgumentParser) -> None:
                         help="device to bind to the caller's account")
     _creds(p_bind)
     p_bind.set_defaults(func=cmd_bind, _command="client device bind")
+    p_forget = dsub.add_parser("forget", help="remove a device from the fleet (the install "
+                                              "ended); history and audit are kept")
+    p_forget.add_argument("--device-id", required=True, metavar="DEVICE_ID",
+                          help="device to remove")
+    _creds(p_forget)
+    p_forget.set_defaults(func=cmd_device_forget, _command="client device forget")
     p_dvg = dsub.add_parser("grant", help="mint a short-lived viewer credential for one device "
                                           "(the relay watch token + the datalake token and URLs)")
     p_dvg.add_argument("--device-id", required=True, metavar="DEVICE_ID",
@@ -378,6 +391,9 @@ def register(parser: argparse.ArgumentParser) -> None:
     acsub = p_acct.add_subparsers(dest="_acct")
     p_acc = acsub.add_parser("create", help="create an account + get its first admin token")
     p_acc.add_argument("--name", required=True, help="human-readable account name")
+    p_acc.add_argument("--client-ref", default=None, metavar="REF",
+                       help="your own id for this account; makes the call idempotent -- "
+                            "the same ref returns the account you already made")
     _creds(p_acc)
     p_acc.set_defaults(func=cmd_account, _command="client account create", action="create")
     p_acl = acsub.add_parser("list", help="list accounts")
@@ -892,11 +908,40 @@ def cmd_bind(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_device_forget(args: argparse.Namespace) -> int:
+    """Remove a device from the fleet. The camera is gone; what it installed is history."""
+    try:
+        res = _make_api(config.resolve(args.server, args.token)).forget_device(args.device_id)
+        return _emit(args, res, "device %s removed from the fleet" % args.device_id)
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+
+
+def cmd_product_create(args: argparse.Namespace) -> int:
+    """Declare a product before anything is published to it."""
+    try:
+        res = _make_api(config.resolve(args.server, args.token)).declare_product(
+            args.product_id, "" if args.name is None else args.name)
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if not res.get("created", True):
+        return _emit(args, res, "product %s already known" % args.product_id)
+    return _emit(args, res, "product %s created" % args.product_id)
+
+
 def cmd_account(args: argparse.Namespace) -> int:
     try:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "create":
-            res = api.create_account(args.name)
+            res = api.create_account(args.name, client_ref=args.client_ref)
+            if not res.get("created", True):
+                # A repeat of a call that already succeeded. No token: it was handed over
+                # once, and minting a second here would leave a live credential nobody
+                # asked for. Rotate if it was lost.
+                return _emit(args, res, "account %s already exists for that --client-ref"
+                             % res["account_id"])
             # The secret is IN the JSON under --json, which is the point: this is the one moment
             # it exists, and a script that cannot capture it has to mint another account.
             return _emit(args, res, "account %s created" % res["account_id"],

@@ -229,8 +229,27 @@ class Api:
     def bind_device(self, device_id):
         return self._req("POST", "/api/v1/admin/devices/%s/account" % device_id)
 
-    def create_account(self, name):
-        return self._req("POST", "/api/v1/admin/accounts", json={"name": name})
+    def forget_device(self, device_id):
+        """Remove a device from the fleet -- the install ended. Its install history and
+        the audit log stay; a camera that checks in again enrols as a new device."""
+        return self._req("DELETE", "/api/v1/admin/devices/%s" % device_id)
+
+    def declare_product(self, product_id, display_name=""):
+        """Create a product for this account before anything is published to it, so it can
+        be named and have cameras bound to it first. Idempotent."""
+        return self._req("POST", "/api/v1/admin/products",
+                         json={"product_id": int(product_id), "display_name": display_name})
+
+    def create_account(self, name, client_ref=None):
+        """Create a tenant account and its first admin token.
+
+        ``client_ref`` is your own id for the account. Pass it and the call is safe to
+        retry: the same reference returns the account you already made (``created:
+        false``, no token) rather than a second one."""
+        body = {"name": name}
+        if client_ref:
+            body["client_ref"] = client_ref
+        return self._req("POST", "/api/v1/admin/accounts", json=body)
 
     def list_accounts(self):
         return self._req("GET", "/api/v1/admin/accounts")
