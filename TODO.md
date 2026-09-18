@@ -11,6 +11,14 @@ file's own history has the longer design notes behind each line.
   imports nothing of ours, but that has never been exercised end to end: flash an
   AE3, run `openmv_ota.sync()`, and prove the helper partition is written and the
   helper core boots its app.
+- **Drop the firmware patches that are now upstream** — the cherry-pick list
+  (`#19350` WWDG, `#19399`, the `#19084` prereq) and the mbedtls PEM-parsing config
+  copy exist because the pinned firmware lacked those fixes; recent openmv firmware
+  carries many of them. Each cherry-pick is sentinel-guarded, so a newer pin skips
+  them on its own — the work is moving the pin, deleting the entries whose sentinel
+  is permanently satisfied, and dropping `_pem_config_arg` if the firmware now
+  enables `MBEDTLS_PEM_PARSE_C`. It changes every device build, so it needs its own
+  fleet run.
 - **Device lockdown** — debug-port and boot protection (residual-threats:
   planned); until then bench/bus access is accepted.
 - **Firmware updates via the ROMFS** — bootloader as *reconciler*: copy a
