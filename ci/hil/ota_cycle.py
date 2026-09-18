@@ -2142,6 +2142,8 @@ def _tamper_image_body(target, manifest_path, board):
     """
     import gzip
 
+    from pathlib import Path
+
     from openmv_ota.ota import payload
     from openmv_ota.ota.manifest import parse_manifest
     from openmv_ota.project import passphrase as passphrase_mod
@@ -2154,7 +2156,10 @@ def _tamper_image_body(target, manifest_path, board):
     enc = rep["enc"]
 
     phrase, _ = passphrase_mod.resolve_passphrase(CFG["project"])
-    keys = payload_mod.read(ProjectPaths(CFG["project"]).private_keys_dir, phrase)[board]
+    # Path(), not the bare string: ProjectPaths builds its members with `/`, and CFG holds
+    # the project as a str -- which raised `unsupported operand type(s) for /` in the middle
+    # of a bench run, where the cheapest bug costs four minutes to see.
+    keys = payload_mod.read(ProjectPaths(Path(CFG["project"])).private_keys_dir, phrase)[board]
     key_id, wrap = payload.select_wrap(enc["wraps"], keys)
     content_key = payload.unwrap_key(keys[key_id], wrap)
     iv = bytes.fromhex(enc["iv"])
@@ -2162,15 +2167,30 @@ def _tamper_image_body(target, manifest_path, board):
     with open(target, "rb") as f:
         ciphertext = f.read()
     gz = payload.decrypt(ciphertext, content_key, iv, enc["size"])
+    # The re-gzipped image has to fit the length the signed manifest declares, so the change
+    # has to make the image MORE compressible, not less. A one-byte flip does the opposite:
+    # it breaks a run of identical bytes in two, and a slot image is mostly such runs (16 MB
+    # of payload gzips to ~35 KB), so every flip and every level came out LONGER than the
+    # original -- measured, not guessed. Overwriting a window of varied bytes with a constant
+    # run always shrinks it instead, changes the image, and leaves its length alone. Whatever
+    # slack is left is zero-padded: bytes after the end of a gzip stream are never read.
     raw = bytearray(gzip.decompress(gz))
-    mid = len(raw) // 2
-    raw[mid] ^= 0xFF
-    for level in (9, 8, 7, 6, 5, 4, 3, 2, 1):
-        regz = gzip.compress(bytes(raw), level, mtime=0)
+    window = 1024
+    step = max(window, len(raw) // 64)
+    fit = None
+    for start in range(0, max(1, len(raw) - window), step):
+        chunk = raw[start:start + window]
+        if len(set(chunk)) == 1:                  # already a constant run: nothing to flatten
+            continue
+        fill = b"\x00" if chunk[0] else b"\xFF"    # a byte the window does not already start with
+        candidate = bytes(raw[:start]) + fill * window + bytes(raw[start + window:])
+        regz = gzip.compress(candidate, 9, mtime=0)
         if len(regz) <= len(gz):
+            fit = (start, regz)
             break
-    else:
-        raise RuntimeError("re-gzipped image will not fit the signed length")
+    if fit is None:
+        raise RuntimeError("no flattened window re-gzips inside the signed length")
+    mid, regz = fit
     regz += b"\x00" * (len(gz) - len(regz))
     _iv, retamped = payload.encrypt(regz, content_key, iv)   # the signed iv, deliberately
     with open(target, "wb") as f:
