@@ -854,6 +854,10 @@ def device_faults(cap):
 
 _CAP = None                                  # the live UartCapture (set by start()); see _await_boot
 _BOARD = None                                # the board under test (set in main); see run_cycle
+# How many device lines a second the capture forwards before it starts calling the rest noise.
+# A healthy board logs a handful per second; the flood that prompted this was ~45,000.
+_UART_LINES_PER_SEC = 200
+
 _FLASH_MARK = 0                              # index into _CAP.raw at the moment golden was flashed:
 #                                              everything after it is THIS golden's account of itself
 #                                              (see verify_golden_uart -- "fresh" must mean "since the
@@ -882,6 +886,8 @@ class UartCapture:
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
         self.raw = []
+        self.flooded = 0                     # noise lines dropped across the whole capture
+        self._window, self._seen_in_window, self._dropped = time.time(), 0, 0
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._run, daemon=True)
 
@@ -932,6 +938,8 @@ class UartCapture:
                 s = line.decode("utf-8", "replace").strip()
                 if not s:
                     continue
+                if self._flooding(s):
+                    continue
                 self.raw.append(s)
                 print("[dev] " + s, flush=True)   # forward the device UART live -> the CI log, so a
                 #                                   multi-minute erase/download shows progress, not silence
@@ -943,6 +951,33 @@ class UartCapture:
                 for sub, cid in COVERAGE.items():
                     if sub in s:
                         self.markers.append((round(time.time() - self._t0, 1), cid))
+
+    def _flooding(self, line):
+        """True when this line is noise from a board talking faster than it can mean anything.
+
+        A Portenta left in a REPL soft-reset loop emitted `MPY: soft reboot` / `OK` at line rate
+        for five minutes: 9.3 MILLION lines, an 838 MB job log nobody can open, every one of them
+        scanned against 96 marker substrings, and `raw` growing without bound in the runner's RAM.
+        The board was fine -- the golden reflash in prepare() cleared it -- but the evidence of
+        what happened was buried under its own noise.
+
+        So the capture keeps a budget of ordinary lines per second. Past it, anything that is not
+        one of the device's own log lines is counted and dropped; the count is reported once a
+        second, which is what a flood should look like in a log. Marker lines are NEVER dropped:
+        a board that is both flooding and working still gets scored."""
+        now = time.time()
+        if now - self._window >= 1.0:
+            if self._dropped:
+                self.flooded += self._dropped
+                print("[dev] ... %d line(s) of REPL noise suppressed (%d total) -- the board is "
+                      "talking to itself; a golden reflash clears it"
+                      % (self._dropped, self.flooded), flush=True)
+            self._window, self._seen_in_window, self._dropped = now, 0, 0
+        self._seen_in_window += 1
+        if self._seen_in_window <= _UART_LINES_PER_SEC or "openmv_ota:" in line:
+            return False
+        self._dropped += 1
+        return True
 
     def points(self):
         return sorted({p for _, p in self.markers})
