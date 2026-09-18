@@ -101,8 +101,11 @@ settings you want to read at runtime:
 
 It is packed into the ROMFS image, so the app can read it on-device (e.g.
 `json.load(open("/rom/settings.json"))`) — useful in any project for reporting a
-version or carrying configuration. Bump `app_version` (a `major.minor.patch`
-semver) for each release.
+version or carrying configuration. Bump `app_version` for each release: a
+`major.minor.patch` semver, each component 0-255, with an optional fourth
+`.build` component when a release number of your own is easier to drive than a
+patch bump (see
+[Integrating as a platform](25-platform-integration.md#the-build-byte)).
 
 For a **multi-core board** (e.g. AE3), `new` also scaffolds a second folder,
 `app-coprocessor/`, holding the slaved helper core's app. It has the same shape

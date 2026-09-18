@@ -102,31 +102,57 @@ The fleet row is created by the first check-in, so a claim issued before a camer
 been powered on has nothing to attach to. Either claim at first check-in, or pin and let
 your flow tolerate the wait.
 
-## The build counter
+## Versions, when a camera can change product
 
-This is the one hard requirement of the arrangement, and it is worth getting right before
-you ship anything.
+Inside one product, versions are ordinary: increment them, and every device takes the
+newer one.
 
-**Use a single, globally monotonic counter for `payload_version` across every product in
-your account.** Not one sequence per product — one sequence, shared.
+Moving a camera between products is where it gets a constraint, and it is worth
+understanding before you ship rather than after. **A version a camera moves _to_ must be
+numerically above the version it is on**, whichever products the two belong to. Two
+things enforce it, independently: the server's pin is upgrade-only, and the device's own
+anti-rollback floor — which records the highest version it has ever run, without
+reference to which product that version belonged to — refuses anything below it in the
+firmware itself.
 
-The reason is on the device. Its rollback floor rises with every install and is
-**product-agnostic**: it records the highest payload version the camera has ever run,
-without reference to which product that version belonged to. An offer below the floor is
-refused by the firmware itself, and the server's pin is upgrade-only besides. So if each
-product has its own independent version sequence, a camera that has run customer A's
-build 40 cannot be transferred to customer B whose stream is at 12 — not until B passes
-40, and not at all if B never does. The first transfer that crosses a numerically older
-stream wedges permanently, in the field, with no way back short of a depot visit.
+So a camera that has run customer A's `5.3.0` will not take customer B's `2.1.0`, and it
+will not take a stock image still sitting at `1.0.0` either. A reset is the case that
+catches people out: stock is the product you rebuild least, so it is the one most likely
+to be behind the camera you want to return to it.
 
-Your human-facing version numbers are unaffected: those live in your own metadata and in
-the release's display name. It is the packed `payload_version` — the number the device
-compares — that has to be the shared counter.
+What follows from that depends on how much your products move cameras around:
 
-De-association follows from the same rule. Returning a camera to stock is a pin to the
-**current** stock release, which under one counter is always newer than whatever the
-customer was running. It is a forward step, never a downgrade, and it is an ordinary OTA
-install rather than a reflash.
+- **If cameras never change product** — every unit is built, claimed and retired inside
+  one product — there is nothing to coordinate. Version each product however you like.
+- **If they do**, the versions of any two products a camera can move between have to be
+  ordered against each other. In practice that means keeping stock ahead of the fleet,
+  and starting each new customer's product above the highest version any camera you might
+  assign to it is running.
+
+The numbers are the packed `payload_version`, not the string in your own UI — that lives
+in your metadata and in the release's display name, and can say whatever your customers
+need it to.
+
+### The build byte
+
+`payload_version` is a uint32 packed as `major.minor.patch.build`, one byte each, and the
+fourth is a **build number**:
+
+```json
+{ "app_version": "1.4.2.7" }
+```
+
+Three components give 2**24 distinct versions. That is generous for one product line and
+much less so for an operator publishing a build per customer into an ordering they all
+share, so the fourth byte is there to take the pressure off: rebuild `1.4.2` as
+`1.4.2.1`, `1.4.2.2` and so on without touching the number your customers see, and
+`1.4.3` still sorts above all 256 of them. Leave it off and it is zero, which is what a
+three-component version has always encoded.
+
+### Resetting a camera
+
+Returning one to stock is a pin to the **current** stock release — a forward step under
+the rule above, never a downgrade, and an ordinary OTA install rather than a reflash.
 
 The only true as-manufactured reset is `openmv-ota flash factory`, because it is the only
 thing that clears the rollback sectors. That needs the camera in hand, so it is a depot
