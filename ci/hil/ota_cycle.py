@@ -2252,6 +2252,20 @@ def _tamper(board, which):
         log("  tampered %s byte@%d of %s" % (which, mid, os.path.basename(target)))
 
 
+def _same_device(recorded, uid):
+    """Whether a server record belongs to the board whose unit id is ``uid``.
+
+    The server qualifies a device id with the board it came from -- `OPENMV_RT1060:9d7b...`
+    -- because `machine.unique_id()` is only unique among boards of the same type. The UART
+    reports the RAW unit id, so a bare `==` matched nothing: every server-scored leg then
+    waited out its whole timeout on `None/None` while the board had already installed,
+    confirmed and promoted. Match the suffix, so the harness reads whichever form the server
+    is keying by today."""
+    if not recorded:
+        return False
+    return recorded == uid or recorded.rsplit(":", 1)[-1] == uid
+
+
 def device_record():
     """All device records from the server admin API."""
     import urllib.request
@@ -2641,7 +2655,7 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=Fals
         except Exception as e:
             log("  (server query retry: %s)" % e)
             continue
-        me = [r for r in recs if r.get("device_id") == devid]
+        me = [r for r in recs if _same_device(r.get("device_id"), devid)]
         v = me[0].get("current_version") if me else None
         slot = me[0].get("slot") if me else None
         if v == golden:                      # the freshly re-flashed golden checked in
