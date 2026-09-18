@@ -168,11 +168,13 @@ enrols from scratch and is not yours again until you bind it.
 The build happens on your machines, not ours, because it needs two things the server must
 never hold: the project's **signing key**, which is what the device verifies before it
 installs anything, and its **payload keys**, if you are encrypting published artifacts
-(see [page 8](08-release-artifacts.md)). Both are made with the project, and the board key
+(see [Release artifacts](08-release-artifacts.md)). Both are made with the project, and
+the board key
 is baked into the firmware you build, so key material and image are produced together.
 
 The signer is pluggable — an encrypted PEM at minimum, and PKCS#11, AWS/GCP/Azure KMS, or
-your own hook ([page 5](05-signing-keys.md)). At platform scale, a key in a KMS is worth
+your own hook ([Signing keys](05-signing-keys.md)). At platform scale, a key in a KMS is
+worth
 the setup: you will be signing unattended, on a schedule, for a long time.
 
 Publishing is the same verb as anywhere:
@@ -191,7 +193,8 @@ a token's account comes from the token itself, and there is no "act as" header �
 you are ever issued more than one account, you hold a credential for each and choose per
 call.
 
-Scopes are the ladder from [page 19](19-accounts-and-tokens.md): `publish` > `manage` >
+Scopes are the ladder from [Accounts and tokens](19-accounts-and-tokens.md):
+`publish` > `manage` >
 `observe`. Give a build pipeline `publish`, a dashboard `observe`, and keep them separate
 so a leak from one is not a leak from both.
 
@@ -234,8 +237,9 @@ Grants are per device and expire in minutes: mint one per view rather than cachi
 and note there is no batch endpoint, so a page of a hundred tiles is a hundred calls.
 
 Device data comes through the same grant, or through a product-wide one — the reads are
-on [page 24](24-pulling-device-data.md). Two shapes, and the difference matters when you
-plan a product around it: `logs/{topic}` returns records with a `before_seq` cursor, so it
+in [Pulling device data](24-pulling-device-data.md). Two shapes, and the difference matters
+when you plan a product around it: `logs/{topic}` returns records with a `before_seq`
+cursor, so it
 backfills completely; `series/{topic}` returns aggregated buckets (`t`, `n`, `min`, `max`,
 `avg`) rather than samples. There is no raw-sample export for numeric telemetry.
 

@@ -21,7 +21,8 @@ P-256 by default; ES384/ES512 raise the curve and signature size):
 
 The two ranges are well-separated so the pools never collide at realistic counts.
 The current signer is the first OTA key (`0x0100`), recorded as `signing_key_id`
-in `openmv-ota.toml`'s `[ota]` section ([page 4](04-ota-projects.md#files-an-ota-project-adds)).
+in `openmv-ota.toml`'s `[ota]` section
+([OTA projects](04-ota-projects.md#files-an-ota-project-adds)).
 `build romfs` signs with that key, and a trailer records *which* key signed
 (`key_id`) so the device picks the matching public key.
 

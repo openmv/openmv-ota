@@ -16,7 +16,7 @@ the rest of your account, top to bottom:
 
 - Your **account** holds everything — devices, releases, rollouts, cohorts, audit.
 - **Each board you build for is its own product**: `project new` derives one product id
-  per board and stamps it into `openmv-ota.toml` ([page 2](02-projects.md)); a release
+  per board and stamps it into `openmv-ota.toml` ([Projects](02-projects.md)); a release
   is built and published per board (`publish -b`) — which is what keeps an `OPENMV_N6`
   image from ever being offered to an `OPENMV_RT1060`.
 - **Cohort names are free-form labels on devices** — every device is in exactly one,
@@ -48,7 +48,8 @@ assigned 412 device(s) (product 5553380507785669254) to cohort beta
 `assign` takes exactly one selector: `--device-id` (repeatable) moves those exact
 devices; `--product-id` moves every device of the product. And the devices behind any
 count are one filter away — `client device list --cohort beta [--product-id N]` prints
-the per-device rows ([page 17](17-watching-the-fleet.md) shows them in full). Assignment is also removal — a device moved to `beta` leaves
+the per-device rows ([Watching the fleet](17-watching-the-fleet.md) shows them in
+full). Assignment is also removal — a device moved to `beta` leaves
 `__default__` — and it counts only the devices that exist and are yours: the `1/1` in
 the summary is what makes a typo'd id visible.
 

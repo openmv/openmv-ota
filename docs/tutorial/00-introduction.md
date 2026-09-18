@@ -35,7 +35,7 @@ tutorial covers one verb. Two pieces run somewhere other than your computer:
   ships as a ROMFS **image**: one file containing that whole filesystem.
   ([Page 1](01-romfs.md) explains the format and the tool that makes them.)
 - **firmware checkout** — a local git clone of the OpenMV firmware. A **project**
-  ([page 2](02-projects.md)) is *pegged* to one: it records exactly which firmware
+  ([Projects](02-projects.md)) is *pegged* to one: it records exactly which firmware
   commit and which tool versions your images are built against, so a build is
   reproducible anywhere.
 - **signing** — an update image carries a cryptographic signature in a footer

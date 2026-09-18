@@ -37,7 +37,7 @@ images a camera can download, verify, and fall back from.
   set up front and writes it under `keys/`.
 
 - **The product id is enforced.** Every build stamps the scaffolded `product_id`
-  ([page 2](02-projects.md#product-name-vs-board-name)) into the image; an OTA
+  ([Projects](02-projects.md#product-name-vs-board-name)) into the image; an OTA
   device bakes its own copy in and rejects any image whose id doesn't match — the
   **cross-flash guard**. Keep the id once devices ship (a later change would
   reject updates on fielded devices); `build romfs` warns if it is `0` (guard
@@ -164,7 +164,7 @@ through them) — and `install()` uses it automatically.
 
 ## Multi-core boards (a coprocessor partition)
 
-On a multi-core board ([page 2](02-projects.md#multi-core-boards)) only the
+On a multi-core board ([Projects](02-projects.md#multi-core-boards)) only the
 **main** partition is OTA. It is built from `app/`, OTA-wrapped like any other;
 the coprocessor partition stays a *plain* romfs — the helper core has no mbedtls
 and can't verify signatures, so it is never updated on its own.

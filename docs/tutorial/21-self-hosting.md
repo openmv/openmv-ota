@@ -116,7 +116,8 @@ production.
 ## Accounts on a self-host
 
 The account model — the implicit `''` single account, the bootstrap token, scopes, and
-why only the operator can manage accounts — is [page 19](19-accounts-and-tokens.md).
+why only the operator can manage accounts — is
+[Accounts and tokens](19-accounts-and-tokens.md).
 What a self-host adds is the **local** spelling of the same operations: the `server`
 verbs act directly on the database, no API round-trip, so they work before the server
 is even running:

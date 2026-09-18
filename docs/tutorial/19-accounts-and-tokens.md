@@ -15,10 +15,11 @@ belonging to an account.
 
 - **OpenMV-hosted (the default):** your account was created at sign-up, and the
   website issues (and revokes) your working tokens. Logging in with one
-  ([page 15](15-the-client.md)) is all a hosted maker ever does — everything on this
+  ([The client](15-the-client.md)) is all a hosted maker ever does — everything on this
   page is the operator machinery behind that button.
 - **Self-hosted:** `server init` prints a **bootstrap token** once at first setup
-  ([page 20](20-update-server.md)) — all four scopes, acting for the implicit single
+  ([The update server](20-update-server.md)) — all four scopes, acting for the implicit
+  single
   account named `''`. A single-tenant self-host can `login` with it and publish,
   manage, and observe forever without ever creating an account: the verbs below exist
   for the **multi-tenant** case, carving real accounts out of one server and issuing
