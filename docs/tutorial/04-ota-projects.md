@@ -85,7 +85,6 @@ How the floor survives is the one place the two modes differ:
 |---|---|
 | `--ota` | Declare the project over-the-air: split each partition into slots and provision the signing keys. |
 | `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle — allowed only on boards whose firmware can carry it (N6, AE3, RT1062). |
-| `--no-firmware-patches` | Don't auto-apply the OTA-required firmware patches; fail instead if the firmware lacks them. |
 
 ## Files an OTA project adds
 

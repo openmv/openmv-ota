@@ -46,9 +46,6 @@ def register(project_parser: argparse.ArgumentParser):
     p_new.add_argument("--allow-dirty", action="store_true", help="don't warn on a dirty checkout")
     p_new.add_argument("--ota", action="store_true",
                        help="over-the-air project: halve each partition for a regular + golden image")
-    p_new.add_argument("--no-firmware-patches", dest="firmware_patches", action="store_false",
-                       help="don't auto-apply the OTA-required firmware patches (ranged romfs erase); "
-                            "`project new` then fails if the firmware is missing them")
     p_new.add_argument("--ca", metavar="PEM",
                        help="TLS roots the device trusts for OTA downloads (a PEM file, copied "
                             "into the project as certs/ and frozen into the firmware). Unset "
@@ -329,7 +326,6 @@ def cmd_new(args: argparse.Namespace) -> int:
             now=_now(),
             key_passphrase=_new_key_passphrase(args),
             dev=args.dev,
-            firmware_patches=args.firmware_patches,
         )
     except ProjectError as e:
         print("error: %s" % e, file=sys.stderr)

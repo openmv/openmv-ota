@@ -257,34 +257,18 @@ def _ensure_ota_mbedtls(lock: lock_mod.Lock) -> None:
         "image that fills the partition)." % ", ".join(bad), exit_code=1)
 
 
-# Firmware features the OTA tooling carries into lib/micropython for a v5.0 firmware that predates
-# them upstream (not yet in openmv/micropython). Applied BEFORE the lock is snapshotted so the lock
-# captures the patched state (a post-lock change trips the drift guard). Each is TEMPORARY: pinned
-# SHAs, retired once it merges upstream (the sentinel then no-ops it); an upstream rebase changes the
-# SHAs, so update a feature's ``commits`` if its cherry-pick stops applying. ``required`` = the OTA
-# installer can't run without it (opting out raises); the rest are opt-in capabilities carried by
-# default so they're available to turn on, but skipped (not fatal) when opted out.
-_MP_REMOTE = "https://github.com/micropython/micropython"
-_FW_FEATURES = (
+# What the OTA tooling needs from the firmware's micropython. These four landed upstream
+# (micropython 57a7b25, which openmv master pins), so the tooling no longer CARRIES them:
+# it used to cherry-pick pinned SHAs into lib/micropython, which broke the moment a merged
+# PR branch was garbage-collected and `project new` died with "fatal: bad object". What is
+# left is the part that was always the useful half -- saying plainly which feature a
+# too-old firmware is missing, rather than building against it and failing on a camera.
+_FW_REQUIREMENTS = (
     {
         "pr": "19348",
         "summary": "ranged romfs erase",
-        "why": ("the OTA installer's incremental FRONT erase -- without it a whole-slot erase stalls "
-                "USB and faults partway through on a large XIP slot (the N6's 12 MiB XSPI)"),
-        # #19348 MERGED upstream 2026-07-31 and its PR branch was DELETED, so the pre-merge SHAs the
-        # carry used to pin are GC'd -- `project new` died with "fatal: bad object 6a4062f9...". These
-        # are the SAME six commits now on micropython master: rebased onto master so the SHAs changed,
-        # but the commit subjects (and diffs) are identical, so they were re-matched by message. Order
-        # preserved (constant -> ports -> mpremote). Re-pinning to the merged SHAs keeps the carry
-        # reproducible; a moving ref (e.g. master) would not be.
-        "commits": (
-            "2af2defbe9305a2fd4cc9d18d2e3957fe2cfa98d",  # extmod/vfs: GET_MIN_PREPARE constant
-            "6ab72487a68a441da2d99b41d70b055fb4cfe800",  # alif: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-            "61d11a4470200564294d7eb092b7b96e1fbca1a8",  # samd: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-            "768bc8fe0a5fe843f22bd726e1a7b5518cb24bc0",  # stm32: flash_get_max_sector_size helper
-            "aef040348e58eb346a51d23d9f98b2d232810594",  # stm32: 4-arg WRITE_PREPARE + GET_MIN_PREPARE
-            "f777bc7e7b14d2d2c9ea6785f1d041006a406c8d",  # mpremote: incremental romfs deploy
-        ),
+        "why": ("the OTA installer's incremental FRONT erase -- without it a whole-slot erase "
+                "stalls USB and faults partway through on a large XIP slot (the N6's 12 MiB XSPI)"),
         "sentinel_path": "extmod/vfs.h",
         "sentinel": "MP_VFS_ROM_IOCTL_GET_MIN_PREPARE",
         "required": True,
@@ -292,96 +276,24 @@ _FW_FEATURES = (
     {
         "pr": "19350",
         "summary": "STM32 WWDG watchdog",
-        "why": ("the deep-sleep-safe windowed watchdog (machine.WDT('WWDG')) the opt-in openmv_wdt "
-                "uses on stm32/N6 -- the default IWDG keeps counting through deep sleep"),
-        "commits": (
-            "b5c6ce36ad59d7709868988aa2e5bc101a572178",  # extmod/machine_wdt: any object as the WDT id
-            "ad64bb17f9f98507536605d61d9f5c5230ea7f9a",  # stm32/machine_wdt: string WDT ids
-            "cc0e275647afa57a7415150ac306810038e0ff89",  # stm32/machine_wdt: WWDG peripheral
-            "fa1ec09126ed75aa4ab2d19281a9036b0106e3eb",  # stm32/machine_wdt: up to 4 watchdogs on H7
-            "daf9858bb4e5458b2b0cadc9a97d36b4e81a141e",  # docs: stm32 WWDG
-        ),
+        "why": ("the deep-sleep-safe windowed watchdog (machine.WDT('WWDG')) the opt-in "
+                "openmv_wdt uses on stm32/N6 -- the default IWDG keeps counting through deep sleep"),
         "sentinel_path": "ports/stm32/machine_wdt.c",
         "sentinel": "machine_wwdt",
         "required": False,
-        # Fork-compat: upstream adds each family's LL-bus header (which declares LL_APBn_GRP1_EnableClock
-        # + LL_APBn_GRP1_PERIPH_WWDG) to <fam>_hal_conf_base.h, but the openmv boards don't inherit that
-        # base, so the WWDG clock-enable fails to compile ("implicit declaration") on EVERY stm32 family,
-        # not just H7. Add the include to machine_wdt.c itself -- self-contained, matching the exact set
-        # of families #19350 (cc0e275) touched. Only the built family's branch compiles; the N6 (STM32N6)
-        # isn't in this set and keeps getting its LL bus header from its own hal_conf (it already builds).
-        "fixups": (
-            ("ports/stm32/machine_wdt.c", '#include "py/mphal.h"',
-             "// openmv fork-compat: pull in each family's LL-bus header for the WWDG clock enable;\n"
-             "// the openmv boards don't inherit <fam>_hal_conf_base.h where upstream #19350 added it.\n"
-             "#if defined(STM32F0)\n"
-             '#include "stm32f0xx_ll_bus.h"\n'
-             "#elif defined(STM32F4)\n"
-             '#include "stm32f4xx_ll_bus.h"\n'
-             "#elif defined(STM32F7)\n"
-             '#include "stm32f7xx_ll_bus.h"\n'
-             "#elif defined(STM32G0)\n"
-             '#include "stm32g0xx_ll_bus.h"\n'
-             "#elif defined(STM32G4)\n"
-             '#include "stm32g4xx_ll_bus.h"\n'
-             "#elif defined(STM32H5)\n"
-             '#include "stm32h5xx_ll_bus.h"\n'
-             "#elif defined(STM32H7)\n"
-             '#include "stm32h7xx_ll_bus.h"\n'
-             "#elif defined(STM32L0)\n"
-             '#include "stm32l0xx_ll_bus.h"\n'
-             "#elif defined(STM32L1)\n"
-             '#include "stm32l1xx_ll_bus.h"\n'
-             "#elif defined(STM32L4)\n"
-             '#include "stm32l4xx_ll_bus.h"\n'
-             "#endif"),
-        ),
     },
     {
-        # PREREQ for #19399 (below): the alif watchdog's machine_wdt wiring in alif/mpconfigport.h sits
-        # right after this PR's mem_backup config, so without it #19399's cherry-pick has no context and
-        # conflicts. Carry only the two commits the alif build needs -- the shared core + the alif
-        # enablement -- not #19084's other ports (rp2/esp32/samd/nrf), which the OTA boards don't build
-        # and which would only add conflict surface (any one commit conflicting SKIPS the whole feature).
         "pr": "19084",
         "summary": "machine.mem_backup (alif watchdog prereq)",
-        "why": ("carried so micropython#19399's alif watchdog cherry-picks cleanly (its machine_wdt "
-                "wiring follows the mem_backup config in alif/mpconfigport.h); also a useful API on its "
-                "own -- backup-SRAM-retained memory across reset"),
-        "commits": (
-            "003ba9b58fb5753cd382ab739b6c5f85467ef34a",  # extmod/machine: machine.mem_backup (the core)
-            "bbd0d481283e221c4ce4af277927e733d876ef4a",  # alif: enable mem_backup via backup SRAM
-        ),
-        # SENTINEL ON THE HALF WE ACTUALLY DEPEND ON -- the ALIF one. This used to check
-        # py/mpconfig.h, the generic core define, and upstream has since merged that: the sentinel
-        # went true while `ports/alif/mpconfigport.h` still had nothing, so the prerequisite was
-        # judged carried, was never applied, and #19399 below then failed to cherry-pick and was
-        # skipped (opt-in features skip quietly). Net effect: the AE3 silently lost machine.WDT,
-        # and it surfaced only when the board's armed-watchdog app crashed on the missing
-        # attribute. A sentinel that a DIFFERENT change can satisfy is not a sentinel for this
-        # feature; check the port-specific file the dependent PR needs.
+        "why": "the backup registers the AE3's watchdog reset-cause reporting reads",
         "sentinel_path": "ports/alif/mpconfigport.h",
         "sentinel": "MICROPY_PY_MACHINE_MEM_BACKUP",
         "required": False,
     },
     {
-        # #19084 (machine.mem_backup) is carried just above, so this PR's machine_wdt wiring -- which
-        # sits right after the mem_backup config in alif/mpconfigport.h -- now has its context and
-        # cherry-picks cleanly. Both are opt-in, carried by default so the AE3 watchdog is available to
-        # turn on (openmv_wdt falls back to machine.WDT(0), the alif WDT this adds).
         "pr": "19399",
         "summary": "ALIF watchdog",
-        "why": "machine.WDT on the alif port (the AE3) for the opt-in openmv_wdt",
-        # The upstream docs commit (374a872) is intentionally NOT carried: it rewrites the
-        # machine.WDT.rst "Availability:" line, which the older fork renders in a different format
-        # ("Availability of this class: ..."), so it conflicts and would abort the whole feature.
-        # Docs don't affect the build or the watchdog; skipping it lets the two code commits apply.
-        # (For the record, 374a872 documents the alif WDT as id=0, max 10737 ms, deep-sleep-safe --
-        # which is exactly what openmv_wdt's machine.WDT(0) fallback + the 100 ms window rely on.)
-        "commits": (
-            "c2e3fe420e2e5bedfd73dd299ae0b8f9f694e469",  # alif/cgu_ext: cgu_get_rtss_hx_clk_khz helper
-            "152e422c120fce874120a36637d08a5585cbdb95",  # alif/machine_wdt: the WDT class (a new file)
-        ),
+        "why": "machine.WDT on the AE3, which the opt-in openmv_wdt uses there",
         "sentinel_path": "ports/alif/machine_wdt.c",
         "sentinel": None,       # a NEW file -> its existence is the sentinel
         "required": False,
@@ -390,155 +302,43 @@ _FW_FEATURES = (
 
 
 def _feature_present(mpy: Path, feat: dict) -> bool:
-    """True if ``feat`` is already carried (or merged upstream). ``sentinel`` of ``None`` means the
-    feature adds a NEW file, so its existence is the check; otherwise look for the sentinel string in
-    ``sentinel_path`` (a file present before the feature too)."""
+    """Whether this micropython already has the feature -- the file exists, and (when the
+    feature adds to an existing file) contains its marker."""
     path = mpy / feat["sentinel_path"]
+    if not path.exists():
+        return False
     if feat["sentinel"] is None:
-        return path.exists()
+        return True
     try:
-        return feat["sentinel"] in path.read_text(encoding="utf-8")
+        return feat["sentinel"] in path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
 
 
-def _apply_fork_fixup(mpy: Path, path: str, anchor: str, added: str) -> bool:
-    """Idempotently insert ``added`` on the line after the first one containing ``anchor`` in
-    ``mpy/path``; return True if the file changed. Reconciles a carried upstream commit with the
-    older openmv fork -- e.g. an include the fork's board hal_conf doesn't pull in. Raises if the
-    anchor is gone (the upstream file moved out from under the fixup -- fix it, don't ship a miss)."""
-    f = mpy / path
-    text = f.read_text(encoding="utf-8")
-    if added in text:
-        return False
-    lines = text.splitlines(keepends=True)
-    for i, line in enumerate(lines):
-        if anchor in line:
-            lines.insert(i + 1, added + "\n")
-            f.write_text("".join(lines), encoding="utf-8")
-            return True
-    raise ProjectError("fork-compat fixup anchor %r not found in %s" % (anchor, path), exit_code=1)
+def _check_ota_firmware_support(repo: Path) -> None:
+    """Refuse a firmware whose micropython lacks a feature the OTA installer NEEDS, and name
+    the opt-in ones it lacks rather than letting them go missing quietly.
 
-
-def _cherry_pick_was_empty(mpy: Path) -> bool:
-    """True if the in-progress cherry-pick stopped because its change is ALREADY in the tree.
-
-    Distinguishes "upstream merged this commit" (skip it, carry on) from a real conflict (a
-    prerequisite is genuinely missing). git reports the first as a clean tree mid-cherry-pick:
-    nothing staged, nothing unmerged."""
-    out = gitrepo.run_git(mpy, "status", "--porcelain", check=False)
-    if out is None:
-        return False                              # cannot tell -> treat it as a real failure
-    return not any(line[:2].strip() and line[:2] != "??" for line in out.splitlines())
-
-
-def _fetch_feature_commits(mpy: Path, feat: dict) -> None:
-    """Bring a feature's pinned commits into lib/micropython. Fetch the SHAs THEMSELVES first
-    (GitHub serves any commit reachable from a ref, so this works whether the PR is open, or
-    merged and its branch deleted); fall back to the PR head only if that is refused. Either
-    way ``--recurse-submodules=no``: git's on-demand recursion would otherwise chase the
-    fetched commits' submodule pointers into lib/axtls & co., and a pointer an old PR history
-    carried but the submodule's remote no longer serves ("upload-pack: not our ref ...")
-    fails the whole fetch -- which is exactly how #19348's carry broke in CI once its merged
-    branch was GC'd. The cherry-picks never need those submodules."""
-    pr = feat["pr"]
+    Called before the lock is snapshotted. A firmware this tooling does not recognise (no
+    version header, no micropython tree) is left alone."""
     try:
-        gitrepo.run_git(mpy, "fetch", "--quiet", "--recurse-submodules=no", _MP_REMOTE,
-                        *feat["commits"])
-    except ProjectError as by_sha:
-        try:
-            gitrepo.run_git(mpy, "fetch", "--quiet", "--recurse-submodules=no", _MP_REMOTE,
-                            "pull/%s/head" % pr)
-        except ProjectError as by_ref:
-            raise ProjectError(
-                "could not fetch micropython#%s's commits: by SHA (%s) nor by PR head (%s). If "
-                "the PR was rebased upstream, update its `commits` in project.py._FW_FEATURES."
-                % (pr, by_sha, by_ref), exit_code=1) from None
-
-
-def _carry_feature(repo: Path, mpy: Path, feat: dict) -> None:
-    """Cherry-pick ``feat``'s pinned commits into lib/micropython, apply any fork-compat fixups, and
-    commit the submodule bump so the checkout stays clean (the lock/verify guard refuses a dirty tree).
-    A REQUIRED feature that won't apply raises; an opt-in one is skipped -- it needs a prerequisite this
-    firmware's micropython predates, and carries itself once the base advances (it's merged upstream)."""
-    pr = feat["pr"]
-    print("note: carrying micropython#%s (%s) in lib/micropython -- %s; committing the bump so the "
-          "checkout stays clean." % (pr, feat["summary"], feat["why"]))
-    ident = ("-c", "user.name=openmv-ota", "-c", "user.email=build@openmv.io")
-    if gitrepo.run_git(mpy, "cat-file", "-e", feat["commits"][-1] + "^{commit}", check=False) is None:
-        _fetch_feature_commits(mpy, feat)
-    try:
-        # ONE COMMIT AT A TIME, TOLERATING THE ONES UPSTREAM HAS SINCE MERGED. A carry is a list of
-        # pinned SHAs, and upstream merges them one by one -- when it does, cherry-picking that SHA
-        # produces an EMPTY commit, git errors, and the whole feature aborts. Silently, for an
-        # opt-in one. That is not hypothetical: micropython merged #19084's core commit, so the
-        # alif watchdog prerequisite stopped carrying, #19399 then conflicted, and the AE3 lost
-        # machine.WDT -- which only surfaced when the board's own app crashed on it. A commit that
-        # is already in the tree is the carry SUCCEEDING early, not failing, so skip it and go on.
-        for commit in feat["commits"]:
-            try:
-                gitrepo.run_git(mpy, *ident, "cherry-pick", commit)
-            except ProjectError:
-                if not _cherry_pick_was_empty(mpy):
-                    raise
-                gitrepo.run_git(mpy, "cherry-pick", "--skip", check=False)
-                print("note: micropython#%s's %s is already upstream -- skipping that commit."
-                      % (pr, commit[:12]))
-    except ProjectError as e:
-        gitrepo.run_git(mpy, "cherry-pick", "--abort", check=False)   # leave the tree unwound
-        if not feat["required"]:
-            print("note: skipping opt-in micropython#%s (%s) -- it does not apply to this firmware's "
-                  "micropython yet (it needs a prerequisite the firmware predates); it carries itself "
-                  "once the firmware's micropython advances (it's merged upstream)." % (pr, feat["summary"]))
-            return
-        raise ProjectError(
-            "could not carry micropython#%s (%s). If the PR was rebased upstream, update its "
-            "`commits` in project.py._FW_FEATURES." % (pr, e), exit_code=1) from None
-    changed = False
-    for path, anchor, added in feat.get("fixups", ()):
-        if _apply_fork_fixup(mpy, path, anchor, added):
-            gitrepo.run_git(mpy, "add", path)
-            changed = True
-    if changed:
-        gitrepo.run_git(mpy, *ident, "commit", "--quiet", "-m",
-                        "openmv fork-compat: reconcile micropython#%s with the pinned base" % pr)
-    gitrepo.run_git(repo, *ident, "commit", "--quiet", "lib/micropython",
-                    "-m", "carry micropython#%s (%s, v5.0 OTA)" % (pr, feat["summary"]))
-
-
-def _ensure_ota_firmware_features(repo: Path, *, apply: bool) -> None:
-    """Ensure the firmware's micropython carries the features the OTA tooling needs/offers on a v5.0
-    firmware that predates them upstream (see ``_FW_FEATURES``). Called BEFORE the lock is snapshotted,
-    so the lock captures the patched state (a post-lock change trips the drift guard).
-
-    With ``apply`` (the default -- ``project new`` without ``--no-firmware-patches``): cherry-pick each
-    missing feature and commit the submodule bump, so the checkout stays clean (the lock/verify guard
-    refuses a dirty tree). Without ``apply``: raise for a REQUIRED feature the OTA installer can't run
-    without (so a user who opts out is told, not silently shipping a faulting firmware), and skip an
-    opt-in one. A no-op for non-5.0 firmware, and per feature once it's present (carried here earlier
-    or merged upstream) -- so each retires itself."""
-    try:
-        ver = fw_res.resolve_firmware_version(repo)
+        fw_res.resolve_firmware_version(repo)
     except ProjectError:
         return                                       # no version header -> not a tree we manage
-    if (ver.major, ver.minor) != (5, 0):
-        return
     mpy = repo / mp_res.MICROPYTHON_SUBPATH
     if not (mpy / "extmod" / "vfs.h").exists():
         return                                       # not a micropython tree we recognise
-    for feat in _FW_FEATURES:
+    for feat in _FW_REQUIREMENTS:
         if _feature_present(mpy, feat):
-            continue                                 # already carried or merged upstream
-        if not apply:
-            if feat["required"]:
-                raise ProjectError(
-                    "this firmware lacks micropython#%s (%s) the OTA installer needs -- %s. Drop "
-                    "--no-firmware-patches to have `project new` carry it, or peg to a firmware that "
-                    "already includes it." % (feat["pr"], feat["summary"], feat["why"]), exit_code=1)
-            print("note: skipping opt-in firmware feature micropython#%s (%s) -- --no-firmware-patches; "
-                  "it stays unavailable until carried." % (feat["pr"], feat["summary"]))
             continue
-        _carry_feature(repo, mpy, feat)
+        if feat["required"]:
+            raise ProjectError(
+                "this firmware's micropython lacks micropython#%s (%s), which the OTA installer "
+                "needs -- %s. Move the firmware pin forward (it has been upstream since "
+                "micropython 57a7b25)." % (feat["pr"], feat["summary"], feat["why"]), exit_code=1)
+        print("note: this firmware's micropython lacks micropython#%s (%s) -- %s. It stays "
+              "unavailable until the firmware pin moves forward."
+              % (feat["pr"], feat["summary"], feat["why"]))
 
 
 def _digest(config: OtaConfig) -> str:
@@ -578,7 +378,6 @@ def create_project(
     app_version: str = "1.0.0",
     key_passphrase: str | None = None,
     dev: bool = False,
-    firmware_patches: bool = True,
 ) -> tuple[lock_mod.Lock, list[str]]:
     repo = firmware.expanduser().resolve()
     if not gitrepo.is_git_repo(repo):
@@ -594,11 +393,11 @@ def create_project(
 
     ensure_sdk(repo, sdk_home_override, install_sdk)
 
-    # An OTA project's firmware must carry the ranged romfs erase the installer needs. Do this
-    # BEFORE resolve_snapshot below so the lock captures the patched (and committed-clean) tree;
-    # --no-firmware-patches (firmware_patches=False) turns auto-apply into a hard capability check.
+    # An OTA project's firmware must carry the ranged romfs erase the installer needs -- checked
+    # before resolve_snapshot below, so a firmware that cannot run the installer is refused here
+    # rather than discovered on a camera.
     if ota:
-        _ensure_ota_firmware_features(repo, apply=firmware_patches)
+        _check_ota_firmware_support(repo)
 
     warnings: list[str] = []
     provisioned = None
