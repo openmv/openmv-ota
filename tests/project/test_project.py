@@ -828,6 +828,9 @@ def _fw_repo(tmp_path, *, name="fw", version="5.0.0", vfs=None, wdt=False):
         v = mpy / "extmod" / "vfs.h"
         v.parent.mkdir(parents=True)
         v.write_text(vfs)
+        mbed = mpy / "extmod" / "mbedtls" / "mbedtls_config_common.h"
+        mbed.parent.mkdir(parents=True, exist_ok=True)
+        mbed.write_text("#define MBEDTLS_PEM_PARSE_C\n")   # upstream since 2026-08-13
         stm = mpy / "ports" / "stm32" / "machine_wdt.c"
         stm.parent.mkdir(parents=True)
         stm.write_text("static machine_wdt_obj_t machine_wwdt = {0};\n" if wdt else "// stm32\n")

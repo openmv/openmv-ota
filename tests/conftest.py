@@ -110,8 +110,11 @@ def make_firmware(tmp_path):
         (mp / "persistentcode.h").write_text(PERSISTENT)
         mbed = repo / "lib" / "micropython" / "extmod" / "mbedtls"
         mbed.mkdir(parents=True)
+        # PEM parsing has been on in the common config for every mbedtls board since
+        # micropython 8356e67 (2026-08-13); the OTA tooling REQUIRES it, so the fixture
+        # mirrors a current firmware rather than a pre-8356e67 one.
         (mbed / "mbedtls_config_common.h").write_text(
-            "#ifndef X\n#define MBEDTLS_X509_USE_C\n#endif\n")
+            "#ifndef X\n#define MBEDTLS_X509_USE_C\n#define MBEDTLS_PEM_PARSE_C\n#endif\n")
         for port in ("stm32", "alif"):
             pc = repo / "lib" / "micropython" / "ports" / port / "mbedtls"
             pc.mkdir(parents=True)

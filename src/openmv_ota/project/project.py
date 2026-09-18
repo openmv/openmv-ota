@@ -274,6 +274,15 @@ _FW_REQUIREMENTS = (
         "required": True,
     },
     {
+        "pr": "8356e67",                # a commit, not a PR: it landed straight on master
+        "summary": "PEM parsing in the common mbedtls config",
+        "why": ("the OTA installer verifies its download's TLS against a PEM CA bundle; without "
+                "this, mbedtls is built DER-only and the handshake cannot load the roots"),
+        "sentinel_path": "extmod/mbedtls/mbedtls_config_common.h",
+        "sentinel": "MBEDTLS_PEM_PARSE_C",
+        "required": True,
+    },
+    {
         "pr": "19350",
         "summary": "STM32 WWDG watchdog",
         "why": ("the deep-sleep-safe windowed watchdog (machine.WDT('WWDG')) the opt-in "
@@ -299,6 +308,13 @@ _FW_REQUIREMENTS = (
         "required": False,
     },
 )
+
+
+def _feature_ref(feat: dict) -> str:
+    """How to name the change upstream: a PR number, or a bare commit for one that landed
+    straight on master."""
+    ref = feat["pr"]
+    return "micropython#" + ref if ref.isdigit() else "micropython " + ref
 
 
 def _feature_present(mpy: Path, feat: dict) -> bool:
@@ -333,12 +349,12 @@ def _check_ota_firmware_support(repo: Path) -> None:
             continue
         if feat["required"]:
             raise ProjectError(
-                "this firmware's micropython lacks micropython#%s (%s), which the OTA installer "
-                "needs -- %s. Move the firmware pin forward (it has been upstream since "
-                "micropython 57a7b25)." % (feat["pr"], feat["summary"], feat["why"]), exit_code=1)
-        print("note: this firmware's micropython lacks micropython#%s (%s) -- %s. It stays "
-              "unavailable until the firmware pin moves forward."
-              % (feat["pr"], feat["summary"], feat["why"]))
+                "this firmware's micropython lacks %s (%s), which the OTA installer needs -- %s. "
+                "Move the firmware pin forward; everything on this list has been upstream since "
+                "2026-08-13." % (_feature_ref(feat), feat["summary"], feat["why"]), exit_code=1)
+        print("note: this firmware's micropython lacks %s (%s) -- %s. It stays unavailable until "
+              "the firmware pin moves forward."
+              % (_feature_ref(feat), feat["summary"], feat["why"]))
 
 
 def _digest(config: OtaConfig) -> str:

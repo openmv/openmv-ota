@@ -30,7 +30,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,13 +66,11 @@ _CA_MODULE = "openmv_ca.py"
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 
-# The OTA installer verifies the download's TLS against a PEM CA bundle, but micropython's
-# mbedtls config builds DER-only (no MBEDTLS_PEM_PARSE_C) to stay lean. Until the firmware
-# enables it upstream, an OTA build points mbedtls at a patched *copy* of the per-port
-# config (in a temp dir) -- the firmware source is never touched.
-_MBEDTLS_COMMON = Path("lib/micropython/extmod/mbedtls/mbedtls_config_common.h")
-_MBEDTLS_COMMON_INCLUDE = '#include "extmod/mbedtls/mbedtls_config_common.h"\n'
-_PEM_DEFINES = "#define MBEDTLS_BASE64_C\n#define MBEDTLS_PEM_PARSE_C\n"
+# The OTA installer verifies its download's TLS against a PEM CA bundle. micropython used to
+# build mbedtls DER-only, so an OTA build pointed it at a patched copy of the per-port config;
+# since micropython 8356e67 (2026-08-13) PEM parsing is on in the common config for every board
+# that builds mbedtls, so there is nothing to patch. A firmware older than that is refused by
+# project.py's requirement check, which says so, rather than being silently patched here.
 
 
 @dataclass
@@ -161,9 +158,6 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
             tmp = _write_wrapper_manifest(p, repo, name, payload_keys or {})
             build_args.append("FROZEN_MANIFEST=%s" % (tmp / "manifest.py").as_posix())
             cmod = _install_verify_module(repo)
-            pem_arg = _pem_config_arg(repo, tmp, name)
-            if pem_arg is not None:
-                build_args.append(pem_arg)
         if not incremental:
             _run_make(repo, ["TARGET=%s" % name, "clean"])
         _ensure_mpy_cross(repo)
@@ -200,40 +194,6 @@ def _board_port(repo: Path, board: str) -> str | None:
         return None
     m = re.search(r"(?m)^\s*PORT\s*=\s*(\w+)", text)
     return m.group(1) if m else None
-
-
-def _pem_config_arg(repo: Path, tmp: Path, board: str) -> str | None:
-    """A make ``MBEDTLS_CONFIG_FILE=...`` override that enables PEM parsing for the OTA
-    installer's TLS, by pointing mbedtls at a **patched copy** of the board's per-port
-    config (in ``tmp``) with MBEDTLS_BASE64_C + MBEDTLS_PEM_PARSE_C appended. The
-    firmware source is never touched. Returns ``None`` when the firmware already enables
-    PEM (then its own config is used unchanged)."""
-    try:
-        if re.search(r"(?m)^\s*#define\s+MBEDTLS_PEM_PARSE_C\b",
-                     (repo / _MBEDTLS_COMMON).read_text(encoding="utf-8")):
-            return None                            # already enabled upstream
-    except OSError:
-        pass                                       # can't tell -> enable it to be safe
-    port = _board_port(repo, board)
-    src = repo / "lib" / "micropython" / "ports" / (port or "") / "mbedtls" \
-        / "mbedtls_config_port.h"
-    try:
-        text = src.read_text(encoding="utf-8")
-    except OSError:
-        print("warning: could not read the mbedtls config for %s; OTA TLS may fail to "
-              "load PEM CA bundles" % board, file=sys.stderr)
-        return None
-    # Append the defines after the config includes the common module list (all ports do),
-    # so they're inside the include guard and applied before mbedtls's check_config runs.
-    patched = (text.replace(_MBEDTLS_COMMON_INCLUDE, _MBEDTLS_COMMON_INCLUDE + _PEM_DEFINES, 1)
-               if _MBEDTLS_COMMON_INCLUDE in text else text + _PEM_DEFINES)
-    dst = tmp / "mbedtls_config_port.h"
-    dst.write_text(patched, encoding="utf-8")
-    print("note: building OTA firmware with PEM parsing enabled (mbedtls config copy; "
-          "source untouched); drop once the firmware enables it upstream")
-    return 'MBEDTLS_CONFIG_FILE=\\"%s\\"' % dst.as_posix()
-
-
 def _write_wrapper_manifest(p, repo: Path, name: str,
                             payload_keys: dict[int, bytes]) -> Path:
     """A temp dir holding the OTA ``boot.py``, its generated ``_ota_config.py``, and

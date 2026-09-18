@@ -11,11 +11,6 @@ file's own history has the longer design notes behind each line.
   imports nothing of ours, but that has never been exercised end to end: flash an
   AE3, run `openmv_ota.sync()`, and prove the helper partition is written and the
   helper core boots its app.
-- **Drop the mbedtls PEM-parsing config copy** — `_pem_config_arg` patches a copy of
-  the board's mbedtls config so the OTA installer can parse a PEM CA bundle. Checked
-  2026-09-18: openmv master still does not define `MBEDTLS_PEM_PARSE_C` on stm32, alif
-  or mimxrt, so the copy stays until the firmware enables it. Dropping it also frees
-  `FLASH_TEXT`, which OPENMV4 is short of.
 - **Device lockdown** — debug-port and boot protection (residual-threats:
   planned); until then bench/bus access is accepted.
 - **Firmware updates via the ROMFS** — bootloader as *reconciler*: copy a

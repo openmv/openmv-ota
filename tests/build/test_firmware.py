@@ -68,71 +68,29 @@ def test_board_port_none_without_port_line(tmp_path):
     assert fw._board_port(repo, "B") is None
 
 
-def test_pem_config_arg_copies_and_patches_port_config(tmp_path):
-    repo = _fake_fw(tmp_path)
-    tmp = tmp_path / "t"
-    tmp.mkdir()
-    arg = fw._pem_config_arg(repo, tmp, "OPENMV_N6")
-    assert arg is not None and arg.startswith('MBEDTLS_CONFIG_FILE=\\"') and arg.endswith('\\"')
-    dst = tmp / "mbedtls_config_port.h"
-    txt = dst.read_text()
-    assert "MBEDTLS_BASE64_C" in txt and "MBEDTLS_PEM_PARSE_C" in txt
-    assert '#include "extmod/mbedtls/mbedtls_config_common.h"' in txt   # still chains to common
-    assert dst.as_posix() in arg
-    assert "X509_USE_C" in (repo / _COMMON_REL).read_text()             # source untouched
-
-
-def test_pem_config_arg_none_when_already_enabled(tmp_path):
-    tmp = tmp_path / "t"
-    tmp.mkdir()
-    assert fw._pem_config_arg(_fake_fw(tmp_path, pem_in_common=True), tmp, "OPENMV_N6") is None
-
-
-def test_pem_config_arg_enables_when_common_unreadable(tmp_path):
-    repo = _fake_fw(tmp_path)
-    (repo / _COMMON_REL).unlink()                  # can't detect -> enable to be safe
-    tmp = tmp_path / "t"
-    tmp.mkdir()
-    assert fw._pem_config_arg(repo, tmp, "OPENMV_N6") is not None
-
-
-def test_pem_config_arg_appends_when_no_common_include(tmp_path):
-    repo = _fake_fw(tmp_path)
-    (repo / _PORT_REL).write_text("#define X\n")    # port config without the include anchor
-    tmp = tmp_path / "t"
-    tmp.mkdir()
-    fw._pem_config_arg(repo, tmp, "OPENMV_N6")
-    assert "MBEDTLS_PEM_PARSE_C" in (tmp / "mbedtls_config_port.h").read_text()
-
-
-def test_pem_config_arg_warns_when_port_config_missing(tmp_path, capsys):
-    repo = _fake_fw(tmp_path, port_cfg=False)
-    tmp = tmp_path / "t"
-    tmp.mkdir()
-    assert fw._pem_config_arg(repo, tmp, "OPENMV_N6") is None
-    assert "could not read the mbedtls config" in capsys.readouterr().err
-
-
-def test_build_firmware_ota_passes_pem_override_and_leaves_source(make_project, monkeypatch):
+def test_an_ota_build_no_longer_patches_the_mbedtls_config(make_project, monkeypatch):
+    """PEM parsing is on in micropython's common mbedtls config for every board that builds
+    mbedtls (8356e67, 2026-08-13), so an OTA build passes no MBEDTLS_CONFIG_FILE override and
+    leaves the firmware's own config alone. A firmware older than that is refused by
+    project.py's requirement check, with the reason, rather than patched here."""
     root, repo, _app = make_project(ota=True)
     common = Path(repo) / _COMMON_REL
-    port_cfg = Path(repo) / _PORT_REL
-    before = (common.read_text(), port_cfg.read_text())
-    seen = {}
+    before = common.read_text()
+    assert "MBEDTLS_PEM_PARSE_C" in before          # the fixture mirrors current firmware
+    seen = []
 
     def fake(repo_, args):
+        seen.extend(args)
         if "clean" not in args:
-            for a in args:
-                if a.startswith("MBEDTLS_CONFIG_FILE="):
-                    seen["copy"] = Path(a.split("=", 1)[1].strip('\\"')).read_text()
             target = next(a.split("=", 1)[1] for a in args if a.startswith("TARGET="))
             f = Path(repo_) / "build" / target / "bin" / "firmware.bin"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(b"FW")
     monkeypatch.setattr(fw, "_run_make", fake)
     fw.build_firmware(root, firmware=repo, boards=["OPENMV_N6"])
-    assert "MBEDTLS_PEM_PARSE_C" in seen["copy"]                        # override -> patched copy
-    assert (common.read_text(), port_cfg.read_text()) == before        # firmware source untouched
+
+    assert not [a for a in seen if a.startswith("MBEDTLS_CONFIG_FILE=")]
+    assert common.read_text() == before             # firmware source untouched, as ever
 
 
 def test_build_firmware_non_ota(make_project, monkeypatch):
