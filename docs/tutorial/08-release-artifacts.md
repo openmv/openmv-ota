@@ -34,6 +34,12 @@ context comes from the project:
   (`1.4.2.7`; omitted, it is zero) and exists for rebuilding a version many times
   without touching the number people see. This is what an ordinary camera orders
   images by. Bump it there for each release.
+- **Publish counter (platform projects only).** A project that sets `platform`
+  under `[ota]` builds cameras with `product_id = 0`, which order images by the
+  account's **publish counter** (`publish_seq` in the trailer) instead. The build
+  takes the next number from the server as it starts, so it needs a login and a
+  reachable server — see
+  [Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter).
 - **Signed with the current OTA key.** The signer is `[ota].signing_key_id` from
   `openmv-ota.toml`; the trailer records `key_id` + the COSE algorithm so the
   device selects the matching trusted public key.

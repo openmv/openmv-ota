@@ -49,6 +49,7 @@ role, and the public key as an uncompressed EC point in hex:
 | `--factory-keys N` | Factory-key reserve, one per manufacturing site (default 8). |
 | `--key-passphrase-file FILE` | Passphrase (read from FILE) that encrypts the private keys at rest. |
 | `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
+| `--keys-from PROJECT` | Provision nothing: copy another project's whole key set instead, so cameras can move between the two products ([Integrating as a platform](25-platform-integration.md#keys-one-set-for-the-whole-fleet)). |
 
 **Provision generously.** Because keys can't be added without re-flashing firmware,
 the rotation pool is your entire future supply of OTA keys — `--ota-keys` below 4
