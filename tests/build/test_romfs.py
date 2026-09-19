@@ -1502,3 +1502,39 @@ def test_a_platform_build_without_a_counter_is_refused(make_project):
     with pytest.raises(BuildError, match="takes the account's next publish counter"):
         build_ota_romfs(root, app=app, firmware=repo, compile_py=False,
                         convert_models=False, allow_dev_key=True)
+
+
+# --- an app that calls what the board's OTA firmware dropped is refused at build --------
+
+def test_h7_ota_build_refuses_an_app_that_calls_a_dropped_method(make_project):
+    """OPENMV4's OTA firmware has no find_barcodes()/find_datamatrices(); a call would only
+    fail on the camera, so the build refuses it and names file:line. A mention in a comment
+    or a string is not a call, and app/lib is scanned like the rest of the app."""
+    root, repo, app = make_project(boards=("OPENMV4",), ota=True, ca="tiny", app_files={
+        "main.py": "import sensor\n# img.find_barcodes() is gone here\n"
+                   "s = 'find_datamatrices('\nfor c in img.find_barcodes():\n    pass\n",
+        "lib/helper.py": "def scan(img):\n    return img.find_datamatrices ( roi=(0, 0, 8, 8))\n",
+    })
+    with pytest.raises(BuildError) as ei:
+        build_mod.build_romfs(root, app=app, firmware=repo, boards=["OPENMV4"], compile_py=False)
+    msg = str(ei.value)
+    assert "OPENMV4's OTA firmware does not carry find_barcodes() or find_datamatrices()" in msg
+    assert "main.py:4: find_barcodes()" in msg
+    assert "lib/helper.py:2: find_datamatrices()" in msg
+    assert "main.py:2" not in msg and "main.py:3" not in msg
+
+
+def test_dropped_method_scan_skips_what_it_cannot_tokenize(tmp_path):
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "broken.py").write_bytes(b"def f(:\n  \xff\xfe find_barcodes(\n")   # not tokenizable
+    (app / "ok.py").write_text("x = 1\n")
+    build_mod._refuse_dropped_calls(app, "OPENMV4")                # nothing to report
+    build_mod._refuse_dropped_calls(tmp_path / "missing", "OPENMV4")
+    build_mod._refuse_dropped_calls(app, "OPENMV_N6")              # a board that drops nothing
+
+
+def test_a_stock_firmware_keeps_the_decoders_so_a_plain_project_is_not_scanned(make_project):
+    root, repo, app = make_project(boards=("OPENMV4",), app_files={
+        "main.py": "for c in img.find_barcodes():\n    pass\n"})
+    assert build_mod.build_romfs(root, app=app, firmware=repo, boards=["OPENMV4"], compile_py=False)

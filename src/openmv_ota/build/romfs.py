@@ -283,12 +283,50 @@ def build_romfs(
             convert_models=convert_models, mpy_extra=list(mpy_extra or []),
             allow_oversize=allow_oversize, keep_build_dir=keep_build_dir))
     for t in mains:
+        if p.config.ota:
+            _refuse_dropped_calls(app_dir, t.name)
         inject = _runtime_inject(out_dir, t.name, [c for c in coprocs if c.name == t.name])
         results.append(_build_one(
             p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, vendor,
             convert_models=convert_models, mpy_extra=list(mpy_extra or []),
             allow_oversize=allow_oversize, keep_build_dir=keep_build_dir, inject=inject))
     return results
+
+
+def _refuse_dropped_calls(app_dir: Path, board: str) -> None:
+    """Refuse an app that calls an image method this board's OTA firmware does not carry.
+
+    ``build firmware`` turns some imlib features off on a board whose flash cannot hold an
+    OTA firmware with them (``ota_firmware_drops`` in the board table -- the OpenMV Cam H7
+    loses ``find_barcodes()`` and ``find_datamatrices()``). A call to one of them would
+    only fail on the camera, as an AttributeError at the moment the frame arrives; here it
+    is a build error that names the file and line. Tokenized rather than grepped, so a
+    mention in a comment or a string is not a call."""
+    import tokenize
+
+    dropped = boards_mod.get_board(board).ota_firmware_drops
+    if not dropped or not app_dir.is_dir():
+        return
+    methods = set(dropped.values())
+    hits: list[str] = []
+    for f in sorted(app_dir.rglob("*.py")):
+        try:
+            with tokenize.open(f) as fh:
+                toks = list(tokenize.generate_tokens(fh.readline))
+        except (OSError, SyntaxError, UnicodeDecodeError, tokenize.TokenError):
+            continue                     # mpy-cross reports an unreadable or broken file
+        for i, tok in enumerate(toks[:-1]):
+            nxt = toks[i + 1]
+            if tok.type == tokenize.NAME and tok.string in methods \
+                    and nxt.type == tokenize.OP and nxt.string == "(":
+                hits.append("%s:%d: %s()" % (f.relative_to(app_dir).as_posix(),
+                                             tok.start[0], tok.string))
+    if hits:
+        raise BuildError(
+            "%s's OTA firmware does not carry %s -- they are turned off so the firmware fits "
+            "its flash -- but the app calls them:\n  %s"
+            % (board, " or ".join("%s()" % m for m in sorted(methods)), "\n  ".join(hits)),
+            exit_code=1)
 
 
 def _select_targets(targets, boards):

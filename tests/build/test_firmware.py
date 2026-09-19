@@ -621,3 +621,61 @@ def test_a_single_core_board_freezes_by_name_as_before(make_project, monkeypatch
     manifest = (r.build_dir / "manifest.py").read_text()
     assert "$(MCU_CORE)" not in manifest
     assert (r.build_dir / "boot.py").exists() and not (r.build_dir / "hp").exists()
+
+
+# --- boards whose OTA firmware drops imlib features to fit (the H7): an OVERLAY board dir --
+
+def test_h7_ota_build_overlays_the_board_dir_with_the_drops_off(make_project, monkeypatch):
+    """OPENMV4's OTA firmware cannot hold zbar + the datamatrix decoder as well as the frozen
+    OTA machinery, so the build hands make a COPY of boards/OPENMV4 with those defines
+    commented out (OMV_BOARD_CONFIG_DIR) -- the firmware tree itself is never touched."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    monkeypatch.setattr(fw, "_ensure_mpy_cross", lambda repo: None)
+    root, repo, _app = make_project(boards=("OPENMV4",), ota=True, ca="tiny")
+    src_cfg = Path(repo) / "boards" / "OPENMV4" / "imlib_config.h"
+    before = src_cfg.read_text()
+    seen = {}
+
+    def spy(repo_, args):
+        if "clean" in args:
+            return fake(repo_, args)
+        overlay = next(a.split("=", 1)[1] for a in args if a.startswith("OMV_BOARD_CONFIG_DIR="))
+        seen["overlay"] = overlay
+        seen["cfg"] = (Path(overlay) / "imlib_config.h").read_text()
+        seen["files"] = sorted(p.name for p in Path(overlay).iterdir())
+        return fake(repo_, args)
+    monkeypatch.setattr(fw, "_run_make", spy)
+
+    fw.build_firmware(root, firmware=repo, boards=["OPENMV4"], keep_build_dir=False)
+    assert seen["overlay"].endswith("/board/")             # a trailing slash, like the Makefile's own
+    assert "#define IMLIB_ENABLE_QRCODES" in seen["cfg"]   # untouched neighbours
+    assert "// #define IMLIB_ENABLE_BARCODES" in seen["cfg"]
+    assert "// #define IMLIB_ENABLE_DATAMATRICES" in seen["cfg"]
+    assert not any(line.lstrip().startswith("#define IMLIB_ENABLE_BARCODES")
+                   for line in seen["cfg"].splitlines())
+    assert "board_config.mk" in seen["files"]              # the whole board dir, not one file
+    assert src_cfg.read_text() == before                   # firmware source untouched
+    assert not Path(seen["overlay"]).exists()              # gone with the wrapper dir
+
+
+def test_a_board_that_drops_nothing_builds_from_its_own_board_dir(make_project, monkeypatch):
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    monkeypatch.setattr(fw, "_ensure_mpy_cross", lambda repo: None)
+    root, repo, _app = make_project(ota=True)                   # OPENMV_N6
+    fw.build_firmware(root, firmware=repo, boards=["OPENMV_N6"])
+    assert not any(a.startswith("OMV_BOARD_CONFIG_DIR=") for a in fake.calls[-1])
+
+
+def test_board_overlay_refuses_a_firmware_that_disagrees_with_the_table(tmp_path):
+    repo = tmp_path / "fw"
+    bd = repo / "boards" / "OPENMV4"
+    bd.mkdir(parents=True)
+    (bd / "board_config.mk").write_text("PORT=stm32\n")
+    with pytest.raises(BuildError, match="imlib_config.h not found"):
+        fw._board_overlay(repo, "OPENMV4", tmp_path / "t1")
+    (bd / "imlib_config.h").write_text("#define IMLIB_ENABLE_BARCODES\n")   # no datamatrices
+    with pytest.raises(BuildError, match="does not define IMLIB_ENABLE_DATAMATRICES"):
+        fw._board_overlay(repo, "OPENMV4", tmp_path / "t2")
+    assert fw._board_overlay(repo, "OPENMV_N6", tmp_path / "t3") is None

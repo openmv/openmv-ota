@@ -127,6 +127,11 @@ def make_firmware(tmp_path):
             (d / "board_config.h").write_text(content)
             (d / "board_config.mk").write_text(
                 "PORT=%s\n" % ("alif" if board == "OPENMV_AE3" else "stm32"))
+            if board == "OPENMV4":       # the features an OTA build turns off live here
+                (d / "imlib_config.h").write_text(
+                    "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
+                    "#define IMLIB_ENABLE_QRCODES\n#define IMLIB_ENABLE_DATAMATRICES\n"
+                    "#define IMLIB_ENABLE_BARCODES\n#endif\n")
         if with_mpy_cross:
             mc = repo / "lib" / "micropython" / "mpy-cross" / "build"
             mc.mkdir(parents=True)
