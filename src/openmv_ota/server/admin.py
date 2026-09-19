@@ -784,7 +784,8 @@ def rename_device(device_id: str, body: DeviceName, request: Request,
     ms.set_device_name(device_id, name)
     ms.append_audit(actor=principal.name, action="device.rename", entity_type="device",
                     entity_id=device_id, data={"name": name},
-                    account_id=principal.account_id, product_id=dev["product_id"])
+                    account_id=principal.account_id,
+                    product_id=(dev or {}).get("product_id"))
     return {"device_id": device_id, "display_name": name}
 
 
@@ -833,14 +834,30 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
     """Pin one device to a release, overriding any rollout, or clear the pin with
     `{"release_id": null}`. The pin wins over cohort pins and rollouts both, so this is
     how you hold a single unit on a known build -- a device on a bench, or one a
-    customer is mid-incident with."""
+    customer is mid-incident with.
+
+    **The device need not have checked in yet.** A pin is an intent about a device id, so
+    it can be recorded when hardware ships and is waiting on that camera's very first
+    check-in -- which is what a platform claiming a unit at the point of sale needs. An id
+    already bound to another account is still a 404.
+    """
     ms = request.app.state.metastore
-    dev = _owned(ms.get_device(device_id), principal)        # 404 if missing or another account's
+    dev = ms.get_device(device_id)
+    if dev is not None:
+        _owned(dev, principal)                              # 404 if another account's
+    else:
+        # Never seen. The only thing to check is that the id is not already spoken for:
+        # without a fleet row there is no account on it, so the binding is what says.
+        cur = ms.device_account(device_id)
+        if cur is not None and cur["source"] == "admin" \
+                and cur["account_id"] != principal.account_id:
+            raise HTTPException(status_code=404)
     _check_pin_release(ms, body.release_id, principal)
-    ms.set_device_pin(device_id, body.release_id)            # release_id=None unpins
+    ms.set_device_pin(device_id, body.release_id,            # release_id=None unpins
+                      account_id=principal.account_id)
     ms.append_audit(actor=principal.name, action="device.pin", entity_type="device",
                     entity_id=device_id, data={"release_id": body.release_id},
-                    account_id=principal.account_id, product_id=dev["product_id"])
+                    account_id=principal.account_id, product_id=(dev or {}).get("product_id"))
     return {"device_id": device_id, "pinned_release_id": body.release_id}
 
 

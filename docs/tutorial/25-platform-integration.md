@@ -107,10 +107,14 @@ into the other slot, rolled back if it does not boot.
 another is a pin to the new customer's release. Taking it back is a pin to the current
 stock release. There is no separate verb, and no state the server has to keep in step.
 
-One thing to build around: **a pin on a device the server has never seen does nothing.**
-The fleet row is created by the first check-in, so a claim issued before a camera has ever
-been powered on has nothing to attach to. Either claim at first check-in, or pin and let
-your flow tolerate the wait.
+**A pin does not need the camera to have checked in.** It is an intent about a device id,
+not a field on a fleet row, so you can record it when the hardware ships — or the moment a
+customer scans a code — and it is waiting on that camera's very first check-in. The claim
+lands on first contact rather than on the poll after it, which is the difference between a
+customer watching a spinner for one interval and for two.
+
+The only thing refused is an id already bound to another account, which is a 404 like
+everywhere else.
 
 ## Versions, and the publish counter
 
@@ -222,7 +226,8 @@ openmv-ota client device bind --device-id OPENMV_N6:3c0021000c51
 
 An administrative bind wins over a learned one and works **before the camera has ever
 checked in**, so you can register hardware at the moment it leaves your building and the
-first check-in lands where you expect.
+first check-in lands where you expect. Pins work the same way, so binding and claiming can
+both happen at the point of sale, and the camera arrives already knowing what it is.
 
 When a unit is retired:
 
