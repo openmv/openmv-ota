@@ -40,7 +40,8 @@ When `client release publish` uploads a release, the server does exactly three t
 
 1. **Reads the signed manifest** and derives every piece of metadata from it — product,
    version, account, sizes, hashes, which delta files belong — refusing any upload
-   whose artifacts don't match what the manifest declares.
+   whose artifacts don't match what the manifest declares, or whose version (or, for a
+   platform project, publish counter) does not advance that product's newest.
 2. **Puts the bytes in object storage**, untouched, under a freshly minted release id:
    the manifest at `manifests/<release_id>/manifest.bin`, and the image and each delta
    at `artifacts/<release_id>/<filename>` — *filename* being exactly what the signed
@@ -75,16 +76,18 @@ interval. In order:
    device in the wrong tenant.
 4. **The offer decision** — a device **pin** wins, then a **cohort pin**, then the active
    rollout for the device's cohort. Whatever the source, an offer only happens when it's
-   an *upgrade* over what the device reports running, the device is *settled* (not
-   mid-trial — its fallback slot is worth more than a new download), and — for a
+   an *upgrade* over what the device reports running — by version, or by the account's
+   publish counter for a camera that says it orders by that — the device is *settled*
+   (not mid-trial — its fallback slot is worth more than a new download), and — for a
    rollout — the device's stable hash falls inside the current percent.
 5. **Rollout accounting** — the check-in feeds the rollout's counters: newly offered
    devices bump `attempted`, a device now running the offered release bumps `updated`,
    and a device transitioning into a fallback bumps `failures`. When the failure rate
    among offered devices crosses the rollout's threshold, the rollout **auto-pauses**
    and the audit log records it.
-6. **The device row** — version, slot, confirmation state, fallback identity, cohort —
-   is upserted; this is what `client fleet` and `client device list` summarize.
+6. **The device row** — version, publish counter, slot, confirmation state, fallback
+   identity, cohort — is upserted; this is what `client fleet` and `client device list`
+   summarize.
 7. **The answer** — `{update: false, poll_after_s: …}` in the common case; on an offer,
    a short-lived download URL for the release's manifest. Where the deployment is wired
    for them, the answer also carries per-device **grants** for OpenMV's live-viewing and
