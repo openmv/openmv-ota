@@ -382,10 +382,25 @@ def test_device_pin_set_and_clear(tmp_path):
     assert store.get_device("d1")["pinned_release_id"] is None
 
 
-def test_device_pin_404_when_missing(tmp_path):
+def test_a_device_can_be_pinned_before_it_has_ever_checked_in(tmp_path):
+    """A pin is an intent about a device id, not a field on a fleet row. A platform claims
+    hardware when it ships -- before anything has been powered on -- and the claim has to
+    be waiting on that camera's FIRST check-in, not the one after the row appears."""
     app, store = _app(tmp_path)
-    assert TestClient(app).patch("/api/v1/admin/devices/ghost/pin", headers=AUTH,
-                                 json={"release_id": "r"}).status_code == 404
+    r = TestClient(app).patch("/api/v1/admin/devices/OPENMV_N6:never-seen/pin", headers=AUTH,
+                              json={"release_id": "rel1"})
+    assert r.status_code == 200
+    assert store.get_device_pin("OPENMV_N6:never-seen") == "rel1"
+    assert store.get_device("OPENMV_N6:never-seen") is None    # still no fleet row
+
+
+def test_an_id_already_bound_elsewhere_cannot_be_pinned(tmp_path):
+    """The only thing there is to check on an unseen id: without a fleet row there is no
+    account on it, so the binding is what says whose it is."""
+    app, store = _app(tmp_path)
+    store.bind_device_account("OPENMV_N6:theirs", "other_acct", source="admin")
+    assert TestClient(app).patch("/api/v1/admin/devices/OPENMV_N6:theirs/pin", headers=AUTH,
+                                 json={"release_id": "rel1"}).status_code == 404
 
 
 def test_cohort_pin_set_and_clear(tmp_path):
@@ -1105,6 +1120,37 @@ def test_viewer_grant_returns_watch_and_read_urls(tmp_path):
     assert body["streams"]["0"]["watch_url"].startswith("wss://live.test/watch/dev1/0?token=")
     assert body["datalake"]["topics_url"] == "https://data.test/api/v1/topics/dev1"
     assert body["token"] and body["datalake"]["token"] != body["token"]
+
+
+def test_viewer_grants_mint_a_page_in_one_call(tmp_path):
+    """A dashboard drawing a hundred tiles should not make a hundred round trips. Each
+    entry is what the single-device call would have returned; a device this credential
+    may not view -- missing, bound elsewhere -- is null, and the page still renders."""
+    app, store = _live_app(tmp_path)
+    _seed_device(store)                                        # dev1, ours
+    store.bind_device_account("dev1", "", source="learned")
+    _seed_device(store, device_id="dev2", account_id="acct_other")
+    store.bind_device_account("dev2", "acct_other", source="admin")
+    c = TestClient(app)
+    single = c.post("/api/v1/admin/devices/dev1/viewer-grant", headers=AUTH).json()
+    r = c.post("/api/v1/admin/devices/viewer-grants", headers=AUTH,
+               json={"device_ids": ["dev1", "dev2", "nope", "dev1"]})
+    assert r.status_code == 200
+    grants = r.json()["grants"]
+    assert set(grants) == {"dev1", "dev2", "nope"}             # duplicates collapse
+    assert grants["dev2"] is None and grants["nope"] is None   # not ours: no 404, no grant
+    assert set(grants["dev1"]["streams"]) == set(single["streams"])
+    assert grants["dev1"]["datalake"]["topics_url"] == single["datalake"]["topics_url"]
+    # a page, not a fleet
+    too_many = c.post("/api/v1/admin/devices/viewer-grants", headers=AUTH,
+                      json={"device_ids": ["d%d" % i for i in range(101)]})
+    assert too_many.status_code == 400
+    # and a deployment with no live/viewing at all says so once, for the whole call
+    plain, pstore = _app(_mk(tmp_path, "plain"))
+    _seed_device(pstore)
+    pstore.bind_device_account("dev1", "", source="learned")
+    assert TestClient(plain).post("/api/v1/admin/devices/viewer-grants", headers=AUTH,
+                                  json={"device_ids": ["dev1"]}).status_code == 503
 
 
 def test_viewer_grant_needs_the_observe_scope(tmp_path):

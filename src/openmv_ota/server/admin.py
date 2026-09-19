@@ -21,7 +21,7 @@ from .schemas import (
     AccountList,
     AccountNamed,
     AdvisoryList,
-    ProductDeclared, ProductList, ProductRenamed, ProductViewerGrant,
+    ProductDeclared, ProductList, ProductRenamed, ProductViewerGrant, ViewerGrants,
     AdvisoryScan,
     AuditList,
     CohortAssigned,
@@ -784,7 +784,8 @@ def rename_device(device_id: str, body: DeviceName, request: Request,
     ms.set_device_name(device_id, name)
     ms.append_audit(actor=principal.name, action="device.rename", entity_type="device",
                     entity_id=device_id, data={"name": name},
-                    account_id=principal.account_id, product_id=dev["product_id"])
+                    account_id=principal.account_id,
+                    product_id=(dev or {}).get("product_id"))
     return {"device_id": device_id, "display_name": name}
 
 
@@ -833,14 +834,30 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
     """Pin one device to a release, overriding any rollout, or clear the pin with
     `{"release_id": null}`. The pin wins over cohort pins and rollouts both, so this is
     how you hold a single unit on a known build -- a device on a bench, or one a
-    customer is mid-incident with."""
+    customer is mid-incident with.
+
+    **The device need not have checked in yet.** A pin is an intent about a device id, so
+    it can be recorded when hardware ships and is waiting on that camera's very first
+    check-in -- which is what a platform claiming a unit at the point of sale needs. An id
+    already bound to another account is still a 404.
+    """
     ms = request.app.state.metastore
-    dev = _owned(ms.get_device(device_id), principal)        # 404 if missing or another account's
+    dev = ms.get_device(device_id)
+    if dev is not None:
+        _owned(dev, principal)                              # 404 if another account's
+    else:
+        # Never seen. The only thing to check is that the id is not already spoken for:
+        # without a fleet row there is no account on it, so the binding is what says.
+        cur = ms.device_account(device_id)
+        if cur is not None and cur["source"] == "admin" \
+                and cur["account_id"] != principal.account_id:
+            raise HTTPException(status_code=404)
     _check_pin_release(ms, body.release_id, principal)
-    ms.set_device_pin(device_id, body.release_id)            # release_id=None unpins
+    ms.set_device_pin(device_id, body.release_id,            # release_id=None unpins
+                      account_id=principal.account_id)
     ms.append_audit(actor=principal.name, action="device.pin", entity_type="device",
                     entity_id=device_id, data={"release_id": body.release_id},
-                    account_id=principal.account_id, product_id=dev["product_id"])
+                    account_id=principal.account_id, product_id=(dev or {}).get("product_id"))
     return {"device_id": device_id, "pinned_release_id": body.release_id}
 
 
@@ -1337,20 +1354,59 @@ def viewer_grant(device_id: str, request: Request,
     Ownership comes from the sticky device->account binding, not from whatever
     the device last claimed, and an unowned device is a 404 like any other
     entity -- so this cannot be used to discover other accounts' devices."""
-    st = request.app.state
+    grant = _viewer_grant_for(request.app.state, principal, device_id)
+    if grant is None:
+        raise HTTPException(status_code=404)
+    if not grant:
+        raise HTTPException(status_code=503, detail="live/viewing is not configured")
+    return grant
+
+
+def _viewer_grant_for(st, principal, device_id: str):
+    """One device's viewer grant, or None when the device is not this credential's to
+    view (missing, or bound elsewhere -- indistinguishable on purpose), or ``{}`` when
+    live/viewing is not configured on this deployment at all."""
     ms = st.metastore
     device = ms.get_device(device_id)
     if device is None:
-        raise HTTPException(status_code=404)
+        return None
     bound = ms.device_account(device_id)          # the sticky binding wins
     owner = bound["account_id"] if bound else device.get("account_id", "")
-    _owned({"account_id": owner}, principal)
+    if owner != principal.account_id or not principal.may(device.get("product_id")):
+        return None
     grant = live_mod.viewer_grant(
         st.settings, device_id, (device.get("streams") or "").split(","),
         datalake_url=getattr(st.settings, "datalake_url", "") or "")
-    if grant is None:
+    return grant if grant is not None else {}
+
+
+class ViewerGrantsRequest(BaseModel):
+    device_ids: list[str]
+
+
+_VIEWER_GRANTS_MAX = 100
+
+
+@admin.post("/devices/viewer-grants", responses={200: {"model": ViewerGrants}})
+def viewer_grants(body: ViewerGrantsRequest, request: Request,
+                  principal: Principal = Depends(require_scope("observe"))):
+    """Viewer grants for a page of devices in one call -- a dashboard drawing a hundred
+    tiles should not have to make a hundred round trips to mint a hundred credentials.
+
+    Each entry is exactly what the single-device call returns, or ``null`` for a device
+    this credential may not view (missing, bound to another account, outside a limited
+    token's products -- the page still renders, with that tile empty). At most 100 ids,
+    which is a page; 400 above that. 503 only when live/viewing is not configured at all.
+    """
+    if len(body.device_ids) > _VIEWER_GRANTS_MAX:
+        raise HTTPException(status_code=400,
+                            detail="at most %d device ids per call" % _VIEWER_GRANTS_MAX)
+    st = request.app.state
+    if not (st.settings.live_relay_url and st.settings.live_token_secret) \
+            and not (getattr(st.settings, "datalake_url", "") and st.settings.datalake_token_secret):
         raise HTTPException(status_code=503, detail="live/viewing is not configured")
-    return grant
+    return {"grants": {did: (_viewer_grant_for(st, principal, did) or None)
+                       for did in dict.fromkeys(body.device_ids)}}
 
 
 @admin.get("/audit", responses={200: {"model": AuditList}})

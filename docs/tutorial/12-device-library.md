@@ -16,6 +16,11 @@ packs it to `/rom/lib/openmv_ota/`. It exposes:
     **the last update failed and you are running the previous release** — worth reporting
     upstream,
   - `payload_version` — the booted image's version,
+  - `publish_seq`, `orders_by_seq` — the booted image's account publish counter, and
+    whether this camera orders images by it rather than by version (only a camera built
+    with `product_id = 0` does — see
+    [Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter)).
+    Both ride in the check-in, since the server cannot tell from anything else,
   - `representation` — `'full'` | `'delta'` | `None` — how this image was installed
     (the updater stamps this; `None` for a provisioned image). Lets you see on-device
     whether deltas are actually being applied,
@@ -86,8 +91,9 @@ hand it (how that's obtained is out of scope here). It:
 2. **Fetches + verifies the manifest** (into RAM): checks its ECDSA signature against the
    same frozen trusted keys as an image trailer, then applies the device-relative checks
    — `product_id` cross-flash guard, `min_platform_version`, and the **anti-rollback floor**
-   (the highest version any slot has recorded) — exactly mirroring what `boot.py` enforces
-   on the image, just *earlier*. Any failure here raises with `/rom` intact.
+   (the highest version any slot has recorded — or, on a `product_id = 0` camera, the
+   highest publish counter) — exactly mirroring what `boot.py` enforces on the image, just
+   *earlier*. Any failure here raises with `/rom` intact.
 3. **Selects a representation** from the manifest — the **full** image, or a **delta**
    when one is offered whose base matches the version this device is *running* and it's
    smaller — and opens a second HTTPS GET (or the sibling file) for it. (Single-image devices never take a delta:

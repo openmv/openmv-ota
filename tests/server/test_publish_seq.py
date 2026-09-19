@@ -116,3 +116,45 @@ def test_an_ordinary_camera_is_ordered_by_its_version(tmp_path):
     assert plain.orders_by_seq is False and plain.publish_seq == 0
     assert _ordering(plain, {"payload_version": 2 << 24, "publish_seq": 1}) == (1 << 24, 2 << 24)
     assert _ordering(plain, None) == (1 << 24, 0)
+
+
+def test_a_pin_recorded_before_first_contact_lands_on_first_contact(tmp_path):
+    """The claim flow, end to end: pin an id that has never been seen, then let the camera
+    arrive. It must be offered the pinned release on the check-in that CREATES its row --
+    not the one after, which is a whole poll interval with a customer watching."""
+    c, store = _app(tmp_path)
+    store.add_release(release_id="rel_claim", product_id=7, product="p", version="2.0.0",
+                      payload_version=2 << 24, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=3, representations=[{"format": "full", "url": "x", "size": 3}],
+                      manifest_key="m", image_key="i", account_id="acct_1")
+    store.bind_device_account("OPENMV_N6:fresh", "acct_1", source="admin")
+
+    assert c.patch("/api/v1/admin/devices/OPENMV_N6:fresh/pin", headers=AUTH,
+                   json={"release_id": "rel_claim"}).status_code == 200
+    assert store.get_device("OPENMV_N6:fresh") is None          # nothing has checked in
+
+    # the camera reports its RAW unit id and its board; the server qualifies the two into
+    # the id everything else is keyed by, which is the id the pin was recorded against
+    body = c.post("/api/v1/check", json={"device_id": "fresh", "product_id": 7,
+                                         "board": "OPENMV_N6", "payload_version": 1 << 24,
+                                         "account_id": "acct_1"}).json()
+    assert body["update"] is True and body["release_id"] == "rel_claim"
+
+
+def test_the_fleet_row_records_what_the_camera_orders_by(tmp_path):
+    """`device show` has to answer the one question that decides whether a platform's
+    camera will take an offer: what counter it is on. The offer path already reads it off
+    the check-in; this is the same fact, kept where an operator can see it."""
+    c, store = _app(tmp_path)
+    store.bind_device_account("OPENMV_N6:stock1", "acct_1", source="admin")
+    c.post("/api/v1/check", json={"device_id": "stock1", "product_id": 7, "board": "OPENMV_N6",
+                                  "payload_version": 1 << 24, "account_id": "acct_1",
+                                  "publish_seq": 4242, "orders_by_seq": True})
+    row = c.get("/api/v1/admin/devices/OPENMV_N6:stock1", headers=AUTH).json()
+    assert (row["publish_seq"], row["orders_by_seq"]) == (4242, 1)
+    # an ordinary camera says nothing and the row says 0 / not-by-seq
+    store.bind_device_account("OPENMV_N6:plain", "acct_1", source="admin")
+    c.post("/api/v1/check", json={"device_id": "plain", "product_id": 7, "board": "OPENMV_N6",
+                                  "payload_version": 1 << 24, "account_id": "acct_1"})
+    row = c.get("/api/v1/admin/devices/OPENMV_N6:plain", headers=AUTH).json()
+    assert (row["publish_seq"], row["orders_by_seq"]) == (0, 0)

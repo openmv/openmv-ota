@@ -394,6 +394,7 @@ def create_project(
     app_version: str = "1.0.0",
     key_passphrase: str | None = None,
     dev: bool = False,
+    keys_from: Path | None = None,
 ) -> tuple[lock_mod.Lock, list[str]]:
     repo = firmware.expanduser().resolve()
     if not gitrepo.is_git_repo(repo):
@@ -435,25 +436,43 @@ def create_project(
         # so, not complain about key passphrases (and no keys get generated for it).
         _ensure_ota_capable(lock)  # fail before writing anything for an impossible board
         _ensure_ota_mbedtls(lock)
-        if force and paths.trusted_keys.exists():
+        if force and keys_from is None and paths.trusted_keys.exists():
             warnings.append(
                 "this regenerates the signing keys; devices already in the field trust the "
                 "OLD keys and will REJECT updates signed by the new ones (you'd have to "
                 "re-flash them). Only do this for a fresh fleet -- back up the old keys first")
-        if dev:
+        if keys_from is not None:
+            # Checked before anything else touches the source, so "that is not a project
+            # with keys" is the error rather than one about its passphrase file.
+            _shared_key_source(keys_from)
+        if dev and keys_from is not None:
+            # Shared keys stay encrypted under the passphrase they were minted with, so a
+            # throwaway one would produce PEMs this project cannot open. Take the source's.
+            src_dev = passphrase_mod.dev_passphrase_path(Path(keys_from).expanduser().resolve())
+            if not src_dev.exists():
+                raise ProjectError(
+                    "--dev --keys-from needs the source project to be a dev project too "
+                    "(no cached passphrase at %s); pass --key-passphrase-file instead"
+                    % src_dev, exit_code=1)
+            key_passphrase = src_dev.read_text().strip()
+        elif dev:
             key_passphrase = secrets.token_hex(16)   # random throwaway passphrase, cached in-project
         elif not key_passphrase:
             raise ProjectError(
                 "an OTA project's signing keys are encrypted -- pass --key-passphrase-file, or "
                 "--dev for a throwaway key (which the production build rail then refuses)",
                 exit_code=1)
-        provisioned, w = _provision_keys(sig_alg, factory_keys, ota_keys, key_passphrase)
+        if keys_from is not None:
+            signing_key_id, w = _adopt_keys(paths, keys_from, boards, key_passphrase)
+        else:
+            provisioned, w = _provision_keys(sig_alg, factory_keys, ota_keys, key_passphrase)
+            signing_key_id = provisioned.signing_key_id
         warnings += w
         # Re-render with the real signing key id. Key identity is digest-neutral (rotation
         # updates it in place via set_signing_key_id without invalidating the lock), so the
         # digest/lock resolved above still match the final on-disk config.
         config_text = config_mod.render_config(
-            name, vendor, boards, ota=ota, signing_key_id=provisioned.signing_key_id, ca=ca_rel,
+            name, vendor, boards, ota=ota, signing_key_id=signing_key_id, ca=ca_rel,
         )
         config = config_mod.parse_config(config_text, name)
     if lock.firmware["dirty"] and not allow_dirty:
@@ -468,10 +487,12 @@ def create_project(
         # same reason: a project should arrive with confidentiality rather than with a
         # decision about it. One per board target -- see project/payload_keys.
         payload_keys.mint(paths.private_keys_dir, boards, key_passphrase)
-        if dev:
-            dp = passphrase_mod.dev_passphrase_path(root)
-            dp.write_text(key_passphrase, encoding="utf-8")
-            dp.chmod(0o600)
+    if config.ota and dev:
+        # Cached whether the keys were minted here or adopted -- an adopted project signs
+        # with the SOURCE's passphrase, and the build resolver has to find it either way.
+        dp = passphrase_mod.dev_passphrase_path(root)
+        dp.write_text(key_passphrase, encoding="utf-8")
+        dp.chmod(0o600)
     _scaffold_app(paths, app_version, config.ota, vendor)  # starter app/ (cloud-wired for OTA)
     if _boards_have_coprocessor(boards):  # a slaved second core (e.g. AE3's M55_HE)
         _scaffold_coprocessor(paths, app_version)
@@ -488,6 +509,82 @@ def create_project(
 
 
 OTA_KEYS_WARN_FLOOR = 4
+
+
+def _shared_key_source(keys_from) -> ProjectPaths:
+    """The project ``--keys-from`` names, or a refusal that says what was looked for."""
+    src = ProjectPaths(Path(keys_from).expanduser().resolve())
+    if not src.trusted_keys.exists():
+        raise ProjectError("no key set at %s (looked for %s)"
+                           % (src.root, src.trusted_keys.name), exit_code=1)
+    return src
+
+
+def _adopt_keys(paths: ProjectPaths, source: Path, boards: list[str],
+                passphrase: str) -> tuple[int, list[str]]:
+    """Take another project's trust material instead of minting fresh, returning
+    ``(signing_key_id, warnings)``.
+
+    A camera verifies an image against the trusted keys baked into its FIRMWARE, and
+    decrypts a payload with the payload keys beside them. Firmware is not replaced over
+    the air, so those are the keys that camera has for its whole life. A fleet whose
+    cameras move between products -- stock hardware that becomes some customer's unit
+    after it ships -- therefore needs every one of those projects to share one key set:
+    mint a fresh set per project and a camera built from one cannot install an image
+    built from another, which is discovered on the first claim rather than here.
+
+    So this copies, and copies everything: the public trusted set, the encrypted private
+    PEMs, and the payload keys. The PEMs are encrypted at rest, so the passphrase has to
+    be the SOURCE project's -- checked here, because the alternative is a build that fails
+    much later with an error about a key file rather than about the decision that made it
+    unreadable."""
+    src = _shared_key_source(source)
+    if src.root == paths.root:
+        raise ProjectError("--keys-from cannot be this project", exit_code=1)
+
+    from openmv_ota.ota.keys import read_trusted_keys
+
+    entries = [k for k in read_trusted_keys(src.trusted_keys) if not k.revoked]
+    ota_ids = [k.key_id for k in entries if k.role == "ota"]
+    if not ota_ids:
+        raise ProjectError("%s has no usable OTA signing key to share" % src.root, exit_code=1)
+
+    paths.trusted_keys.parent.mkdir(parents=True, exist_ok=True)
+    paths.trusted_keys.write_bytes(src.trusted_keys.read_bytes())
+    paths.private_keys_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for pem in sorted(src.private_keys_dir.glob("*.pem")):
+        (paths.private_keys_dir / pem.name).write_bytes(pem.read_bytes())
+        copied += 1
+    if not copied:
+        raise ProjectError(
+            "%s has no private keys to share -- its trusted set is public material only, "
+            "and a project that cannot sign cannot publish" % src.root, exit_code=1)
+
+    warnings: list[str] = []
+    src_payload = payload_keys.path_for(src.private_keys_dir)
+    if src_payload.exists():
+        payload_keys.path_for(paths.private_keys_dir).write_bytes(src_payload.read_bytes())
+        try:
+            added = payload_keys.ensure_boards(paths.private_keys_dir, boards, passphrase)
+        except ProjectError as e:
+            raise ProjectError(
+                "the key passphrase does not open %s's payload keys (%s). Shared keys stay "
+                "encrypted with the passphrase they were minted under, so this project has "
+                "to use the same one." % (src.root.name, e), exit_code=1) from None
+        if added:
+            warnings.append(
+                "minted payload keys for board(s) %s, which %s does not build for; the "
+                "signing keys are shared unchanged" % (", ".join(added), src.root.name))
+    else:
+        payload_keys.mint(paths.private_keys_dir, boards, passphrase)
+        warnings.append("%s has no payload keys, so this project minted its own -- published "
+                        "artifacts will not be decryptable by cameras built from it"
+                        % src.root.name)
+
+    # The lowest live OTA id, the same rule a fresh provision uses, so a shared project
+    # signs with the same key as the one it inherited from rather than a sibling.
+    return min(ota_ids), warnings
 
 
 def _provision_keys(sig_alg: int, factory_keys: int, ota_keys: int, passphrase: str):

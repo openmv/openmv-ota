@@ -40,6 +40,7 @@ in a non-default location.
 | `--install-sdk` | Download + install the SDK if it is missing. |
 | `--allow-dirty` | Don't warn when the checkout has uncommitted changes. |
 | `--force` | Re-run `new` over an existing project (refused otherwise). An existing `app/` is never overwritten. |
+| `--keys-from PROJECT` | Share another project's signing and payload keys instead of minting a fresh set (OTA projects). A camera trusts only the keys baked into its firmware, so every project a camera can be moved between must sign with the same ones — see [Integrating as a platform](25-platform-integration.md#keys-one-set-for-the-whole-fleet). The passphrase must be the source project's. |
 
 ## Layout
 

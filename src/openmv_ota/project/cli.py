@@ -65,6 +65,12 @@ def register(project_parser: argparse.ArgumentParser):
     p_new.add_argument("--dev", action="store_true",
                        help="throwaway dev keys: a random cached passphrase (keys/.dev-passphrase), "
                             "no passphrase to manage -- the production build rail refuses these")
+    p_new.add_argument("--keys-from", metavar="PROJECT",
+                       help="share another project's signing and payload keys instead of minting "
+                            "a fresh set. Needed when cameras move between products (a fleet built "
+                            "with product_id 0): a camera verifies against the keys in its "
+                            "FIRMWARE, which is never replaced over the air, so every project it "
+                            "can be moved between has to sign with the same ones")
     p_new.set_defaults(func=cmd_new, _command="project new")
 
     p_setup = sub.add_parser("setup", help="reconstruct the pinned checkout + SDK")
@@ -323,6 +329,7 @@ def cmd_new(args: argparse.Namespace) -> int:
             ca=args.ca,
             ota_keys=args.ota_keys,
             factory_keys=args.factory_keys,
+            keys_from=Path(args.keys_from) if args.keys_from else None,
             now=_now(),
             key_passphrase=_new_key_passphrase(args),
             dev=args.dev,

@@ -60,6 +60,11 @@ class Api:
             params["display_name"] = display_name
         return self._req("POST", "/api/v1/admin/releases", files=files, params=params)
 
+    def viewer_grants(self, device_ids):
+        """Viewer grants for a page of devices in one call; ``{device_id: grant | None}``."""
+        return self._req("POST", "/api/v1/admin/devices/viewer-grants",
+                         json={"device_ids": list(device_ids)})["grants"]
+
     def next_publish_seq(self):
         """Allocate this account's next publish counter -- the number a platform build
         stamps into the image it is about to sign. See the admin API's ``/publish-seq``."""
