@@ -47,6 +47,12 @@ class OtaConfig:
     # failure (a sensor that fails to initialise on a long cable is already documented in this
     # project) at the cost of one reboot per extra attempt on an image that is genuinely bad.
     max_attempts: int = 3
+    # PLATFORM MODE. A fleet whose cameras are built with product_id 0 can move them
+    # between product lines, so their images cannot be ordered by a per-product version
+    # -- they are ordered by the account's publish counter, which every build has to take
+    # from the server. That is a real cost (there is no offline build once this is on), so
+    # it is opt-in and off for everyone who does not need it.
+    platform: bool = False
     overrides: dict[str, dict] = field(default_factory=dict)
 
 
@@ -115,6 +121,7 @@ def parse_config(text: str, default_name: str) -> OtaConfig:
         ca=str(ota.get("ca") or ""),
         single_image=bool(ota.get("single_image", False)),
         max_attempts=_max_attempts(ota),
+        platform=bool(ota.get("platform", False)),
         overrides=overrides,
     )
 
@@ -222,7 +229,14 @@ def render_config(
             "#                           it a single try; higher tolerates a transient boot failure\n"
             "#                           at the cost of one reboot per extra attempt on an image\n"
             "#                           that is genuinely bad. Retries only help a failure that\n"
-            "#                           RESETS -- a hang just hangs this many times.\n\n"
+            "#                           RESETS -- a hang just hangs this many times.\n"
+            "\n"
+            "# platform = true         # you build for cameras whose product_id is 0, so they can\n"
+            "#                           be moved between product lines. Their images are ordered\n"
+            "#                           by the ACCOUNT's publish counter rather than by a\n"
+            "#                           per-product version, and every build takes the next one\n"
+            "#                           from the server -- so there is no offline build with this\n"
+            "#                           on. Leave it off unless you are running a fleet that way.\n\n"
         )
     else:
         ota_section = (

@@ -506,7 +506,8 @@ _MANIFEST_MAX = 8192
 _ALG_SIG_SIZE = {-7: 64, -35: 96, -36: 132}
 # Image trailer header (mirror of openmv_ota.ota.trailer) -- only payload_version is read.
 _TRAILER_MAGIC = b"OMVR"
-_TRAILER_HEADER_STRUCT = "<4sIIIIIQIIIi32s"   # header v2: product_id is 64-bit
+# header v3: product_id, publish_seq and reserved0 are the three 64-bit fields at 24/32/40
+_TRAILER_HEADER_STRUCT = "<4sIIIIIQQQIIIi32s"
 
 
 def _manifest_parse(data):
@@ -551,7 +552,9 @@ def _update_reject(body, product_id, platform_version, rollback_floor, account_i
     mpv = body.get("min_platform_version", 0)
     if mpv and mpv > platform_version:
         return "compat"
-    if body.get("payload_version", 0) < rollback_floor:
+    # The key this camera orders by -- see openmv_ota.ota.manifest.update_reject_reason.
+    key = body.get("publish_seq", 0) if product_id == 0 else body.get("payload_version", 0)
+    if key < rollback_floor:
         return "rollback"
     return None
 
@@ -592,7 +595,7 @@ def _trailer_version(trailer):
     fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
     if fields[0] != _TRAILER_MAGIC:
         return 0
-    return fields[8]                              # payload_version (9th header field)
+    return fields[10]                             # payload_version (11th header field)
 
 
 def _trailer_body_sha(trailer):
@@ -605,14 +608,15 @@ def _trailer_body_sha(trailer):
     fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
     if fields[0] != _TRAILER_MAGIC:
         return ""
-    return binascii.hexlify(fields[11]).decode()  # body_sha256 (12th: reserved0 is gone)
+    return binascii.hexlify(fields[13]).decode()  # body_sha256 (last header field)
 
 
 # --- pure: A/B slot arithmetic (mirror of boot.py; pinned by a test) ---------
 
-_ROLLBACK_ENTRY = 8                               # u32 version || u32 ~version
+_ROLLBACK_ENTRY = 16                              # u64 key || u64 ~key
 _FLOOR_OFF = 80 + 64 * 16                         # floor entries: the status sector's tail
-_ROLLBACK_STRIDE = 8                              # entry spacing; stride-sized on ECC flash
+_ROLLBACK_STRIDE = 16                             # entry spacing; stride-sized on ECC flash
+_MASK64 = 0xFFFFFFFFFFFFFFFF
 _COUNTER_OFF = 64                                 # within the status sector
 _COUNTER_LEN = 8
 _MASK32 = 0xFFFFFFFF
@@ -639,16 +643,21 @@ def _install_counter(status):
 
 
 def _rollback_floor_of(sector):
-    """The highest valid version in a rollback sector (mirror of ``boot._rollback_floor_of``)."""
+    """The highest valid key in a rollback sector (mirror of ``boot._rollback_floor_of``)."""
     floor = 0
     i = 0
     n = len(sector)
     while i + _ROLLBACK_ENTRY <= n:
-        version, check = struct.unpack_from("<II", sector, i)
-        if (version ^ _MASK32) == check and version > floor:
-            floor = version
+        key, check = struct.unpack_from("<QQ", sector, i)
+        if (key ^ _MASK64) == check and key > floor:
+            floor = key
         i += _ROLLBACK_STRIDE
     return floor
+
+
+def _rollback_entry(key):
+    """One floor entry (mirror of ``openmv_ota.ota.rollback.encode_entry``)."""
+    return struct.pack("<QQ", key & _MASK64, (key & _MASK64) ^ _MASK64)
 
 
 def _encode_counter(value):
@@ -979,7 +988,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         # floor of zero and re-admit any old signed release. Writing it here shrinks that
         # window from the whole download to the blank-verify pass plus one verified program.
         # (It cannot go before the blank verify: the verify would read it as a failed erase.)
-        entry = struct.pack("<II", floor & _MASK32, (floor & _MASK32) ^ _MASK32)
+        entry = _rollback_entry(floor)
         floor_at = slot_size - 2 * block + _FLOOR_OFF
         write(floor_at, _pad(entry))
         if readback(floor_at, len(entry)) != entry:

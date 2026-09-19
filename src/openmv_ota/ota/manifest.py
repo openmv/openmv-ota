@@ -27,7 +27,9 @@ The JSON body schema (``schema`` == ``SCHEMA``)::
     product_id              int     device cross-flash guard (0 = any)
     product               str     human board/product name (informational)
     version               str     new image's MAJOR.MINOR.PATCH (informational)
-    payload_version       int     encoded uint32 -- anti-rollback compare
+    payload_version       int     encoded uint32 -- the app's version
+    publish_seq           int     the account's publish counter (0 = unused); what a
+                                  PRODUCT_ID 0 camera compares instead of the version
     min_platform_version  int     firmware floor (0 = none)
     size                  int     reconstructed full-slot image size, bytes
     sha256                str     sha256 (hex) of the reconstructed full-slot image
@@ -181,7 +183,12 @@ def update_reject_reason(body, product_id, platform_version, rollback_floor, acc
     mpv = body.get("min_platform_version", 0)
     if mpv and mpv > platform_version:
         return "compat"
-    if body.get("payload_version", 0) < rollback_floor:
+    # The key this camera orders by -- the mirror of boot.rollback_key. A camera built
+    # with a real product_id can only ever be offered its own product's images, so its
+    # own version sequence orders them; PRODUCT_ID 0 turns that guard off, so such a
+    # camera orders by the account's publish counter, which spans products.
+    key = body.get("publish_seq", 0) if product_id == 0 else body.get("payload_version", 0)
+    if key < rollback_floor:
         return "rollback"
     return None
 

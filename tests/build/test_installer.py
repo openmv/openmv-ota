@@ -65,12 +65,18 @@ def test_rollback_floor_of_mirrors_boot_and_host():
 
     import tests.build.test_device_boot as boot_test        # noqa: PLC0415
     sector = bytearray(b"\xff" * 4096)
-    sector[0:8] = rollback.encode_entry(0x01000000)
-    sector[8:16] = rollback.encode_entry(0x01020000)
-    sector[16:20] = b"\x05\x00\x00\x00"                       # a torn entry: ignored, not trusted
+    sector[0:16] = rollback.encode_entry(0x01000000)
+    sector[16:32] = rollback.encode_entry(0x01020000)
+    sector[32:36] = b"\x05\x00\x00\x00"                     # a torn entry: ignored, not trusted
     assert (inst("_rollback_floor_of")(bytes(sector))
             == boot_test.B._rollback_floor_of(bytes(sector))
             == rollback.floor_of(sector) == 0x01020000)
+    # 64-bit: an account's publish counter has no reason to fit in 32 bits
+    wide = bytearray(b"\xff" * 4096)
+    wide[0:16] = rollback.encode_entry(1 << 40)
+    assert (inst("_rollback_floor_of")(bytes(wide))
+            == boot_test.B._rollback_floor_of(bytes(wide))
+            == rollback.floor_of(wide) == 1 << 40)
     assert inst("_rollback_floor_of")(b"\xff" * 4096) == 0        # blank -> no floor
     assert inst("_rollback_floor_of")(b"\xff" * 4) == 0           # shorter than one entry
 

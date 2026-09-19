@@ -21,15 +21,30 @@ verifier trusts comes from authenticated fields, not from the flexible blob.
 The fixed header, in order (``docs/reference/trailer.md`` has per-field semantics)::
 
     magic(4s) header_version body_size pad_size meta_size sig_size
-    product_id(uint64) min_platform_version payload_version
-    key_id sig_alg(int32) body_sha256(32s)
+    product_id(uint64) publish_seq(uint64) reserved0(uint64)
+    min_platform_version payload_version key_id sig_alg(int32) body_sha256(32s)
 
-``product_id`` is **64-bit**. It was 32 with four bytes of ``reserved0`` beside
-it; widening it consumed exactly that headroom, so the header is still 80 bytes.
-A 32-bit id is derived from a hash of the product name, and at a few thousand
-products the birthday bound makes a collision likely — two product lines sharing
-an id means one line's devices accept the other's firmware. The header version
-went to 2 with the width.
+``product_id`` is **64-bit**. A 32-bit id is derived from a hash of the product
+name, and at a few thousand products the birthday bound makes a collision likely
+— two product lines sharing an id means one line's devices accept the other's
+firmware.
+
+``publish_seq`` is the account's **publish counter**: strictly increasing, never
+reused, and compared by nothing except anti-rollback. It exists because
+``payload_version`` was doing two jobs with opposite requirements — an app's
+human version, which each product chooses freely, and the anti-rollback ordering
+key, which has to be monotonic across everything a camera might ever run. Those
+only conflict on a camera that can *change product*, i.e. one built with
+``PRODUCT_ID = 0``; such a camera orders by ``publish_seq`` and every other camera
+orders by ``payload_version``, exactly as it always has. See
+``docs/tutorial/25-platform-integration.md``.
+
+**``header_version`` is a one-shot.** Both this codec and the device check it for
+exact equality and refuse anything else, and firmware cannot be replaced over the
+air — so a bump makes every camera already in the field reject every new image,
+permanently. Version 3 is spent here, on a header sized for the life of the
+format: ``reserved0`` is the headroom the next field comes out of, the way
+``product_id``'s width came out of the reserved word that used to sit beside it.
 
 ``magic`` doubles as the payload-kind discriminator (``OMVR`` = ROMFS app,
 ``OMVF`` = firmware, reserved). The lone signed field ``sig_alg`` is placed just
@@ -51,7 +66,7 @@ from .errors import OtaError
 MAGIC_ROMFS_APP = b"OMVR"   # ROMFS application image
 MAGIC_FIRMWARE = b"OMVF"    # firmware image (reserved; a future payload kind)
 
-HEADER_VERSION = 2
+HEADER_VERSION = 3
 # Maximum packed trailer size == the on-flash trailer sector: the build pads the
 # trailer with 0xFF to exactly one control block, and control_block() is 4 KiB on
 # every board -- deliberately NOT the erase block (see openmv_ota.ota.geometry), so
@@ -60,8 +75,11 @@ TRAILER_SZ = 4096
 CRC_SIZE = 4
 
 # Fixed trust-header. The single signed field (sig_alg) is the lone "i".
-HEADER_STRUCT = "<4sIIIIIQIIIi32s"
-HEADER_SIZE = struct.calcsize(HEADER_STRUCT)            # 80
+# The three 64-bit fields sit together at offsets 24/32/40, so each is naturally
+# aligned and `meta` starts at a 16-byte boundary. The single signed field (sig_alg)
+# stays immediately before the digest.
+HEADER_STRUCT = "<4sIIIIIQQQIIIi32s"
+HEADER_SIZE = struct.calcsize(HEADER_STRUCT)            # 96
 _META_SIZE_OFFSET = struct.calcsize("<4sIII")           # magic, version, body, pad => 16
 
 
@@ -81,6 +99,11 @@ class Trailer:
     body_sha256: bytes
     signature: bytes = b""
     header_version: int = HEADER_VERSION
+    publish_seq: int = 0
+    """The account's publish counter. 0 when the project does not use one, which is
+    every project that is not a platform minting images for ``PRODUCT_ID = 0``
+    cameras -- the field is in the header for all of them, and ignored by all of them."""
+    reserved0: int = 0
 
 
 def _serialize_meta(meta: dict) -> bytes:
@@ -107,6 +130,8 @@ def _build_signed_region(t: Trailer) -> tuple[bytes, AlgSpec]:
         len(meta_bytes),
         spec.sig_size,
         t.product_id,
+        t.publish_seq,
+        t.reserved0,
         t.min_platform_version,
         t.payload_version,
         t.key_id,
@@ -173,6 +198,8 @@ def parse_trailer(data: bytes) -> Trailer:
         meta_size,
         sig_size,
         product_id,
+        publish_seq,
+        reserved0,
         min_platform_version,
         payload_version,
         key_id,
@@ -211,6 +238,8 @@ def parse_trailer(data: bytes) -> Trailer:
         pad_size=pad_size,
         meta=meta,
         product_id=product_id,
+        publish_seq=publish_seq,
+        reserved0=reserved0,
         min_platform_version=min_platform_version,
         payload_version=payload_version,
         key_id=key_id,

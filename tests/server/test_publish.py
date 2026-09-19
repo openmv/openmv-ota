@@ -472,3 +472,29 @@ def test_an_encrypted_delta_is_checked_the_same_way(tmp_path):
                 query="?allow_republish=1", delta_name=ENC_DELTA_NAME)
     assert bad.status_code == 400
     assert "x-ota.delta.gz.enc sha256 does not match" in bad.json()["detail"]
+
+
+def test_a_reused_publish_counter_is_refused(tmp_path):
+    """Per PRODUCT and not account-wide, on purpose: concurrent builds finish out of
+    order, and an account-wide gate would 409 a publish for the crime of arriving second.
+    What must never get through is two artifacts of one product sharing a number -- a
+    camera cannot order those, and the ordering is the whole anti-rollback story for a
+    fleet whose cameras can change product."""
+    app, store, _storage = _app(tmp_path)
+    img = b"\xA5" * 64
+
+    body = _body(img, pv=0x02000000)
+    body["publish_seq"] = 500
+    assert _post(app, _manifest(body), _gz(img)).status_code == 200
+    assert store.newest_publish_seq(BID) == 500
+
+    # same number again -> refused, and the message says what to do about it
+    again = _body(img, pv=0x03000000)
+    again["publish_seq"] = 500
+    r = _post(app, _manifest(again), _gz(img))
+    assert r.status_code == 409 and "take a fresh one" in r.json()["detail"]
+
+    # ...and a higher one goes through
+    ahead = _body(img, pv=0x03000000)
+    ahead["publish_seq"] = 501
+    assert _post(app, _manifest(ahead), _gz(img)).status_code == 200

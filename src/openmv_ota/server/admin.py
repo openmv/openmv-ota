@@ -449,6 +449,34 @@ def rotate_token(token_hash: str, request: Request, body: TokenActor | None = No
     return fresh
 
 
+class PublishSeq(BaseModel):
+    publish_seq: int
+
+
+@admin.post("/publish-seq", responses={200: {"model": PublishSeq}})
+def allocate_publish_seq(request: Request,
+                         principal: Principal = Depends(require_scope("publish"))):
+    """Allocate this account's next publish counter -- the number a build stamps into the
+    image it is about to sign.
+
+    Only a fleet whose cameras are built with ``product_id = 0`` needs one. Those cameras
+    can be moved between product lines, so their images cannot be ordered by a per-product
+    version; they are ordered by this, which spans the account. Every other project leaves
+    the field at 0 and never calls this.
+
+    It is allocated here because a counter is the one part of a build that cannot be copied
+    the way a signing key can: two builds must never take the same number. Gaps are
+    expected and harmless -- a build that fails after taking one simply burns it.
+    """
+    seq = request.app.state.metastore.next_publish_seq(principal.account_id)
+    if seq is None:
+        raise HTTPException(status_code=409,
+                            detail="no publish counter for this credential's account; "
+                                   "platform builds need a real account, not a self-host's "
+                                   "implicit one")
+    return {"publish_seq": seq}
+
+
 @admin.post("/rollouts", responses={200: {"model": RolloutCreated}})
 def create_rollout(body: RolloutCreate, request: Request,
                    principal: Principal = Depends(require_scope("manage"))):

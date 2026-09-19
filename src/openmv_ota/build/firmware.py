@@ -37,6 +37,7 @@ from pathlib import Path
 from openmv_ota.project import load_project
 from openmv_ota.project.errors import ProjectError
 from openmv_ota.project.project import ProjectPaths
+from openmv_ota.romfs.boards import get_board
 
 from .errors import BuildError
 
@@ -157,6 +158,9 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
         if ota:
             tmp = _write_wrapper_manifest(p, repo, name, payload_keys or {})
             build_args.append("FROZEN_MANIFEST=%s" % (tmp / "manifest.py").as_posix())
+            overlay = _board_overlay(repo, name, tmp)
+            if overlay is not None:
+                build_args.append("OMV_BOARD_CONFIG_DIR=%s/" % overlay.as_posix())
             cmod = _install_verify_module(repo)
         if not incremental:
             _run_make(repo, ["TARGET=%s" % name, "clean"])
@@ -250,6 +254,45 @@ def _write_wrapper_manifest(p, repo: Path, name: str,
         'include("%s")\n' % board_manifest.as_posix() + "".join(freezes),
         encoding="utf-8")
     return tmp
+
+
+def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
+    """A copy of ``boards/<name>/`` under ``tmp`` with the imlib features this board's OTA
+    firmware drops turned off, or None when it drops nothing.
+
+    An OTA firmware carries what a stock one does not -- the frozen boot.py, the recovery
+    installer, mbedtls PEM parsing -- and on a board with no room for it (the OpenMV Cam
+    H7's 1664 KB FLASH_TEXT overflows by ~41 KB) something has to give. The board table
+    names what: the decoders with the least overlap with an OTA product, as a
+    ``{define: image method}`` map. The firmware tree is never edited: the Makefile takes
+    the board directory from ``OMV_BOARD_CONFIG_DIR`` (a plain ``:=`` assignment, so the
+    command line wins), and the overlay is that directory with the defines commented out
+    of ``imlib_config.h``. ``build romfs`` refuses an app that calls a dropped method
+    (:func:`openmv_ota.build.romfs._refuse_dropped_calls`), so the mismatch is a build
+    error and not a NameError in the field."""
+    drops = get_board(name).ota_firmware_drops
+    if not drops:
+        return None
+    src = repo / "boards" / name
+    overlay = tmp / "board"
+    shutil.copytree(src, overlay)
+    cfg = overlay / "imlib_config.h"
+    try:
+        text = cfg.read_text(encoding="utf-8")
+    except OSError:
+        raise BuildError("boards/%s/imlib_config.h not found in the firmware checkout; the "
+                         "OTA firmware build needs it to turn off %s"
+                         % (name, ", ".join(sorted(drops))), exit_code=2) from None
+    for define, method in drops.items():
+        text, n = re.subn(r"(?m)^[ \t]*#define[ \t]+%s\b.*$" % re.escape(define),
+                          "// #define %s  // dropped by openmv-ota: %s() does not fit an OTA "
+                          "firmware on this board" % (define, method), text)
+        if not n:
+            raise BuildError("boards/%s/imlib_config.h does not define %s, which the OTA "
+                             "firmware build expects to turn off -- the board table and the "
+                             "firmware disagree" % (name, define), exit_code=2)
+    cfg.write_text(text, encoding="utf-8")
+    return overlay
 
 
 def _recovery_ca(p, t) -> bytes:

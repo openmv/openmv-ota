@@ -136,29 +136,23 @@ jobs:
               # DHCP 192.168.0.38. A SECONDARY interface runs delta only (see regression_scenarios):
               # it proves the network path, and the rest of the OTA logic is interface-agnostic.
               {"board": "ARDUINO_PORTENTA_H7", "network": "lan", "label": "board-arduino-portenta"},
-              # Classic boards (single-image mode): no TLS in these builds (the F427 has no `ssl`
-              # module at all), so their real-world update path IS install() from the SD card --
+              # Classic boards (single-image mode): their real-world update path IS install()
+              # from the SD card rather than an HTTPS fetch --
               # and that is what the "file" legs exercise: artifacts staged over the USB-CDC, no
               # server, no marker UART (none is wired on these nodes; the CDC probe scores the
               # run). Each board passed its first fleet run (2026-08-21), so the legs BLOCK
               # like the rest of the fleet -- that is the entire point of having them.
               #
-              # openmv_url/openmv_ref pin the EXACT proven bring-up firmware commit. The classic
-              # board changes (OPENMV4 zbar trim to fit the OTA firmware in FLASH_TEXT, the
-              # classics' WINC sockbuf cap) are DELIBERATELY fork-maintained -- they are not
-              # going to openmv master -- so the pin is permanent policy, not a stopgap: these
-              # legs build a known tree, and moving them is an explicit SHA bump here, reviewed
-              # like any other change. (How fork-carried board changes are maintained long-term
-              # is an open workstream -- the pin is the mechanism until that lands.)
-              {"board": "OPENMV2", "network": "file", "label": "board-openmv-m4",
-               "openmv_url": "https://github.com/kwagyeman/openmv.git",
-               "openmv_ref": "db5f5af74d57ba3d4e28dc52d13dd4e5663432dd"},
-              {"board": "OPENMV3", "network": "file", "label": "board-openmv-m7",
-               "openmv_url": "https://github.com/kwagyeman/openmv.git",
-               "openmv_ref": "db5f5af74d57ba3d4e28dc52d13dd4e5663432dd"},
-              {"board": "OPENMV4", "network": "file", "label": "board-openmv-h7",
-               "openmv_url": "https://github.com/kwagyeman/openmv.git",
-               "openmv_ref": "db5f5af74d57ba3d4e28dc52d13dd4e5663432dd"},
+              # These built from a pinned fork SHA while the OTA firmware features were
+              # cherry-picks carried on top of it. Four of that pin's seven commits were exactly
+              # those carries (micropython #19348/#19350/#19084/#19399) and every one is upstream
+              # now, which is why `project new` checks for them instead of applying them. The pin
+              # had stopped being a proven tree and started being an OLD one: its micropython
+              # predates the commit that turns on PEM parsing, so provisioning refused it.
+              # They build openmv master like every other leg.
+              {"board": "OPENMV2", "network": "file", "label": "board-openmv-m4"},
+              {"board": "OPENMV3", "network": "file", "label": "board-openmv-m7"},
+              {"board": "OPENMV4", "network": "file", "label": "board-openmv-h7"},
           ]
           board = os.environ.get("BOARD") or "all"
           # PR gate runs EVERY board including the AE3 (wifi): its USB/DFU flashing and its watchdog are

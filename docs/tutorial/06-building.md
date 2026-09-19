@@ -35,6 +35,12 @@ otherwise; the build summary reports usage against whichever bound applies.
 
 The app source defaults to `<project>/app`; pass `--app` for another directory.
 
+An OTA project's app is also checked against what its board's OTA firmware carries: on
+the OpenMV Cam H7 the OTA firmware has no `find_barcodes()` or `find_datamatrices()`
+([Factory & firmware](07-factory-and-firmware.md#build-firmware)), so an app that calls
+either is refused here, with the file and line, instead of raising on the camera the
+first time a frame reaches that call. A mention in a comment or a string is not a call.
+
 The pegged firmware checkout must match the lock and be clean. The app is
 compiled with that checkout's own tools — the `.mpy` bytecode must match the
 firmware it will run on — and the image stamps the lock's provenance, so a

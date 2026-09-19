@@ -71,6 +71,9 @@ Cameras are usually built before anyone knows which customer will receive them. 
 hardware a **stock product** of its own, and build its firmware with a product id of `0`:
 
 ```toml
+[ota]
+platform = true
+
 [targets.OPENMV_N6]
 product_id = 0
 ```
@@ -80,6 +83,12 @@ when it has one — so a stock unit will accept an image from any product. What 
 **not** turn off is the account check: a stock camera is still confined to the account it
 is bound to, so "any product" means any of yours.
 
+The build refuses `product_id = 0` unless `platform` is set, and the two really are one
+decision: a camera that can change product cannot have its images ordered by a per-product
+version, so it needs the publish counter that `platform` turns on. Setting one without the
+other is always a mistake. And it is permanent — firmware is not replaced over the air, so
+the id a camera leaves the factory with is the id it has forever.
+
 Claiming one for a customer is then an ordinary device pin, to a release of a *different*
 product:
 
@@ -87,7 +96,8 @@ product:
 openmv-ota client device pin --device-id OPENMV_N6:3c0021000c51 --release-id cust_a_r1
 ```
 
-The pin checks that the release belongs to the account and that it is an upgrade. It
+The pin checks that the release belongs to the account and that it moves the camera
+forward — by the publish counter, for these cameras, not by the version. It
 deliberately does not check that it belongs to the device's current product — which is
 what makes one manufactured SKU able to become any customer's product after unboxing. The
 device takes it on its next check-in like any other update: downloaded, verified, staged
@@ -102,57 +112,94 @@ The fleet row is created by the first check-in, so a claim issued before a camer
 been powered on has nothing to attach to. Either claim at first check-in, or pin and let
 your flow tolerate the wait.
 
-## Versions, when a camera can change product
+## Versions, and the publish counter
 
-Inside one product, versions are ordinary: increment them, and every device takes the
-newer one.
+A camera that cannot change product needs nothing from this section: its own product's
+versions order its images completely, and incrementing them is the whole story. That is
+every ordinary fleet, and none of what follows applies to it.
 
-Moving a camera between products is where it gets a constraint, and it is worth
-understanding before you ship rather than after. **A version a camera moves _to_ must be
-numerically above the version it is on**, whichever products the two belong to. Two
-things enforce it, independently: the server's pin is upgrade-only, and the device's own
-anti-rollback floor — which records the highest version it has ever run, without
-reference to which product that version belonged to — refuses anything below it in the
-firmware itself.
+Yours is the other case. A camera built with `product_id = 0` can be moved between product
+lines, and two products' version numbers have nothing to say about each other — customer
+A's `5.3.0` and customer B's `2.1.0` are not orderable, and a stock image at `1.0.0` is
+below both. So those cameras order their images by a different number.
 
-So a camera that has run customer A's `5.3.0` will not take customer B's `2.1.0`, and it
-will not take a stock image still sitting at `1.0.0` either. A reset is the case that
-catches people out: stock is the product you rebuild least, so it is the one most likely
-to be behind the camera you want to return to it.
+**`publish_seq` is the account's publish counter**: allocated by the server, strictly
+increasing, never reused, and compared by nothing except anti-rollback. Turn it on in the
+project:
 
-What follows from that depends on how much your products move cameras around:
+```toml
+[ota]
+platform = true
+```
 
-- **If cameras never change product** — every unit is built, claimed and retired inside
-  one product — there is nothing to coordinate. Version each product however you like.
-- **If they do**, the versions of any two products a camera can move between have to be
-  ordered against each other. In practice that means keeping stock ahead of the fleet,
-  and starting each new customer's product above the highest version any camera you might
-  assign to it is running.
+and every build takes the next number before it signs. That has a real cost, and it is the
+one thing to know before you commit: **there is no offline build with this on.** A build
+has to reach the server, which means being logged in, which means your build pipeline
+needs a credential. Everything else about it is free.
 
-The numbers are the packed `payload_version`, not the string in your own UI — that lives
-in your metadata and in the release's display name, and can say whatever your customers
-need it to.
+What the counter buys:
+
+- **Version strings become entirely yours.** They order nothing, so a customer can retrain
+  and ship `1.0.0` twice, or use dates, or whatever their UI wants. None of it can wedge a
+  camera.
+- **A camera can be returned to stock.** Rebuild the stock image, it takes the newest
+  number, and a camera running customer A's `5.3.0` takes it — even though `1.0.0` reads
+  as older, because the version is not what is being compared.
+- **Deliberate rollback works.** If a model regresses, republish the previous image as a
+  new release. It gets a fresh number, so the fleet takes it. Anti-rollback here means
+  *no older artifact*, not *no older code*.
+
+And the discipline that comes with it, which is not enforceable and matters:
+
+> A higher counter means **published later**, not **contains more**. If a rebuild goes out
+> from an older branch of your runtime it still gets a higher number and cameras will take
+> it. Build every image from current source, or the counter will happily walk a fleet
+> backwards through code while moving forwards through numbers.
+
+The upside of one shared runtime is the other half of that: a fix in it reaches every
+customer on their next build, and no camera can be walked below what it is already running.
+
+### Taking numbers
+
+One call, per build, as late as you can:
+
+```bash
+openmv-ota build ota-romfs ./projects/acme -b OPENMV_N6   # takes the next number itself
+```
+
+A database sequence hands these out at millions per second, so the round trip is the cost,
+not the contention. Gaps are fine — a build that fails after taking a number simply burns
+it, and nothing anywhere requires them to be contiguous.
+
+**Do not batch them.** A block allocator — a worker grabbing a thousand numbers and handing
+them out locally — is the obvious way to remove the round trip, and it breaks the one
+property the whole arrangement rests on: that a freshly built image has a higher number
+than whatever a camera is running. Claim and return both depend on it.
+
+Out-of-order publishing is fine and expected at any real build rate. The server checks a
+number against **that product's** newest, not the account's, so a build that finishes
+second is not refused for it. Account-wide ordering is enforced at the offer instead: a
+camera reports what it is on, and the server never hands it a release below that.
 
 ### The build byte
 
-`payload_version` is a uint32 packed as `major.minor.patch.build`, one byte each, and the
-fourth is a **build number**:
+`payload_version` — your app's version, not the counter — is a uint32 packed as
+`major.minor.patch.build`, one byte each, and the fourth is a **build number**:
 
 ```json
 { "app_version": "1.4.2.7" }
 ```
 
-Three components give 2**24 distinct versions. That is generous for one product line and
-much less so for an operator publishing a build per customer into an ordering they all
-share, so the fourth byte is there to take the pressure off: rebuild `1.4.2` as
-`1.4.2.1`, `1.4.2.2` and so on without touching the number your customers see, and
-`1.4.3` still sorts above all 256 of them. Leave it off and it is zero, which is what a
-three-component version has always encoded.
+Three components give 2**24 versions per product, which is generous for a product line and
+less so for something rebuilt per workflow change. The fourth byte takes the pressure off:
+rebuild `1.4.2` as `1.4.2.1`, `1.4.2.2` and so on without touching the number your
+customers see, and `1.4.3` still sorts above all 256 of them. Leave it off and it is zero,
+which is what a three-component version has always encoded.
 
 ### Resetting a camera
 
 Returning one to stock is a pin to the **current** stock release — a forward step under
-the rule above, never a downgrade, and an ordinary OTA install rather than a reflash.
+the counter, never a downgrade, and an ordinary OTA install rather than a reflash.
 
 The only true as-manufactured reset is `openmv-ota flash factory`, because it is the only
 thing that clears the rollback sectors. That needs the camera in hand, so it is a depot
@@ -189,19 +236,48 @@ and rollout counters are built from those rows — and the removal is in the aud
 camera that checks in again afterwards is a device the server has not seen before: it
 enrols from scratch and is not yours again until you bind it.
 
+## Keys: one set for the whole fleet
+
+This is the constraint to settle before the first camera ships, because it cannot be
+changed afterwards.
+
+A camera verifies an image against the trusted keys **baked into its firmware**, and
+decrypts a payload with the payload keys baked in beside them. Firmware is not replaced
+over the air, so those are the keys that camera has for its whole life. A stock camera
+carries the *stock project's* keys — and it is going to be asked to install customer A's
+image, then customer B's.
+
+So **every project a camera can be moved between must share one signing key and one
+payload key set.** In practice that means your whole fleet: one signing identity, one
+payload key set, reused by every project you create. `project new` mints fresh keys by
+default, which is right for a product line and wrong for you — point each new project at
+the set you already have rather than letting it make its own.
+
+Two things follow that are worth being explicit about with anyone reviewing this:
+
+- The boundary between your customers is **the server deciding what to offer**, not
+  cryptography on the device. Every camera in your fleet can verify and decrypt every
+  image in it. That is the same trust domain by construction — they are all your images —
+  but it is not a wall, and it should not be described as one.
+- A camera built with `product_id = 0` has the cross-flash guard off permanently. What
+  protects it is the signature, the account binding, and the publish counter. That is a
+  coherent story; it is just a different one from a normal product's.
+
+The **stock image deserves particular care**, because it is the one artifact every camera
+can be returned to. Keep it as close to inert as the job allows — register, check in,
+wait — with no customer data handling and as little network surface as you can manage. A
+weakness there is a weakness in every camera you have ever shipped.
+
 ## Building and publishing
 
 The build happens on your machines, not ours, because it needs two things the server must
 never hold: the project's **signing key**, which is what the device verifies before it
 installs anything, and its **payload keys**, if you are encrypting published artifacts
-(see [Release artifacts](08-release-artifacts.md)). Both are made with the project, and
-the board key
-is baked into the firmware you build, so key material and image are produced together.
+(see [Release artifacts](08-release-artifacts.md)).
 
 The signer is pluggable — an encrypted PEM at minimum, and PKCS#11, AWS/GCP/Azure KMS, or
 your own hook ([Signing keys](05-signing-keys.md)). At platform scale, a key in a KMS is
-worth
-the setup: you will be signing unattended, on a schedule, for a long time.
+worth the setup: you will be signing unattended, on a schedule, for a long time.
 
 Publishing is the same verb as anywhere:
 
@@ -210,7 +286,7 @@ openmv-ota client release publish ./projects/acme -b OPENMV_N6
 ```
 
 With a product per customer this runs once per customer per board, against the same
-account and the same shared counter.
+account and the same counter.
 
 ## Credentials
 
@@ -286,6 +362,29 @@ poller that remembers the last `seq` it saw never misses an event and never sees
 twice — including the ones you cannot get any other way, such as `device.refused`, which
 is written once per device when a camera is turned away for being over the account's
 limit. The admin API is not rate limited; only the device check-in edge is.
+
+## What the counter does and does not protect
+
+Worth stating plainly, because the arrangement is unusual enough that people will ask.
+
+**It does stop an old image being served to a camera.** Every artifact carries a number,
+the camera records the highest it has run, and the firmware refuses anything below it —
+whatever product that artifact belongs to, and whatever its version string says. Someone
+who can answer a camera's check-ins and holds a copy of an old signed release still cannot
+install it. That is the whole point of the counter being global to the account rather than
+per product: it spans the moves a `product_id = 0` camera can make.
+
+**It does not stop you shipping old code.** A republished old image gets a fresh number and
+cameras take it, which is the rollback feature above, seen from the other side. The
+guarantee is *no older artifact*, not *no older code* — and it is why building every image
+from current source is a real requirement and not a style note.
+
+**It does not separate your customers on the device.** That is the server's targeting, as
+the keys section says.
+
+**None of it survives physical access.** The keys are in firmware that is identical across
+your fleet, so a flash dump recovers them. That is true of payload encryption too, and it
+stays true until readout protection and fuses land.
 
 ## If you provision accounts as well
 
