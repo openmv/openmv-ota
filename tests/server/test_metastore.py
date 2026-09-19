@@ -182,17 +182,21 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         M._MIGRATIONS = full[:20]
         old = M.SqliteMetadataStore(db)
         assert old.migrate() == 20
-        old.upsert_device(device_id="3c0021000c51", product_id=7, board="OPENMV_N6",
-                          account_id="acct")
+        # Seeded with the v20 table's own columns, not through upsert_device: the live
+        # writer names every column the CURRENT schema has, and this database is old
+        # on purpose.
+        for did, board in (("3c0021000c51", "OPENMV_N6"), ("noboard", None)):
+            old.execute("INSERT INTO devices (device_id, product_id, board, first_seen, "
+                        "last_seen) VALUES (?,?,?,?,?)",
+                        (did, 7, board, "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"))
         old.bind_device_account("3c0021000c51", "acct", source="learned")
         old.record_deployment(device_id="3c0021000c51", release_id="rel_1", product_id=7,
                               status="installed", reason=None)
-        old.upsert_device(device_id="noboard", product_id=7, board=None, account_id="acct")
     finally:
         M._MIGRATIONS = full
 
     store = M.SqliteMetadataStore(db)
-    assert store.migrate() == 27                           # the deploy applies 21 onward
+    assert store.migrate() == 28                           # the deploy applies 21 onward
     assert sorted(d["device_id"] for d in store.list_devices()) == [
         "OPENMV_N6:3c0021000c51", "noboard"]               # board-less rows are left alone
     assert store.device_account("OPENMV_N6:3c0021000c51")["account_id"] == "acct"
@@ -200,7 +204,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         "OPENMV_N6:3c0021000c51"
     store.add_token("h", "t", ["observe"], account_id="acct", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert M.SqliteMetadataStore(db).migrate() == 27        # idempotent
+    assert M.SqliteMetadataStore(db).migrate() == 28        # idempotent
 
 
 def test_parameterless_sql_is_executed_without_a_parameter_sequence():
@@ -453,7 +457,7 @@ def test_migrations_survive_postgres_transaction_semantics(tmp_path):
         M._MIGRATIONS = full
 
     store = _PostgresManners(db)
-    assert store.migrate() == 27             # walks past the orphaned column
+    assert store.migrate() == 28             # walks past the orphaned column
     store.add_token("h", "t", ["observe"], account_id="a", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert _PostgresManners(db).migrate() == 27        # and is idempotent
+    assert _PostgresManners(db).migrate() == 28        # and is idempotent

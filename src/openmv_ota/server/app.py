@@ -704,6 +704,7 @@ def check(checkin: CheckIn, request: Request):
         fallback_payload_version=fallback_payload_version(checkin.slots),
         body_sha256=running_body_sha256(checkin.slots),
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
+        publish_seq=checkin.publish_seq, orders_by_seq=checkin.orders_by_seq,
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
         account_id=account_id)
     if manifest_url:

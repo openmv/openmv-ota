@@ -347,6 +347,9 @@ def _trailer_summary(t) -> dict:
         "payload_version": decode_app_version(t.payload_version),
         "min_platform_version": decode_app_version(t.min_platform_version)
         if t.min_platform_version else "none",
+        # the account's publish counter -- what a product_id 0 camera orders by; 0 on
+        # every build from a project that is not in platform mode
+        "publish_seq": t.publish_seq,
         "key_id": "0x%04x" % t.key_id,
         "sig_alg": algorithm_for(t.sig_alg).name,
         "body_size": t.body_size,
@@ -380,6 +383,8 @@ def _print_trailer(s: dict) -> None:
     print("  board_name:     %s" % s["board_name"])
     print("  app_version:    %s  (payload_version %s)" % (s["app_version"], s["payload_version"]))
     print("  min_platform:   %s" % s["min_platform_version"])
+    if s["publish_seq"]:
+        print("  publish_seq:    %d" % s["publish_seq"])
     print("  signed by:      key %s  (%s, %d-byte sig)"
           % (s["key_id"], s["sig_alg"], s["signature_size"]))
     print("  body:           %d bytes, sha256 %s" % (s["body_size"], s["body_sha256"]))
