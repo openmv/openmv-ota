@@ -35,6 +35,9 @@ class _OtaSigner:
     sig_alg: int        # COSE id
     alg: object         # AlgSpec
     backend: object     # a Signer (encrypted PEM / PKCS#11 / KMS / custom)
+    publish_seq: int = 0
+    """The account's publish counter for this build. 0 unless the project opts in --
+    only a platform building for PRODUCT_ID 0 cameras needs one."""
 
 
 def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
@@ -174,6 +177,7 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_si
         pad_size=pad_size,
         meta=system_info,
         product_id=int(system_info["product_id"]),
+        publish_seq=signer.publish_seq,
         min_platform_version=int(p.lock.firmware.get("version_code", 0)),
         payload_version=signer.payload_version,
         key_id=signer.key_id,
@@ -279,12 +283,50 @@ def build_romfs(
             convert_models=convert_models, mpy_extra=list(mpy_extra or []),
             allow_oversize=allow_oversize, keep_build_dir=keep_build_dir))
     for t in mains:
+        if p.config.ota:
+            _refuse_dropped_calls(app_dir, t.name)
         inject = _runtime_inject(out_dir, t.name, [c for c in coprocs if c.name == t.name])
         results.append(_build_one(
             p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, vendor,
             convert_models=convert_models, mpy_extra=list(mpy_extra or []),
             allow_oversize=allow_oversize, keep_build_dir=keep_build_dir, inject=inject))
     return results
+
+
+def _refuse_dropped_calls(app_dir: Path, board: str) -> None:
+    """Refuse an app that calls an image method this board's OTA firmware does not carry.
+
+    ``build firmware`` turns some imlib features off on a board whose flash cannot hold an
+    OTA firmware with them (``ota_firmware_drops`` in the board table -- the OpenMV Cam H7
+    loses ``find_barcodes()`` and ``find_datamatrices()``). A call to one of them would
+    only fail on the camera, as an AttributeError at the moment the frame arrives; here it
+    is a build error that names the file and line. Tokenized rather than grepped, so a
+    mention in a comment or a string is not a call."""
+    import tokenize
+
+    dropped = boards_mod.get_board(board).ota_firmware_drops
+    if not dropped or not app_dir.is_dir():
+        return
+    methods = set(dropped.values())
+    hits: list[str] = []
+    for f in sorted(app_dir.rglob("*.py")):
+        try:
+            with tokenize.open(f) as fh:
+                toks = list(tokenize.generate_tokens(fh.readline))
+        except (OSError, SyntaxError, UnicodeDecodeError, tokenize.TokenError):
+            continue                     # mpy-cross reports an unreadable or broken file
+        for i, tok in enumerate(toks[:-1]):
+            nxt = toks[i + 1]
+            if tok.type == tokenize.NAME and tok.string in methods \
+                    and nxt.type == tokenize.OP and nxt.string == "(":
+                hits.append("%s:%d: %s()" % (f.relative_to(app_dir).as_posix(),
+                                             tok.start[0], tok.string))
+    if hits:
+        raise BuildError(
+            "%s's OTA firmware does not carry %s -- they are turned off so the firmware fits "
+            "its flash -- but the app calls them:\n  %s"
+            % (board, " or ".join("%s()" % m for m in sorted(methods)), "\n  ".join(hits)),
+            exit_code=1)
 
 
 def _select_targets(targets, boards):
@@ -333,11 +375,39 @@ def _warn_stale_device_lib(p) -> None:
               file=sys.stderr)
 
 
-def _warn_unset_product_id(t, system_info: dict) -> None:
-    if system_info["product_id"] == 0:
-        print("warning: %s has product_id 0 (unset); the cross-flash guard is off - set "
-              "product_id under [targets.%s] in openmv-ota.toml" % (t.name, t.name),
-              file=sys.stderr)
+def _rollback_key(system_info: dict, signer) -> int:
+    """What a camera running this image orders by -- the mirror of ``boot.rollback_key``.
+
+    A ``product_id`` of 0 turns the cross-flash guard off, so such a camera can be moved
+    between product lines and two products' version numbers say nothing about each other;
+    it orders by the account's publish counter instead. Every other camera orders by the
+    payload version, as it always has."""
+    if int(system_info["product_id"]) == 0:
+        return int(getattr(signer, "publish_seq", 0) or 0)
+    return signer.payload_version
+
+
+def _check_product_id(p, t, system_info: dict) -> None:
+    """A product_id of 0 has to be something someone MEANT.
+
+    It turns the device's cross-flash guard off for the life of the camera -- firmware is
+    not replaced over the air, so the id baked in at manufacture is the one it has forever
+    -- and that is a real capability, not an oversight: it is how stock hardware becomes a
+    customer's unit after it ships. The same arrangement is what `platform` describes, and
+    those cameras order their images by the account's publish counter, which only a
+    platform project allocates. So the two go together, and 0 without it is a mistake the
+    build refuses rather than warns about."""
+    if system_info["product_id"] != 0:
+        return
+    if not p.config.platform:
+        raise BuildError(
+            "%s has product_id 0, which turns the cross-flash guard off for the life of "
+            "every camera built from it -- firmware is not replaced over the air, so that "
+            "id is permanent. Set a real product_id under [targets.%s], or set `platform = "
+            "true` under [ota] if you meant it: a fleet whose cameras move between product "
+            "lines." % (t.name, t.name), exit_code=1)
+    print("note: %s builds with product_id 0 -- the cross-flash guard is off and these "
+          "cameras order images by the account's publish counter" % t.name, file=sys.stderr)
 
 
 def _build_body(p, t, app_dir, ctx, mpy_cmd, app_version, vendor, *, convert_models, mpy_extra,
@@ -453,7 +523,7 @@ def _build_one(p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, ve
         name = _target_name(t)
         if ota_signer is not None:
             from openmv_ota.ota import bundle
-            _warn_unset_product_id(t, system_info)
+            _check_product_id(p, t, system_info)
             pad_size = max(0, capacity - len(body))  # 0xFF gap to the FRONT status sector
             trailer_bytes = _build_trailer(ota_signer, p, body, system_info, pad_size)
             out_path = out_dir / (name + "-romfs.zip")  # body + trailer, one file
@@ -631,7 +701,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
             raise BuildError(
                 "%s image is %d bytes but a slot holds %d (%d over)"
                 % (t.name, len(body), smallest, len(body) - smallest), exit_code=1)
-        _warn_unset_product_id(t, system_info)
+        _check_product_id(p, t, system_info)
         # Both slots ship CONFIRMED: they have nothing to prove, having never been trialed.
         # There is no golden shape and no golden slot -- the difference between the two is one
         # number, the install counter, and after the first update they are just two images with
@@ -641,13 +711,13 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         for size, counter in slots:
             pad = size - overhead - len(body)
             # the status sector ships CONFIRMED + the counter + the anti-rollback floor
-            # seeded at the factory version (the device can never be downgraded below it;
-            # confirm() raises it as updates are kept)
+            # seeded at what the factory image orders by (the device can never be
+            # downgraded below it; confirm() raises it as updates are kept)
             image += _compose_slot(
                 body, pad,
                 status.build_status_sector(block, pending=False, tried=False, confirmed=True,
                                            counter=counter, stride=t.control_stride,
-                                           floor_version=signer.payload_version),
+                                           floor_key=_rollback_key(system_info, signer)),
                 _build_trailer(signer, p, body, system_info, pad), block, size)
 
         name = _target_name(t)
@@ -928,6 +998,10 @@ def _manifest_body(p, tr, image: bytes, reps: list[dict]) -> dict:
         "product": tr.meta.get("product", p.config.name),
         "version": decode_app_version(tr.payload_version),
         "payload_version": tr.payload_version,
+        # From the trailer, so the manifest cannot disagree with the image it describes.
+        # The installer vets from HERE -- before it has ever seen a trailer -- so the number
+        # a PRODUCT_ID 0 camera orders by has to be in both.
+        "publish_seq": tr.publish_seq,
         "min_platform_version": tr.min_platform_version,
         "size": len(image),
         "sha256": hashlib.sha256(image).hexdigest(),
@@ -1089,6 +1163,7 @@ def build_ota_romfs(
     allow_republish: bool = False,
     key_passphrase_file: str | Path | None = None,
     allow_dev_key: bool = False,
+    publish_seq: int | None = None,
 ) -> list[OtaRomfsResult]:
     """Produce the complete **cloud-published** OTA set per main board, from app source in
     one shot (like ``build factory-romfs``): compile + sign the romfs bundle, render the
@@ -1098,6 +1173,11 @@ def build_ota_romfs(
     ``<board>-factory-romfs.img`` or a directory of them); boards with no golden get
     image + manifest only. The golden is validated (board + older version) and the release
     is recorded -- a non-increasing version is refused unless ``allow_republish``.
+
+    ``publish_seq`` is the account's publish counter, required when the project sets
+    ``platform`` and ignored otherwise. It is passed in rather than fetched here: this
+    module builds, and taking a number is a call to the server. ``openmv-ota build
+    ota-romfs`` allocates it.
 
     Representation URLs are **relative filenames** -- artifacts are published together and the
     device resolves them against the manifest's own URL, so the signed manifest is
@@ -1115,6 +1195,12 @@ def build_ota_romfs(
     if not p.config.ota:
         raise BuildError("ota-romfs needs an OTA project (create with "
                          "`openmv-ota project new --ota`)", exit_code=1)
+    if p.config.platform and not publish_seq:
+        raise BuildError(
+            "this project sets `platform`, so every build takes the account's next publish "
+            "counter from the server -- log in (`openmv-ota client login`) and build again. "
+            "Cameras built with product_id 0 order their images by that counter, so a build "
+            "without one cannot be installed over anything.", exit_code=1)
     out_dir = Path(output) if output else project / "build"
     targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
     if not targets:
@@ -1139,6 +1225,7 @@ def build_ota_romfs(
     app_dir = Path(app) if app else project / "app"
     signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota",
                           key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
+    signer.publish_seq = int(publish_seq or 0)
     new_pv = signer.payload_version
 
     # 1) compile + sign the romfs bundle, then render the download image(s) from it.

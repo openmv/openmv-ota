@@ -431,14 +431,26 @@ def test_ota_build_stamps_a_64_bit_product_id(make_project):
     t = parse_trailer(_read_bundle(r)[1])
     assert t.payload_version == encode_app_version("2.5.0")
     assert t.product_id.bit_length() > 32          # a real 64-bit id, not the old crc32
-    assert (HEADER_SIZE, HEADER_VERSION) == (80, 2)
+    assert (HEADER_SIZE, HEADER_VERSION) == (96, 3)
 
 
-def test_ota_build_warns_on_unset_product_id(make_project, capsys):
+def test_product_id_zero_is_refused_unless_the_project_means_it(make_project, capsys):
+    """It turns the cross-flash guard off for the life of every camera built from it --
+    firmware is not replaced over the air, so that id is permanent. A real capability, and
+    one nobody should arrive at by editing a number to zero."""
+    from openmv_ota.build.errors import BuildError
+
     root, repo, app = _build_ota(make_project)
-    _set_product_id(root, 0)  # explicitly clear the auto-assigned id
+    _set_product_id(root, 0)
+    with pytest.raises(BuildError, match="turns the cross-flash guard off"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False,
+                              convert_models=False)
+
+    # ...and with `platform` it is what the project says it is, noted rather than refused
+    cfg = root / "openmv-ota.toml"
+    cfg.write_text(cfg.read_text().replace("[ota]", "[ota]\nplatform = true\n", 1))
     build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
-    assert "product_id 0" in capsys.readouterr().err
+    assert "cross-flash guard is off" in capsys.readouterr().err
 
 
 def test_build_warns_on_product_id_collision(capsys):
@@ -1456,3 +1468,73 @@ def test_dir_sourced_base_not_older_is_skipped_not_fatal(make_project, capsys):
                                   delta_from=bases / "OPENMV_N6-base-1.1.0.img.gz",
                                   compile_py=False, convert_models=False,
                                   allow_republish=True)
+
+
+def test_the_factory_floor_is_seeded_with_what_the_camera_orders_by():
+    """A stock build (product_id 0) can be moved between product lines, so it orders by
+    the account's publish counter; every other build orders by its payload version. The
+    factory sector seeds whichever one applies -- seed the wrong number and the first
+    update either sails past the floor or is refused by it."""
+    import types
+
+    from openmv_ota.build.romfs import _rollback_key
+
+    signer = types.SimpleNamespace(payload_version=0x01020300, publish_seq=4242)
+    assert _rollback_key({"product_id": 7}, signer) == 0x01020300
+    assert _rollback_key({"product_id": 0}, signer) == 4242
+    # a stock project that never opted in seeds 0: no floor, rather than a wrong one
+    assert _rollback_key({"product_id": 0}, types.SimpleNamespace(
+        payload_version=0x01020300, publish_seq=0)) == 0
+
+
+def test_a_platform_build_without_a_counter_is_refused(make_project):
+    """Fail closed. Cameras built with product_id 0 order their images by the account's
+    publish counter, so an image carrying none cannot be installed over anything -- and a
+    build that produced one anyway would hand back an artifact that is quietly useless."""
+    from openmv_ota.build.errors import BuildError
+    from openmv_ota.build.romfs import build_ota_romfs
+
+    root, repo, app = make_project(ota=True, dev=True, ca="tiny",
+                                   app_files={"main.py": "print(1)\n",
+                                              "settings.json": '{"app_version": "1.0.0"}\n'})
+    cfg = root / "openmv-ota.toml"
+    cfg.write_text(cfg.read_text().replace("[ota]", "[ota]\nplatform = true\n", 1))
+    with pytest.raises(BuildError, match="takes the account's next publish counter"):
+        build_ota_romfs(root, app=app, firmware=repo, compile_py=False,
+                        convert_models=False, allow_dev_key=True)
+
+
+# --- an app that calls what the board's OTA firmware dropped is refused at build --------
+
+def test_h7_ota_build_refuses_an_app_that_calls_a_dropped_method(make_project):
+    """OPENMV4's OTA firmware has no find_barcodes()/find_datamatrices(); a call would only
+    fail on the camera, so the build refuses it and names file:line. A mention in a comment
+    or a string is not a call, and app/lib is scanned like the rest of the app."""
+    root, repo, app = make_project(boards=("OPENMV4",), ota=True, ca="tiny", app_files={
+        "main.py": "import sensor\n# img.find_barcodes() is gone here\n"
+                   "s = 'find_datamatrices('\nfor c in img.find_barcodes():\n    pass\n",
+        "lib/helper.py": "def scan(img):\n    return img.find_datamatrices ( roi=(0, 0, 8, 8))\n",
+    })
+    with pytest.raises(BuildError) as ei:
+        build_mod.build_romfs(root, app=app, firmware=repo, boards=["OPENMV4"], compile_py=False)
+    msg = str(ei.value)
+    assert "OPENMV4's OTA firmware does not carry find_barcodes() or find_datamatrices()" in msg
+    assert "main.py:4: find_barcodes()" in msg
+    assert "lib/helper.py:2: find_datamatrices()" in msg
+    assert "main.py:2" not in msg and "main.py:3" not in msg
+
+
+def test_dropped_method_scan_skips_what_it_cannot_tokenize(tmp_path):
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "broken.py").write_bytes(b"def f(:\n  \xff\xfe find_barcodes(\n")   # not tokenizable
+    (app / "ok.py").write_text("x = 1\n")
+    build_mod._refuse_dropped_calls(app, "OPENMV4")                # nothing to report
+    build_mod._refuse_dropped_calls(tmp_path / "missing", "OPENMV4")
+    build_mod._refuse_dropped_calls(app, "OPENMV_N6")              # a board that drops nothing
+
+
+def test_a_stock_firmware_keeps_the_decoders_so_a_plain_project_is_not_scanned(make_project):
+    root, repo, app = make_project(boards=("OPENMV4",), app_files={
+        "main.py": "for c in img.find_barcodes():\n    pass\n"})
+    assert build_mod.build_romfs(root, app=app, firmware=repo, boards=["OPENMV4"], compile_py=False)

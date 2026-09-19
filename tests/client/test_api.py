@@ -323,3 +323,12 @@ def test_data_reads_ride_a_viewer_grant():
             return _Resp(200, {"token": "relay"})
     with pytest.raises(ClientError, match="no datalake"):
         Api(_cfg(), client=_NoLake(None)).data_logs("d1")
+
+
+def test_next_publish_seq_allocates_one_number():
+    """The build's one call to the server. Deliberately not cached or batched: a block of
+    numbers handed out locally would break "freshly built implies a higher number", which
+    is exactly what claiming a camera and returning one rely on."""
+    api, c = _api(_Resp(200, {"publish_seq": 4242}))
+    assert api.next_publish_seq() == 4242
+    assert c.calls[0][:2] == ("POST", "/api/v1/admin/publish-seq")

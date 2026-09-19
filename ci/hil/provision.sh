@@ -86,9 +86,15 @@ if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
   # (the pin changed), and fetching a URL works either way without rewriting the remote.
   git -C "$FW" fetch -q "$URL" "$REF"
   git -C "$FW" reset -q --hard FETCH_HEAD
-  git -C "$FW" clean -qfdx
+  git -C "$FW" clean -qffdx
   git -C "$FW" submodule update -q --init --force --depth=1 --no-single-branch
   git -C "$FW/lib/micropython" submodule update -q --init --force --depth=1
+  # Clean INSIDE the submodules too, with the double -f: a submodule the new ref no longer
+  # carries (the classic legs' bring-up fork pinned a micropython with lib/mm-iot-sdk; master's
+  # has no such submodule) survives the reset as an untracked nested repo, which the
+  # superproject's clean never enters and a single -f refuses to remove -- and `git status` then
+  # reports ` M lib/micropython` forever, so `build firmware` refuses the "dirty" tree.
+  git -C "$FW" submodule foreach -q --recursive 'git clean -qffdx'
   # `project new` below carries micropython#19348 (ranged romfs erase) into lib/micropython for
   # a v5.0 OTA firmware -- the tool guarantees it, so this script (and any real user) needs no
   # custom step; the lock captures the patched, committed-clean tree.

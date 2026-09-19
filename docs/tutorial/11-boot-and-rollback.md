@@ -24,7 +24,7 @@ every boot `boot.py` runs after the board's stock `_boot.py` and, **for each slo
    (via the on-device mbedtls shim) *before trusting any header field*.
 2. Checks the authenticated header: **integrity** (body SHA-256), **cross-flash guard**
    (`product_id`), **compatibility** (`min_platform_version`), and **anti-rollback**
-   (`payload_version` vs the **rollback floor**). `min_platform_version` is the
+   (the ordering key vs the **rollback floor**). `min_platform_version` is the
    image's firmware floor — stamped automatically from the firmware the image was
    built against, so an app compiled for newer firmware (a newer bytecode ABI,
    newer frozen modules) is never mounted by an older one.
@@ -60,8 +60,15 @@ A slot whose counter is unreadable is still bootable if it verifies; it just
 sorts last, because we cannot claim it is newer than something that says so.
 
 **The floor rides in the `status` sector's tail.** The anti-rollback floor is a
-monotonic minimum version: a device can't be downgraded to an *older signed*
-release (a replay attack — the signature is genuine, just stale). Flash only
+monotonic minimum: a device can't be downgraded to an *older signed* release (a
+replay attack — the signature is genuine, just stale). What it compares is
+`payload_version` — unless the camera was built with `product_id = 0`, which turns
+the cross-flash guard off and lets it be moved between product lines; two products'
+versions cannot order each other, so such a camera compares the account's
+`publish_seq` instead (see
+[Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter)).
+One camera only ever uses one of the two, decided by the firmware it was built with,
+so the numbers in its floor can never be a mixture. Flash only
 programs bits 1→0, so a floor that must rise is stored as appended entries past
 the attempt region — a raise programs a fresh entry, and the floor is the
 highest valid one. In practice that is one or two entries between erases: the

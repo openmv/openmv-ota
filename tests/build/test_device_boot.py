@@ -41,13 +41,13 @@ def _verify(alg, pubkey_bytes, sig, msg):
 
 
 def _trailer(priv, key_id, body, *, product_id=PRODUCT_ID, min_platform=0,
-             payload_version=V1, body_size=None, alg=ES256, meta=None):
+             payload_version=V1, publish_seq=0, body_size=None, alg=ES256, meta=None):
     spec = algorithm_for(alg)
     t = host_trailer.Trailer(
         body_size=len(body) if body_size is None else body_size,
         pad_size=0, meta=meta if meta is not None else {"k": 1},
         product_id=product_id, min_platform_version=min_platform,
-        payload_version=payload_version,
+        payload_version=payload_version, publish_seq=publish_seq,
         key_id=key_id, sig_alg=alg, body_sha256=hashlib.sha256(body).digest())
     t.signature = sign.sign_region(priv, host_trailer.signed_region(t), spec)
     return host_trailer.pack_trailer(t)
@@ -147,9 +147,11 @@ def test_parse_trailer_too_short():
 @pytest.mark.parametrize(("mutate", "reason"), [
     (lambda b: b"XXXX" + b[4:], "magic"),                         # bad magic
     (lambda b: b[:4] + b"\x01" + b[5:], "version"),               # header_version=1 (the 32-bit id)
-    (lambda b: b[:44] + b"\x00\x00\x00\x00" + b[48:], "alg"),     # sig_alg -> 0 (unknown)
+    (lambda b: b[:60] + b"\x00\x00\x00\x00" + b[64:], "alg"),     # sig_alg -> 0 (unknown)
     (lambda b: b[:20] + b"\x20\x00\x00\x00" + b[24:], "alg"),     # sig_size -> 32 (!=64)
-    (lambda b: b[:90], "trunc"),                                  # chop below body_end
+    # past the 96-byte header but short of body_end -- the framing check, not the
+    # is-there-even-a-header one above
+    (lambda b: b[:120], "trunc"),
 ])
 def test_parse_trailer_malformed(mutate, reason):
     priv, _pub = _key()
@@ -605,3 +607,59 @@ def test_a_slot_whose_attempt_region_is_full_is_not_bootable():
                    FRONT_SIZE, BLOCK, PRODUCT_ID, {0x100: pub}, PLATFORM, max_attempts=999)
     slot, _t, reason = ob.run()
     assert slot == "A" and "trial-attempts-full" in reason
+
+
+# --- which number a camera orders by ----------------------------------------
+
+def test_an_ordinary_camera_orders_by_payload_version():
+    """It can never be offered another product's image -- the cross-flash guard sees to
+    that -- so its own product's version sequence is a complete ordering, and it is the
+    one such a camera has always used. `publish_seq` is not consulted at all."""
+    priv, pub = _key()
+    body = b"app" * 8
+    t = B.parse_trailer(_trailer(priv, 0x100, body, payload_version=V1, publish_seq=0))
+    assert B.rollback_key(t, PRODUCT_ID) == V1
+
+    # below the floor by version -> refused, whatever publish_seq says
+    with pytest.raises(B.OtaReject, match="rollback"):
+        _eval(_trailer(priv, 0x100, body, payload_version=V1, publish_seq=1 << 40),
+              body, _status(True, False, False), trusted={0x100: pub}, floor=V1 + 1)
+
+
+def test_a_stock_camera_orders_by_publish_seq():
+    """PRODUCT_ID 0 turns the cross-flash guard off, which is how stock hardware becomes
+    some customer's unit after it ships. Such a camera CAN change product, and two
+    products' version numbers say nothing about each other -- so it orders by the
+    account's publish counter, which spans them."""
+    priv, pub = _key()
+    body = b"app" * 8
+    t = B.parse_trailer(_trailer(priv, 0x100, body, product_id=7,
+                                 payload_version=V1, publish_seq=500))
+    assert B.rollback_key(t, 0) == 500                 # the seq, not the version
+
+    # a high version does NOT clear a floor set by the counter
+    with pytest.raises(B.OtaReject, match="rollback"):
+        _eval(_trailer(priv, 0x100, body, product_id=7,
+                       payload_version=9 << 24, publish_seq=499),
+              body, _status(True, False, False), product_id=0,
+              trusted={0x100: pub}, floor=500)
+
+    # ...and a LOW version clears it when the counter has advanced, which is the whole
+    # point: returning a claimed camera to a stock image numbered 1.0.0
+    t2, _consume = _eval(_trailer(priv, 0x100, body, product_id=0,
+                                  payload_version=1 << 24, publish_seq=501),
+                         body, _status(True, False, False), product_id=0,
+                         trusted={0x100: pub}, floor=500)
+    assert t2.publish_seq == 501
+
+
+def test_a_stock_camera_with_no_counter_has_no_floor_to_clear():
+    """A project that never opted in stamps 0, and a camera whose floor is 0 takes it --
+    so an operator who forgets is not silently locked out on the first install; it is the
+    SECOND that refuses, which is the failure the server catches at publish."""
+    priv, pub = _key()
+    body = b"app" * 8
+    t, _c = _eval(_trailer(priv, 0x100, body, product_id=7, publish_seq=0),
+                  body, _status(True, False, False), product_id=0,
+                  trusted={0x100: pub}, floor=0)
+    assert t.publish_seq == 0

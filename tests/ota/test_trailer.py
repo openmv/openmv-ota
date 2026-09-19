@@ -40,17 +40,19 @@ def _trailer(**over) -> Trailer:
 
 
 def _raw_header(**over) -> bytes:
-    """A raw 80-byte header with valid-ES256 defaults; override any field."""
+    """A raw 96-byte header with valid-ES256 defaults; override any field."""
     f = dict(
         magic=MAGIC_ROMFS_APP, header_version=trailer_mod.HEADER_VERSION, body_size=0,
         pad_size=0, meta_size=0,
-        sig_size=64, product_id=0, min_platform_version=0, payload_version=0,
+        sig_size=64, product_id=0, publish_seq=0, reserved0=0,
+        min_platform_version=0, payload_version=0,
         key_id=0, sig_alg=ES256, body_sha256=b"\x00" * 32,
     )
     f.update(over)
     return struct.pack(
         trailer_mod.HEADER_STRUCT, f["magic"], f["header_version"], f["body_size"],
         f["pad_size"], f["meta_size"], f["sig_size"], f["product_id"],
+        f["publish_seq"], f["reserved0"],
         f["min_platform_version"], f["payload_version"],
         f["key_id"], f["sig_alg"], f["body_sha256"],
     )
@@ -82,9 +84,13 @@ def test_round_trip_each_curve(alg, siglen):
     assert parsed == t
 
 
-def test_header_is_80_bytes():
-    assert HEADER_SIZE == 80
-    assert len(_raw_header()) == 80
+def test_header_is_96_bytes():
+    assert HEADER_SIZE == 96
+    assert len(_raw_header()) == 96
+    # a multiple of 16, so `meta` starts on a write-unit boundary, and the three 64-bit
+    # fields sit at 24/32/40 -- each naturally aligned
+    assert HEADER_SIZE % 16 == 0
+    assert struct.calcsize("<4sIIIII") == 24
 
 
 # --- signed region ----------------------------------------------------------
@@ -140,16 +146,24 @@ def test_pack_bad_body_sha_length():
         pack_trailer(_trailer(body_sha256=b"\x00" * 10))
 
 
-def test_product_id_is_64_bit_and_the_header_is_still_80_bytes():
+def test_the_64_bit_fields_carry_their_full_width():
     """A 32-bit product id collides at a few thousand products (birthday bound), and a
-    collision means one product line's devices accept another's firmware. The field is
-    64-bit, which consumed the four reserved bytes beside it -- so the header is the
-    same 80 bytes and header_version went to 2 to say the layout changed."""
+    collision means one product line's devices accept another's firmware. ``publish_seq``
+    is 64-bit because it is an account-wide counter with no reason to ever run out, and
+    ``reserved0`` is the headroom the NEXT field comes out of -- header_version is a
+    one-shot (see the module docstring), so the space has to be there in advance."""
     from openmv_ota.ota.trailer import HEADER_SIZE, HEADER_VERSION
 
-    assert HEADER_SIZE == 80 and HEADER_VERSION == 2
-    big = (1 << 64) - 1                       # the widest id the field can carry
-    assert parse_trailer(pack_trailer(_trailer(product_id=big))).product_id == big
+    assert HEADER_SIZE == 96 and HEADER_VERSION == 3
+    big = (1 << 64) - 1                       # the widest value the fields can carry
+    t = parse_trailer(pack_trailer(_trailer(product_id=big, publish_seq=big, reserved0=big)))
+    assert (t.product_id, t.publish_seq, t.reserved0) == (big, big, big)
+
+
+def test_publish_seq_defaults_to_zero():
+    """Every project that is not a platform leaves it alone, and pays nothing for it."""
+    t = parse_trailer(pack_trailer(_trailer()))
+    assert t.publish_seq == 0 and t.reserved0 == 0
 
 
 def test_pack_unsupported_algorithm():
@@ -176,12 +190,16 @@ def test_parse_bad_magic():
 
 
 def test_parse_bad_header_version():
-    # 1 is the OLD layout: a 32-bit product id with four reserved bytes beside it.
-    # A reader that accepted it would misread every field after the id.
-    with pytest.raises(OtaError, match="unsupported header_version 1"):
-        parse_trailer(_assemble(header_version=1))
-    with pytest.raises(OtaError, match="unsupported header_version 3"):
-        parse_trailer(_assemble(header_version=3))
+    """Exact equality, both directions -- and that is deliberate, not laziness.
+
+    Every earlier version is a DIFFERENT layout (2 had no publish_seq and an 80-byte
+    header), so a reader that accepted one would misread every field after the point they
+    diverge. Refusing a LATER version matters for the same reason, and costs what the
+    module docstring says it costs: firmware cannot be replaced over the air, so the
+    version is a one-shot."""
+    for bad in (1, 2, 4):
+        with pytest.raises(OtaError, match="unsupported header_version %d" % bad):
+            parse_trailer(_assemble(header_version=bad))
 
 
 def test_parse_unknown_algorithm():

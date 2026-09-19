@@ -67,6 +67,7 @@
     "OPENMV4": {
       "display_name": "OpenMV Cam H7 (STM32H743)",
       "arch": "OMV4 H7 1024",
+      "ota_firmware_drops": {"IMLIB_ENABLE_DATAMATRICES": "find_datamatrices", "IMLIB_ENABLE_BARCODES": "find_barcodes"},
       "flash": {"backend": "dfu", "usb": "37c5:9204", "erase": [{"alt": 1}], "runtime": "37c5:1204", "alt": {"firmware": 2, "romfs": 3}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
       "mpy_args": [
         "-march=armv7emdp"

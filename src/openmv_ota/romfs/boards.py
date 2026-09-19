@@ -47,6 +47,11 @@ class BoardConfig:
                                          # public CA bundle (~186 KB) for recovery when
                                          # [ota].ca is unset; smaller boards must pin
                                          # their server's root(s) via [ota].ca instead
+    ota_firmware_drops: dict[str, str] = field(default_factory=dict)
+                                         # imlib features an OTA firmware build turns off
+                                         # to fit this board's flash, `{define: image
+                                         # method}` -- the build refuses an app that
+                                         # calls the method (see build/firmware.py)
 
     def partition(self, index: int | None = None) -> Partition:
         """Return the partition with the given ``index`` (default: the first).
@@ -93,6 +98,7 @@ def load_boards() -> dict[str, BoardConfig]:
             arch=b.get("arch", ""),
             mpy_args=list(b.get("mpy_args", [])),
             recovery_ca_bundle=bool(b.get("recovery_ca_bundle", False)),
+            ota_firmware_drops=dict(b.get("ota_firmware_drops", {})),
             partitions=parts,
             flash=b.get("flash"),
             unsupported=b.get("unsupported"),

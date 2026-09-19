@@ -150,11 +150,11 @@ _SLOT_READ = _COUNTER_OFF + _COUNTER_LEN         # markers + repr + counter
 # decision -- the sha lets the fleet see which exact BYTES each slot holds (the operator's
 # answer to "which delta bases must this release cover?").
 _TRAILER_MAGIC = b"OMVR"
-_TRAILER_VERSION_OFF = 36                        # payload_version (pinned by a test)
-# 36, not 32: product_id is 64-bit as of header version 2, which pushed this and
-# min_platform_version four bytes later. Everything from key_id on kept its offset,
-# because the widening consumed the reserved0 that used to sit here.
-_TRAILER_SHA_OFF = 48                            # body_sha256, 32 raw bytes (pinned by a test)
+_TRAILER_VERSION_OFF = 52                        # payload_version (pinned by a test)
+# Header version 3 put three 64-bit fields together at 24/32/40 -- product_id, the
+# account's publish_seq and the reserved word -- so everything from min_platform_version
+# on sits sixteen bytes later than it did, and the header is 96 rather than 80.
+_TRAILER_SHA_OFF = 64                            # body_sha256, 32 raw bytes (pinned by a test)
 _TRAILER_READ = _TRAILER_SHA_OFF + 32
 
 
@@ -193,23 +193,24 @@ def _representation_of(status):
 
 # --- Anti-rollback floor (mirror of openmv_ota.ota.rollback) -----------------
 
-_ROLLBACK_ENTRY = 8
-_ROLLBACK_STRIDE = 8                              # u32 version || u32 ~version
+_ROLLBACK_ENTRY = 16                              # u64 key || u64 ~key
+_ROLLBACK_STRIDE = 16
+_MASK64 = 0xFFFFFFFFFFFFFFFF
 _FLOOR_OFF = 80 + 64 * 16                         # floor entries: the status sector's tail
 
 
-def _rollback_entry(version):
-    return struct.pack("<II", version & 0xFFFFFFFF, (version & 0xFFFFFFFF) ^ 0xFFFFFFFF)
+def _rollback_entry(key):
+    return struct.pack("<QQ", key & _MASK64, (key & _MASK64) ^ _MASK64)
 
 
 def _rollback_floor_of(sector):
-    """The highest valid version recorded in a rollback sector (0 if none)."""
+    """The highest valid key recorded in a rollback sector (0 if none)."""
     floor = i = 0
     n = len(sector)
     while i + _ROLLBACK_ENTRY <= n:
-        version, check = struct.unpack_from("<II", sector, i)
-        if (version ^ 0xFFFFFFFF) == check and version > floor:
-            floor = version
+        key, check = struct.unpack_from("<QQ", sector, i)
+        if (key ^ _MASK64) == check and key > floor:
+            floor = key
         i += _ROLLBACK_STRIDE
     return floor
 
@@ -443,6 +444,12 @@ def status():  # pragma: no cover
     s["slot"] = slot
     s["fallback_reason"] = reason
     s["payload_version"] = version
+    # The running image's publish counter, and whether THIS camera orders by it. Only a
+    # PRODUCT_ID 0 camera does -- it can be moved between product lines, so a per-product
+    # version cannot order its images. Reported because the server cannot work it out:
+    # `product_id` in the check-in comes from the running image, not from the firmware.
+    s["publish_seq"] = int(getattr(_ota_config, "last_publish_seq", 0) or 0)
+    s["orders_by_seq"] = _ota_config.PRODUCT_ID == 0
     s["representation"] = _representation_of(sector)
     log.debug("status: read")                         # HIL path witness (runs every boot/checkin)
     return s  # hil-residual: bare return of the status dict
@@ -568,6 +575,12 @@ def _checkin_body(info, st, slot_states=None):
         "product": info.get("product"),
         "app_version": info.get("app_version"),
         "payload_version": int(st.get("payload_version", 0) or 0),
+        # WHICH NUMBER THIS CAMERA ORDERS BY, and the number itself. The server cannot
+        # infer it: `product_id` above comes from the RUNNING IMAGE's system.json, so a
+        # stock-lineage camera running some customer's image reports that customer's
+        # product and looks like any other. Only the firmware knows, so it says.
+        "publish_seq": int(st.get("publish_seq", 0) or 0),
+        "orders_by_seq": bool(st.get("orders_by_seq", False)),
         "slot": st.get("slot"),
         "representation": st.get("representation"),
         "fallback_reason": st.get("fallback_reason"),
@@ -906,8 +919,8 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         log.debug("checkin: closed")                  # HIL path witness (connection closed)
 
 
-def _advance_rollback(cfg, slot, version):  # pragma: no cover (device)
-    """Raise the anti-rollback floor to ``version`` by appending it to the RUNNING slot's
+def _advance_rollback(cfg, slot, key):  # pragma: no cover (device)
+    """Raise the anti-rollback floor to ``key`` by appending it to the RUNNING slot's
     rollback sector (a 1->0 program, no erase). A no-op if the floor already covers
     ``version`` or the log is full (the floor then stays frozen at its max -- still
     protective).
@@ -923,13 +936,13 @@ def _advance_rollback(cfg, slot, version):  # pragma: no cover (device)
     off = soff + size - 2 * cfg.CONTROL_BLOCK            # this slot's status sector (absolute)
     sector = uctypes.bytearray_at(base + off, cfg.CONTROL_BLOCK)
     region = sector[_FLOOR_OFF:]
-    if _rollback_floor_of(region) >= version:
+    if _rollback_floor_of(region) >= key:
         return  # hil-residual: bare early return (nothing to advance)
     pos = _rollback_append_offset(region)
     if pos is None:
         return  # hil-residual: bare early return (floor already current)
     pad = _ROLLBACK_STRIDE - _ROLLBACK_ENTRY
-    _write_verified(0, off + _FLOOR_OFF + pos, _rollback_entry(version) + b"\xff" * pad)
+    _write_verified(0, off + _FLOOR_OFF + pos, _rollback_entry(key) + b"\xff" * pad)
     log.debug("confirm: floor advanced")             # HIL path witness (the confirm write path)
 
 
@@ -948,7 +961,12 @@ def confirm():  # pragma: no cover
     off = _status_offset(_ota_config, slot)
     if not _should_confirm(slot, _read_at(0, off, 3 * MARKER_SIZE)):
         return False  # hil-residual: bare const return (not confirmable this boot)
-    _advance_rollback(_ota_config, slot, version)
+    # Raise the floor by whatever this camera ORDERS by -- the mirror of
+    # boot.rollback_key. A PRODUCT_ID 0 camera can change product, so its floor is the
+    # account's publish counter; every other camera's is its own product's version.
+    _advance_rollback(_ota_config, slot,
+                      getattr(_ota_config, "last_publish_seq", 0)
+                      if _ota_config.PRODUCT_ID == 0 else version)
     _write_verified(0, off + _CONFIRMED_OFF,
                     CONFIRMED + b"\xff" * (_TRIED_OFF - MARKER_SIZE))  # pad to the stride
     log.info("confirm: kept the running image (slot %s)" % slot)

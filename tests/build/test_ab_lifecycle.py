@@ -174,7 +174,7 @@ class Device:
             sector = off + SLOT - 2 * BLOCK
             self.flash.write(sector, status.build_status_sector(
                 BLOCK, pending=False, tried=False, confirmed=True, counter=counter,
-                floor_version=_pv(version)))
+                floor_key=_pv(version)))
             del i
 
     def _provision_slots(self):
@@ -189,9 +189,11 @@ class Device:
         def mount(body):
             mounted["body"] = bytes(body)
 
+        # An ORDINARY camera: a real PRODUCT_ID, so it orders images by payload_version
+        # (a PRODUCT_ID 0 camera orders by publish_seq -- see test_publish_seq.py).
         ob = B.OtaBoot(self.flash.read, _verify, mount, self.flash.write,
                        len(self.flash.mem), 0 if self.single else SLOT, BLOCK,
-                       0, TRUSTED, 0, self.max_attempts)
+                       PRODUCT_ID, TRUSTED, 0, self.max_attempts)
         slot, trailer, reason = ob.run()
         self.slot, self.version, self.reject_reason = slot, trailer.payload_version, reason
         assert mounted["body"].startswith(b"APP.")
