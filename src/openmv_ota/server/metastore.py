@@ -404,6 +404,13 @@ _MIGRATIONS: list[list[str]] = [
         # selects the column gets NULL rather than a value that has quietly stopped moving.
         "UPDATE devices SET pinned_release_id = NULL",
     ],
+    [   # v28 -- the fleet row records the counter a camera is on, and whether it orders
+        # by it. The offer decision already reads both off the check-in; without them on
+        # the row an operator could not see, from `device show`, the one number that
+        # decides whether a platform's camera will take what it is offered.
+        "ALTER TABLE devices ADD COLUMN publish_seq BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE devices ADD COLUMN orders_by_seq INTEGER NOT NULL DEFAULT 0",
+    ],
 ]
 
 
@@ -794,19 +801,21 @@ class SqlMetadataStore:
                       current_version=None, current_payload_version=None, slot=None,
                       representation=None, fallback_reason=None, confirmed=None,
                       last_offered_release_id=None, registrar_ref=None, account_id="",
-                      streams=None, fallback_payload_version=None, body_sha256=None) -> None:
+                      streams=None, fallback_payload_version=None, body_sha256=None,
+                      publish_seq=0, orders_by_seq=False) -> None:
         now = _now_iso()
         if self.query_one("SELECT 1 FROM devices WHERE device_id = ?", (device_id,)) is None:
             self.execute(
                 "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
                 "current_payload_version, slot, representation, fallback_reason, confirmed, "
                 "last_offered_release_id, registrar_ref, account_id, streams, "
-                "fallback_payload_version, body_sha256, first_seen, last_seen) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "fallback_payload_version, body_sha256, publish_seq, orders_by_seq, "
+                "first_seen, last_seen) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (device_id, product_id, board, cohort, current_version, current_payload_version,
                  slot, representation, fallback_reason, confirmed, last_offered_release_id,
                  registrar_ref, account_id, ",".join(streams or ()), fallback_payload_version,
-                 body_sha256, now, now))
+                 body_sha256, int(publish_seq or 0), 1 if orders_by_seq else 0, now, now))
         else:                                               # cohort is admin-controlled, not by check-in
             self.execute(
                 "UPDATE devices SET product_id = ?, board = ?, current_version = ?, "
@@ -818,10 +827,12 @@ class SqlMetadataStore:
                 # last told us, rather than having its fallback silently blanked.
                 "fallback_payload_version = COALESCE(?, fallback_payload_version), "
                 "body_sha256 = COALESCE(?, body_sha256), "
+                "publish_seq = ?, orders_by_seq = ?, "
                 "last_seen = ? WHERE device_id = ?",
                 (product_id, board, current_version, current_payload_version, slot, representation,
                  fallback_reason, confirmed, last_offered_release_id, registrar_ref, account_id,
                  ",".join(streams) if streams else None, fallback_payload_version, body_sha256,
+                 int(publish_seq or 0), 1 if orders_by_seq else 0,
                  now, device_id))
 
     def fleet_bases(self, product_id=None, account_id="", products=None) -> list[dict]:

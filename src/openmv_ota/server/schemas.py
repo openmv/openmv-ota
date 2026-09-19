@@ -124,6 +124,11 @@ class Device(_Row):
     last_seen: str = ""
     pinned_release_id: str | None = None
     account_id: str = ""
+    publish_seq: int = 0
+    """The running image's account publish counter, as the camera last reported it."""
+    orders_by_seq: int = 0
+    """1 when this camera orders images by ``publish_seq`` rather than ``payload_version``
+    -- its firmware's product_id is 0, so it can be moved between products."""
     fallback_payload_version: int | None = None
     fallback_version: str | None = None
     """Decoded from ``fallback_payload_version`` by the API, so a reader need not unpack the
