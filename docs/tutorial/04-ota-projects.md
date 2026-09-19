@@ -65,7 +65,9 @@ installer rejects an offered update below the floor before erasing anything, and
 at boot an *unproven* image below the floor is rejected too. The floor starts at
 the factory image's version and rises by itself each time your app calls
 `confirm()`, so a replayed old release — even a validly signed one — cannot come
-back.
+back. (A camera built with `product_id = 0`, which a platform's stock hardware is,
+orders images by a different number for the same purpose — see
+[Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter).)
 
 How the floor survives is the one place the two modes differ:
 
@@ -127,6 +129,10 @@ The `[ota]` section records the mode and the current signing key:
 enabled = true            # each partition holds two updatable slots (A/B)
 signing_key_id = 256      # current OTA signing key (in keys/trusted_keys.json)
 max_attempts = 3          # boots a trial gets to confirm (optional; frozen into the firmware)
+# platform = true         # only for a fleet whose cameras are built with product_id 0 and
+#                         # move between products: every build then takes the account's
+#                         # next publish counter from the server (no offline build) -- see
+#                         # Integrating as a platform
 ```
 
 ## The device runtime library (`openmv_ota`)

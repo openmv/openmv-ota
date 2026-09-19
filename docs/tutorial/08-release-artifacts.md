@@ -30,8 +30,10 @@ context comes from the project:
 
 - **App version → payload version.** `app_version` from `app/settings.json` is
   encoded into the trailer's `payload_version` as
-  `(major<<24)|(minor<<16)|(patch<<8)`, the monotonic anti-rollback counter. Bump
-  it there for each release.
+  `(major<<24)|(minor<<16)|(patch<<8)|build` — the fourth component is optional
+  (`1.4.2.7`; omitted, it is zero) and exists for rebuilding a version many times
+  without touching the number people see. This is what an ordinary camera orders
+  images by. Bump it there for each release.
 - **Signed with the current OTA key.** The signer is `[ota].signing_key_id` from
   `openmv-ota.toml`; the trailer records `key_id` + the COSE algorithm so the
   device selects the matching trusted public key.
