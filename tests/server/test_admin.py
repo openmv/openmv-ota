@@ -382,10 +382,25 @@ def test_device_pin_set_and_clear(tmp_path):
     assert store.get_device("d1")["pinned_release_id"] is None
 
 
-def test_device_pin_404_when_missing(tmp_path):
+def test_a_device_can_be_pinned_before_it_has_ever_checked_in(tmp_path):
+    """A pin is an intent about a device id, not a field on a fleet row. A platform claims
+    hardware when it ships -- before anything has been powered on -- and the claim has to
+    be waiting on that camera's FIRST check-in, not the one after the row appears."""
     app, store = _app(tmp_path)
-    assert TestClient(app).patch("/api/v1/admin/devices/ghost/pin", headers=AUTH,
-                                 json={"release_id": "r"}).status_code == 404
+    r = TestClient(app).patch("/api/v1/admin/devices/OPENMV_N6:never-seen/pin", headers=AUTH,
+                              json={"release_id": "rel1"})
+    assert r.status_code == 200
+    assert store.get_device_pin("OPENMV_N6:never-seen") == "rel1"
+    assert store.get_device("OPENMV_N6:never-seen") is None    # still no fleet row
+
+
+def test_an_id_already_bound_elsewhere_cannot_be_pinned(tmp_path):
+    """The only thing there is to check on an unseen id: without a fleet row there is no
+    account on it, so the binding is what says whose it is."""
+    app, store = _app(tmp_path)
+    store.bind_device_account("OPENMV_N6:theirs", "other_acct", source="admin")
+    assert TestClient(app).patch("/api/v1/admin/devices/OPENMV_N6:theirs/pin", headers=AUTH,
+                                 json={"release_id": "rel1"}).status_code == 404
 
 
 def test_cohort_pin_set_and_clear(tmp_path):

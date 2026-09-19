@@ -192,7 +192,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         M._MIGRATIONS = full
 
     store = M.SqliteMetadataStore(db)
-    assert store.migrate() == 26                           # the deploy applies 21 onward
+    assert store.migrate() == 27                           # the deploy applies 21 onward
     assert sorted(d["device_id"] for d in store.list_devices()) == [
         "OPENMV_N6:3c0021000c51", "noboard"]               # board-less rows are left alone
     assert store.device_account("OPENMV_N6:3c0021000c51")["account_id"] == "acct"
@@ -200,7 +200,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         "OPENMV_N6:3c0021000c51"
     store.add_token("h", "t", ["observe"], account_id="acct", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert M.SqliteMetadataStore(db).migrate() == 26        # idempotent
+    assert M.SqliteMetadataStore(db).migrate() == 27        # idempotent
 
 
 def test_parameterless_sql_is_executed_without_a_parameter_sequence():
@@ -453,7 +453,7 @@ def test_migrations_survive_postgres_transaction_semantics(tmp_path):
         M._MIGRATIONS = full
 
     store = _PostgresManners(db)
-    assert store.migrate() == 26             # walks past the orphaned column
+    assert store.migrate() == 27             # walks past the orphaned column
     store.add_token("h", "t", ["observe"], account_id="a", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert _PostgresManners(db).migrate() == 26        # and is idempotent
+    assert _PostgresManners(db).migrate() == 27        # and is idempotent

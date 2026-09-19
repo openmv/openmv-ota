@@ -245,6 +245,10 @@ keep following their own rollouts until you pin them too, with the RT release. (
 work the same way — targeting is always the `(product, cohort)` pair.) A device pin
 needs no product: the device id alone is unique.
 
+A device pin also needs no *device*. It is recorded against the id, so you can pin one
+that has never checked in — hardware that has shipped but not been powered on — and the
+pin is waiting on its first check-in rather than on the one after the fleet row appears.
+
 ## Naming devices
 
 A device's identity is its hardware id, but a fleet of 40 hex strings is unreadable on a

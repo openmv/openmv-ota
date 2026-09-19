@@ -528,7 +528,9 @@ def _decide(state, checkin, cohort, existing=None, account_id=""):
     ms = state.metastore
     # A pin (device wins over cohort) overrides the rollout: offer the pinned release iff it's an
     # upgrade -- a pin to the current/older version just holds the device (no rollout reaches it).
-    pinned = (existing["pinned_release_id"] if existing else None) \
+    # Read by device id, not off the fleet row: a pin can be recorded before a camera has
+    # ever checked in, and the first check-in is exactly when it should take effect.
+    pinned = ms.get_device_pin(checkin.device_id) \
         or ms.get_cohort_pin(checkin.product_id, cohort, account_id=account_id)
     if pinned:
         rel = ms.get_release(pinned)

@@ -387,6 +387,23 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE accounts ADD COLUMN publish_seq BIGINT NOT NULL DEFAULT 0",
         "ALTER TABLE releases ADD COLUMN publish_seq BIGINT NOT NULL DEFAULT 0",
     ],
+    [   # v27 -- a device pin becomes an INTENT rather than a field on the fleet row.
+        # It was a column on `devices`, set by an UPDATE that matched nothing when the
+        # camera had never checked in -- so pinning one before it was first powered on
+        # silently did nothing, and a claim had to wait for a check-in to create the row
+        # and then land on the one after that, with a customer watching. The account
+        # binding has always worked this way (see device_accounts) for exactly this
+        # reason; the pin was the odd one out.
+        "CREATE TABLE IF NOT EXISTS device_pins ("
+        "device_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, "
+        "account_id TEXT NOT NULL DEFAULT '', pinned_at TEXT)",
+        "INSERT INTO device_pins (device_id, release_id, account_id) "
+        "SELECT device_id, pinned_release_id, COALESCE(account_id, '') FROM devices "
+        "WHERE pinned_release_id IS NOT NULL AND pinned_release_id != ''",
+        # No longer written -- device_pins is the authority, and a reader that still
+        # selects the column gets NULL rather than a value that has quietly stopped moving.
+        "UPDATE devices SET pinned_release_id = NULL",
+    ],
 ]
 
 
@@ -834,7 +851,10 @@ class SqlMetadataStore:
         return [_d(r) for r in rows]
 
     def get_device(self, device_id: str) -> dict | None:
-        return _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
+        row = _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
+        if row is not None:
+            row["pinned_release_id"] = self.get_device_pin(device_id)
+        return row
 
     def forget_device(self, device_id: str) -> None:
         """Remove a device from the fleet: its row and its account binding.
@@ -850,6 +870,7 @@ class SqlMetadataStore:
         A camera that checks in again after this is simply a device the server has not
         seen before -- it enrols from scratch, with a `learned` binding."""
         self.execute("DELETE FROM device_accounts WHERE device_id = ?", (device_id,))
+        self.execute("DELETE FROM device_pins WHERE device_id = ?", (device_id,))
         self.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
 
     # --- sticky device -> account binding (the authoritative account for the device path) ----
@@ -964,7 +985,11 @@ class SqlMetadataStore:
         rows = self.query_all("SELECT * FROM devices " + where
                               + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
                               + " LIMIT ? OFFSET ?", (*params, limit, offset))
-        return [_d(r) for r in rows]
+        out = [_d(r) for r in rows]
+        pins = self.device_pins_for(r["device_id"] for r in out)
+        for r in out:
+            r["pinned_release_id"] = pins.get(r["device_id"])
+        return out
 
     def list_products(self, account_id=None, products=None) -> list[dict]:
         """The account's products: every product id seen on a device or a release, with
@@ -1350,10 +1375,42 @@ class SqlMetadataStore:
         sql, params = _limit(sql, params, limit, offset)
         return [_d(r) for r in self.query_all(sql, params)]
 
-    def set_device_pin(self, device_id: str, release_id: str | None) -> None:
-        """Pin (or, with None, unpin) a device to a release. Preserved across check-ins."""
-        self.execute("UPDATE devices SET pinned_release_id = ? WHERE device_id = ?",
-                     (release_id, device_id))
+    def set_device_pin(self, device_id: str, release_id: str | None,
+                       account_id: str = "") -> None:
+        """Pin (or, with None, unpin) a device to a release.
+
+        An intent about a device id, not a field on a fleet row -- so it can be recorded
+        for a camera the server has never seen and is waiting when that camera first checks
+        in. A platform claims hardware at the moment it ships, which is before anything has
+        been powered on; as an UPDATE on `devices` this matched no rows and did nothing, so
+        the claim had to wait for one check-in to create the row and then land on the next.
+        """
+        if release_id is None:
+            self.execute("DELETE FROM device_pins WHERE device_id = ?", (device_id,))
+            return
+        self.execute(
+            "INSERT INTO device_pins (device_id, release_id, account_id, pinned_at) "
+            "VALUES (?,?,?,?) ON CONFLICT (device_id) DO UPDATE SET "
+            "release_id = excluded.release_id, account_id = excluded.account_id, "
+            "pinned_at = excluded.pinned_at",
+            (device_id, release_id, account_id, _now_iso()))
+
+    def get_device_pin(self, device_id: str) -> str | None:
+        """The release this device is pinned to, whether or not it has ever checked in."""
+        row = self.query_one("SELECT release_id FROM device_pins WHERE device_id = ?",
+                             (device_id,))
+        return row["release_id"] if row else None
+
+    def device_pins_for(self, device_ids) -> dict:
+        """``{device_id: release_id}`` for a page of devices -- one query per listing
+        rather than one per row, bounded by the page the caller already read."""
+        ids = list(device_ids)
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        return {r["device_id"]: r["release_id"] for r in self.query_all(
+            "SELECT device_id, release_id FROM device_pins WHERE device_id IN (%s)" % marks,
+            tuple(ids))}
 
     def set_cohort_pin(self, product_id: int, cohort: str, release_id: str | None,
                        account_id: str = "") -> None:
