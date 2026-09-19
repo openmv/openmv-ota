@@ -12,9 +12,12 @@ server holds the credentials and calls the [admin API](23-admin-api.md), and you
 customers never learn it is there.
 
 Nothing on this page is a separate mode. It is the same accounts, products, cohorts and
-rollouts as everywhere else, arranged for that shape, plus the three things that only
-come up when you are operating on someone else's behalf: carving the account up,
-assigning hardware to a customer after it is built, and versioning across all of it.
+rollouts as everywhere else, arranged for that shape, plus the things that only come up
+when you are operating on someone else's behalf: carving the account up, assigning
+hardware to a customer after it is built, and versioning across all of it.
+
+Two of those decisions are made before the first camera ships and cannot be changed
+afterwards. They come first.
 
 ## One account, products underneath
 
@@ -25,9 +28,11 @@ them or knows they exist. The account's device limit is one number across everyt
 operate, and its audit log is the record of everything you did on their behalf.
 
 Inside that account, the **product** is what you carve by. A product id is the low 63
-bits of `sha256("<product>:<board>")`, computed by your project config, and it is what a
-camera checks an update against before installing it — an image whose product id is not
-the device's own is refused on the device, not just on the server.
+bits of `sha256("<product>:<board>")`, computed by your project config. For an ordinary
+camera it is also the cross-flash guard — the firmware refuses an image whose product id
+is not its own. Your cameras will run with that guard off, for reasons the next sections
+get to, so for you a product is a way of *organising* releases and devices rather than a
+wall between them.
 
 That gives you two ways to arrange customers, and they differ in how much of the camera's
 behaviour you are willing to make configuration.
@@ -48,8 +53,50 @@ label on a device row, so it groups but does not isolate: there is no per-custom
 credential, and everything your customers do runs through one application you have to
 make configurable enough for all of them.
 
-Most platforms end up mixing the two — a shared runtime for the common case, a dedicated
-product for a customer who needs something the runtime cannot express.
+## Keys: one set for the whole fleet
+
+This is the first of the two decisions that cannot be changed after the first camera
+ships.
+
+A camera verifies an image against the trusted keys **baked into its firmware**, and
+decrypts a payload with the payload keys baked in beside them. Firmware is not replaced
+over the air, so those are the keys that camera has for its whole life. A stock camera
+carries the *stock project's* keys — and it is going to be asked to install customer A's
+image, then customer B's.
+
+So **every project a camera can be moved between must share one signing key and one
+payload key set.** In practice that means your whole fleet: one signing identity, one
+payload key set, reused by every project you create. `project new` mints fresh keys by
+default, which is right for a product line and wrong for you. Make your first project
+normally, then point every later one at it:
+
+```bash
+openmv-ota project new ./projects/stock  -f ../openmv -b OPENMV_N6 --ota \
+    --key-passphrase-file ~/.openmv/fleet-passphrase
+openmv-ota project new ./projects/acme   -f ../openmv -b OPENMV_N6 --ota \
+    --key-passphrase-file ~/.openmv/fleet-passphrase --keys-from ./projects/stock
+```
+
+`--keys-from` copies the trusted set, the private keys and the payload keys. The private
+keys stay encrypted under the passphrase they were minted with, so it has to be the same
+one — that is checked when the project is made, rather than surfacing later as a key file
+that will not open. A project that builds for a board the source does not gets a payload
+key minted for it and says so; the signing keys are shared untouched.
+
+Two things follow that are worth being explicit about with anyone reviewing this:
+
+- The boundary between your customers is **the server deciding what to offer**, not
+  cryptography on the device. Every camera in your fleet can verify and decrypt every
+  image in it. That is the same trust domain by construction — they are all your images —
+  but it is not a wall, and it should not be described as one.
+- A camera built for this arrangement has the cross-flash guard off permanently. What
+  protects it is the signature, the account binding, and the publish counter below. That
+  is a coherent story; it is just a different one from a normal product's.
+
+The **stock image deserves particular care**, because it is the one artifact every camera
+can be returned to. Keep it as close to inert as the job allows — register, check in,
+wait — with no customer data handling and as little network surface as you can manage. A
+weakness there is a weakness in every camera you have ever shipped.
 
 ## Declaring a product before you build one
 
@@ -60,12 +107,14 @@ in one order and building in another, declare it up front:
 openmv-ota client product create --product-id 4242 --name "Acme Robotics (N6)"
 ```
 
-The id comes from the project's `ota.toml`, where it was computed — the server does not
-derive it, so the project stays the one place a product is named. Declaring is idempotent
-and gives you a product that appears in `client product list` with no releases and no
-devices, ready to be named and to have cameras bound to it.
+The id comes from the project's `openmv-ota.toml`, where it was computed — the server does
+not derive it, so the project stays the one place a product is named. Declaring is
+idempotent and gives you a product that appears in `client product list` with no releases
+and no devices, ready to be named and to have cameras bound to it.
 
 ## Stock hardware, claimed later
+
+This is the second decision that cannot be changed afterwards.
 
 Cameras are usually built before anyone knows which customer will receive them. Give that
 hardware a **stock product** of its own, and build its firmware with a product id of `0`:
@@ -96,12 +145,13 @@ product:
 openmv-ota client device pin --device-id OPENMV_N6:3c0021000c51 --release-id cust_a_r1
 ```
 
-The pin checks that the release belongs to the account and that it moves the camera
-forward — by the publish counter, for these cameras, not by the version. It
-deliberately does not check that it belongs to the device's current product — which is
-what makes one manufactured SKU able to become any customer's product after unboxing. The
-device takes it on its next check-in like any other update: downloaded, verified, staged
-into the other slot, rolled back if it does not boot.
+The pin only requires that the release belongs to your account; it deliberately does not
+require that it belongs to the device's current product, which is what makes one
+manufactured SKU able to become any customer's product after unboxing. The camera is
+offered the pinned release on its next check-in if the release moves it forward — by the
+publish counter, for these cameras, not by the version — and takes it like any other
+update: downloaded, verified, staged into the other slot, rolled back if it does not
+boot.
 
 **Claim, transfer and reset are the same primitive.** Moving a camera from one customer to
 another is a pin to the new customer's release. Taking it back is a pin to the current
@@ -111,10 +161,8 @@ stock release. There is no separate verb, and no state the server has to keep in
 not a field on a fleet row, so you can record it when the hardware ships — or the moment a
 customer scans a code — and it is waiting on that camera's very first check-in. The claim
 lands on first contact rather than on the poll after it, which is the difference between a
-customer watching a spinner for one interval and for two.
-
-The only thing refused is an id already bound to another account, which is a 404 like
-everywhere else.
+customer watching a spinner for one interval and for two. The only thing refused is an id
+already bound to another account, which is a 404 like everywhere else.
 
 ## Versions, and the publish counter
 
@@ -128,18 +176,12 @@ A's `5.3.0` and customer B's `2.1.0` are not orderable, and a stock image at `1.
 below both. So those cameras order their images by a different number.
 
 **`publish_seq` is the account's publish counter**: allocated by the server, strictly
-increasing, never reused, and compared by nothing except anti-rollback. Turn it on in the
-project:
-
-```toml
-[ota]
-platform = true
-```
-
-and every build takes the next number before it signs. That has a real cost, and it is the
-one thing to know before you commit: **there is no offline build with this on.** A build
-has to reach the server, which means being logged in, which means your build pipeline
-needs a credential. Everything else about it is free.
+increasing, never reused, and compared by nothing except anti-rollback. `platform = true`
+turns it on, and from then on every `build ota-romfs` takes the next number when it
+starts and stamps it into the image it signs. That has a real cost, and it is the one
+thing to know before you commit: **there is no offline build with this on.** A build has
+to reach the server, which means being logged in, which means your build pipeline needs a
+credential. Everything else about it is free.
 
 What the counter buys:
 
@@ -163,9 +205,7 @@ And the discipline that comes with it, which is not enforceable and matters:
 The upside of one shared runtime is the other half of that: a fix in it reaches every
 customer on their next build, and no camera can be walked below what it is already running.
 
-### Taking numbers
-
-One call, per build, as late as you can:
+### How the numbers are handed out
 
 ```bash
 openmv-ota build ota-romfs ./projects/acme -b OPENMV_N6   # takes the next number itself
@@ -175,10 +215,10 @@ A database sequence hands these out at millions per second, so the round trip is
 not the contention. Gaps are fine — a build that fails after taking a number simply burns
 it, and nothing anywhere requires them to be contiguous.
 
-**Do not batch them.** A block allocator — a worker grabbing a thousand numbers and handing
-them out locally — is the obvious way to remove the round trip, and it breaks the one
-property the whole arrangement rests on: that a freshly built image has a higher number
-than whatever a camera is running. Claim and return both depend on it.
+Do not try to remove the round trip with a block allocator — a worker grabbing a thousand
+numbers and handing them out locally. It breaks the one property the whole arrangement
+rests on: that a freshly built image has a higher number than whatever a camera is
+running. Claim and return both depend on it.
 
 Out-of-order publishing is fine and expected at any real build rate. The server checks a
 number against **that product's** newest, not the account's, so a build that finishes
@@ -241,38 +281,6 @@ and rollout counters are built from those rows — and the removal is in the aud
 camera that checks in again afterwards is a device the server has not seen before: it
 enrols from scratch and is not yours again until you bind it.
 
-## Keys: one set for the whole fleet
-
-This is the constraint to settle before the first camera ships, because it cannot be
-changed afterwards.
-
-A camera verifies an image against the trusted keys **baked into its firmware**, and
-decrypts a payload with the payload keys baked in beside them. Firmware is not replaced
-over the air, so those are the keys that camera has for its whole life. A stock camera
-carries the *stock project's* keys — and it is going to be asked to install customer A's
-image, then customer B's.
-
-So **every project a camera can be moved between must share one signing key and one
-payload key set.** In practice that means your whole fleet: one signing identity, one
-payload key set, reused by every project you create. `project new` mints fresh keys by
-default, which is right for a product line and wrong for you — point each new project at
-the set you already have rather than letting it make its own.
-
-Two things follow that are worth being explicit about with anyone reviewing this:
-
-- The boundary between your customers is **the server deciding what to offer**, not
-  cryptography on the device. Every camera in your fleet can verify and decrypt every
-  image in it. That is the same trust domain by construction — they are all your images —
-  but it is not a wall, and it should not be described as one.
-- A camera built with `product_id = 0` has the cross-flash guard off permanently. What
-  protects it is the signature, the account binding, and the publish counter. That is a
-  coherent story; it is just a different one from a normal product's.
-
-The **stock image deserves particular care**, because it is the one artifact every camera
-can be returned to. Keep it as close to inert as the job allows — register, check in,
-wait — with no customer data handling and as little network surface as you can manage. A
-weakness there is a weakness in every camera you have ever shipped.
-
 ## Building and publishing
 
 The build happens on your machines, not ours, because it needs two things the server must
@@ -300,10 +308,9 @@ a token's account comes from the token itself, and there is no "act as" header �
 you are ever issued more than one account, you hold a credential for each and choose per
 call.
 
-Scopes are the ladder from [Accounts and tokens](19-accounts-and-tokens.md):
-`publish` > `manage` >
-`observe`. Give a build pipeline `publish`, a dashboard `observe`, and keep them separate
-so a leak from one is not a leak from both.
+Scopes are the ladder from [Accounts and tokens](19-accounts-and-tokens.md): `publish` >
+`manage` > `observe`. Give a build pipeline `publish`, a dashboard `observe`, and keep
+them separate so a leak from one is not a leak from both.
 
 A token can also be **limited to some products** when it is issued:
 
@@ -344,11 +351,11 @@ Grants are per device and expire in minutes: mint one per view rather than cachi
 and note there is no batch endpoint, so a page of a hundred tiles is a hundred calls.
 
 Device data comes through the same grant, or through a product-wide one — the reads are
-in [Pulling device data](24-pulling-device-data.md). Two shapes, and the difference matters
-when you plan a product around it: `logs/{topic}` returns records with a `before_seq`
-cursor, so it
-backfills completely; `series/{topic}` returns aggregated buckets (`t`, `n`, `min`, `max`,
-`avg`) rather than samples. There is no raw-sample export for numeric telemetry.
+in [Pulling device data](24-pulling-device-data.md). Two shapes, and the difference
+matters when you plan a product around it: `logs/{topic}` returns records with a
+`before_seq` cursor, so it backfills completely; `series/{topic}` returns aggregated
+buckets (`t`, `n`, `min`, `max`, `avg`) rather than samples. There is no raw-sample export
+for numeric telemetry.
 
 ## Watching a fleet you do not sit in front of
 
