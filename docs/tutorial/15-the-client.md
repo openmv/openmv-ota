@@ -84,7 +84,10 @@ format's name). Step by step:
    plaintext digest is verified on the camera, which is the only party that can.
 4. Publish-time anti-rollback: a `payload_version` at or below the newest already
    published for that product is refused. `--allow-republish` overrides it — the dev
-   loop, where you rebuild the same version all afternoon.
+   loop, where you rebuild the same version all afternoon. A project in platform mode
+   also stamps a `publish_seq`, and one at or below that product's newest is refused
+   with no override: each build takes its own from the server, and reusing one would
+   leave two artifacts a camera cannot order.
 
 A published release is **inert**: no device is offered it until a rollout (or a pin)
 points at it.

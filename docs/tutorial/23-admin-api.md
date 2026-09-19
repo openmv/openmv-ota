@@ -9,10 +9,12 @@ your scripts, CI, and dashboards can do too.
 
 Requests carry `Authorization: Bearer <token>`. A token belongs to an **account** and
 carries **scopes** (`publish` > `manage` > `observe`, each including the rungs below
-it, plus the operator scope `accounts`); every read and write
-is scoped to the token's account, and anything belonging to another account answers
-**404** — indistinguishable from "doesn't exist", so the API can't be used to probe
-other tenants.
+it, plus the operator scopes `accounts` — provision and manage the accounts you
+created — and `accounts.all`, the server's own root); every read and write is scoped to
+the token's account, and anything belonging to another account answers **404** —
+indistinguishable from "doesn't exist", so the API can't be used to probe other
+tenants. A token may further be limited to some of its account's products, in which
+case every read is filtered to them and everything else answers the same 404.
 
 ## The reference is the server itself
 
@@ -21,9 +23,9 @@ it would drift: it is generated from the running code and served by every deploy
 Open **`/docs`** on your server for the browsable version — every operation, grouped
 and searchable, with its request and response schemas — or fetch **`/openapi.json`**
 for the machine-readable contract, and generate a client from it instead of
-hand-writing one against guesses. The CLI pages ([15](15-the-client.md) onward) walk
-the same surface in workflow order; `/docs` is wire order, and always exactly what
-your server speaks.
+hand-writing one against guesses. The CLI pages ([The client](15-the-client.md)
+onward) walk the same surface in workflow order; `/docs` is wire order, and always
+exactly what your server speaks.
 
 ## Paging
 

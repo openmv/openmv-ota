@@ -129,6 +129,10 @@ openmv-ota server token issue --name ci --scope publish --account-id acct_7bd21c
 openmv-ota server token list | revoke <hash> | rotate <hash>
 ```
 
+`--scope accounts` mints an operator credential that provisions accounts and manages
+only the ones it creates — what you hand a partner. `--scope accounts.all` is the
+server's root, which the bootstrap token already is; mint another only to replace it.
+
 ## Deploying (self-hosted only)
 
 The [deploy/](../../src/openmv_ota/server/deploy/) directory ships turnkey artifacts:
