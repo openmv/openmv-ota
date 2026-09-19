@@ -21,7 +21,7 @@ from .schemas import (
     AccountList,
     AccountNamed,
     AdvisoryList,
-    ProductDeclared, ProductList, ProductRenamed, ProductViewerGrant,
+    ProductDeclared, ProductList, ProductRenamed, ProductViewerGrant, ViewerGrants,
     AdvisoryScan,
     AuditList,
     CohortAssigned,
@@ -1354,20 +1354,59 @@ def viewer_grant(device_id: str, request: Request,
     Ownership comes from the sticky device->account binding, not from whatever
     the device last claimed, and an unowned device is a 404 like any other
     entity -- so this cannot be used to discover other accounts' devices."""
-    st = request.app.state
+    grant = _viewer_grant_for(request.app.state, principal, device_id)
+    if grant is None:
+        raise HTTPException(status_code=404)
+    if not grant:
+        raise HTTPException(status_code=503, detail="live/viewing is not configured")
+    return grant
+
+
+def _viewer_grant_for(st, principal, device_id: str):
+    """One device's viewer grant, or None when the device is not this credential's to
+    view (missing, or bound elsewhere -- indistinguishable on purpose), or ``{}`` when
+    live/viewing is not configured on this deployment at all."""
     ms = st.metastore
     device = ms.get_device(device_id)
     if device is None:
-        raise HTTPException(status_code=404)
+        return None
     bound = ms.device_account(device_id)          # the sticky binding wins
     owner = bound["account_id"] if bound else device.get("account_id", "")
-    _owned({"account_id": owner}, principal)
+    if owner != principal.account_id or not principal.may(device.get("product_id")):
+        return None
     grant = live_mod.viewer_grant(
         st.settings, device_id, (device.get("streams") or "").split(","),
         datalake_url=getattr(st.settings, "datalake_url", "") or "")
-    if grant is None:
+    return grant if grant is not None else {}
+
+
+class ViewerGrantsRequest(BaseModel):
+    device_ids: list[str]
+
+
+_VIEWER_GRANTS_MAX = 100
+
+
+@admin.post("/devices/viewer-grants", responses={200: {"model": ViewerGrants}})
+def viewer_grants(body: ViewerGrantsRequest, request: Request,
+                  principal: Principal = Depends(require_scope("observe"))):
+    """Viewer grants for a page of devices in one call -- a dashboard drawing a hundred
+    tiles should not have to make a hundred round trips to mint a hundred credentials.
+
+    Each entry is exactly what the single-device call returns, or ``null`` for a device
+    this credential may not view (missing, bound to another account, outside a limited
+    token's products -- the page still renders, with that tile empty). At most 100 ids,
+    which is a page; 400 above that. 503 only when live/viewing is not configured at all.
+    """
+    if len(body.device_ids) > _VIEWER_GRANTS_MAX:
+        raise HTTPException(status_code=400,
+                            detail="at most %d device ids per call" % _VIEWER_GRANTS_MAX)
+    st = request.app.state
+    if not (st.settings.live_relay_url and st.settings.live_token_secret) \
+            and not (getattr(st.settings, "datalake_url", "") and st.settings.datalake_token_secret):
         raise HTTPException(status_code=503, detail="live/viewing is not configured")
-    return grant
+    return {"grants": {did: (_viewer_grant_for(st, principal, did) or None)
+                       for did in dict.fromkeys(body.device_ids)}}
 
 
 @admin.get("/audit", responses={200: {"model": AuditList}})

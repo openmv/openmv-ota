@@ -554,6 +554,12 @@ class ViewerGrant(_Row):
     configured; absent otherwise."""
 
 
+class ViewerGrants(BaseModel):
+    grants: dict[str, ViewerGrant | None] = {}
+    """One entry per requested device id: its grant, or ``null`` when this credential may
+    not view it (missing, another account's, or outside a limited token's products)."""
+
+
 class ProductViewerGrant(BaseModel):
     """A short-lived read credential for one product's data across all its devices:
     the datalake's product ``viewer`` token under ``datalake`` with the URLs it opens

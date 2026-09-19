@@ -347,8 +347,10 @@ The `?token=` form in the returned URLs still works, and has to — cameras in t
 firmware that sends it — but prefer the other two for anything you write. A credential in
 a URL ends up in proxy logs, browser history and `Referer` headers.
 
-Grants are per device and expire in minutes: mint one per view rather than caching them,
-and note there is no batch endpoint, so a page of a hundred tiles is a hundred calls.
+Grants are per device and expire in minutes: mint them per view rather than caching
+them. A page of tiles is one call — `POST /api/v1/admin/devices/viewer-grants` with up to
+a hundred ids returns each device's grant, or `null` for one you may not view, so the page
+renders with that tile empty rather than failing because a camera left the fleet.
 
 Device data comes through the same grant, or through a product-wide one — the reads are
 in [Pulling device data](24-pulling-device-data.md). Two shapes, and the difference
