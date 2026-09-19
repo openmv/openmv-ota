@@ -214,7 +214,13 @@ $ openmv-ota client release show --release-id rel_4f9c2a81d06b73ee     # the sam
 
 $ openmv-ota client release sbom --release-id rel_4f9c2a81d06b73ee -o sbom.cdx.json
 saved sbom.cdx.json (48213 bytes)
+
+$ openmv-ota client release manifest --release-id rel_4f9c2a81d06b73ee -o manifest.bin
 ```
+
+`release manifest` hands back the signed manifest the server serves to devices for that
+release, byte for byte — what to `build inspect`, diff against a build, or hand to
+`install()` from a file on a device you are debugging.
 
 `release sbom` hands back the CycloneDX SBOM exactly as publish uploaded it — pipe it
 to a scanner (no `-o` writes it to stdout) to answer "does the release the fleet runs
