@@ -332,3 +332,11 @@ def test_next_publish_seq_allocates_one_number():
     api, c = _api(_Resp(200, {"publish_seq": 4242}))
     assert api.next_publish_seq() == 4242
     assert c.calls[0][:2] == ("POST", "/api/v1/admin/publish-seq")
+
+
+def test_viewer_grants_asks_for_a_page_in_one_call():
+    api, c = _api(_Resp(200, {"grants": {"dev1": {"token": "t"}, "dev2": None}}))
+    assert api.viewer_grants(["dev1", "dev2"]) == {"dev1": {"token": "t"}, "dev2": None}
+    method, path, kw = c.calls[0]
+    assert (method, path) == ("POST", "/api/v1/admin/devices/viewer-grants")
+    assert kw["json"] == {"device_ids": ["dev1", "dev2"]}
