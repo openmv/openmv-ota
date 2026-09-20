@@ -131,7 +131,9 @@ $ openmv-ota client device list --cohort beta --limit 1
     {
       "device_id": "OPENMV_N6:30003d000851303436313832",
       "product_id": 5553380507785669254,
+      "product_id_str": "5553380507785669254",
       "board": "OPENMV_N6",
+      "display_name": "Loading dock east",
       "cohort": "beta",
       "current_version": "1.2.0",
       "current_payload_version": 16908288,
@@ -148,6 +150,8 @@ $ openmv-ota client device list --cohort beta --limit 1
       "streams": "",
       "fallback_payload_version": 16842752,
       "body_sha256": "9c2ff6a1c4f0f9be55b9e9c25e1e6cf1d5f4f34eaa1f5f5f4b2c9c25e1e6cf1d",
+      "publish_seq": 0,
+      "orders_by_seq": 0,
       "fallback_version": "1.1.0"
     }
   ],
@@ -177,9 +181,12 @@ $ openmv-ota client release list --limit 1
     {
       "release_id": "rel_4f9c2a81d06b73ee",
       "product_id": 5553380507785669254,
+      "product_id_str": "5553380507785669254",
       "product": "my-product",
+      "display_name": "Night vision tuning",
       "version": "1.2.0",
       "payload_version": 16908288,
+      "publish_seq": 0,
       "min_platform_version": 84017152,
       "image_sha256": "5d41402abc4b2a76b9719d911017c592a9c25e1e6cf1d5f4f34eaa1f5f5f4b2c",
       "image_size": 1467392,
@@ -204,8 +211,11 @@ $ openmv-ota client release list --limit 1
 ```
 
 Worth knowing in there: `dev` marks a release signed with a throwaway `--dev` key
-(provenance, visible forever), and `representations` is the signed manifest's own list —
-the deltas a device can choose from, each naming the base it patches.
+(provenance, visible forever), `publish_seq` is the account's publish counter when the
+project uses one (`0` otherwise), `product_id_str` is the id as a string for JSON
+parsers that cannot hold a 64-bit integer, and `representations` is the signed
+manifest's own list — the deltas a device can choose from, each naming the base it
+patches.
 
 One release by id, and the evidence that shipped with it:
 

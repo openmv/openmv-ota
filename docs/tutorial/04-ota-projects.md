@@ -40,8 +40,9 @@ images a camera can download, verify, and fall back from.
   ([Projects](02-projects.md#product-name-vs-board-name)) into the image; an OTA
   device bakes its own copy in and rejects any image whose id doesn't match — the
   **cross-flash guard**. Keep the id once devices ship (a later change would
-  reject updates on fielded devices); `build romfs` warns if it is `0` (guard
-  off) or if two boards collide on one id.
+  reject updates on fielded devices); `build romfs` refuses an id of `0` (guard
+  off) unless the project sets `platform`, and warns if two boards collide on one
+  id.
 
 (The starter `app/` — including the `app_version` the build stamps into the image
 — is scaffolded for every project, not just OTA; see
@@ -107,7 +108,8 @@ my-product/
 │                            # docs/compliance/cra-red-alignment.md
 ├── device/
 │   ├── openmv_log.py               # the OTA debug logger
-│   └── openmv_wdt.py               # the watchdog helper
+│   ├── openmv_wdt.py               # the watchdog helper
+│   └── openmv_ca.py                # only with --ca: your root(s) as a frozen module
 └── keys/
     ├── trusted_keys.json    # committed: the public key set baked into firmware
     └── private/             # GITIGNORED: the private signing keys (PKCS#8 PEM)

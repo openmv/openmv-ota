@@ -142,7 +142,7 @@ Claiming one for a customer is then an ordinary device pin, to a release of a *d
 product:
 
 ```bash
-openmv-ota client device pin --device-id OPENMV_N6:3c0021000c51 --release-id cust_a_r1
+openmv-ota client device pin --device-id OPENMV_N6:3c0021000c51333037343234 --release-id cust_a_r1
 ```
 
 The pin only requires that the release belongs to your account; it deliberately does not
@@ -261,7 +261,7 @@ fine when you control the firmware it ships with and wrong when you do not. To d
 yourself:
 
 ```bash
-openmv-ota client device bind --device-id OPENMV_N6:3c0021000c51
+openmv-ota client device bind --device-id OPENMV_N6:3c0021000c51333037343234
 ```
 
 An administrative bind wins over a learned one and works **before the camera has ever
@@ -272,7 +272,7 @@ both happen at the point of sale, and the camera arrives already knowing what it
 When a unit is retired:
 
 ```bash
-openmv-ota client device forget --device-id OPENMV_N6:3c0021000c51
+openmv-ota client device forget --device-id OPENMV_N6:3c0021000c51333037343234
 ```
 
 It leaves the fleet and stops counting against the account's device limit. Its install
@@ -355,7 +355,7 @@ renders with that tile empty rather than failing because a camera left the fleet
 Device data comes through the same grant, or through a product-wide one — the reads are
 in [Pulling device data](24-pulling-device-data.md). Two shapes, and the difference
 matters when you plan a product around it: `logs/{topic}` returns records with a
-`before_seq` cursor, so it backfills completely; `series/{topic}` returns aggregated
+`next_before_seq` cursor, so it backfills completely; `series/{topic}` returns aggregated
 buckets (`t`, `n`, `min`, `max`, `avg`) rather than samples. There is no raw-sample export
 for numeric telemetry.
 

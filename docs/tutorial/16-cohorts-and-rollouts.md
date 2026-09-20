@@ -122,7 +122,7 @@ number between 0 and 999,999, computed by hashing the rollout id together with t
 device id —
 
 ```
-ticket = sha256(rollout_id + ":" + device_id) % 1000000   # 0–999999, deterministic
+ticket = sha256(rollout_id + ":" + device_id)[:4] % 1000000   # first 4 bytes as an int; 0–999999
 staged = ticket < percent * 10000                         # 5%  -> tickets below  50,000
                                                           # 50% -> tickets below 500,000
 ```
@@ -180,9 +180,11 @@ $ openmv-ota client rollout list
       "rollout_id": "ro_1c3f88ba90d2e644",
       "release_id": "rel_4f9c2a81d06b73ee",
       "product_id": 5553380507785669254,
+      "product_id_str": "5553380507785669254",
       "cohort": "beta",
       "percent": 5.0,
       "state": "active",
+      "display_name": "",
       "cohort_devices": 412,
       "up_to_date": 21,
       "pause_reason": null
@@ -196,9 +198,12 @@ $ openmv-ota client rollout status --rollout-id ro_1c3f88ba90d2e644
   "rollout_id": "ro_1c3f88ba90d2e644",
   "release_id": "rel_4f9c2a81d06b73ee",
   "product_id": 5553380507785669254,
+  "product_id_str": "5553380507785669254",
   "cohort": "beta",
   "percent": 5.0,
   "state": "active",
+  "display_name": "",
+  "pause_reason": null,
   "failure_threshold": 0.05,
   "attempted": 21,
   "updated": 19,

@@ -23,9 +23,9 @@ Its commands are grouped by **verb**:
 tutorial covers one verb. Two pieces run somewhere other than your computer:
 
 - the **device runtime** — `boot.py` and a small library that run on the camera
-  itself ([pages 10–11](11-boot-and-rollback.md)), and
+  itself ([pages 11–14](11-boot-and-rollback.md)), and
 - the **update server** — a web service that hosts what you publish and decides
-  which camera is offered what ([pages 15–23](15-the-client.md)). You drive it
+  which camera is offered what ([pages 15–25](15-the-client.md)). You drive it
   with the `client` verb; other software (such as OpenMV's cloud) drives the same
   **HTTP API** the server exposes.
 

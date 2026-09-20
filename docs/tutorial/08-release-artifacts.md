@@ -56,9 +56,10 @@ before the slower signature check runs.
 A signing build fails (exit 1) on an incomplete signing context — a missing or
 unreadable `app/settings.json`, a missing or non-semver `app_version`, a
 `signing_key_id` not in `keys/trusted_keys.json`, or a missing private key (only
-the signing machine has `keys/private/`). It *warns* but builds if a target's
-`product_id` is `0` (you overrode the auto-assigned id, turning the cross-flash
-guard off) or if two boards collide on one id (the guard can't tell them apart).
+the signing machine has `keys/private/`). A target whose `product_id` is `0` (the
+cross-flash guard off) is refused unless the project sets `platform` — the one case
+that means it; two boards colliding on one id only *warns* (the guard can't tell
+them apart).
 
 ### The manifest
 
@@ -209,8 +210,8 @@ openmv-ota build inspect build/OPENMV_N6-factory-romfs.img   # prints slots A + 
 
 Decodes the signed trailer and prints it: product / board / `product_id` /
 `board_name`, the app version (and the `payload_version` / `min_platform_version`
-it encodes, shown as semver), the signing key and algorithm, the body size +
-SHA-256, and a provenance line. `--json` dumps the full structure for scripting.
+it encodes, shown as semver), the publish counter when the image carries one, the
+signing key and algorithm, the body size + SHA-256, and a provenance line. `--json` dumps the full structure for scripting.
 It does no crypto — it just reads the trailer.
 
 ### build verify

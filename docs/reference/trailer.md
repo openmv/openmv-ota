@@ -25,7 +25,7 @@ to the same 4 KiB: growing the metadata can never reshape the layout. Boards who
 [the OTA-projects page](../tutorial/04-ota-projects.md)). Laid out little-endian:
 
 ```
-[ header (80) ][ json_meta (meta_size) ][ signature (sig_size) ][ crc32 (4) ]
+[ header (96) ][ json_meta (meta_size) ][ signature (sig_size) ][ crc32 (4) ]
 └──── signed region: header ‖ meta ────┘
 └────────── crc32 region: everything before the crc ───────────┘
 ```
@@ -42,25 +42,29 @@ to the same 4 KiB: growing the metadata can never reshape the layout. Boards who
 
 ## Header fields
 
-The fixed header is 80 bytes; `product_id` is 8 bytes, the rest 4. In order:
+The fixed header is 96 bytes: three 8-byte fields at offsets 24, 32 and 40, the
+32-byte digest at 64, and 4-byte fields elsewhere. In order:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `magic` | `4s` | Payload kind + format marker: `OMVR` = ROMFS app, `OMVF` = firmware (reserved). The first cheap reject; folds the kind into the magic so there's no separate type field. |
-| `header_version` | `uint32` | Layout version of *this fixed header* (`2`; `1` was the 32-bit `product_id` with `reserved0` beside it). `boot.py` hard-rejects an unknown version rather than mis-parse it. |
+| `header_version` | `uint32` | Layout version of *this fixed header* (`3`). `boot.py` hard-rejects any other version rather than mis-parse it — and because the verifier is frozen into firmware that no OTA can replace, the layout is a commitment, not a negotiation. (`2` was the 80-byte header without the publish counter; `1` had a 32-bit `product_id`.) |
 | `body_size` | `uint32` | Length of the ROMFS body before the trailer; bounds the mount and the body hash. |
 | `pad_size` | `uint32` | Count of `0xFF` bytes between the body and the status/trailer sectors. `body_size + pad_size` = where the status sector begins, making the slot self-describing across boards with different erase geometry. |
 | `meta_size` | `uint32` | Byte length of the JSON metadata blob. |
 | `sig_size` | `uint32` | Byte length of the signature; must equal the algorithm's size. |
-| `product_id` | `uint64` | Target product id; the cross-flash guard. The build auto-assigns a nonzero id — the low 63 bits of `sha256("<product>:<board>")` — so this is `0` (check skipped) only if you override it to `0`. It was `uint32` in header version 1, derived from a crc32: 32 bits collide at a few thousand products, and two product lines sharing an id means one line's devices accept the other's firmware. Widening it consumed `reserved0`, so the header is still 80 bytes. |
+| `product_id` | `uint64` | Target product id; the cross-flash guard. The build auto-assigns a nonzero id — the low 63 bits of `sha256("<product>:<board>")` — so this is `0` (check skipped) only if the project sets it to `0` on purpose ([Integrating as a platform](../tutorial/25-platform-integration.md)). 32 bits collide at a few thousand products, and two product lines sharing an id means one line's devices accept the other's firmware. |
+| `publish_seq` | `uint64` | The account's **publish counter**: one number per build, taken from the update server, strictly increasing across every product the account publishes. It is the anti-rollback input for a camera built with `product_id = 0` — the only camera that can be moved between products, whose images a per-product version cannot order. `0` for every other project, and ignored by every other camera. |
+| `reserved0` | `uint64` | Zero. Reserved beside the other wide fields so a future one lands here without moving the digest. |
 | `min_platform_version` | `uint32` | Minimum platform version the payload needs, encoded `(major<<24)\|(minor<<16)\|(patch<<8)\|build`. For a ROMFS app the platform is the OpenMV base firmware. `0` = no constraint. |
-| `payload_version` | `uint32` | The app's `app_version` (from `settings.json`), encoded `(major<<24)\|(minor<<16)\|(patch<<8)` so versions compare as plain integers. It is the **anti-rollback input**: the installer and `boot.py` reject an image below the device's recorded floor, and `confirm()` raises that floor to this value. It never *orders* the slots — the install counter does — which is what keeps reinstalling the same version legal. |
+| `payload_version` | `uint32` | The app's `app_version` (from `settings.json`), encoded `(major<<24)\|(minor<<16)\|(patch<<8)\|build` so versions compare as plain integers (the fourth component is optional and `0` when omitted). It is the **anti-rollback input** for a camera with a real `product_id`: the installer and `boot.py` reject an image below the device's recorded floor, and `confirm()` raises that floor to this value. It never *orders* the slots — the install counter does — which is what keeps reinstalling the same version legal. |
 | `key_id` | `uint32` | Which trusted key signed; a selector into the device's baked-in key table, not trust itself. |
 | `sig_alg` | `int32` | COSE algorithm id (negative — hence signed); authenticated, so the algorithm can't be downgraded. |
 | `body_sha256` | `32s` | SHA-256 of the `body_size` body bytes. Verifying the signature + recomputing this hash transitively authenticates the body. |
 
-The single signed (`int32`) field, `sig_alg`, sits just before the digest so the
-struct's lone `i` stays isolated at the end of the long `uint32` run.
+The struct is `<4sIIIIIQQQIIIi32s`. The three 64-bit fields sit together so each is
+naturally aligned and the metadata starts on a 16-byte boundary; the single signed
+(`int32`) field, `sig_alg`, stays immediately before the digest.
 
 ## JSON metadata
 
@@ -90,13 +94,15 @@ first.
   "product": "orchard-sentry",
   "board": "OPENMV_N6",
   "product_id": 5748986181262328784,
+  "account_id": "acct_7bd21c50e83a94f1",
+  "dev": false,
   "board_name": "OrchardSentry Pro",
   "app_version": "1.0.0",
   "vendor": "Acme Robotics",
   "ota": true,
-  "firmware": {"version": "5.0.0", "commit": "9f2c1ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"},
-  "micropython": "1.28.0",
-  "toolchain": {"mpy_cross": "1.28.0", "vela": "3.12.0", "stedgeai": "2.1.0", "sdk": "1.6.0"}
+  "firmware": {"version": "5.0.1", "commit": "9f2c1ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"},
+  "micropython": "1.29.0",
+  "toolchain": {"mpy_cross": "1.29.0", "vela": "5.0.0", "stedgeai": "2.1.0", "sdk": "1.6.0"}
 }
 ```
 
@@ -128,13 +134,14 @@ The body hash carried in the signed header is the hinge — you sign a small foo
 not the megabytes. On the device, `boot.py`:
 
 1. reads the header, checks `magic` and `header_version`, and recomputes the
-   signed region `data[0 : 80 + meta_size]` from the *authenticated* `meta_size`;
+   signed region `data[0 : 96 + meta_size]` from the *authenticated* `meta_size`;
 2. looks `key_id` up in its baked-in `TRUSTED_KEYS` (an absent/revoked id is
    rejected without verifying), and reads `sig_alg` for the curve + hash;
 3. verifies the signature over the signed region;
 4. recomputes SHA-256 of the body and compares it to `body_sha256`;
-5. enforces `product_id`, `min_platform_version`, and the anti-rollback rule against
-   each slot; it boots the newest one that passes.
+5. enforces `product_id`, `min_platform_version`, and the anti-rollback rule —
+   `payload_version` against the floor, or `publish_seq` on a `product_id = 0`
+   camera — against each slot; it boots the newest one that passes.
 
 The CRC is checked first as a cheap torn-write reject; it is not a trust check.
 The trusted public keys come only from the firmware's baked-in set — an embedded

@@ -124,20 +124,24 @@ separate, read-only **`system.json`** into every image at
   "product": "orchard-sentry",
   "board": "OPENMV_N6",
   "product_id": 5553380507785669254,
+  "account_id": "",
+  "dev": false,
   "board_name": "OrchardSentry Pro",
   "app_version": "1.0.0",
   "vendor": "Acme Robotics",
   "ota": false,
-  "firmware": {"version": "5.0.0", "commit": "9f2c1ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"},
-  "micropython": "1.28.0",
-  "toolchain": {"mpy_cross": "1.28.0", "vela": "3.12.0", "stedgeai": "2.1.0", "sdk": "1.6.0"}
+  "firmware": {"version": "5.0.1", "commit": "9f2c1ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"},
+  "micropython": "1.29.0",
+  "toolchain": {"mpy_cross": "1.29.0", "vela": "5.0.0", "stedgeai": "2.1.0", "sdk": "1.6.0"}
 }
 ```
 
 This gives the app **one consistent read path for system state in every build**
 — `json.load(open("/rom/system.json"))`. It is composed
 from the lock (firmware / MicroPython / toolchain provenance) and the config
-(per-board `product_id` / `board_name`). `system.json` is generated into the built image only —
+(per-board `product_id` / `board_name`, and `account_id` under `[product]` — the OTA
+account a camera reports to, empty here). `dev` is true only for an image signed
+with a throwaway `--dev` key ([Signing keys](05-signing-keys.md)). `system.json` is generated into the built image only —
 never into your `app/` source — so there is nothing to edit or accidentally commit.
 (The name is reserved; a `system.json` in your `app/` is overwritten.)
 
