@@ -13,7 +13,9 @@ A device patches against **the release it is running**, so a fleet mid-rollout i
 spread over several versions, and one delta reaches only the devices on its base. The
 deltas must be built **locally** — a delta is named in the *signed* manifest, and the
 server never holds signing keys. So the client asks and fetches, and the build stays
-local (`build` never talks to the server):
+local — `build` never talks to the server for this (the one thing a build does take from
+the server is a platform project's publish counter,
+[Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter)):
 
 ```
 $ openmv-ota client release bases --fleet -b OPENMV_N6 --product-id 5553380507785669254 -o build/bases

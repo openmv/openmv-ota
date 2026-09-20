@@ -17,7 +17,7 @@ hand-off; the raw calls are below for scripts in other languages.
 field's type (from the JSON the device wrote) and its latest value:
 
 ```
-$ openmv-ota client data topics --device-id cam-0f3a
+$ openmv-ota client data topics --device-id OPENMV_N6:30003d000851303436313832
 {
   "topics": [
     { "topic": "console", "objects": 812, "bytes": 96410, "records": 3120, "seq_max": 3120,
@@ -35,7 +35,7 @@ boot session, newest records last, and `next_before_seq` is the cursor for the p
 before it:
 
 ```
-$ openmv-ota client data logs --device-id cam-0f3a --topic console --limit 3
+$ openmv-ota client data logs --device-id OPENMV_N6:30003d000851303436313832 --topic console --limit 3
 {
   "sid": "3f9a1c",
   "records": [
@@ -45,7 +45,7 @@ $ openmv-ota client data logs --device-id cam-0f3a --topic console --limit 3
   ],
   "next_before_seq": 3118
 }
-$ openmv-ota client data logs --device-id cam-0f3a --topic console --before-seq 3118 --limit 3
+$ openmv-ota client data logs --device-id OPENMV_N6:30003d000851303436313832 --topic console --before-seq 3118 --limit 3
 ```
 
 A numeric field comes back downsampled, so a week of samples is at most `--buckets`
@@ -53,7 +53,7 @@ points, each with the bucket's `min`, `avg`, `max` and sample count `n`. The win
 defaults to the topic's whole span; `--since` / `--until` are epoch seconds:
 
 ```
-$ openmv-ota client data series --device-id cam-0f3a --topic telemetry --field temp_c \
+$ openmv-ota client data series --device-id OPENMV_N6:30003d000851303436313832 --topic telemetry --field temp_c \
       --since $(date -d '-1 day' +%s) --until $(date +%s) --buckets 4
 {
   "field": "temp_c", "since": 1789253120.0, "until": 1789339520.0, "truncated": false,
@@ -111,16 +111,16 @@ one device, and a device you don't own is a 404 like everything else:
 
 ```
 $ curl -s -X POST -H "Authorization: Bearer $OPENMV_OTA_TOKEN" \
-      https://ota.cloud.openmv.io/api/v1/admin/devices/cam-0f3a/viewer-grant
+      https://ota.cloud.openmv.io/api/v1/admin/devices/OPENMV_N6:30003d000851303436313832/viewer-grant
 {
   "token": "...",                       # the live relay's watch token
   "streams": { ... },
   "expires_in_s": 300,
   "datalake": {
     "token": "...",                     # THIS one opens the datalake
-    "topics_url": "https://data.cloud.openmv.io/api/v1/topics/cam-0f3a",
-    "logs_url":   "https://data.cloud.openmv.io/api/v1/logs/cam-0f3a",
-    "series_url": "https://data.cloud.openmv.io/api/v1/series/cam-0f3a",
+    "topics_url": "https://data.cloud.openmv.io/api/v1/topics/OPENMV_N6:30003d000851303436313832",
+    "logs_url":   "https://data.cloud.openmv.io/api/v1/logs/OPENMV_N6:30003d000851303436313832",
+    "series_url": "https://data.cloud.openmv.io/api/v1/series/OPENMV_N6:30003d000851303436313832",
     "expires_in_s": 300
   }
 }
@@ -129,12 +129,16 @@ $ curl -s -X POST -H "Authorization: Bearer $OPENMV_OTA_TOKEN" \
 A server with a datalake but no live relay answers the same way with an empty
 `token` and `streams`; only a server with neither configured refuses (503).
 
+For many devices at once, `POST .../admin/devices/viewer-grants` with
+`{"device_ids": [...]}` (up to 100) answers with the same grant per id under `grants`,
+and `null` for an id that is not yours.
+
 Then the read, under the datalake token, at the URL the grant named (`logs_url` and
 `series_url` take `/{topic}` on the end):
 
 ```
 $ curl -s -H "Authorization: Bearer $LAKE_TOKEN" \
-      "https://data.cloud.openmv.io/api/v1/series/cam-0f3a/telemetry?field=fps&buckets=50"
+      "https://data.cloud.openmv.io/api/v1/series/OPENMV_N6:30003d000851303436313832/telemetry?field=fps&buckets=50"
 ```
 
 A product's grant is `POST .../admin/products/{product_id}/viewer-grant`: its `datalake`

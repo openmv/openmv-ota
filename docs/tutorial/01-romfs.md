@@ -1,6 +1,6 @@
 # The ROMFS
 
-*[← Index](00-introduction.md) · [Index](00-introduction.md) · [2 · Projects →](02-projects.md)*
+*[Index](00-introduction.md) · [2 · Projects →](02-projects.md)*
 
 ---
 
@@ -165,4 +165,4 @@ write your own reader — that lives in
 
 ---
 
-*[← Index](00-introduction.md) · [Index](00-introduction.md) · [2 · Projects →](02-projects.md)*
+*[Index](00-introduction.md) · [2 · Projects →](02-projects.md)*

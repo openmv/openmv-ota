@@ -56,7 +56,7 @@ prints the exact commands for yours.
 | ARDUINO_PORTENTA_H7 | dfu (addr) | 2341:035b | 0x08040000 | 0x90B00000 | + CYW4343 wifi/bt blobs (collected by `build firmware`); 1200-baud touch-to-reset |
 | ARDUINO_GIGA | dfu (addr) | 2341:0366 | 0x08040000 | 0x90B00000 | + CYW4343 wifi/bt blobs (collected by `build firmware`); 1200-baud touch-to-reset |
 | ARDUINO_NICLA_VISION | dfu (addr) | 2341:035f | 0x08040000 | 0x90B00000 | + CYW4343 wifi/bt blobs (collected by `build firmware`); 1200-baud touch-to-reset |
-| OPENMV_RT1060 | imx | sdphost/blhost | 0x60040000 | 0x60800000 | SDP/flashloader sequence via the SDK's tools (`--sdk-home`); temporary until it gets the DFU bootloader |
+| OPENMV_RT1060 | imx | sdphost/blhost | 0x60040000 | 0x60800000 | SDP/flashloader sequence via the SDK's tools (`--sdk-home`) |
 
 On an alt-addressed board, each partition is one `dfu-util` call:
 
