@@ -340,3 +340,29 @@ def test_viewer_grants_asks_for_a_page_in_one_call():
     method, path, kw = c.calls[0]
     assert (method, path) == ("POST", "/api/v1/admin/devices/viewer-grants")
     assert kw["json"] == {"device_ids": ["dev1", "dev2"]}
+
+
+def test_account_directory_search_and_paging_are_query_parameters():
+    api, c = _api(_Resp(200, {"accounts": [], "total": 0}))
+    api.list_accounts(q="acme", limit=25, offset=50)
+    method, path, kw = c.calls[0]
+    assert (method, path) == ("GET", "/api/v1/admin/accounts")
+    assert kw["params"] == {"q": "acme", "limit": 25, "offset": 50}
+    api.list_accounts()
+    assert c.calls[1][2]["params"] == {}
+
+
+def test_device_lookup_is_the_root_read_by_fragment():
+    api, c = _api(_Resp(200, {"devices": [], "total": 0}))
+    api.lookup_devices("3d0008", limit=10)
+    method, path, kw = c.calls[0]
+    assert (method, path) == ("GET", "/api/v1/admin/devices/lookup")
+    assert kw["params"] == {"q": "3d0008", "limit": 10}
+
+
+def test_audit_names_an_account_or_every_account_for_the_root():
+    api, c = _api(_Resp(200, {"events": [], "total": 0}))
+    api.audit(account_id="acct_1")
+    assert c.calls[0][2]["params"] == {"since": 0, "account_id": "acct_1"}
+    api.audit(all_accounts=True)
+    assert c.calls[1][2]["params"] == {"since": 0, "all": "true"}

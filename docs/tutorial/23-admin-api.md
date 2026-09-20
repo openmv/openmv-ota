@@ -16,6 +16,15 @@ indistinguishable from "doesn't exist", so the API can't be used to probe other
 tenants. A token may further be limited to some of its account's products, in which
 case every read is filtered to them and everything else answers the same 404.
 
+The server's own root (`accounts.all`, which the bootstrap token carries) has two reads
+nobody else does, because "which account is this camera in" and "what happened across
+every tenant" are the operator's questions and no account credential may answer them:
+`GET /devices/lookup?q=` finds a device anywhere on the server by a fragment of its id
+or display name (`client device lookup --q`), and `/audit` takes `account_id=` for one
+account's log or `all=true` for every account's (`client audit --account-id`,
+`client audit --all`). An account credential sending either parameter reads its own
+log as it always did.
+
 ## The reference is the server itself
 
 The endpoint-by-endpoint reference deliberately does not live in this tutorial, where

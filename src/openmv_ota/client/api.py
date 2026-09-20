@@ -261,8 +261,15 @@ class Api:
             body["client_ref"] = client_ref
         return self._req("POST", "/api/v1/admin/accounts", json=body)
 
-    def list_accounts(self):
-        return self._req("GET", "/api/v1/admin/accounts")
+    def list_accounts(self, q: str | None = None, limit=None, offset=None):
+        params = {"q": q} if q else {}
+        return self._req("GET", "/api/v1/admin/accounts",
+                         params=self._page(params, limit, offset, None, None))
+
+    def lookup_devices(self, q: str, limit=None, offset=None):
+        """(server root) a camera anywhere on the server, by a fragment of its id or name."""
+        return self._req("GET", "/api/v1/admin/devices/lookup",
+                         params=self._page({"q": q}, limit, offset, None, None))
 
     def rename_account(self, account_id, name):
         return self._req("PATCH", "/api/v1/admin/accounts/%s" % account_id, json={"name": name})
@@ -440,10 +447,15 @@ class Api:
         return self._req("GET", "/api/v1/admin/releases/%s" % release_id)
 
     def audit(self, since: int = 0, entity_id: str | None = None, limit=None, offset=None,
-              sort=None, direction=None, action_not=None, action=None):
+              sort=None, direction=None, action_not=None, action=None,
+              account_id: str | None = None, all_accounts: bool = False):
         params = {"since": since}
         if entity_id is not None:
             params["entity_id"] = entity_id
+        if account_id is not None:                 # (server root) one account's log
+            params["account_id"] = account_id
+        if all_accounts:                            # (server root) every account's log
+            params["all"] = "true"
         if action is not None:
             params["action"] = action
         if action_not is not None:

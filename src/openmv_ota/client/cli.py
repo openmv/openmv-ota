@@ -317,6 +317,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     _list_flags(p_dvl, "seen, device, product, version, cohort, first_seen")
     _creds(p_dvl)
     p_dvl.set_defaults(func=cmd_devices, _command="client device list")
+    p_dvl = dsub.add_parser("lookup", help="(server root) find a device across every account")
+    p_dvl.add_argument("--q", required=True, metavar="TEXT",
+                       help="a fragment of the device id or display name")
+    p_dvl.add_argument("--limit", type=int, metavar="N", help="page size (default 50)")
+    p_dvl.add_argument("--offset", type=int, default=0, metavar="N", help="page start")
+    _creds(p_dvl)
+    p_dvl.set_defaults(func=cmd_device_lookup, _command="client device lookup")
     p_dvs = dsub.add_parser("show", help="one device (JSON)")
     p_dvs.add_argument("--device-id", required=True, metavar="DEVICE_ID",
                        help="the device to read")
@@ -396,7 +403,11 @@ def register(parser: argparse.ArgumentParser) -> None:
                             "the same ref returns the account you already made")
     _creds(p_acc)
     p_acc.set_defaults(func=cmd_account, _command="client account create", action="create")
-    p_acl = acsub.add_parser("list", help="list accounts")
+    p_acl = acsub.add_parser("list", help="list accounts (with device/release counts)")
+    p_acl.add_argument("--q", metavar="TEXT", help="only accounts whose name, id or client "
+                                                    "reference contains TEXT")
+    p_acl.add_argument("--limit", type=int, metavar="N", help="page size (default: all)")
+    p_acl.add_argument("--offset", type=int, default=0, metavar="N", help="page start")
     _creds(p_acl)
     p_acl.set_defaults(func=cmd_account, _command="client account list", action="list")
     p_acl2 = acsub.add_parser("limit", help="set an account's device entitlement (operator)")
@@ -500,6 +511,10 @@ def register(parser: argparse.ArgumentParser) -> None:
                       help="hide one action (e.g. advisory.scan)")
     p_au.add_argument("--since", type=int, default=0, metavar="SEQ",
                       help="only events after this sequence number (a cursor, not an offset)")
+    g = p_au.add_mutually_exclusive_group()
+    g.add_argument("--account-id", metavar="ACCOUNT_ID",
+                   help="(server root only) one account's log instead of your own")
+    g.add_argument("--all", action="store_true", help="(server root only) every account's log")
     _creds(p_au)
     p_au.set_defaults(func=cmd_audit, _command="client audit")
 
@@ -967,7 +982,8 @@ def cmd_account(args: argparse.Namespace) -> int:
             res = api.activate_account(args.account_id)
             return _emit(args, res, "account %s activated" % args.account_id)
         else:
-            print(json.dumps(api.list_accounts(), indent=2))
+            print(json.dumps(api.list_accounts(q=args.q, limit=args.limit,
+                                               offset=args.offset or None), indent=2))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -1013,6 +1029,11 @@ def cmd_release_show(args: argparse.Namespace) -> int:
 
 def cmd_device_show(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.device(args.device_id))
+
+
+def cmd_device_lookup(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.lookup_devices(args.q, limit=args.limit,
+                                                      offset=args.offset or None))
 
 
 def cmd_device_grant(args: argparse.Namespace) -> int:
@@ -1214,4 +1235,6 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.audit(args.since, entity_id=args.entity_id,
                                              limit=args.limit, offset=args.offset,
                                              sort=args.sort, direction=args.dir,
-                                             action_not=args.action_not, action=args.action))
+                                             action_not=args.action_not, action=args.action,
+                                             account_id=args.account_id,
+                                             all_accounts=args.all))

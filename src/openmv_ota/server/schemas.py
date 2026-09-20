@@ -41,6 +41,11 @@ class Account(_Row):
     created_at: str = ""
     active: int = 1
     device_limit: int | None = None
+    client_ref: str | None = None
+    devices: int = 0                 # registered devices
+    releases: int = 0
+    active_rollouts: int = 0
+    last_seen: str | None = None     # the newest device check-in, or None
     """Max registered devices (an entitlement set by the operator); null = unlimited."""
 
 
@@ -234,6 +239,7 @@ class AccountLimited(BaseModel):
 
 class AccountList(BaseModel):
     accounts: list[Account]
+    total: int                       # what the filter matched, not the page
 
 
 class TokenList(BaseModel):

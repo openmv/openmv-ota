@@ -1420,3 +1420,27 @@ def test_a_base_that_is_not_a_whole_artifact_is_refused_before_it_is_written():
     rel = {"release_id": "rel_x", "representations": [{"format": "full", "enc": enc}]}
     with pytest.raises(client_cli.ClientError, match="does not decrypt with this project"):
         dec(ciphertext[:-1], rel)
+
+
+def test_account_directory_search_and_root_reads(tmp_path, monkeypatch, capsys):
+    """The console's three reads: a searchable, paged account directory with counts;
+    a device found anywhere on the server by a fragment; another account's audit."""
+    import json
+    store = _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts.all", "observe"))
+    assert main(["client", "account", "create", "--name", "DroneCo"]) == 0
+    assert main(["client", "account", "create", "--name", "Acme"]) == 0
+    capsys.readouterr()
+    assert main(["client", "account", "list", "--q", "drone", "--limit", "10", "--offset", "0"]) == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["total"] == 1 and body["accounts"][0]["name"] == "DroneCo"
+    assert body["accounts"][0]["devices"] == 0
+    acct = body["accounts"][0]["account_id"]
+    store.upsert_device(device_id="OPENMV_N6:30003d0008", product_id=7, board="OPENMV_N6",
+                        account_id=acct)
+    assert main(["client", "device", "lookup", "--q", "3d0008", "--limit", "5"]) == 0
+    found = json.loads(capsys.readouterr().out)
+    assert found["total"] == 1 and found["devices"][0]["account_id"] == acct
+    assert main(["client", "audit", "--account-id", acct]) == 0
+    assert json.loads(capsys.readouterr().out)["total"] >= 0
+    assert main(["client", "audit", "--all", "--action", "account.create"]) == 0
+    assert json.loads(capsys.readouterr().out)["total"] == 2

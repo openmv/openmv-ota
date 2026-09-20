@@ -234,6 +234,8 @@ def create_account(body: AccountCreate, request: Request,
 
 @admin.get("/accounts", responses={200: {"model": AccountList}})
 def list_accounts(request: Request,
+                  q: str | None = Query(None, description="name, id or client_ref contains"),
+                  limit: int = Query(_MAX_PAGE, ge=1, le=_MAX_PAGE), offset: int = 0,
                   principal: Principal = Depends(require_scope("accounts"))):
     """The operator's account directory. Operator scope, not an account credential:
     a normal account token can neither list accounts nor see another one exists.
@@ -241,8 +243,31 @@ def list_accounts(request: Request,
     An `accounts` credential sees the accounts IT provisioned. Only `accounts.all` -- the
     server's own root -- sees every account on the server. Without that split, handing a
     partner the ability to create customers also hands them the customer list of everyone
-    else on the server."""
-    return {"accounts": request.app.state.metastore.list_accounts(created_by=_owner(principal))}
+    else on the server.
+
+    Each row carries what a directory shows beside a name: registered devices, releases,
+    active rollouts and the newest check-in. `q` searches, `limit`/`offset` page, and
+    `total` counts what `q` matched."""
+    ms = request.app.state.metastore
+    owner = _owner(principal)
+    rows = ms.list_accounts(created_by=owner, q=q, limit=limit, offset=offset)
+    counts = ms.account_counts(r["account_id"] for r in rows)
+    for r in rows:
+        r.update(counts.get(r["account_id"], {}))
+    return {"accounts": rows, "total": ms.count_accounts(created_by=owner, q=q)}
+
+
+@admin.get("/devices/lookup", responses={200: {"model": DeviceList}})
+def lookup_devices(request: Request, q: str = Query(..., min_length=2, max_length=128),
+                   limit: int = Query(50, ge=1, le=_MAX_PAGE), offset: int = 0,
+                   principal: Principal = Depends(require_scope(ACCOUNT_ROOT))):
+    """Find a camera across EVERY account, by a fragment of its id or its display name.
+    The server's root only: "which account is this device in" is the first question a
+    support request asks, and no account credential can answer it about a device that is
+    not its own (that answers 404, as it should)."""
+    ms = request.app.state.metastore
+    return {"devices": _with_fallback_version(ms.list_devices(q=q, limit=limit, offset=offset)),
+            "total": ms.count_devices(q=q)}
 
 
 class AccountPatch(BaseModel):
@@ -1416,6 +1441,9 @@ def audit(request: Request, since: int = 0,
           action: str | None = Query(None, description="only this action, e.g. device.refused"),
           action_not: str | None = Query(None, description="hide one action, e.g. advisory.scan"),
           sort: str | None = _sort_q("when, action, actor, entity"), dir: str = _DIR_Q,
+          account_id: str | None = Query(None, description="(server root only) one account's log"),
+          all_accounts: bool = Query(False, alias="all",
+                                     description="(server root only) every account's log"),
           principal: Principal = Depends(require_scope("observe"))):
     """The append-only record. ``entity_id`` narrows it to one release, rollout,
     or device -- a dashboard's per-entity history. ``newest`` returns the most
@@ -1430,9 +1458,15 @@ def audit(request: Request, since: int = 0,
     # limited one -- deliberately not the empty list for the unlimited case, where empty
     # would mean "allowed nothing".
     products = principal.scoped()
-    return {"events": ms.read_audit(limit, since, account_id=principal.account_id,
+    scope = principal.account_id
+    if ACCOUNT_ROOT in principal.scopes:
+        # The server's root reads any account's log by naming it, or every account's at
+        # once with `all` -- the operator's console, and no one else's: an account
+        # credential's `account_id` is its own, whatever it puts in the query.
+        scope = None if all_accounts else (account_id or principal.account_id or None)
+    return {"events": ms.read_audit(limit, since, account_id=scope,
                                     entity_id=entity_id, newest=newest, sort=sort,
                                     direction=dir, offset=offset, action_not=action_not,
                                     action=action, products=products),
-            "total": ms.count_audit(since, principal.account_id, entity_id, action_not, action,
+            "total": ms.count_audit(since, scope, entity_id, action_not, action,
                                     products=products)}

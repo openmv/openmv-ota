@@ -1536,16 +1536,59 @@ class SqlMetadataStore:
     def get_account(self, account_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM accounts WHERE account_id = ?", (account_id,)))
 
-    def list_accounts(self, created_by: str | None = None) -> list[dict]:
+    @staticmethod
+    def _accounts_where(created_by, q) -> tuple[str, list]:
+        conds, params = [], []
+        if created_by is not None:
+            conds.append("created_by = ?")
+            params.append(created_by)
+        if q:
+            conds.append("(LOWER(name) LIKE ? OR account_id LIKE ? OR client_ref LIKE ?)")
+            params += ["%" + q.lower() + "%", "%" + q + "%", "%" + q + "%"]
+        return (" WHERE " + " AND ".join(conds)) if conds else "", params
+
+    def list_accounts(self, created_by: str | None = None, q: str | None = None,
+                      limit: int | None = None, offset: int = 0) -> list[dict]:
         """Every account, or only the ones ``created_by`` this operator credential.
 
         None is the server operator's view. A string is a tenant-of-a-tenant view: a
         platform reselling this service sees the customers it provisioned and not that
-        anyone else exists."""
-        if created_by is None:
-            return [_d(r) for r in self.query_all("SELECT * FROM accounts ORDER BY created_at")]
-        return [_d(r) for r in self.query_all(
-            "SELECT * FROM accounts WHERE created_by = ? ORDER BY created_at", (created_by,))]
+        anyone else exists. ``q`` matches the name, the id or the client reference;
+        ``limit``/``offset`` page (no limit = all of them, the CLI's whole listing)."""
+        where, params = self._accounts_where(created_by, q)
+        sql = "SELECT * FROM accounts" + where + " ORDER BY created_at, account_id"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params += [limit, offset]
+        return [_d(r) for r in self.query_all(sql, tuple(params))]
+
+    def count_accounts(self, created_by: str | None = None, q: str | None = None) -> int:
+        where, params = self._accounts_where(created_by, q)
+        return self.query_one("SELECT COUNT(*) AS n FROM accounts" + where, tuple(params))["n"]
+
+    def account_counts(self, account_ids) -> dict:
+        """``{account_id: {devices, releases, active_rollouts, last_seen}}`` -- the numbers
+        an operator's directory shows beside each account, in four grouped reads rather
+        than four per row."""
+        ids = [a for a in account_ids]
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        out = {a: {"devices": 0, "releases": 0, "active_rollouts": 0, "last_seen": None}
+               for a in ids}
+        for r in self.query_all("SELECT account_id, COUNT(*) AS n, MAX(last_seen) AS seen "
+                                "FROM devices WHERE account_id IN (%s) GROUP BY account_id"
+                                % marks, tuple(ids)):
+            out[r["account_id"]].update(devices=r["n"], last_seen=r["seen"])
+        for r in self.query_all("SELECT account_id, COUNT(*) AS n FROM releases "
+                                "WHERE account_id IN (%s) GROUP BY account_id" % marks,
+                                tuple(ids)):
+            out[r["account_id"]]["releases"] = r["n"]
+        for r in self.query_all("SELECT account_id, COUNT(*) AS n FROM rollouts WHERE "
+                                "state = 'active' AND account_id IN (%s) GROUP BY account_id"
+                                % marks, tuple(ids)):
+            out[r["account_id"]]["active_rollouts"] = r["n"]
+        return out
 
     def account_name_exists(self, name: str, except_id: str | None = None,
                             created_by: str | None = None) -> bool:

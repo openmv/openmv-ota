@@ -169,6 +169,12 @@ One camera by id, same row shape:
 openmv-ota client device show --device-id OPENMV_N6:30003d000851303436313832
 ```
 
+A device that is *not* yours answers 404 to that, like everything else. The one
+credential that can find a camera without knowing whose it is, is the server's own root
+([The admin API](23-admin-api.md)): `client device lookup --q 3d0008` searches every
+account by a fragment of the id or the display name, and each row names its
+`account_id`.
+
 ## The publish history
 
 `client release list` lists what has been published, newest first — the release rows every

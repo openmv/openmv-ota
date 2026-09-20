@@ -30,7 +30,8 @@ def _app(tmp_path):
     store.migrate()
     store.set_meta("capability_secret", "x")
     # the server's own root, and two platforms that resell it
-    store.add_token(hash_token("root"), "openmv", ["accounts.all"])
+    # the bootstrap token's shape: the root scope plus the read scope it serves the console with
+    store.add_token(hash_token("root"), "openmv", ["accounts.all", "observe"])
     store.add_token(hash_token("rf"), "acme-platform", ["accounts"])
     store.add_token(hash_token("other"), "someone-else", ["accounts"])
     app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
@@ -256,3 +257,109 @@ def test_a_camera_that_comes_back_enrols_as_a_new_device(tmp_path):
     store.bind_device_account("OPENMV_N6:dd", "a2", source="learned")
     assert store.device_account("OPENMV_N6:dd")["account_id"] == "a2"
     assert store.device_account("OPENMV_N6:dd")["source"] == "learned"
+
+
+# --- the operator's directory, and the two reads only the server's root has --------------
+
+def test_the_account_directory_searches_pages_and_counts(tmp_path):
+    """An operator's console lists accounts with what a directory shows beside a name --
+    devices, releases, active rollouts, the newest check-in -- searches by name, id or
+    client reference, and pages with a `total` that counts the match, not the page."""
+    c, store = _app(tmp_path)
+    ids = [c.post("/api/v1/admin/accounts", headers=RF,
+                  json={"name": n, "client_ref": r}).json()["account_id"]
+           for n, r in (("Acme", "cust_1"), ("Globex", "cust_2"), ("Initech", "cust_3"))]
+    store.upsert_device(device_id="OPENMV_N6:a", product_id=7, board="OPENMV_N6",
+                        account_id=ids[0])
+    store.upsert_device(device_id="OPENMV_N6:b", product_id=7, board="OPENMV_N6",
+                        account_id=ids[0])
+    store.add_release(release_id="rel1", product_id=7, product="P", version="1.0.0",
+                      payload_version=0x01000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[], manifest_key="m", image_key="i",
+                      account_id=ids[0])
+    store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=7, cohort="__default__",
+                      percent=5, account_id=ids[0])
+    body = c.get("/api/v1/admin/accounts", headers=RF).json()
+    assert body["total"] == 3
+    acme = next(a for a in body["accounts"] if a["account_id"] == ids[0])
+    assert (acme["devices"], acme["releases"], acme["active_rollouts"]) == (2, 1, 1)
+    assert acme["last_seen"] is not None and acme["client_ref"] == "cust_1"
+    globex = next(a for a in body["accounts"] if a["account_id"] == ids[1])
+    assert (globex["devices"], globex["releases"], globex["last_seen"]) == (0, 0, None)
+    # search: name (any case), id, client reference
+    for q in ("acm", "ACME", ids[0][-6:], "cust_1"):
+        found = c.get("/api/v1/admin/accounts", headers=RF, params={"q": q}).json()
+        assert found["total"] == 1 and found["accounts"][0]["account_id"] == ids[0], q
+    assert c.get("/api/v1/admin/accounts", headers=RF, params={"q": "zzz"}).json() == \
+        {"accounts": [], "total": 0}
+    # paging keeps the total
+    page = c.get("/api/v1/admin/accounts", headers=RF, params={"limit": 2, "offset": 2}).json()
+    assert page["total"] == 3 and [a["account_id"] for a in page["accounts"]] == [ids[2]]
+    # another operator's search finds nothing of these
+    assert c.get("/api/v1/admin/accounts", headers=OTHER, params={"q": "acme"}).json()["total"] == 0
+    # the CLI's full listing (no limit) still works for a platform with no page in mind
+    assert len(c.get("/api/v1/admin/accounts", headers=ROOT).json()["accounts"]) == 3
+
+
+def test_only_the_root_can_find_a_device_across_accounts(tmp_path):
+    """"Which account is this camera in" is the first question a support request asks.
+    The server's root answers it by a fragment of the id or the name; an operator or
+    account credential cannot (the read does not exist for them, and their own device
+    reads still answer 404 for a camera that is not theirs)."""
+    c, store = _app(tmp_path)
+    a = c.post("/api/v1/admin/accounts", headers=RF, json={"name": "Acme"}).json()
+    b = c.post("/api/v1/admin/accounts", headers=OTHER, json={"name": "Globex"}).json()
+    store.upsert_device(device_id="OPENMV_N6:30003d0008", product_id=7, board="OPENMV_N6",
+                        account_id=a["account_id"])
+    store.upsert_device(device_id="OPENMV_N6:ffff0000aa", product_id=7, board="OPENMV_N6",
+                        account_id=b["account_id"])
+    store.set_device_name("OPENMV_N6:ffff0000aa", "Loading dock")
+    found = c.get("/api/v1/admin/devices/lookup", headers=ROOT, params={"q": "3d0008"}).json()
+    assert found["total"] == 1
+    assert found["devices"][0]["device_id"] == "OPENMV_N6:30003d0008"
+    assert found["devices"][0]["account_id"] == a["account_id"]
+    by_name = c.get("/api/v1/admin/devices/lookup", headers=ROOT, params={"q": "dock"}).json()
+    assert [d["device_id"] for d in by_name["devices"]] == ["OPENMV_N6:ffff0000aa"]
+    both = c.get("/api/v1/admin/devices/lookup", headers=ROOT, params={"q": "OPENMV_N6"}).json()
+    assert both["total"] == 2
+    assert c.get("/api/v1/admin/devices/lookup", headers=ROOT,
+                 params={"q": "OPENMV_N6", "limit": 1}).json()["total"] == 2
+    # too short to be a search, and not for anyone below root
+    assert c.get("/api/v1/admin/devices/lookup", headers=ROOT, params={"q": "3"}).status_code == 422
+    assert c.get("/api/v1/admin/devices/lookup", headers=RF, params={"q": "3d0008"}).status_code == 403
+    acct = c.post("/api/v1/admin/accounts/%s/tokens" % a["account_id"], headers=RF,
+                  json={"name": "ci", "scopes": ["observe"]}).json()["token"]
+    assert c.get("/api/v1/admin/devices/lookup", headers={"Authorization": "Bearer " + acct},
+                 params={"q": "3d0008"}).status_code == 403
+
+
+def test_the_root_reads_any_accounts_audit_and_everyone_elses_stays_their_own(tmp_path):
+    c, store = _app(tmp_path)
+    a = c.post("/api/v1/admin/accounts", headers=RF, json={"name": "Acme"}).json()
+    b = c.post("/api/v1/admin/accounts", headers=OTHER, json={"name": "Globex"}).json()
+    ta = c.post("/api/v1/admin/accounts/%s/tokens" % a["account_id"], headers=RF,
+                json={"name": "ci", "scopes": ["manage"]}).json()["token"]
+    # one action in each account, under its own credential
+    c.post("/api/v1/admin/cohorts/create", headers={"Authorization": "Bearer " + ta},
+           json={"cohort": "beta"})
+    tb = c.post("/api/v1/admin/accounts/%s/tokens" % b["account_id"], headers=OTHER,
+                json={"name": "ci", "scopes": ["manage"]}).json()["token"]
+    c.post("/api/v1/admin/cohorts/create", headers={"Authorization": "Bearer " + tb},
+           json={"cohort": "canary"})
+    own = c.get("/api/v1/admin/audit", headers={"Authorization": "Bearer " + ta},
+                params={"action": "cohort.create"}).json()
+    assert own["total"] == 1 and own["events"][0]["account_id"] == a["account_id"]
+    # an account credential naming another account is ignored: it reads its own log
+    theirs = c.get("/api/v1/admin/audit", headers={"Authorization": "Bearer " + ta},
+                   params={"action": "cohort.create", "account_id": b["account_id"]}).json()
+    assert theirs["total"] == 1 and theirs["events"][0]["account_id"] == a["account_id"]
+    assert c.get("/api/v1/admin/audit", headers={"Authorization": "Bearer " + ta},
+                 params={"action": "cohort.create", "all": "true"}).json()["total"] == 1
+    # the root names an account, or asks for every one
+    one = c.get("/api/v1/admin/audit", headers=ROOT,
+                params={"action": "cohort.create", "account_id": b["account_id"]}).json()
+    assert one["total"] == 1 and one["events"][0]["account_id"] == b["account_id"]
+    every = c.get("/api/v1/admin/audit", headers=ROOT,
+                  params={"action": "cohort.create", "all": "true"}).json()
+    assert every["total"] == 2
+    assert {e["account_id"] for e in every["events"]} == {a["account_id"], b["account_id"]}
