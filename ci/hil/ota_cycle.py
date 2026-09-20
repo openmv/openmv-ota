@@ -2967,6 +2967,18 @@ def main():
                 log("  [uart] " + ln.rstrip())
             if not tail:
                 log("  [uart] (nothing captured -- board silent, or the marker UART is misconfigured)")
+        # AND WHAT THE SERVER SAID. The per-run server's stdout/stderr go to server.log in a
+        # temp dir that stop() deletes a moment from now, so a `POST ... -> 500` in the harness
+        # log used to be all there was: two legs failed that way with the traceback already gone.
+        if srv is not None:
+            try:
+                with open(os.path.join(srv["dir"], "server.log"), errors="replace") as fh:
+                    slog = [ln for ln in fh.read().splitlines()[-60:] if ln.strip()]
+            except OSError:
+                slog = []
+            log("---- bench server tail (%d lines) ----" % len(slog))
+            for ln in slog:
+                log("  [srv] " + ln.rstrip())
     finally:
         if cap is not None:
             cap.stop()
