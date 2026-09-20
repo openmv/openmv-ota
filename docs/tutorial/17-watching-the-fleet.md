@@ -129,7 +129,7 @@ $ openmv-ota client device list --cohort beta --limit 1
 {
   "devices": [
     {
-      "device_id": "30003d000851303436313832",
+      "device_id": "OPENMV_N6:30003d000851303436313832",
       "product_id": 5553380507785669254,
       "board": "OPENMV_N6",
       "cohort": "beta",
@@ -162,7 +162,7 @@ counts the whole scoped fleet so a full page is distinguishable from a complete 
 One camera by id, same row shape:
 
 ```
-openmv-ota client device show --device-id 30003d000851303436313832
+openmv-ota client device show --device-id OPENMV_N6:30003d000851303436313832
 ```
 
 ## The publish history
@@ -214,7 +214,13 @@ $ openmv-ota client release show --release-id rel_4f9c2a81d06b73ee     # the sam
 
 $ openmv-ota client release sbom --release-id rel_4f9c2a81d06b73ee -o sbom.cdx.json
 saved sbom.cdx.json (48213 bytes)
+
+$ openmv-ota client release manifest --release-id rel_4f9c2a81d06b73ee -o manifest.bin
 ```
+
+`release manifest` hands back the signed manifest the server serves to devices for that
+release, byte for byte — what to `build inspect`, diff against a build, or hand to
+`install()` from a file on a device you are debugging.
 
 `release sbom` hands back the CycloneDX SBOM exactly as publish uploaded it — pipe it
 to a scanner (no `-o` writes it to stdout) to answer "does the release the fleet runs
@@ -297,7 +303,9 @@ tok=$(openmv-ota client token issue --account-id "$acct" --name ci --json | jq -
 
 Verbatim matters most for the one-time secrets (`account create`, `token issue`,
 `token rotate`): the token exists in exactly that one response, and a script that can't
-capture it has to mint another. `publish --percent` is two API calls, so its JSON nests
+capture it has to mint another. A script that creates accounts should also pass
+`--client-ref` with its own id for the account, so a retry after a timeout gets the
+account it already made back rather than making a second one. `publish --percent` is two API calls, so its JSON nests
 the rollout under `rollout` and leaves the release fields where a plain `publish` puts
 them — no special case for parsers.
 

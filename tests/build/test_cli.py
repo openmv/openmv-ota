@@ -155,7 +155,7 @@ def _make_image_files(tmp_path):
               "firmware": {"version": "5.0.0", "commit": "abc123def456"}, "micropython": "1.28.0",
               "toolchain": {"mpy_cross": "1.28.0", "vela": None, "stedgeai": None, "sdk": "1.6.0"}},
         product_id=7, min_platform_version=(5 << 24), payload_version=encode_app_version("1.2.3"),
-        key_id=0x0100, sig_alg=ES256,
+        publish_seq=4242, key_id=0x0100, sig_alg=ES256,
         body_sha256=hashlib.sha256(body).digest())
     t.signature = sign_region(priv, signed_region(t), spec)
     romfs = tmp_path / "x.romfs"
@@ -172,6 +172,7 @@ def test_build_inspect(tmp_path, capsys):
     assert main(["build", "inspect", str(trailer)]) == 0
     out = capsys.readouterr().out
     assert "app_version" in out and "1.2.3" in out and "ES256" in out and "provenance" in out
+    assert "publish_seq:    4242" in out            # the counter a platform's cameras order by
 
 
 def test_build_inspect_json(tmp_path, capsys):
@@ -180,6 +181,7 @@ def test_build_inspect_json(tmp_path, capsys):
     assert main(["build", "inspect", str(trailer), "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["product_id"] == 7 and data["sig_alg"] == "ES256" and data["app_version"] == "1.2.3"
+    assert data["publish_seq"] == 4242
 
 
 def test_build_inspect_bad_trailer(tmp_path, capsys):

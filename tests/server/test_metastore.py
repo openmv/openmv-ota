@@ -182,17 +182,21 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         M._MIGRATIONS = full[:20]
         old = M.SqliteMetadataStore(db)
         assert old.migrate() == 20
-        old.upsert_device(device_id="3c0021000c51", product_id=7, board="OPENMV_N6",
-                          account_id="acct")
+        # Seeded with the v20 table's own columns, not through upsert_device: the live
+        # writer names every column the CURRENT schema has, and this database is old
+        # on purpose.
+        for did, board in (("3c0021000c51", "OPENMV_N6"), ("noboard", None)):
+            old.execute("INSERT INTO devices (device_id, product_id, board, first_seen, "
+                        "last_seen) VALUES (?,?,?,?,?)",
+                        (did, 7, board, "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"))
         old.bind_device_account("3c0021000c51", "acct", source="learned")
         old.record_deployment(device_id="3c0021000c51", release_id="rel_1", product_id=7,
                               status="installed", reason=None)
-        old.upsert_device(device_id="noboard", product_id=7, board=None, account_id="acct")
     finally:
         M._MIGRATIONS = full
 
     store = M.SqliteMetadataStore(db)
-    assert store.migrate() == 26                           # the deploy applies 21 onward
+    assert store.migrate() == 28                           # the deploy applies 21 onward
     assert sorted(d["device_id"] for d in store.list_devices()) == [
         "OPENMV_N6:3c0021000c51", "noboard"]               # board-less rows are left alone
     assert store.device_account("OPENMV_N6:3c0021000c51")["account_id"] == "acct"
@@ -200,7 +204,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         "OPENMV_N6:3c0021000c51"
     store.add_token("h", "t", ["observe"], account_id="acct", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert M.SqliteMetadataStore(db).migrate() == 26        # idempotent
+    assert M.SqliteMetadataStore(db).migrate() == 28        # idempotent
 
 
 def test_parameterless_sql_is_executed_without_a_parameter_sequence():
@@ -453,7 +457,41 @@ def test_migrations_survive_postgres_transaction_semantics(tmp_path):
         M._MIGRATIONS = full
 
     store = _PostgresManners(db)
-    assert store.migrate() == 26             # walks past the orphaned column
+    assert store.migrate() == 28             # walks past the orphaned column
     store.add_token("h", "t", ["observe"], account_id="a", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert _PostgresManners(db).migrate() == 26        # and is idempotent
+    assert _PostgresManners(db).migrate() == 28        # and is idempotent
+
+
+def test_two_first_checkins_of_one_new_device_do_not_collide(tmp_path):
+    """upsert_device is one statement: the store's lock covers a statement, not a handler, so
+    a select-then-insert let two first check-ins of the same new device (a retry racing what
+    it retried) both see no row -- the second INSERT then died on the primary key, a 500 to
+    the camera. Hammered from threads, the atomic form never raises and ends with one row."""
+    import threading
+
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    errors = []
+
+    def hit(n):
+        try:
+            for _ in range(50):
+                store.upsert_device(device_id="OPENMV_N6:new", product_id=7, board="OPENMV_N6",
+                                    current_version="1.0.0", streams=["console"] if n else None,
+                                    body_sha256="ab" * 32 if n else None)
+        except Exception as e:                     # pragma: no cover - the failure being guarded
+            errors.append(e)
+
+    threads = [threading.Thread(target=hit, args=(i,)) for i in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert errors == []
+    rows = store.list_devices(product_id=7)
+    assert len(rows) == 1
+    dev = store.get_device("OPENMV_N6:new")
+    assert dev["streams"] == "console"                 # COALESCE kept the last real value
+    assert dev["body_sha256"] == "ab" * 32
+    assert dev["first_seen"] <= dev["last_seen"]

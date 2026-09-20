@@ -30,7 +30,7 @@ Use as many or as few names as you like — a fleet can live its whole life in
 `__default__`; cohorts only exist to stage updates to a subset:
 
 ```
-$ openmv-ota client cohort assign --cohort beta --device-id 30003d000851303436313832
+$ openmv-ota client cohort assign --cohort beta --device-id OPENMV_N6:30003d000851303436313832
 assigned 1/1 device(s) to cohort beta
 
 $ openmv-ota client cohort list
@@ -228,8 +228,8 @@ A pin overrides rollouts for one device or one whole cohort — "this camera run
 this release":
 
 ```
-openmv-ota client device pin --device-id 30003d000851303436313832 --release-id rel_4f9c2a81d06b73ee
-openmv-ota client device pin --device-id 30003d000851303436313832 --clear
+openmv-ota client device pin --device-id OPENMV_N6:30003d000851303436313832 --release-id rel_4f9c2a81d06b73ee
+openmv-ota client device pin --device-id OPENMV_N6:30003d000851303436313832 --clear
 openmv-ota client cohort pin --product-id 5553380507785669254 --cohort beta --release-id rel_4f9c2a81d06b73ee
 ```
 
@@ -245,6 +245,10 @@ keep following their own rollouts until you pin them too, with the RT release. (
 work the same way — targeting is always the `(product, cohort)` pair.) A device pin
 needs no product: the device id alone is unique.
 
+A device pin also needs no *device*. It is recorded against the id, so you can pin one
+that has never checked in — hardware that has shipped but not been powered on — and the
+pin is waiting on its first check-in rather than on the one after the fleet row appears.
+
 ## Naming devices
 
 A device's identity is its hardware id, but a fleet of 40 hex strings is unreadable on a
@@ -252,10 +256,10 @@ dashboard. `device rename` sets an operator-facing **display name** — a pure l
 (`display_name` in every device row; it never affects lookups, offers, or identity):
 
 ```
-$ openmv-ota client device rename --device-id 30003d000851303436313832 --name "Loading dock east"
-device 30003d000851303436313832 named 'Loading dock east'
-$ openmv-ota client device rename --device-id 30003d000851303436313832 --clear
-device 30003d000851303436313832 name cleared
+$ openmv-ota client device rename --device-id OPENMV_N6:30003d000851303436313832 --name "Loading dock east"
+device OPENMV_N6:30003d000851303436313832 named 'Loading dock east'
+$ openmv-ota client device rename --device-id OPENMV_N6:30003d000851303436313832 --clear
+device OPENMV_N6:30003d000851303436313832 name cleared
 ```
 
 ## Naming releases and rollouts

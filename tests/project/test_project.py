@@ -900,3 +900,152 @@ def test_create_ota_refuses_firmware_missing_ranged_erase(tmp_path, make_firmwar
     (repo / "lib" / "micropython" / "extmod" / "vfs.h").write_text(_NO_SENTINEL)
     with pytest.raises(ProjectError, match="ranged romfs erase"):
         _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True)
+
+
+# --- shared trust material (--keys-from) ------------------------------------
+
+def _keyset(root):
+    """What a camera's firmware ends up trusting: the public set + the private material."""
+    paths = proj.ProjectPaths(root)
+    return (paths.trusted_keys.read_bytes(),
+            sorted((p.name, p.read_bytes()) for p in paths.private_keys_dir.glob("*.pem")))
+
+
+def test_keys_from_shares_one_set_across_projects(tmp_path, make_firmware, make_sdk):
+    """A camera verifies against the keys in its FIRMWARE, and firmware is never replaced
+    over the air -- so a fleet whose cameras move between products needs every one of
+    those projects signing with the same keys. Minting per project means a camera built
+    from one cannot install an image built from another, discovered on the first claim."""
+    from openmv_ota.project import payload_keys
+
+    repo = make_firmware()
+    src, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo,
+                     root=tmp_path / "stock", ota=True, ota_keys=2, factory_keys=1)
+    dst, (_lock, warnings) = _create(tmp_path, make_firmware, make_sdk, repo=repo,
+                                     root=tmp_path / "acme", ota=True,
+                                     keys_from=tmp_path / "stock")
+    assert _keyset(dst) == _keyset(src)                    # byte for byte, both halves
+    assert not any("payload keys" in w for w in warnings)  # same boards: nothing to mint
+
+    # ...and the payload keys came across too, openable with the source's passphrase
+    dev_pass = (tmp_path / "stock" / "keys" / ".dev-passphrase").read_text().strip()
+    assert payload_keys.read(proj.ProjectPaths(dst).private_keys_dir, dev_pass) == \
+        payload_keys.read(proj.ProjectPaths(src).private_keys_dir, dev_pass)
+
+    # both projects sign with the same key id, so one firmware trusts both
+    assert (cfg.parse_config(proj.ProjectPaths(dst).config.read_text(), "acme").signing_key_id
+            == cfg.parse_config(proj.ProjectPaths(src).config.read_text(), "stock").signing_key_id)
+
+
+def test_keys_from_mints_only_for_boards_the_source_lacks(tmp_path, make_firmware, make_sdk):
+    """A payload key is per board, so a project that builds for a board the source does not
+    needs one -- minted here, while the SIGNING keys stay shared and untouched."""
+    from openmv_ota.project import payload_keys
+
+    repo = make_firmware()
+    _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "stock",
+            boards=["OPENMV_N6"], ota=True, ota_keys=2, factory_keys=1)
+    dst, (_lock, warnings) = _create(tmp_path, make_firmware, make_sdk, repo=repo,
+                                     root=tmp_path / "acme",
+                                     boards=["OPENMV_N6", "OPENMV_AE3"], ota=True,
+                                     keys_from=tmp_path / "stock")
+    assert any("OPENMV_AE3" in w and "signing keys are shared unchanged" in w for w in warnings)
+    dev_pass = (tmp_path / "stock" / "keys" / ".dev-passphrase").read_text().strip()
+    keys = payload_keys.read(proj.ProjectPaths(dst).private_keys_dir, dev_pass)
+    assert sorted(keys) == ["OPENMV_AE3", "OPENMV_N6"]
+    assert _keyset(dst)[0] == _keyset(tmp_path / "stock")[0]     # the trusted set is untouched
+
+
+def test_keys_from_rejects_a_source_that_has_nothing_to_share(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "plain", ota=False)
+    with pytest.raises(ProjectError, match="no key set at"):
+        _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "acme",
+                ota=True, keys_from=tmp_path / "plain")
+
+
+def test_keys_from_rejects_itself(tmp_path, make_firmware, make_sdk):
+    repo = make_firmware()
+    _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "stock",
+            ota=True, ota_keys=2, factory_keys=1)
+    with pytest.raises(ProjectError, match="cannot be this project"):
+        _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "stock",
+                ota=True, force=True, keys_from=tmp_path / "stock")
+
+
+def test_dev_keys_from_needs_a_dev_source(tmp_path, make_firmware, make_sdk, tmp_path_factory):
+    """A throwaway passphrase would produce PEMs this project cannot open, so --dev takes
+    the source's cached one -- and says so plainly when there is none to take."""
+    repo = make_firmware()
+    src, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "stock",
+                     ota=True, ota_keys=2, factory_keys=1, dev=False,
+                     key_passphrase="hunter2hunter2")
+    with pytest.raises(ProjectError, match="needs the source project to be a dev project"):
+        _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "acme",
+                ota=True, keys_from=src)
+
+
+def test_keys_from_refuses_a_source_it_cannot_actually_sign_with(tmp_path, make_firmware,
+                                                                 make_sdk):
+    """Two ways a source looks shareable and is not: a trusted set with no live OTA key,
+    and one with no private material at all. Both are refused here rather than at the
+    first publish, which is a long way from the decision that caused them."""
+    from openmv_ota.ota.keys import read_trusted_keys, write_trusted_keys
+
+    repo = make_firmware()
+    src, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "stock",
+                     ota=True, ota_keys=2, factory_keys=1)
+    paths = proj.ProjectPaths(src)
+
+    # every OTA key revoked -- nothing left to sign with
+    entries = read_trusted_keys(paths.trusted_keys)
+    for k in entries:
+        if k.role == "ota":
+            k.revoked = True
+    write_trusted_keys(paths.trusted_keys, entries)
+    with pytest.raises(ProjectError, match="no usable OTA signing key"):
+        _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "a",
+                ota=True, keys_from=src)
+
+    # public set only: the private PEMs were never shared
+    write_trusted_keys(paths.trusted_keys, [k for k in entries if not (k.role == "ota")]
+                       + [_unrevoke(k) for k in entries if k.role == "ota"])
+    for pem in paths.private_keys_dir.glob("*.pem"):
+        pem.unlink()
+    with pytest.raises(ProjectError, match="no private keys to share"):
+        _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "b",
+                ota=True, keys_from=src)
+
+
+def _unrevoke(k):
+    k.revoked = False
+    return k
+
+
+def test_keys_from_says_which_decision_made_the_keys_unreadable(tmp_path, make_firmware,
+                                                                make_sdk):
+    """A wrong passphrase surfaces as a key file that will not open, which points at the
+    file rather than at the sharing decision that made it someone else's."""
+    repo = make_firmware()
+    src, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "stock",
+                     ota=True, ota_keys=2, factory_keys=1, dev=False,
+                     key_passphrase="correct-horse-battery")
+    with pytest.raises(ProjectError, match="encrypted with the passphrase they were minted"):
+        _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "acme",
+                ota=True, dev=False, key_passphrase="a-different-one", keys_from=src)
+
+
+def test_keys_from_a_source_with_no_payload_keys_says_what_that_costs(tmp_path, make_firmware,
+                                                                      make_sdk):
+    """Signing keys shared, payload keys minted fresh -- which means cameras built from the
+    source cannot decrypt what this project publishes. Worth a warning, not a refusal:
+    payload encryption is optional and a project may not be using it."""
+    from openmv_ota.project import payload_keys
+
+    repo = make_firmware()
+    src, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, root=tmp_path / "stock",
+                     ota=True, ota_keys=2, factory_keys=1)
+    payload_keys.path_for(proj.ProjectPaths(src).private_keys_dir).unlink()
+    _dst, (_lock, warnings) = _create(tmp_path, make_firmware, make_sdk, repo=repo,
+                                      root=tmp_path / "acme", ota=True, keys_from=src)
+    assert any("minted its own" in w and "not be decryptable" in w for w in warnings)
