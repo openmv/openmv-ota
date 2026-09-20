@@ -803,37 +803,42 @@ class SqlMetadataStore:
                       last_offered_release_id=None, registrar_ref=None, account_id="",
                       streams=None, fallback_payload_version=None, body_sha256=None,
                       publish_seq=0, orders_by_seq=False) -> None:
+        # One statement, not select-then-insert: the store's lock covers a statement, not a
+        # handler, so two first check-ins of the same new device (a retry racing the request it
+        # retried) both saw no row and the second INSERT died on the primary key -- a 500 to the
+        # camera. ON CONFLICT makes the second one the UPDATE it was always meant to be.
+        # cohort is admin-controlled, so a check-in never changes it. COALESCE on the update
+        # side: a device that stops reporting slots (or never did) keeps whatever it last told
+        # us, rather than having its fallback silently blanked.
         now = _now_iso()
-        if self.query_one("SELECT 1 FROM devices WHERE device_id = ?", (device_id,)) is None:
-            self.execute(
-                "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
-                "current_payload_version, slot, representation, fallback_reason, confirmed, "
-                "last_offered_release_id, registrar_ref, account_id, streams, "
-                "fallback_payload_version, body_sha256, publish_seq, orders_by_seq, "
-                "first_seen, last_seen) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (device_id, product_id, board, cohort, current_version, current_payload_version,
-                 slot, representation, fallback_reason, confirmed, last_offered_release_id,
-                 registrar_ref, account_id, ",".join(streams or ()), fallback_payload_version,
-                 body_sha256, int(publish_seq or 0), 1 if orders_by_seq else 0, now, now))
-        else:                                               # cohort is admin-controlled, not by check-in
-            self.execute(
-                "UPDATE devices SET product_id = ?, board = ?, current_version = ?, "
-                "current_payload_version = ?, slot = ?, representation = ?, fallback_reason = ?, "
-                "confirmed = ?, last_offered_release_id = COALESCE(?, last_offered_release_id), "
-                "registrar_ref = COALESCE(?, registrar_ref), account_id = ?, "
-                "streams = COALESCE(?, streams), "
-                # COALESCE: a device that stops reporting slots (or never did) keeps whatever it
-                # last told us, rather than having its fallback silently blanked.
-                "fallback_payload_version = COALESCE(?, fallback_payload_version), "
-                "body_sha256 = COALESCE(?, body_sha256), "
-                "publish_seq = ?, orders_by_seq = ?, "
-                "last_seen = ? WHERE device_id = ?",
-                (product_id, board, current_version, current_payload_version, slot, representation,
-                 fallback_reason, confirmed, last_offered_release_id, registrar_ref, account_id,
-                 ",".join(streams) if streams else None, fallback_payload_version, body_sha256,
-                 int(publish_seq or 0), 1 if orders_by_seq else 0,
-                 now, device_id))
+        self.execute(
+            "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
+            "current_payload_version, slot, representation, fallback_reason, confirmed, "
+            "last_offered_release_id, registrar_ref, account_id, streams, "
+            "fallback_payload_version, body_sha256, publish_seq, orders_by_seq, "
+            "first_seen, last_seen) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (device_id) DO UPDATE SET "
+            "product_id = excluded.product_id, board = excluded.board, "
+            "current_version = excluded.current_version, "
+            "current_payload_version = excluded.current_payload_version, "
+            "slot = excluded.slot, representation = excluded.representation, "
+            "fallback_reason = excluded.fallback_reason, confirmed = excluded.confirmed, "
+            "last_offered_release_id = COALESCE(excluded.last_offered_release_id, "
+            "devices.last_offered_release_id), "
+            "registrar_ref = COALESCE(excluded.registrar_ref, devices.registrar_ref), "
+            "account_id = excluded.account_id, "
+            "streams = COALESCE(?, devices.streams), "
+            "fallback_payload_version = COALESCE(excluded.fallback_payload_version, "
+            "devices.fallback_payload_version), "
+            "body_sha256 = COALESCE(excluded.body_sha256, devices.body_sha256), "
+            "publish_seq = excluded.publish_seq, orders_by_seq = excluded.orders_by_seq, "
+            "last_seen = excluded.last_seen",
+            (device_id, product_id, board, cohort, current_version, current_payload_version,
+             slot, representation, fallback_reason, confirmed, last_offered_release_id,
+             registrar_ref, account_id, ",".join(streams or ()), fallback_payload_version,
+             body_sha256, int(publish_seq or 0), 1 if orders_by_seq else 0, now, now,
+             ",".join(streams) if streams else None))
 
     def fleet_bases(self, product_id=None, account_id="", products=None) -> list[dict]:
         """The distinct (payload_version, body_sha256) bases the fleet is RUNNING, with device

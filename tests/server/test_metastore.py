@@ -461,3 +461,37 @@ def test_migrations_survive_postgres_transaction_semantics(tmp_path):
     store.add_token("h", "t", ["observe"], account_id="a", products=[7])
     assert store.get_token("h")["products"] == [7]
     assert _PostgresManners(db).migrate() == 28        # and is idempotent
+
+
+def test_two_first_checkins_of_one_new_device_do_not_collide(tmp_path):
+    """upsert_device is one statement: the store's lock covers a statement, not a handler, so
+    a select-then-insert let two first check-ins of the same new device (a retry racing what
+    it retried) both see no row -- the second INSERT then died on the primary key, a 500 to
+    the camera. Hammered from threads, the atomic form never raises and ends with one row."""
+    import threading
+
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    errors = []
+
+    def hit(n):
+        try:
+            for _ in range(50):
+                store.upsert_device(device_id="OPENMV_N6:new", product_id=7, board="OPENMV_N6",
+                                    current_version="1.0.0", streams=["console"] if n else None,
+                                    body_sha256="ab" * 32 if n else None)
+        except Exception as e:                     # pragma: no cover - the failure being guarded
+            errors.append(e)
+
+    threads = [threading.Thread(target=hit, args=(i,)) for i in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert errors == []
+    rows = store.list_devices(product_id=7)
+    assert len(rows) == 1
+    dev = store.get_device("OPENMV_N6:new")
+    assert dev["streams"] == "console"                 # COALESCE kept the last real value
+    assert dev["body_sha256"] == "ab" * 32
+    assert dev["first_seen"] <= dev["last_seen"]
