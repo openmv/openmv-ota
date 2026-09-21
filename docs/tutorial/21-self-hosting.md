@@ -102,6 +102,9 @@ serves:
 | `OPENMV_OTA_LIVE_TOKEN_TTL` | Live grant lifetime (default 24 h) |
 | `OPENMV_DATALAKE_URL` + `OPENMV_DATALAKE_TOKEN_SECRET` | when both are set, check-ins also carry an `ingest` grant: an ingest URL + token whose subject binds the *account* and the *product*, so a device can neither attribute data to another tenant nor file it under another product (the product is what lets the datalake answer for a whole product's devices at once). Deliberately its **own** secret — the two integrations rotate and fail independently |
 | `OPENMV_OTA_DATALAKE_TOKEN_TTL` | ingest grant lifetime (default 24 h) |
+| `OPENMV_OTA_WEBHOOK_INTERVAL_S` | how often the in-process worker sends queued webhook deliveries (default 0: no worker, nothing is sent; OpenMV's deployment uses 15). Deliveries are leased per attempt, so several processes are safe |
+| `OPENMV_OTA_WEBHOOK_TIMEOUT_S` | how long a receiver has to answer 2xx (default 10) |
+| `OPENMV_OTA_WEBHOOK_ALLOW_PRIVATE` | let endpoints resolve to private, loopback or `http://` addresses (default off: the server will not POST into its own network on a customer's say-so) |
 | `OPENMV_OTA_DATALAKE_ADMIN_TOKEN` | the datalake's operator token, for the one write the server makes there: erasing a forgotten device's data (`device forget`). Unset, forget leaves data to the datalake's retention |
 | `OPENMV_OTA_VIEWER_TOKEN_TTL` | lifetime of a dashboard's viewer grant, both its relay and datalake tokens (default 5 min; it leaves the server, so keep it short) |
 

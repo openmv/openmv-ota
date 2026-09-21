@@ -137,6 +137,12 @@ def test_scan_release_records_findings(tmp_path):
     assert out["findings"] == 1 and out["new"][0]["vuln_id"] == "CVE-9"
     rows = st.metastore.list_advisories(account_id="a")
     assert rows[0]["release_id"] == "r1" and rows[0]["severity"] == "high"
+    # a NEW finding is its own event (what a webhook subscriber acts on); a rescan that
+    # finds the same thing again raises none
+    found = [e for e in st.metastore.read_audit() if e["action"] == "advisory.found"]
+    assert len(found) == 1 and found[0]["data"]["vuln_id"] == "CVE-9" and found[0]["data"]["severity"] == "high"
+    advisor.scan_release(st, {"release_id": "r1", "account_id": "a", "sbom_key": "sbom/ok.json"})
+    assert len([e for e in st.metastore.read_audit() if e["action"] == "advisory.found"]) == 1
 
 
 def test_scheduler_disabled_at_zero_interval():

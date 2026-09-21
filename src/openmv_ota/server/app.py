@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
@@ -696,6 +697,19 @@ def check(checkin: CheckIn, request: Request):
     ro, rel, offered, manifest_url = _decide(st, checkin, cohort, existing, account_id)
     _account(ms, ro, rel, checkin, existing, offered)
     release_id = rel["release_id"] if offered else None
+    if existing is None:
+        ms.append_audit(actor="checkin", action="device.enrolled", entity_type="device",
+                        entity_id=checkin.device_id,
+                        data={"product_id": checkin.product_id, "board": checkin.board,
+                              "version": checkin.app_version},
+                        account_id=account_id, product_id=checkin.product_id)
+    if checkin.fallback_reason and (existing is None
+                                    or existing.get("fallback_reason") != checkin.fallback_reason):
+        ms.append_audit(actor="checkin", action="device.fallback", entity_type="device",
+                        entity_id=checkin.device_id,
+                        data={"product_id": checkin.product_id, "reason": checkin.fallback_reason,
+                              "version": checkin.app_version},
+                        account_id=account_id, product_id=checkin.product_id)
     ms.upsert_device(
         device_id=checkin.device_id, product_id=checkin.product_id, board=checkin.board, cohort=cohort,
         current_version=checkin.app_version, current_payload_version=checkin.payload_version,
@@ -746,6 +760,17 @@ def feedback(report: Feedback, request: Request):
     st.metastore.record_deployment(
         device_id=report.device_id, release_id=report.release_id, product_id=report.product_id,
         status=report.status, reason=report.reason, account_id=report.account_id)
+    if report.status == "failed":
+        # the event lands in the device's EFFECTIVE account (its sticky binding), the
+        # same account its check-ins are filed under, not whatever the report said
+        bound = st.metastore.device_account(report.device_id)
+        st.metastore.append_audit(actor="device", action="install.failed", entity_type="device",
+                                  entity_id=report.device_id,
+                                  data={"release_id": report.release_id,
+                                        "product_id": report.product_id,
+                                        "reason": report.reason or ""},
+                                  account_id=(bound or {}).get("account_id") or report.account_id,
+                                  product_id=report.product_id)
     return {"ok": True}
 
 
@@ -809,7 +834,7 @@ def _ranged(data: bytes, media_type: str, header: str | None) -> Response:
 
 
 def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_auth=None,
-               osv=None, datalake=None):
+               osv=None, datalake=None, webhooks=None):
     """Build the ASGI app. Collaborators default to the settings-driven backends; the website
     injects its own. The server HMAC secret comes from the DB (seeded by ``server init``) or
     ``OPENMV_OTA_CAPABILITY_SECRET`` -- required so capability tokens are stable across workers."""
@@ -842,6 +867,19 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.osv = osv if osv is not None else OsvClient()
     from .datalake import DatalakeAdmin
     app.state.datalake = datalake if datalake is not None else DatalakeAdmin(settings)
+    from .webhooks import Deliverer
+    app.state.webhooks = webhooks if webhooks is not None else Deliverer(metastore, settings)
+    if settings.webhook_interval_s > 0:           # pragma: no cover - the worker thread
+        import threading
+
+        def _deliver_forever():
+            while True:
+                try:
+                    app.state.webhooks.run_once()
+                except Exception:                  # noqa: BLE001 - the worker never dies
+                    pass
+                time.sleep(settings.webhook_interval_s)
+        threading.Thread(target=_deliver_forever, name="webhooks", daemon=True).start()
 
     @app.middleware("http")
     async def _security_headers(request, call_next):

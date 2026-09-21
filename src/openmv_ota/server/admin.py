@@ -15,12 +15,14 @@ from . import datalog as datalog_mod
 from . import live as live_mod
 from .auth import Principal, hash_token, require_scope
 from .datalake import DatalakeError
+from . import webhooks as webhooks_mod
 from .schemas import (
     Account,
     AccountActive,
     AccountCreated,
     AccountLimited,
     AccountList,
+    Delivery, DeliveryList, Webhook, WebhookCreated, WebhookDeleted, WebhookList, WebhookPinged,
     AccountNamed,
     AdvisoryList,
     Product, ProductDeclared, ProductList, ProductRenamed, ProductViewerGrant, ViewerGrants,
@@ -1537,3 +1539,182 @@ def audit(request: Request, since: int = 0,
                                     action=action, products=products),
             "total": ms.count_audit(since, scope, entity_id, action_not, action,
                                     products=products)}
+
+
+# --- webhooks ---------------------------------------------------------------------------------
+
+class WebhookCreate(BaseModel):
+    url: str
+    events: list[str] = ["*"]
+    description: str = ""
+
+
+class WebhookPatch(BaseModel):
+    url: str | None = None
+    events: list[str] | None = None
+    description: str | None = None
+    active: bool | None = None
+
+
+def _public_hook(hook: dict) -> dict:
+    return {k: v for k, v in hook.items() if k not in ("secret", "account_id")}
+
+
+def _clean_events(events: list[str]) -> list[str]:
+    out = []
+    for e in events:
+        e = (e or "").strip()
+        if not e or len(e) > 64:
+            raise HTTPException(status_code=400, detail="an event name is empty or too long")
+        if e != "*" and not all(part.replace("_", "").isalnum() or part == "*"
+                                for part in e.split(".")):
+            raise HTTPException(status_code=400, detail=f"not an event pattern: {e!r}")
+        if e not in out:
+            out.append(e)
+    if not out:
+        raise HTTPException(status_code=400, detail="subscribe to at least one event ('*' for all)")
+    return out
+
+
+def _checked_url(request: Request, url: str) -> str:
+    try:
+        return webhooks_mod.check_url(url, allow_private=request.app.state.settings.webhook_allow_private)
+    except webhooks_mod.WebhookError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def _own_hook(ms, webhook_id: str, principal: Principal) -> dict:
+    hook = ms.get_webhook(webhook_id, principal.account_id)
+    if hook is None:
+        raise HTTPException(status_code=404)
+    return hook
+
+
+@admin.get("/webhooks", responses={200: {"model": WebhookList}})
+def list_webhooks(request: Request, principal: Principal = Depends(require_scope("manage"))):
+    """The account's endpoints, and the event catalogue a subscription may name. Secrets
+    are never listed: one was shown at creation, `rotate` mints another."""
+    ms = request.app.state.metastore
+    return {"webhooks": [_public_hook(h) for h in ms.list_webhooks(principal.account_id)],
+            "events": webhooks_mod.EVENTS}
+
+
+@admin.post("/webhooks", responses={200: {"model": WebhookCreated}})
+def create_webhook(body: WebhookCreate, request: Request,
+                   principal: Principal = Depends(require_scope("manage"))):
+    """Subscribe an HTTPS endpoint to some of the account's events. Every matching audit
+    entry is POSTed to it as JSON, signed with the secret this call returns ONCE. The URL
+    must resolve to a public address (a self-host may allow private ones); at most 20
+    endpoints per account."""
+    ms = request.app.state.metastore
+    if ms.count_webhooks(principal.account_id) >= webhooks_mod.MAX_ENDPOINTS:
+        raise HTTPException(status_code=409, detail=f"at most {webhooks_mod.MAX_ENDPOINTS} endpoints per account")
+    url = _checked_url(request, body.url)
+    events = _clean_events(body.events)
+    secret = "whsec_" + secrets.token_urlsafe(32)
+    hook = ms.add_webhook(account_id=principal.account_id, url=url, events=events, secret=secret,
+                          description=body.description[:200], created_by=principal.name)
+    ms.append_audit(actor=principal.name, action="webhook.create", entity_type="webhook",
+                    entity_id=hook["webhook_id"], data={"url": url, "events": events},
+                    account_id=principal.account_id)
+    return {**_public_hook(hook), "secret": secret}
+
+
+@admin.get("/webhooks/{webhook_id}", responses={200: {"model": Webhook}})
+def get_webhook(webhook_id: str, request: Request,
+                principal: Principal = Depends(require_scope("manage"))):
+    """One endpoint: its subscription, its consecutive-failure count, and the last
+    delivery's status."""
+    return _public_hook(_own_hook(request.app.state.metastore, webhook_id, principal))
+
+
+@admin.patch("/webhooks/{webhook_id}", responses={200: {"model": Webhook}})
+def update_webhook(webhook_id: str, body: WebhookPatch, request: Request,
+                   principal: Principal = Depends(require_scope("manage"))):
+    """Change the URL, the subscription or the description, or switch the endpoint off
+    and on. Re-enabling one the server disabled clears its failure count."""
+    ms = request.app.state.metastore
+    _own_hook(ms, webhook_id, principal)
+    fields: dict = {}
+    if body.url is not None:
+        fields["url"] = _checked_url(request, body.url)
+    if body.events is not None:
+        fields["events"] = _clean_events(body.events)
+    if body.description is not None:
+        fields["description"] = body.description[:200]
+    if body.active is not None:
+        fields["active"] = 1 if body.active else 0
+    if not fields:
+        raise HTTPException(status_code=400, detail="nothing to change")
+    ms.update_webhook(webhook_id, **fields)
+    ms.append_audit(actor=principal.name, action="webhook.update", entity_type="webhook",
+                    entity_id=webhook_id, data=fields, account_id=principal.account_id)
+    return _public_hook(ms.get_webhook(webhook_id))
+
+
+@admin.delete("/webhooks/{webhook_id}", responses={200: {"model": WebhookDeleted}})
+def delete_webhook(webhook_id: str, request: Request,
+                   principal: Principal = Depends(require_scope("manage"))):
+    """Remove an endpoint and its delivery history. Pending deliveries are dropped."""
+    ms = request.app.state.metastore
+    hook = _own_hook(ms, webhook_id, principal)
+    ms.delete_webhook(webhook_id)
+    ms.append_audit(actor=principal.name, action="webhook.delete", entity_type="webhook",
+                    entity_id=webhook_id, data={"url": hook["url"]}, account_id=principal.account_id)
+    return {"webhook_id": webhook_id, "deleted": True}
+
+
+@admin.post("/webhooks/{webhook_id}/rotate", responses={200: {"model": WebhookCreated}})
+def rotate_webhook(webhook_id: str, request: Request,
+                   principal: Principal = Depends(require_scope("manage"))):
+    """A new signing secret, shown once; the old one stops verifying immediately."""
+    ms = request.app.state.metastore
+    _own_hook(ms, webhook_id, principal)
+    secret = "whsec_" + secrets.token_urlsafe(32)
+    ms.update_webhook(webhook_id, secret=secret)
+    ms.append_audit(actor=principal.name, action="webhook.update", entity_type="webhook",
+                    entity_id=webhook_id, data={"secret": "rotated"}, account_id=principal.account_id)
+    return {**_public_hook(ms.get_webhook(webhook_id)), "secret": secret}
+
+
+@admin.post("/webhooks/{webhook_id}/test", responses={200: {"model": WebhookPinged}})
+def ping_webhook(webhook_id: str, request: Request,
+                 principal: Principal = Depends(require_scope("manage"))):
+    """Queue a `webhook.ping` event to this endpoint alone, whatever it subscribes to,
+    so a receiver can be checked end to end. The worker sends it on its next pass."""
+    ms = request.app.state.metastore
+    _own_hook(ms, webhook_id, principal)
+    seq = ms.append_audit(actor=principal.name, action="webhook.ping", entity_type="webhook",
+                          entity_id=webhook_id, data={"requested_by": principal.name},
+                          account_id="")           # no account: the fan-out must not double it
+    return {"webhook_id": webhook_id, "delivery_id": ms.enqueue_delivery(webhook_id, seq, "webhook.ping")}
+
+
+@admin.get("/webhooks/{webhook_id}/deliveries", responses={200: {"model": DeliveryList}})
+def list_deliveries(webhook_id: str, request: Request,
+                    status: str | None = Query(None, description="pending, delivered or dead"),
+                    limit: int = Query(50, ge=1, le=_MAX_PAGE), offset: int = 0,
+                    principal: Principal = Depends(require_scope("manage"))):
+    """What was sent to this endpoint, newest first: the event, the attempt count, the
+    last response code or error, and when it landed. Bodies are not kept."""
+    ms = request.app.state.metastore
+    _own_hook(ms, webhook_id, principal)
+    if status not in (None, "pending", "delivered", "dead"):
+        raise HTTPException(status_code=400, detail="status is pending, delivered or dead")
+    rows, total = ms.list_deliveries(webhook_id, limit=limit, offset=offset, status=status)
+    return {"deliveries": rows, "total": total}
+
+
+@admin.post("/webhooks/{webhook_id}/deliveries/{delivery_id}/retry", responses={200: {"model": Delivery}})
+def retry_delivery(webhook_id: str, delivery_id: str, request: Request,
+                   principal: Principal = Depends(require_scope("manage"))):
+    """Send a dead delivery again, now. The attempt count carries on from where it was."""
+    ms = request.app.state.metastore
+    _own_hook(ms, webhook_id, principal)
+    d = ms.get_delivery(delivery_id, webhook_id)
+    if d is None:
+        raise HTTPException(status_code=404)
+    if d["status"] != "dead":
+        raise HTTPException(status_code=409, detail=f"the delivery is {d['status']}, not dead")
+    ms.retry_delivery(delivery_id)
+    return ms.get_delivery(delivery_id, webhook_id)

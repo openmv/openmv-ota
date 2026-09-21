@@ -406,6 +406,58 @@ def register(parser: argparse.ArgumentParser) -> None:
     _creds(p_das)
     p_das.set_defaults(func=cmd_data_series, _command="client data series")
 
+    p_wh = sub.add_parser("webhook", help="endpoints that receive the account's events as they happen")
+    whsub = p_wh.add_subparsers(dest="_wh")
+    p_whl = whsub.add_parser("list", help="every endpoint, and the event catalogue (JSON)")
+    _creds(p_whl)
+    p_whl.set_defaults(func=cmd_webhook, _command="client webhook list", action="list")
+    p_whc = whsub.add_parser("create", help="subscribe an HTTPS endpoint; prints its signing secret ONCE")
+    p_whc.add_argument("--url", required=True, help="https://... that receives the POSTs")
+    p_whc.add_argument("--events", default="*", metavar="LIST",
+                       help="comma-separated event types or families: rollout.autopause,device.* "
+                            "(default: *, everything)")
+    p_whc.add_argument("--description", default="", help="a label for the endpoint")
+    _creds(p_whc)
+    p_whc.set_defaults(func=cmd_webhook, _command="client webhook create", action="create")
+    p_whs = whsub.add_parser("show", help="one endpoint (JSON)")
+    p_whs.add_argument("--webhook-id", required=True, metavar="WEBHOOK_ID", help="the endpoint")
+    _creds(p_whs)
+    p_whs.set_defaults(func=cmd_webhook, _command="client webhook show", action="show")
+    p_whu = whsub.add_parser("update", help="change the URL, the subscription, or switch it on/off")
+    p_whu.add_argument("--webhook-id", required=True, metavar="WEBHOOK_ID", help="the endpoint")
+    p_whu.add_argument("--url", default=None, help="a new URL")
+    p_whu.add_argument("--events", default=None, metavar="LIST", help="a new comma-separated subscription")
+    p_whu.add_argument("--description", default=None, help="a new label")
+    g = p_whu.add_mutually_exclusive_group()
+    g.add_argument("--enable", action="store_true", help="switch the endpoint on (clears its failure count)")
+    g.add_argument("--disable", action="store_true", help="switch the endpoint off; pending deliveries wait")
+    _creds(p_whu)
+    p_whu.set_defaults(func=cmd_webhook, _command="client webhook update", action="update")
+    p_whd = whsub.add_parser("delete", help="remove an endpoint and its delivery history")
+    p_whd.add_argument("--webhook-id", required=True, metavar="WEBHOOK_ID", help="the endpoint")
+    _creds(p_whd)
+    p_whd.set_defaults(func=cmd_webhook, _command="client webhook delete", action="delete")
+    p_whr = whsub.add_parser("rotate", help="a new signing secret, printed ONCE; the old one stops at once")
+    p_whr.add_argument("--webhook-id", required=True, metavar="WEBHOOK_ID", help="the endpoint")
+    _creds(p_whr)
+    p_whr.set_defaults(func=cmd_webhook, _command="client webhook rotate", action="rotate")
+    p_wht = whsub.add_parser("test", help="queue a webhook.ping event to the endpoint")
+    p_wht.add_argument("--webhook-id", required=True, metavar="WEBHOOK_ID", help="the endpoint")
+    _creds(p_wht)
+    p_wht.set_defaults(func=cmd_webhook, _command="client webhook test", action="test")
+    p_whv = whsub.add_parser("deliveries", help="what was sent to an endpoint, newest first (JSON)")
+    p_whv.add_argument("--webhook-id", required=True, metavar="WEBHOOK_ID", help="the endpoint")
+    p_whv.add_argument("--status", default=None, choices=["pending", "delivered", "dead"],
+                       help="only deliveries in this state")
+    p_whv.add_argument("--limit", type=int, default=None, metavar="N", help="page size (default 50)")
+    p_whv.add_argument("--offset", type=int, default=0, metavar="N", help="page start")
+    _creds(p_whv)
+    p_whv.set_defaults(func=cmd_webhook, _command="client webhook deliveries", action="deliveries")
+    p_why = whsub.add_parser("retry", help="send a dead delivery again, now")
+    p_why.add_argument("--webhook-id", required=True, metavar="WEBHOOK_ID", help="the endpoint")
+    p_why.add_argument("--delivery-id", required=True, metavar="DELIVERY_ID", help="the delivery, from `webhook deliveries`")
+    _creds(p_why)
+    p_why.set_defaults(func=cmd_webhook, _command="client webhook retry", action="retry")
     p_acct = sub.add_parser("account", help="create/list tenant accounts (needs accounts)")
     acsub = p_acct.add_subparsers(dest="_acct")
     p_acc = acsub.add_parser("create", help="create an account + get its first admin token")
@@ -975,6 +1027,48 @@ def cmd_product_create(args: argparse.Namespace) -> int:
     if not res.get("created", True):
         return _emit(args, res, "product %s already known" % args.product_id)
     return _emit(args, res, "product %s created" % args.product_id)
+
+
+def cmd_webhook(args: argparse.Namespace) -> int:
+    try:
+        api = _make_api(config.resolve(args.server, args.token))
+        if args.action == "list":
+            print(json.dumps(api.list_webhooks(), indent=2))
+        elif args.action == "create":
+            events = [e.strip() for e in args.events.split(",") if e.strip()]
+            res = api.create_webhook(args.url, events, args.description)
+            return _emit(args, res, "webhook %s created for %s" % (res["webhook_id"], res["url"]),
+                         "signing secret (store it now -- not recoverable): %s" % res["secret"])
+        elif args.action == "show":
+            print(json.dumps(api.webhook(args.webhook_id), indent=2))
+        elif args.action == "update":
+            fields = {"url": args.url, "description": args.description,
+                      "events": ([e.strip() for e in args.events.split(",") if e.strip()]
+                                 if args.events is not None else None),
+                      "active": True if args.enable else (False if args.disable else None)}
+            res = api.update_webhook(args.webhook_id, **fields)
+            return _emit(args, res, "webhook %s updated" % args.webhook_id)
+        elif args.action == "delete":
+            res = api.delete_webhook(args.webhook_id)
+            return _emit(args, res, "webhook %s deleted" % args.webhook_id)
+        elif args.action == "rotate":
+            res = api.rotate_webhook(args.webhook_id)
+            return _emit(args, res, "webhook %s secret rotated" % args.webhook_id,
+                         "signing secret (store it now -- not recoverable): %s" % res["secret"])
+        elif args.action == "test":
+            res = api.ping_webhook(args.webhook_id)
+            return _emit(args, res, "webhook.ping queued as %s" % res["delivery_id"])
+        elif args.action == "deliveries":
+            print(json.dumps(api.webhook_deliveries(args.webhook_id, status=args.status,
+                                                    limit=args.limit, offset=args.offset or None),
+                             indent=2))
+        else:
+            res = api.retry_delivery(args.webhook_id, args.delivery_id)
+            return _emit(args, res, "delivery %s queued again" % args.delivery_id)
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return 0
 
 
 def cmd_account(args: argparse.Namespace) -> int:

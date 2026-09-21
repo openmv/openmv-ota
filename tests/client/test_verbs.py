@@ -1471,3 +1471,45 @@ def test_account_directory_search_and_root_reads(tmp_path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["total"] >= 0
     assert main(["client", "audit", "--all", "--action", "account.create"]) == 0
     assert json.loads(capsys.readouterr().out)["total"] == 2
+
+
+def test_webhook_verbs(wired, tmp_path, capsys, monkeypatch):
+    """Every webhook verb, against the wired server, with DNS stubbed to a public address."""
+    import json
+    from openmv_ota.server import webhooks as wh
+    store, _ = wired
+    monkeypatch.setattr(wh.socket, "getaddrinfo", lambda h, p: [(0, 0, 0, "", ("93.184.216.34", p))])
+    assert main(["client", "webhook", "create", "--url", "https://hooks.example/x",
+                 "--events", "rollout.*, device.forget", "--description", "ops"]) == 0
+    out = capsys.readouterr().out
+    assert "created for https://hooks.example/x" in out and "whsec_" in out
+    assert main(["client", "webhook", "list"]) == 0
+    listing = json.loads(capsys.readouterr().out)
+    wid = listing["webhooks"][0]["webhook_id"]
+    assert listing["webhooks"][0]["events"] == ["rollout.*", "device.forget"] and "rollout.stop" in listing["events"]
+    assert main(["client", "webhook", "show", "--webhook-id", wid]) == 0
+    assert json.loads(capsys.readouterr().out)["description"] == "ops"
+    assert main(["client", "webhook", "update", "--webhook-id", wid, "--events", "*", "--disable"]) == 0
+    assert "updated" in capsys.readouterr().out
+    assert main(["client", "webhook", "show", "--webhook-id", wid]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["events"] == ["*"] and shown["active"] == 0
+    assert main(["client", "webhook", "update", "--webhook-id", wid, "--enable", "--url", "https://hooks.example/y",
+                 "--description", "d2"]) == 0
+    capsys.readouterr()
+    assert main(["client", "webhook", "rotate", "--webhook-id", wid]) == 0
+    assert "secret rotated" in capsys.readouterr().out
+    assert main(["client", "webhook", "test", "--webhook-id", wid]) == 0
+    assert "webhook.ping queued as dl_" in capsys.readouterr().out
+    assert main(["client", "webhook", "deliveries", "--webhook-id", wid, "--status", "pending", "--limit", "5"]) == 0
+    d = json.loads(capsys.readouterr().out)
+    assert d["total"] >= 1 and d["deliveries"][0]["event"] == "webhook.ping"
+    assert main(["client", "webhook", "retry", "--webhook-id", wid, "--delivery-id", d["deliveries"][0]["delivery_id"]]) == 1
+    assert "409" in capsys.readouterr().err                                # pending, not dead
+    store.execute("UPDATE webhook_deliveries SET status = 'dead'")         # the worker gave up on it
+    assert main(["client", "webhook", "retry", "--webhook-id", wid, "--delivery-id", d["deliveries"][0]["delivery_id"]]) == 0
+    assert "queued again" in capsys.readouterr().out
+    assert main(["client", "webhook", "delete", "--webhook-id", wid]) == 0
+    assert "deleted" in capsys.readouterr().out
+    assert main(["client", "webhook", "show", "--webhook-id", wid]) == 1
+    assert "404" in capsys.readouterr().err

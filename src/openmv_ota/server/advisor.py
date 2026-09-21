@@ -145,6 +145,12 @@ def scan_release(state, rel: dict, actor: str = "scheduler") -> dict:
         data={"components": len(components), "findings": len(findings),
               "new": len(result["new"]), "cleared": result["cleared"]},
         account_id=account_id, product_id=rel.get("product_id"))
+    for f in result["new"]:                        # one event per NEW finding, not per scan
+        state.metastore.append_audit(
+            actor=actor, action="advisory.found", entity_type="release", entity_id=release_id,
+            data={"vuln_id": f.get("vuln_id"), "component": f.get("component"),
+                  "version": f.get("version", ""), "severity": f.get("severity", "unknown")},
+            account_id=account_id, product_id=rel.get("product_id"))
     return {"release_id": release_id, "findings": len(findings),
             "new": result["new"], "cleared": result["cleared"]}
 

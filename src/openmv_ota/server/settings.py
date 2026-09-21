@@ -101,6 +101,12 @@ class ServerSettings(BaseSettings):
     # purging a forgotten device's data. Optional -- without it, forget leaves data to the
     # datalake's retention. A separate secret again, and a write one, so it lives on the
     # server alone (a viewer grant never carries it).
+    # Webhooks: the worker thread's cadence (0 = no worker in this process; a deployment
+    # sets it, tests and one-shot tools leave it off), the outbound timeout, and whether
+    # endpoints may point at private addresses (a self-host behind its own firewall).
+    webhook_interval_s: int = 0
+    webhook_timeout_s: int = 10
+    webhook_allow_private: bool = False
     datalake_admin_token: str = Field(
         default="",
         validation_alias=AliasChoices("OPENMV_OTA_DATALAKE_ADMIN_TOKEN",

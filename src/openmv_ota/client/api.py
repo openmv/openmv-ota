@@ -149,6 +149,39 @@ class Api:
         """One cohort's row (devices, per-product split, pins); 404 for an unknown one."""
         return self._req("GET", f"/api/v1/admin/cohorts/{cohort}")
 
+    # --- webhooks ---
+    def list_webhooks(self):
+        return self._req("GET", "/api/v1/admin/webhooks")
+
+    def create_webhook(self, url: str, events: list, description: str = ""):
+        """Subscribe an endpoint; the answer carries its signing secret ONCE."""
+        return self._req("POST", "/api/v1/admin/webhooks",
+                         json={"url": url, "events": events, "description": description})
+
+    def webhook(self, webhook_id: str):
+        return self._req("GET", f"/api/v1/admin/webhooks/{webhook_id}")
+
+    def update_webhook(self, webhook_id: str, **fields):
+        return self._req("PATCH", f"/api/v1/admin/webhooks/{webhook_id}",
+                         json={k: v for k, v in fields.items() if v is not None})
+
+    def delete_webhook(self, webhook_id: str):
+        return self._req("DELETE", f"/api/v1/admin/webhooks/{webhook_id}")
+
+    def rotate_webhook(self, webhook_id: str):
+        return self._req("POST", f"/api/v1/admin/webhooks/{webhook_id}/rotate")
+
+    def ping_webhook(self, webhook_id: str):
+        return self._req("POST", f"/api/v1/admin/webhooks/{webhook_id}/test")
+
+    def webhook_deliveries(self, webhook_id: str, status=None, limit=None, offset=None):
+        params = {"status": status} if status else {}
+        return self._req("GET", f"/api/v1/admin/webhooks/{webhook_id}/deliveries",
+                         params=self._page(params, limit, offset, None, None))
+
+    def retry_delivery(self, webhook_id: str, delivery_id: str):
+        return self._req("POST", f"/api/v1/admin/webhooks/{webhook_id}/deliveries/{delivery_id}/retry")
+
     def products(self, limit=None, offset=None, sort=None, direction=None):
         """The account's product directory (id, friendly name, newest version, device/release
         counts), on the list contract."""

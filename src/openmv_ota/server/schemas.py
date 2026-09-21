@@ -515,6 +515,65 @@ class ProductDeclared(BaseModel):
     """False when the product was already known to this account."""
 
 
+class Webhook(BaseModel):
+    webhook_id: str
+    url: str
+    events: list[str]
+    """Subscribed event types: exact (`rollout.stop`), a family (`rollout.*`) or `*`."""
+    active: int = 1
+    description: str = ""
+    created_at: str = ""
+    created_by: str = ""
+    failures: int = 0
+    """Consecutive failed attempts; 50 disables the endpoint."""
+    disabled_reason: str = ""
+    last_delivery_at: str | None = None
+    last_status: int | None = None
+
+
+class WebhookCreated(Webhook):
+    secret: str
+    """Shown once. Verify `X-OpenMV-Signature` (`t=<ts>,v1=<hex>`) as HMAC-SHA256 of
+    `<ts>.<body>` under it."""
+
+
+class WebhookList(BaseModel):
+    webhooks: list[Webhook]
+    events: dict[str, str]
+    """The event catalogue: every type a subscription may name, with what it means."""
+
+
+class WebhookDeleted(BaseModel):
+    webhook_id: str
+    deleted: bool = True
+
+
+class WebhookPinged(BaseModel):
+    webhook_id: str
+    delivery_id: str
+    """A `webhook.ping` event was queued; watch it in the deliveries list."""
+
+
+class Delivery(BaseModel):
+    delivery_id: str
+    webhook_id: str
+    audit_seq: int
+    event: str
+    status: str
+    """pending (queued or awaiting a retry), delivered, dead (every attempt failed)."""
+    attempt: int
+    next_at: float
+    last_code: int | None = None
+    last_error: str = ""
+    created_at: str
+    delivered_at: str | None = None
+
+
+class DeliveryList(BaseModel):
+    deliveries: list[Delivery]
+    total: int
+
+
 class DeviceForgotten(BaseModel):
     device_id: str
     forgotten: bool = True

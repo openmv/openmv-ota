@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import sys
 import time
 import threading
@@ -410,6 +411,26 @@ _MIGRATIONS: list[list[str]] = [
         # decides whether a platform's camera will take what it is offered.
         "ALTER TABLE devices ADD COLUMN publish_seq BIGINT NOT NULL DEFAULT 0",
         "ALTER TABLE devices ADD COLUMN orders_by_seq INTEGER NOT NULL DEFAULT 0",
+    ],
+    [   # v29 -- webhooks. The audit log was always the event stream; this is its push
+        # side: an account's endpoints, and one delivery row per (endpoint, audit entry)
+        # that matched, carrying the retry state. Deliveries reference the audit seq
+        # rather than copying the entry, so what is sent is exactly what the log says.
+        "CREATE TABLE IF NOT EXISTS webhooks ("
+        "webhook_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, url TEXT NOT NULL, "
+        "secret TEXT NOT NULL, events TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, "
+        "description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, "
+        "created_by TEXT NOT NULL DEFAULT '', failures INTEGER NOT NULL DEFAULT 0, "
+        "disabled_reason TEXT NOT NULL DEFAULT '', last_delivery_at TEXT, last_status INTEGER)",
+        "CREATE INDEX IF NOT EXISTS idx_webhooks_account ON webhooks (account_id)",
+        "CREATE TABLE IF NOT EXISTS webhook_deliveries ("
+        "delivery_id TEXT PRIMARY KEY, webhook_id TEXT NOT NULL, audit_seq INTEGER NOT NULL, "
+        "event TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempt INTEGER NOT NULL DEFAULT 0, "
+        "next_at DOUBLE PRECISION NOT NULL, claimed_until DOUBLE PRECISION NOT NULL DEFAULT 0, "
+        "last_code INTEGER, last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, "
+        "delivered_at TEXT)",
+        "CREATE INDEX IF NOT EXISTS idx_deliveries_due ON webhook_deliveries (status, next_at)",
+        "CREATE INDEX IF NOT EXISTS idx_deliveries_hook ON webhook_deliveries (webhook_id, audit_seq)",
     ],
 ]
 
@@ -1706,7 +1727,160 @@ class SqlMetadataStore:
             "entry_hash, account_id, product_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry, account_id,
              None if product_id is None else int(product_id)))
+        if account_id:
+            self._fan_out(seq, action, account_id, ts)
         return seq
+
+    # --- webhooks: the audit log's push side ------------------------------------------------
+
+    @staticmethod
+    def event_matches(patterns, action: str) -> bool:
+        """``["*"]`` takes everything; ``"rollout.*"`` a family; ``"rollout.stop"`` one."""
+        for pat in patterns:
+            if pat == "*" or pat == action:
+                return True
+            if pat.endswith(".*") and action.startswith(pat[:-1]):
+                return True
+        return False
+
+    def _fan_out(self, seq: int, action: str, account_id: str, ts: str) -> None:
+        """One pending delivery per active endpoint of the account that subscribes to
+        this action. Cheap (an insert each) so the audit write stays fast; the worker does
+        the network."""
+        for hook in self.list_webhooks(account_id, active_only=True):
+            if self.event_matches(hook["events"], action):
+                self.execute(
+                    "INSERT INTO webhook_deliveries (delivery_id, webhook_id, audit_seq, event, "
+                    "status, attempt, next_at, created_at) VALUES (?,?,?,?,'pending',0,?,?)",
+                    ("dl_" + secrets.token_hex(8), hook["webhook_id"], seq, action, time.time(), ts))
+
+    def _hook_row(self, row) -> dict | None:
+        row = _d(row)
+        if row is not None:
+            row["events"] = json.loads(row["events"])
+            row["active"] = int(row["active"])
+        return row
+
+    def add_webhook(self, *, account_id: str, url: str, events: list, secret: str,
+                    description: str = "", created_by: str = "") -> dict:
+        wid = "wh_" + secrets.token_hex(8)
+        self.execute(
+            "INSERT INTO webhooks (webhook_id, account_id, url, secret, events, active, description, "
+            "created_at, created_by) VALUES (?,?,?,?,?,1,?,?,?)",
+            (wid, account_id, url, secret, json.dumps(list(events)), description, _now_iso(), created_by))
+        return self.get_webhook(wid, account_id)
+
+    def get_webhook(self, webhook_id: str, account_id: str | None = None) -> dict | None:
+        if account_id is None:
+            return self._hook_row(self.query_one("SELECT * FROM webhooks WHERE webhook_id = ?", (webhook_id,)))
+        return self._hook_row(self.query_one(
+            "SELECT * FROM webhooks WHERE webhook_id = ? AND account_id = ?", (webhook_id, account_id)))
+
+    def list_webhooks(self, account_id: str, active_only: bool = False) -> list:
+        sql = "SELECT * FROM webhooks WHERE account_id = ?"
+        if active_only:
+            sql += " AND active = 1"
+        return [self._hook_row(r) for r in self.query_all(sql + " ORDER BY created_at, webhook_id",
+                                                          (account_id,))]
+
+    def count_webhooks(self, account_id: str) -> int:
+        return self.query_one("SELECT COUNT(*) AS n FROM webhooks WHERE account_id = ?",
+                              (account_id,))["n"]
+
+    def update_webhook(self, webhook_id: str, **fields) -> None:
+        """url / events / active / description / secret; enabling clears the failure count
+        and the disabled reason, so a repaired endpoint starts clean."""
+        sets, params = [], []
+        for k, v in fields.items():
+            if k == "events":
+                v = json.dumps(list(v))
+            sets.append(f"{k} = ?")
+            params.append(v)
+        if fields.get("active") == 1:
+            sets += ["failures = 0", "disabled_reason = ''"]
+        self.execute(f"UPDATE webhooks SET {', '.join(sets)} WHERE webhook_id = ?",
+                     (*params, webhook_id))
+
+    def delete_webhook(self, webhook_id: str) -> None:
+        self.execute("DELETE FROM webhook_deliveries WHERE webhook_id = ?", (webhook_id,))
+        self.execute("DELETE FROM webhooks WHERE webhook_id = ?", (webhook_id,))
+
+    def enqueue_delivery(self, webhook_id: str, audit_seq: int, event: str) -> str:
+        """A delivery by hand -- the endpoint's test ping, or an operator's retry of an
+        entry the worker gave up on."""
+        did = "dl_" + secrets.token_hex(8)
+        self.execute(
+            "INSERT INTO webhook_deliveries (delivery_id, webhook_id, audit_seq, event, status, "
+            "attempt, next_at, created_at) VALUES (?,?,?,?,'pending',0,?,?)",
+            (did, webhook_id, audit_seq, event, time.time(), _now_iso()))
+        return did
+
+    def claim_due_deliveries(self, now: float, limit: int = 50, lease_s: float = 60.0) -> list:
+        """Pending deliveries whose time has come, leased to this worker for ``lease_s``
+        so a second process (or a slow attempt) never sends the same one twice."""
+        rows = self.query_all(
+            "SELECT * FROM webhook_deliveries WHERE status = 'pending' AND next_at <= ? "
+            "AND claimed_until <= ? ORDER BY next_at, audit_seq LIMIT ?", (now, now, limit))
+        out = []
+        for r in rows:
+            r = _d(r)
+            self.execute("UPDATE webhook_deliveries SET claimed_until = ? WHERE delivery_id = ? "
+                         "AND claimed_until <= ?", (now + lease_s, r["delivery_id"], now))
+            out.append(r)
+        return out
+
+    def finish_delivery(self, delivery_id: str, *, status: str, attempt: int, code, error: str,
+                        next_at: float) -> None:
+        self.execute(
+            "UPDATE webhook_deliveries SET status = ?, attempt = ?, last_code = ?, last_error = ?, "
+            "next_at = ?, claimed_until = 0, delivered_at = ? WHERE delivery_id = ?",
+            (status, attempt, code, error[:200], next_at,
+             _now_iso() if status == "delivered" else None, delivery_id))
+
+    def note_webhook_result(self, webhook_id: str, *, ok: bool, code) -> int:
+        """Bump or reset the consecutive-failure count; returns the count after."""
+        if ok:
+            self.execute("UPDATE webhooks SET failures = 0, last_delivery_at = ?, last_status = ? "
+                         "WHERE webhook_id = ?", (_now_iso(), code, webhook_id))
+            return 0
+        self.execute("UPDATE webhooks SET failures = failures + 1, last_delivery_at = ?, "
+                     "last_status = ? WHERE webhook_id = ?", (_now_iso(), code, webhook_id))
+        return self.query_one("SELECT failures FROM webhooks WHERE webhook_id = ?",
+                              (webhook_id,))["failures"]
+
+    def disable_webhook(self, webhook_id: str, reason: str) -> None:
+        self.execute("UPDATE webhooks SET active = 0, disabled_reason = ? WHERE webhook_id = ?",
+                     (reason, webhook_id))
+        self.execute("UPDATE webhook_deliveries SET status = 'dead' WHERE webhook_id = ? "
+                     "AND status = 'pending'", (webhook_id,))
+
+    def list_deliveries(self, webhook_id: str, limit: int = 50, offset: int = 0,
+                        status: str | None = None) -> tuple[list, int]:
+        where, params = "WHERE webhook_id = ?", [webhook_id]
+        if status:
+            where += " AND status = ?"
+            params.append(status)
+        rows = self.query_all(
+            f"SELECT delivery_id, webhook_id, audit_seq, event, status, attempt, next_at, "
+            f"last_code, last_error, created_at, delivered_at FROM webhook_deliveries {where} "
+            f"ORDER BY created_at DESC, delivery_id DESC LIMIT ? OFFSET ?", (*params, limit, offset))
+        total = self.query_one(f"SELECT COUNT(*) AS n FROM webhook_deliveries {where}",
+                               tuple(params))["n"]
+        return [_d(r) for r in rows], total
+
+    def get_delivery(self, delivery_id: str, webhook_id: str) -> dict | None:
+        return _d(self.query_one("SELECT * FROM webhook_deliveries WHERE delivery_id = ? "
+                                 "AND webhook_id = ?", (delivery_id, webhook_id)))
+
+    def retry_delivery(self, delivery_id: str) -> None:
+        self.execute("UPDATE webhook_deliveries SET status = 'pending', next_at = ?, claimed_until = 0 "
+                     "WHERE delivery_id = ?", (time.time(), delivery_id))
+
+    def get_audit_entry(self, seq: int) -> dict | None:
+        row = _d(self.query_one("SELECT * FROM audit WHERE seq = ?", (seq,)))
+        if row is not None:
+            row["data"] = json.loads(row["data"] or "{}")
+        return row
 
     AUDIT_SORTS = {"when": "seq", "action": "action", "actor": "actor", "entity": "entity_id"}
 

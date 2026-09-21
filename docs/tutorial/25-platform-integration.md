@@ -364,7 +364,11 @@ for numeric telemetry.
 
 ## Watching a fleet you do not sit in front of
 
-There are no webhooks. Everything is polled, and the reads are built for it:
+Subscribe an endpoint and the server tells you: [Webhooks](26-webhooks.md) POST every
+matching audit entry as it is written — a rollout pausing itself, a camera falling
+back, a new advisory — signed, retried, and deduplicable by the entry's sequence
+number. The same log is also readable forward, which is how you reconcile after an
+outage on your side, or watch without an endpoint at all:
 
 | To find | Call |
 |---|---|
