@@ -97,6 +97,14 @@ class ServerSettings(BaseSettings):
         validation_alias=AliasChoices("OPENMV_OTA_DATALAKE_TOKEN_SECRET",
                                       "OPENMV_DATALAKE_TOKEN_SECRET"))
     datalake_token_ttl: int = 86400        # seconds; renewed each check-in, like Live's
+    # The datalake's OPERATOR credential, for the one write the update server makes there:
+    # purging a forgotten device's data. Optional -- without it, forget leaves data to the
+    # datalake's retention. A separate secret again, and a write one, so it lives on the
+    # server alone (a viewer grant never carries it).
+    datalake_admin_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENMV_OTA_DATALAKE_ADMIN_TOKEN",
+                                      "OPENMV_DATALAKE_ADMIN_TOKEN"))
     # A dashboard's viewer grant (relay watch token + datalake read token) is handed to a
     # browser or a script and cannot be revoked short of rotating a secret, so it lives
     # MINUTES, not the day a sleeping camera's own grant needs. One TTL covers both halves:

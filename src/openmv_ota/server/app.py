@@ -809,7 +809,7 @@ def _ranged(data: bytes, media_type: str, header: str | None) -> Response:
 
 
 def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_auth=None,
-               osv=None):
+               osv=None, datalake=None):
     """Build the ASGI app. Collaborators default to the settings-driven backends; the website
     injects its own. The server HMAC secret comes from the DB (seeded by ``server init``) or
     ``OPENMV_OTA_CAPABILITY_SECRET`` -- required so capability tokens are stable across workers."""
@@ -840,6 +840,8 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min)
     from .advisor import OsvClient
     app.state.osv = osv if osv is not None else OsvClient()
+    from .datalake import DatalakeAdmin
+    app.state.datalake = datalake if datalake is not None else DatalakeAdmin(settings)
 
     @app.middleware("http")
     async def _security_headers(request, call_next):

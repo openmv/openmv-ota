@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from . import datalog as datalog_mod
 from . import live as live_mod
 from .auth import Principal, hash_token, require_scope
+from .datalake import DatalakeError
 from .schemas import (
     Account,
     AccountActive,
@@ -943,9 +944,14 @@ def bind_device(device_id: str, request: Request,
 
 @admin.delete("/devices/{device_id}", responses={200: {"model": DeviceForgotten}})
 def forget_device(device_id: str, request: Request,
+                  keep_data: bool = Query(False, description="leave the device's telemetry, "
+                                          "logs and frames in the datalake (default: erase them)"),
                   principal: Principal = Depends(require_scope("manage"))):
     """Remove a device from the fleet: the install is gone and the camera is not coming
-    back.
+    back. Its data goes with it: unless ``keep_data`` is set, the datalake erases
+    everything the device stored under this account BEFORE the fleet row goes, so a
+    datalake that cannot be reached leaves the device in place (502) to be retried rather
+    than forgotten with its data orphaned.
 
     This is the other half of binding one. A platform that maps each install of its
     product to a device needs a way to say an install ended -- without it a decommissioned
@@ -964,11 +970,27 @@ def forget_device(device_id: str, request: Request,
     if dev is None or dev.get("account_id") != principal.account_id \
             or not principal.may(dev.get("product_id")):
         raise HTTPException(status_code=404)
+    data = {"product_id": dev.get("product_id")}
+    purged = None
+    lake = request.app.state.datalake
+    if keep_data:
+        data["data_kept"] = True
+    elif lake.configured:
+        try:
+            purged = lake.purge_device(principal.account_id, device_id)
+        except DatalakeError as e:
+            raise HTTPException(status_code=502,
+                                detail=f"datalake did not erase the device's data ({e}); "
+                                       "the device was kept -- retry, or pass keep_data=true")
+        data["data_deleted"] = purged["deleted"]
+        data["data_bytes"] = purged["bytes"]
     ms.forget_device(device_id)
     ms.append_audit(actor=principal.name, action="device.forget", entity_type="device",
-                    entity_id=device_id, data={"product_id": dev.get("product_id")},
+                    entity_id=device_id, data=data,
                     account_id=principal.account_id, product_id=dev.get("product_id"))
-    return {"device_id": device_id, "forgotten": True}
+    return {"device_id": device_id, "forgotten": True,
+            "data_deleted": purged["deleted"] if purged else None,
+            "data_bytes": purged["bytes"] if purged else None}
 
 
 @admin.post("/cohorts/pin", responses={200: {"model": CohortPinned}})

@@ -518,6 +518,10 @@ class ProductDeclared(BaseModel):
 class DeviceForgotten(BaseModel):
     device_id: str
     forgotten: bool = True
+    data_deleted: int | None = None
+    """Objects the datalake erased with it; None when the data was kept (``keep_data``)
+    or the server has no datalake."""
+    data_bytes: int | None = None
 
 
 class ProductRenamed(BaseModel):

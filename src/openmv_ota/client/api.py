@@ -247,10 +247,12 @@ class Api:
     def bind_device(self, device_id):
         return self._req("POST", "/api/v1/admin/devices/%s/account" % device_id)
 
-    def forget_device(self, device_id):
-        """Remove a device from the fleet -- the install ended. Its install history and
-        the audit log stay; a camera that checks in again enrols as a new device."""
-        return self._req("DELETE", "/api/v1/admin/devices/%s" % device_id)
+    def forget_device(self, device_id, keep_data: bool = False):
+        """Remove a device from the fleet -- the install ended -- and, unless ``keep_data``,
+        erase what it stored in the datalake. Its install history and the audit log stay;
+        a camera that checks in again enrols as a new device."""
+        return self._req("DELETE", "/api/v1/admin/devices/%s" % device_id,
+                         params={"keep_data": "true"} if keep_data else None)
 
     def declare_product(self, product_id, display_name=""):
         """Create a product for this account before anything is published to it, so it can

@@ -491,7 +491,7 @@ def test_bind_device(wired, tmp_path, capsys):
     assert store.device_account("d1")["source"] == "admin"
 
 
-def test_forget_device(wired, tmp_path, capsys):
+def test_forget_device(wired, tmp_path, capsys, monkeypatch):
     """The install ended. The device leaves the fleet; what it installed stays."""
     store, _ = wired
     store.upsert_device(device_id="d1", product_id=BID)
@@ -500,6 +500,17 @@ def test_forget_device(wired, tmp_path, capsys):
     assert store.get_device("d1") is None
     assert main(["client", "device", "forget", "--device-id", "d1"]) == 1   # gone is a 404
     assert "404" in capsys.readouterr().err
+    # --keep-data leaves the datalake alone and says so; with a datalake wired, the
+    # default erases the device's data and reports what went
+    store.upsert_device(device_id="d2", product_id=BID)
+    assert main(["client", "device", "forget", "--device-id", "d2", "--keep-data"]) == 0
+    assert "removed from the fleet (data kept)" in capsys.readouterr().out
+    from openmv_ota.server.datalake import DatalakeAdmin
+    monkeypatch.setattr(DatalakeAdmin, "configured", property(lambda self: True))
+    monkeypatch.setattr(DatalakeAdmin, "purge_device", lambda self, a, d: {"deleted": 5, "bytes": 2048})
+    store.upsert_device(device_id="d3", product_id=BID)
+    assert main(["client", "device", "forget", "--device-id", "d3"]) == 0
+    assert "and 5 stored object(s), 2048 bytes, erased" in capsys.readouterr().out
 
 
 def test_product_create(wired, tmp_path, capsys):

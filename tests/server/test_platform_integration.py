@@ -381,3 +381,80 @@ def test_the_root_reads_any_accounts_audit_and_everyone_elses_stays_their_own(tm
                   params={"action": "cohort.create", "all": "true"}).json()
     assert every["total"] == 2
     assert {e["account_id"] for e in every["events"]} == {a["account_id"], b["account_id"]}
+
+
+class _FakeLake:
+    """The datalake as the update server sees it: purges answer with counts, or fail."""
+    def __init__(self, configured=True, fail=False):
+        self.configured, self.fail, self.calls = configured, fail, []
+
+    def purge_device(self, account_id, device_id):
+        from openmv_ota.server.datalake import DatalakeError
+        self.calls.append((account_id, device_id))
+        if self.fail:
+            raise DatalakeError("HTTP 503")
+        return {"deleted": 3, "bytes": 4096}
+
+
+def test_forgetting_a_device_erases_its_data_first(tmp_path):
+    """Forget is the erasure a retired camera (or a data-subject request) calls for: the
+    datalake purges what the device stored under the account BEFORE the fleet row goes,
+    so a datalake that will not answer leaves the device in place to be retried."""
+    lake = _FakeLake()
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    store.set_meta("capability_secret", "x")
+    store.add_token(hash_token("acct"), "ci", ["manage", "observe"], account_id="a1")
+    app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
+                                    swd_ids_verify_token="t"),
+                     metastore=store, storage=LocalArtifactStorage(str(tmp_path / "blobs")),
+                     verifier=_Verifier(), datalake=lake)
+    c = TestClient(app)
+    auth = {"Authorization": "Bearer acct"}
+    for did in ("OPENMV_N6:aa", "OPENMV_N6:bb", "OPENMV_N6:cc"):
+        store.upsert_device(device_id=did, product_id=7, board="OPENMV_N6", account_id="a1")
+    out = c.delete("/api/v1/admin/devices/OPENMV_N6:aa", headers=auth).json()
+    assert out == {"device_id": "OPENMV_N6:aa", "forgotten": True, "data_deleted": 3, "data_bytes": 4096}
+    assert lake.calls == [("a1", "OPENMV_N6:aa")] and store.get_device("OPENMV_N6:aa") is None
+    # keep_data: the fleet row goes, the data stays, and the audit says so
+    out = c.delete("/api/v1/admin/devices/OPENMV_N6:bb", headers=auth, params={"keep_data": "true"}).json()
+    assert out["forgotten"] is True and out["data_deleted"] is None and lake.calls == [("a1", "OPENMV_N6:aa")]
+    events = {e["entity_id"]: e["data"] for e in c.get("/api/v1/admin/audit", headers=auth).json()["events"]}
+    assert events["OPENMV_N6:aa"]["data_deleted"] == 3 and events["OPENMV_N6:bb"]["data_kept"] is True
+    # the datalake down: 502, the device is still in the fleet, nothing half-done
+    lake.fail = True
+    r = c.delete("/api/v1/admin/devices/OPENMV_N6:cc", headers=auth)
+    assert r.status_code == 502 and "retry" in r.json()["detail"]
+    assert store.get_device("OPENMV_N6:cc") is not None
+    # no datalake configured: forget as before, data fields None
+    app.state.datalake = _FakeLake(configured=False)
+    out = c.delete("/api/v1/admin/devices/OPENMV_N6:cc", headers=auth).json()
+    assert out["forgotten"] is True and out["data_deleted"] is None
+
+
+def test_the_datalake_admin_client_speaks_to_the_purge_route(tmp_path):
+    """The one write the update server makes to the datalake, against a fake transport."""
+    import httpx
+    from openmv_ota.server.datalake import DatalakeAdmin, DatalakeError
+    seen = []
+    def handler(request):
+        seen.append((request.method, str(request.url), request.headers.get("authorization")))
+        if "boom" in str(request.url):
+            return httpx.Response(503, json={"detail": "down"})
+        if "explode" in str(request.url):
+            raise httpx.ConnectError("no route")
+        return httpx.Response(200, json={"account": "a1", "device": "d", "deleted": 2, "bytes": 10})
+    lake = DatalakeAdmin(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
+                                        swd_ids_verify_token="t", datalake_url="https://lake.test/",
+                                        datalake_admin_token="lake-admin"),
+                         http=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert lake.configured
+    assert lake.purge_device("a1", "d") == {"deleted": 2, "bytes": 10}
+    assert seen[-1] == ("DELETE", "https://lake.test/api/v1/admin/accounts/a1/devices/d", "Bearer lake-admin")
+    import pytest
+    with pytest.raises(DatalakeError, match="HTTP 503"):
+        lake.purge_device("a1", "boom")
+    with pytest.raises(DatalakeError, match="no route"):
+        lake.purge_device("a1", "explode")
+    assert not DatalakeAdmin(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
+                                            swd_ids_verify_token="t")).configured

@@ -275,11 +275,14 @@ When a unit is retired:
 openmv-ota client device forget --device-id OPENMV_N6:3c0021000c51333037343234
 ```
 
-It leaves the fleet and stops counting against the account's device limit. Its install
-history stays — a deployment row records what happened on a day that has already passed,
-and rollout counters are built from those rows — and the removal is in the audit log. A
-camera that checks in again afterwards is a device the server has not seen before: it
-enrols from scratch and is not yours again until you bind it.
+It leaves the fleet and stops counting against the account's device limit, and the
+datalake erases everything it stored under the account — which is the erasure an end
+customer's data-subject request calls for, one call. `--keep-data` leaves the data to
+retention instead. Its install history stays — a deployment row records what happened on
+a day that has already passed, and rollout counters are built from those rows — and the
+removal is in the audit log, with what was erased. A camera that checks in again
+afterwards is a device the server has not seen before: it enrols from scratch and is not
+yours again until you bind it.
 
 ## Building and publishing
 

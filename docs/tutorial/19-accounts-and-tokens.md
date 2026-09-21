@@ -239,11 +239,15 @@ $ openmv-ota client device forget --device-id OPENMV_N6:30003d000851303436313832
 device OPENMV_N6:30003d000851303436313832 removed from the fleet
 ```
 
-It leaves the fleet and stops counting against the device limit. Its install history
-stays — a deployment row records what happened on a day that has already passed, and
-rollout counters are built from those rows — and the removal is in the audit log. A
-camera that checks in again afterwards is a device the server has not seen before: it
-enrols from scratch, and is not yours again until you bind it.
+It leaves the fleet and stops counting against the device limit, and everything it
+stored in the datalake — telemetry, logs, frames — is erased with it, first: a datalake
+that cannot be reached answers 502 and leaves the device in place to retry, rather than
+forgetting it with its data orphaned. Pass `--keep-data` to leave the data to the
+datalake's retention instead. Its install history stays — a deployment row records what
+happened on a day that has already passed, and rollout counters are built from those
+rows — and the removal is in the audit log, with what was erased. A camera that checks in
+again afterwards is a device the server has not seen before: it enrols from scratch, and
+is not yours again until you bind it.
 
 ---
 

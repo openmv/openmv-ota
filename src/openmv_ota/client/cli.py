@@ -359,6 +359,9 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_bind.set_defaults(func=cmd_bind, _command="client device bind")
     p_forget = dsub.add_parser("forget", help="remove a device from the fleet (the install "
                                               "ended); history and audit are kept")
+    p_forget.add_argument("--keep-data", action="store_true",
+                          help="leave its telemetry, logs and frames in the datalake "
+                               "(default: erase them with it)")
     p_forget.add_argument("--device-id", required=True, metavar="DEVICE_ID",
                           help="device to remove")
     _creds(p_forget)
@@ -949,8 +952,13 @@ def cmd_bind(args: argparse.Namespace) -> int:
 def cmd_device_forget(args: argparse.Namespace) -> int:
     """Remove a device from the fleet. The camera is gone; what it installed is history."""
     try:
-        res = _make_api(config.resolve(args.server, args.token)).forget_device(args.device_id)
-        return _emit(args, res, "device %s removed from the fleet" % args.device_id)
+        res = _make_api(config.resolve(args.server, args.token)).forget_device(
+            args.device_id, keep_data=args.keep_data)
+        if res.get("data_deleted") is None:
+            tail = " (data kept)" if args.keep_data else ""
+        else:
+            tail = " and %d stored object(s), %d bytes, erased" % (res["data_deleted"], res["data_bytes"])
+        return _emit(args, res, "device %s removed from the fleet%s" % (args.device_id, tail))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
