@@ -76,8 +76,10 @@ account acct_7bd21c50e83a94f1 already exists for that --client-ref
 `list` shows the accounts your credential provisioned (every account, under
 `accounts.all`), each with what a directory shows beside a name — registered devices,
 releases, active rollouts, the newest check-in. `--q` searches by name, id or client
-reference, `--limit`/`--offset` page, and `total` counts what the search matched;
-`rename` changes only the display name (the id is forever):
+reference, `--active`/`--inactive` narrow to switched-on or deactivated accounts,
+`--limit`/`--offset` page, and `total` counts what the filters matched. `show` is one
+account's row by id, counts included, without listing the rest; `rename` changes only
+the display name (the id is forever):
 
 ```
 $ openmv-ota client account list --q drone
@@ -97,6 +99,20 @@ $ openmv-ota client account list --q drone
     }
   ],
   "total": 1
+}
+
+$ openmv-ota client account show --account-id acct_7bd21c50e83a94f1
+{
+  "account_id": "acct_7bd21c50e83a94f1",
+  "name": "DroneCo",
+  "created_at": "2026-08-31T20:02:17.481903+00:00",
+  "active": 1,
+  "device_limit": 10,
+  "client_ref": "cust_8a41f2",
+  "devices": 7,
+  "releases": 3,
+  "active_rollouts": 1,
+  "last_seen": "2026-09-20T14:02:11.318557+00:00"
 }
 
 $ openmv-ota client account rename --account-id acct_7bd21c50e83a94f1 --name "DroneCo GmbH"

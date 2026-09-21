@@ -157,6 +157,9 @@ def test_cohort_list_shows_pins(tmp_path):
            json={"product_id": BID, "cohort": "beta", "release_id": "rel_p"})
     rows = {x["cohort"]: x for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}
     assert rows["beta"]["pins"] == {str(BID): "rel_p"}
+    # one cohort by name is the listing's row; a name nothing is in is 404
+    assert c.get("/api/v1/admin/cohorts/beta", headers=AUTH).json() == rows["beta"]
+    assert c.get("/api/v1/admin/cohorts/gamma", headers=AUTH).status_code == 404
     c.post("/api/v1/admin/cohorts/pin", headers=AUTH,
            json={"product_id": BID, "cohort": "beta", "release_id": None})
     rows = {x["cohort"]: x for x in c.get("/api/v1/admin/cohorts", headers=AUTH).json()["cohorts"]}

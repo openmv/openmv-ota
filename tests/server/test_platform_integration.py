@@ -146,6 +146,10 @@ def test_a_product_can_exist_before_anything_is_published_to_it(tmp_path):
     assert made["created"] is True and made["product_id_str"] == "4242"
 
     listed = c.get("/api/v1/admin/products", headers=auth).json()["products"]
+    # the single read is the listing's row for that id; an unknown id is 404
+    one = c.get(f"/api/v1/admin/products/{made['product_id']}", headers=auth).json()
+    assert one == next(p for p in listed if p["product_id"] == made["product_id"])
+    assert c.get("/api/v1/admin/products/424242", headers=auth).status_code == 404
     assert [(p["product_id"], p["releases"], p["devices"]) for p in listed] == [(4242, 0, 0)]
     assert listed[0]["product"] == "Workflow runner"
 
@@ -297,6 +301,20 @@ def test_the_account_directory_searches_pages_and_counts(tmp_path):
     assert page["total"] == 3 and [a["account_id"] for a in page["accounts"]] == [ids[2]]
     # another operator's search finds nothing of these
     assert c.get("/api/v1/admin/accounts", headers=OTHER, params={"q": "acme"}).json()["total"] == 0
+    # one row by id, counts included; another operator's read of it is 404, not 403
+    one = c.get(f"/api/v1/admin/accounts/{ids[0]}", headers=RF).json()
+    assert (one["account_id"], one["devices"], one["releases"], one["active_rollouts"]) == \
+        (ids[0], 2, 1, 1)
+    assert one["client_ref"] == "cust_1" and one["last_seen"] is not None
+    assert c.get(f"/api/v1/admin/accounts/{ids[1]}", headers=RF).json()["devices"] == 0
+    assert c.get(f"/api/v1/admin/accounts/{ids[0]}", headers=OTHER).status_code == 404
+    assert c.get("/api/v1/admin/accounts/acct_nope", headers=RF).status_code == 404
+    # the active filter: "how many are switched off" is one bounded query
+    c.post(f"/api/v1/admin/accounts/{ids[1]}/deactivate", headers=RF)
+    off = c.get("/api/v1/admin/accounts", headers=RF, params={"active": "false", "limit": 1}).json()
+    assert off["total"] == 1 and off["accounts"][0]["account_id"] == ids[1]
+    assert c.get("/api/v1/admin/accounts", headers=RF, params={"active": "true"}).json()["total"] == 2
+    assert c.get(f"/api/v1/admin/accounts/{ids[1]}", headers=RF).json()["active"] == 0
     # the CLI's full listing (no limit) still works for a platform with no page in mind
     assert len(c.get("/api/v1/admin/accounts", headers=ROOT).json()["accounts"]) == 3
 

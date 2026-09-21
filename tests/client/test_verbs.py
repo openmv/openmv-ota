@@ -305,6 +305,14 @@ def test_cohort_list_and_assign(wired, tmp_path, capsys):
     assert main(["client", "cohort", "list"]) == 0
     assert json.loads(capsys.readouterr().out) == {"cohorts": [
         {"cohort": "beta", "devices": 1, "by_product": {str(BID): 1}, "pins": {}}], "total": 1}
+    # one cohort by name is the listing's row; one product by id likewise
+    assert main(["client", "cohort", "show", "--cohort", "beta"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "cohort": "beta", "devices": 1, "by_product": {str(BID): 1}, "pins": {}}
+    assert main(["client", "cohort", "show", "--cohort", "gamma"]) != 0
+    assert "404" in capsys.readouterr().err
+    assert main(["client", "product", "show", "--product-id", str(BID)]) == 0
+    assert json.loads(capsys.readouterr().out)["product_id"] == BID
 
 
 def test_rollout_list_cohort_filter(wired, tmp_path, capsys):
@@ -560,6 +568,14 @@ def test_account_lifecycle_verbs(tmp_path, monkeypatch, capsys):
     assert "deactivated" in capsys.readouterr().out and store.get_account("acctA")["active"] == 0
     assert main(["client", "account", "activate", "--account-id", "acctA"]) == 0
     assert "activated" in capsys.readouterr().out
+    # one account by id, and the listing narrowed to the switched-off ones
+    import json
+    assert main(["client", "account", "show", "--account-id", "acctA"]) == 0
+    assert json.loads(capsys.readouterr().out)["name"] == "New"
+    assert main(["client", "account", "list", "--inactive"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"accounts": [], "total": 0}
+    assert main(["client", "account", "list", "--active"]) == 0
+    assert json.loads(capsys.readouterr().out)["total"] == 1
 
 
 def test_token_verbs(tmp_path, monkeypatch, capsys):

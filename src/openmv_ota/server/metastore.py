@@ -1537,7 +1537,7 @@ class SqlMetadataStore:
         return _d(self.query_one("SELECT * FROM accounts WHERE account_id = ?", (account_id,)))
 
     @staticmethod
-    def _accounts_where(created_by, q) -> tuple[str, list]:
+    def _accounts_where(created_by, q, active=None) -> tuple[str, list]:
         conds, params = [], []
         if created_by is not None:
             conds.append("created_by = ?")
@@ -1545,25 +1545,30 @@ class SqlMetadataStore:
         if q:
             conds.append("(LOWER(name) LIKE ? OR account_id LIKE ? OR client_ref LIKE ?)")
             params += ["%" + q.lower() + "%", "%" + q + "%", "%" + q + "%"]
+        if active is not None:
+            conds.append("active = ?")
+            params.append(1 if active else 0)
         return (" WHERE " + " AND ".join(conds)) if conds else "", params
 
     def list_accounts(self, created_by: str | None = None, q: str | None = None,
-                      limit: int | None = None, offset: int = 0) -> list[dict]:
+                      limit: int | None = None, offset: int = 0,
+                      active: bool | None = None) -> list[dict]:
         """Every account, or only the ones ``created_by`` this operator credential.
 
         None is the server operator's view. A string is a tenant-of-a-tenant view: a
         platform reselling this service sees the customers it provisioned and not that
         anyone else exists. ``q`` matches the name, the id or the client reference;
         ``limit``/``offset`` page (no limit = all of them, the CLI's whole listing)."""
-        where, params = self._accounts_where(created_by, q)
+        where, params = self._accounts_where(created_by, q, active)
         sql = "SELECT * FROM accounts" + where + " ORDER BY created_at, account_id"
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params += [limit, offset]
         return [_d(r) for r in self.query_all(sql, tuple(params))]
 
-    def count_accounts(self, created_by: str | None = None, q: str | None = None) -> int:
-        where, params = self._accounts_where(created_by, q)
+    def count_accounts(self, created_by: str | None = None, q: str | None = None,
+                       active: bool | None = None) -> int:
+        where, params = self._accounts_where(created_by, q, active)
         return self.query_one("SELECT COUNT(*) AS n FROM accounts" + where, tuple(params))["n"]
 
     def account_counts(self, account_ids) -> dict:

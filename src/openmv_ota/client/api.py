@@ -141,6 +141,14 @@ class Api:
                 params[k] = v
         return params
 
+    def product(self, product_id: int):
+        """One product's directory row; 404 for one the account has never seen."""
+        return self._req("GET", f"/api/v1/admin/products/{product_id}")
+
+    def cohort(self, cohort: str):
+        """One cohort's row (devices, per-product split, pins); 404 for an unknown one."""
+        return self._req("GET", f"/api/v1/admin/cohorts/{cohort}")
+
     def products(self, limit=None, offset=None, sort=None, direction=None):
         """The account's product directory (id, friendly name, newest version, device/release
         counts), on the list contract."""
@@ -261,10 +269,16 @@ class Api:
             body["client_ref"] = client_ref
         return self._req("POST", "/api/v1/admin/accounts", json=body)
 
-    def list_accounts(self, q: str | None = None, limit=None, offset=None):
+    def list_accounts(self, q: str | None = None, limit=None, offset=None, active=None):
         params = {"q": q} if q else {}
+        if active is not None:
+            params["active"] = "true" if active else "false"
         return self._req("GET", "/api/v1/admin/accounts",
                          params=self._page(params, limit, offset, None, None))
+
+    def account(self, account_id: str):
+        """One account's directory row (counts included), without listing them all."""
+        return self._req("GET", f"/api/v1/admin/accounts/{account_id}")
 
     def lookup_devices(self, q: str, limit=None, offset=None):
         """(server root) a camera anywhere on the server, by a fragment of its id or name."""

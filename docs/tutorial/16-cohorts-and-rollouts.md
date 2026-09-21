@@ -43,6 +43,9 @@ $ openmv-ota client cohort list
 
 $ openmv-ota client cohort assign --cohort beta --product-id 5553380507785669254
 assigned 412 device(s) (product 5553380507785669254) to cohort beta
+
+$ openmv-ota client cohort show --cohort beta
+{ "cohort": "beta", "devices": 420, "by_product": { "5553380507785669254": 420 }, "pins": {} }
 ```
 
 `assign` takes exactly one selector: `--device-id` (repeatable) moves those exact

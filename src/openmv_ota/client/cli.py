@@ -203,6 +203,11 @@ def register(parser: argparse.ArgumentParser) -> None:
     _list_flags(p_prl, "product, devices, releases, newest")
     _creds(p_prl)
     p_prl.set_defaults(func=cmd_products, _command="client product list")
+    p_prs = prsub.add_parser("show", help="one product: label, newest version, counts (JSON)")
+    p_prs.add_argument("--product-id", required=True, type=int, metavar="PRODUCT_ID",
+                       help="the product id (from ota.toml)")
+    _creds(p_prs)
+    p_prs.set_defaults(func=cmd_product_show, _command="client product show")
     p_prc = prsub.add_parser("create", help="declare a product before publishing to it, so it "
                                             "can be named and have devices bound first")
     p_prc.add_argument("--product-id", required=True, type=int, metavar="PRODUCT_ID",
@@ -233,6 +238,10 @@ def register(parser: argparse.ArgumentParser) -> None:
     _list_flags(p_col, "cohort, devices, products, pins")
     _creds(p_col)
     p_col.set_defaults(func=cmd_cohort, _command="client cohort list", action="list")
+    p_cos = cosub.add_parser("show", help="one cohort: devices, per-product split, pins (JSON)")
+    p_cos.add_argument("--cohort", required=True, help="the cohort's name")
+    _creds(p_cos)
+    p_cos.set_defaults(func=cmd_cohort, _command="client cohort show", action="show")
     p_coc = cosub.add_parser("create", help="declare an empty cohort to assign devices into later")
     p_coc.add_argument("--cohort", required=True, help="the label to create")
     _creds(p_coc)
@@ -408,8 +417,15 @@ def register(parser: argparse.ArgumentParser) -> None:
                                                     "reference contains TEXT")
     p_acl.add_argument("--limit", type=int, metavar="N", help="page size (default: all)")
     p_acl.add_argument("--offset", type=int, default=0, metavar="N", help="page start")
+    g = p_acl.add_mutually_exclusive_group()
+    g.add_argument("--active", action="store_true", help="only accounts that are switched on")
+    g.add_argument("--inactive", action="store_true", help="only deactivated accounts")
     _creds(p_acl)
     p_acl.set_defaults(func=cmd_account, _command="client account list", action="list")
+    p_acs = acsub.add_parser("show", help="one account, with its device/release counts (JSON)")
+    p_acs.add_argument("--account-id", required=True, metavar="ACCOUNT_ID", help="the account")
+    _creds(p_acs)
+    p_acs.set_defaults(func=cmd_account, _command="client account show", action="show")
     p_acl2 = acsub.add_parser("limit", help="set an account's device entitlement (operator)")
     p_acl2.add_argument("--account-id", required=True, metavar="ACCOUNT_ID", help="the account")
     g = p_acl2.add_mutually_exclusive_group(required=True)
@@ -873,6 +889,8 @@ def cmd_cohort(args: argparse.Namespace) -> int:
             print(json.dumps(api.list_cohorts(args.product_id, limit=args.limit,
                                               offset=args.offset, sort=args.sort,
                                               direction=args.dir), indent=2))
+        elif args.action == "show":
+            print(json.dumps(api.cohort(args.cohort), indent=2))
         elif args.action == "create":
             res = api.create_cohort(args.cohort)
             return _emit(args, res, "cohort %s created (no devices yet)" % res["cohort"])
@@ -981,9 +999,13 @@ def cmd_account(args: argparse.Namespace) -> int:
         elif args.action == "activate":
             res = api.activate_account(args.account_id)
             return _emit(args, res, "account %s activated" % args.account_id)
+        elif args.action == "show":
+            print(json.dumps(api.account(args.account_id), indent=2))
         else:
+            active = True if args.active else (False if args.inactive else None)
             print(json.dumps(api.list_accounts(q=args.q, limit=args.limit,
-                                               offset=args.offset or None), indent=2))
+                                               offset=args.offset or None, active=active),
+                             indent=2))
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -1193,6 +1215,10 @@ def cmd_installs(args: argparse.Namespace) -> int:
 def cmd_fleet(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.fleet(args.product_id, cohort=args.cohort,
                                             totals=args.totals))
+
+
+def cmd_product_show(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.product(args.product_id))
 
 
 def cmd_products(args: argparse.Namespace) -> int:

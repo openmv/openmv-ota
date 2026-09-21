@@ -109,7 +109,8 @@ table, so a full page is never mistaken for a complete list. `--help` names the
 sortable columns for each verb; the API reference documents the same query
 parameters. `client product list` is the directory those filters key on — every
 product id the account has seen, with its friendly name, newest version and
-device/release counts. The name comes from the newest release's manifest unless
+device/release counts, and `client product show --product-id ID` is one of those rows
+on its own. The name comes from the newest release's manifest unless
 `client product rename --product-id ID --name "..."` sets one (`--clear` goes back).
 
 ## The per-device rows

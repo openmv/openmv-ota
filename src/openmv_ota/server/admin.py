@@ -15,15 +15,17 @@ from . import datalog as datalog_mod
 from . import live as live_mod
 from .auth import Principal, hash_token, require_scope
 from .schemas import (
+    Account,
     AccountActive,
     AccountCreated,
     AccountLimited,
     AccountList,
     AccountNamed,
     AdvisoryList,
-    ProductDeclared, ProductList, ProductRenamed, ProductViewerGrant, ViewerGrants,
+    Product, ProductDeclared, ProductList, ProductRenamed, ProductViewerGrant, ViewerGrants,
     AdvisoryScan,
     AuditList,
+    Cohort,
     CohortAssigned,
     CohortList,
     CohortPinned,
@@ -235,6 +237,8 @@ def create_account(body: AccountCreate, request: Request,
 @admin.get("/accounts", responses={200: {"model": AccountList}})
 def list_accounts(request: Request,
                   q: str | None = Query(None, description="name, id or client_ref contains"),
+                  active: bool | None = Query(None, description="only active (true) or "
+                                              "deactivated (false) accounts"),
                   limit: int = Query(_MAX_PAGE, ge=1, le=_MAX_PAGE), offset: int = 0,
                   principal: Principal = Depends(require_scope("accounts"))):
     """The operator's account directory. Operator scope, not an account credential:
@@ -246,15 +250,29 @@ def list_accounts(request: Request,
     else on the server.
 
     Each row carries what a directory shows beside a name: registered devices, releases,
-    active rollouts and the newest check-in. `q` searches, `limit`/`offset` page, and
-    `total` counts what `q` matched."""
+    active rollouts and the newest check-in. `q` searches, `active` narrows to live or
+    deactivated accounts, `limit`/`offset` page, and `total` counts what the filters
+    matched -- so "how many accounts are switched off" is `active=false&limit=1`."""
     ms = request.app.state.metastore
     owner = _owner(principal)
-    rows = ms.list_accounts(created_by=owner, q=q, limit=limit, offset=offset)
+    rows = ms.list_accounts(created_by=owner, q=q, limit=limit, offset=offset, active=active)
     counts = ms.account_counts(r["account_id"] for r in rows)
     for r in rows:
         r.update(counts.get(r["account_id"], {}))
-    return {"accounts": rows, "total": ms.count_accounts(created_by=owner, q=q)}
+    return {"accounts": rows,
+            "total": ms.count_accounts(created_by=owner, q=q, active=active)}
+
+
+@admin.get("/accounts/{account_id}", responses={200: {"model": Account}})
+def get_account(account_id: str, request: Request,
+                principal: Principal = Depends(require_scope("accounts"))):
+    """One account's directory row -- the same shape the listing carries, without the
+    listing: a page about one tenant reads its own row, never all of them. 404 unless
+    this credential provisioned it (or holds the root scope)."""
+    ms = request.app.state.metastore
+    row = dict(_owned_account(ms, account_id, principal))
+    row.update(ms.account_counts([account_id]).get(account_id, {}))
+    return row
 
 
 @admin.get("/devices/lookup", responses={200: {"model": DeviceList}})
@@ -666,6 +684,19 @@ def list_cohorts(request: Request, product_id: int | None = None,
         product_id, account_id=principal.account_id, sort=sort, direction=dir,
         limit=limit, offset=offset, products=principal.scoped())
     return {"cohorts": rows, "total": total}
+
+
+@admin.get("/cohorts/{cohort}", responses={200: {"model": Cohort}})
+def get_cohort(cohort: str, request: Request,
+               principal: Principal = Depends(require_scope("observe"))):
+    """One cohort's row: its device count, the split per product, its pins. 404 when no
+    device is in it and nothing declared it."""
+    rows, _ = request.app.state.metastore.page_cohorts(
+        None, account_id=principal.account_id, products=principal.scoped())
+    row = next((r for r in rows if r["cohort"] == cohort), None)
+    if row is None:
+        raise HTTPException(status_code=404)
+    return row
 
 
 @admin.post("/cohorts/assign", responses={200: {"model": CohortAssigned}})
@@ -1291,6 +1322,20 @@ def products(request: Request, limit: int | None = Query(None, ge=1, le=_MAX_PAG
         account_id=principal.account_id, sort=sort, direction=dir, limit=limit, offset=offset,
         products=principal.scoped())
     return {"products": rows, "total": total}
+
+
+@admin.get("/products/{product_id}", responses={200: {"model": Product}})
+def get_product(product_id: int, request: Request,
+                principal: Principal = Depends(require_scope("observe"))):
+    """One product's directory row (label, newest version, counts). 404 for a product
+    the account has never seen, or one outside a product-scoped token."""
+    _may_product(product_id, principal)
+    rows, _ = request.app.state.metastore.page_products(
+        account_id=principal.account_id, products=principal.scoped())
+    row = next((r for r in rows if r["product_id"] == product_id), None)
+    if row is None:
+        raise HTTPException(status_code=404)
+    return row
 
 
 class ProductDeclare(BaseModel):
