@@ -41,8 +41,9 @@ There are two operator scopes, because a server can have more than one operator:
   `list`, renames, limits, deactivates, mints their tokens — and cannot see that any
   other operator's account exists. This is what a partner reselling the service gets.
 - **`accounts.all`** is the server's own root: it sees and manages every account,
-  whoever made it. The bootstrap token has it. Nobody outside the operator of the
-  server should.
+  whoever made it, and it reads what an `observe` token reads across all of them
+  (the audit log with `all=true` is such a read). The bootstrap token has it. Nobody
+  outside the operator of the server should.
 
 An account is filed under the credential that created it, and account names are unique
 among that operator's accounts rather than across the server — two operators can each

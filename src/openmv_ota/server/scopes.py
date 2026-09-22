@@ -31,6 +31,10 @@ def expand(scopes) -> list[str]:
     """The closure of ``scopes`` down the ladder, in SCOPES order; other scopes (``accounts``)
     pass through unchanged."""
     top = max((LADDER.index(s) for s in scopes if s in LADDER), default=-1)
+    # the server's root sees every account: it reads what an observe token reads, across
+    # all of them (the operator console's cross-account audit is such a read)
+    if ACCOUNT_ROOT in scopes:
+        top = max(top, LADDER.index("observe"))
     implied = [s for s in SCOPES if LADDER.index(s) <= top]
     out = implied + [s for s in scopes if s not in LADDER]
     # seeing every account implies being able to provision one: `accounts.all` is

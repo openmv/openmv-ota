@@ -74,6 +74,8 @@ def test_scope_ladder_implies_lower_rungs():
     assert expand(["manage"]) == ["manage", "observe"]
     assert expand(["observe"]) == ["observe"]
     assert expand(["accounts"]) == ["accounts"]
+    assert expand(["accounts.all"]) == ["observe", "accounts.all", "accounts"]   # root reads everything
+    assert expand(["publish", "accounts.all"]) == ["publish", "manage", "observe", "accounts.all", "accounts"]
     assert expand(["observe", "accounts", "manage"]) == ["manage", "observe", "accounts"]
     assert expand([]) == []
     p = require_scope("observe")(_req(TokenAuth(_store(("manage",))), "Bearer secret-token"))

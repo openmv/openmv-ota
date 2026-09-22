@@ -332,17 +332,45 @@ def _bootstrap(store, settings) -> int:
 
 
 def _seed_admin_token(store, settings) -> None:
-    """Seed a root admin token on first init: from ``ADMIN_BOOTSTRAP_TOKEN`` (silent) or a freshly
-    generated one printed once. A no-op once any token exists."""
-    if store.count_tokens() > 0:
-        return
+    """Seed the root admin token, and keep it in step with the environment.
+
+    First init: from ``ADMIN_BOOTSTRAP_TOKEN`` (silent) or a freshly generated one, printed
+    once. After that the variable stays authoritative for the token NAMED ``bootstrap``: a
+    value that is not a live token rotates that row to it, revoking the old hash, so a
+    changed or regenerated value -- a fresh Blueprint over a kept database, a restore, a
+    deliberate rotation -- is a rotation, never a root the server silently refuses while
+    the environment claims otherwise. Two things are left alone: a value that already IS a
+    live token (whatever its name), and a ``bootstrap`` row an operator revoked on purpose,
+    which is never resurrected."""
     from .auth import hash_token
-    if settings.admin_bootstrap_token:
-        store.add_token(hash_token(settings.admin_bootstrap_token), "bootstrap", list(ALL_SCOPES))
+    if store.count_tokens() == 0:
+        if settings.admin_bootstrap_token:
+            store.add_token(hash_token(settings.admin_bootstrap_token), "bootstrap",
+                            list(ALL_SCOPES))
+            return
+        token = secrets.token_urlsafe(32)
+        store.add_token(hash_token(token), "bootstrap", list(ALL_SCOPES))
+        print("admin bootstrap token (store it now): %s" % token, file=sys.stderr)
         return
-    token = secrets.token_urlsafe(32)
-    store.add_token(hash_token(token), "bootstrap", list(ALL_SCOPES))
-    print("admin bootstrap token (store it now): %s" % token, file=sys.stderr)
+    if not settings.admin_bootstrap_token:
+        return
+    want = hash_token(settings.admin_bootstrap_token)
+    row = store.get_token(want)
+    if row is not None and not row["revoked"]:
+        return                                   # the environment names a live token
+    boots = [t for t in store.list_tokens("") if t["name"] == "bootstrap"]
+    if row is not None or (boots and not any(not t["revoked"] for t in boots)):
+        # the token the environment names, or the bootstrap root itself, was revoked
+        # by hand: that decision stands (`server token issue` mints a new root)
+        print("warning: OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN names a revoked token; leaving it "
+              "revoked", file=sys.stderr)
+        return
+    live = [t for t in boots if not t["revoked"]]
+    for t in live:
+        store.revoke_token(t["token_hash"])
+    store.add_token(want, "bootstrap", list(ALL_SCOPES))
+    print("bootstrap token %s from OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN"
+          % ("rotated" if live else "added"), file=sys.stderr)
 
 
 def _serve(app, host, port, forwarded_allow_ips):  # pragma: no cover  (blocks; seam monkeypatched)

@@ -295,3 +295,75 @@ def test_init_uses_env_bootstrap_token(tmp_path, monkeypatch, capsys):
     s = _store(tmp_path)
     assert s.get_token(hash_token("my-root-token"))["name"] == "bootstrap"
     s.close()
+
+
+def test_init_rotates_the_bootstrap_token_to_a_changed_env_value(tmp_path, monkeypatch, capsys):
+    """The environment stays authoritative after the first init: a regenerated or rotated
+    OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN becomes the bootstrap root (the old hash revoked,
+    every other token untouched) rather than a value the server silently refuses."""
+    from openmv_ota.server.auth import hash_token
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    monkeypatch.setenv("OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN", "first-root")
+    assert main(["server", "init"]) == 0
+    s = _store(tmp_path)
+    s.add_token(hash_token("site-token"), "website", ["accounts.all", "accounts"])
+    s.close()
+    monkeypatch.setenv("OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN", "second-root")   # a fresh Blueprint
+    capsys.readouterr()
+    assert main(["server", "init"]) == 0
+    assert "bootstrap token rotated from OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN" in capsys.readouterr().err
+    s = _store(tmp_path)
+    old, new = s.get_token(hash_token("first-root")), s.get_token(hash_token("second-root"))
+    assert old["revoked"] and new["name"] == "bootstrap" and not new["revoked"]
+    assert set(new["scopes"]) == {"publish", "manage", "observe", "accounts", "accounts.all"}
+    assert not s.get_token(hash_token("site-token"))["revoked"]     # nobody else's business
+    assert s.count_tokens() == 3
+    s.close()
+    # idempotent: the same value again changes nothing
+    assert main(["server", "init"]) == 0
+    assert "bootstrap token" not in capsys.readouterr().err
+    s = _store(tmp_path)
+    assert s.count_tokens() == 3
+    s.close()
+    # the value names another live token (the site's own doubling as root): in step, nothing to do
+    monkeypatch.setenv("OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN", "site-token")
+    assert main(["server", "init"]) == 0
+    assert "bootstrap token" not in capsys.readouterr().err
+    s = _store(tmp_path)
+    assert s.count_tokens() == 3 and not s.get_token(hash_token("second-root"))["revoked"]
+    s.close()
+
+
+def test_init_never_resurrects_a_revoked_root(tmp_path, monkeypatch, capsys):
+    """An operator who revoked the bootstrap token, or the very token the environment
+    names, meant it: init warns and leaves the revocation standing. And with no
+    bootstrap row at all (a database that only ever had issued tokens), a set
+    environment adds one."""
+    from openmv_ota.server.auth import hash_token
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    monkeypatch.setenv("OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN", "first-root")
+    assert main(["server", "init"]) == 0
+    assert main(["server", "token", "revoke", hash_token("first-root")]) == 0
+    capsys.readouterr()
+    for value in ("first-root", "second-root"):        # the revoked one itself, or a new value
+        monkeypatch.setenv("OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN", value)
+        assert main(["server", "init"]) == 0
+        assert "names a revoked token; leaving it revoked" in capsys.readouterr().err
+        s = _store(tmp_path)
+        assert s.count_tokens() == 1 and s.get_token(hash_token("second-root")) is None
+        s.close()
+    # unset: init has nothing to say about tokens at all
+    monkeypatch.delenv("OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN")
+    assert main(["server", "init"]) == 0
+    assert "token" not in capsys.readouterr().err
+    # no bootstrap row, only an issued token: the environment's value is added as the root
+    s = _store(tmp_path)
+    s.execute("DELETE FROM admin_tokens")
+    s.add_token(hash_token("ci"), "ci", ["publish"])
+    s.close()
+    monkeypatch.setenv("OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN", "third-root")
+    assert main(["server", "init"]) == 0
+    assert "bootstrap token added from OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN" in capsys.readouterr().err
+    s = _store(tmp_path)
+    assert s.get_token(hash_token("third-root"))["name"] == "bootstrap" and s.count_tokens() == 2
+    s.close()

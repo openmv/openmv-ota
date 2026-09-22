@@ -29,10 +29,14 @@ openmv-ota server migrate    # apply pending schema migrations (upgrades)
 - **`check`** prints every resolved setting as `key = value` lines (secrets redacted to
   `***`) and lists anything required that's missing — run it before every deploy.
 - **`init`** migrates the database, persists the server's HMAC secret (generated if you
-  didn't set one), and seeds the first **admin token**: from
+  didn't set one), and seeds the **admin token** named `bootstrap`: from
   `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` if set, otherwise freshly generated and printed
-  **once** — only its hash is stored, so it is not recoverable. It's idempotent, which is
-  why the container entrypoint just runs `init` then `run`.
+  **once** — only its hash is stored, so it is not recoverable. The variable stays in
+  charge afterwards: change it and the next `init` rotates the `bootstrap` token to the
+  new value (the old one revoked), so a restored database or a redeployed platform that
+  regenerated the value never leaves you with a root the server refuses. A `bootstrap`
+  token you revoked by hand stays revoked. It's idempotent, which is why the container
+  entrypoint just runs `init` then `run`.
 - **`run`** also migrates + seeds on the way up, so a plain `server run` on a fresh
   database works.
 
@@ -85,7 +89,7 @@ serves:
 
 | env var | what it does |
 |---|---|
-| `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` | seeds the first admin token at `server init` (else one is generated and printed once) |
+| `OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN` | the `bootstrap` admin token: seeded at the first `server init` (else one is generated and printed once), and rotated to a changed value by any later `init` |
 
 **Browser dashboards (only when a UI calls the API cross-origin)**
 
