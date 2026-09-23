@@ -132,6 +132,11 @@ account acct_7bd21c50e83a94f1 deactivated (3 token(s) revoked)
 $ openmv-ota client account activate --account-id acct_7bd21c50e83a94f1
 account acct_7bd21c50e83a94f1 activated
 ```
+Deactivation is the only off-switch the API has: a fielded fleet keeps being served
+through a lapse or a mistake. Removing an account for good is a self-host operator's
+act on the server's own shell, `openmv-ota server account delete`, and it takes a
+deactivated account only ([Self-hosting](21-self-hosting.md)).
+
 
 ### Device limits
 

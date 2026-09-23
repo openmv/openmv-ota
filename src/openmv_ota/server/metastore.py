@@ -1557,6 +1557,64 @@ class SqlMetadataStore:
     def get_account(self, account_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM accounts WHERE account_id = ?", (account_id,)))
 
+    def delete_account(self, account_id: str, *, actor: str = "cli", via: dict | None = None) -> dict:
+        """Remove a DEACTIVATED account and every row it owned -- tokens, products,
+        releases, rollouts, cohorts and pins, deployments, devices and their bindings,
+        advisories, webhooks and their deliveries -- in one transaction. The audit log
+        is the exception: it is one hash chain for the whole server, so its rows are
+        never deleted; the account's history stays readable and the deletion itself is
+        appended. Returns the per-table counts and the artifact keys the caller removes
+        from storage afterwards (rows first, so a storage hiccup can only ever leave an
+        orphaned object, never a release row pointing at nothing)."""
+        acct = self.get_account(account_id)
+        if acct is None:
+            raise ServerError("no such account", exit_code=1)
+        if acct.get("active"):
+            raise ServerError("%s is active; deactivate it first" % account_id, exit_code=1)
+        keys: list[str] = []
+        for r in self.query_all("SELECT release_id, manifest_key, image_key, sbom_key, "
+                                "representations FROM releases WHERE account_id = ?",
+                                (account_id,)):
+            r = _d(r)
+            keys += [k for k in (r["manifest_key"], r["image_key"], r.get("sbom_key")) if k]
+            try:
+                reps = json.loads(r.get("representations") or "[]")
+            except ValueError:
+                reps = []
+            keys += ["artifacts/%s/%s" % (r["release_id"], rep["url"])
+                     for rep in reps if isinstance(rep, dict) and rep.get("url")]
+        stmts = (
+            ("webhook_deliveries", "DELETE FROM webhook_deliveries WHERE webhook_id IN "
+                                   "(SELECT webhook_id FROM webhooks WHERE account_id = ?)"),
+            ("webhooks", "DELETE FROM webhooks WHERE account_id = ?"),
+            ("advisories", "DELETE FROM advisories WHERE account_id = ?"),
+            ("device_pins", "DELETE FROM device_pins WHERE account_id = ?"),
+            ("cohort_pins", "DELETE FROM cohort_pins WHERE account_id = ?"),
+            ("cohorts", "DELETE FROM cohorts WHERE account_id = ?"),
+            ("deployments", "DELETE FROM deployments WHERE account_id = ?"),
+            ("rollouts", "DELETE FROM rollouts WHERE account_id = ?"),
+            ("releases", "DELETE FROM releases WHERE account_id = ?"),
+            ("device_accounts", "DELETE FROM device_accounts WHERE account_id = ?"),
+            ("devices", "DELETE FROM devices WHERE account_id = ?"),
+            ("products", "DELETE FROM products WHERE account_id = ?"),
+            ("admin_tokens", "DELETE FROM admin_tokens WHERE account_id = ?"),
+            ("accounts", "DELETE FROM accounts WHERE account_id = ?"),
+        )
+        rows: dict[str, int] = {}
+        with self._lock:
+            cur = self._conn.cursor()
+            for table, sql in stmts:
+                self._run(cur, sql, (account_id,))
+                rows[table] = max(0, cur.rowcount)
+            self._conn.commit()
+        keys = list(dict.fromkeys(keys))
+        self.append_audit(actor=actor, action="account.delete", entity_type="account",
+                          entity_id=account_id,
+                          data={"name": acct.get("name", ""), "rows": rows,
+                                "artifacts": len(keys), **(via or {})},
+                          account_id=account_id)
+        return {"rows": rows, "keys": keys}
+
     @staticmethod
     def _accounts_where(created_by, q, active=None) -> tuple[str, list]:
         conds, params = [], []

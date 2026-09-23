@@ -69,6 +69,13 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_ade.add_argument("--account-id", required=True, metavar="ACCOUNT_ID",
                        help="account to deactivate (revokes all of its tokens)")
     p_ade.set_defaults(func=cmd_account_deactivate, _command="server account deactivate")
+    p_adl = asub.add_parser("delete", help="delete a DEACTIVATED account and everything it "
+                                           "owned (its audit history is kept)")
+    p_adl.add_argument("--account-id", required=True, metavar="ACCOUNT_ID",
+                       help="the account to delete; it must already be deactivated")
+    p_adl.add_argument("--yes", action="store_true",
+                       help="do it; without this the command only says what it would delete")
+    p_adl.set_defaults(func=cmd_account_delete, _command="server account delete")
     p_aac = asub.add_parser("activate", help="re-enable an account")
     p_aac.add_argument("--account-id", required=True, metavar="ACCOUNT_ID",
                        help="account to re-enable (issue fresh tokens afterwards)")
@@ -227,6 +234,51 @@ def cmd_account_deactivate(args: argparse.Namespace) -> int:
         s.set_account_active(args.account_id, False)
         return "deactivated %s (%d token(s) revoked)" % (args.account_id, n)
     return _account_action(args, do, None)
+
+
+def cmd_account_delete(args: argparse.Namespace) -> int:
+    """The one hard delete the server has, and it lives only here: deactivate is the
+    API's off-switch (a fielded fleet keeps being served), this removes a deactivated
+    account's rows and artifacts for good. Rows go first, then the objects, so what a
+    storage failure can leave behind is an orphaned blob, never a dangling release."""
+    try:
+        settings = _settings()
+        store = _store(settings)
+        store.migrate()
+    except ServerError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    acct = store.get_account(args.account_id)
+    if acct is None:
+        store.close()
+        print("error: no such account", file=sys.stderr)
+        return 1
+    if acct.get("active"):
+        store.close()
+        print("error: %s is active; `server account deactivate` it first" % args.account_id,
+              file=sys.stderr)
+        return 1
+    if not args.yes:
+        store.close()
+        print("would delete %s (%s) and everything it owns -- tokens, products, releases and "
+              "their artifacts, rollouts, cohorts, devices, webhooks; its audit history is "
+              "kept. Run again with --yes." % (args.account_id, acct.get("name", "")))
+        return 1
+    from .storage import build_storage
+    storage = build_storage(settings)
+    res = store.delete_account(args.account_id)
+    store.close()
+    removed = 0
+    for key in res["keys"]:
+        try:
+            storage.delete(key)
+            removed += 1
+        except Exception as e:                      # noqa: BLE001 - reported, never fatal
+            print("warning: artifact %s was not removed: %s" % (key, e), file=sys.stderr)
+    rows = ", ".join("%d %s" % (n, t) for t, n in res["rows"].items() if n)
+    print("deleted %s: %s; %d of %d artifact(s) removed"
+          % (args.account_id, rows or "no rows", removed, len(res["keys"])))
+    return 0
 
 
 def cmd_account_activate(args: argparse.Namespace) -> int:

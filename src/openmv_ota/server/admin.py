@@ -354,6 +354,45 @@ def deactivate_account(account_id: str, request: Request, body: TokenActor | Non
     return {"account_id": account_id, "active": False, "tokens_revoked": n}
 
 
+class AccountDeleted(BaseModel):
+    account_id: str
+    deleted: bool
+    rows: dict                              # per-table counts of what went
+    artifacts: int                          # release artifacts the account owned
+    artifacts_removed: int                  # of those, the ones storage confirmed gone
+
+
+@admin.delete("/accounts/{account_id}", responses={200: {"model": AccountDeleted},
+                                                   409: {"description": "the account is active"}})
+def delete_account(account_id: str, request: Request, body: TokenActor | None = None,
+                   principal: Principal = Depends(require_scope(ACCOUNT_ROOT))):
+    """The one hard delete, and only the server's root may make it: a DEACTIVATED
+    account and everything it owned -- tokens, products, releases and their artifacts,
+    rollouts, cohorts and pins, deployments, devices and their bindings, advisories,
+    webhooks -- go for good. An active account is refused (409): deactivate is the
+    off-switch, this is the end. The audit log keeps the account's history (it is one
+    chain for the whole server) and records the deletion, with `actor` naming the
+    person the operator acted for, as deactivate does. Rows go first, then the
+    artifacts, so a storage failure can only leave an orphaned object behind, never a
+    release row pointing at nothing; the counts say how many were confirmed gone."""
+    ms = request.app.state.metastore
+    acc = _owned_account(ms, account_id, principal)
+    if acc.get("active"):
+        raise HTTPException(status_code=409, detail="the account is active: deactivate it first")
+    who, via = _audit_actor(principal, body.actor if body else None)
+    res = ms.delete_account(account_id, actor=who, via=via)
+    storage = request.app.state.storage
+    removed = 0
+    for key in res["keys"]:
+        try:
+            storage.delete(key)
+            removed += 1
+        except Exception:                          # noqa: BLE001 - counted, never fatal
+            pass
+    return {"account_id": account_id, "deleted": True, "rows": res["rows"],
+            "artifacts": len(res["keys"]), "artifacts_removed": removed}
+
+
 @admin.post("/accounts/{account_id}/activate", responses={200: {"model": AccountActive}})
 def activate_account(account_id: str, request: Request,
                      principal: Principal = Depends(require_scope("accounts"))):

@@ -133,9 +133,16 @@ is even running:
 ```
 openmv-ota server account create --name "DroneCo"    # an account_id + its first working token
 openmv-ota server account list | rename | deactivate | activate
+openmv-ota server account delete --account-id acct_7bd21c50e83a94f1 --yes   # a deactivated account, for good
 openmv-ota server token issue --name ci --scope publish --account-id acct_7bd21c50e83a94f1
 openmv-ota server token list | revoke <hash> | rotate <hash>
 ```
+
+`account delete` is the one hard delete the server has, and it exists only here: it
+refuses an active account (deactivate first), removes everything the account owned --
+tokens, products, releases and their artifacts, rollouts, cohorts, devices, webhooks --
+and keeps the account's audit history, since the log is one hash chain for the whole
+server. Without `--yes` it only says what it would delete.
 
 `--scope accounts` mints an operator credential that provisions accounts and manages
 only the ones it creates — what you hand a partner. `--scope accounts.all` is the

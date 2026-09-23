@@ -252,6 +252,7 @@ def test_account_requires_extra(monkeypatch, capsys):
     assert main(["server", "account", "rename", "--account-id", "a", "--name", "x"]) == 2
     assert main(["server", "account", "deactivate", "--account-id", "a"]) == 2
     assert main(["server", "account", "activate", "--account-id", "a"]) == 2
+    assert main(["server", "account", "delete", "--account-id", "a", "--yes"]) == 2
     assert "need extra" in capsys.readouterr().err
 
 
@@ -366,4 +367,88 @@ def test_init_never_resurrects_a_revoked_root(tmp_path, monkeypatch, capsys):
     assert "bootstrap token added from OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN" in capsys.readouterr().err
     s = _store(tmp_path)
     assert s.get_token(hash_token("third-root"))["name"] == "bootstrap" and s.count_tokens() == 2
+    s.close()
+
+
+def test_account_delete_removes_everything_it_owned_but_its_history(tmp_path, monkeypatch, capsys):
+    """The one hard delete: refused while the account is active and without --yes; then
+    every row the account owned goes, its artifacts go from storage, its audit history
+    stays with the deletion appended, and another account is untouched."""
+    from openmv_ota.server.storage import LocalArtifactStorage
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    monkeypatch.setenv("OPENMV_OTA_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("OPENMV_OTA_STORAGE_LOCATION", str(tmp_path / "blobs"))
+    assert main(["server", "account", "create", "--name", "DroneCo"]) == 0
+    doomed = capsys.readouterr().out.strip().split()[0]
+    assert main(["server", "account", "create", "--name", "Keeper"]) == 0
+    keeper = capsys.readouterr().out.strip().split()[0]
+    s = _store(tmp_path)
+    blobs = LocalArtifactStorage(tmp_path / "blobs")
+    for acct, rid in ((doomed, "rel_gone"), (keeper, "rel_kept")):
+        reps = [{"format": "full", "url": "full.bin"}, {"format": "delta", "url": "from-1.0.0.patch"}]
+        s.add_release(release_id=rid, product_id=7, product="cam", version="1.1.0",
+                      payload_version=2, min_platform_version=1, image_sha256="ab" * 32,
+                      image_size=3, representations=reps, manifest_key=f"manifests/{rid}/manifest.bin",
+                      image_key=f"artifacts/{rid}/full.bin", account_id=acct,
+                      sbom_key=f"sbom/{rid}/sbom.cdx.json")
+        for key in (f"manifests/{rid}/manifest.bin", f"artifacts/{rid}/full.bin",
+                    f"artifacts/{rid}/from-1.0.0.patch", f"sbom/{rid}/sbom.cdx.json"):
+            blobs.put(key, b"xyz", "application/octet-stream")
+        s.upsert_device(device_id=f"cam-{acct[-4:]}", product_id=7, account_id=acct)
+        s.bind_device_account(f"cam-{acct[-4:]}", acct, source="test")
+        s.declare_cohort("beta", account_id=acct)
+        s.add_webhook(account_id=acct, url="https://hooks.test/" + acct, events=["*"], secret="s")
+    s.execute("UPDATE releases SET representations = 'not json' WHERE release_id = 'rel_gone'")
+    s.close()
+    # active: refused; deactivated but no --yes: a dry run that changes nothing
+    assert main(["server", "account", "delete", "--account-id", doomed, "--yes"]) == 1
+    assert "is active" in capsys.readouterr().err
+    assert main(["server", "account", "deactivate", "--account-id", doomed]) == 0
+    capsys.readouterr()
+    assert main(["server", "account", "delete", "--account-id", doomed]) == 1
+    assert "would delete" in capsys.readouterr().out
+    s = _store(tmp_path)
+    assert s.get_account(doomed) is not None and s.count_tokens() == 2   # one per account
+    s.close()
+    # one artifact refuses to go: reported, the rest removed, the rows already gone
+    real_delete = LocalArtifactStorage.delete
+    def flaky(self, key):
+        if key.endswith("manifest.bin"):
+            raise OSError("bucket said no")
+        real_delete(self, key)
+    monkeypatch.setattr(LocalArtifactStorage, "delete", flaky)
+    assert main(["server", "account", "delete", "--account-id", doomed, "--yes"]) == 0
+    out, err = capsys.readouterr()
+    assert "deleted %s" % doomed in out and "1 releases" in out and "1 devices" in out
+    assert "2 of 3 artifact(s) removed" in out          # manifest, image, sbom (deltas were unreadable)
+    assert "manifests/rel_gone/manifest.bin was not removed" in err
+    s = _store(tmp_path)
+    assert s.get_account(doomed) is None and s.get_account(keeper)["name"] == "Keeper"
+    assert s.get_release("rel_gone") is None and s.get_release("rel_kept") is not None
+    assert s.count_tokens() == 1                      # the keeper's
+    assert not blobs.exists("artifacts/rel_gone/full.bin") and blobs.exists("artifacts/rel_kept/full.bin")
+    assert blobs.exists("manifests/rel_gone/manifest.bin")   # the one the storage refused
+    assert s.list_tokens(keeper) and not s.list_tokens(doomed)
+    assert [w for w in s.list_webhooks(keeper)] and not s.list_webhooks(doomed)
+    trail = s.read_audit(action="account.delete")
+    assert len(trail) == 1 and trail[0]["entity_id"] == doomed
+    assert trail[0]["data"]["rows"]["releases"] == 1
+    s.close()
+    assert main(["server", "account", "delete", "--account-id", doomed, "--yes"]) == 1
+    assert "no such account" in capsys.readouterr().err
+
+
+def test_the_store_itself_refuses_to_delete_a_missing_or_active_account(tmp_path, monkeypatch):
+    """The guards live in the store too, not only in the callers: a ghost and an active
+    account are refused whoever asks."""
+    import pytest
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    assert main(["server", "account", "create", "--name", "Live"]) == 0
+    s = _store(tmp_path)
+    live = s.list_accounts()[0]["account_id"]
+    with pytest.raises(ServerError, match="no such account"):
+        s.delete_account("acct_ghost")
+    with pytest.raises(ServerError, match="is active"):
+        s.delete_account(live)
+    assert s.get_account(live) is not None
     s.close()

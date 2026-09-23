@@ -1330,3 +1330,42 @@ def test_release_sbom_served_and_404s(tmp_path):
     assert r.status_code == 200 and r.json()["bomFormat"] == "CycloneDX"
     assert c.get("/api/v1/admin/releases/nosbom/sbom", headers=AUTH).status_code == 404
     assert c.get("/api/v1/admin/releases/gone/sbom", headers=AUTH).status_code == 404
+
+
+def test_account_delete_api_is_root_only_and_final(tmp_path, monkeypatch):
+    """The API's one hard delete: a partner (accounts) credential cannot make it, an
+    active account is refused, a deactivated one goes with everything it owned and its
+    artifacts, the audit log keeps the history and names the person, and an artifact the
+    storage would not release is counted rather than fatal."""
+    from openmv_ota.server.storage import LocalArtifactStorage
+    app, store = _app(tmp_path, scopes=("accounts.all",))
+    store.add_account(created_by="ci", account_id="acctA", name="A")
+    store.add_token(hash_token("partner"), "acme-platform", ["accounts"])
+    store.add_release(release_id="relA", product_id=BID, product="P", version="2.0.0",
+                      payload_version=2, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=3, representations=[{"format": "full", "url": "x.img.gz"}],
+                      manifest_key="manifests/relA/manifest.bin", image_key="artifacts/relA/x.img.gz",
+                      account_id="acctA")
+    blobs = app.state.storage
+    blobs.put("manifests/relA/manifest.bin", b"m", "application/octet-stream")
+    blobs.put("artifacts/relA/x.img.gz", b"i", "application/gzip")
+    c = TestClient(app)
+    assert c.delete("/api/v1/admin/accounts/acctA",
+                    headers={"Authorization": "Bearer partner"}).status_code == 403
+    assert c.delete("/api/v1/admin/accounts/acctA", headers=AUTH).status_code == 409     # active
+    assert c.post("/api/v1/admin/accounts/acctA/deactivate", headers=AUTH).status_code == 200
+    real = LocalArtifactStorage.delete
+    monkeypatch.setattr(LocalArtifactStorage, "delete",
+                        lambda self, key: (_ for _ in ()).throw(OSError("no")) if key.endswith("manifest.bin") else real(self, key))
+    r = c.request("DELETE", "/api/v1/admin/accounts/acctA", headers=AUTH,
+                  json={"actor": "kwabena@openmv.io"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["deleted"] and body["rows"]["releases"] == 1 and body["rows"]["accounts"] == 1
+    assert body["artifacts"] == 2 and body["artifacts_removed"] == 1
+    assert store.get_account("acctA") is None and store.get_release("relA") is None
+    assert not blobs.exists("artifacts/relA/x.img.gz") and blobs.exists("manifests/relA/manifest.bin")
+    gone = next(e for e in store.read_audit() if e["action"] == "account.delete")
+    assert gone["actor"] == "kwabena@openmv.io" and gone["data"]["via"] == "ci"
+    assert gone["data"]["rows"]["releases"] == 1 and gone["data"]["name"] == "A"
+    assert c.delete("/api/v1/admin/accounts/acctA", headers=AUTH).status_code == 404
