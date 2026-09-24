@@ -450,7 +450,7 @@ COVERAGE = {
     "status: read": "run.status",                        # boot-result + trial markers read
     "status: boot result": "run.boot_result",            # boot.py's mirrored result tuple built
     "identity: ready": "run.identity",                   # device_id + system.json read
-    "identity: device id": "run.identity_uid",           # machine.unique_id() read into identity
+    "identity: device id": "run.identity_uid",           # omv.board_id() read into identity
     "data: path": "run.data_path",                       # sync() located a bundled data/ resource
     "wdt: armed": "wdt.armed",                            # a watchdog is REALLY running (with its window)
     "wdt: feed": "run.wdt_feed",                          # watchdog fed each poll (no-op when off)
@@ -2275,8 +2275,9 @@ def _tamper(board, which):
 def _same_device(recorded, uid):
     """Whether a server record belongs to the board whose unit id is ``uid``.
 
-    The server qualifies a device id with the board it came from -- `OPENMV_RT1060:9d7b...`
-    -- because `machine.unique_id()` is only unique among boards of the same type. The UART
+    The server qualifies a device id with the board it came from --
+    `OPENMV_RT1060:332829D7...` -- because the unit id is only unique among boards of the
+    same type. The UART
     reports the RAW unit id, so a bare `==` matched nothing: every server-scored leg then
     waited out its whole timeout on `None/None` while the board had already installed,
     confirmed and promoted. Match the suffix, so the harness reads whichever form the server

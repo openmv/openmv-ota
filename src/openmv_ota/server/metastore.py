@@ -314,7 +314,7 @@ _MIGRATIONS: list[list[str]] = [
         # the scopes, which say what a token may DO; this says what it may do it TO.
         "ALTER TABLE admin_tokens ADD COLUMN products TEXT",
     ],
-    [   # v23 -- device ids become board-qualified. machine.unique_id() is unique among
+    [   # v23 -- device ids become board-qualified. The reported unit id is unique among
         # boards of one TYPE (it is the MCU die id) and not across types, so two cameras
         # could share a row: the sticky account binding would hand the second one the
         # first's account, and its live view and telemetry would open onto the first's.

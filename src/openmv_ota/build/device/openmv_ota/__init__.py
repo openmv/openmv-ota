@@ -520,19 +520,37 @@ def _counter_key(entry):
 def identity():  # pragma: no cover
     """The running image's identity/provenance from ``/rom/system.json`` (board, product,
     product_id, app_version, vendor, toolchain, ...) plus ``device_id`` -- this unit's unique
-    hardware id (``machine.unique_id()``) -- so an update server can address the specific
-    device, not just the model. ``{}`` (minus device_id) if there's no system.json."""
+    hardware id -- so an update server can address the specific device, not just the model.
+    ``{}`` (minus device_id) if there's no system.json.
+
+    ``device_id`` is ``omv.board_id()``, NOT ``machine.unique_id()``. The two differ, and
+    only the first is this camera's identity as the rest of OpenMV knows it: the IDE reads
+    it over the debug protocol, the flashing station registers it, and the update server's
+    registration check looks it up verbatim in that registry. They differ in two ways that
+    no amount of reformatting on the server could bridge:
+
+    * On STM32 the UID words are read HIGH word first (``omv_protocol.c``, and
+      ``py_omv.c`` beside it), which is the reverse of the byte order
+      ``machine.unique_id()`` returns.
+    * On the RT1062 they are not even the same registers: ``OMV_BOARD_UID_OFFSET`` is 12
+      there, so ``omv.board_id()`` reads three fuse words at a 12-byte stride while
+      ``machine.unique_id()`` returns 8 bytes from elsewhere. No transform of one yields
+      the other.
+
+    Reporting ``machine.unique_id()`` meant every registered camera verified as
+    UNREGISTERED -- and an unregistered device is served nothing and leaves no trace, so
+    the whole fleet was invisible with nothing logged anywhere."""
     import json
     try:
         info = json.load(open("/rom/system.json"))
     except OSError:  # hil-residual: no /rom/system.json (always present on a provisioned board)
         info = {}  # hil-residual: bare fallback assign (system.json missing)
     try:
-        import machine
-        info["device_id"] = machine.unique_id().hex()
-        log.debug("identity: device id")              # HIL path witness (unique_id read)
-    except (ImportError, AttributeError):  # hil-residual: no machine.unique_id/hex (always present on a real port)
-        pass  # hil-residual: bare pass (no unique_id/hex on this port)
+        import omv
+        info["device_id"] = omv.board_id()
+        log.debug("identity: device id")              # HIL path witness (board_id read)
+    except (ImportError, AttributeError):  # hil-residual: no omv.board_id (always present on OpenMV firmware)
+        pass  # hil-residual: bare pass (no omv.board_id on this port)
     log.debug("identity: ready")                      # HIL path witness (runs every check-in)
     return info  # hil-residual: bare return of the identity dict
 

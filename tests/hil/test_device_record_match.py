@@ -1,7 +1,7 @@
 """The harness has to find the board's row in the server's device table.
 
 On 2026-09-15 the server started qualifying a device id with the board it came from
-(`OPENMV_RT1060:9d7b4061d7292833`), because `machine.unique_id()` is only unique among
+(`OPENMV_RT1060:332829D761407B9D61407B9D`), because the unit id is only unique among
 boards of the same TYPE. The UART reports the raw unit id, and the harness compared the
 two with `==`. Nothing matched: every server-scored leg read `None/None` and waited out
 its full 900 s timeout while the board had already installed, confirmed and promoted --
@@ -25,19 +25,19 @@ import pytest  # noqa: E402
 
 import ota_cycle  # noqa: E402
 
-UID = "9d7b4061d7292833"
+UID = "332829D761407B9D61407B9D"    # the RT1062 on the bench, as it reports itself
 
 
 @pytest.mark.parametrize("recorded", [
-    "OPENMV_RT1060:9d7b4061d7292833",       # what the server keys by today
-    "9d7b4061d7292833",                     # a device that reports no board -> raw id
+    "OPENMV_RT1060:332829D761407B9D61407B9D",   # what the server keys by today
+    "332829D761407B9D61407B9D",                 # a device that reports no board -> raw id
 ])
 def test_the_boards_own_row_is_found(recorded):
     assert ota_cycle._same_device(recorded, UID)
 
 
 @pytest.mark.parametrize("recorded", [
-    "OPENMV_RT1060:0000000000000000",       # same board type, different unit
+    "OPENMV_RT1060:000000000000000000000000",   # same board type, different unit
     "9d7b4061d7292834",                     # one digit out
     "", None,                               # no record at all
 ])
