@@ -550,7 +550,13 @@ def identity():  # pragma: no cover
         info["device_id"] = omv.board_id()
         log.debug("identity: device id")              # HIL path witness (board_id read)
     except (ImportError, AttributeError):  # hil-residual: no omv.board_id (always present on OpenMV firmware)
-        pass  # hil-residual: bare pass (no omv.board_id on this port)
+        # No omv module: a MicroPython build that is not OpenMV firmware. Report NOTHING
+        # rather than machine.unique_id(), which was the old behaviour and is a different
+        # id -- one the registrar has never seen, so the check-in would be refused as
+        # unregistered and served nothing, silently, forever. device_id is required by
+        # the check-in schema, so leaving it out makes the server answer 422 and say so.
+        # Loud and wrong beats quiet and wrong.
+        log.error("identity: no omv.board_id() -- not OpenMV firmware; device_id omitted")  # hil-residual: only reachable on a non-OpenMV MicroPython build (no omv module); every OTA image is built from the openmv tree and has it
     log.debug("identity: ready")                      # HIL path witness (runs every check-in)
     return info  # hil-residual: bare return of the identity dict
 
