@@ -547,16 +547,26 @@ def identity():  # pragma: no cover
         info = {}  # hil-residual: bare fallback assign (system.json missing)
     try:
         import omv
-        info["device_id"] = omv.board_id()
+        board_id = omv.board_id()
+        if not board_id:
+            # EMPTY, not missing. py_omv.c guards its whole body on `#ifdef
+            # OMV_BOARD_UID_ADDR`, and on the Alif (and the RP2040 boards) that name is an
+            # `extern unsigned char[12]`, not a macro -- so the #ifdef never fires and the
+            # function returns "". The debug protocol beside it reads the same UID through
+            # `#if (OMV_BOARD_UID_SIZE > 2)` and works, so the two have drifted. Reporting
+            # "" would register the camera under the empty id, which is worse than not
+            # registering at all: every such board would collide on one row.
+            raise ValueError("omv.board_id() is empty on this port")  # hil-residual: reached only on a port whose py_omv.c #ifdef does not fire (Alif, RP2040); the boards that reach it cannot then report an id, so no marker can follow it
+        info["device_id"] = board_id
         log.debug("identity: device id")              # HIL path witness (board_id read)
-    except (ImportError, AttributeError):  # hil-residual: no omv.board_id (always present on OpenMV firmware)
+    except (ImportError, AttributeError, ValueError):  # hil-residual: no usable omv.board_id
         # No omv module: a MicroPython build that is not OpenMV firmware. Report NOTHING
         # rather than machine.unique_id(), which was the old behaviour and is a different
         # id -- one the registrar has never seen, so the check-in would be refused as
         # unregistered and served nothing, silently, forever. device_id is required by
         # the check-in schema, so leaving it out makes the server answer 422 and say so.
         # Loud and wrong beats quiet and wrong.
-        log.error("identity: no omv.board_id() -- not OpenMV firmware; device_id omitted")  # hil-residual: only reachable on a non-OpenMV MicroPython build (no omv module); every OTA image is built from the openmv tree and has it
+        log.error("identity: no usable omv.board_id() -- device_id omitted")  # hil-residual: only reachable on a non-OpenMV MicroPython build (no omv module); every OTA image is built from the openmv tree and has it
     log.debug("identity: ready")                      # HIL path witness (runs every check-in)
     return info  # hil-residual: bare return of the identity dict
 
