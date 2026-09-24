@@ -517,6 +517,37 @@ def _counter_key(entry):
     return -1 if counter is None else counter
 
 
+def _board_id_fallback():  # pragma: no cover  (device: per-port UID)  # hil-residual-fn: only runs where omv.board_id() is empty, which is a firmware bug this works around; its arithmetic is host-tested in tests/build/test_identity_fallback.py
+    """This camera's canonical id where ``omv.board_id()`` cannot give it.
+
+    py_omv.c guards on ``#ifdef OMV_BOARD_UID_ADDR``, which is not a macro on the Alif,
+    so ``board_id()`` there returns "". This reconstructs the same string from
+    ``machine.unique_id()`` for that one port, derived from the port's own source rather
+    than guessed:
+
+    * ``se_services_get_unique_id()`` fills 8 bytes into a 12-byte array whose tail stays
+      zero, and ``alif_hal.c`` then reverses all 12 in place to match the USB serial.
+    * ``board_id()`` prints the words back at offsets 8, 4, 0 as ``%08X``, which reverses
+      it a second time.
+
+    The two reversals cancel, so the id is the raw bytes, uppercase, zero-padded to 12 --
+    and that is the shape every registered AE3 carries. Deliberately ONE port: the same
+    arithmetic is wrong on rp2, where the words are swapped and not padded, and unneeded
+    everywhere else. Returns "" when it has nothing trustworthy to offer, and it stops
+    running at all the moment the firmware returns a real id."""
+    try:
+        import sys
+        if sys.platform != "alif":
+            return ""        # hil-residual: every other port either has a working board_id or is not ours to guess
+        import machine
+        uid = machine.unique_id()
+    except (ImportError, AttributeError):  # hil-residual: no sys.platform/machine.unique_id on this port
+        return ""  # hil-residual: nothing to reconstruct from
+    if not uid or len(uid) > 12:
+        return ""            # hil-residual: not the 8-byte id this port is documented to give
+    return (bytes(uid) + b"\x00" * (12 - len(uid))).hex().upper()
+
+
 def identity():  # pragma: no cover
     """The running image's identity/provenance from ``/rom/system.json`` (board, product,
     product_id, app_version, vendor, toolchain, ...) plus ``device_id`` -- this unit's unique
@@ -548,6 +579,8 @@ def identity():  # pragma: no cover
     try:
         import omv
         board_id = omv.board_id()
+        if not board_id:
+            board_id = _board_id_fallback()  # hil-residual: only runs where omv.board_id() is empty (the Alif's broken #ifdef); on every board that reaches a marker, board_id was already non-empty
         if not board_id:
             # EMPTY, not missing. py_omv.c guards its whole body on `#ifdef
             # OMV_BOARD_UID_ADDR`, and on the Alif (and the RP2040 boards) that name is an
