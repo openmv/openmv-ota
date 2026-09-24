@@ -450,7 +450,7 @@ COVERAGE = {
     "status: read": "run.status",                        # boot-result + trial markers read
     "status: boot result": "run.boot_result",            # boot.py's mirrored result tuple built
     "identity: ready": "run.identity",                   # device_id + system.json read
-    "identity: device id": "run.identity_uid",           # machine.unique_id() read into identity
+    "identity: device id": "run.identity_uid",           # omv.board_id() read into identity
     "data: path": "run.data_path",                       # sync() located a bundled data/ resource
     "wdt: armed": "wdt.armed",                            # a watchdog is REALLY running (with its window)
     "wdt: feed": "run.wdt_feed",                          # watchdog fed each poll (no-op when off)
@@ -1889,14 +1889,26 @@ def _flash_blhost_imx(board, bad_romfs=False):
         #
         # /flash survives a romfs erase and openmv_log searches it, so seed it there first. Taking
         # the REPL is safe HERE and only here: this board's app is about to lose its filesystem.
-        try:
-            device_exec("f=open('/flash/.hilcov_uart','w');f.write('%d');f.close()"
-                        % BOARDS[board]["cov_uart"], timeout=30)
-            log("brick: seeded /flash/.hilcov_uart=%d -- /rom (which normally carries it) is about "
-                "to be erased" % BOARDS[board]["cov_uart"])
-        except Exception as e:                   # hil-residual: no REPL to seed through
-            log("brick: could NOT seed /flash/.hilcov_uart (%r) -- the bricked boot will log to USB "
-                "before the CDC enumerates, so its markers will be invisible" % (e,))
+        seed = "f=open('/flash/.hilcov_uart','w');f.write('%d');f.close()" % BOARDS[board]["cov_uart"]
+        for attempt in (1, 2):
+            try:
+                device_exec(seed, timeout=30)
+                log("brick: seeded /flash/.hilcov_uart=%d -- /rom (which normally carries it) is "
+                    "about to be erased" % BOARDS[board]["cov_uart"])
+                break
+            except Exception as e:               # hil-residual: no REPL to seed through
+                if attempt == 1:
+                    # The port can be ENUMERATED YET UNUSABLE -- every mpremote dies on
+                    # OSError(5)/"in use" -- which is exactly what _ensure_cdc's nRST pulse is for.
+                    # Without this retry the seed failure is terminal in a silent way: the erase
+                    # below still happens, the bricked boot logs to USB before the CDC enumerates,
+                    # and the leg spends its ENTIRE timeout waiting for markers that cannot arrive.
+                    # Measured: 737 s to fail on 2 of 96 markers, on a board that was fine.
+                    log("brick: seed failed (%r) -- nRST and retry before bricking" % (e,))
+                    _ensure_cdc(board)
+                    continue
+                log("brick: could NOT seed /flash/.hilcov_uart (%r) -- the bricked boot will log to "
+                    "USB before the CDC enumerates, so its markers will be invisible" % (e,))
         log("brick: erase the OTA romfs region (both slots) -> openmv-ota flash erase --romfs")
         sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--romfs",
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
@@ -2275,8 +2287,9 @@ def _tamper(board, which):
 def _same_device(recorded, uid):
     """Whether a server record belongs to the board whose unit id is ``uid``.
 
-    The server qualifies a device id with the board it came from -- `OPENMV_RT1060:9d7b...`
-    -- because `machine.unique_id()` is only unique among boards of the same type. The UART
+    The server qualifies a device id with the board it came from --
+    `OPENMV_RT1060:332829D7...` -- because the unit id is only unique among boards of the
+    same type. The UART
     reports the RAW unit id, so a bare `==` matched nothing: every server-scored leg then
     waited out its whole timeout on `None/None` while the board had already installed,
     confirmed and promoted. Match the suffix, so the harness reads whichever form the server

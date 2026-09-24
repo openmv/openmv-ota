@@ -468,9 +468,9 @@ class Feedback(BaseModel):
 def _identity(req) -> str:
     """The device identity this server stores, keyed by BOARD as well as unit.
 
-    ``machine.unique_id()`` is unique among boards of the same type -- it is the MCU's
-    die id -- and nothing makes it unique ACROSS types: two different parts can report
-    the same bytes. That id is the primary key of the device table, the subject of a
+    The unit id a device reports (``omv.board_id()``) is unique among boards of the same
+    type -- it is the MCU's die id -- and nothing makes it unique ACROSS types: two
+    different parts can report the same bytes. That id is the primary key of the device table, the subject of a
     viewer grant, the relay's room name and the datalake's path segment, so a clash is
     not cosmetic: two physical cameras become one row, the sticky account binding hands
     the second device the first's account, and one customer's live view and telemetry

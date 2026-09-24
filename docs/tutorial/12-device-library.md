@@ -32,7 +32,9 @@ packs it to `/rom/lib/openmv_ota/`. It exposes:
   can see it. One entry in single-image mode.
 - **`identity()`** — the running image's identity/provenance from `/rom/system.json`
   (`board`, `product`, `product_id`, `app_version`, `vendor`, toolchain, …) plus `device_id`
-  (this unit's hardware id from `machine.unique_id()`) — what an update server reads to
+  (this unit's hardware id, `omv.board_id()` — the same id the IDE shows and the one a
+  camera is registered under, which is NOT `machine.unique_id()`) — what an update
+  server reads to
   decide what to push, and to address the specific device. `{}` if there's no system.json.
 - **`confirm()`** — keep the running image: **advances the anti-rollback floor** to this
   version, then writes `confirmed` into **the slot you are running** — iff it is an

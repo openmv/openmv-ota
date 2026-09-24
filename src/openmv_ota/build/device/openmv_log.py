@@ -67,12 +67,41 @@ class _OtaFormatter(logging.Formatter):  # pragma: no cover  (device record API 
                        record.levelname, record.name, record.message)
 
 
+def _release_repl(bus):  # pragma: no cover  (device: the REPL binding)  # hil-residual-fn: runs BEFORE the log stream exists, so no marker can witness it -- a marker is a line written to the very UART this is clearing. Its decision is host-tested in tests/build/test_log.py; the bench proves it transitively, since the Portenta's markers arrive at all only once the REPL is off that bus
+    """Take the bus: stop the REPL sharing the UART the log is about to write to.
+
+    On most boards the log's UART is a spare one. On some it is the board's REPL UART --
+    the Portenta's UART1 is ``MICROPY_HW_UART_REPL`` -- and then the bus has two owners.
+    The REPL keeps reading RX, so any byte that lands there is interpreted: a 0x04 among
+    them is a soft reboot, whose banner goes straight back out the same TX, to be read and
+    interpreted again. A Portenta on the bench produced 8.3 MILLION lines that way in under
+    four minutes, at 37k lines a second, burying every real marker under its own noise.
+
+    A log stream and a REPL cannot share a bus, so whoever asks for the log gets it. Only
+    the REPL on THIS bus is detached: a REPL on some other UART is someone's console and
+    is left alone. Ports without a movable UART REPL have nothing to do here."""
+    try:
+        import pyb
+        current = pyb.repl_uart()
+    except (ImportError, AttributeError):  # hil-residual: no pyb.repl_uart (mimxrt/alif/rp2 -- their REPL is not on a UART this can move)
+        return  # hil-residual: bare return (nothing to release on this port)
+    if current is None:
+        return  # hil-residual: no UART REPL attached -- the ordinary case, nothing to release
+    # "UART(1, baudrate=115200, ...)" -> "1". Compared as the bus id rather than by
+    # identity: the REPL's object is not the one we are about to build.
+    text = str(current)
+    same = text.split("(", 1)[1].split(",", 1)[0].strip() if "(" in text else ""
+    if same == str(bus):
+        pyb.repl_uart(None)  # hil-residual: only reachable on a board whose REPL UART IS the log's (the Portenta); no marker can precede the stream that carries markers
+
+
 def _configure():  # pragma: no cover  (device: handler/UART; runs only when enabled)
     if UART is None:
         import sys  # hil-residual: USB/REPL branch (no UART); the bench always names a UART via /flash/.hilcov_uart so the else branch runs
         stream = sys.stdout  # hil-residual: bare assign (USB/REPL stream; not the bench path)
     else:
         import machine  # hil-residual: witnessed transitively -- "log: configured" reaches the harness's side-channel UART ONLY if the machine.UART stream below was created (the sys.stdout branch would go to USB, not this UART)
+        _release_repl(UART)  # hil-residual: witnessed transitively -- on the one board whose REPL shares this bus (the Portenta) the markers below arrive at all only because this ran; it cannot self-witness, since it is clearing the bus the markers travel on
         stream = machine.UART(UART, BAUD)   # hil-residual: the coverage UART stream; its existence is proven by every marker line the harness reads off it
     handler = logging.StreamHandler(stream)
     handler.terminator = "\r\n"
