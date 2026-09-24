@@ -19,6 +19,16 @@ file's own history has the longer design notes behind each line.
   image and never asks for another, so this is a launch blocker rather than a
   curiosity. Deliberately not closed as a flake — grep the run log for
   `install: 0% (4096/` followed by nothing.
+- **The check-in rate limit keys on the whole IP** — `app.py` passes
+  `request.client.host` straight to `ratelimit.allow()`, so an IPv6 caller gets a
+  fresh bucket per address and a /64 (what any connection is handed) is 2**64 of
+  them. The check-in and feedback limits are one address rotation from meaningless.
+  The same limiter also only sweeps windows older than 60 s, so a flood of distinct
+  addresses inside one window grows the table past `max_tracked` unchecked. Fixed on
+  the cloud website 2026-09-23 (`limit_key()` collapses IPv6 to its /64 and the sweep
+  evicts the quietest half when it frees nothing); this server carries the same shape
+  and has not been changed, because its callers are devices and that deserves its own
+  look at what a shared NAT does to a fleet behind one address.
 - **Device lockdown** — debug-port and boot protection (residual-threats:
   planned); until then bench/bus access is accepted.
 - **Firmware updates via the ROMFS** — bootloader as *reconciler*: copy a
