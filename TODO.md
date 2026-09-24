@@ -11,6 +11,14 @@ file's own history has the longer design notes behind each line.
   imports nothing of ours, but that has never been exercised end to end: flash an
   AE3, run `openmv_ota.sync()`, and prove the helper partition is written and the
   helper core boots its app.
+- **The Nicla hangs mid-download (terminal)** — seen once, 2026-08-05, on
+  `ARDUINO_NICLA_VISION` wifi, scenario `full`: 4 KB written, then total silence
+  until the run timed out. No reboot, no timeout, no retry, no fallback. Suspect a
+  blocking mbedtls read. Under the current design golden catches it; once the golden
+  image is dropped (see *Firmware updates via the ROMFS*) a device that hangs has no
+  image and never asks for another, so this is a launch blocker rather than a
+  curiosity. Deliberately not closed as a flake — grep the run log for
+  `install: 0% (4096/` followed by nothing.
 - **Device lockdown** — debug-port and boot protection (residual-threats:
   planned); until then bench/bus access is accepted.
 - **Firmware updates via the ROMFS** — bootloader as *reconciler*: copy a
@@ -24,10 +32,18 @@ file's own history has the longer design notes behind each line.
   jitter (post-outage herds), NAT-aware rate limiting (per-IP × per-worker
   today).
 - **`device retire`** — no verb removes a device record today.
-- **H7 Plus (OPENMV4P) armed watchdog** — the one board in `WATCHDOG_BROKEN`:
-  boot + app startup does not fit the 100 ms WWDG ceiling, so one bite becomes
-  a reset loop. Likely a per-port window; safety-relevant — measure, don't
-  guess.
+- **H7 Plus (OPENMV4P): the WINC wedges after a watchdog bite (terminal)** — the
+  one board in `WATCHDOG_BROKEN`. NOT the watchdog window: measured on hardware
+  2026-08-02, `machine.WDT("WWDG", 100)` arms on the H743, a 20 ms feed loop and
+  `relax()`'s ISR feed both survive, and the board does not reset-loop. What
+  actually happens is that the armed leg bites mid-install, resets, and then the
+  WINC is wedged — 39 consecutive `OSError(22)` (EINVAL) check-ins, preceded by one
+  `MBEDTLS_ERR_SSL_INVALID_MAC` and one `TypeError` — and never recovers, so no
+  install ever runs again. A WINC driver/socket-state problem. Same reasoning as the
+  Nicla hang: a network stack that never recovers means a device with no image never
+  gets one. Three WINC fixes are parked on openmv branches that may bear on it
+  (`winc_reconnect`, `winc_bounded_waits`, `winc_19_7_11`) — try those before
+  theorising.
 - **Signer backends: one live pass each** — AWS/GCP/Azure KMS + provisioning
   are unit-covered via fakes (SoftHSM has an opt-in real test); each needs one
   end-to-end run against the real service.
