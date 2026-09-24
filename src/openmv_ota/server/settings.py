@@ -62,6 +62,10 @@ class ServerSettings(BaseSettings):
     # it on a production deployment.
     test_offer_downgrades: bool = False
     checkin_rate_per_min: int = 60         # per-IP device check-in rate limit (0 = disabled)
+    # ...and a ceiling on one IPv6 /64 as a whole (0 = no /64 tier): a /64 is 2**64 addresses,
+    # so without it the per-IP limit is one address rotation from meaningless. Higher than the
+    # per-IP limit because every device at an IPv6 site shares the /64 (see ratelimit.py).
+    checkin_rate_per_prefix_per_min: int = 600
     poll_after_s: int = 3600               # backoff the device is told to wait before polling again
     # Upload ceilings. A publish token is a tenant's credential on a SHARED server, and
     # `await upload.read()` is an allocation sized by whoever is uploading -- the same

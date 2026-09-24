@@ -44,7 +44,10 @@ The answer is `{"update": false, "poll_after_s": 3600}` in the common case. On a
 
 Deployments wired for OpenMV's live-viewing or data-ingest services add `live` / `ingest`
 grants to the same answer. Over the rate limit, the reply is `429` with a `Retry-After`
-header.
+header and the usual body, `{"update": false, "poll_after_s": n}`, where `n` is a random
+60-300 s: a crowd throttled together (a site powering on) spreads itself out instead of
+returning in step. The device library treats it as an answer, not a network fault. The limit
+is per client IP, plus a higher ceiling on each IPv6 /64 as a whole.
 
 **`GET /d/{token}/{filename}`** — the capability gateway. The token is a signed, expiring
 credential minted only when a registered device is offered a release, and **one token

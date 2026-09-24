@@ -484,7 +484,11 @@ def test_rate_limited(tmp_path):
     c = TestClient(app)
     assert c.post("/api/v1/check", json=_checkin()).status_code == 200
     r = c.post("/api/v1/check", json=_checkin())
-    assert r.status_code == 429 and r.headers["Retry-After"] == "3600"
+    assert r.status_code == 429
+    # come back in minutes, at a random point, and say so in the body the device reads
+    retry = int(r.headers["Retry-After"])
+    assert 60 <= retry <= 300
+    assert r.json() == {"update": False, "poll_after_s": retry}
 
 
 def test_autopause_on_fallback_threshold(tmp_path):

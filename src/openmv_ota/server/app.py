@@ -18,6 +18,7 @@ hints under ``from __future__ import annotations``; per-request collaborators co
 from __future__ import annotations
 
 import os
+import random
 import re
 import sys
 import time
@@ -42,6 +43,9 @@ from .rollout import (fallback_payload_version, offers_update, running_body_sha2
                       settled, should_autopause)
 from .storage import build_storage
 from .verify import build_verifier
+
+# A throttled check-in is told to retry after this many seconds, chosen at random per answer.
+_THROTTLED_RETRY_S = (60, 300)
 
 router = APIRouter()
 
@@ -646,8 +650,11 @@ def check(checkin: CheckIn, request: Request):
     nothing = {"update": False, "poll_after_s": st.settings.poll_after_s}
     ip = request.client.host if request.client else "-"
     if not st.ratelimit.allow(ip):
-        return JSONResponse(nothing, status_code=429,
-                            headers={"Retry-After": str(st.settings.poll_after_s)})
+        # Come back in minutes, not a full poll, and at a random point: a crowd that hit the
+        # limit together (a site powering on) spreads itself out instead of returning in step.
+        retry = random.randint(*_THROTTLED_RETRY_S)
+        return JSONResponse({"update": False, "poll_after_s": retry}, status_code=429,
+                            headers={"Retry-After": str(retry)})
 
     if not st.settings.swd_ids_verify_url:
         # NO REGISTRATION SERVER ATTACHED (a self-host that cannot reach OpenMV's
@@ -862,7 +869,8 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.verifier = verifier
     app.state.admin_auth = admin_auth if admin_auth is not None else TokenAuth(metastore)
     app.state.secret = secret
-    app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min)
+    app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min,
+                                      per_prefix_per_minute=settings.checkin_rate_per_prefix_per_min)
     from .advisor import OsvClient
     app.state.osv = osv if osv is not None else OsvClient()
     from .datalake import DatalakeAdmin
