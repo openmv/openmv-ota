@@ -882,8 +882,16 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
             "Content-Type: application/json\r\nContent-Length: %d\r\n"
             "Connection: close\r\n\r\n" % (host, len(payload))).encode() + payload)
         status_line = ss.readline()
-        if b" 200 " not in status_line and not status_line.rstrip().endswith(b" 200"):
+        # A 429 is the server pacing a crowd (the per-IP / per-/64 check-in limit), not a broken
+        # link: its body is an ordinary {"update": false, "poll_after_s": n} with a short, jittered
+        # n. Read it like a 200, so the loop waits n instead of a full poll AND resets its failure
+        # streak -- counted as a transport fault, a throttled board would tear down its network
+        # (a WINC chip reset) after a few polls, over nothing but a busy server.
+        throttled = b" 429 " in status_line or status_line.rstrip().endswith(b" 429")
+        if not throttled and b" 200 " not in status_line and not status_line.rstrip().endswith(b" 200"):
             raise OSError("check-in HTTP %s" % status_line)  # hil-residual: bare raise (non-200; happy path is 200)
+        if throttled:
+            log.info("checkin: throttled by the server")  # hil-residual: needs a server over its check-in limit; no bench scenario throttles (the bench server runs one board per node, far under 60/min)
         log.debug("checkin: server ok")              # milestone + HIL path witness
         clen = None
         left = _RESP_HEADERS_MAX                     # CEILING THE HEADER COUNT. Each readline is
