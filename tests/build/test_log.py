@@ -96,3 +96,59 @@ def test_a_romfs_bench_file_is_actually_read(tmp_path):
     rom.mkdir()
     (rom / ".hilcov_uart").write_text("7\n")
     assert _mod._bench_uart([str(rom / ".hilcov_uart")]) == 7
+
+
+# --- taking the bus off the REPL ------------------------------------------------
+# The Portenta's UART1 is MICROPY_HW_UART_REPL, so the log's stream and the REPL want
+# the same bus. Two owners is a feedback loop: the REPL reads RX, a 0x04 there is a soft
+# reboot, and the banner goes back out the same TX to be read again -- 8.3 million lines
+# in four minutes on the bench. These pin the part that decides whether to detach, which
+# is the part that can silently do nothing and leave the loop in place.
+
+class _FakePyb:
+    def __init__(self, current):
+        self._current = current
+        self.detached = False
+
+    def repl_uart(self, *a):
+        if a:                                   # setting
+            assert a[0] is None
+            self._current = None
+            self.detached = True
+            return None
+        return self._current
+
+
+def _with_pyb(monkeypatch, fake):
+    import sys
+    monkeypatch.setitem(sys.modules, "pyb", fake)
+
+
+def test_the_repl_is_released_only_from_the_logs_own_bus(monkeypatch):
+    # a pyb UART reprs as "UART(1, baudrate=115200, bits=8, ...)"
+    fake = _FakePyb("UART(1, baudrate=115200, bits=8, parity=None, stop=1, flow=0)")
+    _with_pyb(monkeypatch, fake)
+    _mod._release_repl(1)
+    assert fake.detached, "the REPL on the log's own bus must be detached"
+
+    other = _FakePyb("UART(3, baudrate=115200, bits=8, parity=None, stop=1, flow=0)")
+    _with_pyb(monkeypatch, other)
+    _mod._release_repl(1)
+    assert not other.detached, "a REPL on someone else's UART is their console -- leave it"
+
+
+def test_releasing_the_repl_is_a_no_op_where_there_is_nothing_to_release(monkeypatch):
+    none = _FakePyb(None)                      # REPL is on USB, the ordinary case
+    _with_pyb(monkeypatch, none)
+    _mod._release_repl(1)
+    assert not none.detached
+
+    class _NoReplUart:                          # a pyb without the call at all
+        pass
+    _with_pyb(monkeypatch, _NoReplUart())
+    _mod._release_repl(1)                       # must not raise
+
+    import sys
+    monkeypatch.delitem(sys.modules, "pyb", raising=False)
+    monkeypatch.setattr(sys, "path", [p for p in sys.path])
+    _mod._release_repl(1)                       # no pyb at all (mimxrt/alif): must not raise
