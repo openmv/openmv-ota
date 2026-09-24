@@ -1889,14 +1889,26 @@ def _flash_blhost_imx(board, bad_romfs=False):
         #
         # /flash survives a romfs erase and openmv_log searches it, so seed it there first. Taking
         # the REPL is safe HERE and only here: this board's app is about to lose its filesystem.
-        try:
-            device_exec("f=open('/flash/.hilcov_uart','w');f.write('%d');f.close()"
-                        % BOARDS[board]["cov_uart"], timeout=30)
-            log("brick: seeded /flash/.hilcov_uart=%d -- /rom (which normally carries it) is about "
-                "to be erased" % BOARDS[board]["cov_uart"])
-        except Exception as e:                   # hil-residual: no REPL to seed through
-            log("brick: could NOT seed /flash/.hilcov_uart (%r) -- the bricked boot will log to USB "
-                "before the CDC enumerates, so its markers will be invisible" % (e,))
+        seed = "f=open('/flash/.hilcov_uart','w');f.write('%d');f.close()" % BOARDS[board]["cov_uart"]
+        for attempt in (1, 2):
+            try:
+                device_exec(seed, timeout=30)
+                log("brick: seeded /flash/.hilcov_uart=%d -- /rom (which normally carries it) is "
+                    "about to be erased" % BOARDS[board]["cov_uart"])
+                break
+            except Exception as e:               # hil-residual: no REPL to seed through
+                if attempt == 1:
+                    # The port can be ENUMERATED YET UNUSABLE -- every mpremote dies on
+                    # OSError(5)/"in use" -- which is exactly what _ensure_cdc's nRST pulse is for.
+                    # Without this retry the seed failure is terminal in a silent way: the erase
+                    # below still happens, the bricked boot logs to USB before the CDC enumerates,
+                    # and the leg spends its ENTIRE timeout waiting for markers that cannot arrive.
+                    # Measured: 737 s to fail on 2 of 96 markers, on a board that was fine.
+                    log("brick: seed failed (%r) -- nRST and retry before bricking" % (e,))
+                    _ensure_cdc(board)
+                    continue
+                log("brick: could NOT seed /flash/.hilcov_uart (%r) -- the bricked boot will log to "
+                    "USB before the CDC enumerates, so its markers will be invisible" % (e,))
         log("brick: erase the OTA romfs region (both slots) -> openmv-ota flash erase --romfs")
         sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--romfs",
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
