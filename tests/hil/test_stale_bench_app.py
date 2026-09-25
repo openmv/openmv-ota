@@ -187,13 +187,25 @@ def test_no_slot_seeds_the_marker_uart_where_the_brick_cannot_erase_it():
 
     Reading the console instead does not work (same enumeration reason) and actively harms: it
     holds the port the nudge-reset needs. /flash survives a romfs erase and openmv_log searches it,
-    so the brick seeds it there first.
+    so the scenario seeds it there first.
+
+    The seed lives in seed_brick_marker() and the runner calls it BEFORE opening the capture:
+    seeding takes the REPL, which on this board can drop USB and need an nRST, and that reset's
+    boot would land inside the window as a `run.checkin` the scenario forbids. It also has to
+    VERIFY, because the write lands while the transport dies -- believing that exception is what
+    made this leg fail three gate runs.
     """
     import inspect
-    body = inspect.getsource(ota_cycle._flash_blhost_imx)
-    seed = body.split("if bad_romfs:")[1].split("flash erase --romfs")[0]
+    seed = inspect.getsource(ota_cycle.seed_brick_marker)
     assert "/flash/.hilcov_uart" in seed, "the marker UART must be seeded somewhere the erase spares"
     assert "cov_uart" in seed, "...and it must name THIS board's UART"
+    assert "_seeded(" in seed, "...and it must read the file back, not trust the write's exception"
+
+    # the runner seeds BEFORE it starts capturing, or the recovery reset shows up as a check-in
+    main = inspect.getsource(ota_cycle.main)
+    order = main.split('spec["end"] == "no_slot"')[1]
+    assert order.index("seed_brick_marker") < order.index("cap.start("), \
+        "seeding must happen before the capture window opens"
 
 
 def test_trace_write_creates_its_directory():

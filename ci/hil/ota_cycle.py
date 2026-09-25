@@ -1872,6 +1872,30 @@ def _seeded(board):
     return ("SEEDED %d" % BOARDS[board]["cov_uart"]) in out
 
 
+def seed_brick_marker(board):
+    """Put the marker-UART file on /flash before the no_slot brick, and prove it is there.
+
+    Called by the runner BEFORE the capture opens, deliberately. Seeding takes the REPL, and on
+    this board that can drop USB and need an nRST to get it back -- a reset whose boot would
+    otherwise land inside the capture window as a `run.checkin` the scenario forbids. Nothing the
+    seed does is part of what no_slot measures, so none of it belongs in the window."""
+    seed = "f=open('/flash/.hilcov_uart','w');f.write('%d');f.close()" % BOARDS[board]["cov_uart"]
+    for attempt in (1, 2, 3):
+        try:
+            device_exec(seed, timeout=30)
+        except Exception as e:                   # hil-residual: the transport dying mid-write
+            log("brick: seed raised (%r) -- checking whether it landed anyway" % (e,))
+        _ensure_cdc(board)                       # whatever happened, get the CDC back first
+        if _seeded(board):
+            log("brick: seeded /flash/.hilcov_uart=%d -- /rom (which normally carries it) is "
+                "about to be erased" % BOARDS[board]["cov_uart"])
+            return True
+        log("brick: /flash/.hilcov_uart is not there after try %d" % attempt)
+    log("brick: could NOT seed /flash/.hilcov_uart -- the bricked boot will log to USB before "
+        "the CDC enumerates, so its markers will be invisible")
+    return False
+
+
 def _flash_blhost_imx(board, bad_romfs=False):
     """Provision golden on the mimxrt (RT1062) via the openmv-ota CLI's resident-SBL flash path
     (`flash firmware` + `flash romfs`): the CLI enters the resident SBL with machine.bootloader()
@@ -1909,21 +1933,7 @@ def _flash_blhost_imx(board, bad_romfs=False):
         #
         # So do not trust the exception -- READ THE FILE BACK. Recover the CDC first (the nRST
         # pulse _ensure_cdc does is what brings it back), then check.
-        seed = "f=open('/flash/.hilcov_uart','w');f.write('%d');f.close()" % BOARDS[board]["cov_uart"]
-        for attempt in (1, 2, 3):
-            try:
-                device_exec(seed, timeout=30)
-            except Exception as e:               # hil-residual: the transport dying mid-write
-                log("brick: seed raised (%r) -- checking whether it landed anyway" % (e,))
-            _ensure_cdc(board)                   # whatever happened, get the CDC back first
-            if _seeded(board):
-                log("brick: seeded /flash/.hilcov_uart=%d -- /rom (which normally carries it) is "
-                    "about to be erased" % BOARDS[board]["cov_uart"])
-                break
-            log("brick: /flash/.hilcov_uart is not there after try %d" % attempt)
-        else:
-            log("brick: could NOT seed /flash/.hilcov_uart -- the bricked boot will log to USB "
-                "before the CDC enumerates, so its markers will be invisible")
+        # (seed_brick_marker() has already run, BEFORE the capture opened -- see the caller)
         log("brick: erase the OTA romfs region (both slots) -> openmv-ota flash erase --romfs")
         sh([ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board, "--romfs",
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
@@ -2838,6 +2848,10 @@ def main():
             # capture BEFORE the brick flash so the reset it triggers (-> boot -> the log line)
             # is caught. Requires the board already provisioned + bootable (firmware carries the
             # bench logger and /flash/.hilcov_uart is set) -- run it after another scenario.
+            # Seed the marker file BEFORE the window opens: it takes the REPL, which on this
+            # board can drop USB and need an nRST, and that reset's boot would otherwise be read
+            # as a forbidden run.checkin. None of it is what this scenario measures.
+            phase("seed_marker", lambda: seed_brick_marker(args.board))
             cap = UartCapture(CFG["uart"])
             cap.start(time.time())
             phase("flash_brick", lambda: flash_golden(args.board, bad_romfs=True))
