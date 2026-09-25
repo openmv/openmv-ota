@@ -1569,8 +1569,20 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # board has megabytes, and its multi-MiB slots want the one-compare, no-slice path; a
     # single-image classic keeps the small default so DeflateIO's window still fits after the
     # erase. Decided on the free heap itself, which is exactly what is at stake.
+    #
+    # DO THIS UNDER THE WATCHDOG-SAFE PATTERN. On a board where the app armed a watchdog (the N6's
+    # 100 ms WWDG) this runs INSIDE the armed window, and allocating the two _CHUNK buffers churns
+    # the heap -- which, unfed, pushes an automatic gc.collect() into the slot survey just below,
+    # where there is no feed, and a collect is 65-100 ms on the N6: measured, the board reset there
+    # with reset_cause=3 (WDT) before `install: target slot`. relax() ISR-feeds across the alloc,
+    # and the proactive collect clears the churn so no automatic GC lands in the unfed survey. All
+    # no-op unless the app armed a watchdog.
     if gc.mem_free() >= _COMPARE_HEAP_MIN:
-        _set_compare(_CHUNK)  # hil-residual: every fleet board has >= 64 KiB free, so this is the fleet's arm; the small-window arm is the classic legs' (no marker either way -- a compare width leaves no line)
+        feed()                                        # full window before the compare-buffer alloc  # hil-residual: watchdog-armed feed (opt-in; a feed leaves no marker, exercised by the N6 watchdog scenario reaching `install: target slot` without a reset_cause=3)
+        with relax():                                 # ISR-feed across any auto-GC the alloc triggers  # hil-residual: watchdog-armed relax (opt-in; same witness -- the survey now completes under the armed WWDG)
+            _set_compare(_CHUNK)  # hil-residual: every fleet board has >= 64 KiB free, so this is the fleet's arm; the small-window arm is the classic legs' (no marker either way -- a compare width leaves no line)
+        if gc_collect is not None:  # hil-residual: watchdog-armed churn-clear guard (opt-in; gc_collect is None unless the app armed a watchdog, so only the N6 watchdog scenario takes the True arm)
+            gc_collect()  # hil-residual: watchdog-armed churn-clear before the unfed survey (opt-in; the pause it prevents, so marker-less)
     # Log-only progress, built from RAM + the frozen logger so it survives the slot erase.
     progress = _Progress(log) if log is not None else None
     block = cfg.CONTROL_BLOCK
