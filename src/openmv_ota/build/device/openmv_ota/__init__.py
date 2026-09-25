@@ -631,6 +631,16 @@ def register_checkin(contribute=None, on_response=None, key=None):
         _checkin_observers[ident] = on_response
 
 
+# --- NETWORK RUNTIME: begin --------------------------------------------------
+# Everything to the matching end marker is the server-polling stack: run(),
+# _poll_forever(), _checkin() and their helpers. It needs `ssl`, so on a board whose
+# firmware carries no TLS it can NEVER execute -- there the bytecode is pure cost, and
+# the cost is not theoretical: the OPENMV2 (F427) installs a ~31 KB image with ~650
+# bytes of heap to spare, so a few hundred bytes of code it cannot run is the
+# difference between updating and coming back with a blank romfs and no app.
+# build/romfs.py cuts this region for a board flagged `ota_runtime_drops_network`.
+# Keep the region SELF-CONTAINED: nothing outside it may reference a name defined in
+# it (tests/build/test_runtime_drop.py proves that, and that the remainder compiles).
 def _checkin_body(info, st, slot_states=None):
     """The base check-in payload from identity() + status() (+ slots()) -- pure, so it's
     host-testable; extension fields (e.g. streams) are merged by contributors."""
@@ -992,6 +1002,7 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         except Exception:  # hil-residual: best-effort close of the check-in socket
             pass  # hil-residual: bare pass; nothing else holds the fd
         log.debug("checkin: closed")                  # HIL path witness (connection closed)
+# --- NETWORK RUNTIME: end ----------------------------------------------------
 
 
 def _advance_rollback(cfg, slot, key):  # pragma: no cover (device)

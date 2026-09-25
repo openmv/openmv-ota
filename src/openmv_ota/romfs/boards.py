@@ -47,6 +47,13 @@ class BoardConfig:
                                          # public CA bundle (~186 KB) for recovery when
                                          # [ota].ca is unset; smaller boards must pin
                                          # their server's root(s) via [ota].ca instead
+    ota_runtime_drops_network: bool = False
+                                         # this board's firmware has no `ssl`, so the OTA
+                                         # runtime's polling stack (run/_checkin/...) can
+                                         # never execute on it -- the pack drops that code
+                                         # rather than spend heap it cannot use. The F427
+                                         # installs with ~650 bytes to spare; see
+                                         # build/pystrip.drop_network_runtime
     ota_firmware_drops: dict[str, str] = field(default_factory=dict)
                                          # imlib features an OTA firmware build turns off
                                          # to fit this board's flash, `{define: image
@@ -98,6 +105,7 @@ def load_boards() -> dict[str, BoardConfig]:
             arch=b.get("arch", ""),
             mpy_args=list(b.get("mpy_args", [])),
             recovery_ca_bundle=bool(b.get("recovery_ca_bundle", False)),
+            ota_runtime_drops_network=bool(b.get("ota_runtime_drops_network", False)),
             ota_firmware_drops=dict(b.get("ota_firmware_drops", {})),
             partitions=parts,
             flash=b.get("flash"),
