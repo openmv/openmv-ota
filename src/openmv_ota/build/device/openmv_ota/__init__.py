@@ -1184,8 +1184,9 @@ def install(url, ca=None):  # pragma: no cover
     the medium is untrusted in both cases and the signature is the boundary. Does
     **not** return on success -- it reboots. A failure *after* the write commits reboots
     into the previous working image instead (boot.py rejects the half-written slot); a
-    pre-flight failure (bad URL or path, DNS, TLS, a bad/forbidden/rolled-back manifest)
-    raises before anything is erased, so the app can catch it and retry without a reboot.
+    pre-flight failure (bad URL or path, DNS, TLS, a bad/forbidden/rolled-back manifest, or a
+    file image that cannot be opened and staged in RAM) raises before anything is erased, so
+    the app can catch it and retry without a reboot.
     Call after any app teardown -- the install erases ``/rom``, so the running app cannot
     continue past this call -- and, for a URL, once the network is up (WiFi/Ethernet/
     HaLow); a file install needs no network at all.

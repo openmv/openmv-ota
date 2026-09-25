@@ -1529,3 +1529,90 @@ def test_closing_the_decrypting_stream_closes_the_socket_under_it():
     src = _Dribble(ciphertext, 16)
     inst("_decrypting")(src, enc, keys, _HostAes).close()
     assert src._closed
+
+
+# --- the compare window: small at import, widened on a board with heap to spare ------------
+
+def test_is_all_compares_a_chunk_in_windows():
+    """The compare constants are _CMP bytes (a whole chunk's worth cost the M4 8 KiB of a 43 KB
+    heap at import); a longer chunk is compared window by window, tail included."""
+    cmp_, ff, zero, is_all = inst("_CMP"), inst("_FF_MV"), inst("_ZERO_MV"), inst("_is_all")
+    assert cmp_ < inst("_CHUNK")
+    assert is_all(b"\xff" * (3 * cmp_ + 5), ff) is True            # whole windows + a tail
+    assert is_all(bytearray(b"\xff" * cmp_), ff) is True           # exactly one window
+    assert is_all(memoryview(b"\xff" * (2 * cmp_)), ff) is True    # a view input
+    assert is_all(b"\xff" * 3, ff) is True                         # shorter than a window
+    assert is_all(b"", ff) is True
+    bad = bytearray(b"\xff" * (3 * cmp_ + 5))
+    bad[cmp_ + 3] = 0                                              # inside the second window
+    assert is_all(bad, ff) is False
+    bad = bytearray(b"\xff" * (3 * cmp_ + 5))
+    bad[-1] = 0                                                    # in the tail
+    assert is_all(bad, ff) is False
+    assert is_all(bytes(4 * cmp_), zero) is True
+    assert is_all(b"\x00" * cmp_ + b"\x01", zero) is False
+    assert inst("_add")(b"\x10" * (cmp_ + 1), bytes(cmp_ + 1)) == b"\x10" * (cmp_ + 1)
+
+
+def test_set_compare_widens_to_a_chunk_and_back():
+    small, chunk = inst("_CMP"), inst("_CHUNK")
+    try:
+        inst("_set_compare")(chunk)
+        assert inst("_CMP") == chunk == len(inst("_FF_MV")) == len(inst("_ZERO_MV"))
+        assert inst("_is_blank")(b"\xff" * chunk) is True          # one compare, no slice
+        assert inst("_is_blank")(b"\xff" * (chunk - 1) + b"\x00") is False
+        assert inst("_is_blank")(b"\xff" * (chunk + 7)) is True    # still windowed past it
+        ff = inst("_FF_MV")
+        inst("_set_compare")(chunk)                                # same size: a no-op
+        assert inst("_FF_MV") is ff
+    finally:
+        inst("_set_compare")(small)
+    assert inst("_CMP") == small and len(inst("_FF_MV")) == small
+
+
+def test_fill_takes_several_short_reads_and_feeds_each():
+    feeds = []
+    mv = memoryview(bytearray(10))
+    assert inst("_fill")(_SourceOf(b"abcdefghij", step=3), mv, 10, lambda: feeds.append(1)) == 10
+    assert bytes(mv) == b"abcdefghij"
+    assert len(feeds) == 4                                          # one feed per read
+    mv = memoryview(bytearray(10))
+    assert inst("_fill")(_SourceOf(b"abcd", step=3), mv, 10, _noop) == 4   # short only at EOF
+    assert bytes(mv[:4]) == b"abcd"
+    mv = memoryview(bytearray(10))
+    assert inst("_fill")(_SourceOf(b"abcdef", step=100), mv, 4, _noop) == 4  # want < buffer
+    assert bytes(mv[:4]) == b"abcd"
+
+
+def test_install_stream_takes_a_primed_first_chunk():
+    """A file image's first chunk is read into `work` BEFORE the erase (so DeflateIO's window is
+    allocated ahead of the commit point); the loop takes it as its first fill, then reads on."""
+    block = 4096
+    front = 4 * block
+    body = b"PRIMED." + b"\x01" * 5000                              # spans two chunks
+    image = bytearray(b"\xff" * front)
+    image[:len(body)] = body
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    src = _SourceOf(bytes(image))
+    work = bytearray(block)
+    n = inst("_fill")(src, memoryview(work), block, _noop)           # what run() does pre-erase
+    assert n == block and src.pos == block
+    inst("_install_stream")(src, flash.write, flash.readback, front, block, _noop,
+                            None, None, None, None, work, None, 0, primed=n)
+    assert flash.mem[:len(body)] == body
+    assert flash.mem[front - 2 * block:front - 2 * block + 16] == inst("PENDING")
+
+
+def test_install_stream_primed_short_image_is_still_rejected():
+    block = 4096
+    front = 4 * block
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    src = _SourceOf(b"tiny")
+    work = bytearray(block)
+    n = inst("_fill")(src, memoryview(work), block, _noop)
+    assert n == 4
+    with pytest.raises(ValueError, match="image is 4 bytes"):
+        inst("_install_stream")(src, flash.write, flash.readback, front, block, _noop,
+                                None, None, None, None, work, None, 0, primed=n)
