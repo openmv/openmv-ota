@@ -1773,18 +1773,33 @@ class SqlMetadataStore:
         """Append one entry. ``product_id`` is the product the act happened to, where the
         caller knows one -- it is what lets a product-limited credential read its own
         history, and it is stored beside the chain rather than inside it (see the v25
-        migration)."""
-        last = self.query_one("SELECT seq, entry_hash FROM audit ORDER BY seq DESC LIMIT 1")
-        seq = (last["seq"] + 1) if last else 1
-        prev = last["entry_hash"] if last else ""
+        migration).
+
+        The read of the last entry and the insert of the next are ONE critical section under
+        the store lock. The sequence is ``MAX(seq)+1`` and the entry hash chains onto the
+        previous ``entry_hash``, so two appenders that each read the same last row would insert
+        the same seq (which is UNIQUE -> IntegrityError -> a 500) and fork the chain. The server
+        appends concurrently in practice -- a publish on the event-loop thread while a periodic
+        `advisory.scan` runs in a worker thread (`asyncio.to_thread`) -- and that race surfaced as
+        `UNIQUE constraint failed: audit.seq`. `query_one`/`execute` each take and release the lock
+        on their own, leaving a gap between the read and the insert; holding the lock across both
+        closes it. `_fan_out` re-acquires the lock, so it stays OUTSIDE this block."""
         ts = _now_iso()
         payload = json.dumps(data or {}, separators=(",", ":"), sort_keys=True)
-        entry = _audit_hash(prev, ts, actor, action, entity_type, entity_id, payload)
-        self.execute(
-            "INSERT INTO audit (seq, ts, actor, action, entity_type, entity_id, data, prev_hash, "
-            "entry_hash, account_id, product_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry, account_id,
-             None if product_id is None else int(product_id)))
+        pid = None if product_id is None else int(product_id)
+        with self._lock:
+            cur = self._conn.cursor()
+            self._run(cur, "SELECT seq, entry_hash FROM audit ORDER BY seq DESC LIMIT 1", ())
+            last = cur.fetchone()
+            seq = (last["seq"] + 1) if last else 1
+            prev = last["entry_hash"] if last else ""
+            entry = _audit_hash(prev, ts, actor, action, entity_type, entity_id, payload)
+            self._run(cur,
+                      "INSERT INTO audit (seq, ts, actor, action, entity_type, entity_id, data, "
+                      "prev_hash, entry_hash, account_id, product_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                      (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry,
+                       account_id, pid))
+            self._conn.commit()
         if account_id:
             self._fan_out(seq, action, account_id, ts)
         return seq

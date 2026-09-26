@@ -227,3 +227,34 @@ def test_upsert_device_keeps_the_last_reported_body_sha():
     assert s.get_device("d1")["body_sha256"] == "aa" * 32
     s.upsert_device(device_id="d1", product_id=1, body_sha256="bb" * 32)  # new install
     assert s.get_device("d1")["body_sha256"] == "bb" * 32
+
+
+def test_append_audit_is_atomic_under_concurrent_appenders():
+    """The seq is MAX(seq)+1 and each entry hashes onto the previous one, so two appenders that
+    read the same last row collide on the UNIQUE seq and fork the chain -- the 500 a publish hit
+    when it raced the periodic advisory scan. Holding the store lock across the read and the
+    insert serializes them: every seq lands, exactly once, and the chain stays intact."""
+    import threading
+
+    s = _store()
+    n_threads, per_thread = 8, 40
+    errors: list = []
+
+    def worker():
+        try:
+            for _ in range(per_thread):
+                s.append_audit(actor="t", action="x")
+        except Exception as e:  # noqa: BLE001 -- any raise (IntegrityError included) fails the test
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors
+    total = n_threads * per_thread
+    seqs = [r["seq"] for r in s.query_all("SELECT seq FROM audit ORDER BY seq")]
+    assert seqs == list(range(1, total + 1))          # every seq present, unique, none lost
+    assert s.audit_chain_ok()                          # prev_hash/entry_hash chain unbroken
