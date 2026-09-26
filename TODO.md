@@ -28,9 +28,9 @@ file's own history has the longer design notes behind each line.
 - **Rollout ramps** — optional declared-at-creation stages
   `{percent, min_soak, min_attempted, max_failure_rate}` evaluated lazily on
   check-ins; auto-pause always beats auto-raise; every auto-raise audited.
-- **Scaling past ~100K devices** — metastore connection pool, `poll_after_s`
-  jitter (post-outage herds), NAT-aware rate limiting (per-IP × per-worker
-  today).
+- **Scaling past ~100K devices** — metastore connection pool, NAT-aware rate
+  limiting (per-IP × per-worker today). (`poll_after_s` jitter for post-outage
+  herds is done — `poll_jitter`.)
 - **H7 Plus (OPENMV4P): the WINC wedges after a watchdog bite (terminal)** — the
   one board in `WATCHDOG_BROKEN`. NOT the watchdog window: measured on hardware
   2026-08-02, `machine.WDT("WWDG", 100)` arms on the H743, a 20 ms feed loop and
