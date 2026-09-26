@@ -477,6 +477,15 @@ def _runtime_inject(out_dir, board, copro_targets):
             from .pystrip import strip_python_source
             installer.write_text(strip_python_source(installer.read_text(encoding="utf-8")),
                                  encoding="utf-8")
+        if boards_mod.get_board(board).ota_runtime_drops_network:
+            # This board's firmware has no `ssl`, so the runtime's polling stack can never
+            # run on it. Ship it and the bytecode still costs heap at import -- which on the
+            # F427 is the whole margin (it installs a ~31 KB image with ~650 bytes spare, and
+            # losing that leaves the romfs erased and the board with no app). Cut it.
+            from .pystrip import drop_network_runtime
+            init = lib / "__init__.py"
+            before = init.read_text(encoding="utf-8")
+            init.write_text(drop_network_runtime(before), encoding="utf-8")
         if not copro_targets:
             # Plain board: drop only the coprocessor resource (nothing to sync) -- keep
             # installer.py, which every OTA image needs (the trust store rides in the

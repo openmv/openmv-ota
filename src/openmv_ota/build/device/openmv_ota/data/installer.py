@@ -153,12 +153,24 @@ _CHUNK = 4096
 # Preallocated, immutable compare buffers (memoryview-sliced, never copied). The streamed delta
 # apply runs millions of "is this chunk all-zero / all-0xFF?" tests; comparing against a fresh
 # bytes(n) each time was a big slice of the delta's heap churn -> GC pressure -> (under a watchdog)
-# an unfeedable collection pause. The whole write path now reuses fixed buffers so no per-chunk
+# an unfeedable collection pause. The whole write path reuses fixed buffers so no per-chunk
 # allocation happens and automatic GC never fires mid-install.
-_ZERO_CHUNK = bytes(_CHUNK)
-_ZERO_MV = memoryview(_ZERO_CHUNK)
-_FF_CHUNK = b"\xff" * _CHUNK
-_FF_MV = memoryview(_FF_CHUNK)
+#
+# SMALL BY DEFAULT. These live as long as the module does, and the module is frozen, so they are
+# paid at `import openmv_installer`. On the OpenMV Cam M4 (STM32F427, a 43 KB heap) a _CHUNK-sized
+# pair was 8 KiB of the 12 KB that import cost, and what it left was too broken up to hand
+# DeflateIO its 4 KiB inflate window after the erase: 9 KB free, largest run 2.6 KB (heap map,
+# bench). In single-image mode a MemoryError there is terminal -- the only image is already gone.
+# Measured: `attempt 1/3 failed (MemoryError allocating 4096 bytes)` three times, then a reboot
+# into a blank /rom. So a chunk is compared _CMP bytes at a time (_is_all): 16 C-level compares
+# per 4 KiB chunk, tens of microseconds against a multi-millisecond program. run() widens the
+# window to a whole chunk on a board with heap to spare (_set_compare), which keeps the
+# one-compare, no-slice path an armed watchdog needs on a 12 MiB slot.
+_CMP = 256
+_ZERO_MV = memoryview(bytes(_CMP))
+_FF_MV = memoryview(b"\xff" * _CMP)
+_COMPARE_HEAP_MIN = 64 * 1024   # free heap below which the window stays small: the wide pair
+#                                 costs 2 * _CHUNK, so ask for eight times that to spare
 
 # THE LAST BYTES OF AN XIP-MAPPED PARTITION MUST NEVER BE BULK-READ.
 #
@@ -722,8 +734,7 @@ except ImportError:                               # host / a board without ulab 
 def _add(old_b, diff_b):
     """``(old_b + diff_b) mod 256`` for the diff region. All-zero diff (the unchanged bulk)
     is a straight copy; otherwise ulab vectorises the add, with a pure-Python fallback."""
-    n = len(diff_b)
-    if diff_b == (_ZERO_CHUNK if n == _CHUNK else bytes(n)):   # unchanged bulk -> straight copy
+    if _is_all(diff_b, _ZERO_MV):                     # unchanged bulk -> straight copy
         return bytes(old_b)
     if _np is not None:
         return (_np.frombuffer(old_b, dtype=_np.uint8)        # pragma: no cover (device/ulab)  # hil-residual: ulab vectorised add (device-only, no ulab on host); correctness proven end-to-end by the delta scenario's sha256 gate (install.armed -> confirm.promoted); the pure-Python twin below is host-tested
@@ -824,7 +835,7 @@ def _delta_stream(reader, old_read, chunk):
             m = left if left < chunk else chunk
             reader.read_into(mv[:m])                      # out[:m] = the diff bytes
             old_v = old_read(o, m)                        # base view (XIP alias, no copy)
-            if mv[:m] == _ZERO_MV[:m]:                    # unchanged bulk -> result is just base
+            if _is_all(mv[:m], _ZERO_MV):                 # unchanged bulk -> result is just base
                 mv[:m] = old_v
             elif acc is not None:                         # ulab in-place: out += base (uint8 wraps)
                 acc[:m] += _np.frombuffer(old_v, dtype=_np.uint8)  # pragma: no cover (device/ulab)  # hil-residual: ulab in-place vectorised add (device-only, no ulab on host); the pure branch below is host-tested and the delta scenario's sha256 gate proves the ulab path end-to-end (install.armed -> confirm.promoted)
@@ -898,20 +909,39 @@ def _clamp_to(off, n, end):
     return end - off if off < end else 0
 
 
-def _is_blank(chunk):
-    """True if ``chunk`` is all 0xFF -- already-erased flash we needn't rewrite.
+def _set_compare(size):
+    """Resize the compare views to ``size`` bytes -- a whole chunk on a board with heap to spare,
+    so every blank/zero test is ONE C-level compare with no slice and no allocation. That is the
+    zero-alloc discipline an armed watchdog needs: the erase-verify walks a 12 MiB slot in _CHUNK
+    steps, and the ~3000 slices that used to make provoked an automatic collect of 65-100 ms on
+    the N6 -- its entire window; measured, the board died in that loop. ``run()`` only ever
+    widens; the small default is what a single-image classic keeps (see _CMP)."""
+    global _CMP, _ZERO_MV, _FF_MV
+    if size != _CMP:
+        _CMP = size
+        _ZERO_MV = memoryview(bytes(size))
+        _FF_MV = memoryview(b"\xff" * size)
 
-    NO SLICE ON THE COMMON PATH. `_FF_MV[:n]` builds a NEW memoryview every call -- the old comment
-    here claimed otherwise and it was wrong. The erase-verify walks the whole slot in _CHUNK steps,
-    so on a 12 MiB slot that was ~3000 allocations, and with the install armed the automatic
-    collect they provoke is 65-100 ms on the N6 -- its entire watchdog window. Measured: the board
-    died in this loop, between `install: readback` and the first written block. Only the final
-    short chunk slices now.
-    """
+
+def _is_all(chunk, ref):
+    """True if every byte of ``chunk`` matches ``ref``, a ``_CMP``-byte view of one repeated
+    byte. Compares ``_CMP`` bytes at a time so the constant can stay small; a chunk no longer
+    than the window is a single compare, and exactly the window's length slices nothing."""
     n = len(chunk)
-    if n == _CHUNK:
-        return chunk == _FF_MV                   # full chunk: compare the hoisted view AS IS
-    return chunk == _FF_MV[:n]                   # only the tail slices, and only once
+    if n <= _CMP:
+        return chunk == (ref if n == _CMP else ref[:n])
+    mv = memoryview(chunk)
+    i = 0
+    while n - i >= _CMP:
+        if mv[i:i + _CMP] != ref:
+            return False
+        i += _CMP
+    return i == n or mv[i:] == ref[:n - i]
+
+
+def _is_blank(chunk):
+    """True if ``chunk`` is all 0xFF -- already-erased flash we needn't rewrite."""
+    return _is_all(chunk, _FF_MV)
 
 
 class _Progress:
@@ -937,9 +967,27 @@ class _Progress:
             self._log.info("install: %d%% (%d/%d bytes)" % (pct, done, total))
 
 
+def _fill(source, mv, want, feed):
+    """Fill ``mv[:want]`` from ``source.readinto`` and return the count -- short only at EOF. A
+    decompressor answers in whatever pieces it has, so one aligned chunk takes several reads, and
+    each one is fed: a single fill can span the inflate window's allocation plus several recvs.
+    Measured on the N6 with the install armed, one feed per chunk left the board dead between the
+    last `verify i=` line and the first written block."""
+    n = 0
+    while n < want:
+        feed()
+        # Take the FULL buffer when we can: mv[n:want] builds a new memoryview on every read, and
+        # this is the hottest loop in the install.
+        k = source.readinto(mv if n == 0 and want == len(mv) else mv[n:want])
+        if k == 0:
+            break                                    # EOF: a short tail is caught by the size check
+        n += k
+    return n
+
+
 def _install_stream(source, write, readback, slot_size, block, feed,
                     progress=None, expect_sha=None, repr_marker=None, gc_collect=None,
-                    work=None, counter=None, floor=0):
+                    work=None, counter=None, floor=0, primed=0):
     """Stream the decompressed image into the ALREADY-ERASED TARGET slot 1:1
     (verifying every write by read-back, skipping already-erased 0xFF runs), then
     arm the trial.
@@ -949,10 +997,13 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     ``counter`` is the install counter to stamp (what makes this slot the newest) and ``floor``
     the anti-rollback floor to carry forward into it -- see the arm sequence at the bottom.
 
-    The caller MUST erase the target slot BEFORE calling this AND before opening the
-    download stream ``source`` draws from -- so the download socket is never left idle
+    The caller MUST erase the target slot BEFORE calling this AND, for a download, before
+    opening the stream ``source`` draws from -- so the download socket is never left idle
     during the multi-second erase (a slow flash on a power-saving link drops an idle
-    connection, and the write loop would then read a truncated body). This function
+    connection, and the write loop would then read a truncated body). A file image is the
+    other way round: run() opens it and reads its first chunk into ``work`` BEFORE the erase,
+    so every allocation precedes the commit point, and passes that count as ``primed`` for
+    the loop to take as its first fill. This function
     starts by read-back verifying the slot is fully erased.
 
     ``source.readinto(mv)`` fills up to ``len(mv)`` decompressed image bytes into the caller's
@@ -1024,25 +1075,12 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     mv = memoryview(work)
     off = 0
     since_gc = 0
+    n = primed                                       # a primed first chunk is already in `work`
     while off < slot_size:
         feed()                                       # before the (recv + delta reconstruct) fill
         want = _CHUNK if slot_size - off >= _CHUNK else slot_size - off
-        n = 0
-        while n < want:                              # fill a full aligned chunk: re-chunks the
-            feed()                                   # FEED PER READ. This loop had none: the only
-            #                                          feed was the outer loop's, so ONE chunk fill
-            #                                          -- which on the first pass is where DeflateIO
-            #                                          allocates its ~32 KiB window, plus however
-            #                                          many recvs it takes -- ran on a single 100 ms
-            #                                          window. Measured on the N6: the armed install
-            #                                          died between the last `verify i=` line and the
-            #                                          first written block, i.e. in this fill.
-            # ...and take the FULL buffer when we can: mv[n:want] builds a new memoryview on every
-            # read, and this is the hottest loop in the install.
-            k = source.readinto(mv if n == 0 and want == _CHUNK else mv[n:want])
-            if k == 0:
-                break                                # EOF: a short tail is caught by the size check
-            n += k
+        if n == 0:
+            n = _fill(source, mv, want, feed)
         if n == 0:
             break                                    # source exhausted; the size check below rejects short
         chunk = mv[:n]
@@ -1064,6 +1102,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         off += n
         feed()
         since_gc += n
+        n = 0                                        # the next chunk is read, not primed
         if gc_collect is not None and since_gc >= _GC_EVERY:
             gc_collect()                             # proactive relax()-fed collect -> auto-GC never fires
             since_gc = 0
@@ -1485,6 +1524,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     ``/rom`` intact. Progress is logged from here (RAM + the frozen logger) at every 10%
     step -- it can't be a caller callback, whose code is being erased."""
     import deflate
+    import gc
 
     import uctypes
     import vfs
@@ -1525,6 +1565,24 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             with relax():  # hil-residual: relax() feeds the WWDG across the unsplittable gc.collect()
                 _gc.collect()  # hil-residual: proactive collection at a controlled point (device-only)
             feed()  # hil-residual: watchdog-armed post-collect feed (opt-in, marker-less)
+    # Widen the compare views to a whole chunk where the heap can spare them (see _CMP): an A/B
+    # board has megabytes, and its multi-MiB slots want the one-compare, no-slice path; a
+    # single-image classic keeps the small default so DeflateIO's window still fits after the
+    # erase. Decided on the free heap itself, which is exactly what is at stake.
+    #
+    # DO THIS UNDER THE WATCHDOG-SAFE PATTERN. On a board where the app armed a watchdog (the N6's
+    # 100 ms WWDG) this runs INSIDE the armed window, and allocating the two _CHUNK buffers churns
+    # the heap -- which, unfed, pushes an automatic gc.collect() into the slot survey just below,
+    # where there is no feed, and a collect is 65-100 ms on the N6: measured, the board reset there
+    # with reset_cause=3 (WDT) before `install: target slot`. relax() ISR-feeds across the alloc,
+    # and the proactive collect clears the churn so no automatic GC lands in the unfed survey. All
+    # no-op unless the app armed a watchdog.
+    if gc.mem_free() >= _COMPARE_HEAP_MIN:
+        feed()                                        # full window before the compare-buffer alloc  # hil-residual: watchdog-armed feed (opt-in; a feed leaves no marker, exercised by the N6 watchdog scenario reaching `install: target slot` without a reset_cause=3)
+        with relax():                                 # ISR-feed across any auto-GC the alloc triggers  # hil-residual: watchdog-armed relax (opt-in; same witness -- the survey now completes under the armed WWDG)
+            _set_compare(_CHUNK)  # hil-residual: every fleet board has >= 64 KiB free, so this is the fleet's arm; the small-window arm is the classic legs' (no marker either way -- a compare width leaves no line)
+        if gc_collect is not None:  # hil-residual: watchdog-armed churn-clear guard (opt-in; gc_collect is None unless the app armed a watchdog, so only the N6 watchdog scenario takes the True arm)
+            gc_collect()  # hil-residual: watchdog-armed churn-clear before the unfed survey (opt-in; the pause it prevents, so marker-less)
     # Log-only progress, built from RAM + the frozen logger so it survives the slot erase.
     progress = _Progress(log) if log is not None else None
     block = cfg.CONTROL_BLOCK
@@ -1913,14 +1971,15 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
     # failure reboots -- into the OTHER slot under A/B (the previous working image, which was
     # never touched), or into firmware-resident recovery in SINGLE mode, where the erase took
-    # the only image with it. ERASE FIRST,
-    # THEN open the download: the whole-slot erase takes seconds, and if the socket
+    # the only image with it. For a DOWNLOAD, erase first,
+    # then open it: the whole-slot erase takes seconds, and if the socket
     # were already open it would sit idle that whole time -- a slow flash (the AE3's
     # external OSPI) on a power-saving WiFi link drops an idle connection, and the
     # write loop then reads a truncated body. Opening the download only after the
     # erase means it is read continuously. (A download-open failure here is rare --
     # the manifest was just fetched from the same server -- and lands cleanly in
-    # the surviving slot.)
+    # the surviving slot.) A FILE image is opened and primed BEFORE the erase instead -- see
+    # the loop below.
     # A flaky link (WiFi power-save, a slow OSPI flash, cellular) drops the download
     # mid-stream -- a transient transport error, not a bad update. Since the installer
     # already runs from RAM (exec'd before the erase) and re-erase + re-download is
@@ -1931,6 +1990,8 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # verify miscompare) is treated the same: retry, then fall back.
     attempts = getattr(cfg, "INSTALL_RETRIES", 3)
     body = None
+    from_file = _is_path(image_url)
+    erased = False
     # PREALLOCATE EVERYTHING THE ARMED REGION WILL NEED, BEFORE ARMING. An automatic gc.collect()
     # is one unsplittable pause -- 65-100 ms on the N6's multi-MB heap, i.e. at or past that port's
     # whole 100 ms window -- so any allocation inside the armed region is a chance to be bitten for
@@ -1938,6 +1999,42 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     # allocating at all closes it. This is the reused write buffer; _rb/_br (the readback views) are
     # hoisted the same way further up.
     work = bytearray(_CHUNK)
+
+    def open_chain():
+        """Open the image and build what reads it: the body (a file, or the resumable HTTPS
+        download), the decrypt layer when the artifact is wrapped, the inflate window, and for
+        a delta the patch reconstructor. Returns ``(body, source, repr_marker)``; ``body`` is
+        set the moment it is open, so the retry cleanup can close it whatever fails after."""
+        nonlocal body
+        log.info("install: downloading %s (%s)" % (image_url, fmt))
+        # The retry cleanup closes the BODY: for HTTPS the body owns whichever socket is live
+        # after a resume (closing the original would leak the newer one -- see _ResumingBody);
+        # for an on-disk image it is simply the open file.
+        body = _open_body(image_url, ca_pem, socket, ssl, feed)
+        if enc:
+            # Decrypt UNDER the decompressor and OVER the resume: what arrives is
+            # ciphertext, what DeflateIO sees is the gzip stream, and a dropped link
+            # still re-opens at a byte offset neither layer has to know about.
+            import cryptolib
+            body = _decrypting(body, enc, getattr(cfg, "PAYLOAD_KEYS", {}), cryptolib.aes)
+            log.info("install: decrypting")   # the marker a HIL run sees on this path
+        # Collect BEFORE building the decompress chain, unconditionally: DeflateIO
+        # allocates its whole inflate window in one piece (4 KiB on small-window
+        # images, 32 KiB default), and on a ~40 KB-heap classic the previous
+        # attempt's -- or the failed exec's -- garbage is the difference between
+        # fitting and MemoryError x3. The armed-watchdog gc_collect hook exists for
+        # pause control; this one is for the allocation itself.
+        gc.collect()  # hil-residual: pre-DeflateIO collect; effect only visible on small-heap classics (no fleet marker)
+        dio = deflate.DeflateIO(body, deflate.GZIP, wbits)  # wbits 0 = format default
+        if fmt == _DELTA_FORMAT:
+            # Delta: stream-decompress the patch and reconstruct the image against the
+            # RUNNING slot (copy-with-diff, ulab add) -- both the patch and the output are
+            # streamed into the target slot, neither is materialised.
+            log.debug("install: representation delta")
+            return body, _GenReader(_delta_stream(_PatchReader(dio), base_read, _CHUNK), feed), REPR_DELTA  # hil-residual: bare return behind the install.delta marker (a return cannot be dominated by the print before it)
+        log.debug("install: representation full")
+        return body, dio, REPR_FULL                  # DeflateIO is itself a readinto source  # hil-residual: bare return behind the install.full marker (same)
+
     for attempt in range(attempts):
         try:
             # COLLECT BEFORE THE ERASE, under relax(). Everything above -- the TLS session, the
@@ -1955,40 +2052,29 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # exactly this reason; the erase needed the same treatment at its own entry.
             if gc_collect is not None:
                 gc_collect()  # hil-residual: watchdog-armed pre-erase collect (opt-in; gc_collect is None unless the app armed a watchdog, so only the watchdog HIL scenario reaches it -- and it is marker-less by design, being the pause it exists to prevent)
+            primed = 0
+            if from_file:
+                # A FILE IMAGE IS OPENED, BUILT AND PRIMED BEFORE THE ERASE. The erase is the commit
+                # point: past it a failure can only reboot, and in single-image mode -- every board
+                # that installs from a card -- that reboot lands on a blank /rom. So everything that
+                # allocates goes ahead of it: the file, the decrypt buffers and, by reading the first
+                # chunk into `work`, DeflateIO's inflate window, which it only allocates on first use.
+                # A MemoryError here raises to the app with /rom intact. Measured on the M4 with the
+                # chain built after the erase: that window failed to allocate three attempts running
+                # (9 KB free, largest run 2.6 KB) and the board rebooted with no image at all. A file
+                # cannot go stale during the erase, so the reason a download is opened after it
+                # (below) does not apply.
+                body, source, repr_marker = open_chain()  # hil-residual: classic (file) legs only, and those boards have no coverage UART, so no bench print can witness this arm; proven by the M4 bench soak (file_full) and the host tests of _fill/_install_stream(primed=)
+                primed = _fill(source, memoryview(work),  # hil-residual: same arm (classic-only, no coverage UART); the primed first chunk is host-tested in test_install_stream_takes_a_primed_first_chunk
+                               _CHUNK if slot_size >= _CHUNK else slot_size, feed)
+                log.debug("install: primed")          # first chunk in RAM, nothing erased yet  # hil-residual: same arm; a print, but not a fleet marker (no classic board can deliver one)
+            erased = True                             # from here on every failure reboots
             log.info("install: erasing %s (%d bytes) t=%d" % (target, slot_size, ticks_ms()))
             erase(target_off, slot_size)
-            log.info("install: downloading %s (%s)" % (image_url, fmt))
-            # The retry cleanup below closes the BODY: for HTTPS the body owns whichever
-            # socket is live after a resume (closing the original would leak the newer
-            # one -- see _ResumingBody); for an on-disk image it is simply the open file.
-            body = _open_body(image_url, ca_pem, socket, ssl, feed)
-            if enc:
-                # Decrypt UNDER the decompressor and OVER the resume: what arrives is
-                # ciphertext, what DeflateIO sees is the gzip stream, and a dropped link
-                # still re-opens at a byte offset neither layer has to know about.
-                import cryptolib
-                body = _decrypting(body, enc, getattr(cfg, "PAYLOAD_KEYS", {}), cryptolib.aes)
-                log.info("install: decrypting")   # the marker a HIL run sees on this path
-            # Collect BEFORE building the decompress chain, unconditionally: DeflateIO
-            # allocates its whole inflate window in one piece (8 KiB on small-window
-            # images, 32 KiB default), and on a ~40 KB-heap classic the previous
-            # attempt's -- or the failed exec's -- garbage is the difference between
-            # fitting and MemoryError x3. The armed-watchdog gc_collect hook exists for
-            # pause control; this one is for the allocation itself.
-            import gc
-            gc.collect()  # hil-residual: pre-DeflateIO collect; effect only visible on small-heap classics (no fleet marker)
-            dio = deflate.DeflateIO(body, deflate.GZIP, wbits)  # wbits 0 = format default
-            if fmt == _DELTA_FORMAT:
-                # Delta: stream-decompress the patch and reconstruct the image against the
-                # RUNNING slot (copy-with-diff, ulab add) -- both the patch and the output are
-                # streamed into the target slot, neither is materialised.
-                source = _GenReader(_delta_stream(_PatchReader(dio), base_read, _CHUNK), feed)
-                repr_marker = REPR_DELTA
-                log.debug("install: representation delta")
-            else:
-                source = dio                          # DeflateIO is itself a readinto source
-                repr_marker = REPR_FULL
-                log.debug("install: representation full")
+            if not from_file:
+                # ERASE FIRST, THEN OPEN THE DOWNLOAD -- see the commit-point comment above the loop:
+                # a socket left open across a multi-second erase goes idle and drops.
+                body, source, repr_marker = open_chain()  # hil-residual: witnessed transitively -- install.download / install.decrypt / install.full / install.delta are printed inside open_chain(), which every fleet (URL) leg reaches through this arm and the classic (file) legs through the one above; the audit is intraprocedural
             # ARM HERE -- as late as possible, and only once every allocating step is behind us:
             # the socket, the TLS session, the deflate window and the delta reader are all built,
             # and the write buffer was preallocated before the loop. What remains is flash writes
@@ -2007,7 +2093,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             log.info("install: writing %s" % target)
             _install_stream(source, write, readback, slot_size, block, feed,
                             progress, expect_sha, repr_marker, gc_collect, work,
-                            counter=counter, floor=floor)
+                            counter=counter, floor=floor, primed=primed)
             # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
             # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
             # ports cache the final sub-page writes -- the trailer + arm markers -- and
@@ -2021,6 +2107,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 body.close()                          # closes whichever socket the body now owns
                 body = None
                 log.debug("install: retry cleanup")  # HIL path witness (socket closed before a retry)
+            if not erased:
+                # Nothing on flash has changed: a file image that would not open, decrypt, inflate
+                # or stage its first chunk (on a small heap, a MemoryError) is a pre-flight failure
+                # like a rejected manifest, and it raises to the app the same way -- /rom intact, the
+                # app free to retry later -- rather than spending retries and rebooting for nothing.
+                log.warning("install: failed before erase (%r)" % e)  # hil-residual: pre-erase file-chain failure; needs a heap too fragmented to stage the first chunk (measured on the M4 before this reorder, never on a passing run), so no marker can witness it
+                raise  # hil-residual: bare re-raise to the app (pre-erase, /rom intact; the warning above is the only line on this arm)
             if attempt + 1 >= attempts:
                 log.error("install: FAILED after %d attempts (%r); rebooting to the other slot"
                           % (attempts, e))                # %r: show the exception CLASS even when
