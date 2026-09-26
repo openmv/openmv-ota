@@ -825,3 +825,75 @@ def test_check_jitters_the_poll_after_s(tmp_path):
     assert len(vals) > 1                                           # not a constant any more
     lo, hi = int(3600 * 0.75), int(3600 * 1.25) + 1
     assert all(lo <= x <= hi for x in vals)                        # every one within the band
+
+
+# --- rollout ramps: lazy auto-raise / auto-pause on check-ins -------------------------------
+
+def _seed_ramp(store, stages):
+    """Seed the standard release plus a RAMP rollout (percent starts at stage 0's)."""
+    from openmv_ota.server.rollout import validate_stages
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=3,
+                      representations=[{"format": "full", "url": "OPENMV_N6-ota.img.gz", "size": 3}],
+                      manifest_key="manifest/rel1", image_key="image/rel1")
+    clean = validate_stages(stages)
+    store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID, cohort="__default__",
+                      percent=clean[0]["percent"], stages=clean)
+
+
+def test_ramp_auto_raises_when_a_stage_soaks_and_reaches_enough(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed_ramp(store, [{"percent": 5, "min_soak": 0, "min_attempted": 2}, {"percent": 50}])
+    store.bump_rollout("ro1", attempted=2)                    # this stage has reached 2 devices
+    TestClient(app).post("/api/v1/check", json=_checkin(pv=0x01000000))   # any check-in re-evaluates
+    ro = store.get_rollout("ro1")
+    assert ro["percent"] == 50 and ro["stage_index"] == 1     # raised to stage 1
+    assert ro["stage_attempted_base"] == ro["attempted"]      # the new stage's window starts here
+    assert ro["stage_entered_at"]                             # and its soak clock restarts
+    assert any(e["action"] == "rollout.autoraise" for e in store.read_audit())
+
+
+def test_ramp_does_not_raise_before_its_gates(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed_ramp(store, [{"percent": 5, "min_soak": 99999, "min_attempted": 2}, {"percent": 50}])
+    store.bump_rollout("ro1", attempted=5)                    # attempted met, but soak is not
+    TestClient(app).post("/api/v1/check", json=_checkin(pv=0x01000000))
+    ro = store.get_rollout("ro1")
+    assert ro["percent"] == 5 and ro["stage_index"] == 0      # still stage 0
+
+
+def test_ramp_auto_pauses_when_a_stage_exceeds_its_ceiling(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed_ramp(store, [{"percent": 100, "min_soak": 99999, "min_attempted": 999,
+                        "max_failure_rate": 0.1}, {"percent": 100}])
+    store.bump_rollout("ro1", attempted=10, failures=2)       # 20% > 10% ceiling -> pause
+    TestClient(app).post("/api/v1/check", json=_checkin(pv=0x01000000))
+    ro = store.get_rollout("ro1")
+    assert ro["state"] == "paused" and ro["pause_reason"] == "failure_limit"
+    assert ro["stage_index"] == 0                             # paused, not raised
+    paused = [e for e in store.read_audit() if e["action"] == "rollout.autopause"]
+    assert paused and paused[0]["data"]["stage"] == 0
+
+
+def test_soak_elapsed_s_handles_missing_and_malformed():
+    from datetime import datetime, timedelta, timezone
+
+    from openmv_ota.server.app import _soak_elapsed_s
+    assert _soak_elapsed_s(None) == 0.0
+    assert _soak_elapsed_s("not-a-timestamp") == 0.0          # a torn stored value, not a crash
+    past = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+    assert _soak_elapsed_s(past) >= 100
+
+
+def test_ramp_or_autopause_ignores_an_inactive_or_missing_rollout(tmp_path):
+    """The lazy evaluator is a no-op when the rollout it is handed is not active (paused/stopped
+    between the decision and here) or gone -- it never resurrects or mutates one."""
+    from openmv_ota.server.app import _ramp_or_autopause
+    app, store, storage, v = _app(tmp_path)
+    _seed_ramp(store, [{"percent": 5, "min_soak": 0, "min_attempted": 1}, {"percent": 50}])
+    store.bump_rollout("ro1", attempted=5)
+    store.update_rollout("ro1", state="paused")               # not active any more
+    _ramp_or_autopause(store, "ro1", {"account_id": "", "product_id": BID})
+    assert store.get_rollout("ro1")["stage_index"] == 0       # left untouched (no raise)
+    _ramp_or_autopause(store, "ghost", {"account_id": "", "product_id": BID})   # missing -> no crash

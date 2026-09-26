@@ -1369,3 +1369,36 @@ def test_account_delete_api_is_root_only_and_final(tmp_path, monkeypatch):
     assert gone["actor"] == "kwabena@openmv.io" and gone["data"]["via"] == "ci"
     assert gone["data"]["rows"]["releases"] == 1 and gone["data"]["name"] == "A"
     assert c.delete("/api/v1/admin/accounts/acctA", headers=AUTH).status_code == 404
+
+
+def test_create_rollout_with_stages_starts_at_stage_zero(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    r = TestClient(app).post("/api/v1/admin/rollouts", headers=AUTH,
+                             json={"release_id": "rel1", "percent": 99,   # ignored when stages given
+                                   "stages": [{"percent": 1, "min_soak": 3600, "min_attempted": 50},
+                                              {"percent": 10}, {"percent": 100}]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["percent"] == 1 and len(body["stages"]) == 3         # starts at stage 0, not 99
+    ro = store.get_rollout(body["rollout_id"])
+    assert ro["percent"] == 1 and ro["stage_index"] == 0 and ro["stage_entered_at"]
+    import json as _json
+    assert _json.loads(ro["stages"])[1]["percent"] == 10
+
+
+def test_create_rollout_rejects_a_bad_ramp(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    r = TestClient(app).post("/api/v1/admin/rollouts", headers=AUTH,
+                             json={"release_id": "rel1", "percent": 5,
+                                   "stages": [{"percent": 10}, {"percent": 5}]})   # decreasing
+    assert r.status_code == 400 and "decrease" in r.json()["detail"]
+
+
+def test_create_rollout_needs_percent_or_stages(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    r = TestClient(app).post("/api/v1/admin/rollouts", headers=AUTH,
+                             json={"release_id": "rel1"})            # neither percent nor stages
+    assert r.status_code == 400 and "percent or stages" in r.json()["detail"]

@@ -124,6 +124,15 @@ def test_rollout_calls():
     assert c.calls[2][:2] == ("POST", "/api/v1/admin/rollouts/ro1/stop")
 
 
+def test_create_rollout_sends_stages():
+    api, c = _api(_Resp(200, {}))
+    api.create_rollout("r1", "__default__", None,
+                       stages=[{"percent": 1, "min_soak": 3600}, {"percent": 100}])
+    body = c.calls[0][2]["json"]
+    assert body["stages"] == [{"percent": 1, "min_soak": 3600}, {"percent": 100}]
+    assert body["percent"] is None                       # the server picks the start from stage 0
+
+
 def test_read_calls_carry_params():
     api, c = _api(_Resp(200, {}))
     api.fleet(7)

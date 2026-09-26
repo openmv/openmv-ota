@@ -144,8 +144,13 @@ def register(parser: argparse.ArgumentParser) -> None:
                       help="release to stage (ids come from `client release list`)")
     p_rc.add_argument("--cohort", default="__default__",
                       help="cohort to stage it to (default: __default__, the un-assigned devices)")
-    p_rc.add_argument("--percent", type=float, required=True,
-                      help="share of the cohort to offer it to, 0-100")
+    p_rc.add_argument("--percent", type=float,
+                      help="share of the cohort to offer it to, 0-100 (omit when using --stage)")
+    p_rc.add_argument("--stage", action="append", metavar="PCT[:SOAK[:ATTEMPTED[:MAXFAIL]]]",
+                      help="a ramp stage, repeatable: PERCENT then optional min_soak seconds, "
+                           "min_attempted devices, and max_failure_rate 0-1. The rollout starts at "
+                           "the first stage and raises itself through them as each soaks and holds. "
+                           "e.g. --stage 1:86400:50 --stage 10:86400:200 --stage 100")
     p_rc.add_argument("--failure-threshold", type=float, default=0.05,
                       help="fallback rate among offered devices that auto-pauses it (default 0.05)")
     p_rc.add_argument("--name", default="",
@@ -906,13 +911,33 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_stage(spec: str) -> dict:
+    """One ``--stage PCT[:SOAK[:ATTEMPTED[:MAXFAIL]]]`` into a stage dict. The server validates the
+    ramp as a whole (monotonic percents, bounds); this only splits the colon fields."""
+    parts = spec.split(":")
+    try:
+        stage = {"percent": float(parts[0])}
+        if len(parts) > 1 and parts[1] != "":
+            stage["min_soak"] = float(parts[1])
+        if len(parts) > 2 and parts[2] != "":
+            stage["min_attempted"] = int(parts[2])
+        if len(parts) > 3 and parts[3] != "":
+            stage["max_failure_rate"] = float(parts[3])
+    except ValueError:
+        raise ClientError("bad --stage %r: expected PCT[:SOAK[:ATTEMPTED[:MAXFAIL]]]" % spec)
+    return stage
+
+
 def cmd_rollout(args: argparse.Namespace) -> int:
     try:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "create":
+            stages = [_parse_stage(s) for s in args.stage] if args.stage else None
+            if stages is None and args.percent is None:
+                raise ClientError("rollout create needs --percent, or one or more --stage")
             ro = api.create_rollout(args.release_id, args.cohort, args.percent,
                                     failure_threshold=args.failure_threshold,
-                                    display_name=args.name)
+                                    display_name=args.name, stages=stages)
             return _emit(args, ro, "rollout %s  %s%%  cohort=%s"
                          % (ro["rollout_id"], ro["percent"], ro["cohort"]))
         if args.action == "status":

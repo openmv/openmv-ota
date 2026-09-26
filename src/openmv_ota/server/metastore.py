@@ -447,6 +447,18 @@ _MIGRATIONS: list[list[str]] = [
         "CREATE INDEX IF NOT EXISTS idx_releases_account "
         "ON releases (account_id, product_id, payload_version)",
     ],
+    [   # v31 -- rollout ramps. A rollout may carry a declared ordered list of STAGES (JSON:
+        # {percent, min_soak, min_attempted, max_failure_rate?}) it raises itself through, lazily,
+        # on check-ins -- so an operator declares "1% for a day, then 10%, then 100%" once instead
+        # of babysitting PATCH calls. NULL stages = a manual rollout, unchanged. Each stage is judged
+        # on its OWN window, so the baselines record the attempted/failures totals when the current
+        # stage began; stage_entered_at is when, for the soak clock.
+        "ALTER TABLE rollouts ADD COLUMN stages TEXT",
+        "ALTER TABLE rollouts ADD COLUMN stage_index INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE rollouts ADD COLUMN stage_entered_at TEXT",
+        "ALTER TABLE rollouts ADD COLUMN stage_attempted_base INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE rollouts ADD COLUMN stage_failures_base INTEGER NOT NULL DEFAULT 0",
+    ],
 ]
 
 
@@ -678,14 +690,18 @@ class SqlMetadataStore:
     # --- rollouts ---------------------------------------------------------------------------
 
     def add_rollout(self, *, rollout_id, release_id, product_id, cohort, percent, state="active",
-                    failure_threshold=0.05, account_id="", display_name="") -> None:
+                    failure_threshold=0.05, account_id="", display_name="", stages=None) -> None:
         now = _now_iso()
+        # ``stages`` (a validated list) is stored as JSON; a ramp starts at stage 0, entered now,
+        # with zero baselines (the rollout's own attempted/failures also start at 0). NULL = no ramp.
+        stages_json = json.dumps(stages) if stages else None
+        entered = now if stages else None
         self.execute(
             "INSERT INTO rollouts (rollout_id, release_id, product_id, cohort, percent, state, "
-            "failure_threshold, created_at, updated_at, account_id, display_name) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "failure_threshold, created_at, updated_at, account_id, display_name, stages, "
+            "stage_entered_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (rollout_id, release_id, product_id, cohort, percent, state, failure_threshold, now,
-             now, account_id, display_name))
+             now, account_id, display_name, stages_json, entered))
 
     def get_rollout(self, rollout_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM rollouts WHERE rollout_id = ?", (rollout_id,)))

@@ -99,3 +99,69 @@ def offers_update(*, current_payload_version: int, release_payload_version: int,
 def should_autopause(failures: int, attempted: int, threshold: float) -> bool:
     """Whether a rollout's fallback rate has crossed its failure threshold (the safety valve)."""
     return attempted > 0 and (failures / attempted) > threshold
+
+
+# --- rollout ramps: declared stages the rollout raises itself through -----------------------
+#
+# A ramp is an ordered list of stages, each {percent, min_soak, min_attempted, max_failure_rate?}.
+# The rollout starts at stage 0's percent and, evaluated lazily on check-ins, raises itself to the
+# next stage's percent once the CURRENT stage has both soaked long enough and reached enough
+# devices without its failure rate crossing the ceiling. Auto-pause always beats auto-raise: a
+# stage over its failure ceiling pauses even if its soak/attempted gates are also met. Every stage
+# is judged on ITS OWN window -- the attempts and failures since it began -- not the rollout's
+# lifetime totals, so an early rocky stage does not poison a later healthy one, nor the reverse.
+
+def validate_stages(stages):
+    """Normalize + check a declared ramp; return the cleaned list or raise ValueError. Percents are
+    monotonic non-decreasing (a ramp only ever raises the offered share)."""
+    if not isinstance(stages, list) or not stages:
+        raise ValueError("stages must be a non-empty list")
+    out = []
+    last_pct = -1.0
+    for i, s in enumerate(stages):
+        if not isinstance(s, dict):
+            raise ValueError("stage %d must be an object" % i)
+        try:
+            pct = float(s["percent"])
+            soak = float(s.get("min_soak", 0))
+            att = int(s.get("min_attempted", 0))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("stage %d needs a numeric percent (min_soak/min_attempted optional)" % i)
+        if not 0 <= pct <= 100:
+            raise ValueError("stage %d percent must be 0..100" % i)
+        if pct < last_pct:
+            raise ValueError("stage percents must not decrease (a ramp only raises)")
+        if soak < 0 or att < 0:
+            raise ValueError("stage %d min_soak/min_attempted must be >= 0" % i)
+        clean = {"percent": pct, "min_soak": soak, "min_attempted": att}
+        if s.get("max_failure_rate") is not None:
+            mfr = float(s["max_failure_rate"])
+            if not 0 <= mfr <= 1:
+                raise ValueError("stage %d max_failure_rate must be 0..1" % i)
+            clean["max_failure_rate"] = mfr
+        out.append(clean)
+        last_pct = pct
+    return out
+
+
+def ramp_action(stages, stage_index, stage_attempted, stage_failures, soak_elapsed_s,
+                default_max_failure_rate):
+    """What a ramping rollout should do at ``stage_index`` given that stage's OWN window. Pure.
+
+    Returns ``("pause", None)`` when the stage's failure rate exceeds its ceiling (checked FIRST,
+    so it beats a raise), ``("raise", next_percent)`` when the stage has soaked long enough AND
+    reached ``min_attempted`` devices AND a later stage exists, else ``("hold", None)``. A stage
+    with no ``max_failure_rate`` uses ``default_max_failure_rate`` (the rollout's failure_threshold).
+    """
+    if not stages or not 0 <= stage_index < len(stages):
+        return ("hold", None)
+    stage = stages[stage_index]
+    ceiling = stage.get("max_failure_rate", default_max_failure_rate)
+    rate = (stage_failures / stage_attempted) if stage_attempted > 0 else 0.0
+    if stage_attempted > 0 and rate > ceiling:
+        return ("pause", None)
+    if (stage_index + 1 < len(stages)
+            and soak_elapsed_s >= stage["min_soak"]
+            and stage_attempted >= stage["min_attempted"]):
+        return ("raise", stages[stage_index + 1]["percent"])
+    return ("hold", None)
