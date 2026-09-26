@@ -109,23 +109,22 @@ COPROC_ENABLED = env("HIL_COPROC", "") == "1"
 # Also relevant: WWDG is IN RANGE on this family. The patched driver's own formula gives
 # 64 * 4096 * 128 / (120e6/1000) ~= 280 ms max on the H743/H747, well above TIMEOUT_MS=100,
 # so "the H7 window is too short" was never about the peripheral.
-# ANSWERED 2026-08-05, and the answer is the WINC. Same STM32H7, same WWDG, same relax() fix:
-#   Nicla    watchdog PASS (291 s)          cyw43
-#   Portenta watchdog PASS (1117 s / 681 s) cyw43
-#   H7 Plus  watchdog FAIL (1145 s)         ATWINC1500  <- the only difference
-# So it is NOT the H7 family, NOT the WWDG window, and NOT the relax() defect (that one is
-# fixed and is what unblocked the other two). On the H7 Plus the armed leg bites during the
-# install (reset_cause=3), resets again (cause=2), and then the WINC is WEDGED -- 39
-# consecutive `run: cycle failed OSError(22,)` (EINVAL) on the check-in, preceded by one
-# MBEDTLS_ERR_SSL_INVALID_MAC and one TypeError. It never recovers, so no install ever runs.
-# That is a WINC driver/socket-state problem, not a watchdog-window problem, and it needs
-# its own investigation. The board stays out until then -- on MEASUREMENT this time, with the
-# control experiment finally done.
-WATCHDOG_BROKEN = {"OPENMV4P"}
-# The Arduino boards are here by DECISION, not measurement: their armed-watchdog leg has never been
-# run, and chasing it was explicitly deferred so the OTA legs could land. That leaves the H7 Plus
-# question (WINC or H7-wide?) open -- see above. Run it by hand when you want the answer:
-#   workflow_dispatch board=ARDUINO_PORTENTA_H7 scenario=watchdog
+# ANSWERED 2026-08-05, and the answer was the WINC. Same STM32H7, same WWDG, same relax() fix:
+#   Nicla    watchdog PASS          cyw43
+#   Portenta watchdog PASS          cyw43
+#   H7 Plus  watchdog FAIL (1145 s) ATWINC1500  <- the only difference
+# The armed leg bit during the install (reset_cause=3), reset (cause=2), and then the WINC was
+# WEDGED -- 39 consecutive OSError(22) (EINVAL) check-ins, one MBEDTLS_ERR_SSL_INVALID_MAC and one
+# TypeError -- and never recovered. A WINC driver/socket-state problem, not a watchdog-window one.
+#
+# RESOLVED 2026-09-26. The three WINC branches the TODO said to try first are all merged to openmv
+# master now (reconnect #3271, bounded-waits #3273, fw 19.7.11 #3270), and the install-under-a-
+# watchdog fixes since Aug mean the H743 install no longer bites at all: `workflow_dispatch
+# board=OPENMV4P scenario=watchdog` on current master reached promoted in 309 s, every reboot
+# reset_cause=2 (never a WDT bite), `checkin: server ok` throughout, no EINVAL. So the wedge's
+# prerequisite (a mid-install bite) is gone and the WINC is healthy across the resets. The board is
+# back in the watchdog leg like every other; the escape hatch stays for the next board that needs it.
+WATCHDOG_BROKEN: set[str] = set()
 
 # Per-board: which side-channel UART carries markers, how it reaches the network, and
 # how the golden image is flashed. Kept data-driven so a new board is one entry.
@@ -171,9 +170,10 @@ BOARDS = {
     },
     # --- Arduino MCUboot boards ------------------------------------------------------------------
     # Both are STM32H7 like the H7 Plus, but with ONBOARD CYW4343 wifi instead of a WINC1500 shield.
-    # That makes them the control for the H7 Plus's armed-watchdog reset loop (see WATCHDOG_BROKEN):
-    # same family, same WWDG, different network driver. A passing watchdog leg here isolates the
-    # failure to the WINC; a failing one makes it H7-wide.
+    # That made them the control for the H7 Plus's armed-watchdog reset loop (see WATCHDOG_BROKEN,
+    # now resolved): same family, same WWDG, different network driver. Their passing watchdog legs
+    # isolated the failure to the WINC -- since fixed (merged WINC branches + the install no longer
+    # bites), so the H7 Plus is back in the watchdog leg too.
     "ARDUINO_NICLA_VISION": {
         # The update server NEVER writes a device record for these: they sit in its
         # registry's unregistered-board-type answer (it never registers Arduino
@@ -786,8 +786,8 @@ def regression_scenarios(board, network):
     # path. The negative path (the WDT actually BITES when feeding stops, then recovers as a single
     # bite) is WWDG-specific (reset_cause==3), so watchdog_bite stays N6-only -- like no_slot is
     # block-device-only.
-    if board not in WATCHDOG_BROKEN:                   # see WATCHDOG_BROKEN (H7 Plus: armed WWDG
-        scs.append("watchdog")                         # reset-loops off USB; its other 8 legs pass)
+    if board not in WATCHDOG_BROKEN:                   # empty since 2026-09-26 (H7 Plus resolved)
+        scs.append("watchdog")
     if board == "OPENMV_N6":
         scs.append("watchdog_bite")
     if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
