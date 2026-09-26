@@ -199,6 +199,33 @@ in the cloud (the raw `R||S` length is checked either way) — and `backup` /
 `restore` simply don't apply to external keys, because there is nothing on disk to
 lose.
 
+### What a pooled KMS backend costs
+
+`provision` defaults to `--ota-keys 4` (not the on-disk default of 32) because a cloud KMS
+bills for keys that just sit there. An OTA pool is mostly **idle**: the keys are minted up
+front and only sign at a build or a rotation, so signing operations are rare, and the cost
+that matters is the **per-key monthly charge** — paid on every key in the pool whether or
+not it has been rotated in yet.
+
+| Backend | Per key / month | Sign | A 32-key pool, idle |
+|---|---|---|---|
+| AWS KMS (asymmetric) | $1.00 | $0.15 / 10k | ~$32 / month |
+| GCP Cloud KMS, software | ~$0.06 | $0.03 / 10k | ~$2 / month |
+| GCP Cloud KMS, HSM | $1.00–$2.50 | $0.03 / 10k | ~$32–$80 / month |
+| Azure Key Vault, software keys | none | $0.03 / 10k | ~$0 |
+
+Representative rates as of 2026 — confirm against each provider's current pricing:
+[AWS](https://aws.amazon.com/kms/pricing/), [GCP](https://cloud.google.com/kms/pricing),
+[Azure](https://azure.microsoft.com/pricing/details/key-vault/). (Azure's Managed HSM is a
+different, flat-rate pooled model, not per-key.)
+
+So on **AWS** or **GCP-HSM** a large idle pool is real recurring money: size it to the
+rotations you expect over the product's service life and no more — but not too small either,
+since you can't add keys later without a firmware reflash (4 is a floor, not a target). On
+**GCP-software** and **Azure software keys** the per-key cost is negligible, so the on-disk
+default of 32 is essentially free. Signing volume is trivial everywhere — an OTA build signs
+a handful of times a release, far under any free tier.
+
 ---
 
 *[← 4 · OTA projects](04-ota-projects.md) · [Index](00-introduction.md) · [6 · Building →](06-building.md)*

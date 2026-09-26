@@ -43,6 +43,3 @@ file's own history has the longer design notes behind each line.
 - **Signer backends: one live pass each** — AWS/GCP/Azure KMS + provisioning
   are unit-covered via fakes (SoftHSM has an opt-in real test); each needs one
   end-to-end run against the real service.
-- **KMS provisioning pricing** — `keys backend provision` defaults to a small
-  pool because external keys are billable; document per-provider pricing before
-  recommending bigger pools.
