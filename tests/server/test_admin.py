@@ -1402,3 +1402,32 @@ def test_create_rollout_needs_percent_or_stages(tmp_path):
     r = TestClient(app).post("/api/v1/admin/rollouts", headers=AUTH,
                              json={"release_id": "rel1"})            # neither percent nor stages
     assert r.status_code == 400 and "percent or stages" in r.json()["detail"]
+
+
+def test_rollout_status_reports_ramp_progress(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    c = TestClient(app)
+    rid = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                 json={"release_id": "rel1",
+                       "stages": [{"percent": 1, "min_soak": 3600, "min_attempted": 50},
+                                  {"percent": 10}, {"percent": 100}]}).json()["rollout_id"]
+    store.update_rollout(rid, stage_index=1)                       # simulate an auto-raise to stage 1
+    b = c.get("/api/v1/admin/rollouts/%s/status" % rid, headers=AUTH).json()
+    assert isinstance(b["stages"], list) and len(b["stages"]) == 3  # parsed, not a JSON string
+    assert b["ramp"]["stage"] == 1 and b["ramp"]["of"] == 3
+    assert b["ramp"]["current"]["percent"] == 10 and b["ramp"]["next"]["percent"] == 100
+    assert "stage_attempted_base" not in b and "stage_failures_base" not in b   # internals hidden
+    store.update_rollout(rid, stage_index=2)                       # the final stage: no next
+    last = c.get("/api/v1/admin/rollouts/%s/status" % rid, headers=AUTH).json()
+    assert last["ramp"]["stage"] == 2 and last["ramp"]["next"] is None
+
+
+def test_rollout_status_manual_rollout_has_no_ramp(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    c = TestClient(app)
+    rid = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                 json={"release_id": "rel1", "percent": 5}).json()["rollout_id"]
+    b = c.get("/api/v1/admin/rollouts/%s/status" % rid, headers=AUTH).json()
+    assert b["ramp"] is None and b["stages"] == []                  # last stage of a manual rollout

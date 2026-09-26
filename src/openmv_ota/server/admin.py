@@ -6,6 +6,7 @@ off ``request.app.state`` and gate on a scope via ``require_scope``.
 
 from __future__ import annotations
 
+import json
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
@@ -708,14 +709,34 @@ def list_rollouts(request: Request, product_id: int | None = None, limit: int = 
                                        release_id, pause_reason, products=principal.scoped())}
 
 
+def _ramp_view(ro: dict) -> dict:
+    """Present a rollout's ramp for reading. The stored ``stages`` is a JSON string; parse it to a
+    list, add a ``ramp`` summary (which stage, of how many, the current stage and the next one) when
+    there is one, and drop the internal per-stage baselines. A manual rollout gets ``stages: []`` and
+    ``ramp: null``."""
+    raw = ro.get("stages")
+    stages = json.loads(raw) if raw else []
+    ro = {k: v for k, v in ro.items()
+          if k not in ("stages", "stage_attempted_base", "stage_failures_base")}
+    ro["stages"] = stages
+    if stages:
+        i = ro.get("stage_index", 0)
+        ro["ramp"] = {"stage": i, "of": len(stages), "current": stages[i],
+                      "next": stages[i + 1] if i + 1 < len(stages) else None}
+    else:
+        ro["ramp"] = None
+    return ro
+
+
 @admin.get("/rollouts/{rollout_id}/status", responses={200: {"model": RolloutStatus}})
 def rollout_status(rollout_id: str, request: Request,
                    principal: Principal = Depends(require_scope("observe"))):
     """One rollout's numbers: how many devices the cohort holds, how many were
     offered the release, how many confirmed it, and how many fell back. This is what to
-    poll while a rollout is live, and what the failure threshold is measured against."""
+    poll while a rollout is live, and what the failure threshold is measured against.
+    A ramping rollout also reports its ``ramp`` progress (current stage, and the next)."""
     ms = request.app.state.metastore
-    ro = _owned(ms.get_rollout(rollout_id), principal)
+    ro = _ramp_view(_owned(ms.get_rollout(rollout_id), principal))
     cohort_devices = ms.cohort_device_count(ro["product_id"], ro["cohort"],
                                             ro.get("account_id", ""))
     # The current target: percent of the audience. An ESTIMATE -- membership is a hash,
