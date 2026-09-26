@@ -67,6 +67,11 @@ class ServerSettings(BaseSettings):
     # per-IP limit because every device at an IPv6 site shares the /64 (see ratelimit.py).
     checkin_rate_per_prefix_per_min: int = 600
     poll_after_s: int = 3600               # backoff the device is told to wait before polling again
+    # Spread the backoff each device is handed by +/- this fraction, so a fleet that checked in
+    # together -- a site powering on, an outage clearing -- does not come back in lockstep and
+    # arrive as one thundering herd. The device respects whatever value it is told and neither
+    # knows nor cares that it was jittered. 0 disables (an exact `poll_after_s` for every device).
+    poll_jitter: float = 0.15
     # Upload ceilings. A publish token is a tenant's credential on a SHARED server, and
     # `await upload.read()` is an allocation sized by whoever is uploading -- the same
     # rule the device code is held to ("no allocation sized by anything we do not

@@ -47,6 +47,18 @@ from .verify import build_verifier
 # A throttled check-in is told to retry after this many seconds, chosen at random per answer.
 _THROTTLED_RETRY_S = (60, 300)
 
+
+def _paced(settings) -> int:
+    """The poll backoff to hand a device, spread by +/- ``poll_jitter`` so a fleet that checked
+    in together does not return in step (see ``poll_jitter``). Never below 1 s. ``poll_jitter``
+    of 0 returns ``poll_after_s`` unchanged, which is what the tests that pin an exact value set."""
+    base = settings.poll_after_s
+    jitter = settings.poll_jitter
+    if jitter <= 0:
+        return base
+    return max(1, round(base * random.uniform(1.0 - jitter, 1.0 + jitter)))
+
+
 router = APIRouter()
 
 _MEDIA = {"manifest.bin": "application/octet-stream"}
@@ -647,7 +659,7 @@ def check(checkin: CheckIn, request: Request):
     `poll_after_s` is the server pacing the fleet; respect it rather than polling on a
     fixed timer, so a large fleet does not arrive in step."""
     st = request.app.state
-    nothing = {"update": False, "poll_after_s": st.settings.poll_after_s}
+    nothing = {"update": False, "poll_after_s": _paced(st.settings)}
     ip = request.client.host if request.client else "-"
     if not st.ratelimit.allow(ip):
         # Come back in minutes, not a full poll, and at a random point: a crowd that hit the
@@ -669,7 +681,7 @@ def check(checkin: CheckIn, request: Request):
                                                 account_id=checkin.account_id)
         if manifest_url:
             return {"update": True, "manifest_url": manifest_url,
-                    "release_id": rel["release_id"], "poll_after_s": st.settings.poll_after_s}
+                    "release_id": rel["release_id"], "poll_after_s": _paced(st.settings)}
         return nothing
 
     reg = _verify(st, checkin)
@@ -682,7 +694,7 @@ def check(checkin: CheckIn, request: Request):
         _, rel, offered, manifest_url = _decide(st, checkin, "__default__")
         if manifest_url:
             return {"update": True, "manifest_url": manifest_url,
-                    "release_id": rel["release_id"], "poll_after_s": st.settings.poll_after_s}
+                    "release_id": rel["release_id"], "poll_after_s": _paced(st.settings)}
         return nothing
     if not reg.registered:
         return nothing                                          # ZERO footprint for unregistered ids
@@ -730,7 +742,7 @@ def check(checkin: CheckIn, request: Request):
         account_id=account_id)
     if manifest_url:
         resp = {"update": True, "manifest_url": manifest_url, "release_id": release_id,
-                "poll_after_s": st.settings.poll_after_s}
+                "poll_after_s": _paced(st.settings)}
     else:
         resp = dict(nothing)
     # OpenMV Live: registered devices get a fresh camera grant each check-in (the

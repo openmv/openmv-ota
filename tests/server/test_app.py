@@ -40,7 +40,8 @@ def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0,
     settings = ServerSettings(base_url=base_url, checkin_rate_per_min=rate,
                               swd_ids_verify_url=registrar, swd_ids_verify_token="t",
                               test_offer_downgrades=downgrades,
-                              cors_allow_origins=cors)
+                              cors_allow_origins=cors,
+                              poll_jitter=0)   # deterministic poll_after_s; jitter tested separately
     verifier = _Verifier(registered, unregistered_type=unregistered_type)
     app = create_app(settings, storage=storage, metastore=store, verifier=verifier)
     return app, store, storage, verifier
@@ -798,3 +799,29 @@ def test_transfer_to_a_numerically_older_stream_is_refused(tmp_path):
     store.set_device_pin("dev1", "b_old")
     r = c.post("/api/v1/check", json=_checkin(product_id=CUST_A, pv=7)).json()
     assert r == {"update": False, "poll_after_s": 3600}
+
+
+def test_paced_disables_and_bounds_the_poll_backoff():
+    from openmv_ota.server.app import _paced
+
+    base = ServerSettings(poll_after_s=3600, poll_jitter=0)
+    assert _paced(base) == 3600                                    # jitter 0 -> exact
+
+    jit = ServerSettings(poll_after_s=3600, poll_jitter=0.2)
+    seen = {_paced(jit) for _ in range(200)}
+    assert len(seen) > 1                                           # it actually varies
+    assert all(int(3600 * 0.8) <= v <= int(3600 * 1.2) + 1 for v in seen)   # within the band
+
+    floored = ServerSettings(poll_after_s=1, poll_jitter=0.95)
+    assert all(_paced(floored) >= 1 for _ in range(200))           # never below 1s
+
+
+def test_check_jitters_the_poll_after_s(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    app.state.settings.poll_jitter = 0.25                          # turn jitter on for this app
+    c = TestClient(app)
+    vals = {c.post("/api/v1/check", json=_checkin(product_id=BID, pv=4)).json()["poll_after_s"]
+            for _ in range(60)}
+    assert len(vals) > 1                                           # not a constant any more
+    lo, hi = int(3600 * 0.75), int(3600 * 1.25) + 1
+    assert all(lo <= x <= hi for x in vals)                        # every one within the band
