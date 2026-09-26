@@ -277,6 +277,11 @@ def artifact_sizes(board):
 # reset-catch instead. A real flash is ~1-2 minutes on these boards; the old 1500s was not a
 # budget but an absence of one, and a reset-looping board spent all of it.
 CDC_FLASH_TIMEOUT = 420
+# The reset-catch flash route's budget: pulsing nRST to catch the bootloader's DFU window, then
+# the ~1-2 minute write. 1500s was the same absence of a budget as above -- a board that presents
+# no catchable window (the M7 does not, so its CDC route must succeed) sat in it for 25 minutes
+# and failed the whole leg. Bounded so a board that cannot be caught fails fast enough to rerun.
+NOCDC_FLASH_TIMEOUT = 480
 
 # The device's install-retry budget (installer.py: `getattr(cfg, "INSTALL_RETRIES", 3)`, and no
 # project here overrides it). The reinstall scenario's second phase exhausts this budget on
@@ -1327,9 +1332,9 @@ def _flash_dfu_cli(board, bad_romfs=False):
         if rc != 0:
             log("flash: %s CDC route failed (rc=%d) -- retrying through the bootloader DFU window"
                 % (board, rc))
-            rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
+            rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
             if rc != 0 and _partial_download(out) and recover_firmware(board):
-                rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
+                rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
             if rc != 0:
                 raise RuntimeError("flash factory failed on both routes rc=%d: %s" % (rc, out[-400:]))
     else:
@@ -1340,7 +1345,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
         # one door that does not need the port we don't have. Without this the recovery is a dead
         # end -- erase frees DFU, then nothing can use it.
         log("flash factory -> %s (no CDC -- via bootloader DFU window)" % board)
-        rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
+        rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
         if rc != 0 and _partial_download(out):
             # A download that died PARTWAY has left the firmware invalid, and that is
             # self-perpetuating: an invalid image means the bootloader keeps handing over, crashing
@@ -1352,7 +1357,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
             log("flash: %s download died partway -- firmware is now invalid; two-stage recovery"
                 % board)
             if recover_firmware(board):
-                rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=1500)
+                rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
         if rc != 0:
             raise RuntimeError("flash factory (no-CDC path) failed rc=%d: %s" % (rc, out[-400:]))
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
@@ -1361,8 +1366,20 @@ def _flash_dfu_cli(board, bad_romfs=False):
 
 def _cdc_responsive(timeout=15):
     """True if the board ANSWERS on its USB-CDC. A real liveness probe, not os.path.exists(): the
-    port can exist yet be unusable (EIO / 'in use'), and it can be absent entirely."""
-    rc, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
+    port can exist yet be unusable (EIO / 'in use'), and it can be absent entirely.
+
+    Tries a plain `connect` (which auto soft-resets) first, then a `resume` connect that does not.
+    A board running a tight app can wedge the soft-reset raw-REPL handshake -- measured on the M7,
+    `connect` failed `could not enter raw repl` deterministically while `resume` answered every
+    time. Without the fallback a false 'no CDC' sends the flash down the reset-catch path, which
+    that board does not present a window for, so it only failed slowly; and each failed `connect`
+    reboots the board, so repeated probes storm it into exactly that wedged state. `resume` is
+    non-destructive (no reboot) and still proves the REPL answers."""
+    argv = [ota("mpremote"), "connect", CFG["acm"], "eval", "True"]
+    rc, _ = sh(argv, timeout=timeout, check=False, quiet=True)
+    if rc == 0:
+        return True
+    rc, _ = sh([ota("mpremote"), "resume", "connect", CFG["acm"], "eval", "True"],
                timeout=timeout, check=False, quiet=True)
     return rc == 0
 
