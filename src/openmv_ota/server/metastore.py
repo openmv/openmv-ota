@@ -432,6 +432,21 @@ _MIGRATIONS: list[list[str]] = [
         "CREATE INDEX IF NOT EXISTS idx_deliveries_due ON webhook_deliveries (status, next_at)",
         "CREATE INDEX IF NOT EXISTS idx_deliveries_hook ON webhook_deliveries (webhook_id, audit_seq)",
     ],
+    [   # v30 -- account-leading read indexes. Every collection read (_scope leads its WHERE with
+        # account_id) and the check-in's active_rollout lookup filter by account_id FIRST, but the
+        # original indexes (idx_devices_board / idx_releases_board / idx_rollouts_board_cohort) lead
+        # with product_id -- so at scale a query walks every account that shares a product_id before
+        # the account_id filter applies. These lead with account_id to match how the rows are read.
+        # ADDITIVE: the product_id-leading indexes stay, for the device-path lookups that carry no
+        # account (an unregistered board is served read-only with account_id = ''). Index-only,
+        # no data change, so it applies online. active_rollout (hottest, one per check-in) is the
+        # one this most helps: (account_id, product_id, cohort, state) makes it a direct hit.
+        "CREATE INDEX IF NOT EXISTS idx_rollouts_account "
+        "ON rollouts (account_id, product_id, cohort, state)",
+        "CREATE INDEX IF NOT EXISTS idx_devices_account ON devices (account_id, product_id, cohort)",
+        "CREATE INDEX IF NOT EXISTS idx_releases_account "
+        "ON releases (account_id, product_id, payload_version)",
+    ],
 ]
 
 

@@ -35,6 +35,18 @@ def test_migrate_creates_meta_and_records_version():
     assert s.migrate() == v                         # idempotent
 
 
+def test_v30_adds_account_leading_read_indexes():
+    """The collection reads and the check-in's active_rollout lookup filter by account_id first;
+    v30 adds account-leading composites so they don't scan every account that shares a product_id.
+    Additive -- the product_id-leading indexes stay."""
+    s = _mem()
+    s.migrate()
+    idx = {r["name"] for r in s.query_all(
+        "SELECT name FROM sqlite_master WHERE type = 'index'")}
+    assert {"idx_rollouts_account", "idx_devices_account", "idx_releases_account"} <= idx
+    assert {"idx_rollouts_board_cohort", "idx_devices_board", "idx_releases_board"} <= idx  # kept
+
+
 def test_meta_upsert():
     s = _mem()
     s.migrate()
@@ -196,7 +208,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         M._MIGRATIONS = full
 
     store = M.SqliteMetadataStore(db)
-    assert store.migrate() == 29                           # the deploy applies 21 onward
+    assert store.migrate() == 30                           # the deploy applies 21 onward
     assert sorted(d["device_id"] for d in store.list_devices()) == [
         "OPENMV_N6:3c0021000c51", "noboard"]               # board-less rows are left alone
     assert store.device_account("OPENMV_N6:3c0021000c51")["account_id"] == "acct"
@@ -204,7 +216,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         "OPENMV_N6:3c0021000c51"
     store.add_token("h", "t", ["observe"], account_id="acct", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert M.SqliteMetadataStore(db).migrate() == 29        # idempotent
+    assert M.SqliteMetadataStore(db).migrate() == 30        # idempotent
 
 
 def test_parameterless_sql_is_executed_without_a_parameter_sequence():
@@ -457,10 +469,10 @@ def test_migrations_survive_postgres_transaction_semantics(tmp_path):
         M._MIGRATIONS = full
 
     store = _PostgresManners(db)
-    assert store.migrate() == 29             # walks past the orphaned column
+    assert store.migrate() == 30             # walks past the orphaned column
     store.add_token("h", "t", ["observe"], account_id="a", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert _PostgresManners(db).migrate() == 29        # and is idempotent
+    assert _PostgresManners(db).migrate() == 30        # and is idempotent
 
 
 def test_two_first_checkins_of_one_new_device_do_not_collide(tmp_path):
