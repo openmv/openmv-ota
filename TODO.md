@@ -31,18 +31,6 @@ file's own history has the longer design notes behind each line.
 - **Scaling past ~100K devices** — metastore connection pool, NAT-aware rate
   limiting (per-IP × per-worker today). (`poll_after_s` jitter for post-outage
   herds is done — `poll_jitter`.)
-- **H7 Plus (OPENMV4P): the WINC wedges after a watchdog bite (terminal)** — the
-  one board in `WATCHDOG_BROKEN`. NOT the watchdog window: measured on hardware
-  2026-08-02, `machine.WDT("WWDG", 100)` arms on the H743, a 20 ms feed loop and
-  `relax()`'s ISR feed both survive, and the board does not reset-loop. What
-  actually happens is that the armed leg bites mid-install, resets, and then the
-  WINC is wedged — 39 consecutive `OSError(22)` (EINVAL) check-ins, preceded by one
-  `MBEDTLS_ERR_SSL_INVALID_MAC` and one `TypeError` — and never recovers, so no
-  install ever runs again. A WINC driver/socket-state problem. Same reasoning as the
-  Nicla hang: a network stack that never recovers means a device with no image never
-  gets one. Three WINC fixes are parked on openmv branches that may bear on it
-  (`winc_reconnect`, `winc_bounded_waits`, `winc_19_7_11`) — try those before
-  theorising.
 - **Signer backends: one live pass each** — AWS/GCP/Azure KMS + provisioning
   are unit-covered via fakes (SoftHSM has an opt-in real test); each needs one
   end-to-end run against the real service.
