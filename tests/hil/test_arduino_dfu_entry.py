@@ -554,22 +554,17 @@ def test_version_packing_matches_the_device():
     assert ota_cycle._packed_version("1.1.0") == 16842752
 
 
-def test_the_h7_plus_stays_out_of_the_watchdog_suite_on_measurement():
-    """The WINC board is the ONLY one still held out, and now on evidence rather than suspicion.
-
-    Controlled comparison, same STM32H7 family, same WWDG, same relax() fix:
-        Nicla    watchdog PASS   cyw43
-        Portenta watchdog PASS   cyw43
-        H7 Plus  watchdog FAIL   ATWINC1500   <- the only difference
-
-    On the H7 Plus the armed leg bites mid-install, resets again, and then the WINC is wedged: 39
-    consecutive `run: cycle failed OSError(22,)` (EINVAL) on the check-in. That is a WINC
-    socket-state problem, not a watchdog-window one.
-    """
-    assert ota_cycle.WATCHDOG_BROKEN == {"OPENMV4P"}
-    assert "watchdog" not in ota_cycle.regression_scenarios("OPENMV4P", "wifi")
-    for proven in ("ARDUINO_PORTENTA_H7", "ARDUINO_NICLA_VISION"):
-        assert "watchdog" in ota_cycle.regression_scenarios(proven, "wifi")
+def test_every_network_board_runs_the_watchdog_leg():
+    """The H7 Plus was the last board held out of the watchdog suite: its armed leg bit mid-install,
+    reset, and the WINC wedged (39 EINVAL check-ins). RESOLVED 2026-09-26 -- the merged WINC branches
+    (reconnect/bounded-waits/19.7.11) plus the install-under-a-watchdog fixes mean the H743 install
+    no longer bites, so `workflow_dispatch board=OPENMV4P scenario=watchdog` reached promoted with
+    the WINC healthy throughout. WATCHDOG_BROKEN is empty now; every network board runs the leg."""
+    assert ota_cycle.WATCHDOG_BROKEN == set()
+    for board in ("OPENMV4P", "ARDUINO_PORTENTA_H7", "ARDUINO_NICLA_VISION",
+                  "OPENMV_N6", "OPENMV_RT1060", "OPENMV_AE3"):
+        net = ota_cycle.BOARDS[board]["network"]        # the board's own primary interface
+        assert "watchdog" in ota_cycle.regression_scenarios(board, net)
 
 
 def test_the_arduino_dfu_write_is_retried():
