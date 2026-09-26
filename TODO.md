@@ -31,7 +31,6 @@ file's own history has the longer design notes behind each line.
 - **Scaling past ~100K devices** — metastore connection pool, `poll_after_s`
   jitter (post-outage herds), NAT-aware rate limiting (per-IP × per-worker
   today).
-- **`device retire`** — no verb removes a device record today.
 - **H7 Plus (OPENMV4P): the WINC wedges after a watchdog bite (terminal)** — the
   one board in `WATCHDOG_BROKEN`. NOT the watchdog window: measured on hardware
   2026-08-02, `machine.WDT("WWDG", 100)` arms on the H743, a 20 ms feed loop and
