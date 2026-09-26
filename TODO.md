@@ -25,9 +25,6 @@ file's own history has the longer design notes behind each line.
   verified `firmware.bin` out of a **confirmed** slot into the firmware area at
   a fixed offset (no romfs parser in the bootloader), never downgrade; a power
   loss mid-copy retries, not bricks.
-- **Rollout ramps** — optional declared-at-creation stages
-  `{percent, min_soak, min_attempted, max_failure_rate}` evaluated lazily on
-  check-ins; auto-pause always beats auto-raise; every auto-raise audited.
 - **Scaling past ~100K devices** — metastore connection pool, NAT-aware rate
   limiting (per-IP × per-worker today). (`poll_after_s` jitter for post-outage
   herds is done — `poll_jitter`.)
@@ -53,5 +50,3 @@ file's own history has the longer design notes behind each line.
   dropping `MBEDTLS_BASE64_C` + `MBEDTLS_PEM_PARSE_C` from OTA builds that ship
   a DER root and no PEM bundle frees `FLASH_TEXT` (where OPENMV4 is 32 KB
   over). Measure the saving before building anything.
-- **Account-scoped read indexes** — indexes lead with `product_id`, not
-  `account_id`; additive index-only migration when fleets/accounts grow.
