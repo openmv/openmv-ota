@@ -46,7 +46,3 @@ file's own history has the longer design notes behind each line.
 - **KMS provisioning pricing** — `keys backend provision` defaults to a small
   pool because external keys are billable; document per-provider pricing before
   recommending bigger pools.
-- **DER trust store — measure first** — the win is CODE size, not data:
-  dropping `MBEDTLS_BASE64_C` + `MBEDTLS_PEM_PARSE_C` from OTA builds that ship
-  a DER root and no PEM bundle frees `FLASH_TEXT` (where OPENMV4 is 32 KB
-  over). Measure the saving before building anything.
