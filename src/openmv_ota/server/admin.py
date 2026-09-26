@@ -15,6 +15,7 @@ from . import datalog as datalog_mod
 from . import live as live_mod
 from .auth import Principal, hash_token, require_scope
 from .datalake import DatalakeError
+from .rollout import validate_stages
 from . import webhooks as webhooks_mod
 from .schemas import (
     Account,
@@ -118,9 +119,13 @@ def _owned(entity, principal):
 class RolloutCreate(BaseModel):
     release_id: str
     cohort: str = "__default__"
-    percent: float
+    percent: float | None = None           # required UNLESS stages are given (they set the start)
     failure_threshold: float = 0.05
     display_name: str = ""                 # a label only; need not be unique
+    # Optional declared ramp: an ordered list of stages the rollout raises itself through
+    # (see rollout.validate_stages). Given stages, the rollout starts at stage 0's percent and
+    # `percent` above is ignored. Omit for a manual rollout raised by PATCH.
+    stages: list[dict] | None = None
 
 
 class RolloutPatch(BaseModel):
@@ -587,18 +592,33 @@ def create_rollout(body: RolloutCreate, request: Request,
                         entity_id=prior["rollout_id"], account_id=account_id,
                         product_id=product_id)
     display_name = _label(body.display_name)
+    # A declared ramp overrides the starting percent with its first stage's; a bad ramp is a 400,
+    # not a 500 (validate_stages raises ValueError with the offending stage).
+    stages = None
+    if body.stages is not None:
+        try:
+            stages = validate_stages(body.stages)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    if stages:
+        start_percent = stages[0]["percent"]              # a ramp starts at its first stage
+    elif body.percent is not None:
+        start_percent = body.percent
+    else:
+        raise HTTPException(status_code=400, detail="provide percent or stages")
     rid = new_id("ro")
     ms.add_rollout(rollout_id=rid, release_id=body.release_id, product_id=product_id,
-                   cohort=body.cohort, percent=body.percent,
+                   cohort=body.cohort, percent=start_percent,
                    failure_threshold=body.failure_threshold, account_id=account_id,
-                   display_name=display_name)
+                   display_name=display_name, stages=stages)
     ms.append_audit(actor=principal.name, action="rollout.create", entity_type="rollout",
                     entity_id=rid, data={"release_id": body.release_id, "cohort": body.cohort,
-                                         "percent": body.percent}, account_id=account_id,
-                    product_id=product_id)
+                                         "percent": start_percent,
+                                         "stages": len(stages) if stages else 0},
+                    account_id=account_id, product_id=product_id)
     return {"rollout_id": rid, "product_id": product_id, "product_id_str": str(product_id),
-            "cohort": body.cohort,
-            "percent": body.percent, "state": "active", "display_name": display_name}
+            "cohort": body.cohort, "percent": start_percent, "state": "active",
+            "display_name": display_name, "stages": stages or []}
 
 
 @admin.patch("/rollouts/{rollout_id}", responses={200: {"model": Rollout}})

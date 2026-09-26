@@ -145,13 +145,30 @@ The percent is a **fraction of the cohort, at any fleet size**: 15,000 devices a
 stages about 750 of them. The draw is random, so the count wobbles slightly around the
 dial — `rollout status` shows the real numbers.
 
-Nothing promotes a rollout for you. The only automation in the loop points the other
-way — the server **pauses** a rollout whose failure rate crosses its threshold, but it
-never widens one: software may stop a rollout on evidence, while widening exposure is
-always a human reading the score and deciding. A rollout left at 5% therefore never
-finishes on its own; raising to 100 is how one completes (it then stays active,
-satisfying stragglers and newly assigned devices), and the alternative ending is the
-next release's rollout superseding it.
+By default nothing promotes a rollout for you. The only automation in the base loop
+points the other way — the server **pauses** a rollout whose failure rate crosses its
+threshold, but it never widens one: software may stop a rollout on evidence, while
+widening exposure stays a human reading the score and deciding. A rollout left at 5%
+therefore never finishes on its own; raising to 100 is how one completes (it then stays
+active, satisfying stragglers and newly assigned devices), and the alternative ending is
+the next release's rollout superseding it.
+
+**Ramps** let you declare that widening up front instead of babysitting it. A rollout
+created with `--stage` carries an ordered list of stages — each a percent plus optional
+`min_soak` seconds, `min_attempted` devices, and `max_failure_rate` — and raises itself
+to the next stage once the current one has both soaked long enough and reached enough
+devices without its failure rate crossing the ceiling. Pause still beats raise: a stage
+over its ceiling pauses rather than advancing, and every auto-raise is audited. Each
+stage is judged on its own window, so an early rocky stage doesn't poison a later one.
+
+```
+openmv-ota client rollout create --release-id rel_4f9c2a81d06b73ee \
+    --stage 1:86400:50 --stage 10:86400:500 --stage 100
+```
+
+That starts at 1%, holds a day and at least 50 devices, then 10% under the same soak and
+500 devices, then 100% — each `--stage` is `PERCENT[:SOAK[:ATTEMPTED[:MAXFAIL]]]`. A
+manual rollout (no stages) behaves exactly as before.
 
 From there the lifecycle is four actions:
 

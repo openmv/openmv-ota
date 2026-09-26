@@ -119,12 +119,15 @@ class Api:
         return resp.content
 
     def create_rollout(self, release_id: str, cohort: str, percent: float,
-                       failure_threshold: float | None = None, display_name: str = ""):
+                       failure_threshold: float | None = None, display_name: str = "",
+                       stages: list | None = None):
         body = {"release_id": release_id, "cohort": cohort, "percent": percent}
         if failure_threshold is not None:
             body["failure_threshold"] = failure_threshold
         if display_name:
             body["display_name"] = display_name
+        if stages is not None:                          # a declared ramp; the server picks the
+            body["stages"] = stages                     # starting percent from stage 0
         return self._req("POST", "/api/v1/admin/rollouts", json=body)
 
     def patch_rollout(self, rollout_id: str, **body):

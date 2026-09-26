@@ -795,6 +795,30 @@ def test_rollout_create_status_and_list(wired, tmp_path, capsys):
     assert st["state"] == "active" and st["attempted"] == 0
 
 
+
+def test_rollout_create_with_stages_ramps(wired, tmp_path, capsys):
+    """A `rollout create --stage` declares a ramp: the rollout starts at the first stage's percent
+    and stores the whole ordered list, and a malformed --stage is a clean client error."""
+    import json as _json
+
+    store, root = wired
+    _build_release(root / "p")
+    assert main(["client", "release", "publish", str(root / "p"), "-b", "OPENMV_N6", "--json"]) == 0
+    rel = _json.loads(capsys.readouterr().out)["release_id"]
+
+    assert main(["client", "rollout", "create", "--release-id", rel, "--json",
+                 "--stage", "1:3600:50:0.02", "--stage", "10:3600:200", "--stage", "100"]) == 0
+    body = _json.loads(capsys.readouterr().out)
+    assert body["percent"] == 1 and len(body["stages"]) == 3          # starts at stage 0
+    ro = store.get_rollout(body["rollout_id"])
+    assert _json.loads(ro["stages"])[2]["percent"] == 100 and ro["stage_index"] == 0
+
+    assert main(["client", "rollout", "create", "--release-id", rel, "--stage", "notanumber"]) != 0
+    assert "bad --stage" in capsys.readouterr().err
+
+    assert main(["client", "rollout", "create", "--release-id", rel]) != 0    # neither given
+    assert "needs --percent" in capsys.readouterr().err
+
 def test_cohort_rename_relabels_everything_at_once(wired, tmp_path, capsys):
     """Rename touches the three places a cohort name lives -- device rows, rollouts,
     pins -- in one commit, so a mid-flight rollout keeps its audience under the new name."""

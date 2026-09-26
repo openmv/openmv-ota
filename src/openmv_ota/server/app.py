@@ -17,11 +17,13 @@ hints under ``from __future__ import annotations``; per-request collaborators co
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
@@ -39,8 +41,8 @@ from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter
 from .schemas import CheckAnswer, Health, Ok
-from .rollout import (fallback_payload_version, offers_update, running_body_sha256,
-                      settled, should_autopause)
+from .rollout import (fallback_payload_version, offers_update, ramp_action,
+                      running_body_sha256, settled, should_autopause)
 from .storage import build_storage
 from .verify import build_verifier
 
@@ -595,14 +597,63 @@ def _account(ms, ro, rel, checkin, existing, offered):
     # a device we offered this release, transitioning *into* a fallback -> one failure
     if prev_offered == rel["release_id"] and checkin.fallback_reason and not prev_fallback:
         ms.bump_rollout(rid, failures=1)
-        fresh = ms.get_rollout(rid)
-        if fresh["state"] == "active" and should_autopause(
-                fresh["failures"], fresh["attempted"], fresh["failure_threshold"]):
+    # Lazily advance or pause the rollout on this check-in's numbers. A ramp (declared stages)
+    # raises itself once the current stage has soaked + reached enough devices, and pauses if that
+    # stage's failure rate crosses its ceiling (pause beats raise). A manual rollout keeps the
+    # single failure-threshold auto-pause. Cheap: one re-read and a pure decision.
+    _ramp_or_autopause(ms, rid, ro)
+
+
+def _soak_elapsed_s(entered_at: str | None) -> float:
+    """Seconds since the current stage began, from its stored ISO timestamp. 0 if unknown."""
+    if not entered_at:
+        return 0.0
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(entered_at)).total_seconds()
+    except ValueError:                                        # a malformed stored timestamp
+        return 0.0
+
+
+def _ramp_or_autopause(ms, rid, ro):
+    """Advance a ramping rollout to its next stage, or pause it, from the rollout's fresh numbers.
+
+    A ramp judges the CURRENT stage on its own window (attempts/failures since the stage began,
+    via the stored baselines); an auto-raise stamps a new baseline + entry time and is audited, and
+    a stage over its failure ceiling pauses (which ``ramp_action`` prefers over a raise). A rollout
+    with no stages keeps the original single-threshold auto-pause. Called after the check-in's
+    attempted/failure bumps, so it sees the up-to-date counts."""
+    fresh = ms.get_rollout(rid)
+    if fresh is None or fresh["state"] != "active":
+        return
+    acct, pid = ro.get("account_id", ""), ro.get("product_id")
+    stages = json.loads(fresh["stages"]) if fresh.get("stages") else None
+    if stages:
+        idx = fresh["stage_index"]
+        stage_attempted = fresh["attempted"] - fresh["stage_attempted_base"]
+        stage_failures = fresh["failures"] - fresh["stage_failures_base"]
+        action, nxt = ramp_action(stages, idx, stage_attempted, stage_failures,
+                                   _soak_elapsed_s(fresh["stage_entered_at"]),
+                                   fresh["failure_threshold"])
+        if action == "raise":
+            ms.update_rollout(rid, percent=nxt, stage_index=idx + 1,
+                              stage_entered_at=datetime.now(timezone.utc).isoformat(),
+                              stage_attempted_base=fresh["attempted"],
+                              stage_failures_base=fresh["failures"])
+            ms.append_audit(actor="system", action="rollout.autoraise", entity_type="rollout",
+                            entity_id=rid, account_id=acct,
+                            data={"stage": idx + 1, "percent": nxt}, product_id=pid)
+        elif action == "pause":
             ms.update_rollout(rid, state="paused", pause_reason="failure_limit")
             ms.append_audit(actor="system", action="rollout.autopause", entity_type="rollout",
-                            entity_id=rid, account_id=ro.get("account_id", ""),
-                            data={"failures": fresh["failures"], "attempted": fresh["attempted"]},
-                            product_id=ro.get("product_id"))
+                            entity_id=rid, account_id=acct,
+                            data={"stage": idx, "failures": stage_failures,
+                                  "attempted": stage_attempted}, product_id=pid)
+    elif should_autopause(fresh["failures"], fresh["attempted"], fresh["failure_threshold"]):
+        ms.update_rollout(rid, state="paused", pause_reason="failure_limit")
+        ms.append_audit(actor="system", action="rollout.autopause", entity_type="rollout",
+                        entity_id=rid, account_id=acct,
+                        data={"failures": fresh["failures"], "attempted": fresh["attempted"]},
+                        product_id=pid)
 
 
 def _verify(state, req):

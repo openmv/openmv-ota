@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from openmv_ota.server.rollout import (
-    fallback_payload_version, offers_update, settled, should_autopause, staged_in,
+    fallback_payload_version, offers_update, ramp_action, settled, should_autopause,
+    staged_in, validate_stages,
 )
 
 
@@ -121,3 +122,52 @@ def test_running_body_sha256_reads_the_running_slot():
     # "" from the device (a trailer that would not parse) is unknown-to-us, same as absent
     assert running_body_sha256([{"slot": "A", "running": True, "body_sha256": ""}]) is None
     assert running_body_sha256([{"slot": "A", "running": True}]) is None
+
+
+# --- rollout ramps ---------------------------------------------------------------------------
+
+def test_validate_stages_cleans_and_defaults():
+    out = validate_stages([{"percent": 1}, {"percent": 10, "min_soak": 3600, "min_attempted": 50,
+                                            "max_failure_rate": 0.02}, {"percent": 100}])
+    assert out[0] == {"percent": 1.0, "min_soak": 0.0, "min_attempted": 0}   # optional fields default
+    assert out[1]["max_failure_rate"] == 0.02
+    assert [s["percent"] for s in out] == [1.0, 10.0, 100.0]
+
+
+@pytest.mark.parametrize("stages, msg", [
+    ([], "non-empty"),
+    ("nope", "non-empty"),
+    ([{"min_soak": 1}], "numeric percent"),
+    ([{"percent": 101}], "0..100"),
+    ([{"percent": 10}, {"percent": 5}], "must not decrease"),
+    ([{"percent": 1, "min_soak": -1}], ">= 0"),
+    ([{"percent": 1, "max_failure_rate": 2}], "0..1"),
+    ([5], "must be an object"),
+])
+def test_validate_stages_rejects(stages, msg):
+    with pytest.raises(ValueError, match=msg):
+        validate_stages(stages)
+
+
+def test_ramp_action_holds_until_soak_and_attempted_met():
+    stages = [{"percent": 1.0, "min_soak": 3600, "min_attempted": 50}, {"percent": 10.0}]
+    assert ramp_action(stages, 0, 10, 0, 100, 0.05) == ("hold", None)          # too soon, too few
+    assert ramp_action(stages, 0, 50, 0, 3599, 0.05) == ("hold", None)         # attempted ok, soak not
+    assert ramp_action(stages, 0, 49, 0, 3600, 0.05) == ("hold", None)         # soak ok, attempted not
+    assert ramp_action(stages, 0, 50, 0, 3600, 0.05) == ("raise", 10.0)        # both met -> raise
+
+
+def test_ramp_action_pause_beats_raise():
+    stages = [{"percent": 1.0, "min_soak": 0, "min_attempted": 10, "max_failure_rate": 0.05},
+              {"percent": 10.0}]
+    # gates for a raise are all met, but the stage's failure rate is over its ceiling -> pause wins
+    assert ramp_action(stages, 0, 100, 20, 10_000, 0.05) == ("pause", None)
+
+
+def test_ramp_action_uses_default_ceiling_and_stops_at_last_stage():
+    stages = [{"percent": 1.0, "min_soak": 0, "min_attempted": 0}]              # no max_failure_rate
+    assert ramp_action(stages, 0, 100, 6, 10, 0.05) == ("pause", None)          # 6% > default 5%
+    assert ramp_action(stages, 0, 100, 4, 10, 0.05) == ("hold", None)           # last stage: never raises
+    assert ramp_action(stages, 0, 0, 0, 10, 0.05) == ("hold", None)             # no attempts: no rate
+    assert ramp_action([], 0, 0, 0, 0, 0.05) == ("hold", None)                  # not a ramp
+    assert ramp_action(stages, 5, 0, 0, 0, 0.05) == ("hold", None)              # index out of range
