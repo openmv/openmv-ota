@@ -11,14 +11,6 @@ file's own history has the longer design notes behind each line.
   imports nothing of ours, but that has never been exercised end to end: flash an
   AE3, run `openmv_ota.sync()`, and prove the helper partition is written and the
   helper core boots its app.
-- **The Nicla hangs mid-download (terminal)** — seen once, 2026-08-05, on
-  `ARDUINO_NICLA_VISION` wifi, scenario `full`: 4 KB written, then total silence
-  until the run timed out. No reboot, no timeout, no retry, no fallback. Suspect a
-  blocking mbedtls read. Under the current design golden catches it; once the golden
-  image is dropped (see *Firmware updates via the ROMFS*) a device that hangs has no
-  image and never asks for another, so this is a launch blocker rather than a
-  curiosity. Deliberately not closed as a flake — grep the run log for
-  `install: 0% (4096/` followed by nothing.
 - **Device lockdown** — debug-port and boot protection (residual-threats:
   planned); until then bench/bus access is accepted.
 - **Firmware updates via the ROMFS** — bootloader as *reconciler*: copy a
