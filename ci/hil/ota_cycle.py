@@ -1818,6 +1818,17 @@ def _ensure_cdc(board, allow_erase=False):
         # UART), then three reset pulses took the CDC away for good. Leave DFU properly instead;
         # only fall back to the pin pulse if it is not in DFU at all.
         if BOARDS[board].get("flash") == "arduino_cli":
+            # IN DFU BEFORE A GOLDEN FLASH: STAY THERE. The flash writes from DFU directly (see
+            # _arduino_dfu_run), so there is nothing to recover -- and leaving is actively harmful
+            # when the app is a HALF-WRITTEN image from a stalled DFU write: MCUboot jumps into it and
+            # the board comes up with neither DFU nor a port. Measured on the Nicla (PR #92 gate): the
+            # pre-flash recovery left DFU three times, the board vanished, and all 10 scenarios failed
+            # "cannot be reached without a power cycle". (With NO app, as on the Giga's bring-up,
+            # MCUboot just stays in DFU, which is why that path looked safe.)
+            if allow_erase and _dfu_present():
+                log("recover: %s is in DFU before a golden flash -- staying there; the flash writes "
+                    "from DFU" % board)
+                return
             if _dfu_leave(board):
                 continue                               # left DFU -> re-probe rather than reset it
             # NOT in DFU and not answering. Order matters here, and getting it wrong fails both ways:
