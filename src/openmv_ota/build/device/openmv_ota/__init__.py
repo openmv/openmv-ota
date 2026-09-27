@@ -373,16 +373,20 @@ def _rom_write(*args):  # pragma: no cover
     return rc  # hil-residual: bare return of the ioctl rc
 
 
-def _file_chunks(path):  # pragma: no cover  # hil-residual-fn: coprocessor partition path; AE3 HW-blocked (no working HIL coproc rig)
+def _file_chunks(path):  # pragma: no cover
     f = open(path, "rb")
+    streamed = False
     try:
         while True:
             chunk = f.read(_CHUNK)
             if not chunk:
-                return
+                return  # hil-residual: bare generator end at EOF
             yield chunk
+            if not streamed:                          # witness once per stream, not per chunk
+                streamed = True
+                log.debug("partition: file streamed")  # HIL path witness (a consumer took a chunk)
     finally:
-        f.close()
+        f.close()  # hil-residual: generator cleanup; runs at EOF or when the consumer stops
 
 
 def _write_verified(part_index, off, data):  # pragma: no cover
@@ -1067,9 +1071,10 @@ def confirm():  # pragma: no cover
 # assumptions baked into the loop.
 
 _MRAM_SLICE = 256   # bytes programmed per interrupts-off window in _write_masked (~0.75 ms)
+_masked_witnessed = False
 
 
-def _write_masked(part_index, off, data):  # pragma: no cover  # hil-residual-fn: coprocessor partition path (AE3 MRAM)
+def _write_masked(part_index, off, data):  # pragma: no cover
     """``rom_ioctl(4)`` in _MRAM_SLICE pieces, each with interrupts DISABLED.
 
     An interrupt taken while the Alif MRAM is programming wedges the MRAM controller: the
@@ -1083,6 +1088,7 @@ def _write_masked(part_index, off, data):  # pragma: no cover  # hil-residual-fn
     The slice keeps each window short enough (~0.75 ms at 256 B) that USB and the UART
     FIFOs ride through it; interrupts are deferred, not lost. The slice view is built
     BEFORE disabling, so no allocation (and no collect) ever runs with interrupts off."""
+    global _masked_witnessed
     import machine
     import vfs
     mv = memoryview(data)
@@ -1094,10 +1100,13 @@ def _write_masked(part_index, off, data):  # pragma: no cover  # hil-residual-fn
         finally:
             machine.enable_irq(state)
         if rc < 0:
-            raise OSError(-rc)
+            raise OSError(-rc)  # hil-residual: write-fault (inject-only); the readback check after it is proven
+        if not _masked_witnessed:                     # witness once per boot, not per slice
+            _masked_witnessed = True
+            log.debug("partition: slice masked")      # HIL path witness (an IRQ-masked MRAM slice landed)
 
 
-def _partition_matches(entry, path):  # pragma: no cover  # hil-residual-fn: coprocessor partition path; AE3 HW-blocked (no working HIL coproc rig)
+def _partition_matches(entry, path):  # pragma: no cover
     """matches() for the ``partition`` handler: stream-compare the file to the start of
     partition ``entry["partition"]`` (the partition via a uctypes view, the file one
     chunk at a time -- neither whole image in RAM)."""
@@ -1107,10 +1116,10 @@ def _partition_matches(entry, path):  # pragma: no cover  # hil-residual-fn: cop
     same = _streams_equal(_file_chunks(path),
                           lambda off, n: uctypes.bytearray_at(base + off, n), _wdt_feed)
     log.debug("partition: compare")                   # idempotence check ran (every sync)
-    return same
+    return same  # hil-residual: bare return of the compare result
 
 
-def _partition_apply(entry, path, progress=None):  # pragma: no cover  # hil-residual-fn: coprocessor partition path; AE3 HW-blocked (no working HIL coproc rig)
+def _partition_apply(entry, path, progress=None):  # pragma: no cover
     """apply() for the ``partition`` handler: erase + program partition
     ``entry["partition"]`` with the file, streamed in _CHUNK blocks (never the whole
     image in RAM). The final block is 0xFF-padded to a full chunk -- matching the erased
@@ -1128,9 +1137,11 @@ def _partition_apply(entry, path, progress=None):  # pragma: no cover  # hil-res
                                                        # real integrity check, as the installer does)
     off = 0
     _first = True
+    report = progress if progress is not None else (lambda done, total: None)
     for chunk in _file_chunks(path):
         if len(chunk) < _CHUNK:
             chunk = chunk + b"\xff" * (_CHUNK - len(chunk))
+            log.debug("partition: padded tail")       # HIL path witness (image not a _CHUNK multiple)
         # FEED IMMEDIATELY BEFORE THE FLASH OP, not after it. A program/verify runs with
         # interrupts disabled on some ports (mimxrt flash.c), so nothing -- not this feed, not
         # relax()'s ISR -- can run once it starts; the only thing that helps is entering it on a
@@ -1143,20 +1154,18 @@ def _partition_apply(entry, path, progress=None):  # pragma: no cover  # hil-res
         # write goes through _write_masked -- an interrupt mid-program wedges the chip.
         _write_masked(part_index, off, chunk)         # WRITE one block, interrupts off per slice
         _check_readback(_read_at(part_index, off, len(chunk)), chunk)
-        if _first:                                    # witness the write-loop body once (no spam)
-            log.debug("partition: writing")
-            log.debug("partition: slice masked")      # ...and that it went through _write_masked
-            _first = False
         off += _CHUNK
-        if progress is not None:
-            progress(off if off < total else total, total)
+        report(off if off < total else total, total)
+        if _first:                                    # witness the write-loop body once (no spam)
+            _first = False
+            log.debug("partition: writing")
     _wdt_feed()                                        # ...and before the flush, which is another
     #                                                    unfeedable flash op and follows the
     #                                                    caller's progress callback
     import vfs
     rc = vfs.rom_ioctl(5, part_index)                  # WRITE_COMPLETE: flush cached sub-page
     if rc < 0 and rc != -22:                           # writes so they survive reset (NOR/XIP
-        raise OSError(-rc)                             # ports cache them). A port without the
+        raise OSError(-rc)  # hil-residual: flush fault (inject-only; alif answers -EINVAL, handled)
     log.debug("partition: completed")                  # command answers -EINVAL -- alif always
     #                                                    does, MRAM has nothing to flush -- and
     #                                                    that is success; raising on it failed
@@ -1176,7 +1185,7 @@ def _data_path(name):  # pragma: no cover
     return path  # hil-residual: bare return of the data path
 
 
-def sync():  # pragma: no cover  # hil-residual-fn: coprocessor partition path; AE3 HW-blocked (no working HIL coproc rig)
+def sync():  # pragma: no cover
     """Apply bundled resources (``data/resources.json``) whose target differs from the
     bundled copy -- today the coprocessor romfs into the helper core's partition, but the
     loop is handler-agnostic (a resource's ``handler`` selects a (matches, apply) pair,
@@ -1191,7 +1200,8 @@ def sync():  # pragma: no cover  # hil-residual-fn: coprocessor partition path; 
     try:
         manifest = json.load(open(_data_path("resources.json")))
     except OSError:
-        return []
+        log.debug("sync: nothing bundled")            # HIL path witness (every non-coprocessor board)
+        return []  # hil-residual: bare return (no resources bundled)
     applied = []
     for entry in manifest:
         path = _data_path(entry["file"])
@@ -1199,13 +1209,14 @@ def sync():  # pragma: no cover  # hil-residual-fn: coprocessor partition path; 
         matches, apply = _HANDLERS[entry["handler"]]
         if matches(entry, path):
             log.debug("sync: already applied")        # idempotent skip (partition matches bundle)
-            continue
-        log.info("sync: applying " + name)
-        apply(entry, path, _Progress("sync " + name))
-        applied.append(name)
+        else:
+            log.info("sync: applying " + name)
+            apply(entry, path, _Progress("sync " + name))
+            applied.append(name)
+            log.debug("sync: resource written")       # HIL path witness (apply returned cleanly)
     if applied:
         log.info("sync: applied resource(s): " + ", ".join(applied))
-    return applied
+    return applied  # hil-residual: bare return of the applied names
 
 
 def install(url, ca=None):  # pragma: no cover

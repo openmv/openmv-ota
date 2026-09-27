@@ -26,8 +26,10 @@ This is a live-hardware gate, not a host unit test -- it is invoked by the
 
 import argparse
 import glob
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -144,6 +146,8 @@ BOARDS = {
         "flash": "dfu_cli",                  # golden flash via `openmv-ota flash factory` (dfu -w)
         "jlink_device": "AE302F80F55D5_HP",  # debug-only device name, used ONLY to SWD-reset
                                              # the board out of a stuck DFU state (never to flash)
+        "coproc_boot": 0x80320000,           # HE_APP entry (ATOC "deferred": runs only once the main
+                                             # core calls openamp.RemoteProc(<this>).start())
     },
     "OPENMV_RT1060": {
         "cov_uart": 1,                       # UART(1) on P4/P5
@@ -432,6 +436,10 @@ COVERAGE = {
     "partition: prepared": "partition.prepare",               # WRITE_PREPARE (NOR erase / MRAM no-op)
     "partition: writing": "partition.write",                  # chunked program of the partition
     "partition: slice masked": "partition.write_masked",      # the IRQ-masked MRAM slice write ran
+    "partition: file streamed": "partition.file_stream",      # bundled image streamed (compare/apply)
+    "partition: padded tail": "partition.pad",                # last partial chunk 0xFF-padded
+    "sync: resource written": "sync.resource_written",        # one resource's apply returned cleanly
+    "sync: nothing bundled": "sync.none",                     # no resources.json (non-coprocessor board)
     "partition: completed": "partition.complete",             # WRITE_COMPLETE accepted (-EINVAL = none)
     "sync: applying": "sync.applying",                        # a resource differs -> applying it
     "sync: applied resource(s)": "sync.applied",              # sync wrote >=1 resource
@@ -523,7 +531,8 @@ SCENARIOS = {
         "desc": "full (non-delta) image install -> trial -> confirm -> promote",
         "publish": "full", "app": "confirm", "end": "promoted",
         "expect": ["boot.mount", "run.offer", "install.start", "install.decrypt",
-                   "{cov_write}", "install.full", "install.armed", "confirm.promoted"],
+                   "{cov_write}", "install.full", "install.armed", "confirm.promoted",
+                   "{sync_idle}"],
         "forbid": ["install.delta", "install.fallback", "install.reject"],
     },
     "corrupt": {
@@ -643,10 +652,11 @@ SCENARIOS = {
         # golden flash never writes partition 1, so a fresh board differs -> _partition_apply
         # runs. Idempotent: a second boot would match (sync.skip) -- forbidden here so this run
         # proves the WRITE path, not just the compare.
-        "publish": "none", "app": "confirm", "end": "golden",
-        "expect": ["boot.mount", "boot.ready", "run.checkin", "partition.compare",
-                   "sync.applying", "partition.prepare", "partition.write",
-                   "partition.write_masked", "partition.complete", "sync.applied"],
+        "publish": "none", "app": "confirm", "end": "golden", "he_boot": True,
+        "expect": ["boot.mount", "boot.ready", "run.checkin", "partition.file_stream",
+                   "partition.compare", "sync.applying", "partition.prepare", "partition.write",
+                   "partition.write_masked", "partition.pad", "partition.complete",
+                   "sync.resource_written", "sync.applied"],
         "forbid": ["install.start", "install.armed", "sync.skip"],
     },
     "coproc_skip": {
@@ -655,9 +665,11 @@ SCENARIOS = {
         # finds it matches the bundle, and skips -- proving idempotence: no needless erase/write
         # of the helper-core partition on every boot.
         "publish": "none", "app": "confirm", "end": "golden",
-        "expect": ["boot.mount", "run.checkin", "partition.compare", "sync.skip"],
+        "expect": ["boot.mount", "run.checkin", "partition.file_stream", "partition.compare",
+                   "sync.skip"],
         "forbid": ["sync.applying", "partition.prepare", "partition.write",
-                   "partition.write_masked", "partition.complete", "sync.applied"],
+                   "partition.write_masked", "partition.pad", "partition.complete",
+                   "sync.resource_written", "sync.applied", "sync.none"],
     },
     # --- File-transport scenarios (the classic boards' whole regression) -------------------------
     # Scored by run_file_scenario on the CDC, not by run_cycle on the server record + UART markers,
@@ -708,7 +720,11 @@ SCENARIOS["watchdog_bite"] = dict(
 
 
 def scenario_markers(board, key):
-    """(expect, forbid) marker sets for a scenario, with {cov_write} resolved per board.
+    """(expect, forbid) marker sets for a scenario, with {cov_write} and {sync_idle} resolved per board.
+
+    {sync_idle} is what the app's boot-time sync() does when there is nothing to write: a board
+    with a coprocessor finds its partition already matching the bundle (the golden flash wrote it)
+    and skips; every other board has nothing bundled at all.
 
     boot.read (the XIP-alias slot-read closure marker) is observed ONLY on XIP/ioctl ports
     (stm32/alif): it fires reliably on OPENMV_N6 but never on the block-device OPENMV_RT1060
@@ -722,6 +738,8 @@ def scenario_markers(board, key):
         for n in names:
             if n == "{cov_write}":
                 out.add(BOARDS[board]["cov_write"])
+            elif n == "{sync_idle}":
+                out.add("sync.skip" if "coproc_boot" in BOARDS[board] else "sync.none")
             elif n == "boot.read" and not xip:
                 continue
             else:
@@ -1250,6 +1268,8 @@ def prepare(board, checkout, network, app="confirm"):
         sh("grep -q '^ENABLED = True' " + wdt_py)     # fail LOUD if the sed didn't take (else the
         log("prepare: openmv_wdt ENABLED=True (watchdog scenario)")  # watchdog would silently no-op
     open(CFG["project"] + "/app/main.py", "w").write(bench_main_py(board, network, app))
+    global _COPROC_NONCE
+    _COPROC_NONCE = write_coproc_payload(CFG["project"], board)   # None off the coprocessor boards
     # BAKE THE COVERAGE-UART FILE INTO THE ROMFS, so seeing the board never depends on the CDC.
     # THE HARNESS DOES NOT WRITE /flash AT ALL. Written there over the REPL it needs a working
     # CDC -- and a scenario whose app ARMS THE WATCHDOG makes that impossible: every REPL touch
@@ -2125,6 +2145,68 @@ def dirty_coproc_partition():
         timeout=30)
 
 
+COPROC_BLOB_BYTES = 192 * 1024
+_COPROC_NONCE = None
+
+
+def write_coproc_payload(project, board, nonce=None):
+    """Give the coprocessor image enough bytes to STRESS the partition write, plus a per-run nonce.
+
+    The scaffolded app-coprocessor is a ~1 KB romfs -- ONE 4 KB chunk. An interrupt taken mid MRAM
+    program wedges the AE3 until a power cycle (see _write_masked in the device runtime); on the
+    bench the unmasked write died anywhere from chunk 0 to chunk 43 under the logger's UART load, so
+    a one-chunk image passes WITH OR WITHOUT the fix and proves nothing. 192 KB is 48 chunks,
+    written by the app's real sync() under its real interrupt load (logger UART, WiFi).
+
+    The nonce is what coproc_he_boot_check() asks the helper core to read back: only an image
+    written THIS run carries it. Returns the nonce, or None for a board without a coprocessor."""
+    d = os.path.join(project, "app-coprocessor")
+    if "coproc_boot" not in BOARDS[board] or not os.path.isdir(d):
+        return None
+    blob, block = bytearray(), hashlib.sha256(b"openmv-ota hil coproc blob").digest()
+    while len(blob) < COPROC_BLOB_BYTES:                # deterministic, non-repeating bytes, so a
+        block = hashlib.sha256(block).digest()          # misplaced or stale chunk fails readback
+        blob += block
+    with open(os.path.join(d, "hil_blob.bin"), "wb") as f:
+        f.write(bytes(blob[:COPROC_BLOB_BYTES]))
+    nonce = nonce or "%s-%d-%d" % (board, int(time.time()), os.getpid())
+    with open(os.path.join(d, "hil_nonce.txt"), "w") as f:
+        f.write(nonce)
+    return nonce
+
+
+# Runs on the MAIN core after the coproc scenario scored: boot the helper core and have IT read the
+# partition. Its print() comes back over the OpenAMP "vm" endpoint as "❯ HEROM <nonce> <size>".
+# The task is marshalled to the other core and must stay under its 500-byte mpy limit.
+_HE_PROBE = (
+    "import time, openamp\n"
+    "@openamp.async_remote\n"
+    "async def p(ept):\n"
+    "    import os\n"
+    "    print('HEROM', open('/rom/hil_nonce.txt').read(), os.stat('/rom/hil_blob.bin')[6])\n"
+    "openamp.RemoteProc(%d).start()\n"
+    "t = time.ticks_ms()\n"
+    "while time.ticks_diff(time.ticks_ms(), t) < 8000:\n"
+    "    time.sleep_ms(50)\n")
+
+
+def coproc_he_boot_check(board, nonce):
+    """Prove the helper core BOOTS the image sync() just wrote -- not merely that bytes landed.
+
+    The partition readback inside _partition_apply proves the write; this proves the consumer: the
+    helper core starts, mounts partition 1 as its /rom, and reads back this run's nonce and the
+    stress blob's size. Returns (ok, why)."""
+    rc, out = device_exec(_HE_PROBE % BOARDS[board]["coproc_boot"], timeout=60, check=False)
+    m = re.search(r"HEROM (\S+) (\d+)", out or "")
+    if m is None:
+        return False, "the helper core never answered (rc=%s): %s" % (rc, (out or "").strip()[-300:])
+    if m.group(1) != nonce or int(m.group(2)) != COPROC_BLOB_BYTES:
+        return False, "the helper core read nonce=%s size=%s, expected nonce=%s size=%d" % (
+            m.group(1), m.group(2), nonce, COPROC_BLOB_BYTES)
+    return True, "the helper core booted the new image (nonce %s, %d-byte blob)" % (
+        nonce, COPROC_BLOB_BYTES)
+
+
 def publish_update(board, version, variant="delta"):
     log("publish: %s (variant=%s, rollout 100%%)" % (version, variant))
     set_version(version)
@@ -2962,6 +3044,16 @@ def main():
         # NONE of the forbidden ones. So a dropped/renamed log line (missing), a safety path
         # that stopped running (missing), or a wrong path firing (forbidden) all fail the run.
         trace["passed"] = result["reached_end"] and not missing and not forbidden
+        # THE CONSUMER, NOT JUST THE WRITE: after a green coproc run, boot the helper core and make
+        # it read back this run's nonce from the partition sync() just wrote. Scored window is over,
+        # so taking the REPL here costs nothing.
+        if trace["passed"] and spec.get("he_boot"):
+            ok, why = phase("he_boot", lambda: coproc_he_boot_check(args.board, _COPROC_NONCE))
+            trace["he_boot"] = why
+            log("he_boot: " + why)
+            if not ok:
+                trace["passed"] = False
+                log("FAIL: the coprocessor did not boot the applied image -- " + why)
         if not trace["passed"]:
             log("FAIL: end=%s reached=%s missing=%s forbidden=%s%s"
                 % (spec["end"], result["reached_end"], missing or "-", forbidden or "-",
