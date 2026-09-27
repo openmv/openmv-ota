@@ -28,3 +28,17 @@ def test_watchdog_recover_is_scored_on_markers_and_runs_where_watchdog_does():
             continue
         scs = ota_cycle.regression_scenarios(board, spec["network"])
         assert ("watchdog" in scs) == ("watchdog_recover" in scs), board
+
+
+def test_no_slot_never_inherits_an_armed_watchdog_app():
+    """no_slot has no golden flash: it seeds its marker over the REPL on the previous scenario's
+    app. After an armed-watchdog app that seed gets bitten (RT1060, PR #91 gate), so no_slot must
+    run BEFORE the watchdog group."""
+    for board, spec in ota_cycle.BOARDS.items():
+        if spec["network"] == "file":
+            continue
+        scs = ota_cycle.regression_scenarios(board, spec["network"])
+        if "no_slot" in scs:
+            prev = scs[scs.index("no_slot") - 1]
+            assert ota_cycle.SCENARIOS[prev]["app"] not in ("wdt", "wdt_bite", "wdt_recover"), (
+                board, prev)

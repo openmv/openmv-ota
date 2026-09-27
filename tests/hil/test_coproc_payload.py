@@ -80,9 +80,24 @@ def test_he_boot_check_fails_on_a_truncated_blob(monkeypatch):
 
 
 def test_he_boot_check_fails_when_the_helper_core_is_silent(monkeypatch):
-    _probe(monkeypatch, None, rc=1)
+    calls, waits = [], []
+    monkeypatch.setattr(ota_cycle, "device_exec", lambda *a, **k: (calls.append(1), (1, None))[1])
+    monkeypatch.setattr(ota_cycle, "_await_cdc", lambda board, budget=0: waits.append(board))
     ok, why = ota_cycle.coproc_he_boot_check("OPENMV_AE3", "n-7")
     assert not ok and "never answered" in why and "rc=1" in why
+    assert len(calls) == 3 and len(waits) == 3
+
+
+def test_he_boot_check_rides_out_a_port_race(monkeypatch):
+    """PR #91 gate: 'failed to access /dev/ttyACM0 (it may be in use)' right after the scored
+    window. That is the port, not the helper core -- wait for the CDC and ask again."""
+    answers = iter([(1, "mpremote: failed to access /dev/ttyACM0 (it may be in use by another "
+                        "program)"),
+                    (0, "\u276f HEROM n-7 %d" % ota_cycle.COPROC_BLOB_BYTES)])
+    monkeypatch.setattr(ota_cycle, "device_exec", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ota_cycle, "_await_cdc", lambda board, budget=0: True)
+    ok, why = ota_cycle.coproc_he_boot_check("OPENMV_AE3", "n-7")
+    assert ok and "n-7" in why
 
 
 def test_coproc_scenario_demands_the_boot_check_and_the_masked_write():

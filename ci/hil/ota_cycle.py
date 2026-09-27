@@ -823,6 +823,13 @@ def regression_scenarios(board, network):
                 "bad_sig", "bad_key", "bad_version", "watchdog", "watchdog_recover"]
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key",
            "bad_version", "reinstall"]
+    # no_slot BEFORE the watchdog group. It has no golden flash of its own: it seeds its marker file
+    # over the REPL on whatever app the previous scenario left running, and on an armed-watchdog app
+    # taking the REPL stops the feed -- the board bites, reboots, re-arms, and the seed never lands.
+    # After `watchdog` that was merely racy; after `watchdog_recover` it failed every time (RT1060).
+    # `reinstall` leaves the plain confirm app, which a REPL touch cannot hurt.
+    if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
+        scs.append("no_slot")
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
     # path. The negative path (the WDT actually BITES when feeding stops, then recovers as a single
@@ -832,8 +839,6 @@ def regression_scenarios(board, network):
         scs += ["watchdog", "watchdog_recover"]       # ...and survives run() rebuilding the network
     if board == "OPENMV_N6":
         scs.append("watchdog_bite")
-    if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
-        scs.append("no_slot")
     return scs
 
 
@@ -2221,8 +2226,15 @@ def coproc_he_boot_check(board, nonce):
     The partition readback inside _partition_apply proves the write; this proves the consumer: the
     helper core starts, mounts partition 1 as its /rom, and reads back this run's nonce and the
     stress blob's size. Returns (ok, why)."""
-    rc, out = device_exec(_HE_PROBE % BOARDS[board]["coproc_boot"], timeout=60, check=False)
-    m = re.search(r"HEROM (\S+) (\d+)", out or "")
+    for attempt in range(3):
+        rc, out = device_exec(_HE_PROBE % BOARDS[board]["coproc_boot"], timeout=60, check=False)
+        m = re.search(r"HEROM (\S+) (\d+)", out or "")
+        if m is not None:
+            break
+        # A port race ("failed to access /dev/ttyACM0 (it may be in use)") right after the scored
+        # window is not the helper core failing -- measured on the PR #91 gate. Wait for the CDC to
+        # answer again, then ask once more; only a board that stays silent fails the check.
+        _await_cdc(board, budget=60)
     if m is None:
         return False, "the helper core never answered (rc=%s): %s" % (rc, (out or "").strip()[-300:])
     if m.group(1) != nonce or int(m.group(2)) != COPROC_BLOB_BYTES:
