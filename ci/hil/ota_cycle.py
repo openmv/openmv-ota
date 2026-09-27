@@ -225,9 +225,10 @@ BOARDS = {
         # Arduino Giga R1 WiFi: the Portenta's STM32H747 + CYW4343 + MCUboot + QSPI ROMFS geometry
         # (boards.json), so it takes the Portenta's shape. Not registered server-side either.
         "server_record": False,
-        "cov_uart": 1,                       # UART1 = the D0/D1 "Serial1" header (TX=PA9, RX=PB7) ->
-                                             # the node's CP2102. UART1 is also MICROPY_HW_UART_REPL,
-                                             # which openmv_log detaches before logging on it.
+        "cov_uart": 2,                       # UART2 = the header the Giga silkscreens TX1/RX1 (D18/D19,
+                                             # TX=PD5, RX=PD6) -> the node's CP2102. Found by writing a
+                                             # tag on every UART: only UART2 arrives. (NOT D0/D1 =
+                                             # UART1, which is also the REPL UART.)
         "cov_write": "install.xip",
         "network": "wifi",                   # onboard CYW4343 (Murata 1DX) -- standard network.WLAN
         "flash": "arduino_cli",              # 1200-baud touch -> MCUboot DFU (2341:0366)
