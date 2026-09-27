@@ -472,6 +472,8 @@ COVERAGE = {
     "wdt: feed": "run.wdt_feed",                          # watchdog fed each poll (no-op when off)
     "app: wdt STOP feeding": "wdt.stop",                  # bite test: the app deliberately stopped feeding
     "app: wdt BIT": "wdt.bit",                            # bite test: WWDG reset (reset_cause==3), then recovered
+    "run: recovering transport": "run.recover",           # run() escalated a failure streak to recover=
+    "run: transport recovered": "run.recovered",          # ...and the hook returned (under an armed WDT)
     "run: poll wait": "run.poll_tail",                   # run() loop tail reached (post-checkin)
     "clock: resolved": "run.clock",                      # NTP/RTC resolve each poll
     "clock: syncing": "run.clock",                       # openmv_rtc: untrusted clock -> one NTP sync
@@ -719,6 +721,22 @@ SCENARIOS["watchdog_bite"] = dict(
 )
 
 
+# The watchdog RECOVERY path: an armed 100 ms watchdog must survive run() rebuilding the network.
+# The wdt_recover app arms + feeds like `wdt`, but points run() at a CLOSED port, so every check-in
+# fails fast; after recover_after (3) failures run() calls the app's _bring_up -- which CONSTRUCTS the
+# NIC, a long blocking C op (the WINC's chip reset alone sleeps 300 ms). Before the fix that ran
+# unfed inside the async hook's await: the H7 Plus bit on EVERY recovery and reset-looped for as long
+# as its server was unreachable. A bite lands mid-hook, so `run.recovered` can only ever be logged by
+# a board that survived -- expecting it IS the assertion. No server record (the device never checks
+# in), so it is scored on markers alone.
+SCENARIOS["watchdog_recover"] = dict(
+    publish="none", app="wdt_recover", end="golden", by_marker=True,
+    desc="watchdog ENABLED: run() rebuilds a dead network without the watchdog biting",
+    expect=["boot.ready", "wdt.armed", "run.recover", "run.recovered"],
+    forbid=["install.start", "install.armed", "confirm.promoted"],
+)
+
+
 def scenario_markers(board, key):
     """(expect, forbid) marker sets for a scenario, with {cov_write} and {sync_idle} resolved per board.
 
@@ -774,7 +792,8 @@ def regression_scenarios(board, network):
     # failure costs a power cycle -- so it is proven on every PR (HIL_COPROC=0 opts out). coproc
     # dirties the partition first; otherwise sync() stream-compares, matches, and skips.
     if board == "OPENMV_AE3":
-        return ["delta", "watchdog"] + (["coproc", "coproc_skip"] if COPROC_ENABLED else [])
+        return ["delta", "watchdog", "watchdog_recover"] + (
+            ["coproc", "coproc_skip"] if COPROC_ENABLED else [])
     # The Portenta runs a REDUCED suite too, for the AE3's reason: only the paths PROVEN on it.
     # Measured on the bench, running its full set for the first time -- delta, full, bad_sig and
     # bad_key pass; rollback, corrupt, corrupt_sha and bad_version do not (they time out with
@@ -801,20 +820,25 @@ def regression_scenarios(board, network):
         # external SDRAM) and the marker-UART faults that made a healthy board look dead. Every one
         # of those is fixed, so the premise they were dropped on is stale. Measure again.
         return ["delta", "full", "rollback", "corrupt", "corrupt_sha",
-                "bad_sig", "bad_key", "bad_version", "watchdog"]
+                "bad_sig", "bad_key", "bad_version", "watchdog", "watchdog_recover"]
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key",
            "bad_version", "reinstall"]
+    # no_slot BEFORE the watchdog group. It has no golden flash of its own: it seeds its marker file
+    # over the REPL on whatever app the previous scenario left running, and on an armed-watchdog app
+    # taking the REPL stops the feed -- the board bites, reboots, re-arms, and the seed never lands.
+    # After `watchdog` that was merely racy; after `watchdog_recover` it failed every time (RT1060).
+    # `reinstall` leaves the plain confirm app, which a REPL touch cannot hurt.
+    if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
+        scs.append("no_slot")
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
     # path. The negative path (the WDT actually BITES when feeding stops, then recovers as a single
     # bite) is WWDG-specific (reset_cause==3), so watchdog_bite stays N6-only -- like no_slot is
     # block-device-only.
     if board not in WATCHDOG_BROKEN:                   # empty since 2026-09-26 (H7 Plus resolved)
-        scs.append("watchdog")
+        scs += ["watchdog", "watchdog_recover"]       # ...and survives run() rebuilding the network
     if board == "OPENMV_N6":
         scs.append("watchdog_bite")
-    if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
-        scs.append("no_slot")
     return scs
 
 
@@ -1096,6 +1120,12 @@ def bench_main_py(board, net, app="confirm"):
     # EXERCISES the hook the generated main.py ships with, instead of shipping it untested.
     start_run = "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5, recover=_bring_up))\n" % (
         CFG["server"], CFG["ca_board"])
+    if app == "wdt_recover":
+        # run() at a CLOSED port on the bench host: every check-in is refused fast, so the failure
+        # streak (and with it recover=_bring_up) arrives within a few polls. See watchdog_recover.
+        dead = CFG["server"].rsplit(":", 1)[0] + ":9"
+        start_run = "    asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5, recover=_bring_up))\n" % (
+            dead, CFG["ca_board"])
     if app == "no_confirm":
         start_run = ("    if not openmv_ota.status().get('trial'):\n"
                      "        asyncio.create_task(openmv_ota.run(%r, ca=%r, poll_after_s=5, recover=_bring_up))\n" % (
@@ -1110,7 +1140,7 @@ def bench_main_py(board, net, app="confirm"):
             "    while True:\n"
             "        await asyncio.sleep(2)\n"
         )
-    elif app == "wdt":
+    elif app in ("wdt", "wdt_recover"):
         # POSITIVE watchdog test: arm the WWDG once PAST the (slow) network bring-up, then feed on a
         # tight cadence (~20 ms << the 100 ms window) while confirming the trial. Proves an ENABLED
         # watchdog SURVIVES a real OTA cycle -- the install's ranged erase feeds per block, run() feeds
@@ -1256,7 +1286,7 @@ def prepare(board, checkout, network, app="confirm"):
     sh("cp -rf %s/openmv_ota/. %s/app/lib/openmv_ota/" % (dev, CFG["project"]))
     sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
     sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
-    if app in ("wdt", "wdt_bite"):
+    if app in ("wdt", "wdt_bite", "wdt_recover"):
         # Turn the opt-in watchdog ON for this run: flip ENABLED in the project's frozen copy so the
         # built firmware arms its deep-sleep-safe WDT (openmv_wdt auto-selects: WWDG on stm32/N6,
         # the mimxrt WDOG on the RT1060 -- both 100 ms); the app then start()s + feeds it. The
@@ -2196,8 +2226,15 @@ def coproc_he_boot_check(board, nonce):
     The partition readback inside _partition_apply proves the write; this proves the consumer: the
     helper core starts, mounts partition 1 as its /rom, and reads back this run's nonce and the
     stress blob's size. Returns (ok, why)."""
-    rc, out = device_exec(_HE_PROBE % BOARDS[board]["coproc_boot"], timeout=60, check=False)
-    m = re.search(r"HEROM (\S+) (\d+)", out or "")
+    for attempt in range(3):
+        rc, out = device_exec(_HE_PROBE % BOARDS[board]["coproc_boot"], timeout=60, check=False)
+        m = re.search(r"HEROM (\S+) (\d+)", out or "")
+        if m is not None:
+            break
+        # A port race ("failed to access /dev/ttyACM0 (it may be in use)") right after the scored
+        # window is not the helper core failing -- measured on the PR #91 gate. Wait for the CDC to
+        # answer again, then ask once more; only a board that stays silent fails the check.
+        _await_cdc(board, budget=60)
     if m is None:
         return False, "the helper core never answered (rc=%s): %s" % (rc, (out or "").strip()[-300:])
     if m.group(1) != nonce or int(m.group(2)) != COPROC_BLOB_BYTES:
@@ -3041,7 +3078,7 @@ def main():
             # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.
             result = phase("install", lambda: run_cycle(
                 devid, "1.0.0", args.target, spec["end"], expect, cap, args.timeout,
-                after_reset=publish))
+                by_marker=spec.get("by_marker", False), after_reset=publish))
         time.sleep(2)                            # let the last UART lines land
         marks = set(cap.points()) if cap is not None else set()   # file legs run capture-less
         missing = sorted(expect - marks)

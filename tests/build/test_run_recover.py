@@ -115,13 +115,15 @@ def test_failure_log_is_bounded_to_one_repr(log):
     assert "Traceback" not in failed[0]
 
 
-def test_sync_hook_runs_under_relax_but_the_await_does_not(log, monkeypatch):
+def test_the_whole_hook_runs_under_relax_await_included(log, monkeypatch):
     """A NIC re-init is a long blocking C op (the WINC's own chip reset sleeps 300 ms),
-    which outruns a 100 ms watchdog window -- so a SYNC hook must run under relax().
+    which outruns a 100 ms watchdog window -- so the hook must be ISR-fed.
 
-    An ASYNC hook must not: its await yields to asyncio, where the app's own feed loop
-    runs, and holding relax() across an await disables the watchdog for as long as the
-    app cares to take -- turning a safety net into a hole.
+    That includes an ASYNC hook's await: the scaffolded bring_up_network() constructs the
+    NIC before its first await, so the blocking work happens INSIDE the await, where the
+    app's feed loop cannot run. Leaving the await unfed reset-looped an armed H7 Plus on
+    every transport recovery (reset_cause=3 right after `run: recovering transport`).
+    relax() is bounded by RELAX_MAX_MS, so this cannot become an unfed hang.
     """
     depth = {"now": 0, "seen_in_sync_hook": None, "seen_in_await": None}
 
@@ -146,8 +148,14 @@ def test_sync_hook_runs_under_relax_but_the_await_does_not(log, monkeypatch):
         depth["seen_in_await"] = depth["now"]
 
     asyncio.run(rt._recover(async_hook))
-    assert depth["seen_in_await"] == 0, "relax() must not span an await"
+    assert depth["seen_in_await"] == 1, "an async hook's blocking work runs in its await"
     assert depth["now"] == 0, "relax() must be exited on every path"
+
+    async def failing_hook():
+        raise OSError(5)
+
+    asyncio.run(rt._recover(failing_hook))
+    assert depth["now"] == 0, "relax() must be exited when the await raises too"
 
 
 def test_run_accepts_the_hook_and_defaults_to_the_old_behaviour():

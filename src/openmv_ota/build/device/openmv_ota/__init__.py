@@ -867,19 +867,22 @@ async def _recover(recover):
     ``except`` (which has already been left) and kill the OTA task outright, turning a
     recoverable wedge into a permanently un-updatable device. So it is wrapped here.
 
-    The hook's work happens inside ``recover()`` when it is a plain function -- a NIC
-    re-init is a long blocking C op (the WINC's chip reset alone sleeps 300 ms), far
-    past a 100 ms watchdog window -- so that call runs under ``relax()``. An async hook
-    only BUILDS its coroutine there and does the work in the ``await``, which yields to
-    asyncio and lets the app's own feed loop run, so the await is deliberately OUTSIDE
-    the relax: holding relax across an await would disable the watchdog for as long as
-    the app felt like taking."""
+    The WHOLE hook runs under ``relax()`` -- the call AND, for an async hook, the await.
+    A NIC re-init is a long blocking C op (the WINC's chip reset alone sleeps 300 ms), far
+    past a 100 ms watchdog window, and an async hook does that work INSIDE its await:
+    the scaffolded ``bring_up_network()`` constructs the NIC before its first ``await``.
+    The app's feed loop cannot run during a blocking C call, so leaving the await unfed
+    (as this once did, on the theory that an await yields) reset-looped an armed H7 Plus
+    on every recovery -- ``run: recovering transport`` was the last line before each
+    ``reset_cause=3``, for as long as its server was unreachable. relax() is BOUNDED
+    (openmv_wdt.RELAX_MAX_MS), so a hook that never finishes still ends in a watchdog
+    reset rather than an unfed hang."""
     log.warning("run: recovering transport")      # HIL witness + field diagnostic
     try:
         with _wdt_relax():
             res = recover()
-        if hasattr(res, "send"):                  # a coroutine/generator -> an async hook
-            await res
+            if hasattr(res, "send"):              # a coroutine/generator -> an async hook
+                await res
         log.info("run: transport recovered")      # HIL witness: the hook returned cleanly
     except Exception as e:
         log.warning("run: recover failed %r" % e)  # bounded: one repr, no traceback buffer
