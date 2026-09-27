@@ -69,10 +69,11 @@ CFG = {
 }
 
 # The coprocessor-sync scenarios (coproc/coproc_skip, AE3-only) dirty + rewrite the coprocessor MRAM
-# partition, and that write currently crashes/wedges the AE3 off USB. Keep them OUT of the default
-# regression so the AE3 can run the rest of the suite; flip HIL_COPROC=1 to opt back in (for a manual
-# coproc run) once the MRAM write is fixed. See regression_scenarios().
-COPROC_ENABLED = env("HIL_COPROC", "") == "1"
+# partition. That write used to wedge the AE3 until a POWER CYCLE: an interrupt taken mid-program
+# hangs the Alif MRAM controller, and the device now masks interrupts per 256 B slice
+# (_write_masked). They are in the default AE3 regression so every PR proves it; HIL_COPROC=0 opts
+# out (a bench that must not risk a hands-on recovery). See regression_scenarios().
+COPROC_ENABLED = env("HIL_COPROC", "1") != "0"
 
 # Boards whose ARMED-WATCHDOG leg is known-broken, kept out of the default regression so a leg we
 # already know fails can't fail every PR. The H7 Plus (OPENMV4P) is the one; its other 8 scenarios
@@ -430,6 +431,8 @@ COVERAGE = {
     "partition: compare": "partition.compare",                # idempotence stream-compare ran
     "partition: prepared": "partition.prepare",               # WRITE_PREPARE (NOR erase / MRAM no-op)
     "partition: writing": "partition.write",                  # chunked program of the partition
+    "partition: slice masked": "partition.write_masked",      # the IRQ-masked MRAM slice write ran
+    "partition: completed": "partition.complete",             # WRITE_COMPLETE accepted (-EINVAL = none)
     "sync: applying": "sync.applying",                        # a resource differs -> applying it
     "sync: applied resource(s)": "sync.applied",              # sync wrote >=1 resource
     "sync: already applied": "sync.skip",                     # idempotent skip (partition matches)
@@ -642,7 +645,8 @@ SCENARIOS = {
         # proves the WRITE path, not just the compare.
         "publish": "none", "app": "confirm", "end": "golden",
         "expect": ["boot.mount", "boot.ready", "run.checkin", "partition.compare",
-                   "sync.applying", "partition.prepare", "partition.write", "sync.applied"],
+                   "sync.applying", "partition.prepare", "partition.write",
+                   "partition.write_masked", "partition.complete", "sync.applied"],
         "forbid": ["install.start", "install.armed", "sync.skip"],
     },
     "coproc_skip": {
@@ -652,7 +656,8 @@ SCENARIOS = {
         # of the helper-core partition on every boot.
         "publish": "none", "app": "confirm", "end": "golden",
         "expect": ["boot.mount", "run.checkin", "partition.compare", "sync.skip"],
-        "forbid": ["sync.applying", "partition.prepare", "partition.write", "sync.applied"],
+        "forbid": ["sync.applying", "partition.prepare", "partition.write",
+                   "partition.write_masked", "partition.complete", "sync.applied"],
     },
     # --- File-transport scenarios (the classic boards' whole regression) -------------------------
     # Scored by run_file_scenario on the CDC, not by run_cycle on the server record + UART markers,
@@ -746,10 +751,10 @@ def regression_scenarios(board, network):
     # are board-agnostic device logic, fully covered on the stable N6+RT, so re-running them on the
     # AE3 adds DFU cycles (its USB/DFU is the flakier of the fleet, with a history of wedging off USB
     # on an unattended long leg) without new coverage. This keeps the AE3 off the critical path of
-    # every PR while still proving its flash + watchdog on each one. coproc/coproc_skip (AE3-only) stay
-    # OUT: the coprocessor-MRAM write in that path crashes/wedges the AE3 -- re-add under COPROC_ENABLED
-    # once that write is fixed (they still run by hand). A normal run never touches that partition
-    # (factory flash already wrote it; sync() stream-compares, matches, and skips -- no MRAM write).
+    # every PR while still proving its flash + watchdog on each one. coproc/coproc_skip (AE3-only) run
+    # too: the coprocessor-MRAM write is the AE3's third board-specific path, and the one whose
+    # failure costs a power cycle -- so it is proven on every PR (HIL_COPROC=0 opts out). coproc
+    # dirties the partition first; otherwise sync() stream-compares, matches, and skips.
     if board == "OPENMV_AE3":
         return ["delta", "watchdog"] + (["coproc", "coproc_skip"] if COPROC_ENABLED else [])
     # The Portenta runs a REDUCED suite too, for the AE3's reason: only the paths PROVEN on it.
@@ -1303,7 +1308,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
     capable USB device available' or a write timing out at 0 bytes (which read as a bricked board).
 
     Writing the AE3 coprocessor partition also makes the runtime sync() find it matching the bundle
-    and SKIP -- never the coprocessor-MRAM write that wedges the AE3 (see COPROC_ENABLED). J-Link
+    and SKIP -- so only the coproc scenario (which dirties it first) exercises the MRAM write. J-Link
     stays ONLY for _ensure_cdc recovery (an SWD nRST pulse revives a board wedged off USB, which the
     CLI's DFU path -- needing a live CDC to enter the bootloader -- can't reach); it never flashes."""
     # Mark where THIS golden's account of itself begins, so verify can tell a fresh mount
@@ -2107,10 +2112,16 @@ def dirty_coproc_partition():
     -- once applied it matches the bundle forever -- so the coproc scenario must actively dirty it to
     stay deterministic (else it degrades to the coproc_skip path). Writes 0xFF over the first block
     via the ranged rom_ioctl the OTA installer uses; sync() then rewrites the real romfs back."""
+    # Interrupts OFF around each 256 B slice, exactly as the device's _write_masked does: an
+    # interrupt taken mid-program wedges the Alif MRAM controller, and that needs a power cycle.
     device_exec(
-        "import vfs\n"
+        "import vfs, machine\n"
         "vfs.rom_ioctl(3, 1, 0, 4096)\n"            # ranged WRITE_PREPARE the first block (idx 1)
-        "vfs.rom_ioctl(4, 1, 0, b'\\xff' * 4096)",  # 0xFF -> no longer the coproc romfs magic
+        "ff = b'\\xff' * 256\n"                     # 0xFF -> no longer the coproc romfs magic
+        "for o in range(0, 4096, 256):\n"
+        "    s = machine.disable_irq()\n"
+        "    vfs.rom_ioctl(4, 1, o, ff)\n"
+        "    machine.enable_irq(s)",
         timeout=30)
 
 

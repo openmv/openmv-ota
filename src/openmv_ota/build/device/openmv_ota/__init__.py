@@ -1066,6 +1066,37 @@ def confirm():  # pragma: no cover
 # resource kind (keys, fuses, ...) is just another entry in _HANDLERS -- no partition
 # assumptions baked into the loop.
 
+_MRAM_SLICE = 256   # bytes programmed per interrupts-off window in _write_masked (~0.75 ms)
+
+
+def _write_masked(part_index, off, data):  # pragma: no cover  # hil-residual-fn: coprocessor partition path (AE3 MRAM)
+    """``rom_ioctl(4)`` in _MRAM_SLICE pieces, each with interrupts DISABLED.
+
+    An interrupt taken while the Alif MRAM is programming wedges the MRAM controller: the
+    core hangs silently, and nothing short of a power cycle brings the chip back -- not
+    nRST, not the bootloader's DFU window, because the Secure Enclave boots from MRAM too.
+    Alif's own driver requires interrupts off around every MRAM write (Driver_MRAM.c); the
+    port's rom_ioctl does not do it, so we do. Bench-proven on the AE3: a 1 kHz hard-timer
+    load wedged the unmasked write within 30 chunks, and never the masked one. Any IRQ
+    source does it -- a UART, a watchdog's timer, USB -- so the rate only sets how soon.
+
+    The slice keeps each window short enough (~0.75 ms at 256 B) that USB and the UART
+    FIFOs ride through it; interrupts are deferred, not lost. The slice view is built
+    BEFORE disabling, so no allocation (and no collect) ever runs with interrupts off."""
+    import machine
+    import vfs
+    mv = memoryview(data)
+    for i in range(0, len(mv), _MRAM_SLICE):
+        piece = mv[i:i + _MRAM_SLICE]
+        state = machine.disable_irq()
+        try:
+            rc = vfs.rom_ioctl(4, part_index, off + i, piece)
+        finally:
+            machine.enable_irq(state)
+        if rc < 0:
+            raise OSError(-rc)
+
+
 def _partition_matches(entry, path):  # pragma: no cover  # hil-residual-fn: coprocessor partition path; AE3 HW-blocked (no working HIL coproc rig)
     """matches() for the ``partition`` handler: stream-compare the file to the start of
     partition ``entry["partition"]`` (the partition via a uctypes view, the file one
@@ -1108,9 +1139,13 @@ def _partition_apply(entry, path, progress=None):  # pragma: no cover  # hil-res
         # collect -- 243 ms measured on an RT1060 with a full heap), the file read, and the
         # caller's `progress` callback, whose duration we do not control at all.
         _wdt_feed()
-        _write_verified(part_index, off, chunk)       # WRITE one block + verify
+        # The coprocessor partition is MRAM (the AE3 is the only coprocessor board), so the
+        # write goes through _write_masked -- an interrupt mid-program wedges the chip.
+        _write_masked(part_index, off, chunk)         # WRITE one block, interrupts off per slice
+        _check_readback(_read_at(part_index, off, len(chunk)), chunk)
         if _first:                                    # witness the write-loop body once (no spam)
             log.debug("partition: writing")
+            log.debug("partition: slice masked")      # ...and that it went through _write_masked
             _first = False
         off += _CHUNK
         if progress is not None:
@@ -1118,10 +1153,14 @@ def _partition_apply(entry, path, progress=None):  # pragma: no cover  # hil-res
     _wdt_feed()                                        # ...and before the flush, which is another
     #                                                    unfeedable flash op and follows the
     #                                                    caller's progress callback
-    _rom_write(5, part_index)                          # WRITE_COMPLETE: flush cached sub-page
-                                                       # writes so they survive reset (NOR/XIP
-                                                       # ports cache them; no-op on MRAM), exactly
-                                                       # as the installer's complete() does
+    import vfs
+    rc = vfs.rom_ioctl(5, part_index)                  # WRITE_COMPLETE: flush cached sub-page
+    if rc < 0 and rc != -22:                           # writes so they survive reset (NOR/XIP
+        raise OSError(-rc)                             # ports cache them). A port without the
+    log.debug("partition: completed")                  # command answers -EINVAL -- alif always
+    #                                                    does, MRAM has nothing to flush -- and
+    #                                                    that is success; raising on it failed
+    #                                                    every sync() after its last write.
 
 
 # resource kind -> (matches, apply); add new kinds here without touching sync().
