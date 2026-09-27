@@ -221,6 +221,18 @@ BOARDS = {
         "flash": "arduino_cli",              # same MCUboot DFU path as the Nicla
         "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
     },
+    "ARDUINO_GIGA": {
+        # Arduino Giga R1 WiFi: the Portenta's STM32H747 + CYW4343 + MCUboot + QSPI ROMFS geometry
+        # (boards.json), so it takes the Portenta's shape. Not registered server-side either.
+        "server_record": False,
+        "cov_uart": 1,                       # UART1 = the D0/D1 "Serial1" header (TX=PA9, RX=PB7) ->
+                                             # the node's CP2102. UART1 is also MICROPY_HW_UART_REPL,
+                                             # which openmv_log detaches before logging on it.
+        "cov_write": "install.xip",
+        "network": "wifi",                   # onboard CYW4343 (Murata 1DX) -- standard network.WLAN
+        "flash": "arduino_cli",              # 1200-baud touch -> MCUboot DFU (2341:0366)
+        "jlink_device": "STM32H747XI_M7",    # debug-only name (M7 runs the firmware), _ensure_cdc only
+    },
     # --- Classic boards (single-image mode, file transport) --------------------------------------
     # These builds carry no TLS stack (the F427 literally has no `ssl` module -- SD/file IS the
     # M4's update path by design) and no marker UART is wired on their nodes, so their legs run a
@@ -242,6 +254,18 @@ BOARDS = {
         "cov_write": "install.xip",          # ECC-word board the stride exists for)
         "network": "file",
         "flash": "dfu_cli",
+    },
+    "OPENMVPT": {                            # OpenMV Pure Thermal (STM32H743 + SDRAM, 8 MB QSPI ROMFS)
+        # NO NETWORK: the PCB has a WINC footprint, but it was never populated in production
+        # (the chip shortage), so this is a file-transport leg like the classics -- the update is
+        # staged on the SD card over the USB-CDC and installed from there.
+        "cov_write": "install.xip",
+        "network": "file",
+        "flash": "dfu_cli",                  # OpenMV DFU (37c5:9205), same CLI path as the H7 Plus
+        "jlink_device": "STM32H743VI",       # wired on the node: lets the no-CDC paths pulse nRST
+                                             # (OPENMV4 has no probe, and could not recover itself)
+        "cov_uart": 3,                       # USART3 on P4/P5 -> the node's CP2102 (verified). File
+                                             # legs score over the CDC; this is wired for diagnosis.
     },
 }
 
