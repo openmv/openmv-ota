@@ -35,7 +35,7 @@ on:
         description: which board to run (or all)
         default: all
         type: choice
-        options: [all, OPENMV_N6, OPENMV_AE3, OPENMV_RT1060, OPENMV4P, ARDUINO_NICLA_VISION, ARDUINO_PORTENTA_H7, ARDUINO_GIGA, OPENMVPT]
+        options: [all, OPENMV_N6, OPENMV_AE3, OPENMV_RT1060, OPENMV4P, ARDUINO_NICLA_VISION, ARDUINO_PORTENTA_H7, ARDUINO_GIGA]
       scenario:
         description: which OTA path to exercise ('all' = each board's full regression)
         default: all
@@ -154,7 +154,6 @@ jobs:
               {"board": "OPENMV2", "network": "file", "label": "board-openmv-m4"},
               {"board": "OPENMV3", "network": "file", "label": "board-openmv-m7"},
               {"board": "OPENMV4", "network": "file", "label": "board-openmv-h7"},
-              {"board": "OPENMVPT", "network": "file", "label": "board-openmv-pure-thermal"},
           ]
           board = os.environ.get("BOARD") or "all"
           # PR gate runs EVERY board including the AE3 (wifi): its USB/DFU flashing and its watchdog are

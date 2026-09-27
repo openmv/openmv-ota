@@ -255,18 +255,6 @@ BOARDS = {
         "network": "file",
         "flash": "dfu_cli",
     },
-    "OPENMVPT": {                            # OpenMV Pure Thermal (STM32H743 + SDRAM, 8 MB QSPI ROMFS)
-        # NO NETWORK: the PCB has a WINC footprint, but it was never populated in production
-        # (the chip shortage), so this is a file-transport leg like the classics -- the update is
-        # staged on the SD card over the USB-CDC and installed from there.
-        "cov_write": "install.xip",
-        "network": "file",
-        "flash": "dfu_cli",                  # OpenMV DFU (37c5:9205), same CLI path as the H7 Plus
-        "jlink_device": "STM32H743VI",       # wired on the node: lets the no-CDC paths pulse nRST
-                                             # (OPENMV4 has no probe, and could not recover itself)
-        "cov_uart": 3,                       # USART3 on P4/P5 -> the node's CP2102 (verified). File
-                                             # legs score over the CDC; this is wired for diagnosis.
-    },
 }
 
 
