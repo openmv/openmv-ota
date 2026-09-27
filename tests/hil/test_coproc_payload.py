@@ -94,3 +94,4 @@ def test_coproc_scenario_demands_the_boot_check_and_the_masked_write():
         assert mark in ota_cycle.COVERAGE.values()
     skip = ota_cycle.SCENARIOS["coproc_skip"]
     assert "partition.write_masked" in skip["forbid"] and not skip.get("he_boot")
+
