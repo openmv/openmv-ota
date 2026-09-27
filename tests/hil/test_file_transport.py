@@ -96,13 +96,36 @@ def test_file_probe_reads_the_payload_version_not_a_version_key(monkeypatch):
 
 
 def test_file_probe_raises_after_retries_without_an_answer(monkeypatch):
-    calls = []
+    calls, resumes = [], []
     monkeypatch.setattr(ota_cycle, "device_exec", lambda *a, **k: (
         calls.append(1), "")[1] or (1, "no such device"))
+    monkeypatch.setattr(ota_cycle, "sh", lambda argv, **k: (resumes.append(argv), (1, ""))[1])
     monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError, match="probe never answered"):
         ota_cycle.file_probe(retries=2)
-    assert len(calls) == 2
+    assert len(calls) == 2 and len(resumes) == 2
+
+
+def test_file_probe_falls_back_to_resume_when_connect_is_wedged(monkeypatch):
+    """The M7 wedge: `connect` (soft reset) cannot enter the raw REPL, `resume` still answers."""
+    monkeypatch.setattr(ota_cycle, "device_exec", lambda *a, **k: (1, "could not enter raw repl"))
+    seen = []
+    monkeypatch.setattr(ota_cycle, "sh", lambda argv, **k: (
+        seen.append(argv), (0, "PROBE|16777472|True|False\n"))[1])
+    assert ota_cycle.file_probe() == (16777472, True, False)
+    assert seen and seen[0][1:3] == ["resume", "connect"]
+
+
+def test_wait_cdc_uses_the_resume_aware_probe(monkeypatch):
+    """_wait_cdc must not loop bare soft-reset connects (the reset storm that wedges the M7)."""
+    answers = iter([False, True])
+    monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: next(answers))
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    assert ota_cycle._wait_cdc(budget=60) is True
+    monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: False)
+    clock = iter([0, 0, 100, 100])
+    monkeypatch.setattr(ota_cycle.time, "time", lambda: next(clock))
+    assert ota_cycle._wait_cdc(budget=60) is False
 
 
 # --- the scenario/network pairing guard ------------------------------------------------------

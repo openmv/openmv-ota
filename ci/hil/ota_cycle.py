@@ -2561,13 +2561,17 @@ def file_stage(board, tamper=None):
 
 
 def _wait_cdc(budget=120):
-    """Wait for the USB-CDC to answer after a reboot. The probe itself DTR-resets the board,
-    which is fine here: the app confirms a trial at BOOT, so every extra boot re-runs it."""
+    """Wait for the USB-CDC to answer after a reboot, via _cdc_responsive (connect, then the
+    non-destructive `resume`).
+
+    A bare `connect` loop here is the reset storm that WEDGES the M7s: every failed attempt
+    soft-resets the board, and after enough of them the soft-reset raw-REPL handshake fails
+    deterministically while `resume` still answers. Measured on OPENMV4's file_full (PR #90 gate):
+    the install rebooted fine, this loop then hammered the booting trial for 120 s, reported
+    "no CDC", and the next scenario's DFU catch timed out on a board that was up the whole time."""
     deadline = time.time() + budget
     while time.time() < deadline:
-        rc, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
-                   timeout=15, check=False, quiet=True)
-        if rc == 0:
+        if _cdc_responsive():
             return True
         time.sleep(3)
     return False
@@ -2594,6 +2598,11 @@ def file_probe(retries=3):
             "s.get('trial')))\n")
     for attempt in range(retries):
         rc, out = device_exec(code, timeout=90, check=False)
+        if "PROBE|" not in out:
+            # A wedged soft-reset handshake (see _wait_cdc) fails every `connect` while `resume`
+            # still answers -- status() needs no reset, so ask that way before retrying.
+            rc, out = sh([ota("mpremote"), "resume", "connect", CFG["acm"], "exec", code],
+                         timeout=90, check=False, quiet=True)
         for line in reversed(out.splitlines()):
             if line.startswith("PROBE|"):
                 _, v, confirmed, trial = line.strip().split("|")
