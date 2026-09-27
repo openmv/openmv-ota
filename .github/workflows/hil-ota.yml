@@ -132,6 +132,9 @@ jobs:
               # 256 KiB allocation that no SDRAM board could feel.
               {"board": "ARDUINO_NICLA_VISION", "network": "wifi", "label": "board-arduino-nicla"},
               {"board": "ARDUINO_PORTENTA_H7", "network": "wifi", "label": "board-arduino-portenta"},
+              # Giga R1 WiFi: the Portenta's H747 + CYW4343 + MCUboot geometry. Bring-up (2026-09-27,
+              # single-board dispatch): 9/9 on the Arduino list (delta..watchdog, ~4 min each), marker
+              # UART is UART2 = the silkscreened TX1/RX1 header. Blocking from its first gate.
               {"board": "ARDUINO_GIGA", "network": "wifi", "label": "board-arduino-giga"},
               # Portenta also has Ethernet on the breakout -- validated on the bench: link up in 5s,
               # DHCP 192.168.0.38. A SECONDARY interface runs delta only (see regression_scenarios):
