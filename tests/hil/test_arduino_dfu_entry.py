@@ -604,3 +604,30 @@ def test_a_stalled_dfu_device_is_reset_out_of_dfu_not_just_retried():
     at = body.index("LIBUSB_ERROR_PIPE")
     assert "jlink_core_reset(board)" in body[at:], "and recovered by resetting out of DFU"
     assert "jlink_reset_pulse" not in body, "never the nRST pin on an Arduino board"
+
+
+@pytest.mark.parametrize("board", _ARDUINO)
+def test_pre_flash_recovery_leaves_an_arduino_in_dfu(board, monkeypatch):
+    """PR #92 gate: a Nicla left in MCUboot DFU by a stalled write carries a HALF-WRITTEN app. The
+    pre-flash recovery used to `leave` DFU -- MCUboot jumped into that app and the board vanished
+    (no DFU, no port), failing all 10 scenarios. Before a golden flash, DFU is exactly where the
+    flash wants the board: stay there, and touch nothing."""
+    monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (1, ""))           # CDC probe fails
+    monkeypatch.setattr(ota_cycle, "_dfu_present", lambda: True)
+    monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: pytest.fail("must not leave DFU"))
+    monkeypatch.setattr(ota_cycle, "recover_erase_romfs", lambda b: pytest.fail("no erase needed"))
+    monkeypatch.setattr(ota_cycle, "jlink_core_reset", lambda *a, **k: pytest.fail("no reset"))
+    monkeypatch.setattr(ota_cycle, "_await_boot", lambda *a, **k: pytest.fail("nothing to wait for"))
+    ota_cycle._ensure_cdc(board, allow_erase=True)
+
+
+@pytest.mark.parametrize("board", _ARDUINO)
+def test_post_flash_recovery_still_leaves_dfu(board, monkeypatch):
+    """After a flash (allow_erase=False) there is no flash coming to use DFU, so a board stuck there
+    is still booted out of it, as before."""
+    monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (1, ""))
+    monkeypatch.setattr(ota_cycle, "_dfu_present", lambda: True)
+    left = []
+    monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: left.append(b) or True)
+    ota_cycle._ensure_cdc(board)
+    assert left, "a post-flash board stuck in DFU must still be booted out of it"
