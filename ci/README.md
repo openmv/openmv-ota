@@ -37,6 +37,9 @@ regression on the pull request, run on live hardware ([below](#the-hil-gate)).
   (GitHub OIDC → workload identity federation). Needs the repository **secrets**
   `GCP_WIF_PROVIDER`, `GCP_CI_SERVICE_ACCOUNT` and `GCP_KMS_KEY_VERSION`; without
   them (and on fork PRs) it reports "not configured" and passes.
+- **`aws-kms`** — the same for AWS KMS (GitHub OIDC → an IAM role that can only
+  sign with one test key). Needs the repository **secrets** `AWS_CI_ROLE_ARN` and
+  `AWS_KMS_KEY_ARN`; without them (and on fork PRs) it reports "not configured".
 - **`premerged`** — on a push, whether the commit merges a PR whose CI already
   built this exact tree; if so `build` and `qemu` skip (the host tests always run).
 

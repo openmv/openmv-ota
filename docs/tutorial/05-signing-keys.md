@@ -193,11 +193,12 @@ most one:
 | `azure-kms` | `uri` — the vault key URL (`provision` takes `vault_url`) | `openmv-ota[azure-kms]` |
 | `custom` | `factory` — `pkg.module:callable` returning a `Signer`; bring anything | — |
 
-**How well each is proven.** `gcp-kms` has been run end to end against the real service —
-`provision` minting a key set inside a key ring, then `build romfs` signing through it, with the
-result verified the way a device verifies it — and `pkcs11` against SoftHSM. `aws-kms` and
-`azure-kms` are tested against stand-ins for their SDKs only, so before relying on one, run a
-trial `provision` + `build romfs` on a throwaway project against your own account.
+**How well each is proven.** `gcp-kms` and `aws-kms` have been run end to end against the
+real services — `provision` minting a key set in the service, then `build romfs` signing through
+it, with the result verified the way a device verifies it — and `pkcs11` against SoftHSM.
+`azure-kms` is tested against a stand-in for its SDK only, so before relying on it, run a trial
+`provision` + `build romfs` on a throwaway project against your own account. (`aws-kms` also
+works with `aws login` credentials; the extra pulls in the `crt` support that needs.)
 
 At build time nothing changes on the surface: `build romfs` looks up the signing
 key's record and signs through it — a token signs the digest on-token, a KMS signs

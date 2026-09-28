@@ -143,6 +143,54 @@ jobs:
           grep -q "1 passed" out.txt
 
   # ---------------------------------------------------------------------------
+  # 1d) The AWS KMS signer against the REAL KMS service, keyless like 1c: GitHub's OIDC token
+  #     assumes a role that trusts only this repository and can only sign with one test key.
+  #     Needs repository SECRETS AWS_CI_ROLE_ARN + AWS_KMS_KEY_ARN (unset -> "not configured").
+  # ---------------------------------------------------------------------------
+  aws-kms:
+    name: signer on real AWS KMS
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_CI_ROLE_ARN: ${{ secrets.AWS_CI_ROLE_ARN }}
+      OPENMV_OTA_AWS_KEY_ARN: ${{ secrets.AWS_KMS_KEY_ARN }}
+    steps:
+      - name: Configured?
+        id: cfg
+        run: |
+          if [ -n "$AWS_CI_ROLE_ARN" ] && [ -n "$OPENMV_OTA_AWS_KEY_ARN" ]; then
+            echo "on=true" >> "$GITHUB_OUTPUT"
+            echo "region=$(echo "$OPENMV_OTA_AWS_KEY_ARN" | cut -d: -f4)" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::AWS KMS live job not configured (repository secrets unset) -- skipped"
+            echo "on=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cfg.outputs.on == 'true'
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.cfg.outputs.on == 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ steps.cfg.outputs.region }}
+      - uses: actions/setup-python@v5
+        if: steps.cfg.outputs.on == 'true'
+        with:
+          python-version: "3.12"
+      - name: Install (aws-kms extra)
+        if: steps.cfg.outputs.on == 'true'
+        run: pip install -e ".[dev,aws-kms]"
+      - name: Live signing pass (must RUN, not skip)
+        if: steps.cfg.outputs.on == 'true'
+        run: |
+          pytest -o addopts="" -q -rs tests/ota/test_signer_aws_live.py | tee out.txt
+          grep -q "1 passed" out.txt
+
+  # ---------------------------------------------------------------------------
   # 1a) Was this push already tested as a PR? A squash merge of PR head H onto base B is the
   #     same tree as the refs/pull/N/merge the PR's CI built -- IF B is still main's tip. So on a
   #     push, find the merged PR, take the last SUCCESSFUL pull_request run of its head, and
