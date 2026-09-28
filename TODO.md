@@ -10,7 +10,7 @@ file's own history has the longer design notes behind each line.
   verified `firmware.bin` out of a **confirmed** slot into the firmware area at
   a fixed offset (no romfs parser in the bootloader), never downgrade; a power
   loss mid-copy retries, not bricks.
-- **Signer backends: one live pass each** — AWS/GCP/Azure KMS + provisioning
-  are unit-covered via fakes (SoftHSM has an opt-in real test). GCP is next (a
-  live pass against a real key ring); AWS and Azure need accounts first, and
-  until then ship documented as verified against fakes only.
+- **Signer backends: AWS + Azure live pass** — GCP KMS passed live (provision +
+  signed `build romfs` + device-check verify, 2026-09-27; re-runnable opt-in
+  test). AWS KMS and Azure Key Vault are covered by fakes only (documented as
+  such in tutorial 05) until someone with accounts runs one pass each.
