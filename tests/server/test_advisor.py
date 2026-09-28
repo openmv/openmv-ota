@@ -124,6 +124,41 @@ def test_scan_release_without_or_with_bad_sbom(tmp_path):
                 if e["action"] == "advisory.scan"]) == 3
 
 
+def test_an_unreadable_sbom_keeps_the_standing_advisories(tmp_path):
+    """A storage hiccup or a corrupt SBOM is not evidence the release is clean: scanning
+    nothing would reconcile to zero findings and clear what is already known."""
+    st = _state(tmp_path)
+    st.metastore.upsert_advisories("r1", [{"vuln_id": "CVE-9", "component": "mbedtls",
+                                           "version": "3.5.1", "severity": "high",
+                                           "summary": "s"}], account_id="a")
+    for key in ("sbom/gone.json", "sbom/bad.json"):
+        out = advisor.scan_release(st, {"release_id": "r1", "account_id": "a",
+                                        "sbom_key": key})
+        assert out["cleared"] == 0
+    st.storage.put("sbom/bad.json", b"not json", "application/json")
+    advisor.scan_release(st, {"release_id": "r1", "account_id": "a", "sbom_key": "sbom/bad.json"})
+    assert [r["vuln_id"] for r in st.metastore.list_advisories(account_id="a")] == ["CVE-9"]
+    marks = [e["data"] for e in st.metastore.read_audit() if e["action"] == "advisory.scan"]
+    assert marks and all(m == {"sbom_unreadable": True} for m in marks)
+
+
+def test_a_short_osv_reply_fails_the_scan_instead_of_reporting_clean():
+    class _Short(_StubHttp):
+        def post(self, url, json=None):
+            resp = super().post(url, json)
+            resp._payload["results"] = resp._payload["results"][:-1]
+            return resp
+    http = _Short(hits={("lwip", "2.1.3"): ["CVE-1"]}, vulns={})
+    c = OsvClient(http=http, url="https://osv.test")
+    try:
+        advisor.REAL_OSV_SCAN(c, [{"name": "mbedtls", "version": "3.5.1"},
+                                 {"name": "lwip", "version": "2.1.3"}])
+    except ValueError as e:
+        assert "1 results for 2 queries" in str(e)
+    else:
+        raise AssertionError("a short reply must not scan clean")
+
+
 def test_scan_release_records_findings(tmp_path):
     st = _state(tmp_path)
     st.storage.put("sbom/ok.json", json.dumps(

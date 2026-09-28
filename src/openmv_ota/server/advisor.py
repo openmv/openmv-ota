@@ -105,7 +105,14 @@ class OsvClient:
             r = self._http.post(self._url + "/v1/querybatch",
                                 json={"queries": queries})
             r.raise_for_status()
-            for comp, res in zip(window, r.json().get("results", [])):
+            results = r.json().get("results", [])
+            if len(results) != len(window):
+                # one result per query, in order; a short or padded reply would pin vulns on
+                # the wrong component, or report none -- which the reconcile then reads as
+                # "fixed" and clears standing advisories. Fail the scan instead.
+                raise ValueError("OSV answered %d results for %d queries"
+                                 % (len(results), len(window)))
+            for comp, res in zip(window, results, strict=True):
                 for hit in res.get("vulns") or []:
                     vuln = self._detail(hit["id"])
                     findings.append({
@@ -135,7 +142,13 @@ def scan_release(state, rel: dict, actor: str = "scheduler") -> dict:
             components = json.loads(state.storage.get(rel["sbom_key"])).get(
                 "components", []) or []
         except (ServerError, ValueError):
-            components = []
+            # an SBOM we cannot read is not evidence the release is clean: scanning nothing
+            # would reconcile to zero findings and clear every standing advisory. Keep them.
+            state.metastore.append_audit(
+                actor=actor, action="advisory.scan", entity_type="release",
+                entity_id=release_id, data={"sbom_unreadable": True},
+                account_id=account_id, product_id=rel.get("product_id"))
+            return {"release_id": release_id, "findings": 0, "new": [], "cleared": 0}
     findings = state.osv.scan(components)
     result = state.metastore.upsert_advisories(release_id, findings,
                                                account_id=account_id)
