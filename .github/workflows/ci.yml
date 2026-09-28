@@ -49,6 +49,69 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: ${{ matrix.os }}
 
+      # Record the base this PR's merge ref was built from, so the push that MERGES it can tell
+      # whether its tree is the one this run already built and tested (see `premerged`). The run
+      # API forgets a PR's base once it merges, so it has to be written down here.
+      - name: Record the tested base (PRs)
+        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
+        run: echo "${{ github.event.pull_request.base.sha }}" > tested-base.txt
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
+        with:
+          name: tested-base
+          path: tested-base.txt
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # 1a) Was this push already tested as a PR? A squash merge of PR head H onto base B is the
+  #     same tree as the refs/pull/N/merge the PR's CI built -- IF B is still main's tip. So on a
+  #     push, find the merged PR, take the last SUCCESSFUL pull_request run of its head, and
+  #     compare the base it recorded with this commit's parent. Equal -> the firmware builds and
+  #     QEMU already passed on this exact tree; skip them (the host tests still run, for the
+  #     Codecov base report). Anything else -- a direct push, main moved in between, a missing
+  #     artifact, an API error -- runs everything. This job never fails: a failed `needs` would
+  #     skip the builds, which is the one outcome it must not cause.
+  # ---------------------------------------------------------------------------
+  premerged:
+    name: already tested as a PR?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          skip=false
+          if [ "$EVENT" = push ]; then
+            pr=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+                   -q '[.[] | select(.merged_at != null)][0].number' 2>/dev/null || true)
+            if [ -n "$pr" ]; then
+              head=$(gh api "repos/$REPO/pulls/$pr" -q .head.sha 2>/dev/null || true)
+              run=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?event=pull_request&status=success&head_sha=$head&per_page=1" \
+                      -q '.workflow_runs[0].id' 2>/dev/null || true)
+              parent=$(gh api "repos/$REPO/commits/$SHA" -q '.parents[0].sha' 2>/dev/null || true)
+              if [ -n "$run" ] && gh run download "$run" --repo "$REPO" -n tested-base -D tb 2>/dev/null; then
+                base=$(cat tb/tested-base.txt 2>/dev/null || true)
+                echo "PR #$pr head=$head run=$run tested-base=$base parent=$parent"
+                [ -n "$base" ] && [ "$base" = "$parent" ] && skip=true
+              else
+                echo "PR #$pr: no successful PR run with a recorded base -- running everything"
+              fi
+            else
+              echo "not a PR merge (direct push) -- running everything"
+            fi
+          fi
+          echo "skip=$skip"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
   # ---------------------------------------------------------------------------
   # 1b) The ECDSA verify C shim, compiled against the firmware's own mbedtls and
   #     exercised on the host (host signs / mbedtls verifies + gcov 100% of core).
@@ -94,6 +157,8 @@ jobs:
   # ---------------------------------------------------------------------------
   qemu:
     name: boot.py on MicroPython (QEMU)
+    needs: premerged
+    if: needs.premerged.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -150,7 +215,8 @@ jobs:
   # ---------------------------------------------------------------------------
   build:
     name: build ${{ matrix.board }}
-    needs: test
+    needs: [test, premerged]
+    if: needs.premerged.outputs.skip != 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
