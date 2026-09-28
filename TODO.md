@@ -20,11 +20,12 @@ file's own history has the longer design notes behind each line.
 An external audit (and SOC 2, which certifies company controls, not code) is out of
 budget for now; these are the free/cheap passes to run first, in order.
 
-- **GitHub-native scanning** — CodeQL (`security-extended`, Python + the C verify shim),
-  secret scanning + push protection, Dependabot, OpenSSF Scorecard (pin Actions to SHAs,
-  least-privilege workflow tokens). openmv-cloud is private: Semgrep OSS instead of CodeQL.
-- **Stricter lint + dependency audit** — ruff `S` (Bandit) and `B` rule sets; pip-audit /
-  OSV-Scanner on our own dependencies in CI.
+- ~~**GitHub-native scanning**~~ — DONE 2026-09-28: CodeQL (`security-extended`, Python + the
+  C shim), Dependabot (pip + actions), Scorecard, every action SHA-pinned, workflow tokens
+  read-only by default. Fork PRs can no longer reach the self-hosted bench. Left for the repo
+  owner: switch on secret scanning + push protection and Dependabot alerts in Settings.
+- ~~**Stricter lint + dependency audit**~~ — DONE 2026-09-28: ruff `S` + `B` enforced (each
+  suppression carries its reason); pip-audit job in CI.
 - **Fuzz the attacker-facing parsers** — trailer, manifest, romfs and delta-patch parsers
   (Hypothesis properties + atheris); the C ECDSA shim under libFuzzer with ASan/UBSan; the
   server API via Schemathesis from its OpenAPI schema.

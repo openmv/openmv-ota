@@ -51,6 +51,10 @@ on:
   # required `hil-gate` check exists on every PR (never a forever-pending required check).
   pull_request:
 
+# Least privilege: every job reads; a job that needs more says so itself.
+permissions:
+  contents: read
+
 concurrency:
   group: hil-ota-${{ github.ref }}
   cancel-in-progress: false
@@ -67,8 +71,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       device: ${{ steps.d.outputs.device }}
+      # A fork's PR must never reach the bench: the self-hosted runners sit on the lab network
+      # with the WiFi credentials, the J-Links and the tailnet, and this repo is public. Only a
+      # branch pushed to THIS repo (write access) is trusted; a fork PR fails the gate instead.
+      trusted: ${{ steps.d.outputs.trusted }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           fetch-depth: 0            # need the base commit reachable for the diff
       - id: d
@@ -76,8 +84,15 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
         run: |
           set -u
+          if [ "$EVENT" != "pull_request" ] || [ "$HEAD_REPO" = "$REPO" ]; then
+            echo "trusted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "PR from fork $HEAD_REPO -> untrusted (no bench)"; echo "trusted=false" >> "$GITHUB_OUTPUT"
+          fi
           if [ "$EVENT" != "pull_request" ]; then
             echo "non-PR event ($EVENT) -> device=true (run)"; echo "device=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
@@ -174,7 +189,7 @@ jobs:
   ota-cycle:
     name: ota-cycle ${{ matrix.board }} ${{ matrix.network }}
     needs: [changes, plan]
-    if: needs.changes.outputs.device == 'true'
+    if: needs.changes.outputs.device == 'true' && needs.changes.outputs.trusted == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -196,7 +211,7 @@ jobs:
     # at 3.35V, so it was powered, not dead), and no remote lever brought it back -- it took a
     # physical power cycle. Queuing costs a wait; cancelling costs a bench trip.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       - name: OTA scenario(s) + coverage traces
         env:
@@ -240,7 +255,7 @@ jobs:
 
       - name: Upload traces
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: hil-traces-${{ matrix.board }}-${{ matrix.network }}
           path: hil-trace-*.json
@@ -253,8 +268,8 @@ jobs:
     if: always() && needs.changes.outputs.device == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           # Matches the per-leg upload artifacts named `hil-traces-<board>-<network>` above.
           # (`hil-trace-*` silently matched none -- the artifact is `hil-traceS-`, no dash --
@@ -279,7 +294,7 @@ jobs:
           python3 ci/hil/ota_metrics.py --traces traces --md ota-metrics.md --json ota-metrics.json
           cat ota-metrics.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload HIL coverage to Codecov (flag=hil, informational + carryforward)
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: hil-coverage.info
@@ -287,7 +302,7 @@ jobs:
           disable_search: true
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: hil-coverage
           path: |
@@ -309,11 +324,17 @@ jobs:
       - name: Evaluate the HIL result
         env:
           DEVICE: ${{ needs.changes.outputs.device }}
+          TRUSTED: ${{ needs.changes.outputs.trusted }}
           RESULT: ${{ needs.ota-cycle.result }}
         run: |
           if [ "$DEVICE" != "true" ]; then
             echo "No OTA-touching changes in this PR -- HIL not required. PASS."
             exit 0
+          fi
+          if [ "$TRUSTED" != "true" ]; then
+            echo "OTA-touching PR from a fork: the bench never runs fork code. A maintainer"
+            echo "pushes the branch to this repo and opens the PR from there. Blocking."
+            exit 1
           fi
           echo "OTA-touching PR; ota-cycle result = '$RESULT'."
           if [ "$RESULT" = "success" ]; then

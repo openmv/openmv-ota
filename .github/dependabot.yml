@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # the Python dependencies (pyproject.toml ranges)
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  # the SHA-pinned actions: Dependabot bumps the SHA and the version comment together
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
