@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 
 import pytest
@@ -330,7 +331,7 @@ def test_a_migration_that_fails_partway_records_what_it_finished(tmp_path):
         M._MIGRATIONS = [*full[:20], ["ALTER TABLE rollouts ADD COLUMN extra_a TEXT"],
                          ["ALTER TABLE rollouts ADD COLUMN extra_b TEXT", boom]]
         store = M.SqliteMetadataStore(db)
-        with pytest.raises(Exception):
+        with pytest.raises(sqlite3.OperationalError):
             store.migrate()
         # the version that DID finish is recorded, so the next run resumes after it
         assert store.get_meta("schema_version") == "21"

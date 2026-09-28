@@ -56,7 +56,7 @@ def slots(image: bytes, step: int = SCAN_STEP) -> list[tuple[str, bytes, bytes]]
         return []
     block = len(image) - found[-1][0]   # the last trailer fills the last erase block
     out, start = [], 0
-    for (off, t), label in zip(found, slot_labels(len(found))):
+    for (off, t), label in zip(found, slot_labels(len(found)), strict=True):
         out.append((label, bytes(image[start:start + t.body_size]), bytes(image[off:])))
         start = off + block
     return out

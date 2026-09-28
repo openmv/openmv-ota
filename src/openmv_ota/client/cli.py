@@ -924,7 +924,8 @@ def _parse_stage(spec: str) -> dict:
         if len(parts) > 3 and parts[3] != "":
             stage["max_failure_rate"] = float(parts[3])
     except ValueError:
-        raise ClientError("bad --stage %r: expected PCT[:SOAK[:ATTEMPTED[:MAXFAIL]]]" % spec)
+        raise ClientError("bad --stage %r: expected PCT[:SOAK[:ATTEMPTED[:MAXFAIL]]]"
+                          % spec) from None
     return stage
 
 

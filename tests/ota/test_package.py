@@ -16,4 +16,4 @@ def test_lazy_crypto_helpers_resolve():
 
 def test_unknown_attribute_raises():
     with pytest.raises(AttributeError, match="does_not_exist"):
-        getattr(ota, "does_not_exist")
+        getattr(ota, "does_not_exist")  # noqa: B009 - exercises the module __getattr__

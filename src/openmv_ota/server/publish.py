@@ -272,8 +272,8 @@ async def publish_release(request: Request, background: BackgroundTasks,
     # CVE monitoring starts NOW, not at the next daily pass: scan the new release's
     # SBOM in the background (a scan failure never touches the publish result).
     if sbom_key is not None:
-        def _scan_quietly(state=request.app.state,
-                          rel={"release_id": release_id, "account_id": account_id,
+        def _scan_quietly(state=request.app.state,          # binds THIS request's values
+                          rel={"release_id": release_id, "account_id": account_id,  # noqa: B006
                                "sbom_key": sbom_key}):
             from . import advisor
             try:

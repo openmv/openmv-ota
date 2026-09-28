@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import itertools
 import json
 import time
 
@@ -130,7 +131,7 @@ def test_retries_back_off_then_die_and_a_dead_endpoint_is_disabled(tmp_path, mon
     assert deliverer.run_once(now=t + 1)["sent"] == 0 and len(rx.calls) == 1   # not due yet
     # walk the whole schedule
     now = t
-    for i, wait in enumerate(wh.BACKOFF_S):
+    for wait in wh.BACKOFF_S:
         now += wait
         out = deliverer.run_once(now=now)
         assert out["failed"] + out["dead"] >= 1
@@ -236,7 +237,7 @@ def test_event_matching_and_the_catalogue():
     assert m(["*"], "anything.at.all") and m(["rollout.*"], "rollout.stop") and m(["rollout.stop"], "rollout.stop")
     assert not m(["rollout.*"], "device.forget") and not m(["rollout.stop"], "rollout.create")
     assert not m(["rollout"], "rollout.stop")
-    assert wh.MAX_ATTEMPTS == len(wh.BACKOFF_S) + 1 and all(a < b for a, b in zip(wh.BACKOFF_S, wh.BACKOFF_S[1:]))
+    assert wh.MAX_ATTEMPTS == len(wh.BACKOFF_S) + 1 and all(a < b for a, b in itertools.pairwise(wh.BACKOFF_S))
     for name in ("device.enrolled", "install.failed", "device.fallback", "advisory.found", "webhook.ping"):
         assert name in wh.EVENTS
 

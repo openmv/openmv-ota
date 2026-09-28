@@ -7,6 +7,7 @@ off ``request.app.state`` and gate on a scope via ``require_scope``.
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
@@ -59,6 +60,8 @@ from .schemas import (
     ViewerGrant,
 )
 from .scopes import ACCOUNT_ROOT, ALL_SCOPES, SCOPES, expand
+
+log = logging.getLogger(__name__)
 
 admin = APIRouter(prefix="/api/v1/admin")
 
@@ -394,7 +397,8 @@ def delete_account(account_id: str, request: Request, body: TokenActor | None = 
             storage.delete(key)
             removed += 1
         except Exception:                          # noqa: BLE001 - counted, never fatal
-            pass
+            # the rows are gone, so this key is the only trace of the orphan: name it
+            log.exception("account %s deleted; artifact %s was not", account_id, key)
     return {"account_id": account_id, "deleted": True, "rows": res["rows"],
             "artifacts": len(res["keys"]), "artifacts_removed": removed}
 
@@ -600,7 +604,7 @@ def create_rollout(body: RolloutCreate, request: Request,
         try:
             stages = validate_stages(body.stages)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
     if stages:
         start_percent = stages[0]["percent"]              # a ramp starts at its first stage
     elif body.percent is not None:
@@ -1061,9 +1065,10 @@ def forget_device(device_id: str, request: Request,
         try:
             purged = lake.purge_device(principal.account_id, device_id)
         except DatalakeError as e:
-            raise HTTPException(status_code=502,
-                                detail=f"datalake did not erase the device's data ({e}); "
-                                       "the device was kept -- retry, or pass keep_data=true")
+            raise HTTPException(
+                status_code=502,
+                detail=f"datalake did not erase the device's data ({e}); "
+                       "the device was kept -- retry, or pass keep_data=true") from e
         data["data_deleted"] = purged["deleted"]
         data["data_bytes"] = purged["bytes"]
     ms.forget_device(device_id)
@@ -1660,7 +1665,7 @@ def _checked_url(request: Request, url: str) -> str:
     try:
         return webhooks_mod.check_url(url, allow_private=request.app.state.settings.webhook_allow_private)
     except webhooks_mod.WebhookError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def _own_hook(ms, webhook_id: str, principal: Principal) -> dict:

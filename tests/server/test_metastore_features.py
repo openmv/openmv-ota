@@ -51,6 +51,12 @@ def test_rollout_lifecycle():
     assert s.get_rollout("ro1")["percent"] == 50
     s.update_rollout("ro1", state="paused")
     assert s.active_rollout(BID, "__default__") is None
+    # the keys become SQL column names: anything off the allow-list is refused, not spliced
+    import pytest
+    with pytest.raises(ValueError, match="not an updatable column"):
+        s.update_rollout("ro1", **{"state = 'active' --": 1})
+    with pytest.raises(ValueError, match="account_id"):
+        s.update_webhook("wh1", account_id="someone-else")
     assert [r["rollout_id"] for r in s.list_rollouts(BID)] == ["ro1"]
     assert [r["rollout_id"] for r in s.list_rollouts()] == ["ro1"]
 

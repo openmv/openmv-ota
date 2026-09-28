@@ -164,7 +164,8 @@ def _assert_is_our_server(url, ca):
             % (url, url.rsplit(":", 1)[1]))
 
 
-def start(python, port=8443, token="bench-admin-token-1", log=print, offer_downgrades=False):
+def start(python, port=8443, token="bench-admin-token-1", log=print,  # noqa: S107 - per-run bench
+          offer_downgrades=False):
     """Bring up the per-run server + registrar. Returns a handle for ``stop()``; also carries
     ``url`` / ``ca`` / ``store`` / ``token`` for the harness to point CFG at."""
     # Free the port first: a lingering server (a prior crashed run, or the old shared one) would
@@ -186,7 +187,7 @@ def start(python, port=8443, token="bench-admin-token-1", log=print, offer_downg
         OPENMV_OTA_STORAGE_BACKEND="local",
         OPENMV_OTA_STORAGE_LOCATION=store,
         OPENMV_OTA_SWD_IDS_VERIFY_URL="http://127.0.0.1:%d/verify" % REGISTRAR_PORT,
-        OPENMV_OTA_SWD_IDS_VERIFY_TOKEN="benchtoken",
+        OPENMV_OTA_SWD_IDS_VERIFY_TOKEN="benchtoken",  # noqa: S106 - the bench's stub registrar
         OPENMV_OTA_ADMIN_BOOTSTRAP_TOKEN=token,
         OPENMV_OTA_POLL_AFTER_S="5",
         # OFF unless the scenario needs it. It relaxes the server's anti-rollback OFFER gate, which

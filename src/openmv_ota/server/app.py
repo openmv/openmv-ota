@@ -18,6 +18,7 @@ hints under ``from __future__ import annotations``; per-request collaborators co
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import re
@@ -58,7 +59,7 @@ def _paced(settings) -> int:
     jitter = settings.poll_jitter
     if jitter <= 0:
         return base
-    return max(1, round(base * random.uniform(1.0 - jitter, 1.0 + jitter)))
+    return max(1, round(base * random.uniform(1.0 - jitter, 1.0 + jitter)))  # noqa: S311 - jitter
 
 
 router = APIRouter()
@@ -715,7 +716,7 @@ def check(checkin: CheckIn, request: Request):
     if not st.ratelimit.allow(ip):
         # Come back in minutes, not a full poll, and at a random point: a crowd that hit the
         # limit together (a site powering on) spreads itself out instead of returning in step.
-        retry = random.randint(*_THROTTLED_RETRY_S)
+        retry = random.randint(*_THROTTLED_RETRY_S)          # noqa: S311 - jitter, not a secret
         return JSONResponse({"update": False, "poll_after_s": retry}, status_code=429,
                             headers={"Retry-After": str(retry)})
 
@@ -963,7 +964,7 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
                 try:
                     app.state.webhooks.run_once()
                 except Exception:                  # noqa: BLE001 - the worker never dies
-                    pass
+                    logging.getLogger(__name__).exception("webhook delivery pass failed")
                 time.sleep(settings.webhook_interval_s)
         threading.Thread(target=_deliver_forever, name="webhooks", daemon=True).start()
 

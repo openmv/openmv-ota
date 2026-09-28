@@ -491,7 +491,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             entries = [("image", parse_trailer(trailer_bytes))]
         elif found:
             entries = [(lbl, t) for lbl, (_off, t) in
-                       zip(partition.slot_labels(len(found)), found)]
+                       zip(partition.slot_labels(len(found)), found, strict=True)]
         else:
             entries = [("image", parse_trailer(data))]   # a bare trailer.bin, else raises
     except OtaError as e:

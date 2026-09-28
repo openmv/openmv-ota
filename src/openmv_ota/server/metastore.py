@@ -605,7 +605,7 @@ class SqlMetadataStore:
         pinned to (a pooled one outside a session was already rolled back by the pool)."""
         try:
             (getattr(self._tls, "conn", None) or self._conn).rollback()
-        except Exception:                      # pragma: no cover - driver without rollback
+        except Exception:  # noqa: S110  # pragma: no cover - driver without rollback
             pass
 
     # Postgres SQLSTATEs for "the thing you are creating already exists": duplicate
@@ -887,8 +887,22 @@ class SqlMetadataStore:
             "SELECT COUNT(*) AS n FROM devices WHERE account_id = ? AND product_id = ? "
             "AND cohort = ?", (account_id, product_id, cohort))["n"]
 
+    _ROLLOUT_UPDATABLE = frozenset((
+        "percent", "failure_threshold", "state", "pause_reason", "stage_index",
+        "stage_entered_at", "stage_attempted_base", "stage_failures_base"))
+    _WEBHOOK_UPDATABLE = frozenset(("url", "events", "active", "description", "secret"))
+
+    @staticmethod
+    def _updatable(fields, allowed) -> None:
+        """The keys below become column names in the SQL text, so they must never come from a
+        request: every caller passes literals today, and this keeps a future one honest."""
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError("not an updatable column: %s" % ", ".join(sorted(bad)))
+
     def update_rollout(self, rollout_id: str, **fields) -> None:
-        fields = {**fields, "updated_at": _now_iso()}       # column names are code-controlled
+        self._updatable(fields, self._ROLLOUT_UPDATABLE)
+        fields = {**fields, "updated_at": _now_iso()}
         assigns = ", ".join(k + " = ?" for k in fields)
         self.execute("UPDATE rollouts SET " + assigns + " WHERE rollout_id = ?",
                      (*fields.values(), rollout_id))
@@ -1452,7 +1466,7 @@ class SqlMetadataStore:
                      account_id))
                 new.append(dict(f, release_id=release_id))
         cleared = 0
-        for key, row in current.items():
+        for key in current:
             if key not in seen:
                 self.execute(
                     "UPDATE advisories SET cleared_at = ? WHERE release_id = ? "
@@ -1974,6 +1988,7 @@ class SqlMetadataStore:
     def update_webhook(self, webhook_id: str, **fields) -> None:
         """url / events / active / description / secret; enabling clears the failure count
         and the disabled reason, so a repaired endpoint starts clean."""
+        self._updatable(fields, self._WEBHOOK_UPDATABLE)
         sets, params = [], []
         for k, v in fields.items():
             if k == "events":

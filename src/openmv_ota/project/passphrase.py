@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .errors import ProjectError
 
-DEV_PASSPHRASE_NAME = ".dev-passphrase"
+DEV_PASSPHRASE_NAME = ".dev-passphrase"  # noqa: S105 - a file name, not a secret
 ENV_VAR = "OPENMV_OTA_KEY_PASSPHRASE"
 
 

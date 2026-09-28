@@ -670,7 +670,8 @@ def _compose_slot(body: bytes, pad: int, status_sector: bytes,
     (the two control sectors are the last two blocks)."""
     trailer_block = trailer_bytes + b"\xff" * (block - len(trailer_bytes))
     slot = body + b"\xff" * pad + status_sector + trailer_block
-    assert len(slot) == slot_size, (len(slot), slot_size)
+    if len(slot) != slot_size:       # an explicit check: `assert` vanishes under python -O
+        raise ValueError("composed slot is %d bytes, not %d" % (len(slot), slot_size))
     return slot
 
 

@@ -319,7 +319,7 @@ def sh(cmd, timeout=180, check=True, quiet=False):
     except subprocess.TimeoutExpired as e:
         out = (e.stdout or "") + (e.stderr or "") if isinstance(e.stdout, str) else ""
         if check:
-            raise RuntimeError("command timed out (%ds): %s" % (timeout, cmd))
+            raise RuntimeError("command timed out (%ds): %s" % (timeout, cmd)) from e
         return 124, out
     out = (p.stdout or "") + (p.stderr or "")
     if check and p.returncode != 0:
@@ -2250,7 +2250,7 @@ def coproc_he_boot_check(board, nonce):
     The partition readback inside _partition_apply proves the write; this proves the consumer: the
     helper core starts, mounts partition 1 as its /rom, and reads back this run's nonce and the
     stress blob's size. Returns (ok, why)."""
-    for attempt in range(3):
+    for _attempt in range(3):
         rc, out = device_exec(_HE_PROBE % BOARDS[board]["coproc_boot"], timeout=60, check=False)
         m = re.search(r"HEROM (\S+) (\d+)", out or "")
         if m is not None:

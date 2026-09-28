@@ -72,8 +72,9 @@ def install_sdk(version: str, dest: Path, *, base_url: str = SDK_BASE_URL,
 
 
 def _open(url: str):
-    return urllib.request.urlopen(
-        urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}))
+    # S310: the URL is SDK_BASE_URL (https) plus a fixed file name, never user input
+    return urllib.request.urlopen(  # noqa: S310
+        urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}))  # noqa: S310
 
 
 def _download(url: str, dest: Path) -> None:
@@ -121,6 +122,6 @@ def _extract_strip1(archive: Path, dest: Path) -> None:
 
     try:
         with tarfile.open(archive, "r:xz") as tf:
-            tf.extractall(dest, filter=strip1)
+            tf.extractall(dest, filter=strip1)  # noqa: S202 - strip1 ends in tarfile.data_filter
     except (OSError, tarfile.TarError) as e:
         raise ProjectError("OpenMV SDK extraction failed: %s" % e, exit_code=1) from None

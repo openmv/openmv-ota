@@ -38,7 +38,7 @@ def _parse_size(text: str) -> int:
     try:
         return int(s, base) * mult
     except ValueError:
-        raise argparse.ArgumentTypeError("invalid size %r" % text)
+        raise argparse.ArgumentTypeError("invalid size %r" % text) from None
 
 
 def _parse_align(value: str) -> dict[str, object]:
@@ -52,7 +52,7 @@ def _parse_align(value: str) -> dict[str, object]:
             try:
                 alignment = int(num, 0)
             except ValueError:
-                raise argparse.ArgumentTypeError("bad alignment in --align %r" % value)
+                raise argparse.ArgumentTypeError("bad alignment in --align %r" % value) from None
             if alignment < 1 or (alignment & (alignment - 1)):
                 raise argparse.ArgumentTypeError(
                     "--align %r: alignment must be a power of two" % value

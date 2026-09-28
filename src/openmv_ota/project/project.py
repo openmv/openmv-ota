@@ -999,9 +999,10 @@ def _fetch_ca_bundle(url: str = CA_BUNDLE_URL) -> bytes:
     import urllib.error
     import urllib.request
 
-    req = urllib.request.Request(url, headers={"User-Agent": "openmv-ota"})
+    # S310: the URL is the CA_BUNDLE_URL https constant (tests pass their own stub)
+    req = urllib.request.Request(url, headers={"User-Agent": "openmv-ota"})  # noqa: S310
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
             data = resp.read()
     except (urllib.error.URLError, OSError) as e:
         raise ProjectError(

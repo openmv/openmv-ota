@@ -114,7 +114,7 @@ def routes():
 def _served(path: str, routes) -> bool:
     segs = path.split("/")
     for r in routes:
-        if len(r) == len(segs) and all(a == b or a.startswith("{") for a, b in zip(r, segs)):
+        if len(r) == len(segs) and all(a == b or a.startswith("{") for a, b in zip(r, segs, strict=True)):
             return True
     return False
 

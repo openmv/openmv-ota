@@ -38,3 +38,4 @@ Thumbs.db
 .coverage.*
 # scratch databases from ad-hoc server probes
 *.db
+.claude/

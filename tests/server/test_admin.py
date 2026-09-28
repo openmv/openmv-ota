@@ -189,7 +189,7 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     back to natural order, never an error), ?limit/?offset page, and `total` counts
     the FILTERED set. Devices also take ?q (name-or-id substring) and ?cohort_not."""
     app, store = _app(tmp_path)
-    for i, (rid, pv) in enumerate((("r1", 0x01000000), ("r2", 0x03000000), ("r3", 0x02000000))):
+    for rid, pv in (("r1", 0x01000000), ("r2", 0x03000000), ("r3", 0x02000000)):
         _seed_release(store, rid, pv=pv)
     for d, cohort in (("d1", "beta"), ("d2", "__default__"), ("d3", "beta")):
         store.upsert_device(device_id=d, product_id=BID, cohort=cohort)
@@ -1354,6 +1354,9 @@ def test_account_delete_api_is_root_only_and_final(tmp_path, monkeypatch):
                     headers={"Authorization": "Bearer partner"}).status_code == 403
     assert c.delete("/api/v1/admin/accounts/acctA", headers=AUTH).status_code == 409     # active
     assert c.post("/api/v1/admin/accounts/acctA/deactivate", headers=AUTH).status_code == 200
+    from openmv_ota.server import admin as admin_mod
+    logged = []
+    monkeypatch.setattr(admin_mod.log, "exception", lambda msg, *a: logged.append(msg % a))
     real = LocalArtifactStorage.delete
     monkeypatch.setattr(LocalArtifactStorage, "delete",
                         lambda self, key: (_ for _ in ()).throw(OSError("no")) if key.endswith("manifest.bin") else real(self, key))
@@ -1363,6 +1366,8 @@ def test_account_delete_api_is_root_only_and_final(tmp_path, monkeypatch):
     body = r.json()
     assert body["deleted"] and body["rows"]["releases"] == 1 and body["rows"]["accounts"] == 1
     assert body["artifacts"] == 2 and body["artifacts_removed"] == 1
+    # the orphan is named in the log -- with the rows gone, nothing else records it
+    assert any("manifests/relA/manifest.bin" in m for m in logged)
     assert store.get_account("acctA") is None and store.get_release("relA") is None
     assert not blobs.exists("artifacts/relA/x.img.gz") and blobs.exists("manifests/relA/manifest.bin")
     gone = next(e for e in store.read_audit() if e["action"] == "account.delete")

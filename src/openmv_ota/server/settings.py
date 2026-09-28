@@ -25,7 +25,7 @@ class ServerSettings(BaseSettings):
                                       populate_by_name=True)
 
     base_url: str = ""                     # public https origin, for building capability URLs
-    host: str = "0.0.0.0"
+    host: str = "0.0.0.0"  # noqa: S104 - the container's listen address; the platform fronts it
     port: int = Field(default=8080, validation_alias=AliasChoices("OPENMV_OTA_PORT", "PORT"))
 
     storage_backend: str = "local"         # "local" (disk, dev) | "s3" (R2/S3, prod)

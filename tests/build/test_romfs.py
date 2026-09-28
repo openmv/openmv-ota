@@ -1538,3 +1538,12 @@ def test_a_stock_firmware_keeps_the_decoders_so_a_plain_project_is_not_scanned(m
     root, repo, app = make_project(boards=("OPENMV4",), app_files={
         "main.py": "for c in img.find_barcodes():\n    pass\n"})
     assert build_mod.build_romfs(root, app=app, firmware=repo, boards=["OPENMV4"], compile_py=False)
+
+
+def test_compose_slot_refuses_a_slot_of_the_wrong_size():
+    """The size check is explicit, not an assert: `python -O` would strip an assert and
+    let a misaligned slot through to the image."""
+    ok = build_mod._compose_slot(b"b", 2, b"s" * 4, b"t", 4, 11)
+    assert len(ok) == 11
+    with pytest.raises(ValueError, match="12 bytes, not 11"):
+        build_mod._compose_slot(b"b", 3, b"s" * 4, b"t", 4, 11)

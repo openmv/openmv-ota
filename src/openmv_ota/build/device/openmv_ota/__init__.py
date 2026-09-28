@@ -1265,7 +1265,7 @@ def install(url, ca=None):  # pragma: no cover
     # runs synchronously in run()'s task, so the app's async feed loop can't cover it.
     with _wdt_relax():
         try:
-            exec(_read_file(here + "/data/installer.py", "r"), ns)
+            exec(_read_file(here + "/data/installer.py", "r"), ns)  # noqa: S102 - signed ROMFS
             run = ns["run"]
             log.debug("install: staged installer")   # milestone + HIL path witness
         except MemoryError:  # hil-residual: small-heap fallback; measured on the bench (F427 = 39,120B free TOTAL), unreachable on the A/B fleet's boards

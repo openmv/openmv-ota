@@ -52,7 +52,7 @@ def plan(op: str, raw: dict, dfu_util: str, files: dict, serial: str | None = No
     usb, fw, ro = raw["usb"], raw["firmware"], raw["romfs"]
     writes = []                                       # (alt, addr, path, label)
     if op == "factory":                               # full provision: wifi, firmware, romfs
-        for entry, path in zip(raw["wifi"], files["wifi"]):
+        for entry, path in zip(raw["wifi"], files["wifi"], strict=True):
             writes.append((entry["alt"], entry["addr"], path, "wifi %s" % path.name))
         writes.append((fw["alt"], fw["addr"], files["firmware"], "firmware"))
         writes.append((ro["alt"], ro["addr"], files["romfs"], "romfs"))

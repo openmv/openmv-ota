@@ -126,7 +126,8 @@ def validate_stages(stages):
             soak = float(s.get("min_soak", 0))
             att = int(s.get("min_attempted", 0))
         except (KeyError, TypeError, ValueError):
-            raise ValueError("stage %d needs a numeric percent (min_soak/min_attempted optional)" % i)
+            raise ValueError("stage %d needs a numeric percent (min_soak/min_attempted optional)"
+                             % i) from None
         if not 0 <= pct <= 100:
             raise ValueError("stage %d percent must be 0..100" % i)
         if pct < last_pct:

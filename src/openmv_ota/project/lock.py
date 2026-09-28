@@ -106,7 +106,7 @@ def _diff(old, new, path: str, changes: list[str]) -> None:
         if len(old) != len(new):
             changes.append("%s: %d entries -> %d entries" % (path, len(old), len(new)))
         else:
-            for i, (o, n) in enumerate(zip(old, new)):
+            for i, (o, n) in enumerate(zip(old, new, strict=True)):
                 _diff(o, n, "%s[%d]" % (path, i), changes)
     elif old != new:
         changes.append("%s: %r -> %r" % (path, old, new))
