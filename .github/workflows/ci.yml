@@ -92,6 +92,42 @@ jobs:
         run: pytest -o addopts="" -q tests/server/test_metastore_postgres.py
 
   # ---------------------------------------------------------------------------
+  # 1c) The GCP KMS signer against the REAL Cloud KMS service. Keyless: GitHub's OIDC token is
+  #     traded for short-lived Google credentials (workload identity federation, restricted to this
+  #     repository), and the service account can only sign with one throwaway test key -- so no
+  #     secret is stored anywhere. Configured by three repo VARIABLES (identifiers, not secrets);
+  #     unset -> the job does not run. Fork PRs get no OIDC token, so they skip too.
+  # ---------------------------------------------------------------------------
+  gcp-kms:
+    name: signer on real GCP KMS
+    if: >-
+      vars.GCP_WIF_PROVIDER != '' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      OPENMV_OTA_GCP_KEY_VERSION: ${{ vars.GCP_KMS_KEY_VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (gcp-kms extra)
+        run: pip install -e ".[dev,gcp-kms]"
+      - name: Live signing pass (must RUN, not skip)
+        run: |
+          test -n "$OPENMV_OTA_GCP_KEY_VERSION" || { echo "GCP_KMS_KEY_VERSION is not set"; exit 1; }
+          pytest -o addopts="" -q -rs tests/ota/test_signer_gcp_live.py | tee out.txt
+          grep -q "1 passed" out.txt
+
+  # ---------------------------------------------------------------------------
   # 1a) Was this push already tested as a PR? A squash merge of PR head H onto base B is the
   #     same tree as the refs/pull/N/merge the PR's CI built -- IF B is still main's tip. So on a
   #     push, find the merged PR, take the last SUCCESSFUL pull_request run of its head, and
