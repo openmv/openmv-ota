@@ -33,63 +33,12 @@ regression on the pull request, run on live hardware ([below](#the-hil-gate)).
   and races between pooled connections, which the SQLite suite cannot see.
   Locally: `OPENMV_OTA_PG_DSN=<dsn> pytest -o addopts="" tests/server/test_metastore_postgres.py`
   (`pip install pgserver` gives a throwaway server with no install).
-- **`gcp-kms`** — the GCP KMS signer against the real Cloud KMS service
-  ([below](#the-gcp-kms-live-job)).
+- **`gcp-kms`** — the GCP KMS signer against the real Cloud KMS service, keyless
+  (GitHub OIDC → workload identity federation). Needs the repository **secrets**
+  `GCP_WIF_PROVIDER`, `GCP_CI_SERVICE_ACCOUNT` and `GCP_KMS_KEY_VERSION`; without
+  them (and on fork PRs) it reports "not configured" and passes.
 - **`premerged`** — on a push, whether the commit merges a PR whose CI already
   built this exact tree; if so `build` and `qemu` skip (the host tests always run).
-
-## The GCP KMS live job
-
-Signs through a real Cloud KMS key and checks the result with the device-side
-verify ([`tests/ota/test_signer_gcp_live.py`](../tests/ota/test_signer_gcp_live.py)).
-**No secret is stored in GitHub.** The job trades GitHub's OIDC token for
-short-lived Google credentials (workload identity federation), so it needs
-`id-token: write` and three **repository variables** (Settings → Secrets and
-variables → Actions → **Variables**, not Secrets — they are identifiers):
-
-| Variable | Value | What it is |
-|---|---|---|
-| `GCP_WIF_PROVIDER` | `<workload-identity-provider>` | the identity provider GitHub authenticates to |
-| `GCP_CI_SERVICE_ACCOUNT` | `<ci-service-account>` | who the job acts as |
-| `GCP_KMS_KEY_VERSION` | `<kms-key-version>` | the throwaway key it signs with |
-
-The job does not run until `GCP_WIF_PROVIDER` is set, never runs for fork PRs
-(GitHub issues them no OIDC token), and fails if the test skips instead of
-passing.
-
-What those point at, in GCP project `<project>` — all created for this job
-and nothing else:
-
-- **Key ring `<key-ring>`** (location `global`): the test key
-  `<key>` (EC P-256, software, ~$0.06/month). Never a production
-  key.
-- **Service account `<ci-service-account>`**: holds only `roles/cloudkms.signerVerifier`
-  on that one key — it can sign with it and nothing else.
-- **Workload identity pool `github`, provider `openmv-ota`**: issuer
-  `https://token.actions.githubusercontent.com`, attribute condition
-  `assertion.repository == 'openmv/openmv-ota'`, so no other repository can use
-  it; `roles/iam.workloadIdentityUser` on the service account is granted to
-  `principalSet://…/workloadIdentityPools/github/attribute.repository/openmv/openmv-ota`.
-
-To recreate it from scratch (as a project owner, with `gcloud` logged in):
-
-```bash
-P=<project>; N=<project-number>; SA=<ci-service-account>@$P.iam.gserviceaccount.com
-gcloud services enable cloudkms.googleapis.com iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com --project $P
-gcloud kms keyrings create <key-ring> --location global --project $P
-# the key itself: `openmv-ota project keys backend provision --backend gcp-kms
-#   --set key_ring=projects/$P/locations/global/keyRings/<key-ring>` on a throwaway project
-gcloud iam service-accounts create <ci-service-account> --project $P
-gcloud kms keys add-iam-policy-binding <key> --keyring <key-ring> \
-  --location global --project $P --member serviceAccount:$SA --role roles/cloudkms.signerVerifier
-gcloud iam workload-identity-pools create github --project $P --location global
-gcloud iam workload-identity-pools providers create-oidc openmv-ota --project $P --location global \
-  --workload-identity-pool github --issuer-uri https://token.actions.githubusercontent.com \
-  --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository" \
-  --attribute-condition "assertion.repository == 'openmv/openmv-ota'"
-gcloud iam service-accounts add-iam-policy-binding $SA --project $P --role roles/iam.workloadIdentityUser \
-  --member "principalSet://iam.googleapis.com/projects/$N/locations/global/workloadIdentityPools/github/attribute.repository/openmv/openmv-ota"
-```
 
 ## Running the board driver locally
 

@@ -4,8 +4,8 @@ Opt-in (like the SoftHSM test): set ``OPENMV_OTA_GCP_KEY_VERSION`` to an EC P-25
 version (``projects/*/locations/*/keyRings/*/cryptoKeys/*/cryptoKeyVersions/*``) and have
 credentials the Google client library can find (``gcloud auth application-default login``).
 Uses an existing key, so re-running creates nothing and bills nothing new. First passed
-2026-09-27 against <key-ring>, alongside a full
-`project keys backend provision` + `build romfs` whose image `verify_image` accepted.
+2026-09-27, alongside a full `project keys backend provision` + `build romfs` whose image
+`verify_image` accepted.
 """
 import os
 from types import SimpleNamespace

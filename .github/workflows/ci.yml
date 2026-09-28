@@ -95,35 +95,50 @@ jobs:
   # 1c) The GCP KMS signer against the REAL Cloud KMS service. Keyless: GitHub's OIDC token is
   #     traded for short-lived Google credentials (workload identity federation, restricted to this
   #     repository), and the service account can only sign with one throwaway test key -- so no
-  #     secret is stored anywhere. Configured by three repo VARIABLES (identifiers, not secrets);
-  #     unset -> the job does not run. Fork PRs get no OIDC token, so they skip too.
+  #     secret is stored anywhere; the identifiers it needs are repository SECRETS (unset -> the job
+  #     reports "not configured" and passes). Fork PRs get no OIDC token, so they skip too.
   # ---------------------------------------------------------------------------
   gcp-kms:
     name: signer on real GCP KMS
+    # Fork PRs get neither secrets nor an OIDC token.
     if: >-
-      vars.GCP_WIF_PROVIDER != '' &&
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     env:
-      OPENMV_OTA_GCP_KEY_VERSION: ${{ vars.GCP_KMS_KEY_VERSION }}
+      # Secrets cannot gate a job's `if:`, so the job reads them here and gates its steps.
+      GCP_WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}
+      OPENMV_OTA_GCP_KEY_VERSION: ${{ secrets.GCP_KMS_KEY_VERSION }}
     steps:
+      - name: Configured?
+        id: cfg
+        run: |
+          if [ -n "$GCP_WIF_PROVIDER" ] && [ -n "$OPENMV_OTA_GCP_KEY_VERSION" ]; then
+            echo "on=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::GCP KMS live job not configured (repository secrets unset) -- skipped"
+            echo "on=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.cfg.outputs.on == 'true'
       - uses: google-github-actions/auth@v2
+        if: steps.cfg.outputs.on == 'true'
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
       - uses: actions/setup-python@v5
+        if: steps.cfg.outputs.on == 'true'
         with:
           python-version: "3.12"
       - name: Install (gcp-kms extra)
+        if: steps.cfg.outputs.on == 'true'
         run: pip install -e ".[dev,gcp-kms]"
       - name: Live signing pass (must RUN, not skip)
+        if: steps.cfg.outputs.on == 'true'
         run: |
-          test -n "$OPENMV_OTA_GCP_KEY_VERSION" || { echo "GCP_KMS_KEY_VERSION is not set"; exit 1; }
           pytest -o addopts="" -q -rs tests/ota/test_signer_gcp_live.py | tee out.txt
           grep -q "1 passed" out.txt
 
