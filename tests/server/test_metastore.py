@@ -208,7 +208,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         M._MIGRATIONS = full
 
     store = M.SqliteMetadataStore(db)
-    assert store.migrate() == 31                           # the deploy applies 21 onward
+    assert store.migrate() == 32                           # the deploy applies 21 onward
     assert sorted(d["device_id"] for d in store.list_devices()) == [
         "OPENMV_N6:3c0021000c51", "noboard"]               # board-less rows are left alone
     assert store.device_account("OPENMV_N6:3c0021000c51")["account_id"] == "acct"
@@ -216,7 +216,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         "OPENMV_N6:3c0021000c51"
     store.add_token("h", "t", ["observe"], account_id="acct", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert M.SqliteMetadataStore(db).migrate() == 31        # idempotent
+    assert M.SqliteMetadataStore(db).migrate() == 32        # idempotent
 
 
 def test_parameterless_sql_is_executed_without_a_parameter_sequence():
@@ -469,10 +469,10 @@ def test_migrations_survive_postgres_transaction_semantics(tmp_path):
         M._MIGRATIONS = full
 
     store = _PostgresManners(db)
-    assert store.migrate() == 31             # walks past the orphaned column
+    assert store.migrate() == 32             # walks past the orphaned column
     store.add_token("h", "t", ["observe"], account_id="a", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert _PostgresManners(db).migrate() == 31        # and is idempotent
+    assert _PostgresManners(db).migrate() == 32        # and is idempotent
 
 
 def test_two_first_checkins_of_one_new_device_do_not_collide(tmp_path):
@@ -507,3 +507,75 @@ def test_two_first_checkins_of_one_new_device_do_not_collide(tmp_path):
     assert dev["streams"] == "console"                 # COALESCE kept the last real value
     assert dev["body_sha256"] == "ab" * 32
     assert dev["first_seen"] <= dev["last_seen"]
+
+
+# --- the connection pool seam (real Postgres coverage: tests/server/test_metastore_postgres.py) ---
+class _FakePool:
+    """psycopg_pool's shape over real sqlite connections to one file: every borrow is a
+    separate connection, as on Postgres."""
+
+    def __init__(self, path):
+        import contextlib
+        import sqlite3
+
+        self.path, self.borrows, self.closed = path, 0, False
+
+        @contextlib.contextmanager
+        def connection():
+            self.borrows += 1
+            c = sqlite3.connect(self.path, check_same_thread=False)
+            c.row_factory = sqlite3.Row
+            try:
+                yield c
+                c.commit()
+            finally:
+                c.close()
+        self.connection = connection
+
+    def close(self):
+        self.closed = True
+
+
+def test_a_pooled_store_borrows_per_call_but_pins_migrate_and_nested_sessions(tmp_path):
+    from openmv_ota.server.metastore import _MIGRATIONS, SqlMetadataStore
+
+    pool = _FakePool(str(tmp_path / "p.db"))
+    store = SqlMetadataStore(pool=pool)
+    assert store.migrate() == len(_MIGRATIONS)
+    assert pool.borrows == 1, "migrate must run on ONE connection (session settings)"
+    store.set_meta("k", "v")
+    assert store.get_meta("k") == "v" and pool.borrows == 3        # one borrow per call
+    with store._session() as outer:
+        with store._session() as inner:                            # re-entrant: same conn
+            assert inner is outer
+        store.execute("SELECT 1")                                  # reuses the pinned one
+    assert pool.borrows == 4
+    store.close()
+    assert pool.closed
+
+
+def test_only_a_pooled_postgres_store_takes_the_audit_advisory_lock():
+    class _Cur:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, sql, params=None):
+            self.sql.append((sql, params))
+
+    pooled = PostgresMetadataStore("postgresql://x", pool=_FakePool(":memory:"))
+    cur = _Cur()
+    pooled._serialize_audit(cur)
+    assert cur.sql == [("SELECT pg_advisory_xact_lock(%s)", (pooled._AUDIT_LOCK,))]
+    single = PostgresMetadataStore("postgresql://x", connect=lambda: _mem()._conn)
+    cur = _Cur()
+    single._serialize_audit(cur)             # one locked connection already serializes it
+    assert cur.sql == []
+
+
+def test_postgres_missing_pool_hint(monkeypatch):
+    import types
+
+    monkeypatch.setitem(sys.modules, "psycopg", types.ModuleType("psycopg"))
+    monkeypatch.setitem(sys.modules, "psycopg_pool", None)
+    with pytest.raises(ServerError, match="psycopg_pool"):
+        PostgresMetadataStore("postgresql://x")

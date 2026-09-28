@@ -1,4 +1,4 @@
-"""A tiny per-IP fixed-window rate limiter (in-memory, per worker).
+"""Per-IP fixed-window rate limiters: in-memory (per process) and shared (in the metadata store).
 
 Keyed by **IP** (bounded by real clients) -- never by the attacker-controlled ``device_id``, which
 would itself be an unbounded-growth vector. Approximate under multiple workers (each has its own
@@ -79,3 +79,41 @@ class RateLimiter:
             # counted even when the address itself is over: the /64 total is what rotation spends
             ok = (self._count("net:" + prefix, t) <= self._prefix_max) and ok
         return ok
+
+
+class SharedRateLimiter:
+    """The same limits as :class:`RateLimiter`, counted in the metadata store so every server
+    instance shares them -- with N instances the in-memory one allows N times the rate.
+
+    Same keys (the address; the IPv6 /64 as a whole), one atomic upsert per key per request. The
+    /64 is counted FIRST and a request over it stops there, so rotating through a prefix cannot
+    mint address rows once the prefix is spent. Windows are aligned minutes; each process sweeps
+    rows older than the previous window once a minute, which keeps the table to two windows.
+
+    FAIL-OPEN, with a floor: if the store errors, the request is judged by an in-process
+    :class:`RateLimiter` instead -- a database hiccup must not turn a fleet away, and must not
+    leave it unlimited either."""
+
+    def __init__(self, store, per_minute: int, *, per_prefix_per_minute: int = 0,
+                 now=time.time):
+        self._store = store
+        self._max = per_minute
+        self._prefix_max = per_prefix_per_minute
+        self._now = now
+        self._swept = None
+        self._fallback = RateLimiter(per_minute, per_prefix_per_minute=per_prefix_per_minute)
+
+    def allow(self, ip: str) -> bool:
+        if self._max <= 0:
+            return True                                  # disabled
+        window = int(self._now()) // 60 * 60
+        try:
+            if self._swept != window:
+                self._swept = window
+                self._store.rate_sweep(window - 60)
+            prefix = ipv6_prefix(ip) if self._prefix_max > 0 else None
+            if prefix is not None and self._store.rate_hit("net:" + prefix, window) > self._prefix_max:
+                return False
+            return self._store.rate_hit(ip, window) <= self._max
+        except Exception:                                # noqa: BLE001 - see "FAIL-OPEN" above
+            return self._fallback.allow(ip)

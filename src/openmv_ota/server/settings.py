@@ -61,7 +61,15 @@ class ServerSettings(BaseSettings):
     # default; when on, create_app() logs a loud warning and `server check` flags it. Never set
     # it on a production deployment.
     test_offer_downgrades: bool = False
+    # Postgres connections per server process. Each request borrows one instead of queueing on a
+    # single locked connection; size it under the database plan's connection limit divided by the
+    # number of server instances.
+    db_pool_size: int = 10
     checkin_rate_per_min: int = 60         # per-IP device check-in rate limit (0 = disabled)
+    # Where the check-in limiter counts: "memory" (this process only), "shared" (the metadata
+    # store, so every server instance enforces ONE limit), or "auto" -- shared on Postgres,
+    # memory on SQLite (a single-process store).
+    checkin_rate_backend: str = "auto"
     # ...and a ceiling on one IPv6 /64 as a whole (0 = no /64 tier): a /64 is 2**64 addresses,
     # so without it the per-IP limit is one address rotation from meaningless. Higher than the
     # per-IP limit because every device at an IPv6 site shares the /64 (see ratelimit.py).

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from openmv_ota.server.ratelimit import RateLimiter, ipv6_prefix
 
 
@@ -83,3 +85,68 @@ def test_each_ipv6_device_keeps_its_own_per_address_budget():
 def test_prefix_tier_off_by_default():
     rl = RateLimiter(1_000)
     assert all(rl.allow("2001:db8::%x" % i) for i in range(2_000))
+
+
+# --- the shared (metadata-store) limiter ----------------------------------------------------
+def _store():
+    from openmv_ota.server.metastore import SqliteMetadataStore
+
+    s = SqliteMetadataStore(":memory:")
+    s.migrate()
+    return s
+
+
+def test_two_instances_sharing_a_store_enforce_one_limit():
+    """The whole point: N server instances used to allow N times the rate."""
+    from openmv_ota.server.ratelimit import SharedRateLimiter
+
+    store, clock = _store(), [1000.0]
+    a = SharedRateLimiter(store, 5, now=lambda: clock[0])
+    b = SharedRateLimiter(store, 5, now=lambda: clock[0])
+    got = [(a if i % 2 else b).allow("10.0.0.1") for i in range(8)]
+    assert got == [True] * 5 + [False] * 3
+    assert a.allow("10.0.0.2")                               # a different address is its own
+    clock[0] += 60                                           # next window: counts start over
+    assert b.allow("10.0.0.1")
+    left = store.query_one("SELECT COUNT(*) AS n FROM rate_hits WHERE window_start < ?",
+                           (int(clock[0]) // 60 * 60 - 60,))["n"]
+    assert left == 0                                         # swept to two windows
+
+
+def test_the_ipv6_prefix_is_counted_first_and_stops_there():
+    from openmv_ota.server.ratelimit import SharedRateLimiter
+
+    store = _store()
+    lim = SharedRateLimiter(store, 100, per_prefix_per_minute=3, now=lambda: 600.0)
+    got = [lim.allow("2001:db8:1:2::%x" % i) for i in range(6)]    # rotating through one /64
+    assert got == [True] * 3 + [False] * 3
+    rows = store.query_one("SELECT COUNT(*) AS n FROM rate_hits WHERE key NOT LIKE 'net:%'")["n"]
+    assert rows == 3, "an over-budget prefix must not mint address rows"
+
+
+def test_disabled_and_fail_open_to_an_in_process_floor():
+    from openmv_ota.server.ratelimit import SharedRateLimiter
+
+    assert SharedRateLimiter(object(), 0).allow("x")         # 0 = disabled, store untouched
+
+    class _Down:
+        def rate_sweep(self, before):
+            raise OSError("database is down")
+
+    lim = SharedRateLimiter(_Down(), 2, now=lambda: 60.0)
+    assert [lim.allow("10.0.0.9") for _ in range(3)] == [True, True, False]
+
+
+def test_the_backend_setting_picks_the_limiter():
+    from openmv_ota.server.app import _rate_limiter
+    from openmv_ota.server.metastore import PostgresMetadataStore
+    from openmv_ota.server.ratelimit import RateLimiter, SharedRateLimiter
+    from openmv_ota.server.settings import ServerSettings
+
+    lite = _store()
+    pg = PostgresMetadataStore("postgresql://x", connect=lambda: _store()._conn)
+    for backend, store, kind in (("auto", lite, RateLimiter), ("auto", pg, SharedRateLimiter),
+                                 ("memory", pg, RateLimiter), ("shared", lite, SharedRateLimiter)):
+        assert type(_rate_limiter(ServerSettings(checkin_rate_backend=backend), store)) is kind
+    with pytest.raises(ValueError, match="checkin_rate_backend"):
+        _rate_limiter(ServerSettings(checkin_rate_backend="redis"), lite)

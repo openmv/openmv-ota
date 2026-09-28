@@ -63,6 +63,35 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
+  # 1b) The metadata store against a REAL Postgres (production's backend), with the real
+  #     connection pool. The main suite runs on SQLite, which cannot see SQL only one dialect
+  #     accepts (INSERT OR REPLACE failed every new advisory on the production store) or races
+  #     between pooled connections. Service containers are Linux-only, hence its own job.
+  # ---------------------------------------------------------------------------
+  postgres:
+    name: metastore on Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ota
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      OPENMV_OTA_PG_DSN: postgresql://postgres:ota@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (server + postgres extras)
+        run: pip install -e ".[dev,server,server-postgres]"
+      - name: Real-Postgres store tests (pool, dialect, concurrency)
+        run: pytest -o addopts="" -q tests/server/test_metastore_postgres.py
+
+  # ---------------------------------------------------------------------------
   # 1a) Was this push already tested as a PR? A squash merge of PR head H onto base B is the
   #     same tree as the refs/pull/N/merge the PR's CI built -- IF B is still main's tip. So on a
   #     push, find the merged PR, take the last SUCCESSFUL pull_request run of its head, and

@@ -10,9 +10,7 @@ file's own history has the longer design notes behind each line.
   verified `firmware.bin` out of a **confirmed** slot into the firmware area at
   a fixed offset (no romfs parser in the bootloader), never downgrade; a power
   loss mid-copy retries, not bricks.
-- **Scaling past ~100K devices** — metastore connection pool, NAT-aware rate
-  limiting (per-IP × per-worker today). (`poll_after_s` jitter for post-outage
-  herds is done — `poll_jitter`.)
 - **Signer backends: one live pass each** — AWS/GCP/Azure KMS + provisioning
-  are unit-covered via fakes (SoftHSM has an opt-in real test); each needs one
-  end-to-end run against the real service.
+  are unit-covered via fakes (SoftHSM has an opt-in real test). GCP is next (a
+  live pass against a real key ring); AWS and Azure need accounts first, and
+  until then ship documented as verified against fakes only.

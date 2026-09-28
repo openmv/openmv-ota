@@ -19,6 +19,7 @@ import secrets
 import sys
 import time
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from .errors import ServerError
@@ -459,6 +460,13 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE rollouts ADD COLUMN stage_attempted_base INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE rollouts ADD COLUMN stage_failures_base INTEGER NOT NULL DEFAULT 0",
     ],
+    [   # v32 -- shared rate-limit counters. The check-in limiter kept its fixed-window counts in
+        # each server process, so N instances allowed N times the configured rate. One row per
+        # (key, minute), bumped by a single atomic upsert; swept to the last two windows.
+        "CREATE TABLE IF NOT EXISTS rate_hits ("
+        "key TEXT NOT NULL, window_start BIGINT NOT NULL, hits INTEGER NOT NULL, "
+        "PRIMARY KEY (key, window_start))",
+    ],
 ]
 
 
@@ -468,9 +476,43 @@ class SqlMetadataStore:
 
     paramstyle = "?"
 
-    def __init__(self, connection):
+    def __init__(self, connection=None, pool=None):
         self._conn = connection
+        self._pool = pool
         self._lock = threading.Lock()
+        self._tls = threading.local()
+
+    @contextmanager
+    def _session(self):
+        """The connection this thread's statements run on.
+
+        With a POOL (Postgres in production) each session borrows its own connection, so
+        requests no longer queue behind one another; the pool commits on a clean exit and
+        rolls back on an exception. Without one (SQLite, or a test's injected connection) it is
+        the single connection under the store lock -- SQLite serializes writers anyway.
+
+        RE-ENTRANT per thread: a session opened while this thread already holds one reuses that
+        connection. That is what lets a multi-statement operation (and `migrate`, whose session
+        settings must stay on ONE connection) call the ordinary helpers, and it is why nothing
+        here can deadlock on the non-reentrant lock by nesting."""
+        held = getattr(self._tls, "conn", None)
+        if held is not None:
+            yield held
+            return
+        if self._pool is not None:
+            with self._pool.connection() as conn:
+                self._tls.conn = conn
+                try:
+                    yield conn
+                finally:
+                    self._tls.conn = None
+        else:
+            with self._lock:
+                self._tls.conn = self._conn
+                try:
+                    yield self._conn
+                finally:
+                    self._tls.conn = None
 
     def _sql(self, sql: str) -> str:
         return sql if self.paramstyle == "?" else sql.replace("?", "%s")
@@ -489,26 +531,26 @@ class SqlMetadataStore:
         return cur
 
     def execute(self, sql: str, params: tuple = ()):
-        with self._lock:
-            cur = self._conn.cursor()
+        with self._session() as conn:
+            cur = conn.cursor()
             self._run(cur, sql, params)
-            self._conn.commit()
+            conn.commit()
             return cur
 
     def query_one(self, sql: str, params: tuple = ()):
-        with self._lock:
-            cur = self._conn.cursor()
+        with self._session() as conn:
+            cur = conn.cursor()
             self._run(cur, sql, params)
             row = cur.fetchone()
-            self._conn.commit()          # a read ends its transaction: no lock outlives it
+            conn.commit()                # a read ends its transaction: no lock outlives it
             return row
 
     def query_all(self, sql: str, params: tuple = ()) -> list:
-        with self._lock:
-            cur = self._conn.cursor()
+        with self._session() as conn:
+            cur = conn.cursor()
             self._run(cur, sql, params)
             rows = list(cur.fetchall())
-            self._conn.commit()          # (a DBAPI connection opens one on the first statement)
+            conn.commit()                # (a DBAPI connection opens one on the first statement)
             return rows
 
     _LOCK_RETRIES = 10
@@ -559,9 +601,10 @@ class SqlMetadataStore:
                 time.sleep(self._LOCK_BACKOFF_S)
 
     def _rollback(self) -> None:
-        """Make the connection usable again after a failed statement."""
+        """Make the connection usable again after a failed statement -- the one this thread is
+        pinned to (a pooled one outside a session was already rolled back by the pool)."""
         try:
-            self._conn.rollback()
+            (getattr(self._tls, "conn", None) or self._conn).rollback()
         except Exception:                      # pragma: no cover - driver without rollback
             pass
 
@@ -596,7 +639,15 @@ class SqlMetadataStore:
 
     def migrate(self) -> int:
         """Create the ``meta`` table and apply any migrations past the recorded ``schema_version``.
-        Returns the resulting schema version. Idempotent."""
+        Returns the resulting schema version. Idempotent.
+
+        Runs on ONE connection (a single session, which every helper call inside reuses): the
+        Postgres lock hygiene is session state -- ``SET lock_timeout`` -- and on a pool the next
+        statement could otherwise land on a connection that never had it set."""
+        with self._session():
+            return self._migrate()
+
+    def _migrate(self) -> int:
         self.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         current = int(self.get_meta("schema_version") or 0)
         pending = [(v, s) for v, s in enumerate(_MIGRATIONS, start=1) if v > current]
@@ -778,10 +829,11 @@ class SqlMetadataStore:
         into being on a device row is also on the books. __default__ is never declared."""
         if cohort == "__default__" or account_id is None:
             return
-        if not self.query_one("SELECT 1 AS x FROM cohorts WHERE account_id = ? AND cohort = ?",
-                              (account_id, cohort)):
-            self.execute("INSERT INTO cohorts (account_id, cohort, created_at) VALUES (?, ?, ?)",
-                         (account_id, cohort, _now_iso()))
+        # ONE statement: a SELECT-then-INSERT raced a concurrent declaration of the same label
+        # into a duplicate-key 500 once requests stopped queueing on one connection.
+        self.execute("INSERT INTO cohorts (account_id, cohort, created_at) VALUES (?, ?, ?) "
+                     "ON CONFLICT (account_id, cohort) DO NOTHING",
+                     (account_id, cohort, _now_iso()))
 
     def rename_cohort(self, old: str, new: str, account_id: str = "") -> dict:
         """Relabel a cohort everywhere it is referenced -- device rows, rollouts, pins --
@@ -790,8 +842,8 @@ class SqlMetadataStore:
         device_id, never the name). Returns the per-table counts. Validation (refusing
         __default__ and an in-use target) is the caller's."""
         counts = {}
-        with self._lock:
-            cur = self._conn.cursor()
+        with self._session() as conn:
+            cur = conn.cursor()
             for key, table in (("devices", "devices"), ("rollouts", "rollouts"),
                                ("pins", "cohort_pins")):
                 cur.execute(self._sql(
@@ -803,7 +855,7 @@ class SqlMetadataStore:
                         (account_id, old))
             cur.execute(self._sql("INSERT INTO cohorts (account_id, cohort, created_at) "
                                   "VALUES (?, ?, ?)"), (account_id, new, _now_iso()))
-            self._conn.commit()
+            conn.commit()
         return counts
 
     def cohort_has_active_rollout(self, cohort: str, account_id: str = "") -> bool:
@@ -816,8 +868,8 @@ class SqlMetadataStore:
         commit. Rollout rows keep the name -- they are history. Validation (refusing
         __default__ and a cohort an active rollout still targets) is the caller's."""
         counts = {}
-        with self._lock:
-            cur = self._conn.cursor()
+        with self._session() as conn:
+            cur = conn.cursor()
             cur.execute(self._sql("UPDATE devices SET cohort = '__default__' "
                                   "WHERE account_id = ? AND cohort = ?"), (account_id, cohort))
             counts["devices"] = cur.rowcount
@@ -826,7 +878,7 @@ class SqlMetadataStore:
             counts["pins"] = cur.rowcount
             cur.execute(self._sql("DELETE FROM cohorts WHERE account_id = ? AND cohort = ?"),
                         (account_id, cohort))
-            self._conn.commit()
+            conn.commit()
         return counts
 
     def cohort_device_count(self, product_id: int, cohort: str, account_id: str = "") -> int:
@@ -1384,10 +1436,17 @@ class SqlMetadataStore:
                     (now, f.get("severity", "unknown"), f.get("summary", ""),
                      release_id, f["vuln_id"], f["component"]))
             else:
+                # ON CONFLICT, not INSERT OR REPLACE: the latter is SQLite-only syntax, so on the
+                # Postgres production store every NEW finding failed the scan outright.
                 self.execute(
-                    "INSERT OR REPLACE INTO advisories (release_id, vuln_id, component, "
+                    "INSERT INTO advisories (release_id, vuln_id, component, "
                     "version, severity, summary, first_seen, last_seen, cleared_at, "
-                    "account_id) VALUES (?,?,?,?,?,?,?,?,NULL,?)",
+                    "account_id) VALUES (?,?,?,?,?,?,?,?,NULL,?) "
+                    "ON CONFLICT (release_id, vuln_id, component) DO UPDATE SET "
+                    "version = excluded.version, severity = excluded.severity, "
+                    "summary = excluded.summary, first_seen = excluded.first_seen, "
+                    "last_seen = excluded.last_seen, cleared_at = NULL, "
+                    "account_id = excluded.account_id",
                     (release_id, f["vuln_id"], f["component"], f.get("version", ""),
                      f.get("severity", "unknown"), f.get("summary", ""), now, now,
                      account_id))
@@ -1555,6 +1614,22 @@ class SqlMetadataStore:
                      "VALUES (?,?,?,?,?)",
                      (account_id, name, _now_iso(), created_by, client_ref))
 
+    # --- shared rate-limit counters (see ratelimit.SharedRateLimiter) -------------------------
+
+    def rate_hit(self, key: str, window_start: int) -> int:
+        """Count one hit for ``key`` in the minute starting at ``window_start``; return the total.
+        One statement, so concurrent server instances can never under-count each other."""
+        row = self.query_one(
+            "INSERT INTO rate_hits (key, window_start, hits) VALUES (?, ?, 1) "
+            "ON CONFLICT (key, window_start) DO UPDATE SET hits = rate_hits.hits + 1 "
+            "RETURNING hits", (key, int(window_start)))
+        return int(row["hits"])
+
+    def rate_sweep(self, before: int) -> int:
+        """Drop counters for windows that started before ``before``. Returns how many."""
+        return max(0, self.execute("DELETE FROM rate_hits WHERE window_start < ?",
+                                   (int(before),)).rowcount)
+
     def next_publish_seq(self, account_id: str) -> int | None:
         """Allocate the account's next publish counter -- increment and return. None when
         there is no such account (a self-host's implicit ``''`` has no row to count in).
@@ -1562,13 +1637,12 @@ class SqlMetadataStore:
         Gaps are fine and expected: a build that fails after taking a number simply burns
         it. What must never happen is two builds taking the SAME number, which is why the
         increment is a single statement rather than a read followed by a write."""
-        if not self.execute(
-                "UPDATE accounts SET publish_seq = publish_seq + 1 WHERE account_id = ?",
-                (account_id,)).rowcount:
-            return None
-        row = self.query_one("SELECT publish_seq FROM accounts WHERE account_id = ?",
-                             (account_id,))
-        return int(row["publish_seq"])
+        # RETURNING, not an UPDATE then a SELECT: two builds interleaving between those
+        # statements would both read the second number -- the duplicate this must never make.
+        row = self.query_one(
+            "UPDATE accounts SET publish_seq = publish_seq + 1 WHERE account_id = ? "
+            "RETURNING publish_seq", (account_id,))
+        return None if row is None else int(row["publish_seq"])
 
     def newest_publish_seq(self, product_id: int, account_id: str = "") -> int:
         """The highest publish counter already published for this product (0 if none)."""
@@ -1632,12 +1706,12 @@ class SqlMetadataStore:
             ("accounts", "DELETE FROM accounts WHERE account_id = ?"),
         )
         rows: dict[str, int] = {}
-        with self._lock:
-            cur = self._conn.cursor()
+        with self._session() as conn:
+            cur = conn.cursor()
             for table, sql in stmts:
                 self._run(cur, sql, (account_id,))
                 rows[table] = max(0, cur.rowcount)
-            self._conn.commit()
+            conn.commit()
         keys = list(dict.fromkeys(keys))
         self.append_audit(actor=actor, action="account.delete", entity_type="account",
                           entity_id=account_id,
@@ -1818,8 +1892,9 @@ class SqlMetadataStore:
         ts = _now_iso()
         payload = json.dumps(data or {}, separators=(",", ":"), sort_keys=True)
         pid = None if product_id is None else int(product_id)
-        with self._lock:
-            cur = self._conn.cursor()
+        with self._session() as conn:
+            cur = conn.cursor()
+            self._serialize_audit(cur)
             self._run(cur, "SELECT seq, entry_hash FROM audit ORDER BY seq DESC LIMIT 1", ())
             last = cur.fetchone()
             seq = (last["seq"] + 1) if last else 1
@@ -1830,10 +1905,15 @@ class SqlMetadataStore:
                       "prev_hash, entry_hash, account_id, product_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                       (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry,
                        account_id, pid))
-            self._conn.commit()
+            conn.commit()
         if account_id:
             self._fan_out(seq, action, account_id, ts)
         return seq
+
+    def _serialize_audit(self, cur) -> None:
+        """Make the read-last-entry + insert-next pair of `append_audit` a critical section.
+        Without a pool the session already holds the store lock; a pooled store overrides this
+        (the lock no longer spans connections)."""
 
     # --- webhooks: the audit log's push side ------------------------------------------------
 
@@ -1928,9 +2008,11 @@ class SqlMetadataStore:
         out = []
         for r in rows:
             r = _d(r)
-            self.execute("UPDATE webhook_deliveries SET claimed_until = ? WHERE delivery_id = ? "
-                         "AND claimed_until <= ?", (now + lease_s, r["delivery_id"], now))
-            out.append(r)
+            won = self.execute(
+                "UPDATE webhook_deliveries SET claimed_until = ? WHERE delivery_id = ? "
+                "AND claimed_until <= ?", (now + lease_s, r["delivery_id"], now)).rowcount
+            if won == 1:                 # another worker claimed it between our read and here
+                out.append(r)
         return out
 
     def finish_delivery(self, delivery_id: str, *, status: str, attempt: int, code, error: str,
@@ -2083,7 +2165,10 @@ class SqlMetadataStore:
         return True
 
     def close(self) -> None:
-        self._conn.close()
+        if self._pool is not None:
+            self._pool.close()
+        else:
+            self._conn.close()
 
 
 class SqliteMetadataStore(SqlMetadataStore):
@@ -2106,8 +2191,26 @@ class PostgresMetadataStore(SqlMetadataStore):
         return (stmt[len(self._POSTGRES_ONLY):]
                 if stmt.startswith(self._POSTGRES_ONLY) else stmt)
 
-    def __init__(self, dsn: str, connect=None):
-        super().__init__((connect or self._default_connect(dsn))())
+    def __init__(self, dsn: str, connect=None, pool=None, pool_size: int = 10):
+        # A POOL in production: every request borrows its own connection instead of queueing on
+        # one behind a lock (the ceiling this store used to put on the whole server). An injected
+        # ``connect`` (tests) or ``pool`` keeps that seam.
+        if connect is not None:
+            super().__init__(connect())
+        else:
+            super().__init__(pool=pool if pool is not None
+                             else self._default_pool(dsn, pool_size))
+
+    # Any fixed 64-bit number, as long as nothing else in this database takes it.
+    _AUDIT_LOCK = 0x6F74615F61756469          # "ota_audi"
+
+    def _serialize_audit(self, cur) -> None:
+        """The audit chain's read-last + insert-next across POOLED connections: a transaction-
+        scoped advisory lock, released by the commit that follows the insert. Two appenders
+        would otherwise both read the same last row, insert the same seq (UNIQUE -> a 500) and
+        fork the hash chain -- the race the process lock used to close by itself."""
+        if self._pool is not None:
+            self._run(cur, "SELECT pg_advisory_xact_lock(?)", (self._AUDIT_LOCK,))
 
     # A schema change takes an exclusive table lock. A connection that read the table
     # and never ended its transaction ("idle in transaction" -- what this store's reads
@@ -2134,14 +2237,19 @@ class PostgresMetadataStore(SqlMetadataStore):
         self.execute("RESET lock_timeout")
 
     @staticmethod
-    def _default_connect(dsn: str):
+    def _default_pool(dsn: str, size: int):
         try:
-            import psycopg
+            import psycopg  # noqa: F401
+            from psycopg_pool import ConnectionPool
         except ImportError:
-            raise ServerError("the postgres backend needs psycopg -- "
+            raise ServerError("the postgres backend needs psycopg + psycopg_pool -- "
                               "pip install openmv-ota[server-postgres]", exit_code=2) from None
         from psycopg.rows import dict_row                          # pragma: no cover
-        return lambda: psycopg.connect(dsn, row_factory=dict_row)  # pragma: no cover
+        # check= validates a connection on checkout, so a database restart costs one retry
+        # instead of a burst of 500s on dead sockets.
+        return ConnectionPool(dsn, min_size=1, max_size=max(1, int(size)),  # pragma: no cover
+                              kwargs={"row_factory": dict_row},
+                              check=ConnectionPool.check_connection, open=True)
 
 
 def _sqlite_path(url: str) -> str:
@@ -2156,5 +2264,5 @@ def build_metastore(settings) -> SqlMetadataStore:
     if url.startswith("sqlite:"):
         return SqliteMetadataStore(_sqlite_path(url))
     if url.startswith(("postgres://", "postgresql://")):
-        return PostgresMetadataStore(url)
+        return PostgresMetadataStore(url, pool_size=getattr(settings, "db_pool_size", 10))
     raise ServerError("unsupported database_url: %r" % url, exit_code=2)

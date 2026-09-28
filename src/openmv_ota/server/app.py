@@ -39,7 +39,7 @@ from . import live as live_mod
 from .auth import TokenAuth
 from .errors import ServerError
 from .metastore import build_metastore
-from .ratelimit import RateLimiter
+from .ratelimit import RateLimiter, SharedRateLimiter
 from .schemas import CheckAnswer, Health, Ok
 from .rollout import (fallback_payload_version, offers_update, ramp_action,
                       running_body_sha256, settled, should_autopause)
@@ -903,6 +903,22 @@ def _ranged(data: bytes, media_type: str, header: str | None) -> Response:
                              "Content-Range": "bytes %d-%d/%d" % (start, end, len(data))})
 
 
+def _rate_limiter(settings, metastore):
+    """The check-in limiter ``checkin_rate_backend`` asks for ("auto": shared on Postgres)."""
+    from .metastore import PostgresMetadataStore
+
+    backend = settings.checkin_rate_backend
+    if backend not in ("auto", "memory", "shared"):
+        raise ValueError("checkin_rate_backend must be auto, memory or shared (got %r)" % backend)
+    shared = backend == "shared" or (
+        backend == "auto" and isinstance(metastore, PostgresMetadataStore))
+    if shared:
+        return SharedRateLimiter(metastore, settings.checkin_rate_per_min,
+                                 per_prefix_per_minute=settings.checkin_rate_per_prefix_per_min)
+    return RateLimiter(settings.checkin_rate_per_min,
+                       per_prefix_per_minute=settings.checkin_rate_per_prefix_per_min)
+
+
 def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_auth=None,
                osv=None, datalake=None, webhooks=None):
     """Build the ASGI app. Collaborators default to the settings-driven backends; the website
@@ -932,8 +948,7 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.verifier = verifier
     app.state.admin_auth = admin_auth if admin_auth is not None else TokenAuth(metastore)
     app.state.secret = secret
-    app.state.ratelimit = RateLimiter(settings.checkin_rate_per_min,
-                                      per_prefix_per_minute=settings.checkin_rate_per_prefix_per_min)
+    app.state.ratelimit = _rate_limiter(settings, metastore)
     from .advisor import OsvClient
     app.state.osv = osv if osv is not None else OsvClient()
     from .datalake import DatalakeAdmin
