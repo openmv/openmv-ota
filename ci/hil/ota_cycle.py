@@ -2256,9 +2256,13 @@ def coproc_he_boot_check(board, nonce):
         if m is not None:
             break
         # A port race ("failed to access /dev/ttyACM0 (it may be in use)") right after the scored
-        # window is not the helper core failing -- measured on the PR #91 gate. Wait for the CDC to
-        # answer again, then ask once more; only a board that stays silent fails the check.
-        _await_cdc(board, budget=60)
+        # window is not the helper core failing -- measured on the PR #91 gate. Waiting alone was not
+        # enough on the #92 gate: after the golden DFU flash the AE3's USB stayed enumerated as its
+        # DFU device (the documented Alif re-enumeration flakiness) while the app ran fine on the
+        # UART, so there was no CDC to wait for. _ensure_cdc brings the port back (J-Link reset if
+        # it must -- harmless here: sync() already applied, and the partition persists), then ask
+        # once more; only a board that stays silent fails the check.
+        _ensure_cdc(board)
     if m is None:
         return False, "the helper core never answered (rc=%s): %s" % (rc, (out or "").strip()[-300:])
     if m.group(1) != nonce or int(m.group(2)) != COPROC_BLOB_BYTES:

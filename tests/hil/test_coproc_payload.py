@@ -82,7 +82,7 @@ def test_he_boot_check_fails_on_a_truncated_blob(monkeypatch):
 def test_he_boot_check_fails_when_the_helper_core_is_silent(monkeypatch):
     calls, waits = [], []
     monkeypatch.setattr(ota_cycle, "device_exec", lambda *a, **k: (calls.append(1), (1, None))[1])
-    monkeypatch.setattr(ota_cycle, "_await_cdc", lambda board, budget=0: waits.append(board))
+    monkeypatch.setattr(ota_cycle, "_ensure_cdc", lambda board, **k: waits.append(board))
     ok, why = ota_cycle.coproc_he_boot_check("OPENMV_AE3", "n-7")
     assert not ok and "never answered" in why and "rc=1" in why
     assert len(calls) == 3 and len(waits) == 3
@@ -95,7 +95,7 @@ def test_he_boot_check_rides_out_a_port_race(monkeypatch):
                         "program)"),
                     (0, "\u276f HEROM n-7 %d" % ota_cycle.COPROC_BLOB_BYTES)])
     monkeypatch.setattr(ota_cycle, "device_exec", lambda *a, **k: next(answers))
-    monkeypatch.setattr(ota_cycle, "_await_cdc", lambda board, budget=0: True)
+    monkeypatch.setattr(ota_cycle, "_ensure_cdc", lambda board, **k: None)
     ok, why = ota_cycle.coproc_he_boot_check("OPENMV_AE3", "n-7")
     assert ok and "n-7" in why
 
