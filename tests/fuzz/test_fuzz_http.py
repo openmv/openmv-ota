@@ -8,6 +8,8 @@ wire decide how much it allocates."""
 
 from __future__ import annotations
 
+import json
+
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -127,3 +129,16 @@ def test_a_length_is_accepted_only_as_plain_digits(n, fmt):
         assert plain_dec, text
     except ValueError:
         assert not plain_dec, text
+
+
+# --- the live-video relay's /poll reply (openmv_cloud.csi) ---------------------------------------
+
+@given(st.binary(max_size=200) | F.json_values.map(lambda v: json.dumps(v).encode()))
+def test_poll_reply_is_parsed_or_oserror(body):
+    """poll_watch's wake loop catches OSError and nothing else."""
+    from openmv_ota.build.device.openmv_cloud import csi
+    try:
+        watch, viewers = csi.parse_poll_response(body)
+    except OSError:
+        return
+    assert isinstance(watch, bool) and isinstance(viewers, int)
