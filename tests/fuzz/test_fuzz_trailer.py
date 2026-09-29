@@ -130,9 +130,12 @@ def _status():
     return _STATUS
 
 
+_ERASED = b"\xff" * 64       # the erased flash past a body: what a slot read returns there
+
+
 def _evaluate(body, trailer):
     try:
-        t, _consume = B.evaluate_slot(body + b"\xff" * 64, _status(), trailer, 0, 0x1234,
+        t, _consume = B.evaluate_slot(body + _ERASED, _status(), trailer, 0, 0x1234,
                                       {F.KEY_ID: F.keypair()[1]}, 5 << 24, F.device_verify)
         return t
     except B.OtaReject:
@@ -154,6 +157,9 @@ def test_boot_rejects_every_edit_to_a_genuine_trailer_unless_inert(bad):
 def test_boot_rejects_every_edit_to_a_genuine_body(bad):
     t = _evaluate(bad, _GOOD)
     if t is not None:
-        # boot.py hashes exactly body_size bytes, so an edit PAST them is not an edit to the image.
-        assert bad[:len(_BODY)] == _BODY
-        assert hashlib.sha256(bad[:t.body_size]).digest() == t.body_sha256
+        # boot.py hashes exactly body_size bytes OF THE SLOT, so what counts is the slot as read:
+        # an edit past body_size is not an edit to the image, and neither is deleting a trailing
+        # 0xFF byte (the fuzzer's find) -- erased flash reads back the very same byte.
+        slot = bad + _ERASED
+        assert slot[:len(_BODY)] == _BODY
+        assert hashlib.sha256(slot[:t.body_size]).digest() == t.body_sha256
