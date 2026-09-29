@@ -286,7 +286,11 @@ def cmd_unpack(args: argparse.Namespace) -> int:
         print("error: %s is not empty (use --force)" % dest, file=sys.stderr)
         return 1
     os.makedirs(dest, exist_ok=True)
-    count = reader.extract(dest)
+    try:
+        count = reader.extract(dest)
+    except RomfsError as e:                          # a name that would land outside dest
+        print("error: %s" % e, file=sys.stderr)
+        return 1
     print("Extracted %d file%s to %s" % (count, "" if count == 1 else "s", dest))
     return 0
 

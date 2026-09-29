@@ -157,8 +157,12 @@ def parse_manifest(data: bytes) -> Manifest:
     signature = data[HEADER_SIZE + body_size : body_end]
     try:
         body = json.loads(body_bytes)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+    except (ValueError, RecursionError) as e:   # JSONDecodeError/UnicodeDecodeError; deep nesting
         raise OtaError("manifest body is not valid JSON: %s" % e) from None
+    if not isinstance(body, dict):
+        # The server derives a release from ``body[...]`` and the device vets ``body.get(...)``:
+        # a bare list or number is a malformed manifest, never a 500 or an AttributeError.
+        raise OtaError("manifest body is not a JSON object")
 
     return Manifest(body=body, key_id=key_id, sig_alg=sig_alg,
                     signature=bytes(signature), header_version=header_version)

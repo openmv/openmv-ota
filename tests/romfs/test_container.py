@@ -269,3 +269,61 @@ def test_reader_unknown_data_kind_yields_empty():
     reader = c.VfsRomReader(_wrap_root(root))
     files = {p: e for p, e in reader.walk() if not e.is_dir}
     assert files["weird.dat"].data == b""
+
+
+
+# --- hostile images (found by tests/fuzz/test_fuzz_romfs.py) --------------------------------
+
+@pytest.mark.parametrize("name", ["..", "../../escape.txt", "a/../../b", ".", ""])
+def test_extract_refuses_an_entry_name_that_leaves_dest(tmp_path, name):
+    """Entry names come straight out of the image. One called ``../../escape.txt`` was written
+    two levels ABOVE the extraction directory -- the zip-slip of this format."""
+    w = c.VfsRomWriter()
+    w.mkfile("ok.txt", b"fine")
+    w.mkfile(name, b"x")
+    r = c.VfsRomReader(w.finalize())
+    dest = tmp_path / "a" / "b" / "out"
+    dest.mkdir(parents=True)
+    with pytest.raises(c.RomfsError, match="unsafe entry name"):
+        r.extract(str(dest))
+    assert not (tmp_path / "escape.txt").exists() and not (tmp_path / "a" / "b").joinpath(
+        "escape.txt").exists()
+    assert list(dest.iterdir()) == []                  # checked before anything was written
+
+
+def test_extract_refuses_a_directory_named_dotdot(tmp_path):
+    w = c.VfsRomWriter()
+    w.opendir("..")
+    w.mkfile("x", b"x")
+    w.closedir()
+    with pytest.raises(c.RomfsError, match="unsafe entry name"):
+        c.VfsRomReader(w.finalize()).extract(str(tmp_path / "out"))
+    assert not (tmp_path / "x").exists()
+
+
+def test_reader_refuses_directories_nested_past_the_limit():
+    """The reader recurses once per directory level: ~1000 nested empty directories (a few KB)
+    raised RecursionError, which no caller catches -- romfs inspect/verify crashed."""
+    w = c.VfsRomWriter()
+    for _ in range(1200):
+        w.opendir("d")
+    for _ in range(1200):
+        w.closedir()
+    with pytest.raises(c.RomfsError, match="nested deeper than 64"):
+        c.VfsRomReader(w.finalize())
+    ok = c.VfsRomWriter()                                # ...while 64 levels still read
+    for _ in range(64):
+        ok.opendir("d")
+    for _ in range(64):
+        ok.closedir()
+    c.VfsRomReader(ok.finalize())
+
+
+def test_reader_refuses_an_integer_past_64_bits():
+    """A run of 0xFF continuation bytes is one endless integer: a bigint grown 7 bits per
+    byte, quadratic over the image. Refused once it passes 64 bits."""
+    img = c.ROMFS_HEADER_MAGIC + b"\xff" * 50_000 + b"\x01"
+    with pytest.raises(c.RomfsError, match="over 64 bits"):
+        c.VfsRomReader(img)
+    # the writer's alignment padding (a run of 0x80 = leading zero bits) is not affected
+    assert c.VfsRomReader(c.ROMFS_HEADER_MAGIC + b"\x80" * 5000 + b"\x00").entries == []

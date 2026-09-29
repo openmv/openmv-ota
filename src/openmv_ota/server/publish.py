@@ -8,10 +8,10 @@ and never holds a key -- so it can refuse an inconsistent set, but it can't manu
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 import sys
+import zlib
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 
@@ -27,11 +27,79 @@ from .schemas import Published
 publish = APIRouter(prefix="/api/v1/admin")
 
 
-def _gunzip(data: bytes) -> bytes | None:
+# Decompressed bytes are pulled through zlib this many at a time, so no single call can inflate
+# more than this into memory however hostile the stream.
+_INFLATE_STEP = 1 << 20
+_I64_MAX = (1 << 63) - 1      # the catalogue stores these in signed 64-bit columns
+
+
+def _inflate(data: bytes, limit: int, sink) -> int | None:
+    """Stream-decompress ONE gzip member, handing each piece to ``sink``. Returns the
+    decompressed length -- or ``limit + 1`` the moment it passes ``limit``, without inflating
+    any further -- or ``None`` if ``data`` is not exactly one well-formed gzip member.
+
+    Streamed and capped because the upload cap bounds the COMPRESSED bytes only: a few MB of
+    gzip inflates to many GB, and ``gzip.decompress`` would have held all of it. This is the
+    same rule as :func:`_read_capped`, applied one layer down. Trailing bytes after the member
+    are refused too: the device's inflater stops at the end of the first member, so anything
+    after it would be verified here and never installed there."""
+    d = zlib.decompressobj(wbits=31)
+    total = 0
+    pending = data
     try:
-        return gzip.decompress(data)
-    except (OSError, EOFError):
+        while not d.eof:
+            piece = d.decompress(pending, _INFLATE_STEP)
+            pending = d.unconsumed_tail
+            if not piece and not pending:
+                break                                   # input exhausted short of the end
+            total += len(piece)
+            if total > limit:
+                return limit + 1
+            sink(piece)
+    except zlib.error:
         return None
+    if not d.eof or d.unused_data:
+        return None
+    return total
+
+
+def _refuse(detail: str):
+    raise HTTPException(status_code=400, detail=detail)
+
+
+def _check_body(body, max_size: int) -> None:
+    """Refuse a manifest body this endpoint cannot safely act on (400, nothing stored).
+
+    The server never verifies the signature -- the device does -- so until then the body is
+    whatever the uploader wrote: every field below is read by this handler, stored, or turned
+    into a storage key, and a wrong shape was a 500 (or worse, a key outside the release).
+    This is not a schema for the device; it is the minimum the SERVER needs to be true.
+    (That the body is an object at all, parse_manifest already guarantees.)"""
+    for name, required in (("product_id", True), ("payload_version", True), ("size", True),
+                           ("publish_seq", False), ("min_platform_version", False)):
+        v = body.get(name, None if required else 0)
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= _I64_MAX:
+            _refuse("manifest %s must be an integer in 0..2**63-1" % name)
+    if body["size"] > max_size:
+        _refuse("manifest size %d is over the %d byte image limit" % (body["size"], max_size))
+    if not isinstance(body.get("sha256"), str):
+        _refuse("manifest sha256 must be a string")
+    for name in ("product", "version", "account_id"):
+        if name in body and not isinstance(body[name], str):
+            _refuse("manifest %s must be a string" % name)
+    reps = body.get("representations")
+    if not isinstance(reps, list) or not all(isinstance(r, dict) for r in reps):
+        _refuse("manifest representations must be a list of objects")
+    for r in reps:
+        url = r.get("url")
+        if not isinstance(r.get("format"), str) or not isinstance(url, str):
+            _refuse("every representation needs a string format and url")
+        # The url's last segment becomes a storage key under this release. A '..' anywhere
+        # (or a name that is not a name) would put an upload under ANOTHER release's key --
+        # overwriting its artifacts on the filesystem backend.
+        segments = url.split("/")
+        if segments[-1] in ("", ".", "..") or ".." in segments or "\\" in url:
+            _refuse("representation url %r is not a plain artifact name" % url)
 
 
 def _rep(reps, fmt):
@@ -53,13 +121,14 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
     if full is None:
         raise HTTPException(status_code=400, detail="manifest has no 'full' representation")
     if not _verify_encrypted(full, image_bytes, "image"):
-        raw = _gunzip(image_bytes)
-        if raw is None:
+        digest = hashlib.sha256()
+        n = _inflate(image_bytes, body["size"], digest.update)
+        if n is None:
             raise HTTPException(status_code=400, detail="image is not gzip")
-        if hashlib.sha256(raw).hexdigest() != body["sha256"]:
+        if n <= body["size"] and digest.hexdigest() != body["sha256"]:
             raise HTTPException(status_code=400,
                                 detail="image sha256 does not match the manifest")
-        if len(raw) != body["size"]:
+        if n != body["size"]:
             raise HTTPException(status_code=400, detail="image size does not match the manifest")
     declared = {rep["url"].rsplit("/", 1)[-1] for rep in reps if rep["format"] == DELTA_FORMAT}
     missing = sorted(declared - set(deltas))
@@ -76,9 +145,23 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
     for filename in sorted(declared):
         if _verify_encrypted(by_name[filename], deltas[filename], filename):
             continue
-        patch = _gunzip(deltas[filename])
-        if patch is None:
+        # Only the header is read, but the whole stream is inflated (and discarded) so a
+        # corrupt member is refused here rather than on a device. Capped: a patch is at most
+        # ~1.5x its target (every op copies >= 32 bytes for <= 15 bytes of framing), so twice
+        # the image plus slack admits every real one and bounds the work for any other.
+        head = bytearray()
+
+        def keep_head(piece, head=head):
+            if len(head) < 64:
+                head.extend(piece[:64 - len(head)])
+        cap = 2 * body["size"] + 65536
+        n = _inflate(deltas[filename], cap, keep_head)
+        if n is None:
             raise HTTPException(status_code=400, detail="%s is not gzip" % filename)
+        if n > cap:
+            raise HTTPException(status_code=400,
+                                detail="%s inflates past %d bytes" % (filename, cap))
+        patch = bytes(head)
         try:
             if delta_codec.target_size(patch) != body["size"]:
                 raise HTTPException(status_code=400,
@@ -175,6 +258,7 @@ async def publish_release(request: Request, background: BackgroundTasks,
         body = parsed.body
     except OtaError as e:
         raise HTTPException(status_code=400, detail="bad manifest: %s" % e) from None
+    _check_body(body, settings.max_image_bytes)
     product_id, payload_version = body["product_id"], body["payload_version"]
     # A label only -- it lives beside, not in, the signed manifest, so it stays renamable.
     display_name = _label(display_name)
@@ -239,7 +323,7 @@ async def publish_release(request: Request, background: BackgroundTasks,
     if sbom_bytes is not None:
         try:
             json.loads(sbom_bytes)
-        except ValueError:
+        except (ValueError, RecursionError):              # RecursionError: deep nesting
             raise HTTPException(status_code=400, detail="sbom is not JSON") from None
 
     release_id = new_id("rel")

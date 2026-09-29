@@ -5,6 +5,8 @@ from __future__ import annotations
 import gzip
 import hashlib
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from openmv_ota.ota import delta as delta_codec
@@ -498,3 +500,152 @@ def test_a_reused_publish_counter_is_refused(tmp_path):
     ahead = _body(img, pv=0x03000000)
     ahead["publish_seq"] = 501
     assert _post(app, _manifest(ahead), _gz(img)).status_code == 200
+
+
+def test_publish_a_delta_whose_header_is_one_endless_varint_is_malformed_and_fast(tmp_path):
+    """The server decodes target_size off every uploaded delta. 0xFF bytes after the magic are
+    one "varint" that never ends; uncapped, decoding it was quadratic -- a few MB of it pinned
+    a worker for hours, from a gzip of a few KB. Now it is refused at the 10th byte."""
+    import time
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    # under the inflate cap for a 64-byte image, so it is the VARINT cap that answers
+    bomb = _gz(delta_codec.MAGIC + b"\xff" * 60_000)
+    t0 = time.monotonic()
+    r = _post(app, _manifest(_body(img, with_delta=True)), _gz(img), bomb)
+    assert r.status_code == 400 and "malformed" in r.json()["detail"]
+    assert time.monotonic() - t0 < 10                   # was: effectively unbounded
+    assert store.list_releases() == []
+
+
+
+def _raw_manifest(body_bytes):
+    import binascii
+    import struct
+
+    from openmv_ota.ota.manifest import HEADER_STRUCT, MAGIC
+    head = struct.pack(HEADER_STRUCT, MAGIC, 1, len(body_bytes), 64, 0x0100, ES256)
+    out = head + body_bytes + b"\x00" * 64
+    return out + struct.pack("<I", binascii.crc32(out) & 0xFFFFFFFF)
+
+
+def test_publish_a_manifest_body_that_is_not_an_object_is_400_not_500(tmp_path):
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    for raw in (_raw_manifest(b"[]"), _raw_manifest(b"[" * 50_000 + b"]" * 50_000)):
+        r = _post(app, raw, _gz(img))
+        assert r.status_code == 400 and "bad manifest" in r.json()["detail"]
+    assert store.list_releases() == []
+
+
+
+# --- a hostile manifest body / artifact (found by tests/fuzz/test_fuzz_publish.py) ----------
+
+@pytest.mark.parametrize("change, detail", [
+    ({"product_id": "7"}, "product_id must be an integer"),
+    ({"product_id": True}, "product_id must be an integer"),
+    ({"product_id": -1}, "product_id must be an integer"),
+    ({"product_id": 1 << 63}, "product_id must be an integer"),    # past a bigint column
+    ({"payload_version": 1.5}, "payload_version must be an integer"),
+    ({"publish_seq": "9"}, "publish_seq must be an integer"),
+    ({"min_platform_version": None}, "min_platform_version must be an integer"),
+    ({"size": 1 << 40}, "over the"),
+    ({"sha256": 5}, "sha256 must be a string"),
+    ({"product": ["P"]}, "product must be a string"),
+    ({"version": 2}, "version must be a string"),
+    ({"account_id": {}}, "account_id must be a string"),
+    ({"representations": {}}, "representations must be a list of objects"),
+    ({"representations": ["x"]}, "representations must be a list of objects"),
+    ({"representations": [{"format": "full"}]}, "string format and url"),
+    ({"representations": [{"format": 1, "url": "x"}]}, "string format and url"),
+])
+def test_publish_a_malformed_body_is_400_not_500(tmp_path, change, detail):
+    """The server never verifies the signature, so the body is whatever the uploader wrote --
+    and every one of these was a 500 (KeyError/TypeError, or the database refusing a value)."""
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    body = _body(img)
+    body.update(change)
+    r = _post(app, _manifest(body), _gz(img))
+    assert r.status_code == 400 and detail in r.json()["detail"], r.text
+    assert store.list_releases() == []
+
+
+def test_publish_a_body_missing_a_required_field_is_400(tmp_path):
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    for field in ("product_id", "payload_version", "size", "sha256", "representations"):
+        body = _body(img)
+        del body[field]
+        r = _post(app, _manifest(body), _gz(img))
+        assert r.status_code == 400, (field, r.text)
+
+
+@pytest.mark.parametrize("url", ["../rel_victim/x-ota.img.gz", "..", ".", "a/../b.gz",
+                                 "dir/", "a\\b.gz"])
+def test_publish_a_representation_url_that_is_not_a_plain_name_is_refused(tmp_path, url):
+    """The url's last segment is a storage key under the NEW release. With '..' in it the
+    filesystem backend resolved the key into ANOTHER release's directory and overwrote that
+    release's image -- any publish token could clobber any release whose id it knew."""
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    body = _body(img)
+    body["representations"][0]["url"] = url
+    r = _post(app, _manifest(body), _gz(img))
+    assert r.status_code == 400 and "not a plain artifact name" in r.json()["detail"]
+
+
+def test_publish_cannot_overwrite_another_release_through_its_url(tmp_path):
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    victim = _post(app, _manifest(_body(img)), _gz(img)).json()["release_id"]
+    key = store.get_release(victim)["image_key"]
+    evil = b"\x5A" * 64
+    body = _body(evil, pv=0x03000000)
+    body["representations"][0]["url"] = "../%s/x-ota.img.gz" % victim
+    assert _post(app, _manifest(body), _gz(evil)).status_code == 400
+    assert storage.get(key) == _gz(img)                       # untouched
+
+
+def test_publish_an_image_gzip_bomb_is_refused_without_inflating_it(tmp_path):
+    """The upload cap bounds the COMPRESSED bytes; gzip.decompress held the whole inflated
+    image. 64 MiB of zeros is a 64 KiB upload -- the ratio is ~1000:1, so the 512 MiB cap was a
+    ~500 GiB allocation. Streamed now, and it stops one step past the declared size."""
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    bomb = _gz(bytes(64 << 20))
+    r = _post(app, _manifest(_body(img)), bomb)
+    assert r.status_code == 400 and "size does not match" in r.json()["detail"]
+
+
+def test_publish_a_delta_gzip_bomb_is_refused(tmp_path):
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    bomb = _gz(delta_codec.MAGIC + bytes(64 << 20))
+    r = _post(app, _manifest(_body(img, with_delta=True)), _gz(img), bomb)
+    assert r.status_code == 400 and "inflates past" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("mangle", [
+    lambda gz: gz[:10] + b"\xff" * 16 + gz[-8:],     # invalid deflate block -> zlib.error
+    lambda gz: gz[:-4],                                # truncated trailer
+    lambda gz: gz + gz,                                # a second member the device never reads
+    lambda gz: gz + b"junk",                           # trailing garbage
+])
+def test_publish_a_corrupt_gzip_is_400(tmp_path, mangle):
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    r = _post(app, _manifest(_body(img)), mangle(_gz(img)))
+    assert r.status_code == 400 and "not gzip" in r.json()["detail"]
+    patch = delta_codec.make_delta(b"\x00" * 64, img)
+    r = _post(app, _manifest(_body(img, with_delta=True)), _gz(img), mangle(_gz(patch)))
+    assert r.status_code == 400 and "not gzip" in r.json()["detail"]
+
+
+def test_publish_an_sbom_nested_past_the_recursion_limit_is_400(tmp_path):
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    files = _files(_manifest(_body(img)), _gz(img))
+    files["sbom"] = ("sbom.json", b"[" * 50_000 + b"]" * 50_000, "application/json")
+    r = TestClient(app).post("/api/v1/admin/releases", headers=AUTH, files=files)
+    assert r.status_code == 400 and "sbom is not JSON" in r.json()["detail"]

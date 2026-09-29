@@ -195,6 +195,18 @@ def test_parse_poll_response():
     assert rt.parse_poll_response(b'{"watch": false}') == (False, 0)
 
 
+@pytest.mark.parametrize("body", [b"<html>captive portal</html>", b"", b"[]", b"[1]", b"7",
+                                  b'{"viewers": 2}', b'{"watch": true, "viewers": "x"}',
+                                  b'{"watch": true, "viewers": [1]}', b'{"watch": tr',
+                                  b"\xff\xfe", b'{"watch": 1, "viewers": 1e999}'])
+def test_parse_poll_response_malformed_is_oserror(body):
+    """poll_watch documents OSError as its only failure -- the wake loop catches exactly that
+    and sleeps. A relay (or a captive portal answering in its place) sending anything else
+    used to escape as ValueError/KeyError/TypeError/AttributeError and kill the app."""
+    with pytest.raises(OSError, match="malformed"):
+        rt.parse_poll_response(body)
+
+
 # --- module surface --------------------------------------------------------------------
 
 def test_null_log_swallows_everything():

@@ -555,9 +555,16 @@ def _ticks_ms():  # pragma: no cover  (device)
 # --- the wake-cycle check (deep sleep) -----------------------------------------
 
 def parse_poll_response(body):
-    """``(watch, viewers)`` from a relay /poll body -- pure, for host tests."""
-    obj = json.loads(body)
-    return bool(obj["watch"]), int(obj.get("viewers", 0))
+    """``(watch, viewers)`` from a relay /poll body -- pure, for host tests.
+
+    Raises ``OSError`` on a body that is not the relay's answer, which is the one failure
+    :func:`poll_watch` documents: a wake cycle that catches OSError ("sleep, retry next wake")
+    must not be killed by a captive portal's HTML, a truncated body, or ``[]``."""
+    try:
+        obj = json.loads(body)
+        return bool(obj["watch"]), int(obj.get("viewers", 0))
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError, OverflowError):
+        raise OSError("poll: malformed reply")
 
 
 async def poll_watch(stream=_DEFAULT_STREAM, grant=None):  # pragma: no cover  (device)

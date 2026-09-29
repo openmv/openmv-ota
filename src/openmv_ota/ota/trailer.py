@@ -230,8 +230,12 @@ def parse_trailer(data: bytes) -> Trailer:
     signature = data[HEADER_SIZE + meta_size : body_end]
     try:
         meta = json.loads(meta_bytes)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+    except (ValueError, RecursionError) as e:   # JSONDecodeError/UnicodeDecodeError; deep nesting
         raise OtaError("meta is not valid JSON: %s" % e) from None
+    if not isinstance(meta, dict):
+        # Every reader treats meta as a mapping (``meta.get(...)``); a bare list or number is a
+        # malformed trailer, not a crash three calls later.
+        raise OtaError("meta is not a JSON object")
 
     return Trailer(
         body_size=body_size,

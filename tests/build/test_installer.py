@@ -616,6 +616,55 @@ def test_make_body_bad_content_length():
         inst("_make_body")(inst("_Reader")(_recv_of(b"")), {b"content-length": b"x"})
 
 
+# --- hostile framing (found by tests/fuzz/test_fuzz_http.py) -----------------
+
+def test_headers_max_is_pinned_to_the_checkin_reader():
+    import openmv_ota.build.device.openmv_ota as rt
+    assert inst("_HEADERS_MAX") == rt._RESP_HEADERS_MAX
+
+
+def test_read_response_refuses_a_header_flood():
+    """Headers are KEPT (a dict), so 5000 distinct names were 5000 entries of heap chosen by the
+    server -- before the erase for the manifest, after it for the image. Capped like the
+    check-in reader: 64 is fine, 65 is refused."""
+    ok = b"HTTP/1.1 200 OK\r\n" + b"".join(b"X-%d: v\r\n" % i for i in range(64)) + b"\r\n"
+    assert inst("_read_response")(inst("_Reader")(_recv_of(ok)))[0] == 200
+    flood = b"HTTP/1.1 200 OK\r\n" + b"".join(b"X-%d: v\r\n" % i for i in range(5000))
+    with pytest.raises(ValueError, match="over 64 headers"):
+        inst("_read_response")(inst("_Reader")(_recv_of(flood + b"\r\n")))
+
+
+def test_chunked_body_refuses_a_trailer_flood():
+    raw = b"3\r\nabc\r\n0\r\n" + b"X-T: v\r\n" * 65 + b"\r\n"
+    body = inst("_make_body")(inst("_Reader")(_recv_of(raw)), {b"transfer-encoding": b"chunked"})
+    with pytest.raises(ValueError, match="over 64 trailers"):
+        _drain(body)
+
+
+@pytest.mark.parametrize("line", [b"-5\r\n", b"+5\r\n", b"0x5\r\n", b"0_5\r\n", b"5 5\r\n",
+                                  b"g\r\n", b"\xff\r\n"])
+def test_chunk_size_is_hex_digits_only(line):
+    """int(x, 16) takes a sign, 0x and underscores: "-5" framed a chunk of MINUS five bytes,
+    which handed the consumer the buffer's contents up to five bytes from the end -- the next
+    chunk-size line included -- before the framing fell apart."""
+    with pytest.raises(ValueError, match="bad chunk size"):
+        inst("_chunk_size")(line)
+
+
+def test_negative_chunk_hands_nothing_to_the_consumer():
+    raw = b"-5\r\nhello world, then the next chunk line\r\n0\r\n\r\n"
+    body = inst("_make_body")(inst("_Reader")(_recv_of(raw)), {b"transfer-encoding": b"chunked"})
+    with pytest.raises(ValueError, match="bad chunk size"):
+        body.readinto(bytearray(64))
+
+
+@pytest.mark.parametrize("cl", [b"-5", b"+5", b"5_0", b" ", b"", b"0x5", b"\xff"])
+def test_content_length_is_decimal_digits_only(cl):
+    """ "-5" read as an EMPTY body (the length check saw <= 0) rather than a malformed one."""
+    with pytest.raises(ValueError, match="bad Content-Length"):
+        inst("_make_body")(inst("_Reader")(_recv_of(b"hello")), {b"content-length": cl})
+
+
 # --- _install_stream --------------------------------------------------------
 
 class _FakeFlash:
@@ -974,6 +1023,31 @@ def test_manifest_parse_rejections():
         inst("_manifest_parse")(bytes(bad))
 
 
+@pytest.mark.parametrize("body", [[], [1, 2], 7, None, "x"])
+def test_manifest_body_that_is_not_an_object_is_a_value_error(body):
+    """Vetting reads the body with .get(): a SIGNED manifest whose body is a list surfaced as an
+    AttributeError out of install() -- not the ValueError/OSError an app is told to expect.
+    Now the parse refuses it, like the host codec does."""
+    from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.keys import generate_private_key, public_point_hex
+    from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
+    from openmv_ota.ota.sign import sign_region
+    spec = algorithm_for(ES256)
+    priv = generate_private_key(spec)
+    m = Manifest(body=body, key_id=0x0100, sig_alg=ES256)
+    m.signature = sign_region(priv, signed_region(m), spec)
+    raw = pack_manifest(m)
+    with pytest.raises(ValueError, match="not an object"):
+        inst("_manifest_parse")(raw)
+
+    class Cfg:
+        TRUSTED_KEYS = {0x0100: bytes.fromhex(public_point_hex(priv.public_key()))}
+        PRODUCT_ID = 0
+        PLATFORM_VERSION = 0
+    with pytest.raises(ValueError, match="not an object"):
+        inst("_vet_manifest")("https://h/m.bin", raw, Cfg, lambda *a: True, 0, 0, True, "")
+
+
 def test_manifest_parse_unknown_alg():
     import struct
     bad = bytearray(_host_manifest())
@@ -1269,6 +1343,83 @@ def test_patch_reader_truncated_varint_and_exact():
     pr2 = inst("_PatchReader")(_SrcOf(b"ab"))
     with pytest.raises(OSError, match="truncated"):
         pr2.read_exact(8)
+
+
+def test_delta_varint_cap_is_pinned_to_host():
+    from openmv_ota.ota.delta import _VARINT_MAX
+    assert inst("_DELTA_VARINT_MAX") == _VARINT_MAX
+
+
+def test_patch_reader_refuses_a_runaway_varint():
+    """The patch is unverified while it is applied. A run of 0xFF bytes was one endless varint,
+    growing a bigint 7 bits per byte on the device heap -- an allocation sized by the wire.
+    Refused at the 11th byte; the longest legal varint (10 bytes) still decodes."""
+    pr = inst("_PatchReader")(_SrcOf(b"\xff" * 5000 + b"\x01"))
+    with pytest.raises(OSError, match="varint too long"):
+        pr.read_uvarint()
+    from openmv_ota.ota.delta import _write_uvarint
+    ok = bytearray()
+    _write_uvarint(ok, (1 << 64) - 1)
+    assert inst("_PatchReader")(_SrcOf(bytes(ok))).read_uvarint() == (1 << 64) - 1
+
+
+def _delta_ops(target_size, *ops):
+    """A hand-built OCDL patch: ``ops`` are (extra_len, diff_len, seek, payload)."""
+    from openmv_ota.ota.delta import MAGIC, _write_svarint, _write_uvarint
+    out = bytearray(MAGIC)
+    _write_uvarint(out, target_size)
+    for extra_len, diff_len, seek, payload in ops:
+        _write_uvarint(out, extra_len)
+        _write_uvarint(out, diff_len)
+        _write_svarint(out, seek)
+        out += payload
+    return bytes(out)
+
+
+def test_delta_stream_refuses_a_seek_before_the_base():
+    """Found by the fuzz suite: b'OCDL\\x01\\x00\\x01\\x01\\x01' seeks the base cursor to -1.
+    run()'s base_read only guards the TOP of the base region, and on device the read is a raw
+    XIP alias (uctypes.bytearray_at(base + off)) -- so a negative cursor read memory BEFORE the
+    running slot. (On the host the slice wrapped silently, then IndexError'd.) The applier now
+    refuses it before any base read happens."""
+    reads = []
+
+    def base_read(off, n):
+        reads.append(off)
+        return bytes(n)
+    for patch in (b"OCDL\x01\x00\x01\x01\x01",                   # the fuzzer's find
+                  _delta_ops(8, (0, 4, 0, bytes(4)), (0, 4, -9, bytes(4)))):
+        with pytest.raises(OSError, match="before the base"):
+            list(inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)), base_read, 64))
+    assert all(off >= 0 for off in reads)
+
+
+def test_delta_stream_refuses_an_op_that_emits_nothing():
+    """(extra 0, diff 0) consumes three patch bytes and yields nothing: no output, so no feed
+    and no end until the patch runs out -- and a gzip of zeros inflates ~1000:1."""
+    patch = _delta_ops(4, (0, 0, 0, b""), (4, 0, 0, b"abcd"))
+    with pytest.raises(OSError, match="no progress"):
+        list(inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)), _old_read_of(b""), 64))
+
+
+def test_delta_stream_refuses_an_op_past_target_size():
+    patch = _delta_ops(3, (5, 0, 0, b"abcde"))
+    with pytest.raises(OSError, match="overruns its target"):
+        list(inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)), _old_read_of(b""), 64))
+
+
+def test_delta_stream_and_host_refuse_the_same_patches():
+    """The device mirror and the host reference agree on every malformed op above."""
+    from openmv_ota.ota.delta import apply_delta
+    from openmv_ota.ota.errors import OtaError
+    for patch in (_delta_ops(4, (0, 0, 0, b""), (4, 0, 0, b"abcd")),
+                  _delta_ops(3, (5, 0, 0, b"abcde")),
+                  _delta_ops(4, (0, 4, -1, bytes(4)))):
+        with pytest.raises(OtaError):
+            apply_delta(bytes(16), patch)
+        with pytest.raises(OSError):
+            list(inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)),
+                                       _old_read_of(bytes(16)), 64))
 
 
 def test_add_zero_copy_and_pure_add():

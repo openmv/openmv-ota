@@ -61,6 +61,12 @@ ROMFS_HEADER_ALIGNMENT = 16
 
 _PADDING_BYTE = 0x80
 
+# Reader ceilings. A size/offset needs at most 64 bits (the padding run of 0x80 bytes the writer
+# emits decodes to leading zero bits, so it never trips this); a directory tree deeper than this
+# is not something any build makes, and the reader recurses once per level.
+_UINT_MAX = (1 << 64) - 1
+_DIR_DEPTH_MAX = 64
+
 
 # --- Helpers ----------------------------------------------------------------
 
@@ -243,7 +249,7 @@ class VfsRomReader:
         # payload's end -- bytes past it (an OTA trailer, slot pad/status, a second
         # slot) are not part of the image and are ignored.
         self.romfs_size = root_end
-        self.entries = self._parse_dir(pos, root_end)
+        self.entries = self._parse_dir(pos, root_end, 0)
 
     # -- primitives --
 
@@ -255,6 +261,10 @@ class VfsRomReader:
             byte = self._data[pos]
             pos += 1
             value = (value << 7) | (byte & 0x7F)
+            if value > _UINT_MAX:
+                # A run of 0xFF bytes is one endless integer, growing a bigint 7 bits per
+                # byte -- quadratic time over a malformed image. Refuse it.
+                raise RomfsError("integer over 64 bits at offset %d" % pos)
             if not (byte & 0x80):
                 return value, pos
 
@@ -266,7 +276,9 @@ class VfsRomReader:
 
     # -- recursive descent --
 
-    def _parse_dir(self, start: int, stop: int) -> list[_Entry]:
+    def _parse_dir(self, start: int, stop: int, depth: int) -> list[_Entry]:
+        if depth > _DIR_DEPTH_MAX:
+            raise RomfsError("directories nested deeper than %d" % _DIR_DEPTH_MAX)
         entries: list[_Entry] = []
         pos = start
         while pos < stop:
@@ -279,7 +291,7 @@ class VfsRomReader:
                 body += namelen
                 if kind == ROMFS_RECORD_KIND_DIRECTORY:
                     entry = _Entry(name, is_dir=True)
-                    entry.children = self._parse_dir(body, min(nxt, self._end))
+                    entry.children = self._parse_dir(body, min(nxt, self._end), depth + 1)
                     entries.append(entry)
                 else:
                     entry = _Entry(name, is_dir=False)
@@ -314,7 +326,15 @@ class VfsRomReader:
         yield from rec(self.entries, "")
 
     def extract(self, dest: str) -> int:
-        """Write the tree to ``dest`` on disk. Returns the file count."""
+        """Write the tree to ``dest`` on disk. Returns the file count.
+
+        Every name is checked before anything is written: an entry name comes straight out of
+        the image, and one called ``..`` (or carrying a ``/``) would otherwise write outside
+        ``dest`` -- the zip-slip of this format. Raises ``RomfsError`` on such an image."""
+        for path, _entry in self.walk():
+            for part in path.split("/"):
+                if part in ("", ".", "..") or "\\" in part or "\0" in part:
+                    raise RomfsError("unsafe entry name in %r" % path)
         count = 0
         for path, entry in self.walk():
             target = os.path.join(dest, *path.split("/"))

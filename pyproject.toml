@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-cov>=4", "pytest-xdist>=3", "ruff"]
+dev = ["pytest>=7", "pytest-cov>=4", "pytest-xdist>=3", "ruff", "hypothesis>=6"]
 # The update server + client. `httpx` powers both the client verb and FastAPI's test client.
 # Heavy/optional backends are separate extras, lazily imported only when that backend is
 # selected, so the base `server` install stays lean (local-disk + stdlib sqlite work out of it).
