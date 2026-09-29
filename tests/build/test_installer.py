@@ -616,6 +616,55 @@ def test_make_body_bad_content_length():
         inst("_make_body")(inst("_Reader")(_recv_of(b"")), {b"content-length": b"x"})
 
 
+# --- hostile framing (found by tests/fuzz/test_fuzz_http.py) -----------------
+
+def test_headers_max_is_pinned_to_the_checkin_reader():
+    import openmv_ota.build.device.openmv_ota as rt
+    assert inst("_HEADERS_MAX") == rt._RESP_HEADERS_MAX
+
+
+def test_read_response_refuses_a_header_flood():
+    """Headers are KEPT (a dict), so 5000 distinct names were 5000 entries of heap chosen by the
+    server -- before the erase for the manifest, after it for the image. Capped like the
+    check-in reader: 64 is fine, 65 is refused."""
+    ok = b"HTTP/1.1 200 OK\r\n" + b"".join(b"X-%d: v\r\n" % i for i in range(64)) + b"\r\n"
+    assert inst("_read_response")(inst("_Reader")(_recv_of(ok)))[0] == 200
+    flood = b"HTTP/1.1 200 OK\r\n" + b"".join(b"X-%d: v\r\n" % i for i in range(5000))
+    with pytest.raises(ValueError, match="over 64 headers"):
+        inst("_read_response")(inst("_Reader")(_recv_of(flood + b"\r\n")))
+
+
+def test_chunked_body_refuses_a_trailer_flood():
+    raw = b"3\r\nabc\r\n0\r\n" + b"X-T: v\r\n" * 65 + b"\r\n"
+    body = inst("_make_body")(inst("_Reader")(_recv_of(raw)), {b"transfer-encoding": b"chunked"})
+    with pytest.raises(ValueError, match="over 64 trailers"):
+        _drain(body)
+
+
+@pytest.mark.parametrize("line", [b"-5\r\n", b"+5\r\n", b"0x5\r\n", b"0_5\r\n", b"5 5\r\n",
+                                  b"g\r\n", b"\xff\r\n"])
+def test_chunk_size_is_hex_digits_only(line):
+    """int(x, 16) takes a sign, 0x and underscores: "-5" framed a chunk of MINUS five bytes,
+    which handed the consumer the buffer's contents up to five bytes from the end -- the next
+    chunk-size line included -- before the framing fell apart."""
+    with pytest.raises(ValueError, match="bad chunk size"):
+        inst("_chunk_size")(line)
+
+
+def test_negative_chunk_hands_nothing_to_the_consumer():
+    raw = b"-5\r\nhello world, then the next chunk line\r\n0\r\n\r\n"
+    body = inst("_make_body")(inst("_Reader")(_recv_of(raw)), {b"transfer-encoding": b"chunked"})
+    with pytest.raises(ValueError, match="bad chunk size"):
+        body.readinto(bytearray(64))
+
+
+@pytest.mark.parametrize("cl", [b"-5", b"+5", b"5_0", b" ", b"", b"0x5", b"\xff"])
+def test_content_length_is_decimal_digits_only(cl):
+    """ "-5" read as an EMPTY body (the length check saw <= 0) rather than a malformed one."""
+    with pytest.raises(ValueError, match="bad Content-Length"):
+        inst("_make_body")(inst("_Reader")(_recv_of(b"hello")), {b"content-length": cl})
+
+
 # --- _install_stream --------------------------------------------------------
 
 class _FakeFlash:

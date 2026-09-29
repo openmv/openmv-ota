@@ -313,6 +313,25 @@ def _is_redirect(code):
     return code in (301, 302, 303, 307, 308)
 
 
+# The most header (or chunked-trailer) lines a response may carry -- the same ceiling the
+# check-in reader applies (openmv_ota._RESP_HEADERS_MAX). Headers are KEPT in a dict here, so an
+# uncapped run of distinct names is heap sized by the server; a sane one sends a handful.
+_HEADERS_MAX = 64
+
+
+def _digits(s, hex_ok):
+    """True if ``s`` (bytes) is non-empty and only ASCII digits (plus a-f/A-F when ``hex_ok``).
+
+    ``int()`` alone is far too forgiving for a length off the wire: it takes a sign, ``0x``,
+    underscores and surrounding whitespace, so ``-5`` framed a chunk of minus five bytes."""
+    if not s:
+        return False
+    for c in s:                                       # bytes iterate as ints on both VMs
+        if not (48 <= c <= 57 or (hex_ok and (97 <= c <= 102 or 65 <= c <= 70))):
+            return False
+    return True
+
+
 def _chunk_size(line):
     """The size from a chunked-encoding size line (hex, optional ``;ext``)."""
     semi = line.find(b";")
@@ -321,6 +340,8 @@ def _chunk_size(line):
     line = line.strip()
     if not line:
         raise ValueError("empty chunk size")
+    if not _digits(line, True):
+        raise ValueError("bad chunk size: %r" % line)
     return int(line, 16)
 
 
@@ -398,10 +419,14 @@ def _read_response(reader):
     header names lowercased. Leaves ``reader`` positioned at the body."""
     code = _parse_status(reader.readline())
     headers = {}
+    left = _HEADERS_MAX
     while True:
         line = reader.readline()
         if line in (b"\r\n", b"\n", b""):
             break
+        left -= 1
+        if left < 0:
+            raise ValueError("response sent over %d headers" % _HEADERS_MAX)
         i = line.find(b":")
         if i >= 0:
             headers[line[:i].strip().lower()] = line[i + 1:].strip()
@@ -428,9 +453,13 @@ class _Body(io.IOBase):
         if self._chunked:
             if self._chunk_left == 0:
                 size = _chunk_size(self._r.readline())
-                if size == 0:                       # last chunk: skip trailers
+                if size == 0:                       # last chunk: skip trailers (capped)
+                    left = _HEADERS_MAX
                     while self._r.readline() not in (b"\r\n", b"\n", b""):
-                        pass
+                        left -= 1
+                        if left < 0:
+                            raise ValueError("chunked body sent over %d trailers"
+                                             % _HEADERS_MAX)
                     self._eof = True
                     return b""
                 self._chunk_left = size
@@ -469,10 +498,9 @@ def _make_body(reader, headers):
         return _Body(reader, None, True)
     cl = headers.get(b"content-length")
     if cl is not None:
-        try:
-            length = int(cl)
-        except ValueError:
+        if not _digits(cl, False):
             raise ValueError("bad Content-Length: %r" % cl)
+        length = int(cl)
         return _Body(reader, length, False)
     return _Body(reader, None, False)
 
