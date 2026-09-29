@@ -13,6 +13,10 @@ document their own invariants; the map:
 - `project/`, `romfs/`, `flash/` — project pegging + config, image packing,
   the flashing backends.
 - `server/`, `client/` — the update server and the CLI that drives it.
+- `fuzz/` — Hypothesis properties over every parser that reads attacker-supplied
+  bytes (trailer, manifest, delta, ROMFS, the installer's HTTP reader, the
+  publish endpoint). CI runs the small derandomized `ci` profile; hunt with
+  `HYPOTHESIS_PROFILE=fuzz` (and `FUZZ_EXAMPLES=N`) — see `fuzz/conftest.py`.
 - `hil/` — host-side **guards** for the hardware harness in `ci/hil/`, so the
   coverage markers, device log lines, and scenarios can't drift apart; the
   harness itself runs on real boards, not here.

@@ -39,3 +39,4 @@ Thumbs.db
 # scratch databases from ad-hoc server probes
 *.db
 .claude/
+.hypothesis/
