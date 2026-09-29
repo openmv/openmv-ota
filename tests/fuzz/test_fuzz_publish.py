@@ -83,6 +83,8 @@ def bodies(draw):
     return body
 
 
+_client()                                           # start-up outside any timed example
+
 _image = st.sampled_from([_gz(_IMG), _gz(_IMG)[:-4], b"not gzip", _gz(_IMG) + b"x",
                           _gz(bytes(1 << 20))]) | st.binary(max_size=64)
 _delta = st.sampled_from([_gz(D.make_delta(b"\x00" * 256, _IMG)), _gz(D.MAGIC + b"\xff" * 64),

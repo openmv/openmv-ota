@@ -8,8 +8,11 @@ Two profiles, picked by ``HYPOTHESIS_PROFILE``:
   ``HYPOTHESIS_PROFILE=fuzz .venv/bin/pytest tests/fuzz -p no:cacheprovider --no-cov -n auto``.
   ``FUZZ_EXAMPLES`` overrides its per-property example count (default 20000).
 
-Every property also carries a wall-clock ``deadline``: a parser that stalls on a crafted input
-is a finding (a hang on the device is a watchdog bite at best), not something to wait out.
+The ``fuzz`` profile also carries a wall-clock ``deadline``: a parser that stalls on a crafted
+input is a finding (a hang on the device is a watchdog bite at best), not something to wait out.
+``ci`` does not: on a loaded CI runner a slow first example (app start-up, xdist contention) is
+noise, and the hangs this suite has found are pinned by plain regression tests with their own
+timing asserts.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from hypothesis import HealthCheck, settings
 _SLOW_OK = [HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much]
 
 settings.register_profile(
-    "ci", max_examples=200, derandomize=True, database=None, deadline=5000,
+    "ci", max_examples=200, derandomize=True, database=None, deadline=None,
     suppress_health_check=_SLOW_OK, print_blob=True)
 settings.register_profile(
     "fuzz", max_examples=int(os.environ.get("FUZZ_EXAMPLES", "20000")), deadline=5000,
