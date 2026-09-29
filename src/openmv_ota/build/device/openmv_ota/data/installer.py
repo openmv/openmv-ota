@@ -724,6 +724,11 @@ def _install_target(slots, running, counters):
 
 _DELTA_FORMAT = "ocdl"                            # manifest representation["format"]
 _DELTA_MAGIC = b"OCDL"
+# The longest varint a patch may carry (mirror of openmv_ota.ota.delta._VARINT_MAX): 10 bytes is
+# 70 bits, past any length or seek a slot can need. The patch is UNVERIFIED while it is being
+# applied -- only the reconstructed image is checked, at the end -- so without this a run of
+# 0xFF bytes is one endless varint growing a bigint 7 bits per byte: heap sized by the wire.
+_DELTA_VARINT_MAX = 10
 
 try:                                              # ulab numpy: on every OTA-capable board
     from ulab import numpy as _np
@@ -792,6 +797,8 @@ class _PatchReader:
         while True:
             if self._off >= self._len and not self._more():
                 raise OSError("delta truncated")
+            if shift >= 7 * _DELTA_VARINT_MAX:
+                raise OSError("delta varint too long")
             b = self._buf[self._off]
             self._off += 1
             result |= (b & 0x7F) << shift
@@ -822,6 +829,20 @@ def _delta_stream(reader, old_read, chunk):
         extra_len = reader.read_uvarint()
         diff_len = reader.read_uvarint()
         old += reader.read_svarint()
+        # Nothing here is verified yet, so check every op before acting on it (the host
+        # reference, openmv_ota.ota.delta.apply_delta, refuses the same three):
+        # - an op that emits nothing costs a few patch bytes and yields nothing, so a stream of
+        #   them spins with no feed and no output -- a gzip of zeros is ~1000:1, i.e. hours;
+        # - an op that emits past target_size is a patch for some other image;
+        # - a negative base cursor reads BEFORE the running slot. base_read only guards the
+        #   top of the base region, and on device the read is a raw XIP alias -- so this is
+        #   the one check between a crafted seek and an arbitrary memory-mapped address.
+        if not (extra_len or diff_len):
+            raise OSError("delta op makes no progress")
+        if produced + extra_len + diff_len > target_size:
+            raise OSError("delta overruns its target")
+        if old < 0:
+            raise OSError("delta seeks before the base")
         left = extra_len
         while left:                                      # literal run: patch bytes verbatim
             m = left if left < chunk else chunk

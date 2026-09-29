@@ -121,3 +121,29 @@ def test_host_codec_returns_or_raises_ota_error(base, patch):
             f(patch)
         except D.OtaError:
             pass
+
+
+def dev_apply(base, patch, chunk=64):
+    """The installer applier's documented failures: OSError (a bad/short patch) or ValueError
+    (``base_read`` refusing a read past the base region)."""
+    try:
+        return device_apply(base, patch, chunk)
+    except (OSError, ValueError):
+        return None
+
+
+@given(st.binary(max_size=400), _any_patch, st.integers(1, 97))
+def test_device_applier_returns_or_raises_and_agrees_with_the_host(base, patch, chunk):
+    dev = dev_apply(base, patch, chunk)
+    host = host_apply(base, patch)
+    # Every image the device would reconstruct, the host reference reconstructs identically --
+    # and vice versa: the two refuse exactly the same patches.
+    assert dev == host
+
+
+@given(st.binary(max_size=64), st.integers(0, 4096))
+def test_device_varints_never_grow_past_ten_bytes(prefix, n):
+    """A patch is unverified while it is applied: its varints must be bounded before anything
+    is allocated from them."""
+    patch = D.MAGIC + b"\xff" * n + b"\x01" + prefix
+    dev_apply(b"", patch)                               # must return promptly, whatever n is

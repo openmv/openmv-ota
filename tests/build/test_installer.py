@@ -1271,6 +1271,83 @@ def test_patch_reader_truncated_varint_and_exact():
         pr2.read_exact(8)
 
 
+def test_delta_varint_cap_is_pinned_to_host():
+    from openmv_ota.ota.delta import _VARINT_MAX
+    assert inst("_DELTA_VARINT_MAX") == _VARINT_MAX
+
+
+def test_patch_reader_refuses_a_runaway_varint():
+    """The patch is unverified while it is applied. A run of 0xFF bytes was one endless varint,
+    growing a bigint 7 bits per byte on the device heap -- an allocation sized by the wire.
+    Refused at the 11th byte; the longest legal varint (10 bytes) still decodes."""
+    pr = inst("_PatchReader")(_SrcOf(b"\xff" * 5000 + b"\x01"))
+    with pytest.raises(OSError, match="varint too long"):
+        pr.read_uvarint()
+    from openmv_ota.ota.delta import _write_uvarint
+    ok = bytearray()
+    _write_uvarint(ok, (1 << 64) - 1)
+    assert inst("_PatchReader")(_SrcOf(bytes(ok))).read_uvarint() == (1 << 64) - 1
+
+
+def _delta_ops(target_size, *ops):
+    """A hand-built OCDL patch: ``ops`` are (extra_len, diff_len, seek, payload)."""
+    from openmv_ota.ota.delta import MAGIC, _write_svarint, _write_uvarint
+    out = bytearray(MAGIC)
+    _write_uvarint(out, target_size)
+    for extra_len, diff_len, seek, payload in ops:
+        _write_uvarint(out, extra_len)
+        _write_uvarint(out, diff_len)
+        _write_svarint(out, seek)
+        out += payload
+    return bytes(out)
+
+
+def test_delta_stream_refuses_a_seek_before_the_base():
+    """Found by the fuzz suite: b'OCDL\\x01\\x00\\x01\\x01\\x01' seeks the base cursor to -1.
+    run()'s base_read only guards the TOP of the base region, and on device the read is a raw
+    XIP alias (uctypes.bytearray_at(base + off)) -- so a negative cursor read memory BEFORE the
+    running slot. (On the host the slice wrapped silently, then IndexError'd.) The applier now
+    refuses it before any base read happens."""
+    reads = []
+
+    def base_read(off, n):
+        reads.append(off)
+        return bytes(n)
+    for patch in (b"OCDL\x01\x00\x01\x01\x01",                   # the fuzzer's find
+                  _delta_ops(8, (0, 4, 0, bytes(4)), (0, 4, -9, bytes(4)))):
+        with pytest.raises(OSError, match="before the base"):
+            list(inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)), base_read, 64))
+    assert all(off >= 0 for off in reads)
+
+
+def test_delta_stream_refuses_an_op_that_emits_nothing():
+    """(extra 0, diff 0) consumes three patch bytes and yields nothing: no output, so no feed
+    and no end until the patch runs out -- and a gzip of zeros inflates ~1000:1."""
+    patch = _delta_ops(4, (0, 0, 0, b""), (4, 0, 0, b"abcd"))
+    with pytest.raises(OSError, match="no progress"):
+        list(inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)), _old_read_of(b""), 64))
+
+
+def test_delta_stream_refuses_an_op_past_target_size():
+    patch = _delta_ops(3, (5, 0, 0, b"abcde"))
+    with pytest.raises(OSError, match="overruns its target"):
+        list(inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)), _old_read_of(b""), 64))
+
+
+def test_delta_stream_and_host_refuse_the_same_patches():
+    """The device mirror and the host reference agree on every malformed op above."""
+    from openmv_ota.ota.delta import apply_delta
+    from openmv_ota.ota.errors import OtaError
+    for patch in (_delta_ops(4, (0, 0, 0, b""), (4, 0, 0, b"abcd")),
+                  _delta_ops(3, (5, 0, 0, b"abcde")),
+                  _delta_ops(4, (0, 4, -1, bytes(4)))):
+        with pytest.raises(OtaError):
+            apply_delta(bytes(16), patch)
+        with pytest.raises(OSError):
+            list(inst("_delta_stream")(inst("_PatchReader")(_SrcOf(patch)),
+                                       _old_read_of(bytes(16)), 64))
+
+
 def test_add_zero_copy_and_pure_add():
     # all-zero diff -> straight copy; nonzero -> (old+diff) mod 256 (pure fallback on host)
     assert inst("_add")(b"\x10\x20", b"\x00\x00") == b"\x10\x20"
