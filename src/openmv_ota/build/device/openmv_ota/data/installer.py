@@ -574,6 +574,10 @@ def _manifest_parse(data):
         raise ValueError("manifest crc mismatch")
     region = bytes(data[:_MANIFEST_HEADER_SIZE + body_size])
     body = json.loads(data[_MANIFEST_HEADER_SIZE:_MANIFEST_HEADER_SIZE + body_size])
+    if not isinstance(body, dict):
+        # Vetting reads it with body.get(...): a list or a number would surface as an
+        # AttributeError out of install() instead of the documented rejection.
+        raise ValueError("manifest body is not an object")
     signature = bytes(data[_MANIFEST_HEADER_SIZE + body_size:body_end])
     return {"body": body, "key_id": key_id, "sig_alg": sig_alg,
             "signature": signature, "region": region}

@@ -73,7 +73,7 @@ def test_arbitrary_bytes_parse_or_raise_the_documented_error(data):
     _vet(data)
 
 
-@given(framed_manifests(body_values=F.json_values.filter(lambda v: isinstance(v, dict))))
+@given(framed_manifests())
 def test_crc_valid_manifests_parse_or_raise_and_the_two_parsers_agree(data):
     host, dev = _host(data), _device(data)
     assert (host is None) == (dev is None)
@@ -113,3 +113,10 @@ def test_no_edit_to_a_genuine_manifest_is_accepted_unless_inert(bad):
 def test_the_genuine_manifest_is_accepted():
     assert verify_manifest(_GOOD, F.trusted())[0]
     assert _vet(_GOOD) is not None
+
+
+@given(F.json_values.filter(lambda v: not isinstance(v, dict)))
+def test_a_signed_manifest_whose_body_is_not_an_object_is_refused(body):
+    """Signed by a TRUSTED key, so only the vetting stands between an odd body and the app:
+    it must still come back as the documented ValueError, never an AttributeError."""
+    assert _vet(F.signed_manifest(body)) is None

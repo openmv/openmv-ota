@@ -1023,6 +1023,31 @@ def test_manifest_parse_rejections():
         inst("_manifest_parse")(bytes(bad))
 
 
+@pytest.mark.parametrize("body", [[], [1, 2], 7, None, "x"])
+def test_manifest_body_that_is_not_an_object_is_a_value_error(body):
+    """Vetting reads the body with .get(): a SIGNED manifest whose body is a list surfaced as an
+    AttributeError out of install() -- not the ValueError/OSError an app is told to expect.
+    Now the parse refuses it, like the host codec does."""
+    from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.keys import generate_private_key, public_point_hex
+    from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
+    from openmv_ota.ota.sign import sign_region
+    spec = algorithm_for(ES256)
+    priv = generate_private_key(spec)
+    m = Manifest(body=body, key_id=0x0100, sig_alg=ES256)
+    m.signature = sign_region(priv, signed_region(m), spec)
+    raw = pack_manifest(m)
+    with pytest.raises(ValueError, match="not an object"):
+        inst("_manifest_parse")(raw)
+
+    class Cfg:
+        TRUSTED_KEYS = {0x0100: bytes.fromhex(public_point_hex(priv.public_key()))}
+        PRODUCT_ID = 0
+        PLATFORM_VERSION = 0
+    with pytest.raises(ValueError, match="not an object"):
+        inst("_vet_manifest")("https://h/m.bin", raw, Cfg, lambda *a: True, 0, 0, True, "")
+
+
 def test_manifest_parse_unknown_alg():
     import struct
     bad = bytearray(_host_manifest())
