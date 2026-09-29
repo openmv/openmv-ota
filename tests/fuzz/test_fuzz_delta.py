@@ -80,3 +80,44 @@ def test_unrelated_images_round_trip(base, target):
     patch = D.make_delta(base, target)
     assert D.apply_delta(base, patch) == target
     assert device_apply(base, patch, chunk=7) == target
+
+
+# --- arbitrary / malformed patches --------------------------------------------------------------
+
+@st.composite
+def patches(draw):
+    """Structured-but-hostile OCDL patches: a real header and op framing (so the fuzzer gets
+    past the magic), with lengths and seeks that disagree with the payload and the base."""
+    out = bytearray(draw(st.just(D.MAGIC) | st.binary(min_size=4, max_size=4)))
+    D._write_uvarint(out, draw(st.integers(0, 2000) | st.integers(0, 1 << 70)))
+    for _ in range(draw(st.integers(0, 6))):
+        e = draw(st.integers(0, 80))
+        d = draw(st.integers(0, 80))
+        D._write_uvarint(out, e)
+        D._write_uvarint(out, d)
+        D._write_svarint(out, draw(st.integers(-300, 300)))
+        out += draw(st.binary(min_size=0, max_size=e + d))
+    if draw(st.booleans()):
+        out += draw(st.binary(max_size=20))
+    return bytes(out)
+
+
+_any_patch = patches() | st.binary(max_size=300) | st.binary(max_size=40).map(
+    lambda b: D.MAGIC + b)
+
+
+def host_apply(base, patch):
+    try:
+        return D.apply_delta(base, patch)
+    except D.OtaError:
+        return None
+
+
+@given(st.binary(max_size=400), _any_patch)
+def test_host_codec_returns_or_raises_ota_error(base, patch):
+    host_apply(base, patch)
+    for f in (D.target_size, D.summarize):
+        try:
+            f(patch)
+        except D.OtaError:
+            pass

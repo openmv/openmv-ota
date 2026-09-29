@@ -169,6 +169,7 @@ def test_apply_copy_out_of_bounds():
     _write_uvarint(out, 0)              # extra_len
     _write_uvarint(out, 100)            # diff_len (base is only 4 bytes)
     _write_svarint(out, 0)             # seek
+    out += bytes(100)                  # the diff bytes are there -- the BASE is what is short
     with pytest.raises(OtaError, match="out of base bounds"):
         apply_delta(b"base", bytes(out))
 
@@ -189,3 +190,43 @@ def test_apply_size_overshoot():
     out += b"abcde"
     with pytest.raises(OtaError, match="header says"):
         apply_delta(b"base", bytes(out))
+
+
+# --- malformed patches found by the fuzz suite (tests/fuzz/test_fuzz_delta.py) -------------
+
+def test_a_runaway_varint_is_refused_not_decoded():
+    """A run of 0xFF is one endless varint: uncapped, it grows a bigint 7 bits per byte --
+    quadratic in the patch size, and the server decodes this header off every uploaded delta.
+    100 KB of it took seconds; the gzip of a few MB of it is a worker pinned for hours."""
+    from openmv_ota.ota.delta import summarize, target_size
+    patch = MAGIC + b"\xff" * 100_000 + b"\x01"
+    for f in (target_size, summarize, lambda p: apply_delta(b"", p)):
+        with pytest.raises(OtaError, match="varint longer than 10 bytes"):
+            f(patch)
+    # ...while the longest LEGAL varint (10 bytes) still decodes
+    out = bytearray()
+    _write_uvarint(out, (1 << 64) - 1)
+    assert len(out) == 10 and _read_uvarint(bytes(out), 0) == ((1 << 64) - 1, 10)
+
+
+def test_a_short_diff_run_is_truncation_not_an_index_error():
+    """The final op promises 10 diff bytes and the patch carries 2: rejected as truncated.
+    It used to slice a short diff and IndexError in the add."""
+    patch = MAGIC + bytes([10, 0, 10, 0, 1, 2])   # target|extra|diff|seek, then 2 of 10 bytes
+    with pytest.raises(OtaError, match="truncated"):
+        apply_delta(bytes(20), patch)
+
+
+def test_a_short_extra_run_is_truncation_not_a_short_image():
+    patch = MAGIC + bytes([10, 10, 0, 0]) + b"abc"   # 10 literal bytes promised, 3 present
+    with pytest.raises(OtaError, match="truncated"):
+        apply_delta(b"", patch)
+
+
+def test_an_op_that_emits_nothing_is_refused():
+    """(extra 0, diff 0) consumes three patch bytes and produces nothing. The host loop is
+    bounded by the patch, but the device's is bounded only by how much a gzip of zeros
+    inflates to -- so both refuse it (the device mirror is pinned in test_installer)."""
+    patch = MAGIC + bytes([4, 0, 0, 0]) + bytes([0, 4, 0]) + bytes(4)
+    with pytest.raises(OtaError, match="no progress"):
+        apply_delta(b"base", patch)

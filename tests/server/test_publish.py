@@ -498,3 +498,18 @@ def test_a_reused_publish_counter_is_refused(tmp_path):
     ahead = _body(img, pv=0x03000000)
     ahead["publish_seq"] = 501
     assert _post(app, _manifest(ahead), _gz(img)).status_code == 200
+
+
+def test_publish_a_delta_whose_header_is_one_endless_varint_is_malformed_and_fast(tmp_path):
+    """The server decodes target_size off every uploaded delta. 0xFF bytes after the magic are
+    one "varint" that never ends; uncapped, decoding it was quadratic -- a few MB of it pinned
+    a worker for hours, from a gzip of a few KB. Now it is refused at the 10th byte."""
+    import time
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    bomb = _gz(delta_codec.MAGIC + b"\xff" * 1_000_000)
+    t0 = time.monotonic()
+    r = _post(app, _manifest(_body(img, with_delta=True)), _gz(img), bomb)
+    assert r.status_code == 400 and "malformed" in r.json()["detail"]
+    assert time.monotonic() - t0 < 10                   # was: effectively unbounded
+    assert store.list_releases() == []

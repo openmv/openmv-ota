@@ -42,6 +42,12 @@ MAGIC = b"OCDL"
 # `extra`, not a diff of garbage). 32 / 64 suit firmware/romfs images.
 _ANCHOR = 32
 _MAX_GAP = 64
+# The longest varint a patch may carry: 10 bytes is 70 bits, past any length or seek a
+# 64-bit image could need. Without a ceiling a run of 0xFF bytes is ONE "varint" that grows a
+# bigint by 7 bits per byte -- quadratic time and linear memory in the patch size, before a
+# single op has been checked. The server reads this header off an uploaded patch, so an
+# uncapped varint is a few KB of gzip that pins a worker for hours.
+_VARINT_MAX = 10
 
 
 def _write_uvarint(out: bytearray, val: int) -> None:
@@ -61,6 +67,8 @@ def _read_uvarint(buf, pos: int) -> tuple[int, int]:
     while True:
         if pos >= n:
             raise OtaError("truncated varint")
+        if shift >= 7 * _VARINT_MAX:
+            raise OtaError("varint longer than %d bytes" % _VARINT_MAX)
         b = buf[pos]
         pos += 1
         result |= (b & 0x7F) << shift
@@ -196,6 +204,17 @@ def apply_delta(base, patch) -> bytes:
         extra_len, pos = _read_uvarint(patch, pos)
         diff_len, pos = _read_uvarint(patch, pos)
         seek, pos = _read_svarint(patch, pos)
+        # The device applier (installer._delta_stream) refuses the same ops, so the reference
+        # and the device agree on which patches are malformed: an op that emits nothing (a
+        # stream of them spins without output), and one that emits past the declared size.
+        if not (extra_len or diff_len):
+            raise OtaError("delta op makes no progress")
+        if len(out) + extra_len + diff_len > target_sz:
+            raise OtaError("delta overruns its target (header says %d)" % target_sz)
+        if pos + extra_len + diff_len > end:
+            # A short final op would otherwise slice a short `extra` (silently) and a short
+            # `diff` (an IndexError in the add below) -- a malformed patch, not a crash.
+            raise OtaError("delta truncated")
         out += patch[pos : pos + extra_len]
         pos += extra_len
         old += seek
@@ -209,6 +228,4 @@ def apply_delta(base, patch) -> bytes:
             out += bytes((src[i] + diff[i]) & 0xFF for i in range(diff_len))
         pos += diff_len
         old += diff_len
-    if len(out) != target_sz:
-        raise OtaError("delta produced %d bytes, header says %d" % (len(out), target_sz))
-    return bytes(out)
+    return bytes(out)                                   # exactly target_sz: see the overrun check
