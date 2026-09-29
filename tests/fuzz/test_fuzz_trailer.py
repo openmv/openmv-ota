@@ -72,6 +72,7 @@ def test_crc_valid_trailers_parse_or_raise_and_the_two_parsers_agree(data):
     host, dev = _host(data), _device(data)
     if host is None:
         return
+    assert isinstance(host.meta, dict)
     # The device parser is structural only (it never reads the JSON meta), so anything the
     # host accepts the device must accept too -- with the SAME authenticated fields.
     assert dev is not None

@@ -86,6 +86,12 @@ def test_crc_valid_manifests_parse_or_raise_and_the_two_parsers_agree(data):
     assert _vet(data) is None
 
 
+@given(framed_manifests())
+def test_the_host_parser_hands_back_an_object_or_raises(data):
+    host = _host(data)
+    assert host is None or isinstance(host.body, dict)
+
+
 @given(st.dictionaries(st.text(max_size=8), F.json_values, max_size=6),
        st.sampled_from(F.ALGS), st.integers(0, (1 << 32) - 1))
 def test_pack_then_parse_round_trips(body, alg, key_id):

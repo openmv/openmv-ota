@@ -231,3 +231,24 @@ def test_parse_bad_json_meta():
     raw = _assemble(meta_bytes=b"not json", sig_bytes=b"\x00" * 64, sig_alg=ES256)
     with pytest.raises(OtaError, match="not valid JSON"):
         parse_trailer(raw)
+
+
+
+# --- JSON that parses but is not a trailer's meta (found by tests/fuzz) ------------------
+
+@pytest.mark.parametrize("meta", [b"[1, 2]", b"7", b'"s"', b"null"])
+def test_parse_meta_that_is_not_an_object(meta):
+    """Every reader does ``meta.get(...)``: a list or a number is a malformed trailer here,
+    not an AttributeError in whatever reads it next."""
+    raw = _assemble(meta_bytes=meta, sig_bytes=b"\x00" * 64, sig_alg=ES256)
+    with pytest.raises(OtaError, match="not a JSON object"):
+        parse_trailer(raw)
+
+
+def test_parse_meta_nested_past_the_recursion_limit():
+    """parse_trailer takes a file of any size; JSON nested deep enough raised RecursionError,
+    which no caller catches (verify_image only catches OtaError)."""
+    deep = b"[" * 50_000 + b"]" * 50_000
+    raw = _assemble(meta_bytes=deep, sig_bytes=b"\x00" * 64, sig_alg=ES256)
+    with pytest.raises(OtaError, match="not valid JSON"):
+        parse_trailer(raw)

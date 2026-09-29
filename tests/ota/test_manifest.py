@@ -324,3 +324,27 @@ def test_select_skips_unknown_format_and_repr_without_size():
 def test_select_none_when_nothing_usable():
     body = {"representations": [_DELTA]}                     # delta only, not capable
     assert select_representation(body, delta_capable=False, golden_payload_version=0) is None
+
+
+
+# --- JSON that parses but is not a manifest body (found by tests/fuzz) -------------------
+
+def _raw_manifest(body_bytes):
+    head = struct.pack(HEADER_STRUCT, MAGIC, 1, len(body_bytes), 64, 0x0100, ES256)
+    out = head + body_bytes + b"\x00" * 64
+    return out + struct.pack("<I", binascii.crc32(out) & 0xFFFFFFFF)
+
+
+@pytest.mark.parametrize("body", [b"[]", b"1", b"null", b'"x"'])
+def test_parse_body_that_is_not_an_object(body):
+    """The server does ``body["product_id"]`` straight after parsing, so a list here was a
+    500 on publish; the device's vetting does ``body.get(...)``."""
+    with pytest.raises(OtaError, match="not a JSON object"):
+        parse_manifest(_raw_manifest(body))
+
+
+def test_parse_body_nested_past_the_recursion_limit():
+    """The publish endpoint accepts a manifest up to 1 MiB; nesting that deep raised
+    RecursionError (a 500) instead of OtaError (a 400)."""
+    with pytest.raises(OtaError, match="not valid JSON"):
+        parse_manifest(_raw_manifest(b"[" * 50_000 + b"]" * 50_000))

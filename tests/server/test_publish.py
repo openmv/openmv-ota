@@ -513,3 +513,23 @@ def test_publish_a_delta_whose_header_is_one_endless_varint_is_malformed_and_fas
     assert r.status_code == 400 and "malformed" in r.json()["detail"]
     assert time.monotonic() - t0 < 10                   # was: effectively unbounded
     assert store.list_releases() == []
+
+
+
+def _raw_manifest(body_bytes):
+    import binascii
+    import struct
+
+    from openmv_ota.ota.manifest import HEADER_STRUCT, MAGIC
+    head = struct.pack(HEADER_STRUCT, MAGIC, 1, len(body_bytes), 64, 0x0100, ES256)
+    out = head + body_bytes + b"\x00" * 64
+    return out + struct.pack("<I", binascii.crc32(out) & 0xFFFFFFFF)
+
+
+def test_publish_a_manifest_body_that_is_not_an_object_is_400_not_500(tmp_path):
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    for raw in (_raw_manifest(b"[]"), _raw_manifest(b"[" * 50_000 + b"]" * 50_000)):
+        r = _post(app, raw, _gz(img))
+        assert r.status_code == 400 and "bad manifest" in r.json()["detail"]
+    assert store.list_releases() == []
