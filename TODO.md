@@ -26,9 +26,10 @@ budget for now; these are the free/cheap passes to run first, in order.
   owner: switch on secret scanning + push protection and Dependabot alerts in Settings.
 - ~~**Stricter lint + dependency audit**~~ — DONE 2026-09-28: ruff `S` + `B` enforced (each
   suppression carries its reason); pip-audit job in CI.
-- **Fuzz the attacker-facing parsers** — trailer, manifest, romfs and delta-patch parsers
-  (Hypothesis properties + atheris); the C ECDSA shim under libFuzzer with ASan/UBSan; the
-  server API via Schemathesis from its OpenAPI schema.
+- **Fuzz the attacker-facing parsers** — Hypothesis half DONE 2026-09-28 (#94): trailer,
+  manifest, romfs, delta, installer HTTP, csi poll and publish, 20k examples per property; 11
+  bugs fixed, no signature/anti-rollback bypass. Left: the C ECDSA shim under libFuzzer with
+  ASan/UBSan; the server API via Schemathesis from its OpenAPI schema.
 - **Scan the web app** — OWASP ZAP baseline against the fleet simulator.
 - **Internal red-team passes** — `/security-review`, and `/code-review ultra` on the
   signing/verify/installer/anti-rollback path.
