@@ -408,3 +408,15 @@ def test_ls_long_dir_marker(tmp_path, capsys):
     main(["romfs", "ls", str(img), "-l"])
     out = capsys.readouterr().out
     assert "<dir>" in out
+
+
+def test_unpack_refuses_an_image_whose_names_escape_the_output_dir(tmp_path, capsys):
+    from openmv_ota.romfs.container import VfsRomWriter
+    w = VfsRomWriter()
+    w.mkfile("../escape.txt", b"x")
+    img = tmp_path / "evil.romfs"
+    img.write_bytes(w.finalize())
+    dest = tmp_path / "out"
+    assert main(["romfs", "unpack", str(img), "-o", str(dest)]) == 1
+    assert "unsafe entry name" in capsys.readouterr().err
+    assert not (tmp_path / "escape.txt").exists()
