@@ -9,17 +9,48 @@ audited.
 
 ``OsvClient`` is injectable (``create_app(osv=...)``): tests and the sim
 substitute a fake; a deployment talks to the real https://api.osv.dev.
-Coverage caveat: OSV matches ecosystem packages well and C firmware libraries
-by name/version only, so it is one source, not the last word -- the interface
-takes components and returns findings, so a second source can slot in later.
+How a component is looked up (never by bare name + version: OSV then matches every
+distro's package of that name -- a "micropython 1.29.0" query answered with Debian and
+Ubuntu records for unrelated versions):
+
+- its exact git commit (the SBOM's ``openmv-ota:commit``), matched against the advisories'
+  GIT ranges -- precise for any repo OSV indexes;
+- for a component OSV knows by its upstream repo, the release tag of its version
+  (:data:`_UPSTREAM_GIT`): OpenMV builds MicroPython from a fork whose commits OSV never
+  saw, but the fork is upstream ``v<version>`` plus patches;
+- its package URL (``purl``), for components from a language ecosystem (PyPI, ...).
+
+A component with none of these is not looked up. OSV is one source, not the last word --
+the interface takes components and returns findings, so a second source can slot in.
 """
 
 from __future__ import annotations
 
 import json
+import re
 
 _OSV_URL = "https://api.osv.dev"
 _BATCH = 500                                   # OSV caps querybatch at 1000
+# components whose advisories OSV keys to an upstream repo's release tags
+_SHA = re.compile(r"[0-9a-f]{40}")
+_UPSTREAM_GIT = {"micropython": "https://github.com/micropython/micropython"}
+
+
+def _queries(comp: dict) -> list[dict]:
+    """The OSV queries that identify one SBOM component (see the module docstring)."""
+    out = []
+    commit = next((p.get("value") for p in comp.get("properties") or []
+                   if p.get("name") == "openmv-ota:commit" and p.get("value")), None)
+    # only a full sha: OSV refuses anything else -- and one refused query fails the whole
+    # batch, which would leave every component unscanned
+    if commit and _SHA.fullmatch(commit):
+        out.append({"commit": commit})
+    repo, version = _UPSTREAM_GIT.get(comp.get("name", "")), comp.get("version")
+    if repo and version:
+        out.append({"package": {"name": repo, "ecosystem": "GIT"}, "version": "v" + version})
+    if comp.get("purl"):
+        out.append({"package": {"purl": comp["purl"]}})
+    return out
 
 
 # CVSS 3.x base-score metric weights (first.org spec, section 7.4).
@@ -96,14 +127,13 @@ class OsvClient:
     def scan(self, components: list[dict]) -> list[dict]:
         """``components`` are CycloneDX component dicts; returns findings as
         ``{component, version, vuln_id, severity, summary}`` rows."""
-        comps = [c for c in components if c.get("name") and c.get("version")]
+        pairs = [(c, q) for c in components if c.get("name") for q in _queries(c)]
         findings: list[dict] = []
-        for i in range(0, len(comps), _BATCH):
-            window = comps[i:i + _BATCH]
-            queries = [{"package": {"name": c["name"]}, "version": c["version"]}
-                       for c in window]
+        seen: set = set()                    # one finding per (component, vuln), however many
+        for i in range(0, len(pairs), _BATCH):   # of its queries report it
+            window = pairs[i:i + _BATCH]
             r = self._http.post(self._url + "/v1/querybatch",
-                                json={"queries": queries})
+                                json={"queries": [q for _c, q in window]})
             r.raise_for_status()
             results = r.json().get("results", [])
             if len(results) != len(window):
@@ -112,11 +142,14 @@ class OsvClient:
                 # "fixed" and clears standing advisories. Fail the scan instead.
                 raise ValueError("OSV answered %d results for %d queries"
                                  % (len(results), len(window)))
-            for comp, res in zip(window, results, strict=True):
+            for (comp, _q), res in zip(window, results, strict=True):
                 for hit in res.get("vulns") or []:
+                    if (comp["name"], hit["id"]) in seen:
+                        continue
+                    seen.add((comp["name"], hit["id"]))
                     vuln = self._detail(hit["id"])
                     findings.append({
-                        "component": comp["name"], "version": comp["version"],
+                        "component": comp["name"], "version": comp.get("version") or "",
                         "vuln_id": vuln.get("id", hit["id"]),
                         "severity": _severity(vuln),
                         "summary": vuln.get("summary", "")})

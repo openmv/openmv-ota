@@ -25,10 +25,12 @@ class _Resp:
 
 
 class _StubHttp:
-    """querybatch returns ids; per-vuln detail served from ``vulns``."""
+    """querybatch returns ids; per-vuln detail served from ``vulns``. A query is keyed by
+    what identifies it: ("commit", sha), ("git", repo, tag) or ("purl", purl)."""
 
     def __init__(self, hits, vulns):
-        self.hits = hits            # {(name, version): [vuln ids]}
+        self.hits = hits            # {query key: [vuln ids]}
+        self.queries = []
         self.vulns = vulns          # {id: osv json}
         self.posts = 0
         self.gets = []
@@ -38,7 +40,12 @@ class _StubHttp:
         self.posts += 1
         results = []
         for q in json["queries"]:
-            ids = self.hits.get((q["package"]["name"], q["version"]), [])
+            self.queries.append(q)
+            pkg = q.get("package") or {}
+            key = (("commit", q["commit"]) if "commit" in q else
+                   ("purl", pkg["purl"]) if "purl" in pkg else
+                   ("git", pkg["name"], q["version"]))
+            ids = self.hits.get(key, [])
             results.append({"vulns": [{"id": i, "modified": "x"} for i in ids]} if ids else {})
         return _Resp({"results": results})
 
@@ -49,29 +56,53 @@ class _StubHttp:
         return _Resp(v, 200) if v else _Resp({}, 404)
 
 
+def _commit(sha):
+    return [{"name": "openmv-ota:commit", "value": sha}]
+
+
 def test_osv_scan_maps_and_caches_details():
     http = _StubHttp(
-        hits={("mbedtls", "3.5.1"): ["CVE-1", "CVE-2"], ("lwip", "2.1.3"): ["CVE-1"]},
+        hits={("commit", "a" * 40): ["CVE-1", "CVE-2"], ("purl", "pkg:pypi/tool@2.1"): ["CVE-1"]},
         vulns={"CVE-1": {"id": "CVE-1", "summary": "overflow",
                          "database_specific": {"severity": "HIGH"}},
                "CVE-2": {"id": "CVE-2", "summary": "dos",
                          "database_specific": {"severity": "MODERATE"}}})
     c = OsvClient(http=http, url="https://osv.test")
-    comps = [{"name": "mbedtls", "version": "3.5.1"},
-             {"name": "lwip", "version": "2.1.3"},
-             {"name": "nameless"},                      # skipped: no version
-             {"version": "1.0"}]                        # skipped: no name
+    comps = [{"name": "lib/tinyusb", "properties": _commit("a" * 40)},
+             {"name": "lib/apriltag", "properties": _commit("36b9ba1")},   # not a full sha: skipped,
+             {"name": "tool", "version": "2.1", "purl": "pkg:pypi/tool@2.1"},
+             {"name": "openmv-sdk", "version": "1.7.3"},   # nothing that identifies it: skipped
+             {"properties": _commit("bb22")}]               # skipped: no name
     out = advisor.REAL_OSV_SCAN(c, comps)
     assert [(f["component"], f["vuln_id"], f["severity"]) for f in out] == [
-        ("mbedtls", "CVE-1", "high"), ("mbedtls", "CVE-2", "medium"),
-        ("lwip", "CVE-1", "high")]
-    assert out[0]["summary"] == "overflow"
+        ("lib/tinyusb", "CVE-1", "high"), ("lib/tinyusb", "CVE-2", "medium"),
+        ("tool", "CVE-1", "high")]
+    assert out[0]["summary"] == "overflow" and out[0]["version"] == ""
     assert http.gets.count("CVE-1") == 1                # detail cached across hits
+    # never a bare name + version: that matched every distro's package of the same name
+    assert all(set(q) == {"commit"} or "purl" in q["package"] or q["package"].get("ecosystem")
+               for q in http.queries)
+
+
+def test_micropython_is_looked_up_by_its_upstream_release_tag():
+    """OpenMV builds MicroPython from a fork OSV never indexed, so its commit finds nothing;
+    the fork is upstream v<version> plus patches, so the upstream tag is asked too. A vuln
+    both queries report is one finding."""
+    http = _StubHttp(hits={("git", "https://github.com/micropython/micropython", "v1.22.0"):
+                           ["PYSEC-1"], ("commit", "f" * 40): ["PYSEC-1"]}, vulns={})
+    comps = [{"name": "micropython", "version": "1.22.0", "properties": _commit("f" * 40)}]
+    out = advisor.REAL_OSV_SCAN(OsvClient(http=http, url="u"), comps)
+    assert [(f["component"], f["version"], f["vuln_id"]) for f in out] == [
+        ("micropython", "1.22.0", "PYSEC-1")]
+    assert {"commit": "f" * 40} in http.queries
+    assert {"package": {"name": "https://github.com/micropython/micropython",
+                        "ecosystem": "GIT"}, "version": "v1.22.0"} in http.queries
 
 
 def test_osv_detail_404_falls_back_to_id():
-    http = _StubHttp(hits={("x", "1"): ["GHSA-xyz"]}, vulns={})
-    out = advisor.REAL_OSV_SCAN(OsvClient(http=http, url="u"), [{"name": "x", "version": "1"}])
+    http = _StubHttp(hits={("commit", "c" * 40): ["GHSA-xyz"]}, vulns={})
+    out = advisor.REAL_OSV_SCAN(OsvClient(http=http, url="u"),
+                                [{"name": "x", "version": "1", "properties": _commit("c" * 40)}])
     assert out == [{"component": "x", "version": "1", "vuln_id": "GHSA-xyz",
                     "severity": "unknown", "summary": ""}]
 
@@ -148,11 +179,11 @@ def test_a_short_osv_reply_fails_the_scan_instead_of_reporting_clean():
             resp = super().post(url, json)
             resp._payload["results"] = resp._payload["results"][:-1]
             return resp
-    http = _Short(hits={("lwip", "2.1.3"): ["CVE-1"]}, vulns={})
+    http = _Short(hits={("commit", "2" * 40): ["CVE-1"]}, vulns={})
     c = OsvClient(http=http, url="https://osv.test")
     try:
-        advisor.REAL_OSV_SCAN(c, [{"name": "mbedtls", "version": "3.5.1"},
-                                 {"name": "lwip", "version": "2.1.3"}])
+        advisor.REAL_OSV_SCAN(c, [{"name": "mbedtls", "properties": _commit("1" * 40)},
+                                 {"name": "lwip", "properties": _commit("2" * 40)}])
     except ValueError as e:
         assert "1 results for 2 queries" in str(e)
     else:
@@ -187,3 +218,30 @@ def test_scheduler_disabled_at_zero_interval():
         def on_event(self, *_):
             raise AssertionError("must not arm the loop")
     _schedule_advisory_scans(_App(), SimpleNamespace(advisory_scan_interval_s=0))
+
+
+def test_only_releases_a_device_runs_are_scanned(tmp_path):
+    """A release no device runs -- just published, only offered by a rollout, or left
+    behind -- is not scanned, and findings it carried are cleared: the CVE list is what the
+    fleet is actually exposed to."""
+    st = _state(tmp_path)
+    ms = st.metastore
+    for rid, ver in (("r_run", "1.0.0"), ("r_offer", "1.1.0"), ("r_idle", "0.9.0")):
+        ms.add_release(release_id=rid, product_id=7, product="p", version=ver,
+                       payload_version=int(ver.replace(".", "")), min_platform_version=0,
+                       image_sha256="ab", image_size=1, representations=[],
+                       manifest_key="m" + rid, image_key="i" + rid, account_id="a",
+                       sbom_key="sbom/" + rid)
+        st.storage.put("sbom/" + rid, json.dumps({"components": [{"name": rid}]}).encode(),
+                       "application/json")
+        ms.upsert_advisories(rid, [{"vuln_id": "CVE-OLD", "component": "x", "version": "1",
+                                    "severity": "low", "summary": ""}], account_id="a")
+    ms.upsert_device(device_id="d1", product_id=7, current_version="1.0.0", account_id="a")
+    ms.add_rollout(rollout_id="ro1", release_id="r_offer", product_id=7, cohort="__default__",
+                   percent=100, account_id="a")
+    scanned = []
+    st.osv = SimpleNamespace(scan=lambda comps: scanned.append(comps[0]["name"]) or [])
+    out = advisor.scan_account(st, "a")
+    assert scanned == ["r_run"] and out["releases_scanned"] == 1
+    # the running release's stale finding cleared by its own scan, the other two by scope
+    assert ms.list_advisories(account_id="a") == []

@@ -879,23 +879,8 @@ def cmd_publish(args: argparse.Namespace) -> int:
         lines = ["published %s  version %s  (%s)" % (res["release_id"], res.get("version"),
                                                      ", ".join(res["representations"]))]
         payload = dict(res)
-        if sbom_bytes is not None:
-            # Surface CVEs IMMEDIATELY -- publish succeeded either way, but the
-            # maker should walk away knowing what the new release carries.
-            try:
-                api.scan_advisories(res["release_id"])
-                # ACTIVE findings, not just this scan's news: the publish-time
-                # background scan may have recorded them a moment earlier.
-                adv = api.advisories(res["release_id"])["advisories"]
-                payload["advisories"] = adv
-                for f in adv:
-                    lines.append("advisory: %s  %s  %s %s"
-                                 % (f["vuln_id"], f.get("severity", "?"),
-                                    f["component"], f.get("version", "")))
-                if not adv:
-                    lines.append("advisory scan: no known vulnerabilities")
-            except ClientError as e:
-                lines.append("advisory scan unavailable (%s)" % e)
+        # No CVE scan here: CVE monitoring covers the releases devices RUN, and the scheduled
+        # pass picks this one up once one does (`client advisories scan --release-id` asks now).
         if args.percent is not None:
             ro = api.create_rollout(res["release_id"], args.cohort or "__default__", args.percent)
             lines.append("rollout %s  %s%%  cohort=%s"

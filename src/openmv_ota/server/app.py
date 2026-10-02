@@ -592,12 +592,22 @@ def _account(ms, ro, rel, checkin, existing, offered):
     if offered and prev_offered != rel["release_id"]:            # newly entering this rollout
         ms.bump_rollout(rid, attempted=1)
     # a device we offered this release, now *transitioning to running it* -> a success
+    # Each outcome also lands in the install history (deployments, one row per device and
+    # release), which the dashboards chart. The device never POSTs /feedback on its own, so
+    # without this every real install was invisible there -- the chart read 0 after a day of
+    # updates while the rollout said 1/1.
     if (prev_offered == rel["release_id"] and prev_pv != rel["payload_version"]
             and checkin.payload_version == rel["payload_version"]):
         ms.bump_rollout(rid, updated=1)
+        ms.record_deployment(device_id=checkin.device_id, release_id=rel["release_id"],
+                             product_id=checkin.product_id, status="installed",
+                             account_id=ro.get("account_id", ""))
     # a device we offered this release, transitioning *into* a fallback -> one failure
     if prev_offered == rel["release_id"] and checkin.fallback_reason and not prev_fallback:
         ms.bump_rollout(rid, failures=1)
+        ms.record_deployment(device_id=checkin.device_id, release_id=rel["release_id"],
+                             product_id=checkin.product_id, status="failed",
+                             reason=checkin.fallback_reason, account_id=ro.get("account_id", ""))
     # Lazily advance or pause the rollout on this check-in's numbers. A ramp (declared stages)
     # raises itself once the current stage has soaked + reached enough devices, and pauses if that
     # stage's failure rate crosses its ceiling (pause beats raise). A manual rollout keeps the

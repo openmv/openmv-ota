@@ -467,7 +467,35 @@ _MIGRATIONS: list[list[str]] = [
         "key TEXT NOT NULL, window_start BIGINT NOT NULL, hits INTEGER NOT NULL, "
         "PRIMARY KEY (key, window_start))",
     ],
+    [   # v33 -- the size a release actually downloads. image_size is the image unpacked into its
+        # slot (12 MiB on an AE3), which the dashboards showed as "the size" of a 44 KB release.
+        # download_size is the full representation as stored (encrypted, compressed). Backfilled
+        # per dialect: the representations are JSON text, read with each backend's JSON functions.
+        "ALTER TABLE releases ADD COLUMN download_size BIGINT NOT NULL DEFAULT 0",
+        "-- sqlite: UPDATE releases SET download_size = COALESCE((SELECT COALESCE("
+        "json_extract(j.value, '$.enc.size'), json_extract(j.value, '$.size')) "
+        "FROM json_each(releases.representations) j "
+        "WHERE json_extract(j.value, '$.format') = 'full' LIMIT 1), 0)",
+        "-- postgres: UPDATE releases SET download_size = COALESCE((SELECT COALESCE("
+        "(j -> 'enc' ->> 'size')::bigint, (j ->> 'size')::bigint) "
+        "FROM jsonb_array_elements(representations::jsonb) j "
+        "WHERE j ->> 'format' = 'full' LIMIT 1), 0)",
+    ],
 ]
+
+
+def _download_size(representations) -> int:
+    """Bytes a device downloads for a release's full image: the full representation as stored
+    (its encrypted size when encrypted), 0 when the release has none."""
+    for rep in representations or ():
+        if isinstance(rep, dict) and rep.get("format") == "full":
+            enc = rep.get("enc") if isinstance(rep.get("enc"), dict) else {}
+            for size in (enc.get("size"), rep.get("size")):
+                # only a whole number counts: this is display metadata, and a malformed
+                # value must never fail a publish (found by the publish fuzzer)
+                if isinstance(size, int) and not isinstance(size, bool) and size > 0:
+                    return size
+    return 0
 
 
 class SqlMetadataStore:
@@ -668,13 +696,16 @@ class SqlMetadataStore:
         self.set_meta("schema_version", str(current))
         return current
 
+    _SQLITE_ONLY = "-- sqlite: "
+
     def _dialect(self, stmt: str) -> str:
         """A migration step written for one backend only.
 
         ``-- postgres: <sql>`` runs as ``<sql>`` on Postgres and stays a comment (a
         no-op) on sqlite, which is how a column-type widening ships: sqlite's INTEGER is
-        already 64-bit and sqlite has no ALTER COLUMN TYPE at all."""
-        return stmt
+        already 64-bit and sqlite has no ALTER COLUMN TYPE at all. ``-- sqlite: <sql>`` is
+        the mirror image, for a step whose SQL differs per backend (JSON functions)."""
+        return stmt[len(self._SQLITE_ONLY):] if stmt.startswith(self._SQLITE_ONLY) else stmt
 
     def _before_migrations(self) -> None:
         """Backend hook run once before pending migrations apply (Postgres: lock hygiene)."""
@@ -702,12 +733,12 @@ class SqlMetadataStore:
             "publish_seq, "
             "min_platform_version, image_sha256, image_size, representations, manifest_key, "
             "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id, dev, sbom_key, "
-            "display_name) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "display_name, download_size) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (release_id, product_id, product, version, payload_version, publish_seq,
              min_platform_version,
              image_sha256, image_size, json.dumps(representations), manifest_key, image_key,
              delta_key, key_id, uploaded_by, _now_iso(), account_id, dev, sbom_key,
-             display_name))
+             display_name, _download_size(representations)))
 
     def get_release(self, release_id: str) -> dict | None:
         r = _d(self.query_one("SELECT * FROM releases WHERE release_id = ?", (release_id,)))
@@ -715,8 +746,8 @@ class SqlMetadataStore:
             r["representations"] = json.loads(r["representations"])
         return r
 
-    RELEASE_SORTS = {"version": "payload_version", "product": "product", "size": "image_size",
-                     "uploaded": "uploaded_at", "name": "display_name COLLATE NOCASE", "release": "release_id"}
+    RELEASE_SORTS = {"version": "payload_version", "product": "product", "size": "download_size",
+                     "uploaded": "uploaded_at", "name": "LOWER(display_name)", "release": "release_id"}
 
     def count_releases(self, product_id=None, account_id=None, products=None) -> int:
         where, params = _scope(account_id, product_id, products)
@@ -763,7 +794,7 @@ class SqlMetadataStore:
             "AND state = 'active' ORDER BY created_at DESC LIMIT 1", (account_id, product_id, cohort)))
 
     ROLLOUT_SORTS = {"created": "r.created_at", "percent": "r.percent", "state": "r.state",
-                     "cohort": "r.cohort", "product": "r.product_id", "name": "r.display_name COLLATE NOCASE",
+                     "cohort": "r.cohort", "product": "r.product_id", "name": "LOWER(r.display_name)",
                      "devices": "cohort_devices", "rollout": "r.rollout_id"}
 
     @staticmethod
@@ -1035,7 +1066,7 @@ class SqlMetadataStore:
         rebind so the fleet views reflect the new account immediately, not on the next check-in."""
         self.execute("UPDATE devices SET account_id = ? WHERE device_id = ?", (account_id, device_id))
 
-    DEVICE_SORTS = {"seen": "last_seen", "device": "COALESCE(NULLIF(display_name, ''), device_id) COLLATE NOCASE",
+    DEVICE_SORTS = {"seen": "last_seen", "device": "LOWER(COALESCE(NULLIF(display_name, ''), device_id))",
                     "product": "product_id", "version": "current_version", "cohort": "cohort",
                     "first_seen": "first_seen"}
 
@@ -1412,17 +1443,14 @@ class SqlMetadataStore:
     # --- advisories (CVE monitoring) --------------------------------------------------------
 
     def releases_with_devices(self, account_id: str = "") -> list[dict]:
-        """The releases the scanner must cover: every release some device is RUNNING,
-        plus every release an active rollout is still offering. A release nobody runs
-        and nobody offers needs no scan."""
+        """The releases the scanner covers: every release some device is RUNNING. A release
+        no device runs -- one just published, one being offered, one everybody moved off --
+        is out of scope, and its findings are cleared, so the list is what the fleet is
+        actually exposed to."""
         rows = self.query_all(
             "SELECT DISTINCT r.* FROM releases r JOIN devices d "
             "ON d.product_id = r.product_id AND d.current_version = r.version "
-            "AND d.account_id = r.account_id WHERE r.account_id = ? "
-            "UNION "
-            "SELECT DISTINCT r.* FROM releases r JOIN rollouts ro "
-            "ON ro.release_id = r.release_id AND ro.state = 'active' "
-            "WHERE r.account_id = ?", (account_id, account_id))
+            "AND d.account_id = r.account_id WHERE r.account_id = ?", (account_id,))
         out = [_d(r) for r in rows]
         for r in out:
             r["representations"] = json.loads(r["representations"])
@@ -1486,7 +1514,7 @@ class SqlMetadataStore:
         "severity": ("CASE a.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' "
                      "THEN 2 WHEN 'low' THEN 3 ELSE 4 END"),
         "advisory": "a.vuln_id", "component": "a.component",
-        "release": "COALESCE(NULLIF(r.display_name, ''), a.release_id) COLLATE NOCASE",
+        "release": "LOWER(COALESCE(NULLIF(r.display_name, ''), a.release_id))",
         "first_seen": "a.first_seen", "last_seen": "a.last_seen"}
 
     @staticmethod
@@ -2202,7 +2230,10 @@ class PostgresMetadataStore(SqlMetadataStore):
     _POSTGRES_ONLY = "-- postgres: "
 
     def _dialect(self, stmt: str) -> str:
-        """Run the Postgres half of a dialect-split migration step (see the base)."""
+        """Run the Postgres half of a dialect-split migration step (see the base); a
+        sqlite-only step is skipped (an empty statement is an error on Postgres)."""
+        if stmt.startswith(self._SQLITE_ONLY):
+            return "SELECT 1"
         return (stmt[len(self._POSTGRES_ONLY):]
                 if stmt.startswith(self._POSTGRES_ONLY) else stmt)
 

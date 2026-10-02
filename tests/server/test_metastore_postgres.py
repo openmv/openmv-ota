@@ -125,3 +125,32 @@ def test_rate_counters_are_exact_under_concurrency(pg):
     assert errors == []
     assert sorted(n for r in results for n in r) == list(range(1, 161))
     assert pg.rate_sweep(660) == 1
+
+
+def test_every_list_sort_runs_on_postgres(pg):
+    """Each sortable list, by every sort key and both directions. `COLLATE NOCASE` is
+    SQLite-only: on Postgres it failed the device, release, rollout and advisory lists
+    sorted by name (a 500 on the rollout and cohort pages) while every SQLite test passed."""
+    pg.add_release(release_id="rel_1", product_id=7, product="p", version="1.0.0",
+                   payload_version=1, min_platform_version=0, image_sha256="ab", image_size=1,
+                   representations=[{"format": "full", "size": 9}], manifest_key="m",
+                   image_key="i", account_id="acct", display_name="Beta")
+    pg.add_rollout(rollout_id="ro_1", release_id="rel_1", product_id=7, cohort="__default__",
+                   percent=10, account_id="acct", display_name="alpha")
+    pg.upsert_device(device_id="d1", product_id=7, current_version="1.0.0", account_id="acct")
+    pg.upsert_advisories("rel_1", [{"vuln_id": "CVE-1", "component": "c", "version": "1",
+                                    "severity": "low", "summary": ""}], "acct")
+    pg.append_audit(actor="t", action="x.y", account_id="acct")
+    for d in ("asc", "desc"):
+        for key in pg.RELEASE_SORTS:
+            assert pg.list_releases(account_id="acct", sort=key, direction=d)
+        for key in pg.ROLLOUT_SORTS:
+            assert pg.list_rollouts(account_id="acct", sort=key, direction=d)
+        for key in pg.DEVICE_SORTS:
+            assert pg.list_devices(account_id="acct", product_id=7, cohort="__default__",
+                                   sort=key, direction=d)
+        for key in pg.ADVISORY_SORTS:
+            assert pg.list_advisories(account_id="acct", sort=key, direction=d)
+        for key in pg.AUDIT_SORTS:
+            assert pg.read_audit(account_id="acct", sort=key, direction=d)
+    assert pg.get_release("rel_1")["download_size"] == 9              # v33 on Postgres too

@@ -209,7 +209,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         M._MIGRATIONS = full
 
     store = M.SqliteMetadataStore(db)
-    assert store.migrate() == 32                           # the deploy applies 21 onward
+    assert store.migrate() == 33                           # the deploy applies 21 onward
     assert sorted(d["device_id"] for d in store.list_devices()) == [
         "OPENMV_N6:3c0021000c51", "noboard"]               # board-less rows are left alone
     assert store.device_account("OPENMV_N6:3c0021000c51")["account_id"] == "acct"
@@ -217,7 +217,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         "OPENMV_N6:3c0021000c51"
     store.add_token("h", "t", ["observe"], account_id="acct", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert M.SqliteMetadataStore(db).migrate() == 32        # idempotent
+    assert M.SqliteMetadataStore(db).migrate() == 33        # idempotent
 
 
 def test_parameterless_sql_is_executed_without_a_parameter_sequence():
@@ -470,10 +470,10 @@ def test_migrations_survive_postgres_transaction_semantics(tmp_path):
         M._MIGRATIONS = full
 
     store = _PostgresManners(db)
-    assert store.migrate() == 32             # walks past the orphaned column
+    assert store.migrate() == 33             # walks past the orphaned column
     store.add_token("h", "t", ["observe"], account_id="a", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert _PostgresManners(db).migrate() == 32        # and is idempotent
+    assert _PostgresManners(db).migrate() == 33        # and is idempotent
 
 
 def test_two_first_checkins_of_one_new_device_do_not_collide(tmp_path):
@@ -580,3 +580,52 @@ def test_postgres_missing_pool_hint(monkeypatch):
     monkeypatch.setitem(sys.modules, "psycopg_pool", None)
     with pytest.raises(ServerError, match="psycopg_pool"):
         PostgresMetadataStore("postgresql://x")
+
+
+def test_a_release_reports_the_size_it_downloads(tmp_path):
+    """image_size is the image unpacked into its slot (12 MiB on an AE3); what a device
+    downloads is the full representation as stored -- encrypted size when encrypted. v33
+    adds download_size, backfills it for releases already published, and the size sort
+    orders by it."""
+    import json
+    from openmv_ota.server import metastore as M
+
+    db = str(tmp_path / "m.db")
+    full = M._MIGRATIONS
+    try:                                                   # a release published before v33
+        M._MIGRATIONS = full[:32]
+        old = M.SqliteMetadataStore(db)
+        old.migrate()
+        old.execute(
+            "INSERT INTO releases (release_id, product_id, product, version, payload_version, "
+            "min_platform_version, image_sha256, image_size, representations, manifest_key, "
+            "image_key, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("rel_old", 7, "p", "1.0.0", 1, 0, "ab", 12582912,
+             json.dumps([{"format": "full", "size": 44912, "enc": {"size": 44905}},
+                         {"format": "ocdl", "size": 12848}]), "m", "i", "2026-01-01T00:00:00+00:00"))
+    finally:
+        M._MIGRATIONS = full
+    store = M.SqliteMetadataStore(db)
+    store.migrate()
+    assert store.get_release("rel_old")["download_size"] == 44905          # backfilled
+    store.add_release(release_id="rel_new", product_id=7, product="p", version="1.1.0",
+                      payload_version=2, min_platform_version=0, image_sha256="cd",
+                      image_size=12582912, representations=[{"format": "full", "size": 9000}],
+                      manifest_key="m2", image_key="i2")
+    assert store.get_release("rel_new")["download_size"] == 9000           # set at publish
+    assert [r["release_id"] for r in store.list_releases(sort="size", direction="asc")] == [
+        "rel_new", "rel_old"]
+    assert M._download_size([{"format": "ocdl", "size": 5}]) == 0          # no full image
+    for junk in ([{"format": "full", "size": [1]}], [{"format": "full", "enc": "x"}], ["x"],
+                 [{"format": "full", "size": True}]):
+        assert M._download_size(junk) == 0                                  # never raises
+    assert M._download_size([{"format": "full", "enc": {"size": "9"}, "size": 7}]) == 7
+
+
+def test_a_sqlite_only_migration_step_is_skipped_on_postgres():
+    from openmv_ota.server.metastore import PostgresMetadataStore, SqlMetadataStore
+    pg = PostgresMetadataStore.__new__(PostgresMetadataStore)
+    lite = SqlMetadataStore.__new__(SqlMetadataStore)
+    assert pg._dialect("-- sqlite: UPDATE x") == "SELECT 1"
+    assert lite._dialect("-- sqlite: UPDATE x") == "UPDATE x"
+    assert pg._dialect("-- postgres: UPDATE y") == "UPDATE y"

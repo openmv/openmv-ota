@@ -450,6 +450,11 @@ def test_success_counted_when_device_runs_offered_release(tmp_path):
     assert store.get_rollout("ro1")["attempted"] == 1 and store.get_rollout("ro1")["updated"] == 0
     c.post("/api/v1/check", json=_checkin(pv=0x02000000))     # now running it -> updated 1
     assert store.get_rollout("ro1")["updated"] == 1
+    # ...and the install lands in the install history the dashboards chart (the device
+    # never POSTs /feedback itself; this used to read 0 after a day of real updates)
+    assert store.installs_by_day(days=1)["installed"] == 1
+    c.post("/api/v1/check", json=_checkin(pv=0x02000000))     # a repeat check-in: still one
+    assert store.installs_by_day(days=1)["installed"] == 1
 
 
 def test_not_in_staged_percent(tmp_path):
@@ -504,6 +509,7 @@ def test_autopause_on_fallback_threshold(tmp_path):
         c.post("/api/v1/check", json=_checkin(dev=d, pv=0x01000000, fallback_reason="crc"))
     ro = store.get_rollout("ro1")
     assert ro["failures"] == 2 and ro["state"] == "paused" and ro["pause_reason"] == "failure_limit"
+    assert store.installs_by_day(days=1)["failed"] == 2       # and in the install history
     assert any(e["action"] == "rollout.autopause" for e in store.read_audit())
 
 

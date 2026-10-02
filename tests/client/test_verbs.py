@@ -1111,9 +1111,13 @@ def test_advisories_scan_scope(wired, tmp_path, monkeypatch, capsys):
     _fake_osv_hits(monkeypatch, MBEDTLS_CVE)
     assert main(["client", "advisories", "scan"]) == 0
     assert "scanned 0 release(s)" in capsys.readouterr().out
-    # an ACTIVE rollout pulls it back into scope even with zero devices on it
+    # an active rollout offering it is still not enough: no device runs it
     store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID,
                       cohort="__default__", percent=10)
+    assert main(["client", "advisories", "scan"]) == 0
+    assert "scanned 0 release(s)" in capsys.readouterr().out
+    # a device running it brings it into scope
+    store.upsert_device(device_id="d1", product_id=BID, current_version="2.0.0")
     assert main(["client", "advisories", "scan"]) == 0
     assert "scanned 1 release(s): 1 finding(s), 1 new" in capsys.readouterr().out
     # single-release scan + the 404 edge
@@ -1125,64 +1129,22 @@ def test_advisories_scan_scope(wired, tmp_path, monkeypatch, capsys):
     capsys.readouterr()
 
 
-def test_publish_reports_advisories(wired, tmp_path, monkeypatch, capsys):
+def test_publish_does_not_scan_for_advisories(wired, tmp_path, monkeypatch, capsys):
+    """CVE monitoring covers releases devices run; a release just published runs nowhere, so
+    publishing neither scans it nor records findings against it."""
     store, _ = wired
     project = tmp_path / "proj"
     _build_release(project)
     import openmv_ota.build.sbom as sbom_mod
     monkeypatch.setattr(sbom_mod, "render_sbom", lambda proj: json.dumps(
         {"components": [{"name": "mbedtls", "version": "3.5.1"}]}))
-    _fake_osv_hits(monkeypatch, MBEDTLS_CVE)
-    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
-    out = capsys.readouterr().out
-    assert "published rel_" in out
-    # the maker walks away knowing what the new release carries
-    assert "advisory: CVE-2026-21437  high  mbedtls 3.5.1" in out
-    # a clean SBOM says so explicitly
-    _fake_osv_hits(monkeypatch, {})
-    _build_release(project, pv=0x02000100)
-    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
-    assert "no known vulnerabilities" in capsys.readouterr().out
-
-
-def test_publish_advisory_scan_unavailable(wired, tmp_path, monkeypatch, capsys):
-    store, _ = wired
-    project = tmp_path / "proj"
-    _build_release(project)
-    import openmv_ota.build.sbom as sbom_mod
-    monkeypatch.setattr(sbom_mod, "render_sbom", lambda proj: json.dumps(
-        {"components": [{"name": "x", "version": "1"}]}))
-    from openmv_ota.client.api import Api, ClientError
-
-    def boom(self, release_id=None):
-        raise ClientError("scan endpoint down", exit_code=1)
-    monkeypatch.setattr(Api, "scan_advisories", boom)
-    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
-    out = capsys.readouterr().out
-    assert "published rel_" in out and "advisory scan unavailable" in out
-
-
-def test_publish_survives_scanner_crash(wired, tmp_path, monkeypatch, capsys):
-    # The publish-time background scan blowing up must never touch the publish.
-    store, _ = wired
-    project = tmp_path / "proj"
-    _build_release(project)
-    import openmv_ota.build.sbom as sbom_mod
-    monkeypatch.setattr(sbom_mod, "render_sbom", lambda proj: json.dumps(
-        {"components": [{"name": "x", "version": "1"}]}))
     from openmv_ota.server.advisor import OsvClient
-    calls = {"n": 0}
-
-    def crash_once(self, components):
-        calls["n"] += 1
-        if calls["n"] == 1:                     # the publish-time background scan
-            raise RuntimeError("osv exploded")
-        return []
-    monkeypatch.setattr(OsvClient, "scan", crash_once)
+    scans = []
+    monkeypatch.setattr(OsvClient, "scan", lambda self, comps: scans.append(comps) or [])
     assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
-    out = capsys.readouterr()
-    assert "published rel_" in out.out
-    assert "publish-time advisory scan failed" in out.err
+    out = capsys.readouterr().out
+    assert "published rel_" in out and "advisor" not in out
+    assert scans == [] and store.list_advisories() == []
 
 
 def test_release_artifact_download(wired, tmp_path, capsys):

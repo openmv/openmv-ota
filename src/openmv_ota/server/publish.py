@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 import zlib
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
@@ -353,18 +352,8 @@ async def publish_release(request: Request, background: BackgroundTasks,
                     entity_id=release_id, data={"product_id": product_id, "version": body.get("version"),
                                                 "payload_version": payload_version},
                     account_id=account_id, product_id=product_id)
-    # CVE monitoring starts NOW, not at the next daily pass: scan the new release's
-    # SBOM in the background (a scan failure never touches the publish result).
-    if sbom_key is not None:
-        def _scan_quietly(state=request.app.state,          # binds THIS request's values
-                          rel={"release_id": release_id, "account_id": account_id,  # noqa: B006
-                               "sbom_key": sbom_key}):
-            from . import advisor
-            try:
-                advisor.scan_release(state, rel, actor=principal.name)
-            except Exception as e:                            # noqa: BLE001
-                print("publish-time advisory scan failed: %s" % e, file=sys.stderr)
-        background.add_task(_scan_quietly)
+    # No CVE scan here: a release nobody runs yet is out of the scanner's scope (see
+    # metastore.releases_with_devices); the scheduled pass picks it up once a device runs it.
     return {"release_id": release_id, "product_id": product_id,
             "product_id_str": str(product_id), "version": body.get("version"),
             "payload_version": payload_version, "representations": [r["format"] for r in reps],
