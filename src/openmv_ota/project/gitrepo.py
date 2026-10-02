@@ -108,8 +108,11 @@ def submodule_status(repo: Path) -> list[dict]:
     for line in out.splitlines():
         if not line.strip():
             continue
-        flag = line[0]
-        rest = line[1:].split()
+        # run_git strips the whole output, which takes the FIRST line's leading-space flag with
+        # it: reading line[0] as the flag there ate the first character of the first
+        # submodule's sha (lib/apriltag's, in the lock and the SBOM). The flag is optional.
+        flag = line[0] if line[0] in " +-U" else " "
+        rest = (line[1:] if line[0] in " +-U" else line).split()
         if len(rest) < 2:
             continue
         commit, path = rest[0], rest[1]

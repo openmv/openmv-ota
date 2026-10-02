@@ -75,6 +75,20 @@ def test_submodule_status_parsing(monkeypatch, tmp_path):
     assert by_path["modules/ulab"]["initialized"] is True
 
 
+def test_submodule_status_keeps_the_first_sha_whole(monkeypatch, tmp_path):
+    """run_git strips its output, and with it the FIRST line's leading-space flag. Reading
+    line[0] as the flag regardless ate the first character of that submodule's sha -- in
+    the lock and the SBOM (lib/apriltag 636b9ba... recorded as 36b9ba..., which OSV then
+    refused, failing the whole CVE scan)."""
+    out = (" 636b9ba14ba8485c9fc09590cd4ef53f11427966 lib/apriltag (heads/master)\n"
+           " 1111111111111111111111111111111111111111 lib/micropython (v1.28.0)\n").strip()
+    monkeypatch.setattr(gitrepo, "run_git", lambda *a, **k: out)
+    by_path = {e["path"]: e for e in gitrepo.submodule_status(tmp_path)}
+    assert by_path["lib/apriltag"]["commit"] == "636b9ba14ba8485c9fc09590cd4ef53f11427966"
+    assert by_path["lib/apriltag"]["initialized"] is True
+    assert by_path["lib/micropython"]["commit"] == "1" * 40
+
+
 def test_submodule_remotes_parsing(tmp_path, git_cmd):
     # a REAL .gitmodules read through git config --file (no submodule checkout needed)
     repo = tmp_path / "r"
