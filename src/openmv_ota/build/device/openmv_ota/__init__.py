@@ -961,8 +961,12 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         ctx.load_verify_locations(cadata=ca.decode() if isinstance(ca, bytes) else ca)
         ss = ctx.wrap_socket(sock, server_hostname=host)   # blocking TLS handshake (ISR-fed by caller)
         payload = json.dumps(body).encode()
+        # HTTP/1.0, not 1.1: a 1.1 reply may be CHUNKED (Cloudflare in front of the hosted
+        # server does exactly that), and this reader takes the body as-is -- the chunk-size
+        # lines then broke the JSON parse on every check-in. No server or proxy may chunk a
+        # reply to a 1.0 request; it sends Content-Length or closes at the end of the body.
         ss.write((
-            "POST /api/v1/check HTTP/1.1\r\nHost: %s\r\nUser-Agent: openmv-cam/1.0\r\n"
+            "POST /api/v1/check HTTP/1.0\r\nHost: %s\r\nUser-Agent: openmv-cam/1.0\r\n"
             "Content-Type: application/json\r\nContent-Length: %d\r\n"
             "Connection: close\r\n\r\n" % (host, len(payload))).encode() + payload)
         status_line = ss.readline()

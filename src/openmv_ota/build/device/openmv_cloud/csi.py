@@ -580,7 +580,8 @@ async def poll_watch(stream=_DEFAULT_STREAM, grant=None):  # pragma: no cover  (
     tls, host, port, path = _split_url(entry["poll_url"])
     reader, writer = await _open(host, port, tls)
     try:
-        writer.write(("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
+        # HTTP/1.0 so no proxy can chunk the reply (see openmv_ota's check-in)
+        writer.write(("GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: %s\r\n"
                       "Connection: close\r\n\r\n" % (path, host, _UA)).encode())
         await writer.drain()
         status = await reader.readline()
