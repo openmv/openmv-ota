@@ -68,29 +68,75 @@ def test_board_port_none_without_port_line(tmp_path):
     assert fw._board_port(repo, "B") is None
 
 
-def test_an_ota_build_no_longer_patches_the_mbedtls_config(make_project, monkeypatch):
-    """PEM parsing is on in micropython's common mbedtls config for every board that builds
-    mbedtls (8356e67, 2026-08-13), so an OTA build passes no MBEDTLS_CONFIG_FILE override and
-    leaves the firmware's own config alone. A firmware older than that is refused by
-    project.py's requirement check, with the reason, rather than patched here."""
-    root, repo, _app = make_project(ota=True)
-    common = Path(repo) / _COMMON_REL
-    before = common.read_text()
-    assert "MBEDTLS_PEM_PARSE_C" in before          # the fixture mirrors current firmware
+def _capture_make(monkeypatch, headers):
+    """A fake make that records the build args and, while the wrapper dir still exists,
+    the generated mbedtls header the args point at."""
     seen = []
 
     def fake(repo_, args):
         seen.extend(args)
+        for a in args:
+            if a.startswith("MBEDTLS_CONFIG_FILE="):
+                headers.append(Path(a.split("=", 1)[1].strip('\\"')).read_text())
         if "clean" not in args:
             target = next(a.split("=", 1)[1] for a in args if a.startswith("TARGET="))
             f = Path(repo_) / "build" / target / "bin" / "firmware.bin"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(b"FW")
     monkeypatch.setattr(fw, "_run_make", fake)
+    return seen
+
+
+def test_an_ota_build_adds_the_mbedtls_speed_options_the_firmware_lacks(make_project, monkeypatch):
+    """Without them an AE3 TLS handshake with verification took ~17 s and Cloudflare cut it
+    off; an OTA build for a TLS-update board adds them through a wrapper header that
+    includes the port's own config unchanged -- the firmware source is never touched."""
+    root, repo, _app = make_project(ota=True)
+    common = Path(repo) / _COMMON_REL
+    before = common.read_text()
+    headers = []
+    seen = _capture_make(monkeypatch, headers)
     fw.build_firmware(root, firmware=repo, boards=["OPENMV_N6"])
 
-    assert not [a for a in seen if a.startswith("MBEDTLS_CONFIG_FILE=")]
+    arg = [a for a in seen if a.startswith("MBEDTLS_CONFIG_FILE=")]
+    assert len(arg) == 1 and arg[0].startswith('MBEDTLS_CONFIG_FILE=\\"')   # a C string literal
+    (h,) = headers
+    assert h.index('#include "mbedtls/mbedtls_config_port.h"') < h.index("#define MBEDTLS_HAVE_ASM")
+    for d in fw._MBEDTLS_SPEED:
+        assert "#ifndef %s\n#define %s\n#endif" % (d, d) in h
     assert common.read_text() == before             # firmware source untouched, as ever
+
+
+def test_the_speed_options_fall_away_once_the_firmware_has_them(tmp_path):
+    """Upstream took them: once the firmware's own config (common or port) defines every
+    option, nothing is injected and the build is exactly the firmware's. One already there
+    is just not repeated."""
+    from types import SimpleNamespace
+    proj = SimpleNamespace(board=lambda name: SimpleNamespace(recovery_ca_bundle=True))
+    repo = _fake_fw(tmp_path, port="alif")
+    out = tmp_path / "wrap"
+    out.mkdir()
+    port_cfg = repo / "lib" / "micropython" / "ports" / "alif" / "mbedtls" / "mbedtls_config_port.h"
+    port_cfg.write_text(port_cfg.read_text() + "#define MBEDTLS_ECP_NIST_OPTIM\n")
+    arg = fw._mbedtls_speed_arg(proj, repo, "OPENMV_N6", out)
+    h = (out / "mbedtls_config_openmv_ota.h").read_text()
+    assert arg and "MBEDTLS_ECP_NIST_OPTIM" not in h and "MBEDTLS_HAVE_ASM" in h
+
+    common = repo / _COMMON_REL
+    common.write_text(common.read_text() + "  #define MBEDTLS_HAVE_ASM\n"
+                      "#define MBEDTLS_ECP_DP_CURVE25519_ENABLED\n")
+    assert fw._mbedtls_speed_arg(proj, repo, "OPENMV_N6", out) is None
+    # a mention that is not a define (a comment, an #ifdef) does not count as having it
+    common.write_text(common.read_text().replace("  #define MBEDTLS_HAVE_ASM", "// MBEDTLS_HAVE_ASM"))
+    assert fw._mbedtls_speed_arg(proj, repo, "OPENMV_N6", out) is not None
+
+
+def test_no_speed_options_for_a_board_without_room(tmp_path):
+    """Only boards whose firmware carries the full CA bundle (the TLS-update boards with
+    flash to spare) get them; the 1792 KB parts are left exactly as they build."""
+    from types import SimpleNamespace
+    proj = SimpleNamespace(board=lambda name: SimpleNamespace(recovery_ca_bundle=False))
+    assert fw._mbedtls_speed_arg(proj, tmp_path, "OPENMV4", tmp_path) is None
 
 
 def test_build_firmware_non_ota(make_project, monkeypatch):
@@ -679,3 +725,11 @@ def test_board_overlay_refuses_a_firmware_that_disagrees_with_the_table(tmp_path
     with pytest.raises(BuildError, match="does not define IMLIB_ENABLE_DATAMATRICES"):
         fw._board_overlay(repo, "OPENMV4", tmp_path / "t2")
     assert fw._board_overlay(repo, "OPENMV_N6", tmp_path / "t3") is None
+
+
+def test_speed_options_with_no_port_config_file(tmp_path):
+    """A port without its own mbedtls config file is judged on the common config alone."""
+    from types import SimpleNamespace
+    proj = SimpleNamespace(board=lambda name: SimpleNamespace(recovery_ca_bundle=True))
+    repo = _fake_fw(tmp_path, port="mimxrt", port_cfg=False)
+    assert fw._mbedtls_speed_arg(proj, repo, "OPENMV_N6", tmp_path) is not None
