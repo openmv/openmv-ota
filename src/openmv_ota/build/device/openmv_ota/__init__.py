@@ -958,6 +958,10 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         sock.settimeout(_CHECKIN_TIMEOUT)            # bounds handshake + each recv; WINC-safe (no poll)
         sock.connect(ai[-1])
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        # VERIFY the server. MicroPython's PROTOCOL_TLS_CLIENT defaults to CERT_NONE (unlike
+        # CPython), so loading the CA alone checked nothing: anyone on the path could answer
+        # the check-in and hand out Live/ingest grants. The installer always verified.
+        ctx.verify_mode = ssl.CERT_REQUIRED
         ctx.load_verify_locations(cadata=ca.decode() if isinstance(ca, bytes) else ca)
         ss = ctx.wrap_socket(sock, server_hostname=host)   # blocking TLS handshake (ISR-fed by caller)
         payload = json.dumps(body).encode()

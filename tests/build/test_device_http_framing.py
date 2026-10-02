@@ -25,3 +25,13 @@ def test_the_live_poll_asks_for_an_unchunked_reply():
     poll = src[src.index("async def poll_watch"):]
     poll = poll[:poll.index("\nasync def ") if "\nasync def " in poll else len(poll)]
     assert "HTTP/1.0" in poll and "HTTP/1.1" not in poll
+
+
+def test_every_device_tls_client_verifies_the_server():
+    """MicroPython's SSLContext(PROTOCOL_TLS_CLIENT) defaults to CERT_NONE -- loading a CA
+    does not turn verification on. Each device TLS client must set CERT_REQUIRED itself."""
+    for parts in (("openmv_ota", "__init__.py"), ("openmv_ota", "data", "installer.py"),
+                  ("openmv_cloud", "_lib.py")):
+        src = _src(*parts)
+        assert src.count("ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)") == \
+            src.count("verify_mode = ssl.CERT_REQUIRED"), parts
