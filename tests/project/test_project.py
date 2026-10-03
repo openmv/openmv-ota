@@ -811,23 +811,105 @@ def test_load_project_verify_false_skips(tmp_path, make_firmware, make_sdk, git_
 def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, make_sdk):
     root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, ota_keys=2, factory_keys=1)
     main = (proj.ProjectPaths(root).app_dir / "main.py").read_text()
-    assert "openmv_ota.run(" in main               # the cloud lifecycle task
-    assert "from openmv_cloud import" in main       # the SDK wrappers
-    assert "logs.enable()" in main
-    assert "datalog.post(" in main                  # a telemetry example
-    assert "configure(" in main                     # the tunable RAM limits
-    # the app confirms the OTA trial explicitly once it is operational (run() does
-    # not auto-confirm), so a bad update rolls back instead of sticking.
+    assert main == proj._APP_MAIN_OTA      # THE file the website's /start page shows
+    compile(main, "main.py", "exec")       # it parses (CPython syntax is a superset here)
+    assert 'openmv_ota.run("https://ota.cloud.openmv.io", recover=bring_up_network)' in main
+    assert main.count("https://ota.cloud.openmv.io") == 1   # the one URL the website swaps
+    assert "from openmv_cloud import csi, datalog, logs" in main
+    # both sinks started: logs.enable() alone leaves datalog.post() buffering forever
+    assert "logs.enable()" in main and "datalog.enable()" in main
+    # the heap graph: percent of the GC heap in use, one decimal, every 5 s, its own task
+    assert 'datalog.post("heap", {"used_pct": round(100 * used / (used + free), 1)})' in main
+    assert "used, free = gc.mem_alloc(), gc.mem_free()" in main
+    assert "asyncio.create_task(heap_graph())" in main and "await asyncio.sleep(5)" in main
+    assert 'log.info("app version %s, count %d", VERSION, count)' in main
+    assert 'VERSION = openmv_ota.identity().get("app_version")' in main
+    # the app confirms the OTA trial explicitly once it is operational (run() does not
+    # auto-confirm), so a bad update rolls back instead of sticking.
     assert "openmv_ota.confirm()" in main
-    # the labelled sections tell the user what is scaffolding vs their own code
-    assert "GENERATED" in main and "YOUR APP" in main
-    # the opt-in watchdog is wired in seamlessly: arm AFTER the slow camera setup (not at
-    # import) and feed once per loop iteration -- no-ops until the user turns openmv_wdt on.
-    assert "import openmv_wdt" in main
-    assert "openmv_wdt.start()" in main
-    assert "openmv_wdt.feed()" in main
-    # start() comes after cam setup and before the loop; feed() is inside the loop
-    assert main.index("openmv_wdt.start()") < main.index("while True:") < main.index("openmv_wdt.feed()")
+    # a camera without Ethernet must still run it: LAN() is only built inside USE_LAN
+    lan = main.index("network.LAN()")
+    assert main.rindex("if USE_LAN:", 0, lan) < lan < main.index("else:", lan)
+    assert "USE_LAN = False" in main
+    # the short version: no banners, no RAM limits (defaults apply), no watchdog
+    for gone in ("GENERATED", "YOUR APP", "configure(", "openmv_wdt"):
+        assert gone not in main, gone
+
+
+def test_the_ota_main_runs_against_stub_device_modules(tmp_path, monkeypatch):
+    """Execute the template's own logic on CPython with stand-in device modules: the network
+    bring-up (Wi-Fi path), the heap figure and confirm(). Catches a NameError or a bad call
+    that compile() cannot."""
+    import asyncio
+    import sys
+    import types
+
+    posted, calls = [], []
+
+    class _Nic:
+        def __init__(self, *a):
+            calls.append(("nic",) + a)
+
+        def active(self, on):
+            calls.append(("active", on))
+
+        def connect(self, ssid, pw):
+            calls.append(("connect", ssid, pw))
+
+        def isconnected(self):
+            return True
+
+    class _Cam:
+        def reset(self):
+            pass
+
+        def pixformat(self, f):
+            pass
+
+        def framesize(self, f):
+            pass
+
+        async def snapshot(self):
+            for _ in range(5):          # let the background tasks run once
+                await asyncio.sleep(0)
+            raise SystemExit            # then leave the main loop
+
+    async def run(url, recover=None):
+        calls.append(("run", url, recover.__name__))
+
+    gc_mod = types.SimpleNamespace(mem_alloc=lambda: 300, mem_free=lambda: 700)
+    # MicroPython's asyncio, on a loop made BEFORE `asyncio` is swapped in sys.modules
+    loop = asyncio.new_event_loop()
+    aio = types.SimpleNamespace(run=loop.run_until_complete, create_task=loop.create_task,
+                                sleep_ms=lambda ms: asyncio.sleep(0),
+                                sleep=lambda s: asyncio.sleep(0))
+    mods = {
+        "asyncio": aio, "gc": gc_mod,
+        "network": types.SimpleNamespace(WLAN=_Nic, STA_IF=0, LAN=None),
+        "openmv_ota": types.SimpleNamespace(identity=lambda: {"app_version": "1.2.3"}, run=run,
+                                            confirm=lambda: calls.append(("confirm",))),
+        "openmv_cloud": types.SimpleNamespace(
+            csi=types.SimpleNamespace(CSI=_Cam, RGB565=0, VGA=0),
+            datalog=types.SimpleNamespace(enable=lambda: None,
+                                          post=lambda t, o: posted.append((t, o))),
+            logs=types.SimpleNamespace(enable=lambda: None)),
+    }
+    for k, v in mods.items():
+        monkeypatch.setitem(sys.modules, k, v)
+    try:
+        with pytest.raises(SystemExit):
+            exec(compile(proj._APP_MAIN_OTA, "main.py", "exec"), {"__name__": "__main__"})
+    finally:
+        monkeypatch.undo()
+        pending = asyncio.all_tasks(loop)
+        for t in pending:
+            t.cancel()
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()
+    assert ("connect", "SSID", "PASSWORD") in calls
+    assert ("run", "https://ota.cloud.openmv.io", "bring_up_network") in calls
+    assert ("confirm",) in calls
+    assert ("heap", {"used_pct": 30.0}) in posted
 
 
 def test_non_ota_project_scaffolds_the_bare_main(tmp_path, make_firmware, make_sdk):
