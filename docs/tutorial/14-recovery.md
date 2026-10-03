@@ -45,7 +45,7 @@ self-hosting, change both:
 
 ```toml
 [ota]
-server_url = "https://ota.cloud.openmv.io"   # self-hosting? change this AND app/main.py's
+server_url = "https://ota.cloud.openmv.io"   # self-hosting? change this AND the URL in app/main.py
 ```
 
 The trust store has a working default: on the OpenMV N6, AE3, and RT1062 the

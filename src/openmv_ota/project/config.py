@@ -215,7 +215,7 @@ def render_config(
             "# Where devices fetch updates, and what they trust. BAKED INTO THE FIRMWARE, not the\n"
             "# romfs -- a device whose image is gone still needs both to reach the server, which is\n"
             "# exactly the case recovery exists for.\n"
-            "server_url = \"https://ota.cloud.openmv.io\"   # self-hosting? change this AND app/main.py's\n"
+            "server_url = \"https://ota.cloud.openmv.io\"   # self-hosting? change this AND the URL in app/main.py\n"
             % (signing_key_id or 0)                 # binds to the literal chain above, not below
             + (('# Anchors for the hosted OpenMV Cloud; self-hosting? Replace %s with your\n'
                 '# server\'s root (or pass `project new --ca`).\n' % ca) if cloud_roots else "")
