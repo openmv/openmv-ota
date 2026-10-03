@@ -841,15 +841,16 @@ def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, mak
         assert gone not in main, gone
 
 
-def test_the_ota_main_runs_against_stub_device_modules(tmp_path, monkeypatch):
-    """Execute the template's own logic on CPython with stand-in device modules: the network
-    bring-up (Wi-Fi path), the heap figure and confirm(). Catches a NameError or a bad call
-    that compile() cannot."""
+def _run_ota_main(monkeypatch, cam_cls):
+    """Execute the template's own logic on CPython with stand-in device modules, using camera
+    ``cam_cls``; returns (calls, posted, errors). Catches a NameError or a bad call that
+    compile() cannot. The run ends when something raises SystemExit (the stub camera after a
+    few frames, or the stub Event the crash path parks on)."""
     import asyncio
     import sys
     import types
 
-    posted, calls = [], []
+    posted, calls, errors = [], [], []
 
     class _Nic:
         def __init__(self, *a):
@@ -864,38 +865,39 @@ def test_the_ota_main_runs_against_stub_device_modules(tmp_path, monkeypatch):
         def isconnected(self):
             return True
 
-    class _Cam:
-        def reset(self):
-            pass
-
-        def pixformat(self, f):
-            pass
-
-        def framesize(self, f):
-            pass
-
-        async def snapshot(self):
-            for _ in range(5):          # let the background tasks run once
-                await asyncio.sleep(0)
-            raise SystemExit            # then leave the main loop
-
     async def run(url, self_test=None, wdt=None, poll_after_s=None, recover=None):   # run()'s order
         assert self_test is None and wdt is None
         calls.append(("run", url, poll_after_s, recover.__name__))
+
+    class _Event:                       # the crash path parks here: end the run instead
+        async def wait(self):
+            calls.append(("parked",))
+            for _ in range(5):          # the loop stays alive: the OTA task gets to run
+                await asyncio.sleep(0)
+            raise SystemExit
+
+    class _Log:
+        def info(self, *a):
+            pass
+
+        def error(self, fmt, *a):
+            errors.append(fmt % a)
 
     gc_mod = types.SimpleNamespace(mem_alloc=lambda: 300, mem_free=lambda: 700)
     # MicroPython's asyncio, on a loop made BEFORE `asyncio` is swapped in sys.modules
     loop = asyncio.new_event_loop()
     aio = types.SimpleNamespace(run=loop.run_until_complete, create_task=loop.create_task,
                                 sleep_ms=lambda ms: asyncio.sleep(0),
-                                sleep=lambda s: asyncio.sleep(0))
+                                sleep=lambda s: asyncio.sleep(0), Event=_Event)
     mods = {
         "asyncio": aio, "gc": gc_mod,
+        "logging": types.SimpleNamespace(getLogger=lambda name: _Log()),
         "network": types.SimpleNamespace(WLAN=_Nic, STA_IF=0, LAN=None),
         "openmv_ota": types.SimpleNamespace(identity=lambda: {"app_version": "1.2.3"}, run=run,
                                             confirm=lambda: calls.append(("confirm",))),
         "openmv_cloud": types.SimpleNamespace(
-            csi=types.SimpleNamespace(CSI=_Cam, RGB565=0, QVGA=0),
+            csi=types.SimpleNamespace(CSI=lambda: cam_cls(calls), RGB565="RGB565",
+                                      GRAYSCALE="GRAYSCALE", QVGA="QVGA"),
             datalog=types.SimpleNamespace(enable=lambda: None,
                                           post=lambda t, o: posted.append((t, o))),
             logs=types.SimpleNamespace(enable=lambda: None)),
@@ -912,11 +914,66 @@ def test_the_ota_main_runs_against_stub_device_modules(tmp_path, monkeypatch):
             t.cancel()
         loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
+    return calls, posted, errors
+
+
+class _Cam:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def reset(self):
+        pass
+
+    def pixformat(self, f):
+        self.calls.append(("pixformat", f))
+
+    def framesize(self, f):
+        pass
+
+    async def snapshot(self):
+        import asyncio
+        for _ in range(5):              # let the background tasks run once
+            await asyncio.sleep(0)
+        raise SystemExit                # then leave the main loop
+
+
+def test_the_ota_main_runs_against_stub_device_modules(monkeypatch):
+    """The network bring-up (Wi-Fi path), the heap figure and confirm()."""
+    calls, posted, errors = _run_ota_main(monkeypatch, _Cam)
     assert ("connect", "SSID", "PASSWORD") in calls
     # CHECK_IN_S reaches run() as its interval (a positional slip would land in self_test)
     assert ("run", "https://ota.cloud.openmv.io", 300, "bring_up_network") in calls
+    assert ("pixformat", "RGB565") in calls and ("pixformat", "GRAYSCALE") not in calls
     assert ("confirm",) in calls
     assert ("heap", {"used_pct": 30.0}) in posted
+    assert errors == [] and ("parked",) not in calls
+
+
+def test_the_ota_main_falls_back_to_grayscale_on_a_mono_sensor(monkeypatch):
+    # an HM0360 / HM01B0 (Portenta, Nicla) rejects RGB565 with "Sensor control failed"; that used
+    # to end asyncio.run(main()) -- and the OTA task with it, so the board never checked in
+    class _Mono(_Cam):
+        def pixformat(self, f):
+            super().pixformat(f)
+            if f == "RGB565":
+                raise RuntimeError("Sensor control failed")
+
+    calls, _posted, errors = _run_ota_main(monkeypatch, _Mono)
+    assert calls.count(("pixformat", "RGB565")) == 1 and ("pixformat", "GRAYSCALE") in calls
+    assert ("confirm",) in calls and errors == []
+
+
+def test_an_app_crash_leaves_updates_running(monkeypatch):
+    # an app bug at boot must not kill the OTA task: log it, keep the loop alive, and do NOT
+    # confirm -- the fix (or a rollback) can still arrive over the air
+    class _Broken(_Cam):
+        def framesize(self, f):
+            raise ValueError("bad app")
+
+    calls, _posted, errors = _run_ota_main(monkeypatch, _Broken)
+    assert ("run", "https://ota.cloud.openmv.io", 300, "bring_up_network") in calls
+    assert errors == ["app crashed: ValueError('bad app')"]
+    assert ("parked",) in calls and ("confirm",) not in calls
 
 
 def test_non_ota_project_scaffolds_the_bare_main(tmp_path, make_firmware, make_sdk):

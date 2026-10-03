@@ -742,13 +742,20 @@ async def main():
     asyncio.create_task(openmv_ota.run("https://ota.cloud.openmv.io", poll_after_s=CHECK_IN_S, recover=bring_up_network))
     asyncio.create_task(heartbeat())
     asyncio.create_task(heap_graph())
-    cam = csi.CSI()                   # the camera, with live video built in
-    cam.reset()
-    cam.pixformat(csi.RGB565)
-    cam.framesize(csi.QVGA)
-    openmv_ota.confirm()              # this version works: keep it (else it rolls back)
-    while True:
-        await cam.snapshot()
+    try:
+        cam = csi.CSI()               # the camera, with live video built in
+        cam.reset()
+        try:
+            cam.pixformat(csi.RGB565)
+        except RuntimeError:          # mono sensors (HM01B0, HM0360) have no color
+            cam.pixformat(csi.GRAYSCALE)
+        cam.framesize(csi.QVGA)
+        openmv_ota.confirm()          # this version works: keep it (else it rolls back)
+        while True:
+            await cam.snapshot()
+    except Exception as e:            # an app bug must not stop updates: ship the fix OTA
+        log.error("app crashed: %r", e)
+        await asyncio.Event().wait()  # keep running so the update can land
 
 
 asyncio.run(main())
