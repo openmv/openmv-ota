@@ -167,6 +167,15 @@ def test_account_rename_and_active():
 
 # --- the hash-chained audit log -------------------------------------------------------------
 
+def test_audit_sort_ties_list_newest_first():
+    # a history sorted by actor/action lists equal keys newest first, like the default view
+    s = _store()
+    for _ in range(3):
+        s.append_audit(actor="ci", action="advisory.scan", entity_type="release", entity_id="r")
+    for d in ("asc", "desc"):
+        assert [x["seq"] for x in s.read_audit(sort="actor", direction=d)] == [3, 2, 1]
+
+
 def test_audit_chain_and_read():
     s = _store()
     assert s.read_audit() == [] and s.audit_chain_ok() is True

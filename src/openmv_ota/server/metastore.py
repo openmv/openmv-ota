@@ -2200,7 +2200,7 @@ class SqlMetadataStore:
                                           products)
         sql = "SELECT * FROM audit " + where
         if sort in self.AUDIT_SORTS:
-            sql += _order(sort, direction, self.AUDIT_SORTS, "seq", "seq")
+            sql += _order(sort, direction, self.AUDIT_SORTS, "seq", "seq DESC")
         else:
             sql += " ORDER BY seq DESC" if newest else " ORDER BY seq"
         rows = [_d(r) for r in self.query_all(sql + " LIMIT ? OFFSET ?", (*params, limit, offset))]
