@@ -1460,7 +1460,15 @@ class SqlMetadataStore:
                           account_id: str = "") -> dict:
         """Reconcile one release's scan result: new findings inserted (first_seen=now),
         repeats refreshed (last_seen), and active rows the scan no longer reports
-        cleared. Returns {new: [...], cleared: n} -- `new` is what notification edges on."""
+        cleared. Returns {new: [...], cleared: n, cleared_findings: [...]} -- `new` and
+        `cleared_findings` are what the audit events edge on.
+
+        Every transition is decided by the WRITE, never by the read before it: two scans of
+        one release can overlap (the scheduler's pass and an API scan; two server
+        instances), and a read-then-write lets both see "not active yet" and both announce
+        the same finding. A row counts as new only if THIS statement turned it active
+        (inserted, or revived from cleared), and as cleared only if this statement set its
+        cleared_at -- so each transition is reported exactly once however scans interleave."""
         now = _now_iso()
         current = {(a["vuln_id"], a["component"]): a
                    for a in self.query_all(
@@ -1470,17 +1478,20 @@ class SqlMetadataStore:
         seen = set()
         for f in findings:
             key = (f["vuln_id"], f["component"])
+            if key in seen:                       # one row per (component, vuln) per scan
+                continue
             seen.add(key)
-            if key in current:
-                self.execute(
+            if self.execute(
                     "UPDATE advisories SET last_seen = ?, severity = ?, summary = ? "
-                    "WHERE release_id = ? AND vuln_id = ? AND component = ?",
+                    "WHERE release_id = ? AND vuln_id = ? AND component = ? "
+                    "AND cleared_at IS NULL",
                     (now, f.get("severity", "unknown"), f.get("summary", ""),
-                     release_id, f["vuln_id"], f["component"]))
-            else:
-                # ON CONFLICT, not INSERT OR REPLACE: the latter is SQLite-only syntax, so on the
-                # Postgres production store every NEW finding failed the scan outright.
-                self.execute(
+                     release_id, f["vuln_id"], f["component"])).rowcount:
+                continue                          # a repeat: still active, refreshed
+            # Absent or cleared: insert or revive it -- unless another scan made it active
+            # since the UPDATE above (the conflict's WHERE then matches nothing: rowcount 0).
+            # ON CONFLICT, not INSERT OR REPLACE: the latter is SQLite-only syntax.
+            if self.execute(
                     "INSERT INTO advisories (release_id, vuln_id, component, "
                     "version, severity, summary, first_seen, last_seen, cleared_at, "
                     "account_id) VALUES (?,?,?,?,?,?,?,?,NULL,?) "
@@ -1488,20 +1499,21 @@ class SqlMetadataStore:
                     "version = excluded.version, severity = excluded.severity, "
                     "summary = excluded.summary, first_seen = excluded.first_seen, "
                     "last_seen = excluded.last_seen, cleared_at = NULL, "
-                    "account_id = excluded.account_id",
+                    "account_id = excluded.account_id "
+                    "WHERE advisories.cleared_at IS NOT NULL",
                     (release_id, f["vuln_id"], f["component"], f.get("version", ""),
                      f.get("severity", "unknown"), f.get("summary", ""), now, now,
-                     account_id))
+                     account_id)).rowcount:
                 new.append(dict(f, release_id=release_id))
-        cleared = 0
-        for key in current:
-            if key not in seen:
-                self.execute(
+        cleared = []
+        for key, row in current.items():
+            if key not in seen and self.execute(
                     "UPDATE advisories SET cleared_at = ? WHERE release_id = ? "
-                    "AND vuln_id = ? AND component = ?",
-                    (now, release_id, key[0], key[1]))
-                cleared += 1
-        return {"new": new, "cleared": cleared}
+                    "AND vuln_id = ? AND component = ? AND cleared_at IS NULL",
+                    (now, release_id, key[0], key[1])).rowcount:
+                cleared.append({"release_id": release_id, "vuln_id": key[0],
+                                "component": key[1], "version": row["version"]})
+        return {"new": new, "cleared": len(cleared), "cleared_findings": cleared}
 
     def releases_with_active_advisories(self, account_id: str = "") -> list[str]:
         """Release ids still carrying active findings -- the reconciliation set:

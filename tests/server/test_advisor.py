@@ -245,3 +245,120 @@ def test_only_releases_a_device_runs_are_scanned(tmp_path):
     assert scanned == ["r_run"] and out["releases_scanned"] == 1
     # the running release's stale finding cleared by its own scan, the other two by scope
     assert ms.list_advisories(account_id="a") == []
+
+
+_CVE9 = {"vuln_id": "CVE-9", "component": "mbedtls", "version": "3.5.1", "severity": "high",
+         "summary": "s"}
+
+
+def _actions(ms, action):
+    return [e for e in ms.read_audit() if e["action"] == action]
+
+
+def test_overlapping_reconciles_announce_each_transition_once(tmp_path, monkeypatch):
+    """Two scans of one release can overlap (the scheduler's pass and an API scan, or two
+    server instances): both read "not active yet" before either writes. The write decides,
+    not that read -- the second reconcile reports nothing new and clears nothing twice."""
+    ms = _state(tmp_path).metastore
+    real = ms.query_all
+    stale = {"rows": None}
+
+    def query_all(sql, params=()):                # hand the reconcile a pre-captured read
+        return stale["rows"] if stale["rows"] is not None else real(sql, params)
+    monkeypatch.setattr(ms, "query_all", query_all)
+    stale["rows"] = []                            # both scans read: nothing active
+    assert len(ms.upsert_advisories("r1", [_CVE9], account_id="a")["new"]) == 1
+    assert ms.upsert_advisories("r1", [_CVE9], account_id="a")["new"] == []
+    stale["rows"] = real("SELECT * FROM advisories WHERE release_id = ?", ("r1",))
+    first = ms.upsert_advisories("r1", [], account_id="a")
+    assert first["cleared"] == 1 and first["cleared_findings"] == [
+        {"release_id": "r1", "vuln_id": "CVE-9", "component": "mbedtls", "version": "3.5.1"}]
+    assert ms.upsert_advisories("r1", [], account_id="a") == {
+        "new": [], "cleared": 0, "cleared_findings": []}
+    # and a cleared finding that comes back is new again
+    stale["rows"] = None
+    assert len(ms.upsert_advisories("r1", [_CVE9], account_id="a")["new"]) == 1
+
+
+def test_a_finding_reported_twice_in_one_scan_is_one_finding(tmp_path):
+    ms = _state(tmp_path).metastore
+    out = ms.upsert_advisories("r1", [_CVE9, dict(_CVE9)], account_id="a")
+    assert len(out["new"]) == 1
+
+
+def test_concurrent_scans_of_a_release_record_found_once(tmp_path):
+    """The live symptom: advisory.scan and advisory.found twice in the same second. Scans
+    of one account now run one at a time, so the second sees the first's findings."""
+    import threading
+
+    st = _state(tmp_path)
+    st.storage.put("sbom/ok.json", json.dumps({"components": [{"name": "mbedtls"}]}).encode(),
+                   "application/json")
+    gate = threading.Barrier(2, timeout=5)
+
+    def scan(comps):
+        try:
+            gate.wait(timeout=0.3)                # both scans in OSV at once, if they could be
+        except threading.BrokenBarrierError:
+            pass
+        return [_CVE9]
+    st.osv = SimpleNamespace(scan=scan)
+    rel = {"release_id": "r1", "account_id": "a", "sbom_key": "sbom/ok.json"}
+    threads = [threading.Thread(target=advisor.scan_release, args=(st, rel)),
+               threading.Thread(target=advisor.scan_release, args=(st, rel),
+                                kwargs={"actor": "ci-token"})]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(_actions(st.metastore, "advisory.found")) == 1
+    scans = _actions(st.metastore, "advisory.scan")
+    assert sorted(e["data"]["new"] for e in scans) == [0, 1]
+
+
+def test_a_cleared_finding_is_audited(tmp_path):
+    """History shows resolution, not just discovery: a finding a later scan no longer
+    reports, and one whose release no device runs any more, each get advisory.cleared."""
+    st = _state(tmp_path)
+    ms = st.metastore
+    for rid, ver in (("r_old", "1.0.0"), ("r_new", "2.0.0")):
+        ms.add_release(release_id=rid, product_id=7, product="p", version=ver,
+                       payload_version=int(ver.replace(".", "")), min_platform_version=0,
+                       image_sha256="ab", image_size=1, representations=[],
+                       manifest_key="m" + rid, image_key="i" + rid, account_id="a",
+                       sbom_key="sbom/" + rid)
+        st.storage.put("sbom/" + rid, json.dumps({"components": [{"name": "x"}]}).encode(),
+                       "application/json")
+    ms.upsert_device(device_id="d1", product_id=7, current_version="1.0.0", account_id="a")
+    ms.upsert_device(device_id="d2", product_id=7, current_version="2.0.0", account_id="a")
+    other = dict(_CVE9, vuln_id="CVE-10")
+    st.osv = SimpleNamespace(scan=lambda comps: [_CVE9, other])
+    advisor.scan_account(st, "a")
+    assert len(_actions(ms, "advisory.found")) == 4
+    # CVE-10 withdrawn from the database; d1 moves to 2.0.0 so r_old leaves rotation
+    st.osv = SimpleNamespace(scan=lambda comps: [_CVE9])
+    ms.upsert_device(device_id="d1", product_id=7, current_version="2.0.0", account_id="a")
+    advisor.scan_account(st, "a")
+    got = sorted((e["entity_id"], e["data"]["vuln_id"], e["data"]["reason"], e["actor"])
+                 for e in _actions(ms, "advisory.cleared"))
+    assert got == [("r_new", "CVE-10", "not_reported", "scheduler"),
+                   ("r_old", "CVE-10", "out_of_rotation", "scheduler"),
+                   ("r_old", "CVE-9", "out_of_rotation", "scheduler")]
+    cleared = _actions(ms, "advisory.cleared")[0]
+    assert cleared["data"] == {"vuln_id": cleared["data"]["vuln_id"], "component": "mbedtls",
+                               "version": "3.5.1", "reason": cleared["data"]["reason"]}
+    assert cleared["product_id"] == 7
+    # the scan rows keep their counts, consistent with the cleared events
+    assert sum(e["data"]["cleared"] for e in _actions(ms, "advisory.scan")) == 3
+    # nothing left to clear: a further scan announces nothing
+    advisor.scan_account(st, "a")
+    assert len(_actions(ms, "advisory.cleared")) == 3 and len(_actions(ms, "advisory.found")) == 4
+
+
+def test_scheduled_scans_are_the_scheduler_api_scans_the_caller(tmp_path):
+    st = _state(tmp_path)
+    advisor.scan_release(st, {"release_id": "r1", "account_id": "a"})
+    advisor.scan_release(st, {"release_id": "r1", "account_id": "a"}, actor="ci-token")
+    assert [e["actor"] for e in _actions(st.metastore, "advisory.scan")] == [
+        advisor.SCHEDULER, "ci-token"]
+    assert advisor.SCHEDULER == "scheduler"

@@ -51,6 +51,8 @@ EVENTS = {
     "product.create": "a product was declared",
     "product.rename": "a product's display name changed",
     "advisory.found": "a security advisory was found for a release the fleet runs",
+    "advisory.cleared": "a security advisory stopped applying: a scan no longer reports it, "
+                        "or no camera runs the release any more",
     "account.limit": "the account's device limit changed",
     "account.rename": "the account was renamed",
     "account.activate": "the account was re-enabled",

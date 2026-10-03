@@ -5,7 +5,9 @@ rollout still offers), queries each SBOM component against OSV.dev, and
 reconciles the findings into the ``advisories`` table -- new findings appear,
 repeats refresh, and findings a later scan no longer reports are cleared (the
 row history is the CRA-facing evidence that monitoring ran). Every scan is
-audited.
+audited (``advisory.scan``), and so is every transition: ``advisory.found`` when a
+finding turns active, ``advisory.cleared`` when it stops being -- each exactly once,
+however scans overlap.
 
 ``OsvClient`` is injectable (``create_app(osv=...)``): tests and the sim
 substitute a fake; a deployment talks to the real https://api.osv.dev.
@@ -28,12 +30,29 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 
 _OSV_URL = "https://api.osv.dev"
 _BATCH = 500                                   # OSV caps querybatch at 1000
 # components whose advisories OSV keys to an upstream repo's release tags
 _SHA = re.compile(r"[0-9a-f]{40}")
 _UPSTREAM_GIT = {"micropython": "https://github.com/micropython/micropython"}
+# The actor of a scan nobody asked for: the server's own periodic pass. An API scan is
+# audited as its caller.
+SCHEDULER = "scheduler"
+
+# One scan per account at a time, in this process. The scheduler's pass runs in a worker
+# thread while an API scan can arrive on a request; run side by side they would both
+# reconcile the same releases. The reconcile is itself race-safe (each transition is
+# reported once even across server instances); this keeps the two scans' audit trails
+# from interleaving and the second from re-querying OSV for nothing new.
+_scan_locks: dict[str, threading.Lock] = {}
+_scan_locks_guard = threading.Lock()
+
+
+def _account_lock(account_id: str) -> threading.Lock:
+    with _scan_locks_guard:
+        return _scan_locks.setdefault(account_id, threading.Lock())
 
 
 def _queries(comp: dict) -> list[dict]:
@@ -162,10 +181,28 @@ class OsvClient:
         return self._details[vuln_id]
 
 
-def scan_release(state, rel: dict, actor: str = "scheduler") -> dict:
+def scan_release(state, rel: dict, actor: str = SCHEDULER) -> dict:
     """Scan ONE release's SBOM; reconcile and audit. A release without an SBOM
     has nothing to scan and reports zero findings (never an error -- evidence
     is worth carrying, not worth failing a scan run over)."""
+    with _account_lock(rel.get("account_id", "")):
+        return _scan_release(state, rel, actor)
+
+
+def _audit_cleared(state, rel_id: str, cleared: list[dict], reason: str, actor: str,
+                   account_id: str, product_id) -> None:
+    """One ``advisory.cleared`` per finding that stopped being active: ``not_reported`` (a scan
+    of the release no longer reports it) or ``out_of_rotation`` (no device runs the
+    release any more)."""
+    for f in cleared:
+        state.metastore.append_audit(
+            actor=actor, action="advisory.cleared", entity_type="release", entity_id=rel_id,
+            data={"vuln_id": f["vuln_id"], "component": f["component"],
+                  "version": f.get("version", ""), "reason": reason},
+            account_id=account_id, product_id=product_id)
+
+
+def _scan_release(state, rel: dict, actor: str) -> dict:
     from .errors import ServerError
 
     release_id, account_id = rel["release_id"], rel.get("account_id", "")
@@ -197,31 +234,40 @@ def scan_release(state, rel: dict, actor: str = "scheduler") -> dict:
             data={"vuln_id": f.get("vuln_id"), "component": f.get("component"),
                   "version": f.get("version", ""), "severity": f.get("severity", "unknown")},
             account_id=account_id, product_id=rel.get("product_id"))
+    _audit_cleared(state, release_id, result["cleared_findings"], "not_reported", actor,
+                   account_id, rel.get("product_id"))
     return {"release_id": release_id, "findings": len(findings),
             "new": result["new"], "cleared": result["cleared"]}
 
 
-def scan_account(state, account_id: str, actor: str = "scheduler") -> dict:
+def scan_account(state, account_id: str, actor: str = SCHEDULER) -> dict:
     """Scan every release the account's fleet still cares about -- and CLEAR
     the findings of releases that left rotation. A release nobody runs and
     nobody offers is out of scope, and stale advisories lingering on it would
     make the security list grow forever."""
+    with _account_lock(account_id):
+        return _scan_account(state, account_id, actor)
+
+
+def _scan_account(state, account_id: str, actor: str) -> dict:
     ms = state.metastore
     rels = ms.releases_with_devices(account_id)
     new: list[dict] = []
     findings = 0
     for rel in rels:
-        out = scan_release(state, rel, actor=actor)
+        out = _scan_release(state, rel, actor)
         findings += out["findings"]
         new.extend(out["new"])
     in_scope = {r["release_id"] for r in rels}
     for rid in ms.releases_with_active_advisories(account_id):
         if rid in in_scope:
             continue
-        cleared = ms.upsert_advisories(rid, [], account_id=account_id)["cleared"]
+        result = ms.upsert_advisories(rid, [], account_id=account_id)
+        product_id = (ms.get_release(rid) or {}).get("product_id")
         ms.append_audit(actor=actor, action="advisory.scan", entity_type="release",
                         entity_id=rid,
-                        data={"out_of_rotation": True, "cleared": cleared},
-                        account_id=account_id,
-                        product_id=(ms.get_release(rid) or {}).get("product_id"))
+                        data={"out_of_rotation": True, "cleared": result["cleared"]},
+                        account_id=account_id, product_id=product_id)
+        _audit_cleared(state, rid, result["cleared_findings"], "out_of_rotation", actor,
+                       account_id, product_id)
     return {"releases_scanned": len(rels), "findings": findings, "new": new}

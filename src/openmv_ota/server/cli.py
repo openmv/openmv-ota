@@ -367,7 +367,7 @@ def _schedule_advisory_scans(app, settings) -> None:
                 for acct in app.state.metastore.list_accounts():
                     try:
                         await asyncio.to_thread(advisor.scan_account, app.state,
-                                                acct["account_id"])
+                                                acct["account_id"], actor=advisor.SCHEDULER)
                     except Exception as e:       # noqa: BLE001 - keep the loop alive
                         print("advisory scan failed for %s: %s"
                               % (acct["account_id"], e), file=sys.stderr)

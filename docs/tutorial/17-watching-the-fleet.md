@@ -271,9 +271,11 @@ $ openmv-ota client advisories list
 ```
 
 `advisories list --all` includes cleared findings; `advisories scan --release-id`
-scans one release. Every scan is audited as `advisory.scan`. OSV matches firmware
-C libraries by name and version, so treat a clean scan as "no known issues in one
-good database", not a guarantee.
+scans one release. Every scan is audited as `advisory.scan`, each new finding as
+`advisory.found` and each finding that stops applying as `advisory.cleared`. OSV
+matches components by exact commit (MicroPython also by its upstream release tag) or
+package URL, so treat a clean scan as "no known issues in one good database", not a
+guarantee.
 
 ## The audit log
 

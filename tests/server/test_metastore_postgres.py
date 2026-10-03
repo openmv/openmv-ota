@@ -106,6 +106,19 @@ def test_a_new_advisory_inserts_on_postgres(pg):
     assert pg.upsert_advisories("rel-1", [], "acct")["cleared"] == 1   # and a drop clears
 
 
+def test_concurrent_reconciles_announce_a_finding_once(pg):
+    """Overlapping scans (the scheduler and an API call, or two instances) used to both
+    read "not active" and both report the same finding as new -- duplicate audit events."""
+    finding = {"vuln_id": "CVE-2", "component": "lwip", "version": "2.1",
+               "severity": "low", "summary": ""}
+    results, errors = _hammer(8, lambda i: pg.upsert_advisories("rel-2", [finding], "acct"))
+    assert errors == []
+    assert sum(len(r["new"]) for r in results) == 1
+    results, errors = _hammer(8, lambda i: pg.upsert_advisories("rel-2", [], "acct"))
+    assert errors == []
+    assert sum(r["cleared"] for r in results) == 1
+
+
 def test_two_webhook_workers_never_claim_the_same_delivery(pg):
     hook = pg.add_webhook(account_id="acct", url="https://example.invalid/h", events=["*"],
                           secret="s")

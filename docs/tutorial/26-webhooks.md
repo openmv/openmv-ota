@@ -40,6 +40,7 @@ the URL, the subscription or the description, or switches the endpoint off and o
 | `cohort.create`, `cohort.assign`, `cohort.pin`, `cohort.rename`, `cohort.delete` | cohort changes |
 | `product.create`, `product.rename` | product changes |
 | `advisory.found` | a scan found a **new** security advisory for a release the fleet runs (one event per finding, never one per scan) |
+| `advisory.cleared` | a finding stopped applying: a scan no longer reports it, or no camera runs the release any more (one event per finding) |
 | `account.limit`, `account.rename`, `account.activate`, `account.deactivate` | operator actions on the account |
 | `token.revoke` | an API token was revoked |
 | `webhook.create`, `webhook.update`, `webhook.delete`, `webhook.disabled` | changes to endpoints, including the server switching one off |

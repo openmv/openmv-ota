@@ -1285,8 +1285,8 @@ class AdvisoryScanRequest(BaseModel):
 def scan_advisories(body: AdvisoryScanRequest, request: Request,
                     principal: Principal = Depends(require_scope("manage"))):
     """Run a scan NOW -- one release, or every release the fleet still runs.
-    The daily scheduler calls the same code; this is the on-demand edge
-    (publish-time, a dashboard button, CI)."""
+    The daily scheduler calls the same code (audited as actor `scheduler`); this is the
+    on-demand edge (a dashboard button, CI), audited as its caller."""
     from . import advisor
 
     st = request.app.state
