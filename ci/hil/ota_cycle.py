@@ -919,6 +919,16 @@ def device_faults(cap):
     return seen
 
 
+def _log_contention(cap):
+    """On a FAIL, say if another process was reading the marker UART: then the missing markers
+    may have been logged by the board and taken by that reader, so the verdict is the bench's,
+    not the device's (see UartCapture._note_contention)."""
+    n = getattr(cap, "contended", 0) if cap is not None else 0
+    if n:
+        log("  the marker UART was being read by ANOTHER process (%d stolen read(s)) -- the missing "
+            "markers may have been logged and taken by it; this is not a verdict on the device" % n)
+
+
 _CAP = None                                  # the live UartCapture (set by start()); see _await_boot
 _BOARD = None                                # the board under test (set in main); see run_cycle
 # How many device lines a second the capture forwards before it starts calling the rest noise.
@@ -930,6 +940,21 @@ _FLASH_MARK = 0                              # index into _CAP.raw at the moment
 #                                              (see verify_golden_uart -- "fresh" must mean "since the
 #                                              flash", not "since the verify call", because the boot
 #                                              being verified happens in between)
+
+
+def _claim_port(ser, on=True):
+    """Set (or lift) the tty's EXCLUSIVE flag (TIOCEXCL) on the marker UART: while it is set, any
+    later open() of the port by a non-root process fails with EBUSY. It cannot evict a reader that
+    already has the port open -- nothing can, short of killing it -- but such a reader is locked
+    out the moment it reopens, which a capture does after the read errors the contention itself
+    causes (see UartCapture._note_contention). Best-effort: a port without a real fd, or a
+    platform without the ioctl, is left as it is."""
+    try:
+        import fcntl
+        import termios
+        fcntl.ioctl(ser.fileno(), termios.TIOCEXCL if on else termios.TIOCNXCL)
+    except Exception:
+        pass
 
 
 class UartCapture:
@@ -950,10 +975,12 @@ class UartCapture:
             time.sleep(1)                    # let the killed reader actually release the fd
         self._port, self._baud = port, baud   # kept so _reopen can re-resolve after a re-enumeration
         self._ser = serial.Serial(dev, baud, timeout=0.5)
+        _claim_port(self._ser)
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
         self.raw = []
         self.flooded = 0                     # noise lines dropped across the whole capture
+        self.contended = 0                   # reads lost to ANOTHER reader of this port (see _run)
         self._window, self._seen_in_window, self._dropped = time.time(), 0, 0
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._run, daemon=True)
@@ -973,7 +1000,8 @@ class UartCapture:
     def _reopen(self):
         """Re-resolve and reopen the marker UART after its port went away. Returns True on success."""
         import serial
-        try:
+        _claim_port(self._ser, False)        # lift OUR exclusive flag first, or the reopen below is
+        try:                                 # refused by it while another fd still holds the tty
             self._ser.close()
         except Exception:
             pass
@@ -982,6 +1010,7 @@ class UartCapture:
             self._ser = serial.Serial(dev, self._baud, timeout=0.5)
         except Exception:
             return False
+        _claim_port(self._ser)
         log("uart: reopened %s after the port dropped" % dev)
         return True
 
@@ -990,7 +1019,8 @@ class UartCapture:
         while not self._stop.is_set():
             try:
                 buf += self._ser.read(256)
-            except Exception:
+            except Exception as e:
+                self._note_contention(e)
                 # THE PORT DIED -- do not spin on it. Linux renumbers ttyUSBn on re-plug and a DFU
                 # flash re-enumerates USB, so the handle opened at start-up can stop existing
                 # mid-leg. `continue` alone span silently for the rest of the run: no lines, no
@@ -1018,6 +1048,30 @@ class UartCapture:
                 for sub, cid in COVERAGE.items():
                     if sub in s:
                         self.markers.append((round(time.time() - self._t0, 1), cid))
+
+    def _note_contention(self, exc):
+        """Count a read that failed because SOMEBODY ELSE drained the port, and say so once.
+
+        A tty does not copy its input to every reader: each byte goes to whichever ``read()`` wins.
+        pyserial notices only sideways -- select() said readable, the read came back empty -- and
+        raises "device reports readiness to read but returned no data (device disconnected or
+        multiple access on port?)". To the capture that is just a dropped port, so it reopens and
+        carries on, and the run fails at the end with markers missing from a board that logged
+        every one of them. Measured on RT1060 wifi `delta`: a leftover bench capture (another
+        user's, so the start-up ``fuser -k`` could not even see it) had been reading /dev/ttyUSB0
+        for four hours; the device installed, trialled, confirmed and promoted, and the leg failed
+        with 14 markers missing -- every one of them sitting in the OTHER reader's log file.
+
+        ``_claim_port`` keeps a newcomer out, and locks the interloper out the next time IT
+        reopens; this makes the theft visible, because the lines already lost cannot come back."""
+        if "multiple access" not in str(exc):
+            return
+        self.contended += 1
+        if self.contended == 1:
+            log("uart: ANOTHER PROCESS IS READING %s -- each byte goes to only one reader, so device "
+                "lines (and their markers) are being lost to it. Find it with `sudo fuser -v` on the "
+                "port: a leftover bench capture or terminal. The run cannot be scored while it "
+                "lives." % self._port)
 
     def _flooding(self, line):
         """True when this line is noise from a board talking faster than it can mean anything.
@@ -3157,6 +3211,7 @@ def main():
             if cap is not None:
                 for text, hits in device_faults(cap).items():
                     log("  the device reported this %d time(s): %s" % (hits, text))
+                _log_contention(cap)
         # A SECOND PHASE, for the paths that only exist AFTER a promote. Every scenario above
         # starts from golden, so the whole "what happens to a board that has already taken an
         # update" surface was unreachable: the run ends the moment the first cycle settles. That
@@ -3207,6 +3262,7 @@ def main():
                     % (then["end"], result2["reached_end"], missing2 or "-", forbidden2 or "-"))
                 for text, hits in device_faults(cap).items():
                     log("  the device reported this %d time(s): %s" % (hits, text))
+                _log_contention(cap)
     except Exception as e:
         trace["error"] = str(e)
         log("ERROR: " + str(e))
