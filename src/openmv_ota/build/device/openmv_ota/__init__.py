@@ -645,6 +645,40 @@ def register_checkin(contribute=None, on_response=None, key=None):
 # build/romfs.py cuts this region for a board flagged `ota_runtime_drops_network`.
 # Keep the region SELF-CONTAINED: nothing outside it may reference a name defined in
 # it (tests/build/test_runtime_drop.py proves that, and that the remainder compiles).
+
+# THE CHECK-IN CADENCE. Pure, so the host suite pins every number below.
+_JITTER = 0.15               # +/- spread on every wait the DEVICE picks (the server jitters its own)
+_BACKOFF_FIRST_S = 10        # first retry after a failed check-in; doubles per consecutive miss
+_BACKOFF_MAX_SHIFT = 16      # bounds the doubling's int long before the cap is ever the limit
+
+
+def _jittered(s, r):
+    """``s`` spread by +/- ``_JITTER``; ``r`` is a uniform draw in [0, 1). A fleet that
+    booted together (a site powering on, an outage clearing) must not check in in step."""
+    return s * (1.0 - _JITTER + 2.0 * _JITTER * r)
+
+
+def _backoff(misses, cap, r):
+    """The wait after the ``misses``-th CONSECUTIVE failed check-in: 10, 20, 40 ... s,
+    capped at the poll interval ``cap``, jittered.
+
+    A transport failure used to wait a whole poll (an hour), so one bad check-in left a
+    device dark for that hour -- and it happened on EVERY boot of the RT1062 over LAN: the
+    mimxrt driver seeds a static address, ``isconnected()`` goes True at once, DHCP swaps
+    the address ~2 s later, and the first check-in dies with EHOSTUNREACH. Ten seconds
+    later it works. Doubling keeps a long outage from becoming a retry storm, and the cap
+    means a device that has been down a while is back to its ordinary cadence."""
+    base = _BACKOFF_FIRST_S << min(misses - 1, _BACKOFF_MAX_SHIFT)
+    return _jittered(min(base, cap), r)
+
+
+def _rand():
+    """A uniform draw in [0, 1) for the jitter -- one byte of ``os.urandom``, so no
+    ``random`` module (absent on some ports) and no seeding at boot to get wrong."""
+    import os
+    return os.urandom(1)[0] / 256
+
+
 def _checkin_body(info, st, slot_states=None):
     """The base check-in payload from identity() + status() (+ slots()) -- pure, so it's
     host-testable; extension fields (e.g. streams) are merged by contributors."""
@@ -723,7 +757,7 @@ def _offer(resp):
 
 async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
               ca=None, ntp_host=None, recover=None,
-              recover_after=3):  # pragma: no cover  (device: the network loop)
+              recover_after=5):  # pragma: no cover  (device: the network loop)
     """The OTA lifecycle loop (async, so it coexists with the app's asyncio work
     and openmv_cloud's background tasks). Forever: resolve the clock, poll the
     update server, hand the response to registered extensions (the live + ingest
@@ -760,7 +794,17 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
     (retry forever, never re-initialise).
 
     The counter tracks CONSECUTIVE failures and resets on any completed cycle, so a
-    flaky link that still gets through now and then never triggers it."""
+    flaky link that still gets through now and then never triggers it.
+
+    A failed check-in is retried on a short backoff -- 10, 20, 40 ... s (jittered), capped
+    at ``poll_after_s`` -- not a whole poll later, so ``recover_after`` failures now arrive
+    in minutes rather than hours. Hence the default of 5: the fifth consecutive failure
+    lands ~150 s (10+20+40+80) after the first. That rides out what heals by itself (a
+    DHCP renumbering at boot, an access point rebooting) without tearing the NIC down,
+    while a real wedge -- which never clears on its own -- is rebuilt within a few
+    minutes instead of the ~3 h three hourly polls used to take. The backoff keeps growing
+    across a recover, so a server that is simply down settles at one check-in (and one
+    escalation every ``recover_after`` polls) per interval, not a rebuild every minute."""
     import asyncio  # hil-residual: the restart backoff awaits; imported here for the same reason _poll_forever imports its own
     while True:  # hil-residual: the RESTART loop emits nothing on the happy path -- every marker comes from _poll_forever inside it
         try:  # hil-residual: guard only; a healthy loop never leaves it
@@ -797,6 +841,7 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
     here = __file__.rsplit("/", 1)[0]
     ca = _resolve_ca(ca, here)
     fails = 0                             # CONSECUTIVE failed cycles; drives the recover escalation
+    misses = 0                            # the same streak, NOT reset by a recover: drives the backoff
     while True:
         wait = poll_after_s
         _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
@@ -820,6 +865,12 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # only one allowed to escalate to recover().
             log.warning("run: cycle failed %r" % e)  # hil-residual: transient-failure witness
             fails += 1  # hil-residual: counter arithmetic; the COUNT is witnessed downstream -- N `run: cycle failed` lines followed by exactly one `run: recovering transport` is what proves the streak logic on HW
+            misses += 1  # hil-residual: counter arithmetic, as above; witnessed by the spacing of the `run: cycle failed` lines
+            # RETRY SOON, not in a poll: a transient fault (the RT1062's boot-time DHCP swap) must
+            # cost seconds, not the hour it used to. The backoff keeps on growing across a recover
+            # -- a recover is not proof the link is back -- and only a check-in that gets through
+            # resets it, so a long outage settles at one try per poll, as before.
+            wait = _backoff(misses, poll_after_s, _rand())  # hil-residual: pure arithmetic, host-tested (_backoff); its effect is the spacing between `run: cycle failed` lines
             if recover is not None and fails >= recover_after:  # hil-residual: the taken branch is witnessed by `run: recovering transport`; the not-taken branch by its ABSENCE after fewer than recover_after failures
                 fails = 0                 # one escalation per streak, not one per cycle after it  # hil-residual: witnessed by there being ONE `run: recovering transport` per streak of failures, not one per poll after the threshold
                 await _recover(recover)  # hil-residual: the witness for this call is emitted by the CALLEE's first line (`run: recovering transport`); the audit cannot see across the call boundary, and a marker here would duplicate it
@@ -832,6 +883,7 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # is never going to validate. On the WINC that rebuild is a full chip reset. (Measured
             # on the bench: bad_sig / bad_key / bad_version each drove a spurious recover.)
             fails = 0  # hil-residual: the streak RESET is witnessed by absence -- a healthy board polls for a whole run and never emits `run: recovering transport`; a marker here would fire every poll and drown the log
+            misses = 0  # hil-residual: the backoff reset, witnessed the same way -- a healthy board's check-ins are a poll apart, never 10 s
             try:
                 log.debug("checkin: response received")
                 _notify(resp)

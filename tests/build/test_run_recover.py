@@ -164,7 +164,7 @@ def test_run_accepts_the_hook_and_defaults_to_the_old_behaviour():
 
     sig = inspect.signature(rt.run)
     assert sig.parameters["recover"].default is None
-    assert sig.parameters["recover_after"].default == 3
+    assert sig.parameters["recover_after"].default == 5
 
 
 def test_generated_app_wires_its_own_bring_up_as_the_hook():
@@ -250,3 +250,54 @@ def test_cancellation_is_recorded_but_still_propagates():
     base = inspect.getsource(rt.run).split("except BaseException")[1]
     assert "log.error" in base, "a cancelled OTA loop must say so"
     assert "raise" in base, "cancellation must still propagate"
+
+
+# --- a failed check-in retries on a short backoff, not a whole poll ---------------------
+# Measured on the RT1062 over LAN: the mimxrt eth driver seeds a static address, isconnected()
+# goes True at once, DHCP swaps the address ~2 s later -- so the first check-in of EVERY boot
+# failed with EHOSTUNREACH, and the device then sat dark for a full hour-long poll.
+
+def test_backoff_doubles_from_ten_seconds_up_to_the_poll_cap():
+    mid = 0.5                                       # r=0.5 is the un-jittered value
+    assert [rt._backoff(n, 3600, mid) for n in range(1, 11)] == [
+        10, 20, 40, 80, 160, 320, 640, 1280, 2560, 3600]
+    assert rt._backoff(500, 3600, mid) == 3600      # a long outage stays AT the cap ...
+    assert rt._backoff(10 ** 6, 3600, mid) == 3600  # ... and the shift is bounded, not a bignum
+    # A short app interval caps it too: a device polling every 5 s never waits longer to retry.
+    assert rt._backoff(1, 5, mid) == 5
+    assert rt._backoff(3, 300, mid) == 40 and rt._backoff(6, 300, mid) == 300
+
+
+def test_backoff_keeps_the_jitter():
+    """A server outage fails a whole fleet at once; without jitter they all retry in lockstep."""
+    assert rt._backoff(1, 3600, 0.0) == pytest.approx(8.5)
+    assert rt._backoff(1, 3600, 0.999) == pytest.approx(11.5, abs=0.01)
+    assert rt._backoff(20, 3600, 0.0) == pytest.approx(3060)
+
+
+def test_the_jitter_draw_is_uniform_in_the_unit_interval():
+    draws = [rt._rand() for _ in range(200)]
+    assert all(0.0 <= d < 1.0 for d in draws)
+    assert len(set(draws)) > 1
+
+
+def test_default_recover_after_spans_minutes_not_hours():
+    """With the backoff, recover_after failures arrive within minutes. Five of them span
+    10+20+40+80 = 150 s: past a boot-time DHCP swap or an AP reboot (which heal by themselves),
+    well short of the ~3 h three hourly polls used to take to rebuild a wedged stack."""
+    import inspect
+    n = inspect.signature(rt.run).parameters["recover_after"].default
+    span = sum(rt._backoff(k, 3600, 0.5) for k in range(1, n))
+    assert 120 <= span <= 300
+
+
+def test_a_failed_checkin_waits_the_backoff_and_success_resets_it():
+    src = _run_src()
+    checkin_block = src.split("resp = _checkin(")[1]
+    failed, ok = checkin_block.split("else:")[0], checkin_block.split("else:")[1]
+    assert "wait = _backoff(misses" in failed, "a transport failure must not wait a whole poll"
+    assert "misses += 1" in failed
+    assert "misses = 0" in ok.split("try:")[0], "a check-in that got through resets the backoff"
+    # A recover is NOT proof the link is back: it must not reset the backoff.
+    recover_branch = failed.split("fails >= recover_after")[1]
+    assert "misses = 0" not in recover_branch

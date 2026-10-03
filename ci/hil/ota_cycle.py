@@ -736,7 +736,7 @@ SCENARIOS["watchdog_bite"] = dict(
 
 # The watchdog RECOVERY path: an armed 100 ms watchdog must survive run() rebuilding the network.
 # The wdt_recover app arms + feeds like `wdt`, but points run() at a CLOSED port, so every check-in
-# fails fast; after recover_after (3) failures run() calls the app's _bring_up -- which CONSTRUCTS the
+# fails fast; after recover_after (5) failures run() calls the app's _bring_up -- which CONSTRUCTS the
 # NIC, a long blocking C op (the WINC's chip reset alone sleeps 300 ms). Before the fix that ran
 # unfed inside the async hook's await: the H7 Plus bit on EVERY recovery and reset-looped for as long
 # as its server was unreachable. A bite lands mid-hook, so `run.recovered` can only ever be logged by
