@@ -73,3 +73,15 @@ def test_find_cubeprog_not_found_raises(monkeypatch):
     monkeypatch.setattr(tools.shutil, "which", lambda _n: None)
     with pytest.raises(FlashError, match="STM32_Programmer_CLI not found"):
         tools.find_cubeprog()
+
+
+def test_installed_sdk_home_picks_the_newest_with_a_dfu_util(tmp_path):
+    for v, dfu in (("1.9.0", True), ("1.10.0", True), ("1.11.0", False), ("dev", True)):
+        (tmp_path / ("openmv-sdk-" + v) / "bin").mkdir(parents=True)
+        if dfu:
+            (tmp_path / ("openmv-sdk-" + v) / "bin" / "dfu-util").write_text("")
+    assert tools.installed_sdk_home(tmp_path) == tmp_path / "openmv-sdk-1.10.0"
+
+
+def test_installed_sdk_home_none_when_nothing_installed(tmp_path):
+    assert tools.installed_sdk_home(tmp_path) is None

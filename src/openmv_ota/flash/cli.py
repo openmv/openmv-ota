@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from . import flash as flash_mod
+from . import tools
 from .errors import FlashError
 
 
@@ -74,6 +75,9 @@ def register(flash_parser: argparse.ArgumentParser):
     p_er.set_defaults(func=cmd_erase, _command="flash erase")
 
     p_ls = sub.add_parser("list", help="list connected boards and the state each is in")
+    p_ls.add_argument("project", nargs="?", default=".",
+                      help="project directory whose SDK tools to use (default: .; outside a "
+                           "project, the newest ~/openmv-sdk-*)")
     p_ls.add_argument("--dfu-util", help="path to dfu-util (default: SDK's, else PATH)")
     p_ls.add_argument("--sdk-home", help="SDK home to find the flash tools under")
     p_ls.add_argument("--json", action="store_true", help="machine-readable output")
@@ -145,9 +149,20 @@ def cmd_factory(args: argparse.Namespace) -> int:
     return _report(args, steps)
 
 
+def _list_sdk_home(args: argparse.Namespace) -> Path | None:
+    """The SDK ``flash list`` scans with: the one ``flash factory`` would use (``--sdk-home``, else
+    the project's), else -- run outside a project, or the project's SDK is not installed -- the
+    newest installed ``~/openmv-sdk-*``. Without that, `flash list` warned "dfu-util not found"
+    on a machine whose only dfu-util is the SDK's, while `flash factory` found it."""
+    home = _sdk_home(args)
+    if home is not None and (args.sdk_home or (home / "bin" / "dfu-util").exists()):
+        return home
+    return tools.installed_sdk_home() or home
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     try:
-        devices = flash_mod.scan_devices(dfu_util=args.dfu_util, sdk_home=_sdk_home(args))
+        devices = flash_mod.scan_devices(dfu_util=args.dfu_util, sdk_home=_list_sdk_home(args))
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

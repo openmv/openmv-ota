@@ -138,7 +138,9 @@ flash verbs use), or **`recovery`** (the by-hand ROM/maintenance modes you
 enter to flash a *bootloader* — [next page](10-erase-and-bootloader.md)). A
 board that looks identical to others in a shared ROM mode is reported under a
 generic label, and each scanner degrades on its own when its tool is missing.
-`--json` prints the same as a machine-readable array.
+`--json` prints the same as a machine-readable array. It uses the same SDK
+tools as the flash verbs: the project's SDK when run inside one, otherwise the
+newest installed `~/openmv-sdk-*`.
 
 ## Typical use
 

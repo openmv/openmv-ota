@@ -156,3 +156,62 @@ def test_list_cli_error_returns_exit_code(monkeypatch, capsys):
                         lambda **k: (_ for _ in ()).throw(FlashError("boom")))
     assert main(["flash", "list"]) == 2
     assert "boom" in capsys.readouterr().err
+
+
+# --- which SDK `flash list` scans with --------------------------------------------------------
+
+def _sdk(base, version, dfu=True):
+    home = base / ("openmv-sdk-%s" % version)
+    (home / "bin").mkdir(parents=True)
+    if dfu:
+        (home / "bin" / "dfu-util").write_text("")
+    return home
+
+
+@pytest.fixture
+def seen_sdk(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(fl, "scan_devices",
+                        lambda **k: seen.setdefault("sdk", k["sdk_home"]) and [] or [])
+    return seen
+
+
+def test_list_outside_a_project_uses_the_newest_installed_sdk(tmp_path, monkeypatch, seen_sdk):
+    # THE bug: `flash factory` found the SDK's dfu-util, `flash list` warned "dfu-util not found"
+    monkeypatch.setattr("openmv_ota.flash.tools.Path.home", lambda: tmp_path)
+    _sdk(tmp_path, "1.9.0")
+    newest = _sdk(tmp_path, "1.10.2")
+    _sdk(tmp_path, "2.0.0", dfu=False)                    # no dfu-util: not a candidate
+    assert main(["flash", "list", str(tmp_path / "not-a-project")]) == 0
+    assert seen_sdk["sdk"] == newest
+
+
+def test_list_in_a_project_uses_the_projects_sdk(tmp_path, monkeypatch, seen_sdk):
+    mine = _sdk(tmp_path, "1.6.0")
+    _sdk(tmp_path, "1.7.3")
+    monkeypatch.setattr("openmv_ota.flash.tools.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("openmv_ota.project.project.project_sdk_home", lambda root: mine)
+    assert main(["flash", "list"]) == 0
+    assert seen_sdk["sdk"] == mine                        # the one `flash factory` would use
+
+
+def test_list_falls_back_when_the_projects_sdk_is_not_installed(tmp_path, monkeypatch, seen_sdk):
+    other = _sdk(tmp_path, "1.7.3")
+    monkeypatch.setattr("openmv_ota.flash.tools.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("openmv_ota.project.project.project_sdk_home",
+                        lambda root: tmp_path / "openmv-sdk-9.9.9")
+    assert main(["flash", "list"]) == 0
+    assert seen_sdk["sdk"] == other
+
+
+def test_list_with_no_sdk_anywhere_passes_none(tmp_path, monkeypatch, seen_sdk):
+    monkeypatch.setattr("openmv_ota.flash.tools.Path.home", lambda: tmp_path)
+    assert main(["flash", "list", str(tmp_path)]) == 0
+    assert seen_sdk["sdk"] is None                        # -> PATH, then the warning
+
+
+def test_list_sdk_home_flag_wins(tmp_path, monkeypatch, seen_sdk):
+    monkeypatch.setattr("openmv_ota.flash.tools.Path.home", lambda: tmp_path)
+    _sdk(tmp_path, "1.7.3")
+    assert main(["flash", "list", "--sdk-home", "/opt/sdk"]) == 0
+    assert str(seen_sdk["sdk"]) == "/opt/sdk"

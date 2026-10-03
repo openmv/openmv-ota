@@ -28,6 +28,21 @@ def find_dfu_util(override: str | None = None, sdk_home: Path | None = None) -> 
                      "or pass --dfu-util <path>")
 
 
+def _sdk_version_key(home: Path) -> tuple[int, ...]:
+    """``openmv-sdk-1.10.2`` -> (1, 10, 2): numeric, so 1.10 sorts above 1.9."""
+    return tuple(int(x) if x.isdigit() else -1
+                 for x in home.name[len("openmv-sdk-"):].split("."))
+
+
+def installed_sdk_home(base: Path | None = None) -> Path | None:
+    """The newest SDK installed the default way (``~/openmv-sdk-<version>``) that carries a
+    dfu-util, or ``None``. For commands that run outside any project (``flash list``), where
+    there is no lock to say WHICH SDK -- any installed one's dfu-util scans the same."""
+    homes = [p for p in (base or Path.home()).glob("openmv-sdk-*")
+             if (p / "bin" / "dfu-util").exists()]
+    return max(homes, key=_sdk_version_key) if homes else None
+
+
 def find_cubeprog(sdk_home: Path | None = None) -> str:
     """Resolve STM32CubeProgrammer's CLI (``<sdk_home>/stcubeprog/bin/STM32_Programmer_CLI``,
     else PATH) -- used to flash the N6 bootloader."""
