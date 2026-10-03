@@ -25,7 +25,9 @@ logging.getLogger("openmv_ota").info("hi")     # or: openmv_ota.log.info("hi")
 The configuration lives in `device/openmv_log.py`, scaffolded into your project and frozen by
 `build firmware` as **`openmv_log`** (frozen so `boot.py` can use it before `/rom` mounts).
 It's **off by default** (the logger's level is set above `CRITICAL`, so nothing emits and
-nothing leaks to the REPL). To debug on hardware, edit it and rebuild firmware:
+nothing leaks to the REPL). An app that calls `openmv_cloud.logs.enable()` turns its
+`WARNING` and `ERROR` records on, so update failures show in the cloud console. To debug
+on hardware, edit it and rebuild firmware:
 
 ```python
 ENABLED = True         # master switch

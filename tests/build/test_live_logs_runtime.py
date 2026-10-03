@@ -372,3 +372,19 @@ def test_envelope_carries_a_timestamp_only_when_one_is_given():
     # presence of ts MEANS the clock was trustworthy, so it is never defaulted
     assert json.loads(lg._envelope("aa00", 0, "x\n", 1700000000.5))["ts"] == 1700000000.5
     assert "ts" not in json.loads(lg._envelope("aa00", 0, "x\n"))
+
+
+# --- the updater's warnings reach the cloud console -------------------------------------------
+
+def test_hear_ota_lets_warnings_through_an_off_logger():
+    ota = logging.getLogger("test_hear_ota_off")
+    ota.setLevel(logging.CRITICAL + 1)              # what the frozen openmv_log sets
+    lg._hear_ota(ota)
+    assert ota.level == logging.WARNING
+
+
+def test_hear_ota_never_lowers_a_level_someone_set():
+    ota = logging.getLogger("test_hear_ota_debug")
+    ota.setLevel(logging.DEBUG)                     # a bench UART at DEBUG keeps it
+    lg._hear_ota(ota)
+    assert ota.level == logging.DEBUG

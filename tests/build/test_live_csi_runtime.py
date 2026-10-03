@@ -452,3 +452,10 @@ def test_contribute_reports_the_stream_names():
     rt.Stream("0")
     rt.Stream("tele")
     assert set(rt._contribute()["streams"]) == {"0", "tele"}
+
+
+def test_relay_reconnects_warn_once_per_outage():
+    # the updater's warnings reach the cloud console now; a relay retrying every few seconds
+    # must not fill it with the same line
+    assert rt._loud_reconnect(1)
+    assert not any(rt._loud_reconnect(n) for n in range(2, 50))

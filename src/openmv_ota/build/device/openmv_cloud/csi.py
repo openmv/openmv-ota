@@ -636,6 +636,15 @@ async def _ws_recv(reader):  # pragma: no cover
     return opcode, await reader.readexactly(length) if length else b""
 
 
+def _loud_reconnect(streak):
+    """Whether the ``streak``-th consecutive relay failure is worth a WARNING (the first of a
+    streak) or only DEBUG (the rest). The OTA logger's warnings now reach the cloud console
+    (``logs.enable``), and a relay that cannot connect retries every few seconds per stream --
+    a WARNING each time would fill the console's ring and the datalake outbox with the same
+    line during exactly the outage whose other lines matter."""
+    return streak == 1
+
+
 async def _relay_task(stream):  # pragma: no cover
     """The background machinery: one task per Stream. Waits for this stream's
     grant, holds the relay socket, forwards control messages into the session,
@@ -643,6 +652,7 @@ async def _relay_task(stream):  # pragma: no cover
     backoff -- the app never sees a network error, just live_active staying
     False."""
     import asyncio
+    streak = 0                                   # consecutive failures since the last connect
     while True:
         entry = _stream_grant(stream.name)
         if not entry:
@@ -650,10 +660,13 @@ async def _relay_task(stream):  # pragma: no cover
             continue
         try:
             reader, writer = await _ws_connect(entry["camera_url"])
+            streak = 0
             log.info("live[%s]: connected to relay" % stream.name)
             await _pump(stream, reader, writer)
         except Exception as e:
-            log.warning("live[%s]: %s; reconnecting" % (stream.name, repr(e)))
+            streak += 1
+            say = log.warning if _loud_reconnect(streak) else log.debug
+            say("live[%s]: %s; reconnecting" % (stream.name, repr(e)))
         stream._session.streaming = False        # a dead socket streams to no one
         await asyncio.sleep(_RECONNECT_BACKOFF_S)
 

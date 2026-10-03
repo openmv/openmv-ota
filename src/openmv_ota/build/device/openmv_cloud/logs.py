@@ -367,11 +367,31 @@ def enable(level=logging.INFO, logger=None, ring_bytes=None, fps=5,
     target.addHandler(handler)
     if target.level > level:      # the root default (WARNING) would eat INFO
         target.setLevel(level)
+    _hear_ota(logging.getLogger("openmv_ota"))
     stream = _csi.Stream(_STREAM_NAME, fps=fps, encoder=lambda batch, _q: batch)
     handler.stream = stream
     asyncio.create_task(_flusher(console, stream))
     asyncio.create_task(_datalake_flusher(console.sid, outbox))
     return handler
+
+
+def _hear_ota(ota):
+    """Let the updater's WARNING and ERROR records reach the cloud console.
+
+    The frozen ``openmv_log`` keeps the ``openmv_ota`` logger OFF (level above CRITICAL) so a
+    device with no log sink pays nothing -- which also hid every update failure from the cloud:
+    a device offered an update that never installs looked, from the console, exactly like one
+    with nothing on offer. With no handler of its own, MicroPython hands the logger's records to
+    the root handlers, i.e. this sink. WARNING, not INFO: the per-poll chatter stays off, the
+    lines that say something is wrong come through. Never LOWERS a level someone set (a bench
+    or debug build logging the updater at DEBUG to a UART keeps it).
+
+    No feedback loop: ``CloudLogHandler.emit`` only queues the line, and the flushers that send
+    it log nothing; the relay's reconnect warning is one per outage (``csi._loud_reconnect``).
+    The installer mutes the logger again at its erase (``_quiet_past_commit``), because past
+    that point this handler's code may be the flash being erased."""
+    if ota.level > logging.WARNING:
+        ota.setLevel(logging.WARNING)
 
 
 async def _flusher(console, stream):  # pragma: no cover  (device loop)
