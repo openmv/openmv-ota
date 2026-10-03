@@ -813,7 +813,9 @@ def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, mak
     main = (proj.ProjectPaths(root).app_dir / "main.py").read_text()
     assert main == proj._APP_MAIN_OTA      # THE file the website's /start page shows
     compile(main, "main.py", "exec")       # it parses (CPython syntax is a superset here)
-    assert 'openmv_ota.run("https://ota.cloud.openmv.io", recover=bring_up_network)' in main
+    assert ('openmv_ota.run("https://ota.cloud.openmv.io", poll_after_s=CHECK_IN_S, '
+            'recover=bring_up_network)') in main
+    assert "CHECK_IN_S = 300 " in main     # the user's check-in interval, one line to edit
     assert main.count("https://ota.cloud.openmv.io") == 1   # the one URL the website swaps
     assert "from openmv_cloud import csi, datalog, logs" in main
     # both sinks started: logs.enable() alone leaves datalog.post() buffering forever
@@ -874,8 +876,9 @@ def test_the_ota_main_runs_against_stub_device_modules(tmp_path, monkeypatch):
                 await asyncio.sleep(0)
             raise SystemExit            # then leave the main loop
 
-    async def run(url, recover=None):
-        calls.append(("run", url, recover.__name__))
+    async def run(url, self_test=None, wdt=None, poll_after_s=None, recover=None):   # run()'s order
+        assert self_test is None and wdt is None
+        calls.append(("run", url, poll_after_s, recover.__name__))
 
     gc_mod = types.SimpleNamespace(mem_alloc=lambda: 300, mem_free=lambda: 700)
     # MicroPython's asyncio, on a loop made BEFORE `asyncio` is swapped in sys.modules
@@ -907,7 +910,8 @@ def test_the_ota_main_runs_against_stub_device_modules(tmp_path, monkeypatch):
         loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
     assert ("connect", "SSID", "PASSWORD") in calls
-    assert ("run", "https://ota.cloud.openmv.io", "bring_up_network") in calls
+    # CHECK_IN_S reaches run() as its interval (a positional slip would land in self_test)
+    assert ("run", "https://ota.cloud.openmv.io", 300, "bring_up_network") in calls
     assert ("confirm",) in calls
     assert ("heap", {"used_pct": 30.0}) in posted
 

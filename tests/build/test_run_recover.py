@@ -301,3 +301,40 @@ def test_a_failed_checkin_waits_the_backoff_and_success_resets_it():
     # A recover is NOT proof the link is back: it must not reset the backoff.
     recover_branch = failed.split("fails >= recover_after")[1]
     assert "misses = 0" not in recover_branch
+
+
+# --- the check-in interval: the app's own cadence, honoured; the server may only slow it ----
+
+def test_an_app_interval_is_kept_against_the_servers_default_pacing():
+    """The server's ordinary answer ALWAYS carries poll_after_s (3600 s on the hosted cloud).
+    Honouring it would silently turn the app's CHECK_IN_S = 300 into an hour."""
+    ordinary = {"update": False, "poll_after_s": 3600}
+    assert rt._next_poll(ordinary, 300, 0.5) == 300
+    assert rt._next_poll({"update": False, "poll_after_s": 5}, 300, 0.5) == 300
+    assert rt._next_poll({"update": False}, 300, 0.5) == 300
+
+
+def test_the_apps_interval_is_jittered():
+    assert rt._next_poll({}, 300, 0.0) == pytest.approx(255)
+    assert rt._next_poll({}, 300, 0.999) == pytest.approx(345, abs=0.1)
+
+
+def test_a_throttled_answer_may_slow_the_device_but_never_speed_it_up():
+    """Load-shedding: a 429 asks for longer, and an overloaded server must always get it."""
+    assert rt._next_poll({"poll_after_s": 240, "throttled": True}, 30, 0.5) == 240
+    assert rt._next_poll({"poll_after_s": 60, "throttled": True}, 300, 0.5) == 300
+    assert rt._next_poll({"throttled": True}, 300, 0.5) == 300
+
+
+def test_no_interval_leaves_the_device_server_paced():
+    """run(poll_after_s=None): wait what the server said (it already jittered it)."""
+    assert rt._next_poll({"poll_after_s": 3411}, None, 0.5) == 3411
+    assert rt._next_poll({}, None, 0.5) == rt._POLL_DEFAULT_S == 3600
+
+
+def test_run_defaults_to_server_paced_and_the_loop_uses_the_interval():
+    import inspect
+    assert inspect.signature(rt.run).parameters["poll_after_s"].default is None
+    src = _run_src()
+    assert "wait = _next_poll(resp, poll_after_s" in src
+    assert "_backoff(misses, cap" in src and "cap = poll_after_s or _POLL_DEFAULT_S" in src

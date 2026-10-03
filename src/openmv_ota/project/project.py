@@ -700,6 +700,7 @@ from openmv_cloud import csi, datalog, logs
 USE_LAN = False                       # True: Ethernet instead of Wi-Fi
 WIFI_SSID = "SSID"                    # your Wi-Fi network
 WIFI_PASSWORD = "PASSWORD"
+CHECK_IN_S = 300                      # how often to check for updates, in seconds
 
 logs.enable()                         # the console on the device page
 datalog.enable()                      # telemetry to the datalake (the heap graph)
@@ -738,7 +739,7 @@ async def heap_graph():
 async def main():
     await bring_up_network()
     # Your OTA server. recover= runs if check-ins keep failing, so it must recreate the NIC.
-    asyncio.create_task(openmv_ota.run("https://ota.cloud.openmv.io", recover=bring_up_network))
+    asyncio.create_task(openmv_ota.run("https://ota.cloud.openmv.io", poll_after_s=CHECK_IN_S, recover=bring_up_network))
     asyncio.create_task(heartbeat())
     asyncio.create_task(heap_graph())
     cam = csi.CSI()                   # the camera, with live video built in

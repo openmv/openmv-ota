@@ -647,6 +647,7 @@ def register_checkin(contribute=None, on_response=None, key=None):
 # it (tests/build/test_runtime_drop.py proves that, and that the remainder compiles).
 
 # THE CHECK-IN CADENCE. Pure, so the host suite pins every number below.
+_POLL_DEFAULT_S = 3600       # the wait when neither the app nor the server names one
 _JITTER = 0.15               # +/- spread on every wait the DEVICE picks (the server jitters its own)
 _BACKOFF_FIRST_S = 10        # first retry after a failed check-in; doubles per consecutive miss
 _BACKOFF_MAX_SHIFT = 16      # bounds the doubling's int long before the cap is ever the limit
@@ -677,6 +678,28 @@ def _rand():
     ``random`` module (absent on some ports) and no seeding at boot to get wrong."""
     import os
     return os.urandom(1)[0] / 256
+
+
+def _next_poll(resp, interval, r):
+    """How long to wait after a check-in that GOT THROUGH.
+
+    ``interval`` is the app's own cadence (``run(poll_after_s=...)``). Set, it wins: the
+    device checks in every ``interval`` (jittered) whatever the server's ordinary answer
+    says -- that answer always carries ``poll_after_s`` (the server's DEFAULT pacing, 3600 s
+    on the hosted cloud), so honouring it would silently undo the app's choice. The one
+    exception is LOAD-SHEDDING: a throttled (429) answer's ``poll_after_s`` is honoured when
+    it is LONGER than the device's own wait, so an overloaded server can always slow a
+    device down but never speed it up past what the app asked for.
+
+    ``interval`` None leaves the device SERVER-PACED: it waits whatever the server said (the
+    server has already jittered it), or ``_POLL_DEFAULT_S`` if it said nothing."""
+    told = resp.get("poll_after_s")
+    if interval is None:
+        return told or _POLL_DEFAULT_S
+    own = _jittered(interval, r)
+    if resp.get("throttled") and told and told > own:
+        return told
+    return own
 
 
 def _checkin_body(info, st, slot_states=None):
@@ -755,7 +778,7 @@ def _offer(resp):
     return resp.get("manifest_url") if resp.get("update") else None
 
 
-async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
+async def run(server_url, self_test=None, wdt=None, poll_after_s=None,
               ca=None, ntp_host=None, recover=None,
               recover_after=5):  # pragma: no cover  (device: the network loop)
     """The OTA lifecycle loop (async, so it coexists with the app's asyncio work
@@ -777,6 +800,13 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
     if the image ships one, else the firmware's built-in store (``builtin_ca()``).
     ``ntp_host`` overrides the NTP server used to set the clock when the RTC is
     not already trustworthy (``None`` = ntptime's default pool).
+
+    ``poll_after_s`` is how often to check in, in seconds (the generated main.py passes its
+    ``CHECK_IN_S``). Set, the device keeps that cadence itself, jittered +/-15%; the server's
+    ordinary answer cannot shorten or lengthen it, but a THROTTLED answer that asks for longer
+    is honoured -- an overloaded server can always slow a device down. ``None`` (the default)
+    leaves the device server-paced: it waits whatever ``poll_after_s`` the server answers
+    with (3600 s if none). See ``_next_poll``.
 
     ``recover`` is how a device gets ITSELF out of a WEDGED NETWORK STACK. Retrying
     a check-in forever is not a recovery strategy: a stack can enter a state where
@@ -821,7 +851,7 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
             # So: log it, wait a poll, and start over. Nothing an OTA device does is worth giving
             # up the ability to be updated.
             log.error("run: OTA LOOP DIED %r -- restarting" % (e,))  # hil-residual: THE witness for a dead OTA loop; no bench scenario kills it on purpose, so it is unexercised -- which is exactly why it must exist before one does
-            await asyncio.sleep(poll_after_s)  # hil-residual: back off one poll before re-entering
+            await asyncio.sleep(poll_after_s or _POLL_DEFAULT_S)  # hil-residual: back off one poll before re-entering
         except BaseException as e:  # hil-residual: cancellation/shutdown -- record, then let it through
             # NOT restarted: CancelledError and KeyboardInterrupt mean somebody is deliberately
             # stopping us (asyncio shutdown, or a probe taking the REPL). Restarting through those
@@ -842,8 +872,9 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
     ca = _resolve_ca(ca, here)
     fails = 0                             # CONSECUTIVE failed cycles; drives the recover escalation
     misses = 0                            # the same streak, NOT reset by a recover: drives the backoff
+    cap = poll_after_s or _POLL_DEFAULT_S  # the longest a failed check-in waits to retry
     while True:
-        wait = poll_after_s
+        wait = cap
         _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
         # SPLIT ON PURPOSE: a failed CHECK-IN is a transport fault, everything after it is a
         # verdict on the release. Only the first kind may drive the recover escalation.
@@ -870,7 +901,7 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # cost seconds, not the hour it used to. The backoff keeps on growing across a recover
             # -- a recover is not proof the link is back -- and only a check-in that gets through
             # resets it, so a long outage settles at one try per poll, as before.
-            wait = _backoff(misses, poll_after_s, _rand())  # hil-residual: pure arithmetic, host-tested (_backoff); its effect is the spacing between `run: cycle failed` lines
+            wait = _backoff(misses, cap, _rand())  # hil-residual: pure arithmetic, host-tested (_backoff); its effect is the spacing between `run: cycle failed` lines
             if recover is not None and fails >= recover_after:  # hil-residual: the taken branch is witnessed by `run: recovering transport`; the not-taken branch by its ABSENCE after fewer than recover_after failures
                 fails = 0                 # one escalation per streak, not one per cycle after it  # hil-residual: witnessed by there being ONE `run: recovering transport` per streak of failures, not one per poll after the threshold
                 await _recover(recover)  # hil-residual: the witness for this call is emitted by the CALLEE's first line (`run: recovering transport`); the audit cannot see across the call boundary, and a marker here would duplicate it
@@ -887,7 +918,7 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             try:
                 log.debug("checkin: response received")
                 _notify(resp)
-                wait = resp.get("poll_after_s", poll_after_s)
+                wait = _next_poll(resp, poll_after_s, _rand())
                 manifest_url = _offer(resp)
                 if manifest_url:
                     log.debug("checkin: update offered")
@@ -1028,8 +1059,8 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         status_line = ss.readline()
         # A 429 is the server pacing a crowd (the per-IP / per-/64 check-in limit), not a broken
         # link: its body is an ordinary {"update": false, "poll_after_s": n} with a short, jittered
-        # n. Read it like a 200, so the loop waits n instead of a full poll AND resets its failure
-        # streak -- counted as a transport fault, a throttled board would tear down its network
+        # n. Read it like a 200 -- the loop waits n (or its own interval, if that is longer: see
+        # _next_poll) AND resets its failure streak -- counted as a transport fault, a throttled board would tear down its network
         # (a WINC chip reset) after a few polls, over nothing but a busy server.
         throttled = b" 429 " in status_line or status_line.rstrip().endswith(b" 429")
         if not throttled and b" 200 " not in status_line and not status_line.rstrip().endswith(b" 200"):
@@ -1061,6 +1092,8 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
                 except Exception:  # hil-residual: malformed length -> fall back to read-to-EOF
                     clen = None  # hil-residual: bare assign
         resp = json.loads(_read_capped(ss, _RESP_MAX, clen))
+        if throttled:
+            resp["throttled"] = True  # hil-residual: needs a throttling server (see above); tells _next_poll this poll_after_s is load-shedding, not the server's default pacing
         log.debug("checkin: parsed")                  # HIL path witness (headers skipped + JSON)
         return resp  # hil-residual: bare return of the parsed response
     finally:
