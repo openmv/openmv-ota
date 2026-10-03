@@ -745,7 +745,7 @@ async def main():
     cam = csi.CSI()                   # the camera, with live video built in
     cam.reset()
     cam.pixformat(csi.RGB565)
-    cam.framesize(csi.VGA)
+    cam.framesize(csi.QVGA)
     openmv_ota.confirm()              # this version works: keep it (else it rolls back)
     while True:
         await cam.snapshot()

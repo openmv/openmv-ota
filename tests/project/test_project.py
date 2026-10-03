@@ -833,6 +833,9 @@ def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, mak
     lan = main.index("network.LAN()")
     assert main.rindex("if USE_LAN:", 0, lan) < lan < main.index("else:", lan)
     assert "USE_LAN = False" in main
+    # QVGA RGB565 (150 KB), the IDE's hello-world default: VGA overflowed the Nicla's frame
+    # buffer at boot ("Frame buffer overflow") before the app could even confirm itself
+    assert "cam.framesize(csi.QVGA)" in main and "csi.VGA" not in main
     # the short version: no banners, no RAM limits (defaults apply), no watchdog
     for gone in ("GENERATED", "YOUR APP", "configure(", "openmv_wdt"):
         assert gone not in main, gone
@@ -892,7 +895,7 @@ def test_the_ota_main_runs_against_stub_device_modules(tmp_path, monkeypatch):
         "openmv_ota": types.SimpleNamespace(identity=lambda: {"app_version": "1.2.3"}, run=run,
                                             confirm=lambda: calls.append(("confirm",))),
         "openmv_cloud": types.SimpleNamespace(
-            csi=types.SimpleNamespace(CSI=_Cam, RGB565=0, VGA=0),
+            csi=types.SimpleNamespace(CSI=_Cam, RGB565=0, QVGA=0),
             datalog=types.SimpleNamespace(enable=lambda: None,
                                           post=lambda t, o: posted.append((t, o))),
             logs=types.SimpleNamespace(enable=lambda: None)),
