@@ -19,6 +19,8 @@ def project(tmp_path, monkeypatch):
     ran: list[list[str]] = []
     recorded: list[dict] = []
     monkeypatch.setattr(fl.runner, "run", lambda argv, **kw: ran.append(argv))
+    # the bootloader-entry reset (mpremote) runs captured; it exits 1 as the USB drops, as on HW
+    monkeypatch.setattr(fl.runner, "run_quiet", lambda argv: (ran.append(argv), (1, "EIO"))[1])
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
     monkeypatch.setattr(fl.history, "record",
                         lambda root, action, **f: recorded.append({"action": action, **f}))

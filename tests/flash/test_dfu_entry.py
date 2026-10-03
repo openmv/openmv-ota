@@ -80,6 +80,33 @@ def test_no_device_is_a_clear_error_not_a_hang(tmp_path, monkeypatch, capsys):
         fl.flash_firmware(str(tmp_path), board="OPENMV_N6", enter_bootloader=False)
 
 
+def test_a_reset_that_really_failed_shows_what_mpremote_said(monkeypatch):
+    # the reboot step's traceback is held back as the expected USB drop -- but when the bootloader
+    # then NEVER appears, it is the evidence, so the timeout error carries its tail
+    _Clock(monkeypatch)
+    monkeypatch.setattr(fl, "_dfu_listed", lambda tool, usb: False)
+    monkeypatch.setattr(fl.device, "_comports",
+                        lambda: [_Port(0x37C5, 0x1206, "/dev/ttyACM0", "SN")])
+    out = "\n".join("line %d" % i for i in range(20)) + "\nmpremote: could not enter raw repl"
+    monkeypatch.setattr(fl.device, "reset", lambda *a, **k: out)
+    raw = fl.flash_config("OPENMV_N6").raw
+    fl._prepare(raw, serial=None, enter_bootloader=True, mpremote=None, dry_run=False)
+    with pytest.raises(FlashError) as e:
+        fl._ensure_dfu("DFU", "37c5:9206", "OPENMV_N6")
+    msg = str(e.value)
+    assert "the reboot-into-bootloader step said:" in msg
+    assert "could not enter raw repl" in msg and "line 16" in msg and "line 15" not in msg
+    assert fl._reset_output is None          # consumed: a later, unrelated wait doesn't repeat it
+
+
+def test_a_reset_whose_bootloader_appears_shows_nothing(monkeypatch):
+    _Clock(monkeypatch)
+    monkeypatch.setattr(fl, "_dfu_listed", lambda tool, usb: True)
+    monkeypatch.setattr(fl, "_reset_output", "Traceback ... OSError: [Errno 5]")
+    fl._ensure_dfu("DFU", "37c5:9206", "OPENMV_N6")      # no raise: the EIO was the expected drop
+    assert fl._reset_output is None
+
+
 # --- prechecks before the reset ------------------------------------------------------------
 
 class _Port:

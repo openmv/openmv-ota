@@ -15,3 +15,7 @@ def _no_cameras(monkeypatch):
     monkeypatch.setattr("openmv_ota.flash.flash.time.sleep", lambda _s: None)
     # every DFU wait finds its device at once; a test about the wait itself re-stubs this
     monkeypatch.setattr("openmv_ota.flash.flash._dfu_listed", lambda tool, usb: True)
+    # the bootloader-entry reset runs mpremote through runner.run_quiet: never let a test reach a
+    # real serial port with it. A test about the reset stubs it with its own answer.
+    monkeypatch.setattr("openmv_ota.flash.runner.run_quiet",
+                        lambda argv: pytest.fail("unstubbed runner.run_quiet(%r)" % (argv,)))

@@ -45,6 +45,13 @@ def _mpremote(override: str | None) -> list[str]:
     return [override] if override else [sys.executable, "-m", "mpremote"]
 
 
+# What the bootloader-entry reset printed when it exited non-zero -- normally just the expected
+# USB-drop traceback, so it is held back and shown only if the bootloader then never appears
+# (_ensure_dfu). Set by _prepare, consumed (and cleared) by _ensure_dfu.
+_reset_output: str | None = None
+_RESET_TAIL = 5           # lines of that output worth showing: the exception, not the whole stack
+
+
 def _prepare(raw: dict, *, serial: str | None, enter_bootloader: bool, mpremote: str | None,
              dry_run: bool) -> str | None:
     """Get the running camera into its bootloader and return its USB serial (to pin dfu-util
@@ -57,7 +64,8 @@ def _prepare(raw: dict, *, serial: str | None, enter_bootloader: bool, mpremote:
         return serial                            # already in the bootloader / not attached
     if raw.get("backend") == "imx":              # imx: the resident-SBL catcher (flash.imx) must arm
         return cam.serial                        # BEFORE the reset, so _imx_flash owns the reset
-    device.reset(raw, cam, mpremote=_mpremote(mpremote))
+    global _reset_output
+    _reset_output = device.reset(raw, cam, mpremote=_mpremote(mpremote))
     return cam.serial
 
 
@@ -106,10 +114,16 @@ def _no_wait(argv: list[str]) -> list[str]:
 
 
 def _ensure_dfu(tool: str, usb: str, board: str) -> None:
+    global _reset_output
+    said, _reset_output = _reset_output, None
     if not _await_dfu(tool, usb):
+        why = ""
+        if said:                                 # the reset step's held-back output: now it matters
+            why = "\nthe reboot-into-bootloader step said:\n  " + "\n  ".join(
+                said.splitlines()[-_RESET_TAIL:])
         raise FlashError("%s: no DFU device (%s) appeared within %d s -- is it attached? Put it in "
-                         "its bootloader by hand and rerun with --in-bootloader"
-                         % (board, usb, _DFU_WAIT_S))
+                         "its bootloader by hand and rerun with --in-bootloader%s"
+                         % (board, usb, _DFU_WAIT_S, why))
 
 
 # --- dfu backend ----------------------------------------------------------------------------
