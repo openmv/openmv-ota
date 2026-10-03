@@ -1297,19 +1297,14 @@ def install(url, ca=None):  # pragma: no cover
 
 def builtin_ca():  # pragma: no cover  (device: frozen-module imports)
     """The TLS trust anchors frozen into the FIRMWARE, or ``None`` if this firmware carries
-    none (a non-OTA build). Read straight out of flash -- no RAM copy of a ~186 KB bundle.
-    Two frozen homes, oldest first: ``openmv_ca`` (a ``--ca`` project's own roots) and
-    ``_ota_config.CA_PEM`` (what recovery uses -- the full public bundle on boards whose
-    firmware fits it, or the same ``--ca`` roots). Public so an app that opens its own TLS
-    connections can reuse the store the updater trusts."""
-    try:  # hil-residual: import guard; a --ca firmware freezes openmv_ca, the bench (explicit-CA legs) reaches neither arm
-        import openmv_ca  # hil-residual: dominated by the return below
-        return openmv_ca.PEM  # hil-residual: --ca-firmware arm; the bench passes an EXPLICIT ca (path or bytes) on every leg
-    except ImportError:  # hil-residual: bundle-default firmware has no openmv_ca module
-        pass  # hil-residual: fall through to the recovery config's copy
+    none (a non-OTA build). Read straight out of flash -- no RAM copy. One frozen home,
+    ``_ota_config.CA_PEM``, which recovery uses too: the project's ``[ota].ca`` (the hosted
+    OpenMV Cloud's roots by default on boards that cannot fit more, or your own server's root),
+    else the full public bundle on boards whose firmware fits it. Public so an app that opens
+    its own TLS connections can reuse the store the updater trusts."""
     try:  # hil-residual: import guard for the frozen boot config
         import _ota_config  # hil-residual: dominated by the return below
-        return getattr(_ota_config, "CA_PEM", None) or None  # hil-residual: bundle-default arm; the bench passes an explicit CA on every leg
+        return getattr(_ota_config, "CA_PEM", None) or None  # hil-residual: frozen-store arm; the bench passes an explicit CA on every leg
     except ImportError:  # hil-residual: non-OTA firmware (no _ota_config frozen) -- install() then needs an explicit ca
         return None  # hil-residual: no frozen anchors to offer
 

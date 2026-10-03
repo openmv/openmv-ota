@@ -36,7 +36,7 @@ from pathlib import Path
 
 from openmv_ota.project import load_project
 from openmv_ota.project.errors import ProjectError
-from openmv_ota.project.project import ProjectPaths
+from openmv_ota.project.project import CLOUD_ROOTS, ProjectPaths
 from openmv_ota.romfs.boards import get_board
 
 from .errors import BuildError
@@ -56,14 +56,6 @@ _FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py",
                           # installer -- which normally ships in the romfs and is exec'd into
                           # RAM, but cannot be when the romfs is the thing that is gone.
                           "openmv_netcfg.py", "openmv_recovery.py")
-# The public TLS trust store, frozen into the firmware rather than shipped in the romfs. It is
-# ~186 KB -- 58% of a scaffolded app image -- and the romfs image is duplicated under A/B, so in
-# the slot it was paid for twice; on a one-erase-sector board (M4/M7/H7 classic) it did not fit at
-# all. In the firmware it is paid for once, is read straight out of flash (no RAM copy), and is
-# there even when the filesystem holding the app is what broke -- the same argument that puts
-# boot.py and openmv_log there. Generated per project (from the fetched bundle), so unlike the
-# modules above it has no bundled default.
-_CA_MODULE = "openmv_ca.py"
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 
@@ -275,16 +267,6 @@ def _write_wrapper_manifest(p, repo: Path, name: str,
         src = p.root / "device" / mod
         shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, mods / mod)
         freezes.append('freeze("%s", "%s")\n' % (mods.as_posix(), mod))
-    # The project's OWN TLS roots, frozen as `openmv_ca` -- present only when `project new --ca`
-    # supplied them. There is deliberately no default here: the PUBLIC bundle is ~186 KB and
-    # freezing that overflows FLASH_TEXT on every 1792 KB board (H7 Plus 106.85%, PureThermal
-    # 104.57%, Nicla 101.56%), so it ships in the romfs instead. What makes freezing work is the
-    # store being about a kilobyte, not where it lives. Without one, openmv_ota reads the romfs
-    # copy, which is also what a project created before `--ca` existed keeps doing.
-    ca_mod = p.root / "device" / _CA_MODULE
-    if ca_mod.exists():
-        shutil.copy2(ca_mod, mods / _CA_MODULE)
-        freezes.append('freeze("%s", "%s")\n' % (mods.as_posix(), _CA_MODULE))
     # The installer, frozen as `openmv_installer`. It is the SAME source the romfs ships and
     # openmv_ota.install() exec's into RAM -- one implementation, so a fix cannot land on the
     # normal path and miss the recovery one. The romfs copy stays: on a healthy device it is
@@ -343,17 +325,19 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
 
 
 def _recovery_ca(p, t) -> bytes:
-    """The TLS anchors baked into the firmware for recovery, read at build time.
+    """The TLS anchors baked into the firmware, read at build time: ``_ota_config.CA_PEM``.
 
-    Recovery runs when the romfs is gone, so the firmware must carry real anchors -- an empty
-    CA_PEM would leave TLS with nothing to verify against and recovery retrying forever. With
-    ``[ota].ca`` unset, a board whose firmware has the room (``recovery_ca_bundle`` in
-    boards.json) freezes the project's full public bundle -- ``certs/ca.pem``, scaffolded at
-    ``project new`` and read at build time so the device never has to find a file. That one
-    frozen copy serves the runtime too (``openmv_ota.builtin_ca()``), so the romfs does not
-    ship the bundle at all. A board without the room must pin its server's root(s) via
-    ``[ota].ca`` (the ~186 KB bundle overflows FLASH_TEXT on the 1792 KB parts); the build
-    refuses rather than ship a recovery that cannot connect."""
+    This is the device's ONE frozen trust store -- recovery uses it, and so does the runtime
+    (``openmv_ota.builtin_ca()``) -- so it is paid for once, read straight out of flash, and is
+    there even when the romfs is gone. Recovery runs exactly then, so it must hold real anchors:
+    an empty CA_PEM would leave TLS with nothing to verify against and recovery retrying forever.
+
+    ``[ota].ca`` when set (``project new`` points it at ``certs/root.pem``: the hosted OpenMV
+    Cloud's roots by default, or ``--ca``'s file). With it unset, a board whose firmware has the
+    room (``recovery_ca_bundle`` in boards.json) freezes the project's full public bundle --
+    ``certs/ca.pem``, scaffolded at ``project new``. A board without the room (the ~186 KB
+    bundle overflows FLASH_TEXT on the 1792 KB parts) refuses rather than ship a recovery that
+    cannot connect."""
     rel = (p.config.ca or "").strip()
     if rel:
         path = p.root / rel
@@ -374,8 +358,10 @@ def _recovery_ca(p, t) -> bytes:
     raise BuildError(
         "%s: [ota].ca is unset, and this board's firmware cannot hold the public CA "
         "bundle (~186 KB overflows its flash budget).\n"
-        "Recovery needs TLS anchors in the firmware: point [ota].ca at a PEM holding "
-        "the root(s) your server's certificate chains to (a few KB)." % t.name)
+        "Recovery needs TLS anchors in the firmware: point [ota].ca at a PEM holding the "
+        "root(s) your server's certificate chains to -- for the hosted OpenMV Cloud, a copy "
+        "of openmv_ota/data/%s (what `project new` scaffolds as certs/root.pem)."
+        % (t.name, CLOUD_ROOTS.name))
 
 
 def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
@@ -431,8 +417,8 @@ def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
         + "MAX_ATTEMPTS = %d\n" % p.config.max_attempts
         # RECOVERY CONFIG -- in the FIRMWARE, deliberately, not the romfs. A device whose image is
         # gone still needs both of these to reach the server, which is exactly when recovery runs;
-        # keeping them in the app is what made recovery impossible in v1. CA_PEM is never empty:
-        # [ota].ca when set, else the full public bundle on boards whose firmware fits it.
+        # keeping them in the app is what made recovery impossible in v1. CA_PEM is never empty
+        # (see _recovery_ca), and it is the only frozen copy: the runtime reads it too.
         + "SERVER_URL = %r\n" % p.config.server_url
         + "CA_PEM = %r\n" % _recovery_ca(p, t)
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))

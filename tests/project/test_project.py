@@ -217,7 +217,9 @@ def test_create_ota_scaffolds_runtime_lib_with_coprocessor_data(tmp_path, make_f
     # builtin_ca(); shipping it in the romfs too would pay ~186 KB per slot twice.
     assert (root / "certs" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()
     assert not (lib / "data" / "ca.pem").exists()
-    assert not (root / "device" / proj.CA_MODULE).exists()
+    assert not (root / "device" / "openmv_ca.py").exists()   # CA_PEM is the one frozen copy
+    assert not (root / "certs" / "root.pem").exists()        # every board fits the bundle
+    assert proj.load_project(root, verify=False).config.ca == ""
     res = json.loads((lib / "data" / "resources.json").read_text())
     assert res[0]["handler"] == "partition" and res[0]["partition"] == 1
     read_image((lib / "data" / "coprocessor.romfs").read_bytes())   # valid romfs, no raise
@@ -238,7 +240,7 @@ def test_create_ota_runtime_lib_no_coprocessor_data_without_coprocessor(
     assert "def run(" in (data / "installer.py").read_text()
     assert (root / "certs" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()  # the stubbed bundle
     assert not (data / "ca.pem").exists()   # the bundle rides in firmware, not the romfs
-    assert not (root / "device" / proj.CA_MODULE).exists()   # no openmv_ca module without --ca
+    assert not (root / "device" / "openmv_ca.py").exists()   # no separate frozen module
     assert not (data / "coprocessor.romfs").exists()
     assert not (data / "resources.json").exists()
 
@@ -439,11 +441,13 @@ def test_create_ota_accepts_a_one_sector_board_in_single_mode(tmp_path, make_fir
     rb = next(t for t in lock.targets["resolved"] if t.get("role", "main") == "main")
     assert geometry.derive_mode(rb["partition_size"], rb["erase_size"]) == geometry.SINGLE
     assert root.exists()
-    # the supplied roots are what gets frozen -- NOT the public bundle
-    ns = {}
-    exec(compile((root / "device" / proj.CA_MODULE).read_text(), "openmv_ca.py", "exec"), ns)
-    assert b"BEGIN CERTIFICATE" in ns["PEM"] and len(ns["PEM"]) < 4096
-    assert (root / "certs" / "root.pem").exists()    # copied in, so the project is self-contained
+    # the supplied roots are what gets frozen -- NOT the public bundle, NOT the cloud roots --
+    # copied in, so the project is self-contained
+    supplied = Path(_root_pem(tmp_path)).read_bytes()
+    assert (root / "certs" / "root.pem").read_bytes() == supplied
+    toml = proj.ProjectPaths(root).config.read_text()
+    assert 'ca = "certs/root.pem"' in toml and "hosted OpenMV Cloud" not in toml
+    assert not (root / "certs" / "ca.pem").exists()
 
 
 def test_create_ota_ca_must_exist(tmp_path, make_firmware, make_sdk):
@@ -461,23 +465,47 @@ def test_create_ota_ca_must_look_like_a_pem(tmp_path, make_firmware, make_sdk):
                 factory_keys=1, ota_keys=2, ca=str(bad))
 
 
-def test_trust_store_reports_an_unreadable_configured_ca(tmp_path):
-    """`[ota] ca` pointing at a path that isn't there -- e.g. hand-edited, or not committed."""
-    import types as _t
-    paths = proj.ProjectPaths(tmp_path)
-    cfg = _t.SimpleNamespace(ca="certs/gone.pem")
-    lock = _t.SimpleNamespace(targets={"resolved": []})
-    with pytest.raises(ProjectError, match=r"\[ota\] ca .* is not readable"):
-        proj._trust_store(paths, cfg, lock)
+def _no_bundle_fetch(monkeypatch):
+    """The public bundle must not even be downloaded for a project that cannot use it."""
+    def boom(*a, **k):
+        raise AssertionError("fetched the public CA bundle")
+    monkeypatch.setattr(proj, "_fetch_ca_bundle", boom)
 
 
-def test_create_ota_refuses_a_one_sector_board_without_its_own_ca(tmp_path, make_firmware, make_sdk):
-    """The public bundle does not fit these boards, so scaffolding it would only move the
-    failure to a linker error nobody connects to a certificate. Refuse where it can be
-    explained, and say what to pass."""
-    with pytest.raises(ProjectError, match="cannot hold the public CA bundle"):
-        _create(tmp_path, make_firmware, make_sdk, ota=True, boards=["OPENMV4"],
-                factory_keys=1, ota_keys=2)
+@pytest.mark.parametrize("boards", [["OPENMV4"], ["ARDUINO_NICLA_VISION"],
+                                    ["OPENMV_N6", "ARDUINO_PORTENTA_H7"]])
+def test_create_ota_without_ca_scaffolds_the_hosted_cloud_roots(tmp_path, make_firmware,
+                                                                make_sdk, monkeypatch, boards):
+    """A board whose firmware cannot carry the ~186 KB public bundle used to refuse `new --ota`
+    without --ca. The hosted OpenMV Cloud has to work out of the box on every board, so it now
+    gets the cloud's own roots (a few KB) as certs/root.pem, pointed at by [ota].ca -- with a
+    note telling a self-hoster what to replace. One such board is enough: the whole project
+    shares one trust store."""
+    _no_bundle_fetch(monkeypatch)
+    root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, boards=boards,
+                      factory_keys=1, ota_keys=2)
+    assert (root / "certs" / "root.pem").read_bytes() == proj.CLOUD_ROOTS.read_bytes()
+    assert not (root / "certs" / "ca.pem").exists()
+    toml = proj.ProjectPaths(root).config.read_text()
+    assert 'ca = "certs/root.pem"' in toml
+    assert "# Anchors for the hosted OpenMV Cloud; self-hosting? Replace certs/root.pem" in toml
+    assert proj.load_project(root, verify=False).config.ca == "certs/root.pem"
+    assert b"self-hosting? Replace with your server's root" in proj.CLOUD_ROOTS.read_bytes()
+
+
+def test_create_ota_keeps_a_root_pem_the_user_already_replaced(tmp_path, make_firmware,
+                                                               make_sdk, monkeypatch):
+    """A self-hoster who swapped their server's root into certs/root.pem keeps it across
+    `new --force`; only the hosted default is scaffolded, never forced."""
+    _no_bundle_fetch(monkeypatch)
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True, boards=["OPENMV4"],
+                      factory_keys=1, ota_keys=2)
+    mine = b"-----BEGIN CERTIFICATE-----\nmine\n-----END CERTIFICATE-----\n"
+    (root / "certs" / "root.pem").write_bytes(mine)
+    _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True, boards=["OPENMV4"],
+            force=True, factory_keys=1, ota_keys=2)
+    assert (root / "certs" / "root.pem").read_bytes() == mine
 
 
 def test_create_non_ota_allows_non_capable_board(tmp_path, make_firmware, make_sdk):

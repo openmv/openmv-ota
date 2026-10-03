@@ -587,8 +587,9 @@ def test_recovery_ca_empty_on_a_board_without_room_fails_the_build_loudly(tmp_pa
     from openmv_ota.build.errors import BuildError
     from openmv_ota.build.firmware import _recovery_ca
 
-    with pytest.raises(BuildError, match=r"cannot hold the public CA bundle"):
+    with pytest.raises(BuildError, match=r"cannot hold the public CA bundle") as e:
         _recovery_ca(_FakeProj(tmp_path), _FakeTarget(name="OPENMV4P"))
+    assert "openmv-cloud-roots.pem" in str(e.value)   # says where the hosted roots are
 
 
 def test_recovery_ca_missing_project_bundle_fails_the_build_loudly(tmp_path):
@@ -621,21 +622,25 @@ def test_an_unreadable_ca_fails_the_build_loudly(tmp_path):
         _recovery_ca(_FakeProj(tmp_path, ca="certs/missing.pem"), _FakeTarget())
 
 
-def test_build_firmware_freezes_a_supplied_trust_store(make_project, monkeypatch):
-    """`--ca` roots ARE frozen: about a kilobyte, so the firmware can hold them -- and there they
-    are readable with no RAM copy and survive the filesystem being gone, which is what recovery
-    needs. The public bundle is what cannot be frozen, not the idea."""
+def test_build_firmware_freezes_the_configured_trust_store_once(make_project, monkeypatch):
+    """[ota].ca is frozen as _ota_config.CA_PEM -- recovery's anchors AND the runtime's
+    (builtin_ca) -- and nowhere else. A second frozen copy (the old openmv_ca module) doubled
+    the flash cost of a ~17 KB store, and went stale the moment certs/root.pem was replaced;
+    a leftover device/openmv_ca.py is ignored."""
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)
-    root, repo, _app = make_project(ota=True)
-    ca = root / "device" / "openmv_ca.py"
-    ca.write_text('PEM = b"-----BEGIN CERTIFICATE-----\\nAAA\\n-----END CERTIFICATE-----\\n"\n')
+    root, repo, _app = make_project(ota=True, boards=("ARDUINO_NICLA_VISION",))
+    monkeypatch.setattr(fw, "_copy_wifi_blobs", lambda *a: [])   # the fake tree has none
+    (root / "device" / "openmv_ca.py").write_text('PEM = b"stale"\n')
+    pem = (root / "certs" / "root.pem").read_bytes()
 
     r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
 
-    manifest = (r.build_dir / "manifest.py").read_text()
-    assert "openmv_ca.py" in manifest
-    assert (r.build_dir / "openmv_ca.py").read_text() == ca.read_text()
+    assert "openmv_ca" not in (r.build_dir / "manifest.py").read_text()
+    assert not (r.build_dir / "openmv_ca.py").exists()
+    ns = {}
+    exec((r.build_dir / "_ota_config.py").read_text(), ns)
+    assert ns["CA_PEM"] == pem and b"GTS Root R4" in pem
 
 
 def test_a_multi_core_board_freezes_the_ota_modules_into_the_main_core_only(make_project,

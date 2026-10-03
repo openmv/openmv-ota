@@ -386,20 +386,20 @@ def test_offer(resp, expect):
 
 # --- builtin_ca: the firmware's frozen trust anchors -------------------------
 
-def test_builtin_ca_prefers_a_ca_projects_frozen_roots(monkeypatch):
-    """A --ca project freezes openmv_ca; those roots ARE the trust decision the maker made,
-    so they win over the recovery config's copy (same bytes in practice, but the module is
-    the older, more specific home)."""
+def test_builtin_ca_reads_only_the_recovery_configs_copy(monkeypatch):
+    """_ota_config.CA_PEM is the firmware's one frozen trust store, the same one recovery
+    uses. A stray openmv_ca module (an older firmware's second copy) is not consulted, so
+    the runtime and recovery can never trust different roots."""
     import sys
     import types
-    monkeypatch.setitem(sys.modules, "openmv_ca", types.SimpleNamespace(PEM=b"root"))
-    monkeypatch.setitem(sys.modules, "_ota_config", types.SimpleNamespace(CA_PEM=b"bundle"))
+    monkeypatch.setitem(sys.modules, "openmv_ca", types.SimpleNamespace(PEM=b"stale"))
+    monkeypatch.setitem(sys.modules, "_ota_config", types.SimpleNamespace(CA_PEM=b"root"))
     assert rt.builtin_ca() == b"root"
 
 
 def test_builtin_ca_falls_back_to_the_recovery_configs_copy(monkeypatch):
-    """A bundle-default firmware (no --ca) freezes no openmv_ca module -- the public bundle
-    lives in _ota_config.CA_PEM, stamped for recovery, and the runtime reuses it."""
+    """A bundle-default firmware (no [ota].ca) carries the public bundle in
+    _ota_config.CA_PEM, stamped for recovery, and the runtime reuses it."""
     import sys
     import types
     monkeypatch.setitem(sys.modules, "_ota_config", types.SimpleNamespace(CA_PEM=b"bundle"))

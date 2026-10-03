@@ -26,6 +26,8 @@ firmware.bin
 
 # Private signing material — NEVER commit these
 *.pem
+# ...except the hosted OpenMV Cloud's PUBLIC root certificates (package data)
+!src/openmv_ota/data/openmv-cloud-roots.pem
 *.key
 keys/*.private
 keys/private/

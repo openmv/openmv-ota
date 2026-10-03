@@ -34,7 +34,9 @@ class OtaConfig:
     #
     # These are the maker's and constant per build, and a device whose romfs is gone still needs
     # them to reach the server: that is precisely why recovery could not work while they lived in
-    # the app. `ca` is a path relative to the project root; empty means the bundled Mozilla set.
+    # the app. `ca` is a path relative to the project root; empty means the bundled Mozilla set
+    # (allowed only where every board's firmware fits it -- `project new` otherwise scaffolds
+    # the hosted OpenMV Cloud's roots and points this at them).
     server_url: str = ""
     ca: str = ""
     # Opt DOWN to one slot. Asymmetric on purpose: A/B is derived wherever it fits, and this is
@@ -199,6 +201,7 @@ def render_config(
     ota: bool = False,
     signing_key_id: int | None = None,
     ca: str | None = None,
+    cloud_roots: bool = False,
 ) -> str:
     board_list = ", ".join('"%s"' % b for b in boards)
     vendor_line = ('vendor = "%s"\n' % vendor) if vendor else '# vendor = "Acme Robotics"\n'
@@ -214,6 +217,8 @@ def render_config(
             "# exactly the case recovery exists for.\n"
             "# server_url = \"https://ota.cloud.openmv.io\"\n"
             % (signing_key_id or 0)                 # binds to the literal chain above, not below
+            + (('# Anchors for the hosted OpenMV Cloud; self-hosting? Replace %s with your\n'
+                '# server\'s root (or pass `project new --ca`).\n' % ca) if cloud_roots else "")
             + (('ca = "%s"   # TLS roots for OTA downloads (relative to the project)\n' % ca)
                if ca else
                "# ca = \"certs/root.pem\"   # relative to the project; unset = the bundled public CAs\n")

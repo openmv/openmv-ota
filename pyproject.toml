@@ -59,6 +59,7 @@ where = ["src"]
 # The on-device SDK ships as package data, bundled into the ROMFS at build time.
 "openmv_ota" = [
     "data/*.json",
+    "data/*.pem",                # the hosted OpenMV Cloud trust anchors (certs/root.pem)
     "data/firmware/**/*",
     "data/flashloaders/**/*",    # prebuilt i.MX RT sdphost/blhost flashloaders
     "data/n6_bootloader/*",      # static N6 CubeProgrammer FSBL/loader + FlashLayout.tsv

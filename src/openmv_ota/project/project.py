@@ -419,9 +419,14 @@ def create_project(
     warnings: list[str] = []
     provisioned = None
 
-    ca_rel = _install_ca(paths, ca) if (ota and ca) else None
+    ca_rel = None
+    if ota and ca:
+        ca_rel = _install_ca(paths, ca)
+    elif ota and _boards_without_bundle(boards):
+        ca_rel = _install_cloud_roots(paths)
+    cloud = ota and not ca and ca_rel is not None
     config_text = config_mod.render_config(
-        name, vendor, boards, ota=ota, signing_key_id=None, ca=ca_rel,
+        name, vendor, boards, ota=ota, signing_key_id=None, ca=ca_rel, cloud_roots=cloud,
     )
     # Parse the rendered text so the digest/resolve see exactly what lands on disk
     # (incl. the scaffolded per-board sections) — otherwise `verify` would see drift.
@@ -473,6 +478,7 @@ def create_project(
         # digest/lock resolved above still match the final on-disk config.
         config_text = config_mod.render_config(
             name, vendor, boards, ota=ota, signing_key_id=signing_key_id, ca=ca_rel,
+            cloud_roots=cloud,
         )
         config = config_mod.parse_config(config_text, name)
     if lock.firmware["dirty"] and not allow_dirty:
@@ -497,9 +503,8 @@ def create_project(
     if _boards_have_coprocessor(boards):  # a slaved second core (e.g. AE3's M55_HE)
         _scaffold_coprocessor(paths, app_version)
     if config.ota:  # the device OTA runtime lib (status/confirm/sync) for the app to use
-        trust = _trust_store(paths, config, lock)   # supplied roots, or None -> public bundle
-        _scaffold_runtime_lib(paths, boards, trust)
-        _scaffold_device_files(paths, trust)
+        _scaffold_runtime_lib(paths, boards, bundle=not (config.ca or "").strip())
+        _scaffold_device_files(paths)
         _scaffold_compliance(paths)   # CRA/RED fill-in templates -- per-product paperwork
     _scaffold_license(paths, vendor or name)   # proprietary default; replace freely
     _write_local(paths, repo, sdk_home_override)
@@ -923,7 +928,10 @@ def _empty_romfs() -> bytes:
         return build_image(empty)
 
 
-CA_MODULE = "openmv_ca.py"
+# The hosted OpenMV Cloud's trust anchors (a few KB of self-signed roots), the default
+# [ota].ca for boards whose firmware cannot carry the public bundle.
+CLOUD_ROOTS = Path(__file__).resolve().parents[1] / "data" / "openmv-cloud-roots.pem"
+CLOUD_ROOTS_REL = "certs/root.pem"
 
 
 def _install_ca(paths: ProjectPaths, src: str) -> str:
@@ -945,52 +953,25 @@ def _install_ca(paths: ProjectPaths, src: str) -> str:
     return out.relative_to(paths.root).as_posix()
 
 
-def _trust_store(paths: ProjectPaths, config: OtaConfig, lock: lock_mod.Lock) -> bytes:
-    """The project's own TLS roots (``[ota].ca``) to FREEZE into the firmware, or ``None``
-    meaning "no supplied store" -- then the public bundle ships in the romfs as before.
-
-    Only a supplied store gets frozen, and the reason is measured: the public set is ~186 KB and
-    freezing it overflows FLASH_TEXT on every 1792 KB board (H7 Plus 106.85%, PureThermal
-    104.57%, Nicla 101.56%). The firmware is not a free place to put a trust store, it is a
-    tighter one -- what makes freezing work is the store being ~1 KB, not where it lives.
-
-    A device talks to ONE update server, so its own root is what it actually needs. On a board
-    whose firmware cannot carry the bundle (``recovery_ca_bundle`` unset in boards.json -- the
-    1792 KB parts, and the classics whose ROMFS slot cannot hold it either) that is not a
-    preference: firmware-resident recovery would be left with no TLS anchors at all, so REFUSE
-    and say what to pass, instead of scaffolding something that can only fail later."""
-    rel = (config.ca or "").strip()
-    if rel:
-        path = paths.root / rel
-        try:
-            return path.read_bytes()
-        except OSError as e:
-            raise ProjectError("[ota] ca %r is not readable: %s" % (rel, e), exit_code=1) from None
-    small = sorted({rb["name"] for rb in lock.targets.get("resolved", [])
-                    if rb.get("role", "main") == "main"
-                    and not rb.get("recovery_ca_bundle", False)})
-    if small:
-        raise ProjectError(
-            "%s cannot hold the public CA bundle (~%d KB) in firmware, and recovery needs TLS "
-            "anchors there.\nThese boards do OTA against your OWN server, so give them your "
-            "server's root instead -- it is about a kilobyte:\n"
-            "    openmv-ota project new ... --ca certs/root.pem\n"
-            "(or set `ca = \"certs/root.pem\"` under [ota] in openmv-ota.toml)."
-            % (", ".join(small), len(_fetch_ca_bundle()) // 1024),
-            exit_code=1)
-    return None
+def _boards_without_bundle(boards: list[str]) -> list[str]:
+    """The boards whose firmware cannot carry the ~186 KB public CA bundle (``recovery_ca_bundle``
+    unset in boards.json: the 1792 KB parts, and the classics). Recovery needs TLS anchors in the
+    firmware, so these boards need a small trust store of their own."""
+    return sorted(b for b in boards if not boards_mod.get_board(b).recovery_ca_bundle)
 
 
-def render_ca_module(pem: bytes) -> str:
-    """``device/openmv_ca.py``: the trust store as a frozen module.
-
-    A bytes literal, so mpy-cross puts it in the firmware's frozen section and the device reads
-    it out of flash -- no RAM copy of a ~186 KB bundle, and nothing for the romfs to carry."""
-    return ('"""The TLS trust store, frozen into the firmware.\n\n'
-            "Generated by `openmv-ota project new` from %s.\n"
-            "Replace PEM with your own server's root to shrink it -- a single root is ~1 KB\n"
-            "against ~186 KB for the public bundle, and a device only ever talks to your\n"
-            'server.\n"""\n\nPEM = %r\n' % (CA_BUNDLE_URL, pem))
+def _install_cloud_roots(paths: ProjectPaths) -> str:
+    """Scaffold ``certs/root.pem`` from the hosted OpenMV Cloud's roots and return its
+    project-relative path -- the ``[ota].ca`` for a project with boards that cannot carry the
+    public bundle and no ``--ca``. A few KB, so it freezes into any OTA firmware, and the hosted
+    cloud works out of the box. A self-hoster replaces the file with their server's root (the
+    file and the toml both say so). An existing file is left alone, so a root the user already
+    swapped in survives ``new --force``."""
+    out = paths.root / CLOUD_ROOTS_REL
+    if not out.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(CLOUD_ROOTS.read_bytes())
+    return CLOUD_ROOTS_REL
 
 
 def _fetch_ca_bundle(url: str = CA_BUNDLE_URL) -> bytes:
@@ -1013,11 +994,11 @@ def _fetch_ca_bundle(url: str = CA_BUNDLE_URL) -> bytes:
     return data
 
 
-def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str], pem: bytes | None) -> None:
+def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str], bundle: bool) -> None:
     """Scaffold ``app/lib/openmv_ota/`` -- the device OTA runtime helpers
     (status/confirm/sync/install) -- into an OTA project. ``data/`` always gets the
-    installer source (shipped uncompiled so ``install()`` can ``exec`` it into RAM) and
-    a freshly-downloaded ``ca.pem`` (the TLS trust store). For coprocessor boards it
+    installer source (shipped uncompiled so ``install()`` can ``exec`` it into RAM). With
+    ``bundle`` (no ``[ota].ca``) the public CA bundle is fetched to ``certs/ca.pem``. For coprocessor boards it
     also seeds ``data/coprocessor.romfs`` (a placeholder the build swaps for the real
     image) and ``data/resources.json`` (the sync() manifest). Existing files are left
     alone, so a user's replaced ``ca.pem`` survives ``new --force``."""
@@ -1042,15 +1023,15 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str], pem: bytes | N
     data = dst / "data"
     data.mkdir(exist_ok=True)
     # The PUBLIC bundle lives at certs/ca.pem -- OUTSIDE app/, so it does NOT ship in the
-    # romfs. `pem is None` only happens on boards flagged recovery_ca_bundle (N6, AE3,
-    # RT1060; _trust_store refuses everyone else), where `build firmware` freezes this file
-    # and BOTH the runtime and recovery read that one frozen copy (openmv_ota.builtin_ca()).
-    # Shipping it in the romfs too would pay ~186 KB per slot for bytes the firmware already
-    # carries; a project that wants a per-image override adds app/lib/openmv_ota/data/ca.pem,
-    # which the runtime prefers when present. It cannot be a universal default: at ~186 KB it
-    # overflows FLASH_TEXT on every 1792 KB board -- H7 Plus 106.85%, PureThermal 104.57%,
-    # Nicla 101.56% -- so those boards supply their server's root (~1 KB) via `--ca` instead.
-    if pem is None:
+    # romfs. Only a project without [ota].ca gets it, which `new` allows only when every board
+    # is flagged recovery_ca_bundle (N6, AE3, RT1060); `build firmware` freezes it as
+    # _ota_config.CA_PEM and BOTH the runtime and recovery read that one frozen copy
+    # (openmv_ota.builtin_ca()). Shipping it in the romfs too would pay ~186 KB per slot for
+    # bytes the firmware already carries; a project that wants a per-image override adds
+    # app/lib/openmv_ota/data/ca.pem, which the runtime prefers when present. It cannot be a
+    # universal default: at ~186 KB it overflows FLASH_TEXT on every 1792 KB board -- H7 Plus
+    # 106.85%, PureThermal 104.57%, Nicla 101.56% -- so those get a few KB of roots instead.
+    if bundle:
         ca = paths.root / "certs" / "ca.pem"
         if not ca.exists():
             ca.parent.mkdir(parents=True, exist_ok=True)
@@ -1073,7 +1054,7 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str], pem: bytes | N
             manifest.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
 
 
-def _scaffold_device_files(paths: ProjectPaths, pem: bytes | None) -> None:
+def _scaffold_device_files(paths: ProjectPaths) -> None:
     """Scaffold the editable device modules frozen into the firmware -- the logger
     (``openmv_log``) and the watchdog helper (``openmv_wdt``), both shared by the
     installer and your app and both off until you edit + rebuild. Left alone if present."""
@@ -1084,15 +1065,6 @@ def _scaffold_device_files(paths: ProjectPaths, pem: bytes | None) -> None:
         if not out.exists():
             out.write_text((_DEVICE_SRC_DIR / name).read_text(encoding="utf-8"),
                            encoding="utf-8")
-    # The public TLS trust store, as a frozen module rather than a romfs asset -- see
-    # build.firmware._CA_MODULE for why (it is 58% of a scaffolded app image, the romfs is
-    # duplicated under A/B, and it did not fit a single-image board at all). Generated, not
-    # copied: there is no bundled default, the bundle is fetched. Left alone if present, so a
-    # user who pinned their own server's root keeps it across `new --force`.
-    if pem is not None:                               # only a SUPPLIED store is small enough
-        ca = d / CA_MODULE
-        if not ca.exists():
-            ca.write_text(render_ca_module(pem), encoding="utf-8")
 
 
 _COMPLIANCE_SRC_DIR = Path(__file__).resolve().parent / "compliance_templates"
