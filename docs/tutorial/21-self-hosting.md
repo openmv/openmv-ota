@@ -117,6 +117,17 @@ serves:
 
 Unregistered and read-only-bypassed boards never receive a grant.
 
+**Board types the registry never registers**
+
+Some board types — today the Arduino boards — have no way to be claimed yet, and the
+registry says so for every one of them. The server serves those read-only: updates
+published under the account a board claims are offered, and nothing else happens (no
+device row, no feedback, no grants, no device-limit counting).
+
+| env var | what it does |
+|---|---|
+| `OPENMV_OTA_SERVE_UNREGISTERED_BOARDS` | a **pre-launch operator switch** (boolean: `1`/`true`/`yes`/`on` turns it on, `0`/`false`/`no`/`off` off; default off). On, such a board is treated as **registered for every account**: it gets a device row and is enrolled, its install feedback is recorded, it receives Live and ingest grants, and it counts toward its account's device limit like any other device. It takes the board's claimed id on trust, so turn it off once Arduino board claiming and signed check-ins ship. The server prints a note at startup while it is on |
+
 One more setting exists — `OPENMV_OTA_TEST_OFFER_DOWNGRADES` — and it is **test-only**:
 it makes the server willing to *offer* a release at or below a device's current version,
 which a correct server never does, and which is the only way to exercise the device's own

@@ -45,7 +45,7 @@ from .schemas import CheckAnswer, Health, Ok
 from .rollout import (fallback_payload_version, offers_update, ramp_action,
                       running_body_sha256, settled, should_autopause)
 from .storage import build_storage
-from .verify import build_verifier
+from .verify import Registration, build_verifier
 
 # A throttled check-in is told to retry after this many seconds, chosen at random per answer.
 _THROTTLED_RETRY_S = (60, 300)
@@ -670,8 +670,15 @@ def _ramp_or_autopause(ms, rid, ro):
 def _verify(state, req):
     """The registration check, with the check-in's board name sent VERBATIM -- the
     registry normalizes and owns board identity. ``req`` is a CheckIn or Feedback
-    (both carry ``board`` + ``device_id``)."""
-    return state.verifier.verify(req.board or "", req.device_id)
+    (both carry ``board`` + ``device_id``).
+
+    With ``serve_unregistered_boards`` on (a pre-launch operator switch), a board TYPE the
+    registry never registers counts as registered, for every account and on every path that
+    asks here -- check-in (device row, enrollment, grants, device limit) and feedback alike."""
+    reg = state.verifier.verify(req.board or "", req.device_id)
+    if reg.unregistered_board_type and state.settings.serve_unregistered_boards:
+        return Registration(True)
+    return reg
 
 
 def _effective_account(ms, checkin):
@@ -949,6 +956,10 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     if not settings.swd_ids_verify_url:
         print("note: no registration server configured -- serving ALL devices READ-ONLY "
               "(offers work; no device registry, telemetry, or grants)", file=sys.stderr)
+    if settings.serve_unregistered_boards:
+        print("note: serve_unregistered_boards is ON -- board types the registry never registers "
+              "(Arduino) are tracked as registered devices for every account (a pre-launch switch: "
+              "turn it off once board claiming ships)", file=sys.stderr)
     if settings.test_offer_downgrades:      # loud: a real deployment must never boot with this on
         print("WARNING: test_offer_downgrades is ON -- the server will OFFER anti-rollback "
               "downgrades (a TEST-ONLY hook; devices still reject them). Never in production.",

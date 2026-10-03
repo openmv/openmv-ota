@@ -61,6 +61,14 @@ class ServerSettings(BaseSettings):
     # default; when on, create_app() logs a loud warning and `server check` flags it. Never set
     # it on a production deployment.
     test_offer_downgrades: bool = False
+    # PRE-LAUNCH OPERATOR SWITCH. The registry flags some board types as structurally never
+    # registered (the Arduino boards: nothing to claim them with yet), and those are served
+    # read-only -- offers, but no device row, feedback, grants or device-limit counting. On, the
+    # server treats such a board as REGISTERED for every account: the full fleet treatment, so
+    # the hosted cloud can run them before claiming exists. It trusts the board's claimed id, so
+    # turn it OFF once Arduino board claiming and signed check-ins ship. A boolean: 1/true/yes/on
+    # (any case) is on, 0/false/no/off is off, anything else refuses to start.
+    serve_unregistered_boards: bool = False
     # Postgres connections per server process. Each request borrows one instead of queueing on a
     # single locked connection; size it under the database plan's connection limit divided by the
     # number of server instances.
