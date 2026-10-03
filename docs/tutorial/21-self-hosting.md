@@ -10,7 +10,7 @@ turnkey deploy artifacts.
 
 ## Running your own
 
-The base `pip install openmv-ota` stays lean; the server needs extras:
+The base `pip install openmv-ota` stays lean — it carries the whole CLI, `client` verbs included; only running the server needs extras:
 
 ```
 pip install "openmv-ota[server]"                            # fastapi/uvicorn + local disk + sqlite

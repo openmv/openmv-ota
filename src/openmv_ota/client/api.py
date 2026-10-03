@@ -10,15 +10,6 @@ from __future__ import annotations
 from .errors import ClientError
 
 
-def _require_httpx():
-    try:
-        import httpx
-    except ImportError:
-        raise ClientError("the client needs extra packages -- run: pip install openmv-ota[server]",
-                          exit_code=2) from None
-    return httpx
-
-
 def _detail(resp) -> str:
     try:
         return resp.json().get("detail", resp.text)
@@ -30,7 +21,8 @@ class Api:
     def __init__(self, cfg, *, client=None):
         self._token = cfg.token
         if client is None:
-            client = _require_httpx().Client(base_url=cfg.server_url, timeout=30.0)
+            import httpx                     # a base dependency; imported here to keep CLI start-up quick
+            client = httpx.Client(base_url=cfg.server_url, timeout=30.0)
         self._client = client
 
     def _req(self, method: str, path: str, **kw):

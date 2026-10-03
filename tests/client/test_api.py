@@ -1,13 +1,12 @@
-"""The Api HTTP layer: request shaping, auth header, error mapping, the httpx guard."""
+"""The Api HTTP layer: request shaping, auth header, error mapping."""
 
 from __future__ import annotations
 
-import sys
 from types import SimpleNamespace
 
 import pytest
 
-from openmv_ota.client.api import Api, _require_httpx
+from openmv_ota.client.api import Api
 from openmv_ota.client.errors import ClientError
 
 
@@ -41,16 +40,6 @@ def _cfg():
 def _api(resp):
     c = _Client(resp)
     return Api(_cfg(), client=c), c
-
-
-def test_require_httpx_present():
-    assert _require_httpx().__name__ == "httpx"
-
-
-def test_require_httpx_missing(monkeypatch):
-    monkeypatch.setitem(sys.modules, "httpx", None)
-    with pytest.raises(ClientError, match=r"pip install openmv-ota\[server\]"):
-        _require_httpx()
 
 
 def test_default_client_is_constructed():
