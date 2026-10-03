@@ -196,3 +196,106 @@ def test_set_time_converts_out_of_unix_into_the_port_epoch(monkeypatch):
 def test_source_defaults_to_none():
     rtc._source = "none"
     assert rtc.source() == "none"
+
+
+# --- the server's Date header: the main time source --------------------------
+
+@pytest.fixture
+def _clock(monkeypatch):
+    """A controllable ticks_ms, a recording RTC, and a clean network-time state."""
+    t = {"ms": 1_000_000, "set": []}
+    monkeypatch.setattr(rtc, "_ticks_ms", lambda: t["ms"])
+    monkeypatch.setattr(rtc, "set_time", lambda unix: t["set"].append(unix))
+    monkeypatch.setattr(rtc, "_net_ms", None)
+    monkeypatch.setattr(rtc, "_ntp_ms", None)
+    rtc.BUILD_TIME, rtc._bad, rtc._source = BUILD, False, "none"
+    return t
+
+
+@pytest.mark.parametrize("y,m,d", [(1970, 1, 1), (2000, 2, 29), (2023, 11, 14), (2036, 2, 7),
+                                   (2100, 3, 1), (1999, 12, 31)])
+def test_days_from_civil_matches_the_calendar(y, m, d):
+    import calendar
+    assert rtc._days_from_civil(y, m, d) * 86400 == calendar.timegm((y, m, d, 0, 0, 0))
+
+
+def test_parse_http_date_reads_an_imf_fixdate():
+    assert rtc.parse_http_date(b" Tue, 14 Nov 2023 22:13:20 GMT\r\n") == 1_700_000_000
+    assert rtc.parse_http_date("Tue, 14 Nov 2023 22:13:20 GMT") == 1_700_000_000   # str too
+
+
+@pytest.mark.parametrize("bad", [
+    b"", b"garbage", b"Tue, 14 Nov 2023 22:13:20 PST",          # not GMT
+    b"Tue, 14 Foo 2023 22:13:20 GMT",                            # no such month
+    b"Tue, xx Nov 2023 22:13:20 GMT", b"Tue, 14 Nov 2023 22:13 GMT",
+    b"Tue, 32 Nov 2023 22:13:20 GMT", b"Tue, 14 Nov 2023 24:00:00 GMT",
+    b"Tue, 14 Nov 2023 22:60:00 GMT", b"Tue, 14 Nov 2023 22:13:61 GMT",
+    b"Tuesday, 14-Nov-23 22:13:20 GMT",                          # obsolete RFC 850 form
+])
+def test_parse_http_date_rejects_what_is_not_an_imf_fixdate(bad):
+    assert rtc.parse_http_date(bad) is None
+
+
+def test_server_date_corrects_a_drifted_rtc(monkeypatch, _clock):
+    # THE bench bug: an RTC that reads past the build (so the floor trusts it) but runs
+    # 100 s slow. The check-in's Date re-sets it.
+    _at(monkeypatch, 1_700_000_000 - 100)
+    assert rtc.server_date(b"Tue, 14 Nov 2023 22:13:20 GMT")
+    assert _clock["set"] == [1_700_000_000]
+    assert rtc.source() == "server" and rtc.fresh()
+
+
+def test_server_date_leaves_a_close_rtc_alone(monkeypatch, _clock):
+    # Date has 1 s resolution: re-setting on every check-in would only add jitter
+    _at(monkeypatch, 1_700_000_000 + rtc._DRIFT_S)
+    assert rtc.server_date(b"Tue, 14 Nov 2023 22:13:20 GMT")
+    assert _clock["set"] == []
+    assert rtc.source() == "server" and rtc.fresh()      # but it still counts as checked
+
+
+def test_server_date_sets_an_untrusted_clock_even_if_close(monkeypatch, _clock):
+    rtc._bad = True                                      # latched from a bad boot
+    _at(monkeypatch, 1_700_000_000)
+    assert rtc.server_date(b"Tue, 14 Nov 2023 22:13:20 GMT")
+    assert _clock["set"] == [1_700_000_000]
+
+
+def test_server_date_ignores_garbage_and_pre_build_times(monkeypatch, _clock):
+    _at(monkeypatch, BUILD + 60)
+    assert not rtc.server_date(b"not a date")
+    assert not rtc.server_date(b"Thu, 01 Jan 2015 00:00:00 GMT")   # before the build: a bad proxy
+    assert _clock["set"] == [] and rtc.source() == "none" and not rtc.fresh()
+
+
+def test_fresh_expires_and_drops_the_stale_mark(monkeypatch, _clock):
+    _at(monkeypatch, 1_700_000_000)
+    rtc.server_date(b"Tue, 14 Nov 2023 22:13:20 GMT")
+    _clock["ms"] += (rtc._RESYNC_S - 1) * 1000
+    assert rtc.fresh()
+    _clock["ms"] += 1000
+    assert not rtc.fresh()
+    assert rtc._net_ms is None          # dropped, so a ticks wrap can never revive it
+    _clock["ms"] -= 10 ** 9             # even a "negative" age (wrap) never reads as fresh
+    assert not rtc.fresh()
+
+
+def test_ntp_attempts_are_rate_limited(_clock):
+    assert rtc._ntp_due()               # first attempt: go
+    assert not rtc._ntp_due()           # right after: no
+    _clock["ms"] += (rtc._NTP_RETRY_S - 1) * 1000
+    assert not rtc._ntp_due()
+    _clock["ms"] += 1000
+    assert rtc._ntp_due()               # spacing elapsed: go again
+
+
+def test_ntp_due_after_a_ticks_wrap(_clock):
+    rtc._ntp_due()
+    _clock["ms"] -= 10 ** 6             # ticks_diff went negative: treat as due, never stuck
+    assert rtc._ntp_due()
+
+
+def test_host_ticks_fallback_counts_milliseconds():
+    a = rtc._ticks_ms()
+    assert rtc._ticks_diff(a + 5, a) == 5
+    assert rtc._age_s(None) is None
+    assert rtc._age_s(rtc._ticks_ms()) == 0

@@ -34,9 +34,9 @@ BAUD    = 115200       # UART = None -> log to the USB REPL instead
 LEVEL   = logging.INFO # show this level and above
 ```
 
-Output is kernel-style. It prefers **wall-clock UTC from the RTC** — which is set by the
-time the installer runs, because TLS cert validation requires it (`ntptime.settime()`) —
-and falls back to **monotonic uptime** before the clock is set (e.g. in `boot.py`):
+Output is kernel-style. It prefers **wall-clock UTC from the RTC** — which `openmv_ota.run()`
+corrects from the server's clock on every check-in (and from NTP while the server is
+unreachable) — and falls back to **monotonic uptime** before the clock is set (e.g. in `boot.py`):
 
 ```
 [   12.345] INFO openmv_ota: boot: mounted A (payload 1)                  (RTC unset)

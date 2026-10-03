@@ -6,9 +6,25 @@ timestamp when the answer is yes.
 
     import openmv_rtc
 
-    openmv_rtc.resolve()            # once, after the network is up
+    openmv_rtc.resolve()            # each poll; cheap while the clock is fresh
     if openmv_rtc.trusted():
         ts = openmv_rtc.now()       # Unix seconds (UTC), real
+
+WHERE THE TIME COMES FROM, in order of preference:
+
+1. **The server's ``Date`` header, every check-in** (:func:`server_date`). The
+   check-in already happens, over TLS with the server verified, so this costs no
+   extra traffic and cannot be spoofed by anyone on the path. The RTC is re-set
+   whenever it has drifted more than ``_DRIFT_S`` from it.
+2. **NTP** (:func:`sync`), only when no network time has landed for
+   ``_RESYNC_S`` (the server is unreachable) -- and at most once per
+   ``_NTP_RETRY_S``, since every attempt is a blocking socket op.
+3. **The RTC as it stands**, judged by the build-time floor below -- the OFFLINE
+   fallback, used until one of the above succeeds.
+
+An RTC that merely *looks* plausible is not left alone once the network is up:
+RTCs drift (an STM32 on LSI runs percent-level slow), and a bench fleet that
+trusted its RTC whenever it read past the build ran minutes off the server.
 
 HOW TRUST IS DECIDED: the firmware cannot have been running before it was built,
 so a clock reading earlier than the build timestamp is provably wrong. That is
@@ -43,7 +59,8 @@ assumed:
   than hardcoded, and everything this module returns is Unix (1970) seconds.
 
 RAM BUDGET: this module runs inside your application, so its memory is your
-memory. It holds a few integers and allocates only during a sync.
+memory. It holds a few integers and allocates only during a sync; the ``Date``
+parse works on the one header line the check-in has already read.
 """
 
 import time
@@ -67,8 +84,35 @@ _EPOCH_2000 = 946684800
 # only catches a wildly-wrong future reading (a corrupt RTC latching all ones).
 _MAX_AHEAD = 20 * 365 * 24 * 3600
 
-_source = "none"                      # "rtc" | "ntp" | "none"
+# A network time is FRESH for this long; after it, resolve() goes back to NTP. Every check-in
+# refreshes it from the server's Date header, so on a healthy device NTP never runs at all.
+_RESYNC_S = 6 * 3600
+# Minimum spacing of NTP attempts. Each one is a blocking socket op (DNS + up to two 4 s queries)
+# run under a relaxed watchdog, so a network that blackholes NTP must not see one per poll.
+_NTP_RETRY_S = 300
+# Re-set the RTC from the server's Date only when it is further off than this. Date has 1 s
+# resolution, so re-setting on every check-in would just add up to a second of jitter.
+_DRIFT_S = 2
+
+_source = "none"                      # "rtc" | "ntp" | "server" | "none"
 _bad = False                          # latched: an out-of-window reading was seen
+_net_ms = None                        # ticks_ms of the last network time (Date or NTP), or None
+_ntp_ms = None                        # ticks_ms of the last NTP attempt, or None
+
+
+try:                                  # MicroPython: wrapping millisecond ticks
+    _ticks_ms, _ticks_diff = time.ticks_ms, time.ticks_diff
+except AttributeError:                # host (CPython): a plain monotonic count
+    def _ticks_ms():
+        return int(time.monotonic() * 1000)
+
+    def _ticks_diff(a, b):
+        return a - b
+
+
+def _age_s(mark):
+    """Seconds since the ticks_ms ``mark``, or None when there is no mark."""
+    return None if mark is None else _ticks_diff(_ticks_ms(), mark) // 1000
 
 
 def _epoch_offset():
@@ -115,9 +159,81 @@ def trusted():
 
 
 def source():
-    """Where the current time came from: ``"rtc"`` (already valid at boot, e.g.
-    kept across deep sleep), ``"ntp"`` (synced this boot), or ``"none"``."""
+    """Where the current time came from: ``"server"`` (the last check-in's ``Date``),
+    ``"ntp"`` (an NTP sync), ``"rtc"`` (the RTC as it stood -- the offline fallback,
+    e.g. kept across deep sleep), or ``"none"``."""
     return _source
+
+
+def fresh():
+    """True when a network time (server ``Date`` or NTP) landed within ``_RESYNC_S``.
+
+    A stale mark is dropped rather than kept: ``ticks_diff`` is only meaningful for
+    half the ticks period (about six days), so a mark left in place through a long
+    outage would eventually wrap around and read as fresh again."""
+    global _net_ms
+    age = _age_s(_net_ms)
+    if age is not None and 0 <= age < _RESYNC_S:
+        return True
+    _net_ms = None
+    return False
+
+
+_MONTHS = (b"jan", b"feb", b"mar", b"apr", b"may", b"jun",
+           b"jul", b"aug", b"sep", b"oct", b"nov", b"dec")
+
+
+def _days_from_civil(y, m, d):
+    """Days from 1970-01-01 to the proleptic-Gregorian date ``y-m-d`` (H. Hinnant's
+    algorithm). Pure integer arithmetic: ``time.mktime`` uses the PORT's epoch and,
+    on some ports, local time, so it cannot be trusted to produce Unix seconds."""
+    y -= m <= 2
+    era = y // 400
+    yoe = y - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+
+def parse_http_date(value):
+    """Unix seconds from an HTTP ``Date`` value (IMF-fixdate, the only form RFC 9110
+    lets a server send: ``Sun, 06 Nov 1994 08:49:37 GMT``), or None when it does
+    not parse. Takes bytes or str -- the raw header value off the socket."""
+    if isinstance(value, str):
+        value = value.encode()
+    parts = value.strip().split()
+    if len(parts) != 6 or parts[5].upper() != b"GMT":
+        return None
+    try:
+        day, year = int(parts[1]), int(parts[3])
+        month = _MONTHS.index(parts[2].lower()) + 1
+        hh, mm, ss = (int(x) for x in parts[4].split(b":"))
+    except ValueError:
+        return None
+    if not (1 <= day <= 31 and 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 60):
+        return None
+    return _days_from_civil(year, month, day) * 86400 + hh * 3600 + mm * 60 + ss
+
+
+def server_date(value):
+    """Correct the clock from a check-in response's ``Date`` header value.
+
+    The check-in is TLS with the server verified, so this time is authenticated --
+    and it arrives on every check-in at no extra cost. The RTC is re-set only when
+    it is more than ``_DRIFT_S`` off (or not trusted); either way the clock counts
+    as freshly network-checked, which keeps NTP off the wire. A value that does not
+    parse, or reads before the build (a misconfigured proxy), is ignored.
+
+    Returns True when the value was accepted."""
+    global _source, _net_ms
+    unix = parse_http_date(value)
+    if unix is None or unix < BUILD_TIME:
+        return False
+    if not trusted() or abs(now() - unix) > _DRIFT_S:
+        set_time(unix)
+    _source = "server"
+    _net_ms = _ticks_ms()
+    return True
 
 
 def timestamp():
@@ -201,7 +317,7 @@ def sync(host=None):  # pragma: no cover  (device: network + RTC)
     # BLACKHOLES NTP the clock never becomes trusted, so that would relax the watchdog on EVERY poll
     # -- leaving it permanently disabled, which protects nothing. Rotating keeps each attempt bounded
     # (host + one fallback) while still reaching every server across successive polls.
-    global _fallback_next
+    global _fallback_next, _net_ms
     targets = [_NTP_FALLBACK[_fallback_next % len(_NTP_FALLBACK)]]
     _fallback_next = (_fallback_next + 1) % len(_NTP_FALLBACK)
     targets = [(ip, 123) for ip in targets]
@@ -218,22 +334,46 @@ def sync(host=None):  # pragma: no cover  (device: network + RTC)
             continue  # hil-residual: bare continue    # server clock, or a non-NTP host answering) -> next
         set_time(unix)
         _source = "ntp"
+        _net_ms = _ticks_ms()
         log.debug("clock: ntp synced")                 # HIL path witness (NTP query set the RTC)
         return True  # hil-residual: bare return (NTP sync ok)
     return False  # hil-residual: bare return (all servers failed -> retry next poll)
 
 
-def resolve(host=None):  # pragma: no cover  (device: network + RTC)
-    """Establish the clock once, cheaply: keep what the RTC already has if it is
-    trustworthy (the deep-sleep and coin-cell case -- no network needed), else
-    try one NTP sync. Returns True if the clock ended up trustworthy.
+def _ntp_due():
+    """True when an NTP attempt is allowed now (none yet, or the last one is older
+    than ``_NTP_RETRY_S``); claims the slot when it is. Pure apart from the clock."""
+    global _ntp_ms
+    age = _age_s(_ntp_ms)
+    if age is not None and 0 <= age < _NTP_RETRY_S:
+        return False
+    _ntp_ms = _ticks_ms()
+    return True
 
-    Safe to call repeatedly: once the clock is good it costs a comparison."""
+
+def resolve(host=None):  # pragma: no cover  (device: network + RTC)
+    """Keep the clock right. Call it every poll, AFTER the check-in (whose ``Date``
+    header normally has just refreshed the clock, making this a comparison).
+
+    * fresh network time (server ``Date`` or NTP within ``_RESYNC_S``) -> done;
+    * otherwise try NTP, at most once per ``_NTP_RETRY_S`` -- this is the path for a
+      device that cannot reach its server, and the periodic re-sync for one that
+      only talks to it rarely;
+    * failing that, fall back to the RTC as it stands if the build-time floor
+      trusts it (the offline case: deep sleep, a coin cell).
+
+    Returns True if the clock ended up trustworthy."""
     global _source
+    if fresh():
+        log.debug("clock: fresh")                 # HIL path witness (server Date / NTP still fresh)
+        return True  # hil-residual: bare return (network time fresh)
+    if _ntp_due():
+        log.debug("clock: syncing")               # HIL path witness (no fresh network time -> one NTP sync)
+        if sync(host):  # hil-residual: branch on the NTP result; success is witnessed inside sync() (`clock: ntp synced`), failure by the `clock: rtc trusted` fallback or nothing
+            return True  # hil-residual: bare return (NTP synced; witnessed by clock: ntp synced)
     if trusted():
         if _source == "none":
-            _source = "rtc"  # hil-residual: bare assign (RTC trusted at boot without NTP; bench NTP-syncs first)
-        log.debug("clock: rtc trusted")           # HIL path witness (fast path: clock already good)
+            _source = "rtc"  # hil-residual: bare assign (offline fallback; the bench always reaches a server)
+        log.debug("clock: rtc trusted")           # HIL path witness (offline fallback: RTC passes the floor)
         return True  # hil-residual: bare return (clock trusted)
-    log.debug("clock: syncing")                   # HIL path witness (untrusted -> one NTP sync)
-    return sync(host)  # hil-residual: tail call to sync() (its NTP path is witnessed by clock: ntp synced)
+    return False  # hil-residual: bare return (untrusted; NTP retried after _NTP_RETRY_S)

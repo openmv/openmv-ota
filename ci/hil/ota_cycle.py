@@ -489,9 +489,11 @@ COVERAGE = {
     "run: transport recovered": "run.recovered",          # ...and the hook returned (under an armed WDT)
     "run: poll wait": "run.poll_tail",                   # run() loop tail reached (post-checkin)
     "clock: resolved": "run.clock",                      # NTP/RTC resolve each poll
-    "clock: syncing": "run.clock",                       # openmv_rtc: untrusted clock -> one NTP sync
+    "clock: syncing": "run.clock",                       # openmv_rtc: no fresh network time -> one NTP sync
     "clock: ntp synced": "run.clock",                    # openmv_rtc: NTP query set the RTC
-    "clock: rtc trusted": "run.clock",                   # openmv_rtc: fast path, clock already good
+    "clock: rtc trusted": "run.clock",                   # openmv_rtc: offline fallback, RTC passes the floor
+    "clock: fresh": "run.clock",                         # openmv_rtc: server Date / NTP still fresh
+    "clock: server date": "run.clock",                   # check-in Date header set/confirmed the clock
     "log: configured": "log.configured",                 # openmv_log: handler/UART attached (bootstrap witness)
     "confirm: floor advanced": "confirm.floor",          # anti-rollback floor raised on confirm
     "checkin: response received": "run.checkin",

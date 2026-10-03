@@ -798,8 +798,8 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=None,
 
     ``ca`` are TLS anchors (PEM/path); ``None`` uses the romfs override ``data/ca.pem``
     if the image ships one, else the firmware's built-in store (``builtin_ca()``).
-    ``ntp_host`` overrides the NTP server used to set the clock when the RTC is
-    not already trustworthy (``None`` = ntptime's default pool).
+    ``ntp_host`` overrides the NTP server (``None`` = pool.ntp.org). Each check-in's ``Date``
+    header keeps the clock right, so NTP is only used while the server is unreachable.
 
     ``poll_after_s`` is how often to check in, in seconds (the generated main.py passes its
     ``CHECK_IN_S``). Set, the device keeps that cadence itself, jittered +/-15%; the server's
@@ -875,7 +875,6 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
     cap = poll_after_s or _POLL_DEFAULT_S  # the longest a failed check-in waits to retry
     while True:
         wait = cap
-        _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
         # SPLIT ON PURPOSE: a failed CHECK-IN is a transport fault, everything after it is a
         # verdict on the release. Only the first kind may drive the recover escalation.
         try:
@@ -937,6 +936,10 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
                 # the log from a board with nothing on offer: the same check-in, the same poll wait,
                 # forever. Bounded: one repr of the exception, no traceback buffer.
                 log.warning("run: cycle failed %r" % e)  # hil-residual: transient-failure witness
+        # AFTER the check-in, not before: its Date header has normally just refreshed the clock
+        # (see _server_date), so this is a comparison and NTP stays off the wire. Only a device
+        # that cannot reach its server falls through to an NTP attempt (rate-limited).
+        _resolve_clock(ntp_host)
         _wdt_feed()
         log.debug("run: poll wait")                  # HIL path witness (loop tail; _wdt_feed fed)
         await asyncio.sleep(wait)  # hil-residual: bare loop-tail await (sleep only; nothing follows)
@@ -972,11 +975,10 @@ async def _recover(recover):
 
 
 def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
-    """Establish a trustworthy wall clock so records can carry real timestamps.
-    A no-op once the clock is good (the deep-sleep / coin-cell case resolves on
-    the first pass with no network); otherwise it retries NTP each poll until the
-    network is up. Defensive: a missing clock module or a failed sync just leaves
-    timestamps absent -- ``seq`` still orders every record."""
+    """Keep the wall clock right so records carry real timestamps. A comparison while the
+    last check-in's Date (or an NTP sync) is fresh; otherwise one rate-limited NTP attempt,
+    falling back to the RTC as it stands (see openmv_rtc.resolve). Defensive: a missing clock
+    module or a failed sync just leaves timestamps absent -- ``seq`` still orders every record."""
     try:
         import openmv_rtc
         # An NTP sync is a BLOCKING network op the main loop cannot feed through, so it must relax()
@@ -985,12 +987,25 @@ def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
         # 100 ms, `clock: syncing` was the last line before every reboot, with reset_cause=3 (WDT).
         # It is worst on a network that BLACKHOLES NTP -- each unreachable server burns its full
         # socket timeout, and sync() walks a fallback list -- which is precisely when a device most
-        # needs to stay alive. A no-op once the clock is trusted (the common case: no relax at all).
+        # needs to stay alive. A no-op while the clock is fresh (the common case: no relax at all).
         with _wdt_relax():
             openmv_rtc.resolve(ntp_host)
         log.debug("clock: resolved")                  # HIL path witness (NTP/RTC each poll)
     except Exception:  # hil-residual: clock-unresolved wrapper (missing module / failed NTP)
         pass  # hil-residual: bare pass; clock left unresolved
+
+
+def _server_date(value):  # pragma: no cover  (device: RTC)
+    """Hand a check-in's ``Date`` header value to openmv_rtc, which corrects the RTC when it has
+    drifted. This is the device's main time source: free (the check-in happens anyway) and
+    authenticated (the TLS session verified the server). Defensive like _resolve_clock: a missing
+    clock module or an RTC fault must never fail the check-in it rides on."""
+    try:
+        import openmv_rtc
+        if openmv_rtc.server_date(value):
+            log.debug("clock: server date")           # HIL path witness (check-in Date set/confirmed the clock)
+    except Exception:  # hil-residual: missing clock module / RTC fault -> the check-in goes on
+        pass  # hil-residual: bare pass; timestamps stay as they were
 
 
 def _read_capped(sock, limit, clen=None):  # pragma: no cover  (device network)
@@ -1091,6 +1106,8 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
                     #                                       so the body read is exact -- every board, every poll)
                 except Exception:  # hil-residual: malformed length -> fall back to read-to-EOF
                     clen = None  # hil-residual: bare assign
+            elif line[:5].lower() == b"date:":  # hil-residual: header dispatch; the taken branch is witnessed by the callee's `clock: server date` (every check-in: uvicorn and Cloudflare both send Date)
+                _server_date(line[5:])  # hil-residual: the witness is emitted by the CALLEE (`clock: server date`); the audit cannot see across the call boundary
         resp = json.loads(_read_capped(ss, _RESP_MAX, clen))
         if throttled:
             resp["throttled"] = True  # hil-residual: needs a throttling server (see above); tells _next_poll this poll_after_s is load-shedding, not the server's default pacing
