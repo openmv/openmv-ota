@@ -73,8 +73,10 @@ class _Fd:
         return self._fd
 
 
-@pytest.mark.skipif(not hasattr(os, "openpty") or os.geteuid() == 0,
-                    reason="needs a pty, and root ignores TIOCEXCL")
+@pytest.mark.skipif(not hasattr(os, "openpty") or os.geteuid() == 0
+                    or not sys.platform.startswith("linux"),
+                    reason="needs a Linux pty (the bench is Linux; macOS ptys don't enforce "
+                           "TIOCEXCL), and root ignores TIOCEXCL")
 def test_the_claim_locks_out_a_later_opener_and_lifts_cleanly():
     master, slave = os.openpty()
     path = os.ttyname(slave)
