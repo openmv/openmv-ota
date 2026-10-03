@@ -76,7 +76,18 @@ def register(flash_parser: argparse.ArgumentParser):
 
 
 def _sdk_home(args: argparse.Namespace) -> Path | None:
-    return Path(args.sdk_home) if args.sdk_home else None
+    """``--sdk-home``, else the PROJECT's SDK -- resolved the way a build resolves it (``[sdk].home``
+    in openmv-ota.local.toml, else ``~/openmv-sdk-<SDK_VERSION>``). Only the flag used to count,
+    so a project made with ``--install-sdk`` (local home left empty) never found the SDK's own
+    dfu-util/blhost and fell back to PATH: "dfu-util not found" with the tool sitting in
+    ~/openmv-sdk-<ver>/bin."""
+    if args.sdk_home:
+        return Path(args.sdk_home)
+    project = getattr(args, "project", None)        # `flash list` has no project
+    if project is None:
+        return None
+    from openmv_ota.project.project import project_sdk_home
+    return project_sdk_home(project)
 
 
 def _report(args: argparse.Namespace, steps) -> int:

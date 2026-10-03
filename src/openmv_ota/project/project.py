@@ -1150,6 +1150,24 @@ def _local_sdk_home(paths: ProjectPaths) -> Path | None:
     return local.sdk_home if local else None
 
 
+def _sdk_home(paths: ProjectPaths, repo: Path) -> Path:
+    """The SDK a project uses: ``[sdk].home`` in the local file, else (empty, the default
+    ``project new`` writes) ``~/openmv-sdk-<SDK_VERSION>`` -- where ``--install-sdk`` puts it."""
+    home = _local_sdk_home(paths)
+    return home if home is not None else sdk_res.default_sdk_home(sdk_res.read_sdk_version(repo))
+
+
+def project_sdk_home(root: str | Path) -> Path | None:
+    """The project's SDK home, resolved exactly as a build resolves it, or ``None`` when ``root``
+    is not a set-up project. For the tools that only need the SDK's binaries (``flash``: dfu-util,
+    blhost, sdphost) -- it reads the local file and the checkout's SDK_VERSION, not the lock."""
+    paths = ProjectPaths(Path(root))
+    try:
+        return _sdk_home(paths, _checkout_path(paths, None))
+    except ProjectError:
+        return None
+
+
 # --- setup ------------------------------------------------------------------
 
 def setup_project(
@@ -1265,9 +1283,7 @@ def load_project(
     locked = lock_mod.read(paths.lock)
     repo = _checkout_path(paths, fw)
 
-    sdk_home = _local_sdk_home(paths)
-    if sdk_home is None:
-        sdk_home = sdk_res.default_sdk_home(sdk_res.read_sdk_version(repo))
+    sdk_home = _sdk_home(paths, repo)
     return LoadedProject(
         root=paths.root, config=config, lock=locked,
         firmware_path=repo, sdk_home=sdk_home,
