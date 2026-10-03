@@ -242,7 +242,7 @@ def render_config(
         ota_section = (
             "# [ota]\n"
             "# enabled = true          # opt in to over-the-air updates; halves the\n"
-            "#                           usable image size (regular + golden image)\n\n"
+            "#                           usable image size (two A/B slots)\n\n"
         )
     # Active per-board sections with an auto-assigned product_id in EVERY mode -- one
     # scaffold shape. In a plain project the id is inert (recorded in system.json,

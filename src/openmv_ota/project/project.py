@@ -592,7 +592,7 @@ def _provision_keys(sig_alg: int, factory_keys: int, ota_keys: int, passphrase: 
     if factory_keys < 1:
         raise ProjectError(
             "an OTA project needs at least one factory key (--factory-keys 0 leaves no "
-            "way to sign the golden image)", exit_code=1,
+            "way to sign the factory image)", exit_code=1,
         )
     from openmv_ota.ota.keys import provision_key_set
 

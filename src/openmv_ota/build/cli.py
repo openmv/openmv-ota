@@ -141,7 +141,7 @@ def register(build_parser: argparse.ArgumentParser):
     p_ver.add_argument("trailer", nargs="?", help="trailer.bin (omit when image is a .zip)")
     p_ver.add_argument("--trusted-keys", default="keys/trusted_keys.json",
                        help="trusted_keys.json (default: keys/trusted_keys.json)")
-    p_ver.add_argument("--base", help="golden image to apply a delta against (delta verify)")
+    p_ver.add_argument("--base", help="base image the delta applies to (delta verify)")
     p_ver.add_argument("--target", help="expected new image, to confirm a delta reconstructs it")
     p_ver.set_defaults(func=cmd_verify, _command="build verify")
 
@@ -517,7 +517,7 @@ def _verify_delta(raw: bytes, args: argparse.Namespace) -> int:
     from openmv_ota.ota.delta import apply_delta
     from openmv_ota.ota.errors import OtaError
     if not args.base:
-        print("error: verifying a delta needs --base <golden image>", file=sys.stderr)
+        print("error: verifying a delta needs --base <base image>", file=sys.stderr)
         return 2
     try:
         base = build_mod._read_maybe_gz(Path(args.base))

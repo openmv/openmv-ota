@@ -45,7 +45,8 @@ def register(project_parser: argparse.ArgumentParser):
     p_new.add_argument("--install-sdk", action="store_true", help="download + install the SDK if missing")
     p_new.add_argument("--allow-dirty", action="store_true", help="don't warn on a dirty checkout")
     p_new.add_argument("--ota", action="store_true",
-                       help="over-the-air project: halve each partition for a regular + golden image")
+                       help="over-the-air project: two A/B slots per partition (one slot, "
+                            "single-image, where a partition cannot hold two)")
     p_new.add_argument("--ca", metavar="PEM",
                        help="TLS roots the device trusts for OTA downloads (a PEM file, copied "
                             "into the project as certs/ and frozen into the firmware). Unset "
@@ -516,8 +517,8 @@ def _print_summary(lock: lock_mod.Lock) -> None:
     tc = lock.toolchain
     dirty = " (dirty)" if fw.get("dirty") else ""
     branch = fw.get("branch") or "detached"
-    print("  mode:        %s" % ("OTA (partition split into regular + golden)" if lock.ota
-                                 else "single image (fills the partition)"))
+    print("  mode:        %s" % ("OTA (A/B slots; single-image where a partition holds one)"
+                                 if lock.ota else "no OTA (the image fills the partition)"))
     print("  firmware:    %s  commit %s%s" % (fw.get("version"), (fw.get("commit") or "")[:12], dirty))
     print("               branch %s  describe %s" % (branch, fw.get("describe")))
     print("  micropython: %s  (.mpy abi %s.%s)"

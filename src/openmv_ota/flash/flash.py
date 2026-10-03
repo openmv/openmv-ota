@@ -340,7 +340,7 @@ def flash_erase(project: str = ".", *, board: str, dfu_util: str | None = None,
     on the RT1060 (imx) it's a blhost ``flash-erase-region`` of the disk's MBR sector.
 
     ``romfs=True`` instead erases the whole OTA romfs region (both slots), blanking any installed
-    update so boot.py finds no valid trailer and falls back to the golden image -- imx-only (the
+    image so boot.py finds no valid trailer and the firmware-resident recovery runs -- imx-only (the
     block-device boards); other backends have no single romfs region to erase. The retired Nanos
     are refused."""
     cfg = flash_config(board)                        # refuses the retired Nanos

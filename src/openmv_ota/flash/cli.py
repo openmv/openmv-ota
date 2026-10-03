@@ -64,7 +64,7 @@ def register(flash_parser: argparse.ArgumentParser):
     _add_common(p_er)
     p_er.add_argument("--romfs", action="store_true",
                       help="erase the whole OTA romfs region (both slots) instead of the user "
-                           "disk, so the device falls back to golden (imx boards only)")
+                           "disk, so no slot is bootable and the firmware's recovery runs (imx boards only)")
     p_er.set_defaults(func=cmd_erase, _command="flash erase")
 
     p_ls = sub.add_parser("list", help="list connected boards and the state each is in")

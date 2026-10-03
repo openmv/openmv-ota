@@ -23,7 +23,7 @@ def test_new_success(tmp_path, make_firmware, make_sdk, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "firmware:    5.0.0" in out and "vela 5.0.0" in out
-    assert "mode:        single image" in out
+    assert "mode:        no OTA" in out
     assert (root / "openmv-ota.toml").exists()
 
 
@@ -377,3 +377,19 @@ def test_keys_revoke_idempotent_and_unrevoke_noop(tmp_path, make_firmware, make_
     assert "already revoked" in capsys.readouterr().out
     assert main(["project", "keys", "unrevoke", "0x0103", str(root)]) == 0  # never revoked
     assert "is not revoked" in capsys.readouterr().out
+
+
+def test_help_never_mentions_the_retired_golden_image(capsys):
+    """v2 dropped the golden image (A/B slots, single-image mode, firmware-resident
+    recovery); help that still promises one describes a layout that no longer exists."""
+    import pytest
+
+    for argv in (["project", "new", "--help"], ["build", "verify", "--help"],
+                 ["flash", "erase", "--help"]):
+        with pytest.raises(SystemExit):
+            main(argv)
+        out = capsys.readouterr().out
+        assert "golden" not in out.lower(), argv
+    with pytest.raises(SystemExit):
+        main(["project", "new", "--help"])
+    assert "A/B slots" in " ".join(capsys.readouterr().out.split())   # however it wraps
