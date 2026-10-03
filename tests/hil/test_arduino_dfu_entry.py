@@ -631,3 +631,40 @@ def test_post_flash_recovery_still_leaves_dfu(board, monkeypatch):
     monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: left.append(b) or True)
     ota_cycle._ensure_cdc(board)
     assert left, "a post-flash board stuck in DFU must still be booted out of it"
+
+
+def test_reset_pulse_on_an_arduino_board_is_the_pin_only():
+    # connect;r;g after the pulse is a SECOND reset ~200 ms later: MCUboot reads the pair as a
+    # double-tap and the board lands in DFU (2341:035f) instead of booting
+    script = ota_cycle._reset_pulse_script("ARDUINO_NICLA_VISION").decode()
+    assert "SetRESET" in script and "ClrRESET" in script
+    assert "connect" not in script and "\nr\n" not in script and "\ng\n" not in script
+
+
+def test_reset_pulse_on_other_boards_keeps_connect_reset_go():
+    # the N6 can be left halted by the pin alone; connect+r+g runs it
+    script = ota_cycle._reset_pulse_script("OPENMV_N6").decode()
+    assert "SetRESET" in script and "connect\nr\ng\n" in script
+
+
+def test_flash_backend_of_an_unknown_board_is_none():
+    assert ota_cycle._flash_backend("NOT_A_BOARD") is None
+    assert ota_cycle._flash_backend("ARDUINO_NICLA_VISION") == "arduino"
+
+
+def test_jlink_reset_pulse_writes_the_backend_script(monkeypatch, tmp_path):
+    written = {}
+
+    def fake_mkstemp(**kw):
+        path = tmp_path / "p.jlink"
+        return os.open(str(path), os.O_CREAT | os.O_WRONLY), str(path)
+
+    def fake_sh(cmd, **kw):
+        written["script"] = open(cmd[-1]).read()
+        return (0, "")
+    monkeypatch.setattr(ota_cycle.tempfile, "mkstemp", fake_mkstemp)
+    monkeypatch.setattr(ota_cycle, "sh", fake_sh)
+    monkeypatch.setattr(ota_cycle, "_free_jlink", lambda: None)
+    monkeypatch.setattr(os, "unlink", lambda p: None)
+    assert ota_cycle.jlink_reset_pulse("ARDUINO_NICLA_VISION")
+    assert "connect" not in written["script"]

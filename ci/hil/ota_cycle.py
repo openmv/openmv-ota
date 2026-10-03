@@ -1477,8 +1477,31 @@ def _await_cdc(board, budget=150):
         time.sleep(3)
 
 
+def _flash_backend(board):
+    """The board's flash backend from the package config ("dfu", "imx", "arduino", ...), or None."""
+    try:
+        from openmv_ota.flash.targets import flash_config
+        return flash_config(board).backend
+    except Exception:                        # not installed, or an unknown board
+        return None
+
+
+def _reset_pulse_script(board):
+    """The J-Link commander script for jlink_reset_pulse.
+
+    ARDUINO (MCUboot) BOARDS GET THE PIN ONLY. The `connect; r; g` that follows the pulse on the
+    other boards is a SECOND reset ~200 ms after the first, and the Arduino bootloader reads two
+    resets in quick succession as a double-tap: the board lands in DFU (2341:035f) instead of
+    booting the app -- measured on the Nicla. Releasing nRST is enough to boot an MCUboot board
+    (no halted-core case there), so the pin pulse is held a little longer and nothing follows."""
+    if _flash_backend(board) == "arduino":
+        return b"si SWD\nspeed 4000\nSetRESET\nSleep 300\nClrRESET\nqc\n"
+    return b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n"
+
+
 def jlink_reset_pulse(board, timeout=60):
-    """Pulse the board's PHYSICAL nRST line via the J-Link, then connect + reset + GO.
+    """Pulse the board's PHYSICAL nRST line via the J-Link, then connect + reset + GO (pin only
+    on an Arduino board -- see _reset_pulse_script).
 
     The pin pulse (SetRESET/ClrRESET) needs no core connect, so it reaches a HUNG core that a
     SYSRESETREQ cannot; the follow-up `connect; r; g` actually RUNS the firmware, because the pulse
@@ -1489,7 +1512,7 @@ def jlink_reset_pulse(board, timeout=60):
         return False
     _free_jlink()                         # a stale JLinkExe blocks the probe, silently
     fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
-    os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n")
+    os.write(fd, _reset_pulse_script(board))
     os.close(fd)
     try:
         # -AutoConnect 0: do NOT attach the (possibly hung) core on launch -- the pin pulse is
