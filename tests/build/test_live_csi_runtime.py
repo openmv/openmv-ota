@@ -488,3 +488,32 @@ def test_relieve_closes_idle_relays_first_then_all(monkeypatch):
     assert rt._relieve(1) == 1                           # the check-in still needs room
     assert ww.s.closed and watched._writer is None and not watched.live_active
     assert down._writer is None and rt._relieve(1) == 0
+
+
+# --- application keepalive: a half-open relay socket must not hang the stream forever ------
+
+def test_keepalive_frame_is_a_masked_text_ping():
+    assert rt._KEEPALIVE_FRAME == rt._frame_header(rt._OP_TEXT, 4) + b"ping"
+    b0, b1 = rt._KEEPALIVE_FRAME[0], rt._KEEPALIVE_FRAME[1]
+    assert rt._decode_header(b0, b1) == (True, rt._OP_TEXT, True, 4)
+
+
+def test_liveness_pings_every_interval():
+    lv = rt._Liveness(0, interval=30000, silence=70000)
+    assert not lv.due(29999)
+    assert lv.due(30000) and not lv.due(30001)       # marked sent
+    assert lv.due(60000)
+
+
+def test_liveness_any_inbound_frame_keeps_it_alive():
+    lv = rt._Liveness(0, interval=30000, silence=70000)
+    assert not lv.dead(69999) and lv.dead(70000)      # total silence: dead
+    lv.heard(65000)                                   # a pong, a control message, a ping...
+    assert not lv.dead(134999) and lv.dead(135000)
+
+
+def test_liveness_survives_the_ticks_wrap():
+    near = 0x3FFFFFFF - 1000
+    lv = rt._Liveness(near, interval=30000, silence=70000)
+    assert not lv.dead(5000) and not lv.due(5000)     # wrapped: 6001 ms elapsed
+    assert lv.due(29000) and lv.dead(69000)

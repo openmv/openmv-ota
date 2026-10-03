@@ -224,6 +224,48 @@ _OP_CLOSE = 0x8
 _OP_PING = 0x9
 _OP_PONG = 0xA
 
+# APPLICATION KEEPALIVE. A relay socket can die without a FIN ever reaching the camera (the relay
+# redeploys, a NAT forgets the flow): the camera then reads a half-open connection forever and
+# the room shows the camera offline until someone power-cycles it -- measured on all six bench
+# boards after a relay redeploy. So every _KEEPALIVE_MS the camera sends a TEXT frame `ping`
+# (the relay answers TEXT `pong` from setWebSocketAutoResponse, which neither wakes nor bills
+# its Durable Object), and ANY inbound frame -- pong, a control message, a protocol ping --
+# counts as the peer being alive. Only _SILENCE_MS of total silence (two keepalives missed)
+# closes the socket and reconnects, so a relay that does not answer ping still works; it just
+# gets reconnected after each silent stretch.
+_KEEPALIVE_MS = 30000
+_SILENCE_MS = 70000
+_KEEPALIVE_TICK_MS = 5000          # how often the keepalive task checks the clock
+# The whole keepalive frame, built once: FIN+TEXT, masked, length 4, zero mask key (see
+# _frame_header), payload "ping". 10 bytes; sending it allocates nothing.
+_KEEPALIVE_FRAME = b"\x81\x84\x00\x00\x00\x00ping"
+_PONG = b"pong"
+_TICKS_MASK = 0x3FFFFFFF           # MicroPython ticks wrap at 2**30
+
+
+class _Liveness:
+    """When to send the keepalive and when the relay has gone silent -- pure, fed an injected
+    millisecond clock (wrap-safe masked differences, like _Throttle)."""
+
+    def __init__(self, now, interval=_KEEPALIVE_MS, silence=_SILENCE_MS):
+        self._interval, self._silence = interval, silence
+        self._heard = self._sent = now
+
+    def heard(self, now):
+        """Any inbound frame: the peer is alive."""
+        self._heard = now
+
+    def due(self, now):
+        """Time to send a keepalive? Marks it sent when it is."""
+        if ((now - self._sent) & _TICKS_MASK) < self._interval:
+            return False
+        self._sent = now
+        return True
+
+    def dead(self, now):
+        """Nothing at all inbound for the silence window."""
+        return ((now - self._heard) & _TICKS_MASK) >= self._silence
+
 
 def _handshake_key(rand16):
     """Sec-WebSocket-Key from 16 random bytes (b2a_base64 appends a newline)."""
@@ -673,7 +715,9 @@ async def _relay_task(stream):  # pragma: no cover
     backoff -- the app never sees a network error, just live_active staying
     False."""
     import asyncio
+    import gc
     streak = 0                                   # consecutive failures since the last connect
+    reader = writer = None
     while True:
         entry = _stream_grant(stream.name)
         if not entry:
@@ -690,20 +734,28 @@ async def _relay_task(stream):  # pragma: no cover
             say = log.warning if _loud_reconnect(streak) else log.debug
             say("live[%s]: %s; reconnecting" % (stream.name, repr(e)))
         stream._writer = None
+        reader = writer = None                   # drop the dead connection's objects...
         stream._session.streaming = False        # a dead socket streams to no one
+        gc.collect()                             # ...and reclaim them before the next handshake
         await asyncio.sleep(_RECONNECT_BACKOFF_S)
 
 
 async def _pump(stream, reader, writer):  # pragma: no cover
-    """Run the receive + send halves until the socket dies. Two sub-tasks: recv
-    (control messages, ping/pong, close) and send (frames as the mailbox fills)."""
+    """Run the receive, send and keepalive halves until the socket dies. Sub-tasks: recv
+    (control messages, ping/pong, close), send (frames as the mailbox fills) and keep (the
+    application keepalive -- see _KEEPALIVE_MS)."""
     import asyncio
+    from ._lib import _hard_close
+    live = _Liveness(_ticks_ms())
+    silent = [False]
 
     async def recv():
         while True:
             opcode, payload = await _ws_recv(reader)
+            live.heard(_ticks_ms())              # ANY frame is liveness
             if opcode == _OP_TEXT:
-                stream._session.on_text(payload)
+                if payload != _PONG:             # the keepalive answer carries nothing else
+                    stream._session.on_text(payload)
             elif opcode == _OP_PING:
                 writer.write(_encode_frame(_OP_PONG, payload, os.urandom(4)))
                 await writer.drain()
@@ -725,11 +777,33 @@ async def _pump(stream, reader, writer):  # pragma: no cover
                 finally:
                     stream._release_inflight()
 
+    async def keep():
+        while True:
+            await asyncio.sleep_ms(_KEEPALIVE_TICK_MS)
+            now = _ticks_ms()
+            if live.dead(now):
+                silent[0] = True
+                _hard_close(writer)              # frees the TLS buffers NOW, not at the next GC
+                recv_t.cancel()                  # recv is parked on a half-open read
+                return
+            if live.due(now):
+                writer.write(_KEEPALIVE_FRAME)
+                await writer.drain()
+
     recv_t = asyncio.create_task(recv())
     send_t = asyncio.create_task(send())
+    keep_t = asyncio.create_task(keep())
     try:
         await recv_t                             # the relay closing ends the session
+    except asyncio.CancelledError:
+        if not silent[0]:
+            raise                                # somebody cancelled US: let it through
+        raise OSError("relay silent for %d s" % (_SILENCE_MS // 1000))
     finally:
         send_t.cancel()
-        writer.close()
-        await writer.wait_closed()
+        keep_t.cancel()
+        try:
+            writer.close()
+            await writer.wait_closed()           # closes the socket -> its TLS buffers go
+        except OSError:
+            pass                                 # already closed by keep()
