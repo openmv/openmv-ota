@@ -420,11 +420,21 @@ P = ns
 
 
 def recv_of(*pieces):
-    box = list(pieces)
+    # the installer's _Reader takes sock.readinto: fill the caller's buffer, return a count
+    box = [bytes(p) for p in pieces]
 
-    def recv(n):
-        return box.pop(0) if box else b""
-    return recv
+    def readinto(mv):
+        if not box:
+            return 0
+        p = box[0]
+        k = min(len(mv), len(p))
+        mv[:k] = p[:k]
+        if k < len(p):
+            box[0] = p[k:]
+        else:
+            box.pop(0)
+        return k
+    return readinto
 
 
 class _NullSock:
