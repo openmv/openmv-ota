@@ -1885,12 +1885,8 @@ def _dfu_leave(board):
 def _flash_arduino_cli(board, bad_romfs=False):
     """Golden flash for the Arduino MCUboot boards (Nicla Vision, Portenta H7) via the openmv-ota
     CLI's `flash factory`. The arduino backend enters DFU with an automatic 1200-baud touch, then
-    writes firmware + romfs (+ the CYW4343 wifi blobs) with address-based `dfu-util -w`.
-
-    Unlike the DFU boards, the CLI's arduino factory resolves the romfs partition as
-    ``<board>-romfs.img``, so stage the dual-slot factory image under that name first
-    (``build factory-romfs`` emits ``<board>-factory-romfs.img``; the wifi blobs are already dropped
-    into build/ by ``build firmware``). Same rename the mimxrt path does.
+    writes firmware + the dual-slot factory romfs (``<board>-factory-romfs.img``) + the CYW4343 wifi
+    blobs (dropped into build/ by ``build firmware``) with address-based dfu-util.
 
     DFU entry is `_arduino_dfu_run`'s business: the 1200-baud touch, or a direct write if the board
     is already in DFU. Note what does NOT work here -- the OpenMV path's "wait on -w and pulse nRST
@@ -1898,8 +1894,6 @@ def _flash_arduino_cli(board, bad_romfs=False):
     live here and only ever hung."""
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
-    build = CFG["project"] + "/build"
-    sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
     # Mark where THIS golden's account of itself begins: every UART line from here on belongs to the
     # image about to be written, so verify can tell a fresh mount from the one it replaced.
     global _FLASH_MARK
@@ -1994,7 +1988,7 @@ def seed_brick_marker(board):
 
 def _flash_blhost_imx(board, bad_romfs=False):
     """Provision golden on the mimxrt (RT1062) via the openmv-ota CLI's resident-SBL flash path
-    (`flash firmware` + `flash romfs`): the CLI enters the resident SBL with machine.bootloader()
+    (`flash factory`, firmware + the factory romfs): the CLI enters the resident SBL with machine.bootloader()
     (no jumper) and, running post-FCB, needs no FlexSPI config -- see openmv_ota.flash.imx. This
     replaces the harness's hand-rolled blhost sequence: the everyday golden flash now goes through
     the same tooling users ship with.
@@ -2006,7 +2000,6 @@ def _flash_blhost_imx(board, bad_romfs=False):
     # from the one it replaced (see verify_golden_uart).
     global _FLASH_MARK
     _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
-    build = CFG["project"] + "/build"
     if bad_romfs:
         # KEEP THE BOARD OBSERVABLE ACROSS THE BRICK. `.hilcov_uart` is baked into the ROMFS (see
         # _bench_files: /rom is the one volume that survives an armed watchdog), and the erase below
@@ -2035,14 +2028,11 @@ def _flash_blhost_imx(board, bad_romfs=False):
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
         time.sleep(12)
         return
-    # Golden: firmware + the factory (dual-slot) romfs. The CLI's `flash romfs` reads <board>-romfs.img,
-    # so stage the factory image under that name (as the AE3 path already does), then flash both via
-    # the CLI's automatable resident-SBL path -- each call does its own machine.bootloader + reset.
-    sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
-    for op in ("firmware", "romfs"):
-        log("flash %s -> %s (openmv-ota, resident SBL)" % (op, board))
-        sh([ota("openmv-ota"), "flash", op, CFG["project"], "-b", board,
-            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
+    # Golden: firmware + the factory (dual-slot) romfs, in ONE resident-SBL session -- the same
+    # `flash factory` the Getting started page tells a customer to run.
+    log("flash factory -> %s (openmv-ota, resident SBL)" % board)
+    sh([ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
+        "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=600)
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
 
 

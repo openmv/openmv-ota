@@ -25,8 +25,10 @@ class ArduinoStep:
 
 
 def program_argv(dfu_util: str, usb: str, alt: int, addr: str, file: Path, *,
-                 leave: bool = False, serial: str | None = None) -> list[str]:
+                 leave: bool = False, serial: str | None = None, wait: bool = True) -> list[str]:
     """Argv to write ``file`` to ``addr`` on alt ``alt``; ``leave`` exits DFU after the write.
+    ``wait=False`` drops ``-w``: the first write of a flash, run once the caller has seen the
+    DFU device listed (see ``flash._await_dfu``).
 
     NO ``-S`` SERIAL PIN -- ``serial`` is accepted and deliberately ignored. A board's DFU-mode
     serial is NOT its runtime serial, so pinning the runtime one matches nothing and ``-w`` then
@@ -42,7 +44,14 @@ def program_argv(dfu_util: str, usb: str, alt: int, addr: str, file: Path, *,
     """
     del serial                       # see above: the DFU serial never matches the runtime one
     target = (addr + ":leave") if leave else addr
-    return [dfu_util, "-w", "-d", ",%s" % usb, "-a", str(alt), "-s", target, "-D", str(file)]
+    return [dfu_util, *(["-w"] if wait else []), "-d", ",%s" % usb, "-a", str(alt), "-s", target,
+            "-D", str(file)]
+
+
+def leave_argv(dfu_util: str, usb: str) -> list[str]:
+    """Argv to take a board OUT of DFU (it boots its app) without writing anything -- how a
+    DfuSe device stuck in dfuERROR is cleared from the host. No ``-w``: it is already there."""
+    return [dfu_util, "-d", ",%s" % usb, "-a", "0", "-s", ":leave", "-R"]
 
 
 def plan(op: str, raw: dict, dfu_util: str, files: dict, serial: str | None = None
@@ -67,5 +76,6 @@ def plan(op: str, raw: dict, dfu_util: str, files: dict, serial: str | None = No
         leave = i == last                             # only the final write leaves DFU
         steps.append(ArduinoStep(
             "%s -> %s%s" % (label, addr, ":leave" if leave else ""),
-            program_argv(dfu_util, usb, alt, addr, path, leave=leave, serial=serial)))
+            program_argv(dfu_util, usb, alt, addr, path, leave=leave, serial=serial,
+                         wait=i > 0)))
     return steps

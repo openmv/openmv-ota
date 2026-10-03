@@ -26,18 +26,29 @@ openmv-ota flash factory  ./my-product -b OPENMV4
 
 A multi-partition write (`flash factory`) resets the board only after the final
 write, so it stays in the bootloader between steps — and every flash resolves
-its artifacts first, so a missing file fails fast instead of half-programming
-the board.
+its tool and its artifacts first, before it touches the board, so a missing
+file or a missing `dfu-util` fails fast instead of leaving the board in its
+bootloader or half-programmed.
 
 ## Getting into the bootloader
 
 You don't have to put the camera in its bootloader first — `flash` does it. It
 finds a board running its firmware, resets it into the bootloader (OpenMV
 boards via `machine.bootloader()`; Arduino boards via a 1200-baud touch), and
-pins the flash to that exact device by USB serial number when several are
-attached. If several of the same board are connected, pass `--serial <SN>` to
-pick one; if the board is already in its bootloader, it's flashed as-is — pass
-`--in-bootloader` to skip the detect/reset step entirely.
+flashes it once its bootloader is listed on USB. If several of the same board
+are connected, pass `--serial <SN>` to pick which one to reset; if the board is
+already in its bootloader, it's flashed as-is — pass `--in-bootloader` to skip
+the detect/reset step entirely.
+
+The first write waits (up to 60 s) for the bootloader to be *listed* and then
+settles briefly before it starts, rather than handing the wait to
+`dfu-util -w`, which can open the device before it has finished enumerating.
+
+An Arduino app that arms a short watchdog can reboot before the 1200-baud touch
+takes effect. `flash` touches again once the app is back; if that fails too, it
+says so: double-tap the board's reset button to enter the bootloader and rerun
+with `--in-bootloader`. A write that fails because the bootloader has wedged is
+retried once from a fresh entry.
 
 ## What each board uses
 
@@ -56,13 +67,13 @@ prints the exact commands for yours.
 | ARDUINO_PORTENTA_H7 | dfu (addr) | 2341:035b | 0x08040000 | 0x90B00000 | + CYW4343 wifi/bt blobs (collected by `build firmware`); 1200-baud touch-to-reset |
 | ARDUINO_GIGA | dfu (addr) | 2341:0366 | 0x08040000 | 0x90B00000 | + CYW4343 wifi/bt blobs (collected by `build firmware`); 1200-baud touch-to-reset |
 | ARDUINO_NICLA_VISION | dfu (addr) | 2341:035f | 0x08040000 | 0x90B00000 | + CYW4343 wifi/bt blobs (collected by `build firmware`); 1200-baud touch-to-reset |
-| OPENMV_RT1060 | imx | sdphost/blhost | 0x60040000 | 0x60800000 | SDP/flashloader sequence via the SDK's tools (`--sdk-home`) |
+| OPENMV_RT1060 | imx | blhost | 0x60040000 | 0x60800000 | through the resident secure bootloader (`machine.bootloader()`); `factory --provision` is the blank-board ROM path (sdphost + SBL jumper) |
 
 On an alt-addressed board, each partition is one `dfu-util` call:
 
 ```
 $ openmv-ota flash factory ./my-product -b OPENMV4 --dry-run
-would run: dfu-util -w -d ,37c5:9204 -a 2 -D build/OPENMV4-firmware.bin
+would run: dfu-util -d ,37c5:9204 -a 2 -D build/OPENMV4-firmware.bin
 would run: dfu-util -w -d ,37c5:9204 -a 3 --reset -D build/OPENMV4-factory-romfs.img
 ```
 
@@ -70,21 +81,29 @@ An Arduino board flashes by address, wifi/bt blobs first:
 
 ```
 $ openmv-ota flash factory ./my-product -b ARDUINO_PORTENTA_H7 --dry-run
-would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90F00000 -D .../cyw4343_7_45_98_102.bin
+would run: dfu-util -d ,2341:035b -a 1 -s 0x90F00000 -D .../cyw4343_7_45_98_102.bin
 would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90FC0000 -D .../cyw4343_btfw.bin
 would run: dfu-util -w -d ,2341:035b -a 0 -s 0x08040000 -D ARDUINO_PORTENTA_H7-firmware.bin
-would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90B00000:leave -D ARDUINO_PORTENTA_H7-romfs.img
+would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90B00000:leave -D ARDUINO_PORTENTA_H7-factory-romfs.img
 ```
 
-And the RT1060 runs its longer serial-download sequence:
+The RT1060 goes through the resident secure bootloader every shipped camera
+has, entered with `machine.bootloader()` like the other boards:
 
 ```
 $ openmv-ota flash factory ./my-product -b OPENMV_RT1060 --dry-run
-would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 .../sdphost_flash_loader.bin
-would run: sdphost -u 0x1FC9,0x0135 -- jump-address 0x20001C00
-...
+would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60040000 ...
+would run: blhost -u 0x15A2,0x0073 -- write-memory 0x60040000 build/OPENMV_RT1060-firmware.bin
+would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60800000 ...
+would run: blhost -u 0x15A2,0x0073 -- write-memory 0x60800000 build/OPENMV_RT1060-factory-romfs.img
 would run: blhost -u 0x15A2,0x0073 -- reset
 ```
+
+A blank board has no secure bootloader yet. `flash factory --provision` is the
+manufacturing path for one: with the SBL boot jumper fitted it loads a
+flashloader over the i.MX ROM's serial download, writes the flash-config block
+and the secure bootloader, the firmware and the factory image, and burns the
+boot e-fuse. It is refused on every other board.
 
 ## Options
 
@@ -96,8 +115,9 @@ would run: blhost -u 0x15A2,0x0073 -- reset
 | `--in-bootloader` | The board is already in its bootloader; skip the detect/reset step. |
 | `--serial SN` | USB serial number of the camera to flash (when several are attached). |
 | `--mpremote PATH` | How to run mpremote (default `python -m mpremote`). |
-| `--dfu-util PATH` | Use a specific `dfu-util` (default: the SDK's when `--sdk-home` is given, else `PATH`). |
-| `--sdk-home DIR` | Find the SDK's flashing tools (`dfu-util`, `blhost`). |
+| `--dfu-util PATH` | Use a specific `dfu-util` (default: the SDK's, else `PATH`). |
+| `--sdk-home DIR` | Find the SDK's flashing tools (`dfu-util`, `blhost`) here (default: the project's SDK — `[sdk].home` in `openmv-ota.local.toml`, else `~/openmv-sdk-<SDK_VERSION>`, as a build finds it). |
+| `--provision` | `factory` only, i.MX only: provision a blank board over the ROM serial download (SBL jumper). |
 
 ## Listing connected boards
 

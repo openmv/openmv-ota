@@ -11,18 +11,16 @@ Two reset paths to the same place:
   writes the OpenMV boot magic and resets into its own DFU (37c5:9xxx), not the ST one.
 - **Arduino boards** take a 1200-baud serial touch (the MCUboot reset signal).
 
-A board already in its bootloader isn't a serial port, so it isn't discovered here -- the
-backend's ``dfu-util -w`` simply waits for it.
+A board already in its bootloader isn't a serial port, so it isn't discovered here. Nothing here
+waits for the bootloader to appear either: the flash backend polls for the DFU device itself
+(``flash._await_dfu``), which is both faster than a fixed settle and bounded.
 """
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 
 from .errors import FlashError
-
-_SETTLE_S = 2.0          # let the bootloader enumerate after the reset before dfu-util looks
 
 
 @dataclass(frozen=True)
@@ -69,7 +67,7 @@ def discover(raw: dict) -> list[Camera]:
 
 
 def reset(raw: dict, cam: Camera, *, mpremote: list[str]) -> None:
-    """Reset a running camera into its bootloader, then settle while it re-enumerates."""
+    """Reset a running camera into its bootloader (the caller waits for it to enumerate)."""
     from . import runner
     if raw.get("app"):                        # arduino: 1200-baud touch
         _open_1200(cam.port)
@@ -81,7 +79,6 @@ def reset(raw: dict, cam: Camera, *, mpremote: list[str]) -> None:
         # tolerate it, exactly as the write step tolerates the ST ROM's missing final-status ACK.
         runner.run([*mpremote, "connect", cam.port, "exec", "import machine; machine.bootloader()"],
                    tolerate_fail=True)
-    time.sleep(_SETTLE_S)
 
 
 def select(raw: dict, serial: str | None) -> Camera | None:
