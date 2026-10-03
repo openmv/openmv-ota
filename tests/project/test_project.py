@@ -841,7 +841,7 @@ def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, mak
         assert gone not in main, gone
 
 
-def _run_ota_main(monkeypatch, cam_cls):
+def _run_ota_main(monkeypatch, cam_cls, trial=False):
     """Execute the template's own logic on CPython with stand-in device modules, using camera
     ``cam_cls``; returns (calls, posted, errors). Catches a NameError or a bad call that
     compile() cannot. The run ends when something raises SystemExit (the stub camera after a
@@ -876,6 +876,10 @@ def _run_ota_main(monkeypatch, cam_cls):
                 await asyncio.sleep(0)
             raise SystemExit
 
+    def _reset():                       # the trial path reboots: end the run there
+        calls.append(("reset",))
+        raise SystemExit
+
     class _Log:
         def info(self, *a):
             pass
@@ -894,7 +898,9 @@ def _run_ota_main(monkeypatch, cam_cls):
         "logging": types.SimpleNamespace(getLogger=lambda name: _Log()),
         "network": types.SimpleNamespace(WLAN=_Nic, STA_IF=0, LAN=None),
         "openmv_ota": types.SimpleNamespace(identity=lambda: {"app_version": "1.2.3"}, run=run,
-                                            confirm=lambda: calls.append(("confirm",))),
+                                            confirm=lambda: calls.append(("confirm",)),
+                                            status=lambda: {"trial": trial}),
+        "machine": types.SimpleNamespace(reset=_reset),
         "openmv_cloud": types.SimpleNamespace(
             csi=types.SimpleNamespace(CSI=lambda: cam_cls(calls), RGB565="RGB565",
                                       GRAYSCALE="GRAYSCALE", QVGA="QVGA"),
@@ -974,6 +980,19 @@ def test_an_app_crash_leaves_updates_running(monkeypatch):
     assert ("run", "https://ota.cloud.openmv.io", 300, "bring_up_network") in calls
     assert errors == ["app crashed: ValueError('bad app')"]
     assert ("parked",) in calls and ("confirm",) not in calls
+    assert ("reset",) not in calls              # a confirmed image stays up for the fix
+
+
+def test_an_app_crash_on_an_unconfirmed_update_reboots_so_it_rolls_back(monkeypatch):
+    # parked, a crashing TRIAL would never roll back -- and run() defers every update while a
+    # trial is unconfirmed, so no fix could land either. Rebooting spends a trial boot.
+    class _Broken(_Cam):
+        def framesize(self, f):
+            raise ValueError("bad update")
+
+    calls, _posted, errors = _run_ota_main(monkeypatch, _Broken, trial=True)
+    assert errors == ["app crashed: ValueError('bad update')"]
+    assert ("reset",) in calls and ("parked",) not in calls and ("confirm",) not in calls
 
 
 def test_non_ota_project_scaffolds_the_bare_main(tmp_path, make_firmware, make_sdk):

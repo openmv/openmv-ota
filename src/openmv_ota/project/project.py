@@ -693,6 +693,7 @@ import asyncio
 import gc
 import logging
 
+import machine
 import network
 import openmv_ota
 from openmv_cloud import csi, datalog, logs
@@ -755,6 +756,8 @@ async def main():
             await cam.snapshot()
     except Exception as e:            # an app bug must not stop updates: ship the fix OTA
         log.error("app crashed: %r", e)
+        if openmv_ota.status().get("trial"):
+            machine.reset()           # a new update that crashes: reboot so it rolls back
         await asyncio.Event().wait()  # keep running so the update can land
 
 
