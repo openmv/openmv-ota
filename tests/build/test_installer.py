@@ -1856,17 +1856,30 @@ def test_quiet_past_commit_mutes_a_logger_with_no_handlers_of_its_own():
     assert lg.level == inst("_SILENT") > logging.CRITICAL
 
 
-def test_quiet_past_commit_keeps_a_frozen_handler():
+def test_quiet_past_commit_keeps_only_the_frozen_handler():
     import logging
+
+    class Cloud(logging.Handler):                  # romfs code (openmv_cloud.logs)
+        pass
     lg = logging.getLogger("test_quiet_past_commit_uart")
     lg.setLevel(logging.DEBUG)
-    h = logging.NullHandler()
-    lg.addHandler(h)
+    uart, cloud = logging.StreamHandler(), Cloud()
+    lg.addHandler(uart)
+    lg.addHandler(cloud)
     try:
         inst("_quiet_past_commit")(lg)             # the bench's UART handler keeps logging
-        assert lg.level == logging.DEBUG
+        assert lg.handlers == [uart] and lg.level == logging.DEBUG
     finally:
-        lg.removeHandler(h)
+        lg.removeHandler(uart)
+
+
+def test_quiet_past_commit_mutes_when_only_romfs_handlers_were_attached():
+    import logging
+    lg = logging.getLogger("test_quiet_past_commit_cloud_only")
+    lg.setLevel(logging.WARNING)
+    lg.addHandler(logging.NullHandler())
+    inst("_quiet_past_commit")(lg, keep=logging.StreamHandler)
+    assert lg.handlers == [] and lg.level == inst("_SILENT")
 
 
 def test_quiet_past_commit_ignores_the_null_logger():

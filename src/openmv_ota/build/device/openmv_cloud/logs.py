@@ -367,31 +367,45 @@ def enable(level=logging.INFO, logger=None, ring_bytes=None, fps=5,
     target.addHandler(handler)
     if target.level > level:      # the root default (WARNING) would eat INFO
         target.setLevel(level)
-    _hear_ota(logging.getLogger("openmv_ota"))
     stream = _csi.Stream(_STREAM_NAME, fps=fps, encoder=lambda batch, _q: batch)
     handler.stream = stream
+
+    def ota_handler():
+        h = CloudLogHandler(console, outbox)
+        h.stream = stream
+        return h
+    _hear_ota(logging.getLogger("openmv_ota"), ota_handler)
     asyncio.create_task(_flusher(console, stream))
     asyncio.create_task(_datalake_flusher(console.sid, outbox))
     return handler
 
 
-def _hear_ota(ota):
+def _hear_ota(ota, make_handler):
     """Let the updater's WARNING and ERROR records reach the cloud console.
 
     The frozen ``openmv_log`` keeps the ``openmv_ota`` logger OFF (level above CRITICAL) so a
     device with no log sink pays nothing -- which also hid every update failure from the cloud:
     a device offered an update that never installs looked, from the console, exactly like one
-    with nothing on offer. With no handler of its own, MicroPython hands the logger's records to
-    the root handlers, i.e. this sink. WARNING, not INFO: the per-poll chatter stays off, the
-    lines that say something is wrong come through. Never LOWERS a level someone set (a bench
-    or debug build logging the updater at DEBUG to a UART keeps it).
+    with nothing on offer. WARNING, not INFO: the per-poll chatter stays off, the lines that say
+    something is wrong come through. Never LOWERS a level someone set (a bench or debug build
+    logging the updater at DEBUG to a UART keeps it).
+
+    Where the records go: a logger with no handler of its own has them handed to the ROOT
+    handlers by MicroPython's logging -- this sink, already. But one WITH a handler (the bench's
+    UART) does not fall back, so the sink would miss them: then a second cloud handler
+    (``make_handler()``, same queues, at WARNING so the UART's DEBUG chatter stays local) is
+    attached to it -- once, however often enable() runs.
 
     No feedback loop: ``CloudLogHandler.emit`` only queues the line, and the flushers that send
     it log nothing; the relay's reconnect warning is one per outage (``csi._loud_reconnect``).
-    The installer mutes the logger again at its erase (``_quiet_past_commit``), because past
-    that point this handler's code may be the flash being erased."""
+    The installer detaches these handlers again at its erase (``_quiet_past_commit``), because
+    past that point their code may be the flash being erased."""
     if ota.level > logging.WARNING:
         ota.setLevel(logging.WARNING)
+    if ota.handlers and not any(isinstance(h, CloudLogHandler) for h in ota.handlers):
+        h = make_handler()
+        h.setLevel(logging.WARNING)
+        ota.addHandler(h)
 
 
 async def _flusher(console, stream):  # pragma: no cover  (device loop)

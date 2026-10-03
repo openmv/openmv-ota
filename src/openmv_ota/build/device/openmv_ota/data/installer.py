@@ -1622,15 +1622,22 @@ def _heap_fits(n, alloc=bytearray):
     return True
 
 
-def _quiet_past_commit(lg):
-    """Past the erase, log only through handlers the ``openmv_ota`` logger itself owns.
+def _quiet_past_commit(lg, keep=None):
+    """Past the erase, log only through FROZEN handlers.
 
-    Those are frozen (openmv_log's UART handler on a bench or a debug build). With none of its
-    own, MicroPython's logging hands each record to the ROOT logger's handlers instead -- the
-    app's, which since ``openmv_cloud.logs.enable()`` lets WARNING through means the cloud log
-    handler: ROMFS code. In single-image mode that is the slot being erased, so calling it
-    would execute erased flash. Nothing it queues could be sent anyway -- the install is
-    synchronous and every exit from here reboots -- so mute the logger instead."""
+    The one frozen handler is openmv_log's plain ``logging.StreamHandler`` (the UART on a bench
+    or a debug build); ``keep`` is that class (``None`` = import it). Any other handler -- the
+    cloud log handler ``openmv_cloud.logs.enable()`` attaches to this logger, or the root ones
+    MicroPython falls back to when the logger has none of its own -- is ROMFS code, and in
+    single-image mode that is the slot being erased: calling it would execute erased flash.
+    Nothing it queues could be sent anyway -- the install is synchronous and every exit from
+    here reboots. So those are detached, and a logger left with no handler is muted."""
+    handlers = getattr(lg, "handlers", None)
+    if handlers:
+        if keep is None:
+            import logging
+            keep = logging.StreamHandler
+        handlers[:] = [h for h in handlers if type(h) is keep]
     if not getattr(lg, "handlers", None) and hasattr(lg, "setLevel"):
         lg.setLevel(_SILENT)
 
