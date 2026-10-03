@@ -112,7 +112,7 @@ boot e-fuse. It is refused on every other board.
 | `-o, --output DIR` | Where the artifacts are (default `<project>/build`). |
 | `--dry-run` | Print the exact commands without running them. |
 | `--no-reset` | Don't reboot the board after flashing (stay in the bootloader). |
-| `--in-bootloader` | The board is already in its bootloader; skip the detect/reset step. |
+| `--in-bootloader` | The board is already in its bootloader; skip the detect/reset step. On the RT1060 it waits up to 60 s for the resident secure bootloader. |
 | `--serial SN` | USB serial number of the camera to flash (when several are attached). |
 | `--mpremote PATH` | How to run mpremote (default `python -m mpremote`). |
 | `--dfu-util PATH` | Use a specific `dfu-util` (default: the SDK's, else `PATH`). |

@@ -355,6 +355,60 @@ def test_imx_catch_and_reset_raises_when_sbl_not_claimed_and_terminates_catcher(
     assert made[0].terminated                                           # finally cleaned it up
 
 
+def test_imx_catch_announces_armed_then_claimed(monkeypatch, capsys):
+    popens = []
+    _patch_catcher(monkeypatch, popens)
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: None)
+    fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None)
+    err = capsys.readouterr().err
+    assert fl.IMX_ARMED in err and fl.IMX_CLAIMED in err
+    assert err.index(fl.IMX_ARMED) < err.index(fl.IMX_CLAIMED)
+    assert popens[0][popens[0].index("claim") + 2] == "%g" % fl._IMX_RESET_WAIT_S
+
+
+def test_imx_in_bootloader_waits_bounded_and_never_touches_the_cdc(monkeypatch, capsys):
+    """--in-bootloader: the SBL is up or about to be. No device.select, no machine.bootloader --
+    just a catcher armed for the longer bounded wait, announced so an outside trigger can fire."""
+    popens, waits = [], []
+    import subprocess
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **k: popens.append(argv) or _FakeCatcher())
+    monkeypatch.setattr(fl, "_await_line", lambda p, m, t: waits.append((m, t)) or True)
+
+    def boom(*a, **k):
+        raise AssertionError("--in-bootloader must not look for a running camera")
+    monkeypatch.setattr(fl.device, "select", boom)
+    fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None,
+                            enter_bootloader=False)
+    assert len(popens) == 1 and "claim" in popens[0]                     # the catcher only
+    assert popens[0][popens[0].index("claim") + 2] == "%g" % fl.IMX_IN_BOOTLOADER_WAIT_S
+    assert waits[1] == ("CLAIMED", fl.IMX_IN_BOOTLOADER_WAIT_S + 15)
+    assert fl.IMX_ARMED in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("enter, cam, why", [
+    (False, None, "--in-bootloader: nothing brought the SBL up"),
+    (True, None, "no running camera was found"),
+    (True, "cam", "machine.bootloader() was sent to /dev/ttyACM0"),
+])
+def test_imx_claim_failure_says_why(monkeypatch, enter, cam, why):
+    _patch_catcher(monkeypatch, [], claimed=False)
+    camera = fl.device.Camera("/dev/ttyACM0", "SN") if cam else None
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: camera)
+    with pytest.raises(FlashError, match="could not be claimed") as e:
+        fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None,
+                                enter_bootloader=enter)
+    assert why in str(e.value)
+
+
+def test_imx_flash_passes_in_bootloader_to_the_catcher(imx_project, monkeypatch):
+    root, ran, _rec = imx_project
+    seen = []
+    monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: seen.append(a))
+    fl.flash_factory(str(root), board="OPENMV_RT1060", enter_bootloader=False)
+    assert seen[0][-1] is False
+    assert any("write-memory" in a and "0x60800000" in a for a in ran)
+
+
 def test_prepare_skips_reset_for_imx(monkeypatch):
     # imx: _prepare must NOT reset (the catcher arms before the reset) -- it just resolves the serial
     monkeypatch.setattr(fl.device, "select", lambda raw, serial: fl.device.Camera("/dev/ttyACM0", "SN9"))

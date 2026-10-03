@@ -35,7 +35,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    help="don't reset (reboot) the board after flashing (dfu boards)")
     p.add_argument("--in-bootloader", dest="enter_bootloader", action="store_false",
                    help="the board is already in its bootloader; skip detecting + resetting "
-                        "the running camera")
+                        "the running camera (i.MX: wait up to 60 s for the resident SBL)")
     p.add_argument("--serial", metavar="SN",
                    help="USB serial number of the camera to flash (when several are attached)")
     p.add_argument("--mpremote", help="path to mpremote (default: python -m mpremote)")

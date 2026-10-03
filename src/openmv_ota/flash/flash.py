@@ -242,20 +242,43 @@ def _await_line(proc, marker: str, timeout: float) -> bool:
     return False
 
 
-def _imx_catch_and_reset(raw: dict, python3: str, mpremote: str | None, serial: str | None) -> None:
+# How long ``--in-bootloader`` waits for the resident SBL. It is for "the SBL is up, or about to
+# be": a caller that triggers the entry itself (the HIL harness kicking machine.bootloader() over a
+# barely-alive CDC) starts the CLI first, waits for the ARMED line below, then triggers. A minute
+# covers that; it is bounded so a board that never gets there fails instead of hanging.
+IMX_IN_BOOTLOADER_WAIT_S = 60
+_IMX_RESET_WAIT_S = 30           # the CLI's own machine.bootloader() -> SBL enumerates (~1-2 s)
+# Printed (stderr, flushed) once the catcher is armed and scanning -- the moment an outside trigger
+# may fire. A stable string: the HIL harness waits for it.
+IMX_ARMED = "i.MX: catcher armed, waiting for the resident SBL"
+IMX_CLAIMED = "i.MX: resident SBL claimed"
+
+
+def _imx_catch_and_reset(raw: dict, python3: str, mpremote: str | None, serial: str | None,
+                         enter_bootloader: bool = True) -> None:
     """Enter + hold the resident SBL the IDE's imxArmCatcher way: ARM the catcher (wait for READY --
     spsdk warmed + scanning), THEN reset the running camera into the SBL (machine.bootloader drops
     the USB-CDC, so fire it and don't block), and let the armed catcher CLAIM the SBL the instant it
     enumerates -- holding it against the ~1 s idle timeout so the region blhost ops that follow land.
     A passive post-reset scan misses that window; this is why the automatable imx path resets HERE
-    rather than in _prepare. Raises FlashError on arm/claim timeout."""
+    rather than in _prepare. Raises FlashError on arm/claim timeout.
+
+    ``enter_bootloader=False`` (``--in-bootloader``): touch NO serial port -- the SBL is already up
+    or something else is about to bring it up. Arm, announce IMX_ARMED, and claim within a bounded
+    IMX_IN_BOOTLOADER_WAIT_S. Note what this can NOT do: catch the SBL off a reset. The RT1062's
+    resident SBL presents USB only when entered through ROM_RunBootloader (what machine.bootloader()
+    calls); after a power-on or nRST it boots the app straight away, so there is no window to catch
+    (measured: an armed catcher plus nRST waited 60 s and the SBL never enumerated)."""
     import subprocess
-    catcher = subprocess.Popen(imx.catcher_argv(python3, raw["blhost"]["usb"], "claim"),
+    usb = raw["blhost"]["usb"]
+    wait = _IMX_RESET_WAIT_S if enter_bootloader else IMX_IN_BOOTLOADER_WAIT_S
+    catcher = subprocess.Popen(imx.catcher_argv(python3, usb, "claim", timeout_s=wait),
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         if not _await_line(catcher, "READY", 45):
             raise FlashError("i.MX: the resident-SBL catcher never armed (spsdk import failed?)")
-        cam = device.select(raw, serial)         # the running camera to reset (None -> already in SBL)
+        print("%s (%s) for up to %d s" % (IMX_ARMED, usb, wait), file=sys.stderr, flush=True)
+        cam = device.select(raw, serial) if enter_bootloader else None
         if cam is not None:
             # `exec machine.bootloader()`, NOT mpremote's `bootloader` subcommand -- the same
             # distinction device.reset() documents for the DFU boards. The subcommand does more
@@ -268,10 +291,20 @@ def _imx_catch_and_reset(raw: dict, python3: str, mpremote: str | None, serial: 
             subprocess.Popen([*_mpremote(mpremote), "connect", cam.port,
                               "exec", "import machine; machine.bootloader()"],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if not _await_line(catcher, "CLAIMED", 45):
-            raise FlashError("i.MX: the resident SBL did not enumerate / could not be claimed (a "
-                             "blank board has no SBL yet: provision it with `flash factory "
-                             "--provision`)")
+        if not _await_line(catcher, "CLAIMED", wait + 15):
+            if cam is not None:
+                why = ("machine.bootloader() was sent to %s but the SBL never enumerated (an app "
+                       "that dies on Ctrl-C under an armed watchdog resets before the call lands)"
+                       % cam.port)
+            elif enter_bootloader:
+                why = ("no running camera was found on USB to send machine.bootloader() to -- "
+                       "\"no camera\" is not \"in the SBL\"; a blank board has no SBL yet: provision "
+                       "it with `flash factory --provision`")
+            else:
+                why = "--in-bootloader: nothing brought the SBL up within %d s" % wait
+            raise FlashError("i.MX: the resident SBL (%s) did not enumerate / could not be claimed: "
+                             "%s" % (usb, why))
+        print(IMX_CLAIMED, file=sys.stderr, flush=True)
     finally:
         if catcher.poll() is None:
             catcher.terminate()
@@ -296,7 +329,7 @@ def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str,
         if not recovery:                         # automatable: enter + CLAIM the resident SBL first
             serial = _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader,
                               mpremote=mpremote, dry_run=dry_run)
-            _imx_catch_and_reset(cfg.raw, python3, mpremote, serial)
+            _imx_catch_and_reset(cfg.raw, python3, mpremote, serial, enter_bootloader)
         for s in steps:
             runner.run(s.argv)
         history.record(project, action, board=board, steps=[s.label for s in steps])
