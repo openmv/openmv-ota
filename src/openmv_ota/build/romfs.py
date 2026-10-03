@@ -1177,11 +1177,12 @@ def build_ota_romfs(
 ) -> list[OtaRomfsResult]:
     """Produce the complete **cloud-published** OTA set per main board, from app source in
     one shot (like ``build factory-romfs``): compile + sign the romfs bundle, render the
-    gzipped full FRONT-slot image, sign a manifest, and add a delta against the factory
-    golden + an ``ocdl`` representation. The golden is resolved automatically from the
-    ledger (recorded by ``build factory-romfs``), or pass ``delta_from`` explicitly (a
-    ``<board>-factory-romfs.img`` or a directory of them); boards with no golden get
-    image + manifest only. The golden is validated (board + older version) and the release
+    gzipped full FRONT-slot image, sign a manifest, and add one delta + ``ocdl``
+    representation per base. The bases default to the factory golden (recorded by ``build
+    factory-romfs``) plus the last ``_LOCAL_BASES`` releases built here (each build keeps a copy
+    of its image under ``<out>/releases/``); pass ``delta_from`` to name them explicitly (a
+    ``<board>-factory-romfs.img``, a previous ``-ota.img.gz``, or a directory of them). A board
+    with no base gets image + manifest only. The golden is validated (board + older version) and the release
     is recorded -- a non-increasing version is refused unless ``allow_republish``.
 
     ``publish_seq`` is the account's publish counter, required when the project sets
@@ -1301,8 +1302,12 @@ def build_ota_romfs(
                                 boards=[name], firmware=firmware,
                                 deltas=deltas,
                                 key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
+        kept = _keep_release_image(img_path, out_dir, name, signer.app_version)
         ledger.record_release(project, name, version=signer.app_version, payload_version=new_pv,
-                              sha256=hashlib.sha256(image).hexdigest(), key_id=mres.key_id)
+                              sha256=hashlib.sha256(image).hexdigest(), key_id=mres.key_id,
+                              path=str(kept.relative_to(project) if _under(kept, project)
+                                       else kept))
+        _prune_release_images(project, out_dir, name)
         results.append(OtaRomfsResult(t.name, t.partition_index, img_path,
                                       [d for d, _v, _sha in deltas],
                                       mres.output, mres.key_id))
@@ -1316,8 +1321,8 @@ def _resolve_bases(project, name, delta_from, delta_files, delta_dirs) -> list[P
     enough: a device's delta base is the release it is *running*, so a fleet mid-rollout is
     spread across several versions and a single base reaches only the devices still on it.
     Each entry is a provisioning image, a previous release's ``-ota.img.gz``, or a directory
-    holding the per-board file. With none given, the ledger's recorded provisioning image is
-    the one base -- which is right for a fleet that has never updated.
+    holding the per-board file. With none given, the bases are the ledger's recorded
+    provisioning image plus the images of the last ``_LOCAL_BASES`` releases built here.
     A directory-sourced base that is NOT older than this release is SKIPPED with a note
     rather than an error: `client release bases --fleet` legitimately downloads the
     current release too, and a directory is a collection, not a claim. An explicitly
@@ -1344,15 +1349,65 @@ def _resolve_bases(project, name, delta_from, delta_files, delta_dirs) -> list[P
             print("warning: no delta base for %s - full image only" % name, file=sys.stderr)
         return out
     from openmv_ota.project import ledger
+    out = []
     g = ledger.golden_for(project, name)
-    if g is None:
-        return []
-    path = Path(project) / g["path"]
-    if not path.exists():
-        print("warning: %s's recorded provisioning image is missing at %s - full image only "
-              "(keep your factory images)" % (name, path), file=sys.stderr)
-        return []
-    return [(path, False)]
+    if g is not None:
+        path = Path(project) / g["path"]
+        if path.exists():
+            out.append((path, False))
+        else:
+            print("warning: %s's recorded provisioning image is missing at %s - no delta for "
+                  "factory-fresh devices (keep your factory images)" % (name, path),
+                  file=sys.stderr)
+    # ...and the releases built here before this one. A device patches against the release it
+    # is RUNNING, so a default that bases only on the factory image gave every device that had
+    # already updated the full image on every release after (measured: an AE3 fleet on 1.3.0 and
+    # 1.4.x re-downloading the whole image while the release shipped one delta, from 1.0.0).
+    # Collections, like a --delta-from directory: one that is not older is skipped with a note.
+    out.extend((p, True) for p in _recent_release_images(project, name))
+    return out
+
+
+# How many of the releases built before this one the default (no --delta-from) patches against,
+# on top of the factory image: the versions a fleet is most likely to be running. Older devices
+# take the full image; `client release bases --fleet` covers a fleet exactly.
+_LOCAL_BASES = 3
+_RELEASES_DIR = "releases"   # under the build output: <board>-ota-<version>.img.gz, one per release
+
+
+def _recent_release_images(project, name) -> list[Path]:
+    """The kept images of the last ``_LOCAL_BASES`` distinct versions built for ``name``, newest
+    first, that still exist. A missing copy (a cleaned build dir, another checkout) is skipped
+    silently -- it only costs those devices a full image."""
+    from openmv_ota.project import ledger
+    seen, out = set(), []
+    for rel in reversed(ledger.releases(project, name)):
+        v = rel["version"]
+        if v in seen or len(seen) >= _LOCAL_BASES:
+            continue
+        seen.add(v)
+        p = rel.get("path")
+        if p and (Path(project) / p).exists():
+            out.append(Path(project) / p)
+    return out
+
+
+def _keep_release_image(img_path: Path, out_dir: Path, name: str, version: str) -> Path:
+    """Copy this release's image to ``<out>/releases/`` under its version, so the NEXT build can
+    delta against it: ``<board>-ota.img.gz`` itself is overwritten by every build."""
+    keep = out_dir / _RELEASES_DIR / ("%s-ota-%s.img.gz" % (name, version))
+    keep.parent.mkdir(parents=True, exist_ok=True)
+    keep.write_bytes(img_path.read_bytes())
+    return keep
+
+
+def _prune_release_images(project, out_dir: Path, name: str) -> None:
+    """Delete kept images no default build will base on again (older than the last
+    ``_LOCAL_BASES`` versions), so the build dir does not grow by an image per release."""
+    keep = {p.resolve() for p in _recent_release_images(project, name)}
+    for f in (out_dir / _RELEASES_DIR).glob(name + "-ota-*.img.gz"):
+        if f.resolve() not in keep:
+            f.unlink()
 
 
 def _base_slot(path: Path, erase_size: int):

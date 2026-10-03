@@ -40,3 +40,14 @@ def test_corrupt_ledger_reads_as_empty(tmp_path):
     ledger.record_golden(tmp_path, "OPENMV_N6", version="1.0.0", payload_version=1,
                          sha256="x", path="y")                  # overwrites the junk
     assert ledger.golden_for(tmp_path, "OPENMV_N6")["version"] == "1.0.0"
+
+
+def test_releases_lists_every_record_with_its_kept_path(tmp_path):
+    assert ledger.releases(tmp_path, "OPENMV_N6") == []
+    ledger.record_release(tmp_path, "OPENMV_N6", version="1.1.0", payload_version=1,
+                          sha256="a", key_id=1, path="build/releases/x.img.gz")
+    ledger.record_release(tmp_path, "OPENMV_N6", version="1.2.0", payload_version=2,
+                          sha256="b", key_id=1)
+    rels = ledger.releases(tmp_path, "OPENMV_N6")
+    assert [r["version"] for r in rels] == ["1.1.0", "1.2.0"]
+    assert rels[0]["path"] == "build/releases/x.img.gz" and "path" not in rels[1]
