@@ -194,6 +194,31 @@ def test_the_scaffolded_config_documents_the_trade_not_just_the_key():
     assert "server_url" in text and "ca =" in text
     assert "BAKED INTO THE FIRMWARE" in text, "say where these live, and why"
 
+
+def test_the_scaffolded_config_stamps_the_servers_url_for_recovery():
+    """A commented-out server_url left a default project's firmware with no SERVER_URL, so
+    recovery logged "cannot recover" and stopped. It is set, to the URL main.py checks in to,
+    and the line tells a self-hoster to change both."""
+    import re
+
+    from openmv_ota.project.project import _APP_MAIN_OTA
+
+    text = cfg.render_config(name="demo", vendor=None, boards=["OPENMV_N6"], ota=True,
+                             signing_key_id=1)
+    main_url = re.search(r'openmv_ota\.run\("([^"]+)"', _APP_MAIN_OTA).group(1)
+    assert cfg.parse_config(text, "demo").server_url == main_url == "https://ota.cloud.openmv.io"
+    line = next(ln for ln in text.splitlines() if ln.startswith("server_url"))
+    assert "self-hosting" in line and "main.py" in line
+
+
+def test_the_scaffolded_config_shows_where_account_id_goes():
+    """The build warns when it is unset; the line it asks for has to be findable."""
+    text = cfg.render_config(name="demo", vendor=None, boards=["OPENMV_N6"], ota=True,
+                             signing_key_id=1)
+    product = text.split("[product]")[1].split("[ota]")[0]
+    assert '# account_id = "acct_..."' in product
+    assert cfg.parse_config(text, "demo").account_id == ""     # commented: a hint, not a value
+
 def test_max_attempts_defaults_and_validates():
     """0 would reject every image on its first boot -- a permanently un-updatable device -- and
     it is exactly the value someone reaches for to "turn trials off". Catch it at build time."""

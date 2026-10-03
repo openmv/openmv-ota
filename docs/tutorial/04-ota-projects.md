@@ -127,12 +127,15 @@ leak (an attacker could sign images your devices would trust) or are lost (you c
 rotate to another provisioned key, but a key never provisioned can't be added).
 Back the private keys up out-of-band.
 
-The `[ota]` section records the mode and the current signing key:
+The `[ota]` section records the mode, the current signing key, and the server
+recovery reaches (`server_url`, the hosted cloud's by default — the same URL the
+generated `main.py` checks in to, so a self-hoster changes both):
 
 ```toml
 [ota]
 enabled = true            # each partition holds two updatable slots (A/B)
 signing_key_id = 256      # current OTA signing key (in keys/trusted_keys.json)
+server_url = "https://ota.cloud.openmv.io"
 max_attempts = 3          # boots a trial gets to confirm (optional; frozen into the firmware)
 # platform = true         # only for a fleet whose cameras are built with product_id 0 and
 #                         # move between products: every build then takes the account's

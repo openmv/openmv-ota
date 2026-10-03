@@ -215,7 +215,7 @@ def render_config(
             "# Where devices fetch updates, and what they trust. BAKED INTO THE FIRMWARE, not the\n"
             "# romfs -- a device whose image is gone still needs both to reach the server, which is\n"
             "# exactly the case recovery exists for.\n"
-            "# server_url = \"https://ota.cloud.openmv.io\"\n"
+            "server_url = \"https://ota.cloud.openmv.io\"   # self-hosting? change this AND app/main.py's\n"
             % (signing_key_id or 0)                 # binds to the literal chain above, not below
             + (('# Anchors for the hosted OpenMV Cloud; self-hosting? Replace %s with your\n'
                 '# server\'s root (or pass `project new --ca`).\n' % ca) if cloud_roots else "")
@@ -267,6 +267,8 @@ def render_config(
         "[product]\n"
         'name = "%s"\n' % name
         + vendor_line
+        + "# account_id = \"acct_...\"   # your OTA account id: a device is only offered\n"
+        "#                              updates published under the account it was built for\n"
         + "# support_period = \"5y\"\n"
         "# security_contact = \"security@example.com\"\n"
         "# disclosure_url = \"https://example.com/.well-known/security.txt\"\n\n"
