@@ -326,6 +326,7 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
     try:
         import openmv_ota
         openmv_ota.register_checkin(on_response=_on_checkin, key="openmv_cloud.logs")
+        openmv_ota.register_flush(flush, key="openmv_cloud.logs")
     except (ImportError, AttributeError):
         pass
 
@@ -359,8 +360,10 @@ def enable(level=logging.INFO, logger=None, ring_bytes=None, fps=5,
         # One-time, BEFORE attaching our handler (so it doesn't self-ingest).
         logging.getLogger("openmv_cloud").warning(
             "logs: write_through on -- a disk write per line; expect slowdown")
+    global _kick, _outbox
     console = _Console(ring_bytes if ring_bytes else limits.ring_bytes)
     outbox = _Outbox(sid=console.sid, disk=disk, write_through=write_through)
+    _kick, _outbox = asyncio.Event(), outbox
     handler = CloudLogHandler(console, outbox)
     handler.setLevel(level)
     target = logging.getLogger(logger)
@@ -420,6 +423,48 @@ async def _flusher(console, stream):  # pragma: no cover  (device loop)
         await asyncio.sleep_ms(_FLUSH_MS)  # type: ignore[attr-defined]
 
 
+# On-demand flush (see flush()): the datalake flusher waits on _kick instead of a bare sleep, and
+# counts its finished cycles so a caller can wait for one that started after its kick.
+_kick = None              # asyncio.Event, created by enable()
+_cycles = 0               # finished datalake cycles
+_outbox = None            # enable()'s outbox, for flush() to see what is still queued
+
+
+def _flushed(start, cycles, pending):
+    """Done waiting: a cycle that STARTED after the kick has finished (the one in flight at the
+    kick may have missed the newest lines, so it does not count) and nothing is left. Pure."""
+    return cycles >= start + 2 or (cycles >= start + 1 and not pending)
+
+
+async def flush(timeout_ms=10000):  # pragma: no cover  (device: asyncio + clock)
+    """Push the console's queued lines to the datalake NOW, waiting at most ``timeout_ms``.
+    Returns True when everything queued went out. For a caller about to reset (openmv_ota's
+    fresh-heap reboot) -- the normal path ships within one ~5 s tick plus the upload."""
+    import asyncio
+    import time
+    if _kick is None or _ingest is None:
+        return False                              # not enabled, or nowhere to send yet
+    start = _cycles
+    deadline = time.ticks_add(time.ticks_ms(), timeout_ms)
+    while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+        pending = _outbox.pending_bytes() if _outbox is not None else 0
+        if _flushed(start, _cycles, pending):
+            return not pending
+        _kick.set()
+        await asyncio.sleep_ms(100)
+    return False
+
+
+async def _tick(ms):  # pragma: no cover  (device: asyncio)
+    """Sleep one flush interval, or less if flush() kicks."""
+    import asyncio
+    try:
+        await asyncio.wait_for_ms(_kick.wait(), ms)
+    except asyncio.TimeoutError:
+        pass
+    _kick.clear()
+
+
 async def _datalake_flusher(sid, outbox):  # pragma: no cover  (device loop)
     """Push the persistence tiers to the datalake: the disk spool first (oldest,
     records carry their own sid) then the RAM tier. Idle until configured;
@@ -429,27 +474,35 @@ async def _datalake_flusher(sid, outbox):  # pragma: no cover  (device loop)
     One :class:`_Conn` serves the whole cycle: every batch rides the same TLS
     session, so a long spool drain pays one ~20 KiB handshake instead of one per
     batch. That is what allows a small ``batch_bytes`` at no extra cost."""
-    import asyncio
+    global _cycles
     while True:
-        await asyncio.sleep_ms(_DATALAKE_FLUSH_MS)  # type: ignore[attr-defined]
-        target = _ingest
-        if target is None:
-            continue
-        batch = limits.batch_bytes
-        conn = _Conn(target)
+        await _tick(_DATALAKE_FLUSH_MS)
         try:
-            try:
-                await _drain_disk(conn, _STREAM_NAME, outbox._disk, batch)
-            except Exception:
-                continue                              # network down: retry next tick
-            while outbox.pending_bytes():
-                records = outbox.take(batch)
-                try:
-                    await conn.post(_STREAM_NAME, _ndjson(sid, records))
-                except Exception:
-                    outbox.requeue(records)
-                    break
+            await _datalake_cycle(sid, outbox)
         finally:
-            await conn.close()
+            _cycles += 1
+
+
+async def _datalake_cycle(sid, outbox):  # pragma: no cover  (device network)
+    """One flush: the disk spool, then the RAM tier, over one connection."""
+    target = _ingest
+    if target is None:
+        return
+    batch = limits.batch_bytes
+    conn = _Conn(target)
+    try:
+        try:
+            await _drain_disk(conn, _STREAM_NAME, outbox._disk, batch)
+        except Exception:
+            return                                    # network down: retry next tick
+        while outbox.pending_bytes():
+            records = outbox.take(batch)
+            try:
+                await conn.post(_STREAM_NAME, _ndjson(sid, records))
+            except Exception:
+                outbox.requeue(records)
+                break
+    finally:
+        await conn.close()
 
 

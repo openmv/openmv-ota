@@ -654,6 +654,16 @@ def register_pressure(release, key=None):
     _pressure_hooks[key if key is not None else object()] = release
 
 
+_flush_hooks = {}
+
+
+def register_flush(flush, key=None):
+    """The before-reset seam. ``async flush(timeout_ms)`` pushes a log sink's queued records out
+    and returns within ``timeout_ms``; the runtime awaits it before a reset it chooses to take
+    (the fresh-heap reboot), so the line saying WHY reaches the cloud. ``key`` as above."""
+    _flush_hooks[key if key is not None else object()] = flush
+
+
 def _relieve(level):
     """Run every release hook at ``level``; the total they closed. A raising hook is skipped --
     it must never cost the check-in it is meant to help."""
@@ -1124,17 +1134,29 @@ def _uptime_s():  # pragma: no cover  (device clock)
     return time.ticks_ms() // 1000  # hil-residual: bare return of the device uptime
 
 
-_REBOOT_SETTLE_MS = 6000   # before the fresh-heap reboot: one datalake tick (5 s) to ship the log line
+_REBOOT_FLUSH_MS = 12000   # bound on pushing the log out before the fresh-heap reboot. Measured on a
+#                            Nicla: the console upload lags 14-20 s behind a line (a 5 s flush tick,
+#                            then a TLS handshake + POST); kicking the flush skips the tick.
+
+
+async def _flush_all(budget_ms):  # pragma: no cover  (device: asyncio)
+    """Await every registered flush hook, each bounded by ``budget_ms`` (and guarded by it too,
+    so a hook that ignores its timeout still cannot hold the reset back). Never raises."""
+    import asyncio  # hil-residual: asyncio import for the bounded wait below (no fleet marker)
+    for flush in list(_flush_hooks.values()):  # hil-residual: hook loop; the hooks are openmv_cloud's (host-tested), and the cloud console receiving the reboot line is the witness
+        try:  # hil-residual: isolation guard around an optional hook
+            await asyncio.wait_for_ms(flush(budget_ms), budget_ms + 1000)  # hil-residual: bounded await of the hook (see above)
+        except Exception:  # hil-residual: a slow or broken hook must never block the reset
+            pass  # hil-residual: bare pass
 
 
 async def _reboot_for_install():  # pragma: no cover  (device: reset)
     """Restart so the BOOT check-in installs the offered update from a fresh heap (see
-    _InstallGate). Waits one datalake tick first so the line below reaches the cloud console:
-    a device that reboots for an update and then does not take it must say so somewhere."""
-    import asyncio  # hil-residual: imports ahead of the field-diagnostic line below (no fleet marker)
-    import machine  # hil-residual: same
+    _InstallGate). Pushes the log out first (bounded) so the line below reaches the cloud
+    console: a device that reboots for an update and then does not take it must say so."""
+    import machine  # hil-residual: import ahead of the field-diagnostic line below (no fleet marker)
     log.warning("run: fresh-heap reboot; the boot check-in installs the update")  # hil-residual: field diagnostic (and the cloud console's record of why the device rebooted); the bench's offers can land on a periodic check-in, but no scenario expects this line yet
-    await asyncio.sleep_ms(_REBOOT_SETTLE_MS)  # hil-residual: bare settle (the app keeps running)
+    await _flush_all(_REBOOT_FLUSH_MS)  # hil-residual: bounded log flush (the app keeps running meanwhile)
     machine.reset()  # hil-residual: terminal reset (no post-reset witness)
 
 

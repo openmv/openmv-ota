@@ -629,3 +629,14 @@ def test_apply_server_time_corrects_through_an_old_frozen_rtc(monkeypatch):
     assert rt._apply_server_time(untrusted, 1_700_000_000) and untrusted.set == [1_700_000_000]
     assert not rt._apply_server_time(old, 1_500_000_000)       # before the build: ignored
     assert len(warned) == 1 and "rebuild the firmware" in warned[0]   # said ONCE
+
+
+def test_register_flush_is_idempotent_by_key(monkeypatch):
+    monkeypatch.setattr(rt, "_flush_hooks", {})
+
+    async def a(ms):
+        return True
+    rt.register_flush(a, key="logs")
+    rt.register_flush(a, key="logs")
+    rt.register_flush(a)
+    assert len(rt._flush_hooks) == 2

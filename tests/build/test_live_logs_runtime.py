@@ -412,3 +412,11 @@ def test_hear_ota_attaches_the_sink_to_a_logger_with_its_own_handler():
     finally:
         for h in list(ota.handlers):
             ota.removeHandler(h)
+
+
+def test_flushed_waits_for_a_cycle_that_started_after_the_kick():
+    # the cycle in flight at the kick may have missed the newest line: it alone is not enough
+    assert not lg._flushed(start=4, cycles=4, pending=10)
+    assert not lg._flushed(start=4, cycles=5, pending=10)      # in-flight one done, lines left
+    assert lg._flushed(start=4, cycles=5, pending=0)           # ...but nothing is left: done
+    assert lg._flushed(start=4, cycles=6, pending=10)          # a full cycle after: give up waiting
