@@ -753,7 +753,11 @@ def check(checkin: CheckIn, request: Request):
         # device-registry write, so a fake id can't grow the DB -- zero footprint,
         # at the cost of no fleet tracking for these boards.
         checkin.device_id = _identity(checkin)     # board-qualified from here down
-        _, rel, offered, manifest_url = _decide(st, checkin, "__default__")
+        # Scoped by the CLAIMED account, as with no registrar above: there is no sticky binding
+        # without a registry row. Left at the default '' it matched only self-host releases, so
+        # on the multi-tenant hosted server no Arduino board was ever offered an update.
+        _, rel, offered, manifest_url = _decide(st, checkin, "__default__",
+                                                account_id=checkin.account_id)
         if manifest_url:
             return {"update": True, "manifest_url": manifest_url,
                     "release_id": rel["release_id"], "poll_after_s": _paced(st.settings)}

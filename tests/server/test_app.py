@@ -49,15 +49,17 @@ def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0,
 
 BID = 7
 
-def _seed(store, *, pv=0x02000000, percent=100, storage=None, manifest=b"MANI", image=b"IMG"):
+def _seed(store, *, pv=0x02000000, percent=100, storage=None, manifest=b"MANI", image=b"IMG",
+          account_id=""):
     store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
                       payload_version=pv, min_platform_version=0, image_sha256="ab" * 32,
                       image_size=len(image),
                       representations=[{"format": "full", "url": "OPENMV_N6-ota.img.gz",
                                         "size": len(image)}],
-                      manifest_key="manifest/rel1", image_key="image/rel1")
+                      manifest_key="manifest/rel1", image_key="image/rel1",
+                      account_id=account_id)
     store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID, cohort="__default__",
-                      percent=percent)
+                      percent=percent, account_id=account_id)
     if storage is not None:
         storage.put("manifest/rel1", manifest, "application/octet-stream")
         storage.put("image/rel1", image, "application/gzip")
@@ -216,6 +218,21 @@ def test_no_registrar_offer_scopes_by_claimed_account(tmp_path):
     _seed(store, storage=storage, percent=100)               # release under account ''
     r = TestClient(app).post("/api/v1/check", json=_checkin(account_id="acct_other"))
     assert r.json()["update"] is False                       # '' release never offered to them
+
+
+def test_unregistered_board_type_offer_scopes_by_claimed_account(tmp_path):
+    """Regression (Nicla + Giga bring-up on the hosted cloud): the read-only branch decided
+    under account '' whatever the device claimed, so a release published under a real
+    account -- every release on a multi-tenant server -- was never offered to an Arduino
+    board. The claimed account scopes it now, exactly as with no registrar."""
+    app, store, storage, v = _app(tmp_path, registered=False, unregistered_type=True)
+    _seed(store, storage=storage, percent=100, account_id="acctA")
+    c = TestClient(app)
+    r = c.post("/api/v1/check", json=_checkin(board="ARDUINO_GIGA", account_id="acctA"))
+    assert r.json()["update"] is True, r.json()
+    r = c.post("/api/v1/check", json=_checkin(board="ARDUINO_GIGA", account_id="acctB"))
+    assert r.json()["update"] is False                       # never another account's release
+    assert store.get_device("ARDUINO_GIGA:dev1") is None     # still zero footprint
 
 
 def test_unregistered_board_type_no_rollout_returns_nothing(tmp_path):
