@@ -1565,8 +1565,12 @@ def _free_jlink():
 
     That is why the N6's SWD reset works when watchdog_bite runs ALONE and fails after nine prior
     scenarios: the leftovers accumulate. Only one J-Link operation is ever in flight per node, so
-    anything still running here is by definition stale."""
-    rc, out = sh("pkill -f JLinkExe 2>/dev/null; true", check=False, quiet=True)
+    anything still running here is by definition stale.
+
+    By EXACT PROCESS NAME (``-x``), never ``-f``: a full-command-line match also hits every process
+    whose argv merely MENTIONS JLinkExe -- the documented ``JLINK=/opt/SEGGER/JLink/JLinkExe
+    ./recover.py ...`` invocation, the shell that ran pkill itself -- so it killed its own caller."""
+    rc, out = sh(["pkill", "-x", "JLinkExe"], check=False, quiet=True)
     del rc, out
 
 
