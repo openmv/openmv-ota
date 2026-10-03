@@ -331,8 +331,6 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
         pass
 
 
-_register()
-
 
 def enable(level=logging.INFO, logger=None, ring_bytes=None, fps=5,
            spool_path=None,
@@ -506,3 +504,5 @@ async def _datalake_cycle(sid, outbox):  # pragma: no cover  (device network)
         await conn.close()
 
 
+# Wire into openmv_ota last: _register() names functions defined further down.
+_register()

@@ -175,7 +175,7 @@ def _contribute():
     return {"streams": streams()}
 
 
-def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
+def _wire():  # pragma: no cover  (device: the openmv_ota runtime package)
     # Auto-wire into openmv_ota.run() so grants flow with zero app code. The
     # updater never imports us; we register into it (openmv_cloud -> openmv_ota).
     # On the host `import openmv_ota` is the CLI package (no seam) -> skipped.
@@ -187,8 +187,6 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
     except (ImportError, AttributeError):
         pass
 
-
-_register()
 
 
 def _relieve(level):
@@ -807,3 +805,7 @@ async def _pump(stream, reader, writer):  # pragma: no cover
             await writer.wait_closed()           # closes the socket -> its TLS buffers go
         except OSError:
             pass                                 # already closed by keep()
+
+
+# Wire into openmv_ota last: _wire() names functions defined further down.
+_wire()
