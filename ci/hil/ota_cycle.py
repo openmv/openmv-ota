@@ -1719,6 +1719,98 @@ def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
     return proc.returncode, out or ""
 
 
+# The CLI's --in-bootloader announcements on i.MX (openmv_ota.flash.flash.IMX_ARMED / IMX_CLAIMED;
+# a host test pins the two copies together).
+_IMX_ARMED = "i.MX: catcher armed, waiting for the resident SBL"
+_IMX_CLAIMED = "i.MX: resident SBL claimed"
+# The REPL keystrokes for imx_kick_catch: stop the app, then ONE friendly-REPL line. Two writes
+# (see _imx_kick) so the line cannot be swept by the ring-buffer clear a Ctrl-C triggers.
+_IMX_KICK_STOP = b"\r\x03\x03"
+_IMX_KICK_LINE = b"import machine; machine.bootloader()\r"
+_IMX_KICK_EVERY_S = 2.0
+
+
+def _imx_kick(port):
+    """Send machine.bootloader() to ``port`` as raw REPL keystrokes, no handshake. True if written.
+
+    mpremote cannot do this on a board whose app runs an ARMED short watchdog: its raw-REPL entry
+    (Ctrl-C, Ctrl-A, then a Ctrl-D soft reset and a wait for the banner) takes far longer than the
+    100 ms the Ctrl-C leaves before the watchdog bites, so the board reboots mid-handshake and the
+    CDC reads as "unresponsive" forever. Typed straight into the friendly REPL the call is already
+    queued when the app unwinds, and runs in milliseconds. Fire and forget: success is the SBL
+    enumerating, which the CLI's armed catcher sees."""
+    import serial
+    try:
+        with serial.Serial(port, 115200, timeout=0.2, write_timeout=0.5) as ser:
+            ser.write(_IMX_KICK_STOP)
+            ser.flush()
+            ser.write(_IMX_KICK_LINE)
+            ser.flush()
+        return True
+    except Exception:                        # absent, re-enumerating, or torn down by the call itself
+        return False
+
+
+def imx_kick_catch(board, argv, *, timeout=NOCDC_FLASH_TIMEOUT, pulse=True):
+    """The RT1060's no-CDC route into its resident SBL: run an openmv-ota command with
+    ``--in-bootloader`` (pass it in ``argv``), and once the CLI says its catcher is ARMED, bring
+    the SBL up from the outside -- an nRST pulse for a fresh boot, then machine.bootloader() typed
+    into the REPL (_imx_kick) every couple of seconds until the CLI reports the SBL CLAIMED.
+    Returns (rc, output).
+
+    THIS IS NOT dfu_reset_catch. The OpenMV DFU bootloader parks a window on every reset; the
+    RT1062's resident SBL does not -- it presents USB only when entered through ROM_RunBootloader,
+    i.e. machine.bootloader(), and after nRST it boots the app straight away (measured: an armed
+    catcher plus nRST waited 60 s and the SBL never enumerated). So the reset alone catches nothing;
+    it only restarts the app so the kick meets a live REPL. The kick is what enters the SBL, and the
+    kick is what survives the case this route exists for: an app with an armed 100 ms watchdog that
+    reboots the board whenever mpremote's slow raw-REPL handshake stops it.
+
+    Kicking STOPS at the CLAIMED line: from there the CDC is gone because the SBL is flashing, and
+    nothing may disturb the board until the CLI exits. No raw flash access here -- every byte is
+    written by the openmv-ota CLI; this only gets its bootloader up."""
+    log("recover: %s -- openmv-ota --in-bootloader + nRST + REPL machine.bootloader() kick (the "
+        "resident SBL has no reset window to catch)" % board)
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines, armed, claimed = [], threading.Event(), threading.Event()
+
+    def _read():
+        for line in proc.stdout:
+            lines.append(line)
+            if _IMX_ARMED in line:
+                armed.set()
+            elif _IMX_CLAIMED in line:
+                claimed.set()
+    reader = threading.Thread(target=_read, daemon=True)
+    reader.start()
+    end = time.time() + timeout
+    try:
+        while not armed.wait(0.2):           # spsdk warms before it arms; nothing to do until then
+            if proc.poll() is not None or time.time() > end:
+                break
+        if armed.is_set():
+            if pulse:
+                jlink_reset_pulse(board)     # a fresh boot: the app back on a live REPL
+            kicks = 0
+            while not claimed.is_set() and proc.poll() is None and time.time() < end:
+                if os.path.exists(CFG["acm"]) and _imx_kick(CFG["acm"]):
+                    kicks += 1
+                claimed.wait(_IMX_KICK_EVERY_S)
+            log("recover: %s -- %d kick(s), SBL %s" % (board, kicks,
+                                                       "claimed" if claimed.is_set() else "NOT claimed"))
+        try:
+            proc.wait(timeout=max(1, end - time.time()))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            reader.join(5)
+            return 124, "".join(lines) + "imx_kick_catch timed out"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    reader.join(5)
+    return proc.returncode, "".join(lines)
+
+
 def _dfu_present():
     """True iff an MCUboot DFU device is enumerated RIGHT NOW. A point-in-time check, never a wait:
     the whole class of bug this guards against is ``dfu-util -w`` blocking on a device that is not
@@ -1855,6 +1947,10 @@ def recover_erase_romfs(board):
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
     if BOARDS[board].get("flash") == "arduino_cli":
         rc, out = _arduino_dfu_run(board, argv, "recover: erase", timeout=300)
+    elif BOARDS[board].get("flash") == "blhost_imx":
+        # The RT1060: `--romfs` (a bare i.MX `erase` wipes the /flash DISK and leaves the app that
+        # breaks the CDC in place), and its SBL is reached by a REPL kick, not a reset window.
+        rc, out = imx_kick_catch(board, argv + ["--romfs", "--in-bootloader"], timeout=300)
     else:
         rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"])
     log("recover: romfs erase rc=%d%s" % (rc, "" if rc == 0 else " -- %s" % out[-300:]))
@@ -1946,7 +2042,7 @@ def _ensure_cdc(board, allow_erase=False):
             "just written) -- caller must handle it" % board)
         return
     recover_erase_romfs(board)
-    log("recover: %s romfs erased -- the golden flash will reprovision it over DFU "
+    log("recover: %s romfs erased -- the golden flash will reprovision it "
         "(no CDC expected until then)" % board)
 
 
@@ -2113,9 +2209,25 @@ def _flash_blhost_imx(board, bad_romfs=False):
         return
     # Golden: firmware + the factory (dual-slot) romfs, in ONE resident-SBL session -- the same
     # `flash factory` the Getting started page tells a customer to run.
-    log("flash factory -> %s (openmv-ota, resident SBL)" % board)
-    sh([ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
-        "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=600)
+    #
+    # The CLI enters the SBL with machine.bootloader() over the CDC -- the first choice whenever
+    # the CDC answers. When it does not (an app with an armed 100 ms watchdog reboots the board
+    # under mpremote's handshake; the board fell off USB), the CLI waits `--in-bootloader` while
+    # imx_kick_catch brings the SBL up from outside. The RT1062 SBL has no reset window, so the
+    # nRST pulse a DFU board's reset-catch relies on cannot do that job alone.
+    argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")]
+    rc, out = 1, "CDC not responsive"
+    if _cdc_responsive():
+        log("flash factory -> %s (openmv-ota, resident SBL)" % board)
+        rc, out = sh(argv, timeout=600, check=False)
+    if rc != 0:
+        log("flash factory -> %s: CDC route failed (%s) -- via the no-CDC SBL route"
+            % (board, out.strip().splitlines()[-1] if out.strip() else rc))
+        rc, out = imx_kick_catch(board, argv + ["--in-bootloader"], timeout=600)
+        if rc != 0:
+            raise RuntimeError("command failed (%d): %s\n%s" % (rc, argv + ["--in-bootloader"],
+                                                                out[-2000:]))
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
 
 

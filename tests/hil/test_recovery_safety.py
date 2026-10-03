@@ -165,3 +165,138 @@ def test_the_harness_never_writes_to_flash():
         assert "_flash_bench_files" not in src, fn.__name__
     assert not hasattr(ota_cycle, "_flash_bench_files"), "the /flash writer must be gone"
     assert not hasattr(ota_cycle, "_msc_put"), "its USB-MSC path goes with it"
+
+
+# --- the RT1060's no-CDC route into its resident SBL ----------------------------------------
+
+def _cli(*lines, rc=0, gap=0.3):
+    """A real short-lived process that prints ``lines`` (``gap`` s apart) and exits ``rc`` -- a
+    stand-in for the openmv-ota CLI, so imx_kick_catch's reader thread runs for real."""
+    code = "import time\n" + "".join("print(%r, flush=True); time.sleep(%r)\n" % (ln, gap)
+                                     for ln in lines) + "raise SystemExit(%d)\n" % rc
+    return [sys.executable, "-c", code]
+
+
+def _kick_rig(monkeypatch, *, port=True):
+    events = []
+    monkeypatch.setattr(ota_cycle, "jlink_reset_pulse", lambda b: events.append("pulse"))
+    monkeypatch.setattr(ota_cycle, "_imx_kick", lambda p: events.append("kick") or True)
+    monkeypatch.setattr(ota_cycle.os.path, "exists", lambda p: port)
+    monkeypatch.setattr(ota_cycle, "_IMX_KICK_EVERY_S", 0.05)
+    monkeypatch.setattr(ota_cycle, "log", lambda m: None)
+    return events
+
+
+def test_imx_markers_match_the_cli():
+    """The harness waits on the CLI's own words; two copies of a string drift silently."""
+    from openmv_ota.flash import flash as fl
+    assert ota_cycle._IMX_ARMED == fl.IMX_ARMED
+    assert ota_cycle._IMX_CLAIMED == fl.IMX_CLAIMED
+
+
+def test_imx_kick_catch_pulses_after_arming_and_stops_kicking_at_the_claim(monkeypatch):
+    events = _kick_rig(monkeypatch)
+    rc, out = ota_cycle.imx_kick_catch(
+        "OPENMV_RT1060", _cli("spsdk warming", ota_cycle._IMX_ARMED + " (x) for up to 60 s",
+                              ota_cycle._IMX_CLAIMED, "erase ... write ... reset", gap=0.4),
+        timeout=30)
+    assert rc == 0 and ota_cycle._IMX_CLAIMED in out
+    assert events[0] == "pulse" and "kick" in events, events   # reset FIRST, then the kick
+    n = events.count("kick")
+    import time
+    time.sleep(0.3)
+    assert events.count("kick") == n, "no kick may land once the SBL is claimed (it is flashing)"
+
+
+def test_imx_kick_catch_does_nothing_when_the_cli_never_arms(monkeypatch):
+    events = _kick_rig(monkeypatch)
+    rc, out = ota_cycle.imx_kick_catch("OPENMV_RT1060", _cli("error: blhost not found", rc=2),
+                                       timeout=30)
+    assert rc == 2 and "blhost not found" in out
+    assert events == [], "no reset, no kick without an armed catcher to catch the SBL"
+
+
+def test_imx_kick_catch_without_a_port_never_kicks_and_times_out(monkeypatch):
+    events = _kick_rig(monkeypatch, port=False)
+    rc, out = ota_cycle.imx_kick_catch(
+        "OPENMV_RT1060", _cli(ota_cycle._IMX_ARMED, gap=30), timeout=1.5, pulse=False)
+    assert rc == 124 and "timed out" in out
+    assert events == []
+
+
+def test_imx_kick_types_stop_then_the_call_as_two_writes(monkeypatch):
+    writes = []
+
+    class FakeSerial:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def write(self, b):
+            writes.append(b)
+
+        def flush(self):
+            pass
+    import serial
+    monkeypatch.setattr(serial, "Serial", FakeSerial)
+    assert ota_cycle._imx_kick("/dev/ttyACM0") is True
+    assert writes[0].count(b"\x03") >= 1 and b"bootloader" not in writes[0]
+    assert writes[1] == b"import machine; machine.bootloader()\r"
+
+    def gone(*a, **k):
+        raise OSError(2, "No such file")
+    monkeypatch.setattr(serial, "Serial", gone)
+    assert ota_cycle._imx_kick("/dev/ttyACM0") is False
+
+
+def test_rt1060_recovery_erase_is_the_romfs_via_the_kick(monkeypatch):
+    """A bare i.MX `flash erase` wipes the /flash disk and leaves the app that breaks the CDC; and
+    dfu_reset_catch's nRST cannot bring the RT1062's SBL up. Both were the old route."""
+    seen = []
+    monkeypatch.setattr(ota_cycle, "imx_kick_catch", lambda b, argv, **k: seen.append(argv) or (0, ""))
+
+    def nope(*a, **k):
+        raise AssertionError("the RT1060 has no DFU reset window")
+    monkeypatch.setattr(ota_cycle, "dfu_reset_catch", nope)
+    monkeypatch.setattr(ota_cycle, "log", lambda m: None)
+    assert ota_cycle.recover_erase_romfs("OPENMV_RT1060") is True
+    assert "--romfs" in seen[0] and "--in-bootloader" in seen[0] and "erase" in seen[0]
+
+
+def _golden_rig(monkeypatch, *, cdc, cdc_rc=0, kick_rc=0):
+    calls = []
+    monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: cdc)
+    monkeypatch.setattr(ota_cycle, "sh", lambda argv, **k: calls.append(("cdc", argv)) or (cdc_rc, "x\nerror: SBL"))
+    monkeypatch.setattr(ota_cycle, "imx_kick_catch",
+                        lambda b, argv, **k: calls.append(("kick", argv)) or (kick_rc, "boom"))
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ota_cycle, "log", lambda m: None)
+    return calls
+
+
+def test_rt1060_golden_prefers_the_cdc_route(monkeypatch):
+    calls = _golden_rig(monkeypatch, cdc=True)
+    ota_cycle._flash_blhost_imx("OPENMV_RT1060")
+    assert [c[0] for c in calls] == ["cdc"]
+    assert "--in-bootloader" not in calls[0][1] and "factory" in calls[0][1]
+
+
+def test_rt1060_golden_without_cdc_goes_in_bootloader_via_the_kick(monkeypatch):
+    calls = _golden_rig(monkeypatch, cdc=False)
+    ota_cycle._flash_blhost_imx("OPENMV_RT1060")
+    assert [c[0] for c in calls] == ["kick"] and "--in-bootloader" in calls[0][1]
+
+
+def test_rt1060_golden_falls_back_when_the_cdc_route_fails_and_raises_if_both_do(monkeypatch):
+    import pytest
+    calls = _golden_rig(monkeypatch, cdc=True, cdc_rc=2)
+    ota_cycle._flash_blhost_imx("OPENMV_RT1060")
+    assert [c[0] for c in calls] == ["cdc", "kick"]
+    _golden_rig(monkeypatch, cdc=True, cdc_rc=2, kick_rc=2)
+    with pytest.raises(RuntimeError, match="command failed"):
+        ota_cycle._flash_blhost_imx("OPENMV_RT1060")

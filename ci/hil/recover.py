@@ -15,6 +15,10 @@ The way out is that **the OpenMV bootloader presents a DFU window on EVERY reset
     2. a moment later, pulse the board's PHYSICAL nRST line via the J-Link;
     3. dfu-util catches the window and does its work.
 
+The RT1060 is the exception: its resident SBL has NO reset window (it only comes up through
+``machine.bootloader()``), so the nRST just restarts the app and the harness then types
+``machine.bootloader()`` into the REPL while the CLI waits -- see ``ota_cycle.imx_kick_catch``.
+
 ``--in-bootloader`` tells the CLI not to try the (broken) CDC route first. Erasing the romfs is the
 useful payload: with no bootable slot the app never runs, the CDC comes back, and a normal
 ``flash factory`` can reprovision. It needs no built artifacts, so it works even on a fresh node.
