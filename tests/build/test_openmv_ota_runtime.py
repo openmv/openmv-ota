@@ -555,3 +555,77 @@ def test_relieve_sums_hooks_and_survives_a_broken_one(monkeypatch):
     rt.register_pressure(lambda lv: None)                 # unkeyed, returns nothing
     rt.register_pressure(lambda lv: lv, key="a")          # same key replaces
     assert rt._relieve(1) == 1 and rt._relieve(0) == 0
+
+
+# --- the server's Date header: parsed here (romfs, OTA-updatable), applied by openmv_rtc ------
+
+@pytest.mark.parametrize("y,m,d", [(1970, 1, 1), (2000, 2, 29), (2023, 11, 14), (2036, 2, 7),
+                                   (2100, 3, 1), (1999, 12, 31)])
+def test_days_from_civil_matches_the_calendar(y, m, d):
+    import calendar
+    assert rt._days_from_civil(y, m, d) * 86400 == calendar.timegm((y, m, d, 0, 0, 0))
+
+
+def test_parse_http_date_reads_an_imf_fixdate():
+    assert rt._parse_http_date(b" Tue, 14 Nov 2023 22:13:20 GMT\r\n") == 1_700_000_000
+    assert rt._parse_http_date("Tue, 14 Nov 2023 22:13:20 GMT") == 1_700_000_000   # str too
+
+
+@pytest.mark.parametrize("bad", [
+    b"", b"garbage", b"Tue, 14 Nov 2023 22:13:20 PST",          # not GMT
+    b"Tue, 14 Foo 2023 22:13:20 GMT",                            # no such month
+    b"Tue, xx Nov 2023 22:13:20 GMT", b"Tue, 14 Nov 2023 22:13 GMT",
+    b"Tue, 32 Nov 2023 22:13:20 GMT", b"Tue, 14 Nov 2023 24:00:00 GMT",
+    b"Tue, 14 Nov 2023 22:60:00 GMT", b"Tue, 14 Nov 2023 22:13:61 GMT",
+    b"Tuesday, 14-Nov-23 22:13:20 GMT",                          # obsolete RFC 850 form
+])
+def test_parse_http_date_rejects_what_is_not_an_imf_fixdate(bad):
+    assert rt._parse_http_date(bad) is None
+
+
+
+class _NewRtc:
+    def __init__(self):
+        self.got = []
+
+    def server_time(self, unix):
+        self.got.append(unix)
+        return True
+
+
+class _OldRtc:                          # a frozen openmv_rtc from before server_time existed
+    BUILD_TIME = 1_600_000_000
+
+    def __init__(self, now, trusted=True):
+        self._now, self._trusted, self.set = now, trusted, []
+
+    def trusted(self):
+        return self._trusted
+
+    def now(self):
+        return self._now
+
+    def set_time(self, unix):
+        self.set.append(unix)
+
+
+def test_apply_server_time_uses_the_frozen_policy_when_present():
+    r = _NewRtc()
+    assert rt._apply_server_time(r, 1_700_000_000) and r.got == [1_700_000_000]
+    assert not rt._apply_server_time(r, None) and r.got == [1_700_000_000]
+
+
+def test_apply_server_time_corrects_through_an_old_frozen_rtc(monkeypatch):
+    # THE OTA case: the runtime updated, the frozen openmv_rtc did not -- the fix must still land
+    warned = []
+    monkeypatch.setattr(rt, "_legacy_rtc_warned", False)
+    monkeypatch.setattr(rt.log, "warning", lambda m, *a: warned.append(m))
+    old = _OldRtc(now=1_700_000_000 - 100)
+    assert rt._apply_server_time(old, 1_700_000_000)
+    assert old.set == [1_700_000_000]
+    close = _OldRtc(now=1_700_000_000 + rt._DRIFT_S)
+    assert rt._apply_server_time(close, 1_700_000_000) and close.set == []
+    untrusted = _OldRtc(now=1_700_000_000, trusted=False)
+    assert rt._apply_server_time(untrusted, 1_700_000_000) and untrusted.set == [1_700_000_000]
+    assert not rt._apply_server_time(old, 1_500_000_000)       # before the build: ignored
+    assert len(warned) == 1 and "rebuild the firmware" in warned[0]   # said ONCE

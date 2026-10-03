@@ -212,64 +212,39 @@ def _clock(monkeypatch):
     return t
 
 
-@pytest.mark.parametrize("y,m,d", [(1970, 1, 1), (2000, 2, 29), (2023, 11, 14), (2036, 2, 7),
-                                   (2100, 3, 1), (1999, 12, 31)])
-def test_days_from_civil_matches_the_calendar(y, m, d):
-    import calendar
-    assert rtc._days_from_civil(y, m, d) * 86400 == calendar.timegm((y, m, d, 0, 0, 0))
-
-
-def test_parse_http_date_reads_an_imf_fixdate():
-    assert rtc.parse_http_date(b" Tue, 14 Nov 2023 22:13:20 GMT\r\n") == 1_700_000_000
-    assert rtc.parse_http_date("Tue, 14 Nov 2023 22:13:20 GMT") == 1_700_000_000   # str too
-
-
-@pytest.mark.parametrize("bad", [
-    b"", b"garbage", b"Tue, 14 Nov 2023 22:13:20 PST",          # not GMT
-    b"Tue, 14 Foo 2023 22:13:20 GMT",                            # no such month
-    b"Tue, xx Nov 2023 22:13:20 GMT", b"Tue, 14 Nov 2023 22:13 GMT",
-    b"Tue, 32 Nov 2023 22:13:20 GMT", b"Tue, 14 Nov 2023 24:00:00 GMT",
-    b"Tue, 14 Nov 2023 22:60:00 GMT", b"Tue, 14 Nov 2023 22:13:61 GMT",
-    b"Tuesday, 14-Nov-23 22:13:20 GMT",                          # obsolete RFC 850 form
-])
-def test_parse_http_date_rejects_what_is_not_an_imf_fixdate(bad):
-    assert rtc.parse_http_date(bad) is None
-
-
-def test_server_date_corrects_a_drifted_rtc(monkeypatch, _clock):
+def test_server_time_corrects_a_drifted_rtc(monkeypatch, _clock):
     # THE bench bug: an RTC that reads past the build (so the floor trusts it) but runs
     # 100 s slow. The check-in's Date re-sets it.
     _at(monkeypatch, 1_700_000_000 - 100)
-    assert rtc.server_date(b"Tue, 14 Nov 2023 22:13:20 GMT")
+    assert rtc.server_time(1_700_000_000)
     assert _clock["set"] == [1_700_000_000]
     assert rtc.source() == "server" and rtc.fresh()
 
 
-def test_server_date_leaves_a_close_rtc_alone(monkeypatch, _clock):
+def test_server_time_leaves_a_close_rtc_alone(monkeypatch, _clock):
     # Date has 1 s resolution: re-setting on every check-in would only add jitter
     _at(monkeypatch, 1_700_000_000 + rtc._DRIFT_S)
-    assert rtc.server_date(b"Tue, 14 Nov 2023 22:13:20 GMT")
+    assert rtc.server_time(1_700_000_000)
     assert _clock["set"] == []
     assert rtc.source() == "server" and rtc.fresh()      # but it still counts as checked
 
 
-def test_server_date_sets_an_untrusted_clock_even_if_close(monkeypatch, _clock):
+def test_server_time_sets_an_untrusted_clock_even_if_close(monkeypatch, _clock):
     rtc._bad = True                                      # latched from a bad boot
     _at(monkeypatch, 1_700_000_000)
-    assert rtc.server_date(b"Tue, 14 Nov 2023 22:13:20 GMT")
+    assert rtc.server_time(1_700_000_000)
     assert _clock["set"] == [1_700_000_000]
 
 
-def test_server_date_ignores_garbage_and_pre_build_times(monkeypatch, _clock):
+def test_server_time_ignores_pre_build_times(monkeypatch, _clock):
     _at(monkeypatch, BUILD + 60)
-    assert not rtc.server_date(b"not a date")
-    assert not rtc.server_date(b"Thu, 01 Jan 2015 00:00:00 GMT")   # before the build: a bad proxy
+    assert not rtc.server_time(1_420_070_400)            # before the build: a bad proxy
     assert _clock["set"] == [] and rtc.source() == "none" and not rtc.fresh()
 
 
 def test_fresh_expires_and_drops_the_stale_mark(monkeypatch, _clock):
     _at(monkeypatch, 1_700_000_000)
-    rtc.server_date(b"Tue, 14 Nov 2023 22:13:20 GMT")
+    rtc.server_time(1_700_000_000)
     _clock["ms"] += (rtc._RESYNC_S - 1) * 1000
     assert rtc.fresh()
     _clock["ms"] += 1000

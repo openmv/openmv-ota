@@ -1159,14 +1159,80 @@ def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
         pass  # hil-residual: bare pass; clock left unresolved
 
 
+_MONTHS = (b"jan", b"feb", b"mar", b"apr", b"may", b"jun",
+           b"jul", b"aug", b"sep", b"oct", b"nov", b"dec")
+
+
+def _days_from_civil(y, m, d):
+    """Days from 1970-01-01 to the proleptic-Gregorian date ``y-m-d`` (H. Hinnant's
+    algorithm). Pure integer arithmetic: ``time.mktime`` uses the PORT's epoch and,
+    on some ports, local time, so it cannot be trusted to produce Unix seconds."""
+    y -= m <= 2
+    era = y // 400
+    yoe = y - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+
+def _parse_http_date(value):
+    """Unix seconds from an HTTP ``Date`` value (IMF-fixdate, the only form RFC 9110
+    lets a server send: ``Sun, 06 Nov 1994 08:49:37 GMT``), or None when it does
+    not parse. Takes bytes or str -- the raw header value off the socket."""
+    if isinstance(value, str):
+        value = value.encode()
+    parts = value.strip().split()
+    if len(parts) != 6 or parts[5].upper() != b"GMT":
+        return None
+    try:
+        day, year = int(parts[1]), int(parts[3])
+        month = _MONTHS.index(parts[2].lower()) + 1
+        hh, mm, ss = (int(x) for x in parts[4].split(b":"))
+    except ValueError:
+        return None
+    if not (1 <= day <= 31 and 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 60):
+        return None
+    return _days_from_civil(year, month, day) * 86400 + hh * 3600 + mm * 60 + ss
+
+
+_DRIFT_S = 2              # re-set the RTC only past this (Date has 1 s resolution)
+_legacy_rtc_warned = False
+
+
+def _apply_server_time(rtc, unix):
+    """Hand the server's time to the clock module ``rtc`` (the FROZEN openmv_rtc). Pure.
+
+    THE CLOCK POLICY IS SPLIT ON PURPOSE: openmv_rtc is frozen into the firmware (boot.py and
+    recovery need it before any romfs is mounted), so an OTA update never replaces it -- while
+    this runtime ships in the romfs and does. A device updated over the air onto this runtime
+    may therefore be running an older openmv_rtc with no ``server_time``. Then the correction is
+    done here, through the calls every version has (``trusted``/``now``/``set_time``), and a
+    one-time warning says the firmware is behind. Returns True when the time was used."""
+    global _legacy_rtc_warned
+    if unix is None:
+        return False
+    server_time = getattr(rtc, "server_time", None)
+    if server_time is not None:
+        return server_time(unix)
+    if not _legacy_rtc_warned:
+        _legacy_rtc_warned = True
+        log.warning("clock: the firmware's openmv_rtc predates server time -- correcting the "
+                    "RTC from here; rebuild the firmware for the full clock policy")
+    if unix < getattr(rtc, "BUILD_TIME", 0):
+        return False
+    if not rtc.trusted() or abs(rtc.now() - unix) > _DRIFT_S:
+        rtc.set_time(unix)
+    return True
+
+
 def _server_date(value):  # pragma: no cover  (device: RTC)
-    """Hand a check-in's ``Date`` header value to openmv_rtc, which corrects the RTC when it has
-    drifted. This is the device's main time source: free (the check-in happens anyway) and
-    authenticated (the TLS session verified the server). Defensive like _resolve_clock: a missing
-    clock module or an RTC fault must never fail the check-in it rides on."""
+    """Hand a check-in's ``Date`` header value to the clock. This is the device's main time
+    source: free (the check-in happens anyway) and authenticated (the TLS session verified the
+    server). Defensive like _resolve_clock: a missing clock module or an RTC fault must never
+    fail the check-in it rides on."""
     try:
         import openmv_rtc
-        if openmv_rtc.server_date(value):
+        if _apply_server_time(openmv_rtc, _parse_http_date(value)):
             log.debug("clock: server date")           # HIL path witness (check-in Date set/confirmed the clock)
     except Exception:  # hil-residual: missing clock module / RTC fault -> the check-in goes on
         pass  # hil-residual: bare pass; timestamps stay as they were

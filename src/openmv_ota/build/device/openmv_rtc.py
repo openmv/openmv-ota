@@ -12,7 +12,7 @@ timestamp when the answer is yes.
 
 WHERE THE TIME COMES FROM, in order of preference:
 
-1. **The server's ``Date`` header, every check-in** (:func:`server_date`). The
+1. **The server's ``Date`` header, every check-in** (:func:`server_time`). The
    check-in already happens, over TLS with the server verified, so this costs no
    extra traffic and cannot be spoofed by anyone on the path. The RTC is re-set
    whenever it has drifted more than ``_DRIFT_S`` from it.
@@ -59,8 +59,7 @@ assumed:
   than hardcoded, and everything this module returns is Unix (1970) seconds.
 
 RAM BUDGET: this module runs inside your application, so its memory is your
-memory. It holds a few integers and allocates only during a sync; the ``Date``
-parse works on the one header line the check-in has already read.
+memory. It holds a few integers and allocates only during a sync.
 """
 
 import time
@@ -179,55 +178,19 @@ def fresh():
     return False
 
 
-_MONTHS = (b"jan", b"feb", b"mar", b"apr", b"may", b"jun",
-           b"jul", b"aug", b"sep", b"oct", b"nov", b"dec")
+def server_time(unix):
+    """Correct the clock from the server's time (Unix seconds), as the OTA runtime reads it off
+    each check-in's ``Date`` header (``openmv_ota._server_date``, which parses it -- the parse
+    lives in the romfs runtime so an OTA update can change it; this module is frozen).
 
+    The check-in is TLS with the server verified, so this time is authenticated -- and it
+    arrives on every check-in at no extra cost. The RTC is re-set only when it is more than
+    ``_DRIFT_S`` off (or not trusted); either way the clock counts as freshly network-checked,
+    which keeps NTP off the wire. A time before the build (a misconfigured proxy) is ignored.
 
-def _days_from_civil(y, m, d):
-    """Days from 1970-01-01 to the proleptic-Gregorian date ``y-m-d`` (H. Hinnant's
-    algorithm). Pure integer arithmetic: ``time.mktime`` uses the PORT's epoch and,
-    on some ports, local time, so it cannot be trusted to produce Unix seconds."""
-    y -= m <= 2
-    era = y // 400
-    yoe = y - era * 400
-    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
-    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
-    return era * 146097 + doe - 719468
-
-
-def parse_http_date(value):
-    """Unix seconds from an HTTP ``Date`` value (IMF-fixdate, the only form RFC 9110
-    lets a server send: ``Sun, 06 Nov 1994 08:49:37 GMT``), or None when it does
-    not parse. Takes bytes or str -- the raw header value off the socket."""
-    if isinstance(value, str):
-        value = value.encode()
-    parts = value.strip().split()
-    if len(parts) != 6 or parts[5].upper() != b"GMT":
-        return None
-    try:
-        day, year = int(parts[1]), int(parts[3])
-        month = _MONTHS.index(parts[2].lower()) + 1
-        hh, mm, ss = (int(x) for x in parts[4].split(b":"))
-    except ValueError:
-        return None
-    if not (1 <= day <= 31 and 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 60):
-        return None
-    return _days_from_civil(year, month, day) * 86400 + hh * 3600 + mm * 60 + ss
-
-
-def server_date(value):
-    """Correct the clock from a check-in response's ``Date`` header value.
-
-    The check-in is TLS with the server verified, so this time is authenticated --
-    and it arrives on every check-in at no extra cost. The RTC is re-set only when
-    it is more than ``_DRIFT_S`` off (or not trusted); either way the clock counts
-    as freshly network-checked, which keeps NTP off the wire. A value that does not
-    parse, or reads before the build (a misconfigured proxy), is ignored.
-
-    Returns True when the value was accepted."""
+    Returns True when the time was accepted."""
     global _source, _net_ms
-    unix = parse_http_date(value)
-    if unix is None or unix < BUILD_TIME:
+    if unix < BUILD_TIME:
         return False
     if not trusted() or abs(now() - unix) > _DRIFT_S:
         set_time(unix)
