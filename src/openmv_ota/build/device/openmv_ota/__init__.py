@@ -778,6 +778,66 @@ def _offer(resp):
     return resp.get("manifest_url") if resp.get("update") else None
 
 
+# INSTALL FROM A FRESH HEAP. An update is installed in place only on the BOOT check-in, before
+# the app has built up its heap; one offered later reboots the device first so the boot
+# check-in installs it. Measured on a Nicla: with the camera, two live-relay TLS sessions and
+# the datalake batchers resident, an in-place install died of MemoryError -- before the erase
+# (`manifest fetch failed: MemoryError allocating 4097 bytes`, retried every poll, forever) or
+# after it (`MemoryError 32768` x3, then a reboot to the other slot) -- while the same release
+# installed every time from the boot check-in. The reboot costs one extra boot; the install
+# reboots anyway.
+_REBOOT_GAP_S = 3600   # a device whose BOOT install of a release failed reboots for it again only
+#                        after this much uptime -- at most one such reboot per hour, so a release
+#                        that cannot install from any heap never turns into a reboot loop
+_INPLACE_TRIES = 3     # ...and only after this many in-place attempts in a row have failed too
+
+
+class _InstallGate:
+    """Decides, for each offered release, whether to install it in place or reboot first. Pure:
+    the caller passes the release key and the uptime, and reports what happened.
+
+    The state lives in RAM, deliberately. Nothing here may live on /flash (it corrupts, and
+    nothing load-bearing goes there), and no port OpenMV ships exposes RTC backup memory to
+    MicroPython. RAM is enough: a reboot for a release happens only when THIS boot's first
+    check-in did not already try that release, so every reboot is followed by a boot install of
+    it -- and if that fails, this boot does not reboot for it again until ``_REBOOT_GAP_S`` of
+    uptime and ``_INPLACE_TRIES`` failed in-place attempts have passed. The server's offers are
+    deterministic per device (rollout percentage by device id), so the boot check-in after the
+    reboot is offered the same release."""
+
+    def __init__(self):
+        self._answered = False   # a check-in has been answered (un-throttled) this boot
+        self._boot_key = None    # the release the boot check-in tried in place, if any
+        self._key = None         # the release the failure count below is about
+        self._fails = 0          # consecutive failed in-place installs of _key
+
+    def answered(self):
+        """A check-in was answered with no offer: the boot check-in has passed."""
+        self._answered = True
+
+    def plan(self, key, uptime_s):
+        """``"install"`` (in place, now) or ``"reboot"`` (restart; the boot check-in installs)."""
+        if not self._answered:               # the boot check-in: the freshest heap this boot has
+            self._answered = True
+            self._boot_key = key
+            return "install"
+        if key != self._boot_key:            # offered since boot: reboot, the boot install takes it
+            return "reboot"
+        if (self._key == key and self._fails >= _INPLACE_TRIES
+                and uptime_s >= _REBOOT_GAP_S):
+            return "reboot"                  # the boot install failed, and so has every retry
+        return "install"
+
+    def failed(self, key):
+        """An in-place install of ``key`` raised (before the erase -- after it, it reboots)."""
+        if key != self._key:
+            self._key, self._fails = key, 0
+        self._fails += 1
+
+
+_gate = _InstallGate()   # module-level: survives run()'s restart of a dead loop, not a reboot
+
+
 async def run(server_url, self_test=None, wdt=None, poll_after_s=None,
               ca=None, ntp_host=None, recover=None,
               recover_after=5):  # pragma: no cover  (device: the network loop)
@@ -919,6 +979,10 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
                 _notify(resp)
                 wait = _next_poll(resp, poll_after_s, _rand())
                 manifest_url = _offer(resp)
+                if not manifest_url and not resp.get("throttled"):
+                    _gate.answered()  # hil-residual: gate bookkeeping (host-tested _InstallGate). A THROTTLED answer is not the boot check-in: under a
+                    #                           crowd, counting it would turn the next offer into a
+                    #                           reboot -- and more crowd
                 if manifest_url:
                     log.debug("checkin: update offered")
                     defer = _defer_install(st, slot_states)  # hil-residual: the DEFER path needs a device to be mid-trial at the moment an update is offered, which no current scenario produces (the bench apps confirm as soon as they boot) -- the scenario for it lands with the step-6 catalog rework
@@ -928,8 +992,16 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
                         # polls, is offered an update, and does nothing is otherwise
                         # indistinguishable in the log from one that is broken.
                         log.info("checkin: deferring the update (%s)" % defer)  # hil-residual: emitted only on the deferred path above (no scenario reaches it yet); it is a field diagnostic until the step-6 defer scenario exists
+                        _gate.answered()  # hil-residual: gate bookkeeping on the (unexercised) defer path -- once confirmed, the offer reboots for a fresh heap
                     else:
-                        install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
+                        key = resp.get("release_id") or manifest_url  # hil-residual: the release key (host-tested gate input); dominated by install.start downstream only across a call
+                        if _gate.plan(key, _uptime_s()) == "reboot":  # hil-residual: host-tested decision (_InstallGate.plan); the reboot arm is witnessed by `run: fresh-heap reboot`, the install arm by install.start
+                            await _reboot_for_install()  # hil-residual: the witness is the CALLEE's first line (`run: fresh-heap reboot`)
+                        try:  # hil-residual: failure-count guard around install(); witnessed by install.start (callee)
+                            install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
+                        except Exception:  # hil-residual: a pre-erase install failure; witnessed by the caller's `run: cycle failed`
+                            _gate.failed(key)  # hil-residual: counter bookkeeping (host-tested _InstallGate)
+                            raise  # hil-residual: bare re-raise to the cycle handler below
             except Exception as e:  # hil-residual: post-check-in failure (a verdict on the release, or an install fault); exercised by corrupt/bad_sig
                 # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install
                 # (e.g. the installer read blowing the heap) is indistinguishable on the wire and in
@@ -972,6 +1044,27 @@ async def _recover(recover):
         log.info("run: transport recovered")      # HIL witness: the hook returned cleanly
     except Exception as e:
         log.warning("run: recover failed %r" % e)  # bounded: one repr, no traceback buffer
+
+
+def _uptime_s():  # pragma: no cover  (device clock)
+    """Seconds since boot, from ticks_ms. Its ~12-day wrap only ever reads LOW, which can only
+    postpone a fresh-heap reboot (see _InstallGate), never bring one forward."""
+    import time  # hil-residual: device clock import for the gate's uptime (no marker can witness a clock read)
+    return time.ticks_ms() // 1000  # hil-residual: bare return of the device uptime
+
+
+_REBOOT_SETTLE_MS = 6000   # before the fresh-heap reboot: one datalake tick (5 s) to ship the log line
+
+
+async def _reboot_for_install():  # pragma: no cover  (device: reset)
+    """Restart so the BOOT check-in installs the offered update from a fresh heap (see
+    _InstallGate). Waits one datalake tick first so the line below reaches the cloud console:
+    a device that reboots for an update and then does not take it must say so somewhere."""
+    import asyncio  # hil-residual: imports ahead of the field-diagnostic line below (no fleet marker)
+    import machine  # hil-residual: same
+    log.warning("run: fresh-heap reboot; the boot check-in installs the update")  # hil-residual: field diagnostic (and the cloud console's record of why the device rebooted); the bench's offers can land on a periodic check-in, but no scenario expects this line yet
+    await asyncio.sleep_ms(_REBOOT_SETTLE_MS)  # hil-residual: bare settle (the app keeps running)
+    machine.reset()  # hil-residual: terminal reset (no post-reset witness)
 
 
 def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)

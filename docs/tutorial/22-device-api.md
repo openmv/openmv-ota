@@ -57,6 +57,12 @@ down but never speed it up. An app that names none waits the `poll_after_s` the 
 answers with. A check-in that fails outright is retried after 10, 20, 40 … s, capped at the
 interval.
 
+How the device library takes an offer: it installs in place only on the **boot** check-in,
+before the app has filled the heap. An offer that arrives on a later check-in reboots the
+camera first (logged as `run: fresh-heap reboot`), and the boot check-in installs it. If that
+boot install fails, the camera retries in place on later check-ins and reboots for the same
+release again at most once an hour.
+
 **`GET /d/{token}/{filename}`** — the capability gateway. The token is a signed, expiring
 credential minted only when a registered device is offered a release, and **one token
 authorizes the whole bundle**: the manifest and every image/delta beside it resolve under

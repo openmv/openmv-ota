@@ -416,3 +416,66 @@ def test_builtin_ca_is_none_without_frozen_anchors(monkeypatch):
     assert rt.builtin_ca() is None
     monkeypatch.delitem(sys.modules, "_ota_config")
     assert rt.builtin_ca() is None
+
+
+# --- _InstallGate: install from a fresh heap ---------------------------------------------
+# An in-place install on a periodic check-in ran out of heap on the Nicla (camera + two relay
+# TLS sessions + the batchers), while the same release always installed from the boot check-in.
+
+def test_gate_installs_in_place_on_the_boot_check_in():
+    g = rt._InstallGate()
+    assert g.plan("R1", uptime_s=5) == "install"
+
+
+def test_gate_reboots_for_a_release_offered_after_boot():
+    g = rt._InstallGate()
+    g.answered()                                    # boot check-in: nothing on offer
+    assert g.plan("R1", uptime_s=900) == "reboot"   # the boot check-in after the reboot takes it
+
+
+def test_gate_reboot_is_followed_by_a_boot_install_not_another_reboot():
+    # the next boot: a fresh gate, and the boot check-in is offered the same release
+    g = rt._InstallGate()
+    assert g.plan("R1", uptime_s=8) == "install"
+
+
+def test_gate_never_loops_on_a_release_the_boot_install_failed():
+    g = rt._InstallGate()
+    assert g.plan("R1", uptime_s=8) == "install"    # boot install ...
+    g.failed("R1")                                  # ... fails (say, a flaky link)
+    for _ in range(10):                             # every later offer this boot: retry in place,
+        assert g.plan("R1", uptime_s=600) == "install"   # never a reboot within the gap
+        g.failed("R1")
+
+
+def test_gate_escalates_after_repeated_failures_once_the_gap_has_passed():
+    g = rt._InstallGate()
+    g.plan("R1", uptime_s=8)
+    for _ in range(rt._INPLACE_TRIES):
+        g.failed("R1")
+    assert g.plan("R1", uptime_s=rt._REBOOT_GAP_S - 1) == "install"   # not yet: at most 1/hour
+    assert g.plan("R1", uptime_s=rt._REBOOT_GAP_S) == "reboot"
+
+
+def test_gate_needs_the_failures_too_not_just_uptime():
+    g = rt._InstallGate()
+    g.plan("R1", uptime_s=8)
+    g.failed("R1")
+    assert g.plan("R1", uptime_s=10 * rt._REBOOT_GAP_S) == "install"
+
+
+def test_gate_counts_failures_per_release():
+    g = rt._InstallGate()
+    g.plan("R1", uptime_s=8)
+    for _ in range(rt._INPLACE_TRIES):
+        g.failed("R2")                              # some other release's failures
+    g.failed("R1")                                  # switching key restarts the count
+    assert g._fails == 1
+    assert g.plan("R1", uptime_s=rt._REBOOT_GAP_S) == "install"
+
+
+def test_gate_a_newer_release_after_a_failed_boot_install_reboots():
+    g = rt._InstallGate()
+    g.plan("R1", uptime_s=8)
+    g.failed("R1")
+    assert g.plan("R2", uptime_s=900) == "reboot"   # R2 was never tried from a fresh heap
