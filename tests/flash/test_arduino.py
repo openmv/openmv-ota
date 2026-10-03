@@ -23,21 +23,23 @@ def test_firmware_plan_is_one_leave_write(tmp_path):
     files = {"firmware": tmp_path / "fw.bin"}
     steps = arduino.plan("firmware", _raw(), "dfu-util", files)
     assert len(steps) == 1
-    assert steps[0].argv[6:8] == ["-s", "0x08040000:leave"]
+    assert steps[0].argv[5:7] == ["-s", "0x08040000:leave"]
+    assert "-w" not in steps[0].argv          # the first write runs once DFU is seen listed
 
 
 def test_romfs_plan_targets_qspi(tmp_path):
     files = {"romfs": tmp_path / "r.img"}
     steps = arduino.plan("romfs", _raw(), "dfu-util", files)
-    assert steps[0].argv[6:8] == ["-s", "0x90B00000:leave"]
+    assert steps[0].argv[5:7] == ["-s", "0x90B00000:leave"]
 
 
 def test_factory_plan_writes_wifi_firmware_romfs_leave_last(tmp_path):
     files = {"firmware": tmp_path / "fw.bin", "romfs": tmp_path / "r.img",
              "wifi": [tmp_path / "cyw0.bin", tmp_path / "cyw1.bin"]}
     steps = arduino.plan("factory", _raw(), "dfu-util", files)
-    addrs = [s.argv[7] for s in steps]
+    addrs = [s.argv[s.argv.index("-s") + 1] for s in steps]
     assert addrs == ["0x90F00000", "0x90FC0000", "0x08040000", "0x90B00000:leave"]
+    assert ["-w" in s.argv for s in steps] == [False, True, True, True]   # later steps keep -w
     assert sum(a.endswith(":leave") for a in addrs) == 1   # only the final write leaves DFU
 
 
@@ -53,6 +55,11 @@ def test_program_argv_never_pins_the_serial():
     assert "-S" not in argv and "AB12" not in argv
     # -d ,<vid:pid> still selects the bootloader, and the 1200-baud touch put only THIS board in DFU
     assert argv[1:4] == ["-w", "-d", ",2341:035b"]
+
+
+def test_leave_argv_takes_the_board_out_of_dfu():
+    assert arduino.leave_argv("dfu-util", "2341:035f") == [
+        "dfu-util", "-d", ",2341:035f", "-a", "0", "-s", ":leave", "-R"]
 
 
 def test_plan_never_threads_serial_into_the_argv():

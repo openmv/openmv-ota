@@ -372,3 +372,51 @@ def test_envelope_carries_a_timestamp_only_when_one_is_given():
     # presence of ts MEANS the clock was trustworthy, so it is never defaulted
     assert json.loads(lg._envelope("aa00", 0, "x\n", 1700000000.5))["ts"] == 1700000000.5
     assert "ts" not in json.loads(lg._envelope("aa00", 0, "x\n"))
+
+
+# --- the updater's warnings reach the cloud console -------------------------------------------
+
+def test_hear_ota_lets_warnings_through_an_off_logger():
+    ota = logging.getLogger("test_hear_ota_off")
+    ota.setLevel(logging.CRITICAL + 1)              # what the frozen openmv_log sets
+    lg._hear_ota(ota, lambda: pytest.fail("no handler of its own: root covers it"))
+    assert ota.level == logging.WARNING
+
+
+def test_hear_ota_never_lowers_a_level_someone_set():
+    ota = logging.getLogger("test_hear_ota_debug")
+    ota.setLevel(logging.DEBUG)                     # a bench UART at DEBUG keeps it
+    lg._hear_ota(ota, lambda: pytest.fail("no handler of its own: root covers it"))
+    assert ota.level == logging.DEBUG
+
+
+def test_hear_ota_attaches_the_sink_to_a_logger_with_its_own_handler():
+    # micropython-lib logging does NOT fall back to root handlers when the logger has one (the
+    # bench UART), so the cloud sink must sit on the logger itself -- once
+    ota = logging.getLogger("test_hear_ota_uart")
+    ota.setLevel(logging.DEBUG)
+    uart = logging.NullHandler()
+    ota.addHandler(uart)
+    made = []
+
+    def make():
+        h = lg.CloudLogHandler(lg._Console(ring_bytes=1024, sid="s"))
+        made.append(h)
+        return h
+    try:
+        lg._hear_ota(ota, make)
+        lg._hear_ota(ota, make)                     # enable() again: not duplicated
+        assert len(made) == 1 and made[0] in ota.handlers
+        assert made[0].level == logging.WARNING     # the UART's DEBUG stays local
+        assert ota.level == logging.DEBUG
+    finally:
+        for h in list(ota.handlers):
+            ota.removeHandler(h)
+
+
+def test_flushed_waits_for_a_cycle_that_started_after_the_kick():
+    # the cycle in flight at the kick may have missed the newest line: it alone is not enough
+    assert not lg._flushed(start=4, cycles=4, pending=10)
+    assert not lg._flushed(start=4, cycles=5, pending=10)      # in-flight one done, lines left
+    assert lg._flushed(start=4, cycles=5, pending=0)           # ...but nothing is left: done
+    assert lg._flushed(start=4, cycles=6, pending=10)          # a full cycle after: give up waiting

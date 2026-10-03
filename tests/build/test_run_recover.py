@@ -164,7 +164,7 @@ def test_run_accepts_the_hook_and_defaults_to_the_old_behaviour():
 
     sig = inspect.signature(rt.run)
     assert sig.parameters["recover"].default is None
-    assert sig.parameters["recover_after"].default == 3
+    assert sig.parameters["recover_after"].default == 5
 
 
 def test_generated_app_wires_its_own_bring_up_as_the_hook():
@@ -200,7 +200,7 @@ def _run_src():
 def test_only_a_failed_checkin_increments_the_streak():
     """The counter must live in the CHECK-IN's own except, not one wrapping the whole cycle."""
     src = _run_src()
-    checkin_block = src.split("resp = _checkin(")[1]
+    checkin_block = src.split("resp = _checkin_relieved(")[1]
     after = checkin_block.split("else:")[0]
     assert "fails += 1" in after, "the streak must be driven by the check-in failing"
     # ...and everything past a SUCCESSFUL check-in must not be able to reach it.
@@ -212,7 +212,7 @@ def test_only_a_failed_checkin_increments_the_streak():
 
 def test_a_successful_checkin_clears_the_streak():
     """Proof the transport works, whatever the release turns out to be."""
-    post = _run_src().split("resp = _checkin(")[1].split("else:")[1]
+    post = _run_src().split("resp = _checkin_relieved(")[1].split("else:")[1]
     assert "fails = 0" in post.split("try:")[0], (
         "reaching the else branch means the link is fine; the streak must reset there")
 
@@ -250,3 +250,91 @@ def test_cancellation_is_recorded_but_still_propagates():
     base = inspect.getsource(rt.run).split("except BaseException")[1]
     assert "log.error" in base, "a cancelled OTA loop must say so"
     assert "raise" in base, "cancellation must still propagate"
+
+
+# --- a failed check-in retries on a short backoff, not a whole poll ---------------------
+# Measured on the RT1062 over LAN: the mimxrt eth driver seeds a static address, isconnected()
+# goes True at once, DHCP swaps the address ~2 s later -- so the first check-in of EVERY boot
+# failed with EHOSTUNREACH, and the device then sat dark for a full hour-long poll.
+
+def test_backoff_doubles_from_ten_seconds_up_to_the_poll_cap():
+    mid = 0.5                                       # r=0.5 is the un-jittered value
+    assert [rt._backoff(n, 3600, mid) for n in range(1, 11)] == [
+        10, 20, 40, 80, 160, 320, 640, 1280, 2560, 3600]
+    assert rt._backoff(500, 3600, mid) == 3600      # a long outage stays AT the cap ...
+    assert rt._backoff(10 ** 6, 3600, mid) == 3600  # ... and the shift is bounded, not a bignum
+    # A short app interval caps it too: a device polling every 5 s never waits longer to retry.
+    assert rt._backoff(1, 5, mid) == 5
+    assert rt._backoff(3, 300, mid) == 40 and rt._backoff(6, 300, mid) == 300
+
+
+def test_backoff_keeps_the_jitter():
+    """A server outage fails a whole fleet at once; without jitter they all retry in lockstep."""
+    assert rt._backoff(1, 3600, 0.0) == pytest.approx(8.5)
+    assert rt._backoff(1, 3600, 0.999) == pytest.approx(11.5, abs=0.01)
+    assert rt._backoff(20, 3600, 0.0) == pytest.approx(3060)
+
+
+def test_the_jitter_draw_is_uniform_in_the_unit_interval():
+    draws = [rt._rand() for _ in range(200)]
+    assert all(0.0 <= d < 1.0 for d in draws)
+    assert len(set(draws)) > 1
+
+
+def test_default_recover_after_spans_minutes_not_hours():
+    """With the backoff, recover_after failures arrive within minutes. Five of them span
+    10+20+40+80 = 150 s: past a boot-time DHCP swap or an AP reboot (which heal by themselves),
+    well short of the ~3 h three hourly polls used to take to rebuild a wedged stack."""
+    import inspect
+    n = inspect.signature(rt.run).parameters["recover_after"].default
+    span = sum(rt._backoff(k, 3600, 0.5) for k in range(1, n))
+    assert 120 <= span <= 300
+
+
+def test_a_failed_checkin_waits_the_backoff_and_success_resets_it():
+    src = _run_src()
+    checkin_block = src.split("resp = _checkin_relieved(")[1]
+    failed, ok = checkin_block.split("else:")[0], checkin_block.split("else:")[1]
+    assert "wait = _backoff(misses" in failed, "a transport failure must not wait a whole poll"
+    assert "misses += 1" in failed
+    assert "misses = 0" in ok.split("try:")[0], "a check-in that got through resets the backoff"
+    # A recover is NOT proof the link is back: it must not reset the backoff.
+    recover_branch = failed.split("fails >= recover_after")[1]
+    assert "misses = 0" not in recover_branch
+
+
+# --- the check-in interval: the app's own cadence, honoured; the server may only slow it ----
+
+def test_an_app_interval_is_kept_against_the_servers_default_pacing():
+    """The server's ordinary answer ALWAYS carries poll_after_s (3600 s on the hosted cloud).
+    Honouring it would silently turn the app's CHECK_IN_S = 300 into an hour."""
+    ordinary = {"update": False, "poll_after_s": 3600}
+    assert rt._next_poll(ordinary, 300, 0.5) == 300
+    assert rt._next_poll({"update": False, "poll_after_s": 5}, 300, 0.5) == 300
+    assert rt._next_poll({"update": False}, 300, 0.5) == 300
+
+
+def test_the_apps_interval_is_jittered():
+    assert rt._next_poll({}, 300, 0.0) == pytest.approx(255)
+    assert rt._next_poll({}, 300, 0.999) == pytest.approx(345, abs=0.1)
+
+
+def test_a_throttled_answer_may_slow_the_device_but_never_speed_it_up():
+    """Load-shedding: a 429 asks for longer, and an overloaded server must always get it."""
+    assert rt._next_poll({"poll_after_s": 240, "throttled": True}, 30, 0.5) == 240
+    assert rt._next_poll({"poll_after_s": 60, "throttled": True}, 300, 0.5) == 300
+    assert rt._next_poll({"throttled": True}, 300, 0.5) == 300
+
+
+def test_no_interval_leaves_the_device_server_paced():
+    """run(poll_after_s=None): wait what the server said (it already jittered it)."""
+    assert rt._next_poll({"poll_after_s": 3411}, None, 0.5) == 3411
+    assert rt._next_poll({}, None, 0.5) == rt._POLL_DEFAULT_S == 3600
+
+
+def test_run_defaults_to_server_paced_and_the_loop_uses_the_interval():
+    import inspect
+    assert inspect.signature(rt.run).parameters["poll_after_s"].default is None
+    src = _run_src()
+    assert "wait = _next_poll(resp, poll_after_s" in src
+    assert "_backoff(misses, cap" in src and "cap = poll_after_s or _POLL_DEFAULT_S" in src

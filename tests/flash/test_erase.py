@@ -38,8 +38,8 @@ def test_erase_openmv_downloads_zeros_to_the_fs_alt(erase_project):
     root, ran = erase_project
     steps = fl.flash_erase(str(root), board="OPENMV4")
     assert len(ran) == 1
-    assert ran[0][:4] == ["DFU", "-w", "-d", ",37c5:9204"]
-    assert ran[0][4:7] == ["-a", "1", "--reset"]      # H7 filesystem alt 1, reset on the last step
+    assert ran[0][:3] == ["DFU", "-d", ",37c5:9204"]   # first step: no -w (the device is listed)
+    assert ran[0][3:6] == ["-a", "1", "--reset"]      # H7 filesystem alt 1, reset on the last step
     assert ran[0][-2] == "-D"
     assert [s.label for s in steps] == ["erase alt 1"]
 
@@ -57,7 +57,7 @@ def test_erase_arduino_walks_both_targets_leave_on_last(erase_project):
     root, ran = erase_project
     steps = fl.flash_erase(str(root), board="ARDUINO_PORTENTA_H7")
     assert len(ran) == 2
-    assert ran[0][4:8] == ["-a", "0", "-s", "0x08020000"] and "--reset" not in ran[0]
+    assert ran[0][3:7] == ["-a", "0", "-s", "0x08020000"] and "--reset" not in ran[0]
     assert ran[1][4:8] == ["-a", "1", "-s", "0x90000000:leave"]
     assert [s.label for s in steps] == ["erase alt 0", "erase alt 1"]
 
@@ -72,8 +72,8 @@ def test_erase_dry_run_runs_nothing(erase_project):
     root, ran = erase_project
     steps = fl.flash_erase(str(root), board="OPENMV_N6", dry_run=True)
     assert ran == []
-    assert steps[0].argv[:4] == ["DFU", "-w", "-d", ",37c5:9206"]
-    assert steps[0].argv[4:7] == ["-a", "2", "--reset"]
+    assert steps[0].argv[:3] == ["DFU", "-d", ",37c5:9206"]
+    assert steps[0].argv[3:6] == ["-a", "2", "--reset"]
 
 
 def test_erase_rt1060_blhost_erases_the_disk_mbr_sector(tmp_path, monkeypatch):
@@ -125,7 +125,7 @@ def test_erase_missing_target_configured(monkeypatch):
 def test_erase_cli_dry_run(erase_project, capsys):
     root, _ran = erase_project
     assert main(["flash", "erase", str(root), "-b", "OPENMV4", "--dry-run"]) == 0
-    assert "would run: DFU -w -d ,37c5:9204 -a 1 --reset -D" in capsys.readouterr().out
+    assert "would run: DFU -d ,37c5:9204 -a 1 --reset -D" in capsys.readouterr().out
 
 
 def test_erase_cli_error_returns_exit_code(capsys):

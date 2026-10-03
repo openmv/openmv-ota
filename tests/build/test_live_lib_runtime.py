@@ -241,3 +241,48 @@ def test_timestamp_is_none_without_the_clock_module(monkeypatch):
     # a non-OTA firmware has no openmv_rtc; records simply carry (sid, seq)
     monkeypatch.setattr(_lib, "_rtc", False)
     assert _lib._timestamp() is None
+
+
+def test_hard_close_closes_the_socket_not_the_noop_stream():
+    from openmv_ota.build.device.openmv_cloud import _lib as lib
+
+    class S:
+        closed = 0
+
+        def close(self):
+            S.closed += 1
+
+    class W:                            # asyncio Stream: close() does nothing, .s is the socket
+        s = S()
+
+        def close(self):
+            raise AssertionError("not this one")
+    lib._hard_close(W())
+    assert S.closed == 1
+    lib._hard_close(S())                # a plain socket closes itself
+    assert S.closed == 2
+
+    class Bad:
+        def close(self):
+            raise OSError(9)
+    lib._hard_close(Bad())              # never raises
+
+
+def test_relieve_conns_drops_every_open_datalake_connection(monkeypatch):
+    from openmv_ota.build.device.openmv_cloud import _lib as lib
+
+    class S:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    class C:
+        def __init__(self, open_):
+            self._writer = S() if open_ else None
+            self._reader = object() if open_ else None
+    a, b = C(True), C(False)
+    monkeypatch.setattr(lib, "_conns", [a, b])
+    sa = a._writer
+    assert lib._relieve_conns(0) == 1
+    assert sa.closed and a._writer is None and a._reader is None and lib._conns == []

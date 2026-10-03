@@ -19,6 +19,8 @@ def project(tmp_path, monkeypatch):
     ran: list[list[str]] = []
     recorded: list[dict] = []
     monkeypatch.setattr(fl.runner, "run", lambda argv, **kw: ran.append(argv))
+    # the bootloader-entry reset (mpremote) runs captured; it exits 1 as the USB drops, as on HW
+    monkeypatch.setattr(fl.runner, "run_quiet", lambda argv: (ran.append(argv), (1, "EIO"))[1])
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
     monkeypatch.setattr(fl.history, "record",
                         lambda root, action, **f: recorded.append({"action": action, **f}))
@@ -34,7 +36,8 @@ def test_flash_firmware(project):
     artifact("OPENMV4-firmware.bin")
     steps = fl.flash_firmware(str(root), board="OPENMV4")
     assert [s.alt for s in steps] == [2]
-    assert ran == [["DFU", "-w", "-d", ",37c5:9204", "-a", "2", "--reset",
+    # the FIRST write runs without -w: _await_dfu has already seen the device listed and settled
+    assert ran == [["DFU", "-d", ",37c5:9204", "-a", "2", "--reset",
                     "-D", str(root / "build/OPENMV4-firmware.bin")]]
     assert recorded == [{"action": "flash-firmware", "board": "OPENMV4",
                          "files": [{"file": "OPENMV4-firmware.bin", "alt": 2}]}]
@@ -48,13 +51,14 @@ def test_flash_factory_is_multistep_and_resets_only_last(project):
     assert [(s.artifact, s.alt) for s in steps] == [("firmware", 2), ("romfs", 3)]
     assert "--reset" not in ran[0]                   # firmware step stays in the bootloader
     assert "--reset" in ran[1]                       # only the final write reboots
+    assert "-w" not in ran[0] and "-w" in ran[1]     # later steps keep -w (the board stays in DFU)
 
 
 def test_flash_romfs(project):
     root, ran, _rec, artifact = project
     artifact("OPENMV4-romfs.img")
     fl.flash_romfs(str(root), board="OPENMV4")
-    assert ran[0][4:6] == ["-a", "3"] and "--reset" in ran[0]
+    assert ran[0][3:5] == ["-a", "3"] and "--reset" in ran[0]
 
 
 def test_no_reset(project):
@@ -72,7 +76,7 @@ def test_ae3_firmware_flashes_both_cores(project):
     steps = fl.flash_firmware(str(root), board="OPENMV_AE3")
     assert [(s.alt, s.file.name) for s in steps] == [
         (1, "OPENMV_AE3-firmware-M55_HP.bin"), (2, "OPENMV_AE3-firmware-M55_HE.bin")]
-    assert ran[0][3] == ",37c5:96e3" and "--reset" in ran[1] and "--reset" not in ran[0]
+    assert ran[0][2] == ",37c5:96e3" and "--reset" in ran[1] and "--reset" not in ran[0]
 
 
 def test_ae3_firmware_requires_both_cores(project):
@@ -181,11 +185,39 @@ def test_imx_firmware_runs_the_sequence(imx_project):
         [s.label for s in steps]
 
 
-def test_imx_factory_full_provision(imx_project):
+def test_imx_provision_is_the_full_rom_path(imx_project, capsys):
     root, ran, _rec = imx_project
-    fl.flash_factory(str(root), board="OPENMV_RT1060")
+    fl.flash_factory(str(root), board="OPENMV_RT1060", provision=True)
     flat = " ".join(" ".join(a) for a in ran)
     assert "efuse-program-once 0x06 00000010" in flat and "0x60001000" in flat
+    assert ran[0][0] == "SDPHOST" or "SdpUSBInterface" in flat     # over the ROM's serial download
+    assert "SBL to 3.3V" in capsys.readouterr().err                 # says how to get there
+
+
+def test_imx_factory_goes_through_the_resident_sbl(imx_project, monkeypatch):
+    """A customer RT1062 already has its SBL: `flash factory` must work with a camera plugged in
+    over USB -- firmware + the factory romfs through machine.bootloader() -> blhost, and NONE of
+    the blank-board provisioning (no ROM/SDP wait, no FCB, no SBL rewrite, no e-fuse)."""
+    root, ran, recorded = imx_project
+    entered = []
+    monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: entered.append(a))
+    fl.flash_factory(str(root), board="OPENMV_RT1060")
+    flat = " ".join(" ".join(a) for a in ran)
+    assert entered, "the resident SBL is entered (and claimed) first"
+    assert not any(a[0] == "SDPHOST" for a in ran) and "SdpUSBInterface" not in flat
+    for gone in ("efuse", "0x60000000", "0x60001000", "fill-memory", "configure-memory"):
+        assert gone not in flat, gone
+    writes = [a for a in ran if "write-memory" in a]
+    assert [w[-2] for w in writes] == ["0x60040000", "0x60800000"]          # firmware, romfs
+    assert writes[1][-1].endswith("OPENMV_RT1060-factory-romfs.img")      # the dual-slot image
+    assert ran[-1][-1] == "reset" and recorded[0]["action"] == "flash-factory"
+
+
+def test_provision_is_refused_off_imx(project):
+    root, ran, _rec, artifact = project
+    with pytest.raises(FlashError, match="i.MX ROM provisioning"):
+        fl.flash_factory(str(root), board="OPENMV4", provision=True)
+    assert ran == []
 
 
 def test_imx_dry_run_runs_nothing(imx_project):
@@ -204,7 +236,7 @@ def test_imx_uses_bundled_flashloader(imx_project):
     # only the RECOVERY path (factory/bootloader, over SDP) loads one; the everyday firmware/romfs
     # path drives the resident SBL and needs none.
     root, ran, _rec = imx_project
-    fl.flash_factory(str(root), board="OPENMV_RT1060")
+    fl.flash_factory(str(root), board="OPENMV_RT1060", provision=True)
     assert any("data/flashloaders/OPENMV_RT1060/sdphost_flash_loader.bin" in a[-1] for a in ran)
     n = len(ran)
     fl.flash_firmware(str(root), board="OPENMV_RT1060")
@@ -323,6 +355,60 @@ def test_imx_catch_and_reset_raises_when_sbl_not_claimed_and_terminates_catcher(
     assert made[0].terminated                                           # finally cleaned it up
 
 
+def test_imx_catch_announces_armed_then_claimed(monkeypatch, capsys):
+    popens = []
+    _patch_catcher(monkeypatch, popens)
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: None)
+    fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None)
+    err = capsys.readouterr().err
+    assert fl.IMX_ARMED in err and fl.IMX_CLAIMED in err
+    assert err.index(fl.IMX_ARMED) < err.index(fl.IMX_CLAIMED)
+    assert popens[0][popens[0].index("claim") + 2] == "%g" % fl._IMX_RESET_WAIT_S
+
+
+def test_imx_in_bootloader_waits_bounded_and_never_touches_the_cdc(monkeypatch, capsys):
+    """--in-bootloader: the SBL is up or about to be. No device.select, no machine.bootloader --
+    just a catcher armed for the longer bounded wait, announced so an outside trigger can fire."""
+    popens, waits = [], []
+    import subprocess
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **k: popens.append(argv) or _FakeCatcher())
+    monkeypatch.setattr(fl, "_await_line", lambda p, m, t: waits.append((m, t)) or True)
+
+    def boom(*a, **k):
+        raise AssertionError("--in-bootloader must not look for a running camera")
+    monkeypatch.setattr(fl.device, "select", boom)
+    fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None,
+                            enter_bootloader=False)
+    assert len(popens) == 1 and "claim" in popens[0]                     # the catcher only
+    assert popens[0][popens[0].index("claim") + 2] == "%g" % fl.IMX_IN_BOOTLOADER_WAIT_S
+    assert waits[1] == ("CLAIMED", fl.IMX_IN_BOOTLOADER_WAIT_S + 15)
+    assert fl.IMX_ARMED in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("enter, cam, why", [
+    (False, None, "--in-bootloader: nothing brought the SBL up"),
+    (True, None, "no running camera was found"),
+    (True, "cam", "machine.bootloader() was sent to /dev/ttyACM0"),
+])
+def test_imx_claim_failure_says_why(monkeypatch, enter, cam, why):
+    _patch_catcher(monkeypatch, [], claimed=False)
+    camera = fl.device.Camera("/dev/ttyACM0", "SN") if cam else None
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: camera)
+    with pytest.raises(FlashError, match="could not be claimed") as e:
+        fl._imx_catch_and_reset({"blhost": {"usb": "0x15A2,0x0073"}}, "python3", None, None,
+                                enter_bootloader=enter)
+    assert why in str(e.value)
+
+
+def test_imx_flash_passes_in_bootloader_to_the_catcher(imx_project, monkeypatch):
+    root, ran, _rec = imx_project
+    seen = []
+    monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: seen.append(a))
+    fl.flash_factory(str(root), board="OPENMV_RT1060", enter_bootloader=False)
+    assert seen[0][-1] is False
+    assert any("write-memory" in a and "0x60800000" in a for a in ran)
+
+
 def test_prepare_skips_reset_for_imx(monkeypatch):
     # imx: _prepare must NOT reset (the catcher arms before the reset) -- it just resolves the serial
     monkeypatch.setattr(fl.device, "select", lambda raw, serial: fl.device.Camera("/dev/ttyACM0", "SN9"))
@@ -353,6 +439,7 @@ def arduino_project(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
     for n in ("ARDUINO_PORTENTA_H7-firmware.bin", "ARDUINO_PORTENTA_H7-romfs.img",
+              "ARDUINO_PORTENTA_H7-factory-romfs.img",
               "cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):
         (tmp_path / "build" / n).write_bytes(b"x")
     return tmp_path, ran
@@ -361,20 +448,23 @@ def arduino_project(tmp_path, monkeypatch):
 def test_arduino_firmware(arduino_project):
     root, ran = arduino_project
     fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7")
-    assert len(ran) == 1 and ran[0][7] == "0x08040000:leave"
+    assert len(ran) == 1 and ran[0][6] == "0x08040000:leave" and "-w" not in ran[0]
 
 
 def test_arduino_factory_writes_wifi_from_output_dir(arduino_project):
     root, ran = arduino_project
     fl.flash_factory(str(root), board="ARDUINO_PORTENTA_H7")
-    assert [a[7] for a in ran] == ["0x90F00000", "0x90FC0000", "0x08040000", "0x90B00000:leave"]
+    assert [a[a.index("-s") + 1] for a in ran] == [
+        "0x90F00000", "0x90FC0000", "0x08040000", "0x90B00000:leave"]
     assert ran[0][-1] == str(root / "build/cyw4343_7_45_98_102.bin")   # from the build outputs
+    # the dual-slot image `build factory-romfs` writes, not the single-slot app romfs
+    assert ran[-1][-1] == str(root / "build/ARDUINO_PORTENTA_H7-factory-romfs.img")
 
 
 def test_arduino_dry_run_runs_nothing(arduino_project):
     root, ran = arduino_project
     steps = fl.flash_romfs(str(root), board="ARDUINO_PORTENTA_H7", dry_run=True)
-    assert ran == [] and steps[0].argv[7] == "0x90B00000:leave"
+    assert ran == [] and steps[0].argv[6] == "0x90B00000:leave"
 
 
 def test_arduino_missing_artifact_errors(tmp_path, monkeypatch):

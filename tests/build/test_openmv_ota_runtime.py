@@ -386,20 +386,20 @@ def test_offer(resp, expect):
 
 # --- builtin_ca: the firmware's frozen trust anchors -------------------------
 
-def test_builtin_ca_prefers_a_ca_projects_frozen_roots(monkeypatch):
-    """A --ca project freezes openmv_ca; those roots ARE the trust decision the maker made,
-    so they win over the recovery config's copy (same bytes in practice, but the module is
-    the older, more specific home)."""
+def test_builtin_ca_reads_only_the_recovery_configs_copy(monkeypatch):
+    """_ota_config.CA_PEM is the firmware's one frozen trust store, the same one recovery
+    uses. A stray openmv_ca module (an older firmware's second copy) is not consulted, so
+    the runtime and recovery can never trust different roots."""
     import sys
     import types
-    monkeypatch.setitem(sys.modules, "openmv_ca", types.SimpleNamespace(PEM=b"root"))
-    monkeypatch.setitem(sys.modules, "_ota_config", types.SimpleNamespace(CA_PEM=b"bundle"))
+    monkeypatch.setitem(sys.modules, "openmv_ca", types.SimpleNamespace(PEM=b"stale"))
+    monkeypatch.setitem(sys.modules, "_ota_config", types.SimpleNamespace(CA_PEM=b"root"))
     assert rt.builtin_ca() == b"root"
 
 
 def test_builtin_ca_falls_back_to_the_recovery_configs_copy(monkeypatch):
-    """A bundle-default firmware (no --ca) freezes no openmv_ca module -- the public bundle
-    lives in _ota_config.CA_PEM, stamped for recovery, and the runtime reuses it."""
+    """A bundle-default firmware (no [ota].ca) carries the public bundle in
+    _ota_config.CA_PEM, stamped for recovery, and the runtime reuses it."""
     import sys
     import types
     monkeypatch.setitem(sys.modules, "_ota_config", types.SimpleNamespace(CA_PEM=b"bundle"))
@@ -416,3 +416,227 @@ def test_builtin_ca_is_none_without_frozen_anchors(monkeypatch):
     assert rt.builtin_ca() is None
     monkeypatch.delitem(sys.modules, "_ota_config")
     assert rt.builtin_ca() is None
+
+
+# --- _InstallGate: install from a fresh heap ---------------------------------------------
+# An in-place install on a periodic check-in ran out of heap on the Nicla (camera + two relay
+# TLS sessions + the batchers), while the same release always installed from the boot check-in.
+
+def test_gate_installs_in_place_on_the_boot_check_in():
+    g = rt._InstallGate()
+    assert g.plan("R1", uptime_s=5) == "install"
+
+
+def test_gate_reboots_for_a_release_offered_after_boot():
+    g = rt._InstallGate()
+    g.answered()                                    # boot check-in: nothing on offer
+    assert g.plan("R1", uptime_s=900) == "reboot"   # the boot check-in after the reboot takes it
+
+
+def test_gate_reboot_is_followed_by_a_boot_install_not_another_reboot():
+    # the next boot: a fresh gate, and the boot check-in is offered the same release
+    g = rt._InstallGate()
+    assert g.plan("R1", uptime_s=8) == "install"
+
+
+def test_gate_never_loops_on_a_release_the_boot_install_failed():
+    g = rt._InstallGate()
+    assert g.plan("R1", uptime_s=8) == "install"    # boot install ...
+    g.failed("R1")                                  # ... fails (say, a flaky link)
+    for _ in range(10):                             # every later offer this boot: retry in place,
+        assert g.plan("R1", uptime_s=600) == "install"   # never a reboot within the gap
+        g.failed("R1")
+
+
+def test_gate_escalates_after_repeated_failures_once_the_gap_has_passed():
+    g = rt._InstallGate()
+    g.plan("R1", uptime_s=8)
+    for _ in range(rt._INPLACE_TRIES):
+        g.failed("R1")
+    assert g.plan("R1", uptime_s=rt._REBOOT_GAP_S - 1) == "install"   # not yet: at most 1/hour
+    assert g.plan("R1", uptime_s=rt._REBOOT_GAP_S) == "reboot"
+
+
+def test_gate_needs_the_failures_too_not_just_uptime():
+    g = rt._InstallGate()
+    g.plan("R1", uptime_s=8)
+    g.failed("R1")
+    assert g.plan("R1", uptime_s=10 * rt._REBOOT_GAP_S) == "install"
+
+
+def test_gate_counts_failures_per_release():
+    g = rt._InstallGate()
+    g.plan("R1", uptime_s=8)
+    for _ in range(rt._INPLACE_TRIES):
+        g.failed("R2")                              # some other release's failures
+    g.failed("R1")                                  # switching key restarts the count
+    assert g._fails == 1
+    assert g.plan("R1", uptime_s=rt._REBOOT_GAP_S) == "install"
+
+
+def test_gate_a_newer_release_after_a_failed_boot_install_reboots():
+    g = rt._InstallGate()
+    g.plan("R1", uptime_s=8)
+    g.failed("R1")
+    assert g.plan("R2", uptime_s=900) == "reboot"   # R2 was never tried from a fresh heap
+
+
+# --- the check-in comes first: out-of-memory relief ------------------------------------------
+# Measured on a Nicla with two Live relays up: six periodic check-ins in a row died with
+# OSError(12) as wrap_socket could not allocate its record buffers.
+
+def _script(*outcomes):
+    """An attempt() that raises/returns the given outcomes in order."""
+    it = iter(outcomes)
+
+    def attempt():
+        o = next(it)
+        if isinstance(o, BaseException):
+            raise o
+        return o
+    return attempt
+
+
+def test_is_enomem():
+    assert rt._is_enomem(MemoryError())
+    assert rt._is_enomem(OSError(12)) and rt._is_enomem(OSError(-12))
+    assert not rt._is_enomem(OSError(110)) and not rt._is_enomem(OSError())
+    assert not rt._is_enomem(ValueError("x"))
+
+
+def test_checkin_relieved_passes_a_good_checkin_straight_through():
+    assert rt._checkin_relieved(_script({"ok": 1}), lambda lv: pytest.fail("no relief"),
+                                lambda: pytest.fail("no gc")) == {"ok": 1}
+
+
+def test_checkin_relieved_closes_idle_connections_and_retries_at_once():
+    levels, collected = [], []
+    resp = rt._checkin_relieved(_script(OSError(12), {"ok": 1}),
+                                lambda lv: levels.append(lv) or 2, lambda: collected.append(1))
+    assert resp == {"ok": 1} and levels == [0] and collected == [1]
+
+
+def test_checkin_relieved_escalates_to_watched_connections():
+    levels = []
+    resp = rt._checkin_relieved(_script(OSError(12), MemoryError(), {"ok": 1}),
+                                lambda lv: levels.append(lv) or 1, lambda: None)
+    assert resp == {"ok": 1} and levels == [0, 1]
+
+
+def test_checkin_relieved_skips_a_level_that_released_nothing():
+    levels = []
+    resp = rt._checkin_relieved(_script(OSError(12), {"ok": 1}),
+                                lambda lv: levels.append(lv) or (1 if lv == 1 else 0),
+                                lambda: None)
+    assert resp == {"ok": 1} and levels == [0, 1]
+
+
+def test_checkin_relieved_reraises_when_nothing_helps():
+    with pytest.raises(OSError) as e:
+        rt._checkin_relieved(_script(OSError(12)), lambda lv: 0, lambda: None)
+    assert e.value.args[0] == 12
+    with pytest.raises(MemoryError):
+        rt._checkin_relieved(_script(OSError(12), MemoryError(), MemoryError()),
+                             lambda lv: 1, lambda: None)
+
+
+def test_checkin_relieved_never_hides_another_error():
+    with pytest.raises(OSError, match="refused"):
+        rt._checkin_relieved(_script(OSError(111, "refused")), lambda lv: 1, lambda: None)
+    with pytest.raises(ValueError):
+        rt._checkin_relieved(_script(OSError(12), ValueError("bad json")), lambda lv: 1,
+                             lambda: None)
+
+
+def test_relieve_sums_hooks_and_survives_a_broken_one(monkeypatch):
+    monkeypatch.setattr(rt, "_pressure_hooks", {})
+    rt.register_pressure(lambda lv: 2, key="a")
+    rt.register_pressure(lambda lv: 1 / 0, key="b")      # broken: skipped
+    rt.register_pressure(lambda lv: None)                 # unkeyed, returns nothing
+    rt.register_pressure(lambda lv: lv, key="a")          # same key replaces
+    assert rt._relieve(1) == 1 and rt._relieve(0) == 0
+
+
+# --- the server's Date header: parsed here (romfs, OTA-updatable), applied by openmv_rtc ------
+
+@pytest.mark.parametrize("y,m,d", [(1970, 1, 1), (2000, 2, 29), (2023, 11, 14), (2036, 2, 7),
+                                   (2100, 3, 1), (1999, 12, 31)])
+def test_days_from_civil_matches_the_calendar(y, m, d):
+    import calendar
+    assert rt._days_from_civil(y, m, d) * 86400 == calendar.timegm((y, m, d, 0, 0, 0))
+
+
+def test_parse_http_date_reads_an_imf_fixdate():
+    assert rt._parse_http_date(b" Tue, 14 Nov 2023 22:13:20 GMT\r\n") == 1_700_000_000
+    assert rt._parse_http_date("Tue, 14 Nov 2023 22:13:20 GMT") == 1_700_000_000   # str too
+
+
+@pytest.mark.parametrize("bad", [
+    b"", b"garbage", b"Tue, 14 Nov 2023 22:13:20 PST",          # not GMT
+    b"Tue, 14 Foo 2023 22:13:20 GMT",                            # no such month
+    b"Tue, xx Nov 2023 22:13:20 GMT", b"Tue, 14 Nov 2023 22:13 GMT",
+    b"Tue, 32 Nov 2023 22:13:20 GMT", b"Tue, 14 Nov 2023 24:00:00 GMT",
+    b"Tue, 14 Nov 2023 22:60:00 GMT", b"Tue, 14 Nov 2023 22:13:61 GMT",
+    b"Tuesday, 14-Nov-23 22:13:20 GMT",                          # obsolete RFC 850 form
+])
+def test_parse_http_date_rejects_what_is_not_an_imf_fixdate(bad):
+    assert rt._parse_http_date(bad) is None
+
+
+
+class _NewRtc:
+    def __init__(self):
+        self.got = []
+
+    def server_time(self, unix):
+        self.got.append(unix)
+        return True
+
+
+class _OldRtc:                          # a frozen openmv_rtc from before server_time existed
+    BUILD_TIME = 1_600_000_000
+
+    def __init__(self, now, trusted=True):
+        self._now, self._trusted, self.set = now, trusted, []
+
+    def trusted(self):
+        return self._trusted
+
+    def now(self):
+        return self._now
+
+    def set_time(self, unix):
+        self.set.append(unix)
+
+
+def test_apply_server_time_uses_the_frozen_policy_when_present():
+    r = _NewRtc()
+    assert rt._apply_server_time(r, 1_700_000_000) and r.got == [1_700_000_000]
+    assert not rt._apply_server_time(r, None) and r.got == [1_700_000_000]
+
+
+def test_apply_server_time_corrects_through_an_old_frozen_rtc(monkeypatch):
+    # THE OTA case: the runtime updated, the frozen openmv_rtc did not -- the fix must still land
+    warned = []
+    monkeypatch.setattr(rt, "_legacy_rtc_warned", False)
+    monkeypatch.setattr(rt.log, "warning", lambda m, *a: warned.append(m))
+    old = _OldRtc(now=1_700_000_000 - 100)
+    assert rt._apply_server_time(old, 1_700_000_000)
+    assert old.set == [1_700_000_000]
+    close = _OldRtc(now=1_700_000_000 + rt._DRIFT_S)
+    assert rt._apply_server_time(close, 1_700_000_000) and close.set == []
+    untrusted = _OldRtc(now=1_700_000_000, trusted=False)
+    assert rt._apply_server_time(untrusted, 1_700_000_000) and untrusted.set == [1_700_000_000]
+    assert not rt._apply_server_time(old, 1_500_000_000)       # before the build: ignored
+    assert len(warned) == 1 and "rebuild the firmware" in warned[0]   # said ONCE
+
+
+def test_register_flush_is_idempotent_by_key(monkeypatch):
+    monkeypatch.setattr(rt, "_flush_hooks", {})
+
+    async def a(ms):
+        return True
+    rt.register_flush(a, key="logs")
+    rt.register_flush(a, key="logs")
+    rt.register_flush(a)
+    assert len(rt._flush_hooks) == 2

@@ -49,6 +49,20 @@ header and the usual body, `{"update": false, "poll_after_s": n}`, where `n` is 
 returning in step. The device library treats it as an answer, not a network fault. The limit
 is per client IP, plus a higher ceiling on each IPv6 /64 as a whole.
 
+How the device library uses `poll_after_s`: an app that names its own interval
+(`openmv_ota.run(..., poll_after_s=CHECK_IN_S)`, as the generated `main.py` does) checks in on
+that cadence, jittered ±15%, whatever the ordinary answer says; only a throttled (`429`)
+answer that asks for **longer** is honoured, so an overloaded server can always slow a device
+down but never speed it up. An app that names none waits the `poll_after_s` the server
+answers with. A check-in that fails outright is retried after 10, 20, 40 … s, capped at the
+interval.
+
+How the device library takes an offer: it installs in place only on the **boot** check-in,
+before the app has filled the heap. An offer that arrives on a later check-in reboots the
+camera first (logged as `run: fresh-heap reboot`), and the boot check-in installs it. If that
+boot install fails, the camera retries in place on later check-ins and reboots for the same
+release again at most once an hour.
+
 **`GET /d/{token}/{filename}`** — the capability gateway. The token is a signed, expiring
 credential minted only when a registered device is offered a release, and **one token
 authorizes the whole bundle**: the manifest and every image/delta beside it resolve under

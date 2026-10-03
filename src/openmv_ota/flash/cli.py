@@ -3,6 +3,7 @@
     firmware   flash the firmware image (both cores on the AE3 -- they're inseparable)
     romfs      flash the app romfs image
     factory    flash the manufacturing program: firmware + the dual-slot factory image
+               (i.MX: through the resident bootloader; --provision for a blank board)
     bootloader flash the bootloader (board must be in system ROM DFU, entered by hand)
     erase      erase the onboard filesystem (the user disk)
     list       list connected boards and the state (running / bootloader / recovery) each is in
@@ -18,6 +19,7 @@ import sys
 from pathlib import Path
 
 from . import flash as flash_mod
+from . import tools
 from .errors import FlashError
 
 
@@ -33,7 +35,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    help="don't reset (reboot) the board after flashing (dfu boards)")
     p.add_argument("--in-bootloader", dest="enter_bootloader", action="store_false",
                    help="the board is already in its bootloader; skip detecting + resetting "
-                        "the running camera")
+                        "the running camera (i.MX: wait up to 60 s for the resident SBL)")
     p.add_argument("--serial", metavar="SN",
                    help="USB serial number of the camera to flash (when several are attached)")
     p.add_argument("--mpremote", help="path to mpremote (default: python -m mpremote)")
@@ -54,6 +56,11 @@ def register(flash_parser: argparse.ArgumentParser):
 
     p_fa = sub.add_parser("factory", help="flash firmware + the dual-slot factory image")
     _add_common(p_fa)
+    p_fa.add_argument("--provision", action="store_true",
+                      help="i.MX only: provision a BLANK board over the ROM serial download "
+                           "(SBL boot jumper) -- flash-config block, secure bootloader, boot "
+                           "e-fuse, firmware and romfs. Without it, factory goes through the "
+                           "resident bootloader every shipped camera has")
     p_fa.set_defaults(func=cmd_factory, _command="flash factory")
 
     p_bl = sub.add_parser("bootloader", help="flash the bootloader (board in system ROM DFU)")
@@ -68,6 +75,9 @@ def register(flash_parser: argparse.ArgumentParser):
     p_er.set_defaults(func=cmd_erase, _command="flash erase")
 
     p_ls = sub.add_parser("list", help="list connected boards and the state each is in")
+    p_ls.add_argument("project", nargs="?", default=".",
+                      help="project directory whose SDK tools to use (default: .; outside a "
+                           "project, the newest ~/openmv-sdk-*)")
     p_ls.add_argument("--dfu-util", help="path to dfu-util (default: SDK's, else PATH)")
     p_ls.add_argument("--sdk-home", help="SDK home to find the flash tools under")
     p_ls.add_argument("--json", action="store_true", help="machine-readable output")
@@ -76,7 +86,18 @@ def register(flash_parser: argparse.ArgumentParser):
 
 
 def _sdk_home(args: argparse.Namespace) -> Path | None:
-    return Path(args.sdk_home) if args.sdk_home else None
+    """``--sdk-home``, else the PROJECT's SDK -- resolved the way a build resolves it (``[sdk].home``
+    in openmv-ota.local.toml, else ``~/openmv-sdk-<SDK_VERSION>``). Only the flag used to count,
+    so a project made with ``--install-sdk`` (local home left empty) never found the SDK's own
+    dfu-util/blhost and fell back to PATH: "dfu-util not found" with the tool sitting in
+    ~/openmv-sdk-<ver>/bin."""
+    if args.sdk_home:
+        return Path(args.sdk_home)
+    project = getattr(args, "project", None)        # `flash list` has no project
+    if project is None:
+        return None
+    from openmv_ota.project.project import project_sdk_home
+    return project_sdk_home(project)
 
 
 def _report(args: argparse.Namespace, steps) -> int:
@@ -120,7 +141,7 @@ def cmd_factory(args: argparse.Namespace) -> int:
         steps = flash_mod.flash_factory(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
             sdk_home=_sdk_home(args), reset=args.reset, enter_bootloader=args.enter_bootloader,
-            serial=args.serial, mpremote=args.mpremote,
+            serial=args.serial, mpremote=args.mpremote, provision=args.provision,
             dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -128,9 +149,20 @@ def cmd_factory(args: argparse.Namespace) -> int:
     return _report(args, steps)
 
 
+def _list_sdk_home(args: argparse.Namespace) -> Path | None:
+    """The SDK ``flash list`` scans with: the one ``flash factory`` would use (``--sdk-home``, else
+    the project's), else -- run outside a project, or the project's SDK is not installed -- the
+    newest installed ``~/openmv-sdk-*``. Without that, `flash list` warned "dfu-util not found"
+    on a machine whose only dfu-util is the SDK's, while `flash factory` found it."""
+    home = _sdk_home(args)
+    if home is not None and (args.sdk_home or (home / "bin" / "dfu-util").exists()):
+        return home
+    return tools.installed_sdk_home() or home
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     try:
-        devices = flash_mod.scan_devices(dfu_util=args.dfu_util, sdk_home=_sdk_home(args))
+        devices = flash_mod.scan_devices(dfu_util=args.dfu_util, sdk_home=_list_sdk_home(args))
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

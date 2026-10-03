@@ -24,6 +24,20 @@ def output(argv: list[str]) -> str:
         raise FlashError("%s failed: exit %d" % (argv[0], e.returncode), exit_code=1) from None
 
 
+def run_quiet(argv: list[str]) -> tuple[int, str]:
+    """Run ``argv`` with its stdout+stderr CAPTURED, returning ``(exit code, output)`` and never
+    raising on a non-zero exit -- for a step whose failure is the expected outcome (mpremote's
+    ``machine.bootloader()``, which drops the USB link mid-call and prints a page of traceback
+    about it). The caller judges success by what happens next, and shows the output only if
+    that fails. ``FlashError`` on a missing binary, like :func:`run`."""
+    try:
+        p = subprocess.run(argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True, errors="replace")
+    except FileNotFoundError:
+        raise FlashError("%s not found -- is it installed?" % argv[0], exit_code=1) from None
+    return p.returncode, p.stdout or ""
+
+
 def run(argv: list[str], *, tolerate_fail: bool = False) -> None:
     """Run ``argv`` (streaming its output), raising ``FlashError`` on failure. With
     ``tolerate_fail`` a non-zero exit is warned about and ignored -- for the system-DFU

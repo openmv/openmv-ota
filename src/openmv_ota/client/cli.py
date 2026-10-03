@@ -11,8 +11,8 @@
 
 One verb per entity; every action lives under its entity.
 
-``login``/``logout`` need only the standard library; the API verbs use httpx from the ``server``
-extra (via ``api.Api``).
+Everything here runs on a base install: the API verbs use httpx (a base dependency, via
+``api.Api``), never the ``server`` extra.
 """
 
 from __future__ import annotations

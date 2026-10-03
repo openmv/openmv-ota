@@ -36,10 +36,20 @@ def _recv_from(data: bytes, cuts):
     return recv
 
 
+def _into(recv):
+    """The reader takes ``readinto(mv) -> n`` (one preallocated buffer); ``recv`` above already
+    respects ``n``, so each piece fits."""
+    def readinto(mv):
+        d = recv(len(mv))
+        mv[:len(d)] = d
+        return len(d)
+    return readinto
+
+
 def fetch(raw: bytes, cuts=()):
     """``_read_response`` + ``_make_body`` + ``_read_all``: what ``_fetch_manifest`` does to a
     response. Returns ``(code, body)``."""
-    reader = INST._Reader(_recv_from(raw, list(cuts)))
+    reader = INST._Reader(_into(_recv_from(raw, list(cuts))))
     code, headers = INST._read_response(reader)
     return code, INST._read_all(INST._make_body(reader, headers), _LIMIT)
 
@@ -125,7 +135,7 @@ def test_a_length_is_accepted_only_as_plain_digits(n, fmt):
         assert not plain_hex, text
     plain_dec = bool(text) and set(text) <= _DECDIGITS
     try:
-        INST._make_body(INST._Reader(lambda k: b""), {b"content-length": text})
+        INST._make_body(INST._Reader(lambda mv: 0), {b"content-length": text})
         assert plain_dec, text
     except ValueError:
         assert not plain_dec, text

@@ -37,24 +37,27 @@ which is exactly what is gone:
 | the server URL | `server_url` in `openmv-ota.toml`'s `[ota]` table |
 | the TLS trust store | the project's `[ota].ca` when set; otherwise the full public CA bundle (`certs/ca.pem`) — the same frozen store the runtime trusts by default, so it is there whether or not any romfs is |
 
-**Set `server_url`.** It is the line recovery cannot function without — a
-firmware built without it logs a critical error and stops, because no amount
-of retrying fixes a build mistake.
+**`server_url` is set for you.** It is the line recovery cannot function
+without — a firmware built without it logs a critical error and stops, because
+no amount of retrying fixes a build mistake. `project new --ota` writes the
+hosted cloud's URL, the same one the generated `main.py` checks in to;
+self-hosting, change both:
 
 ```toml
 [ota]
-server_url = "https://ota.cloud.openmv.io"
+server_url = "https://ota.cloud.openmv.io"   # self-hosting? change this AND the URL in app/main.py
 ```
 
 The trust store has a working default: on the OpenMV N6, AE3, and RT1062 the
 firmware is large enough to carry the full public CA bundle, so a server
 behind a public CA needs no configuration at all. On the smaller boards the
-~186 KB bundle does not fit in firmware, so `[ota].ca` must point at a PEM
-file holding the root(s) your server chains to — one certificate or a small
-bundle, a few KB — and both `project new --ota` and `build firmware` refuse
-to build those boards without one, rather than ship a recovery with no trust
-anchors. Setting `[ota].ca` is never wrong on any board: your device talks to
-one server, so its root is all it actually needs.
+~186 KB bundle does not fit in firmware, so `[ota].ca` points at a PEM file
+holding the root(s) your server chains to — a few KB. `project new --ota`
+scaffolds one for you: `certs/root.pem`, the roots of the hosted OpenMV Cloud.
+Self-hosting? Replace that file with your server's root (or pass `--ca` at
+`new`). `build firmware` refuses those boards with `[ota].ca` unset, rather
+than ship a recovery with no trust anchors. Setting `[ota].ca` is never wrong
+on any board: your device talks to one server, so its root is all it needs.
 
 ## The network settings file
 

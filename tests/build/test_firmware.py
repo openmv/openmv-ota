@@ -112,7 +112,7 @@ def test_the_speed_options_fall_away_once_the_firmware_has_them(tmp_path):
     option, nothing is injected and the build is exactly the firmware's. One already there
     is just not repeated."""
     from types import SimpleNamespace
-    proj = SimpleNamespace(board=lambda name: SimpleNamespace(recovery_ca_bundle=True))
+    proj = SimpleNamespace(board=lambda name: SimpleNamespace(role="main", mbedtls=True))
     repo = _fake_fw(tmp_path, port="alif")
     out = tmp_path / "wrap"
     out.mkdir()
@@ -131,12 +131,29 @@ def test_the_speed_options_fall_away_once_the_firmware_has_them(tmp_path):
     assert fw._mbedtls_speed_arg(proj, repo, "OPENMV_N6", out) is not None
 
 
-def test_no_speed_options_for_a_board_without_room(tmp_path):
-    """Only boards whose firmware carries the full CA bundle (the TLS-update boards with
-    flash to spare) get them; the 1792 KB parts are left exactly as they build."""
+def test_the_1792k_boards_get_the_speed_options_too(make_project, monkeypatch):
+    """The Nicla, Portenta and Giga cannot carry the CA bundle, but they reach the same
+    Cloudflare edge: without the options their handshake stalls past its cutoff just the same.
+    Every main-role OTA board whose port builds mbedtls gets them."""
+    root, repo, _app = make_project(ota=True, boards=("ARDUINO_NICLA_VISION",))
+    monkeypatch.setattr(fw, "_copy_wifi_blobs", lambda *a: [])   # the fake tree has none
+    headers = []
+    seen = _capture_make(monkeypatch, headers)
+    fw.build_firmware(root, firmware=repo)
+    assert any(a.startswith("MBEDTLS_CONFIG_FILE=") for a in seen)
+    (h,) = headers
+    for d in fw._MBEDTLS_SPEED:
+        assert "#define %s\n" % d in h
+
+
+@pytest.mark.parametrize("board", [dict(role="coprocessor", mbedtls=True),
+                                   dict(role="main", mbedtls=False)])
+def test_no_speed_options_for_a_board_that_does_no_tls(tmp_path, board):
+    """A coprocessor core never runs TLS, and a port built without mbedtls has nothing to
+    speed up: both are left exactly as they build."""
     from types import SimpleNamespace
-    proj = SimpleNamespace(board=lambda name: SimpleNamespace(recovery_ca_bundle=False))
-    assert fw._mbedtls_speed_arg(proj, tmp_path, "OPENMV4", tmp_path) is None
+    proj = SimpleNamespace(board=lambda name: SimpleNamespace(**board))
+    assert fw._mbedtls_speed_arg(proj, tmp_path, "OPENMV_AE3", tmp_path) is None
 
 
 def test_build_firmware_non_ota(make_project, monkeypatch):
@@ -587,8 +604,9 @@ def test_recovery_ca_empty_on_a_board_without_room_fails_the_build_loudly(tmp_pa
     from openmv_ota.build.errors import BuildError
     from openmv_ota.build.firmware import _recovery_ca
 
-    with pytest.raises(BuildError, match=r"cannot hold the public CA bundle"):
+    with pytest.raises(BuildError, match=r"cannot hold the public CA bundle") as e:
         _recovery_ca(_FakeProj(tmp_path), _FakeTarget(name="OPENMV4P"))
+    assert "openmv-cloud-roots.pem" in str(e.value)   # says where the hosted roots are
 
 
 def test_recovery_ca_missing_project_bundle_fails_the_build_loudly(tmp_path):
@@ -621,21 +639,25 @@ def test_an_unreadable_ca_fails_the_build_loudly(tmp_path):
         _recovery_ca(_FakeProj(tmp_path, ca="certs/missing.pem"), _FakeTarget())
 
 
-def test_build_firmware_freezes_a_supplied_trust_store(make_project, monkeypatch):
-    """`--ca` roots ARE frozen: about a kilobyte, so the firmware can hold them -- and there they
-    are readable with no RAM copy and survive the filesystem being gone, which is what recovery
-    needs. The public bundle is what cannot be frozen, not the idea."""
+def test_build_firmware_freezes_the_configured_trust_store_once(make_project, monkeypatch):
+    """[ota].ca is frozen as _ota_config.CA_PEM -- recovery's anchors AND the runtime's
+    (builtin_ca) -- and nowhere else. A second frozen copy (the old openmv_ca module) doubled
+    the flash cost of a ~17 KB store, and went stale the moment certs/root.pem was replaced;
+    a leftover device/openmv_ca.py is ignored."""
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)
-    root, repo, _app = make_project(ota=True)
-    ca = root / "device" / "openmv_ca.py"
-    ca.write_text('PEM = b"-----BEGIN CERTIFICATE-----\\nAAA\\n-----END CERTIFICATE-----\\n"\n')
+    root, repo, _app = make_project(ota=True, boards=("ARDUINO_NICLA_VISION",))
+    monkeypatch.setattr(fw, "_copy_wifi_blobs", lambda *a: [])   # the fake tree has none
+    (root / "device" / "openmv_ca.py").write_text('PEM = b"stale"\n')
+    pem = (root / "certs" / "root.pem").read_bytes()
 
     r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
 
-    manifest = (r.build_dir / "manifest.py").read_text()
-    assert "openmv_ca.py" in manifest
-    assert (r.build_dir / "openmv_ca.py").read_text() == ca.read_text()
+    assert "openmv_ca" not in (r.build_dir / "manifest.py").read_text()
+    assert not (r.build_dir / "openmv_ca.py").exists()
+    ns = {}
+    exec((r.build_dir / "_ota_config.py").read_text(), ns)
+    assert ns["CA_PEM"] == pem and b"GTS Root R4" in pem
 
 
 def test_a_multi_core_board_freezes_the_ota_modules_into_the_main_core_only(make_project,
@@ -730,6 +752,6 @@ def test_board_overlay_refuses_a_firmware_that_disagrees_with_the_table(tmp_path
 def test_speed_options_with_no_port_config_file(tmp_path):
     """A port without its own mbedtls config file is judged on the common config alone."""
     from types import SimpleNamespace
-    proj = SimpleNamespace(board=lambda name: SimpleNamespace(recovery_ca_bundle=True))
+    proj = SimpleNamespace(board=lambda name: SimpleNamespace(role="main", mbedtls=True))
     repo = _fake_fw(tmp_path, port="mimxrt", port_cfg=False)
     assert fw._mbedtls_speed_arg(proj, repo, "OPENMV_N6", tmp_path) is not None

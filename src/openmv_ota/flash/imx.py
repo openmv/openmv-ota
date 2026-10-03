@@ -1,15 +1,18 @@
 """The i.MX RT1060 backend: drive ``sdphost`` + ``blhost`` (NXP spsdk).
 
-Unlike the DFU boards, the RT1062 has no resident DFU bootloader -- it's flashed through the
-ROM's serial-download protocol (SDP). The flow, mirroring the OpenMV IDE's ``imx.cpp``:
+Unlike the DFU boards, the RT1062 has no DFU bootloader. A programmed camera (every one that
+ships) carries a resident secure bootloader (SBL) that ``machine.bootloader()`` enters with no
+jumper; ``firmware``/``romfs``/``factory``/``erase`` drive that (see ``plan``). A BLANK board is
+provisioned through the ROM's serial-download protocol (SDP), the flow mirroring the OpenMV IDE's
+``imx.cpp``:
 
 1. ``sdphost`` loads a RAM **flashloader** (``sdphost_flash_loader.bin``) and jumps to it.
 2. The flashloader re-enumerates as the MCU-bootloader (blhost) USB device. We **wait** for it
    to appear -- one process that polls spsdk's USB scan internally (like ``dfu-util -w``),
    instead of relaunching ``blhost`` to retry ``get-property`` (a heavy, flaky poll).
-3. ``blhost`` configures the FlexSPI NOR, then erases/writes each region. A full ``factory``
-   flash also writes the flash-config block (FCB), the secure bootloader, and burns the boot
-   e-fuse; a ``firmware``/``romfs`` update just rewrites that one region.
+3. ``blhost`` configures the FlexSPI NOR, then erases/writes each region. A full ``provision``
+   also writes the flash-config block (FCB), the secure bootloader, and burns the boot e-fuse;
+   ``firmware``/``romfs``/``factory`` go through the resident SBL and just rewrite their regions.
 4. ``blhost reset`` runs the new image.
 
 Every command is a pure argv (testable). The flashloader binaries are prebuilt artifacts
@@ -116,6 +119,11 @@ def scan_argv(python3: str, specs: list[tuple[str, str, str]]) -> list[str]:
     return [python3, "-c", _SCAN_SCRIPT] + ["|".join(s) for s in specs]
 
 
+# The ops that go through the i.MX ROM's serial download (SDP) -- they need the SBL boot jumper.
+# Every other op drives the camera's resident secure bootloader.
+ROM_OPS = ("provision", "bootloader")
+
+
 @dataclass(frozen=True)
 class ImxStep:
     label: str
@@ -172,13 +180,14 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
 
     Two entry paths:
 
-    * **Automatable** (``firmware`` / ``romfs`` / ``erase``) -- drive the board's *resident* secure
+    * **Automatable** (``firmware`` / ``romfs`` / ``factory`` / ``erase``) -- drive the board's
+      *resident* secure
       bootloader (the MCU-bootloader / blhost device), which ``machine.bootloader()`` enters with NO
       jumper. Because it runs *after* the ROM has already applied the flash-config block (FCB), the
       FlexSPI NOR is configured, so there is no ``sdphost`` flashloader load and no config-register
       writes -- straight to the region op. This is the everyday update path (and what the HIL bench
       uses).
-    * **Recovery** (``factory`` / ``bootloader``) -- these rewrite the SBL (and FCB) itself, so they
+    * **Recovery** (``provision`` / ``bootloader``) -- these rewrite the SBL (and FCB) itself, so they
       cannot rely on the resident SBL. They load a RAM flashloader over the ROM's serial-download
       protocol (SDP); that fresh flashloader starts with FlexSPI *unconfigured*, so it must be
       configured first. SDP requires the board manually in ROM-serial-download (the SBL jumper) --
@@ -191,7 +200,7 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
     usb = bl["usb"]
     steps: list[ImxStep] = []
 
-    if op in ("factory", "bootloader"):
+    if op in ROM_OPS:
         steps.append(ImxStep("wait for the ROM (SDP) device",
                              _wait_argv(python3, sd["usb"], sdp=True)))
         steps += [
@@ -209,7 +218,7 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
         ]
         steps += _fcb(blhost, usb, bl)                   # the FCB + the secure bootloader (SBL)
         steps += _write_region(blhost, usb, bl["sbl_addr"], files["blhost_loader"])
-        if op == "factory":                              # plus firmware, romfs, and the boot e-fuse
+        if op == "provision":                            # plus firmware, romfs, and the boot e-fuse
             steps += _write_region(blhost, usb, bl["firmware_addr"], files["firmware"])
             steps += _write_region(blhost, usb, bl["romfs_addr"], files["romfs"])
             steps.append(ImxStep("burn boot e-fuse",
@@ -220,9 +229,9 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
         # armed before the reset, holds it against the ~1 s idle timeout), and it's FlexSPI-configured
         # from the FCB. So no SDP load, no wait step here, and no config-register writes -- straight
         # to the region op (then reset). blhost runs back-to-back so the SBL never idles out.
-        if op == "firmware":
+        if op in ("firmware", "factory"):
             steps += _write_region(blhost, usb, bl["firmware_addr"], files["firmware"])
-        elif op == "romfs":
+        if op in ("romfs", "factory"):                   # factory: the dual-slot image, same region
             steps += _write_region(blhost, usb, bl["romfs_addr"], files["romfs"])
         elif op == "erase":                              # wipe the user disk's first sector (its MBR)
             steps.append(ImxStep("erase disk %s (%s)" % (bl["disk_addr"], bl["disk_size"]),

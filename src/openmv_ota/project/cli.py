@@ -49,9 +49,10 @@ def register(project_parser: argparse.ArgumentParser):
                             "single-image, where a partition cannot hold two)")
     p_new.add_argument("--ca", metavar="PEM",
                        help="TLS roots the device trusts for OTA downloads (a PEM file, copied "
-                            "into the project as certs/ and frozen into the firmware). Unset "
-                            "fetches the public bundle -- which is ~186 KB and does NOT fit a "
-                            "single-image board, so those boards require this")
+                            "into the project as certs/ and frozen into the firmware). Unset: "
+                            "the public bundle where every board's firmware fits it (~186 KB; "
+                            "N6, AE3, RT1060), else the hosted OpenMV Cloud's roots (a few KB) "
+                            "as certs/root.pem -- self-hosting, pass your server's root here")
     p_new.add_argument("--sig-alg", choices=("ES256", "ES384", "ES512"), default="ES256",
                        help="OTA signature algorithm (default ES256 / P-256)")
     p_new.add_argument("--ota-keys", type=int, default=32, metavar="N",

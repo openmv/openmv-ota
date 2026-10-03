@@ -45,7 +45,7 @@ def test_flash_romfs_dry_run_prints_command(proj, capsys):
     assert main(["flash", "romfs", str(root), "-b", "OPENMV4", "--dry-run",
                  "--dfu-util", "/x/dfu-util"]) == 0
     assert ran == []
-    assert "would run: /x/dfu-util -w -d ,37c5:9204 -a 3" in capsys.readouterr().out
+    assert "would run: /x/dfu-util -d ,37c5:9204 -a 3" in capsys.readouterr().out
 
 
 def test_error_returns_exit_code(proj, capsys):
@@ -115,13 +115,14 @@ def test_erase_romfs_dry_run(proj, monkeypatch, capsys):
 
 def test_arduino_factory_dry_run(proj, capsys):
     root, ran, artifact = proj
-    for n in ("firmware.bin", "romfs.img"):
+    for n in ("firmware.bin", "factory-romfs.img"):
         artifact("ARDUINO_PORTENTA_H7-%s" % n)
     for n in ("cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):   # build emits these to out_dir
         artifact(n)
     assert main(["flash", "factory", str(root), "-b", "ARDUINO_PORTENTA_H7", "--dry-run"]) == 0
     out = capsys.readouterr().out
-    assert "would run: DFU -w -d ,2341:035b -a 0 -s 0x08040000 " in out
+    assert "would run: DFU -w -d ,2341:035b -a 0 -s 0x08040000 " in out   # a later step: keeps -w
+    assert "would run: DFU -d ,2341:035b -a 1 -s 0x90F00000 " in out      # the first: no -w
     assert "0x90B00000:leave" in out
 
 
@@ -141,5 +142,5 @@ def test_ae3_factory_flashes_all_partitions(proj, capsys):
               "factory-romfs.img"):
         artifact("OPENMV_AE3-%s" % n)
     assert main(["flash", "factory", str(root), "-b", "OPENMV_AE3", "--no-reset"]) == 0
-    assert [a[5] for a in ran] == ["1", "2", "3", "6"]   # HP, HE, coproc romfs, main romfs
+    assert [a[a.index("-a") + 1] for a in ran] == ["1", "2", "3", "6"]   # HP, HE, coproc + main romfs
     assert all("--reset" not in a for a in ran)          # --no-reset honored on every step

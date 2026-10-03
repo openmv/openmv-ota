@@ -15,6 +15,10 @@ The way out is that **the OpenMV bootloader presents a DFU window on EVERY reset
     2. a moment later, pulse the board's PHYSICAL nRST line via the J-Link;
     3. dfu-util catches the window and does its work.
 
+The RT1060 is the exception: its resident SBL has NO reset window (it only comes up through
+``machine.bootloader()``), so the nRST just restarts the app and the harness then types
+``machine.bootloader()`` into the REPL while the CLI waits -- see ``ota_cycle.imx_kick_catch``.
+
 ``--in-bootloader`` tells the CLI not to try the (broken) CDC route first. Erasing the romfs is the
 useful payload: with no bootable slot the app never runs, the CDC comes back, and a normal
 ``flash factory`` can reprovision. It needs no built artifacts, so it works even on a fresh node.
@@ -24,7 +28,7 @@ the same thing by hand, for when you are debugging a board directly.
 
     ./recover.py --board OPENMV4P            # erase romfs -> frees the CDC
     ./recover.py --board OPENMV4P --probe    # just report whether the CDC answers
-    ./recover.py --board OPENMV4P --reset    # only pulse nRST (no DFU)
+    ./recover.py --board OPENMV4P --reset    # only pulse nRST (no DFU, no REPL probe)
     ./recover.py --board OPENMV_N6 --firmware   # CORRUPT FIRMWARE: two-stage reflash
 
 CORRUPT FIRMWARE IS A DIFFERENT ILLNESS, and it does not look like one. The board is not dead, it
@@ -57,7 +61,8 @@ def main(argv=None):
     ap.add_argument("--probe", action="store_true",
                     help="only report whether the CDC answers; change nothing")
     ap.add_argument("--reset", action="store_true",
-                    help="only pulse nRST via the J-Link (no DFU, no erase)")
+                    help="only pulse nRST via the J-Link (no DFU, no erase, and no REPL probe "
+                         "first -- that would kill the running app)")
     ap.add_argument("--firmware", action="store_true",
                     help="reflash MAIN FIRMWARE in two stages -- for a board cycling "
                          "bootloader->crash->bootloader (see the module docstring)")
@@ -65,21 +70,24 @@ def main(argv=None):
                     help="firmware .bin to write (default: the project's build output)")
     args = ap.parse_args(argv)
 
+    # --reset and --firmware act WITHOUT the REPL probe below. The probe is an mpremote connect,
+    # and its Ctrl-C KILLS THE RUNNING APP (KeyboardInterrupt is a BaseException the app does not
+    # catch) -- so a "just reset it" that probed first left the board with no app before the pulse.
+    if args.reset:
+        return 0 if oc.jlink_reset_pulse(args.board) else 1
+
+    if args.firmware:
+        # Not gated on a probe either: a cycling board often answers the CDC intermittently, so
+        # "responsive" would mean nothing. If you asked for a firmware reflash, you have already
+        # decided the firmware is the problem.
+        return 0 if oc.recover_firmware(args.board, args.firmware_image) else 1
+
     rc, _ = oc.sh([oc.ota("mpremote"), "connect", oc.CFG["acm"], "eval", "True"],
                   timeout=15, check=False, quiet=True)
     oc.log("probe: %s CDC at %s -> %s" % (args.board, oc.CFG["acm"],
                                           "responsive" if rc == 0 else "MISSING/unresponsive"))
     if args.probe:
         return 0 if rc == 0 else 1
-
-    if args.reset:
-        return 0 if oc.jlink_reset_pulse(args.board) else 1
-
-    if args.firmware:
-        # Deliberately NOT gated on the probe above: a cycling board often answers the CDC
-        # intermittently, so "responsive" here means nothing. If you asked for a firmware
-        # reflash, you have already decided the firmware is the problem.
-        return 0 if oc.recover_firmware(args.board, args.firmware_image) else 1
 
     if rc == 0:
         oc.log("recover: CDC already responsive -- nothing to do "
