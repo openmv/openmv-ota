@@ -183,11 +183,31 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
         import openmv_ota
         openmv_ota.register_checkin(contribute=_contribute, on_response=_on_checkin,
                                     key="openmv_cloud.csi")
+        openmv_ota.register_pressure(_relieve, key="openmv_cloud.csi")
     except (ImportError, AttributeError):
         pass
 
 
 _register()
+
+
+def _relieve(level):
+    """The OTA check-in ran out of memory: close relay connections so their TLS buffers (~20 KiB
+    each) are freed for it. ``level`` 0 closes only streams nobody is watching; 1 closes every
+    one. Closed from synchronous code (the check-in is blocking), so the SOCKET is closed
+    directly -- that frees the mbedTLS buffers at once; the relay task notices on its next
+    read and reconnects after its backoff. Returns how many were closed."""
+    from ._lib import _hard_close
+    n = 0
+    for stream in list(_streams.values()):
+        w = stream._writer
+        if w is None or (level < 1 and stream.live_active):
+            continue
+        _hard_close(w)
+        stream._writer = None
+        stream._session.streaming = False
+        n += 1
+    return n
 
 
 def _register(stream):
@@ -394,6 +414,7 @@ class Stream:
         self._frame_event = None      # asyncio.Event, created with the task
         self._task = None
         self._dropped = 0             # fixed-cap mode: oversize frames (warned once)
+        self._writer = None           # the relay connection while one is up (see _relieve)
         _register(self)
 
     @property
@@ -660,6 +681,7 @@ async def _relay_task(stream):  # pragma: no cover
             continue
         try:
             reader, writer = await _ws_connect(entry["camera_url"])
+            stream._writer = writer               # reachable by _relieve (check-in priority)
             streak = 0
             log.info("live[%s]: connected to relay" % stream.name)
             await _pump(stream, reader, writer)
@@ -667,6 +689,7 @@ async def _relay_task(stream):  # pragma: no cover
             streak += 1
             say = log.warning if _loud_reconnect(streak) else log.debug
             say("live[%s]: %s; reconnecting" % (stream.name, repr(e)))
+        stream._writer = None
         stream._session.streaming = False        # a dead socket streams to no one
         await asyncio.sleep(_RECONNECT_BACKOFF_S)
 

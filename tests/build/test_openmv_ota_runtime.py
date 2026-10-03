@@ -479,3 +479,79 @@ def test_gate_a_newer_release_after_a_failed_boot_install_reboots():
     g.plan("R1", uptime_s=8)
     g.failed("R1")
     assert g.plan("R2", uptime_s=900) == "reboot"   # R2 was never tried from a fresh heap
+
+
+# --- the check-in comes first: out-of-memory relief ------------------------------------------
+# Measured on a Nicla with two Live relays up: six periodic check-ins in a row died with
+# OSError(12) as wrap_socket could not allocate its record buffers.
+
+def _script(*outcomes):
+    """An attempt() that raises/returns the given outcomes in order."""
+    it = iter(outcomes)
+
+    def attempt():
+        o = next(it)
+        if isinstance(o, BaseException):
+            raise o
+        return o
+    return attempt
+
+
+def test_is_enomem():
+    assert rt._is_enomem(MemoryError())
+    assert rt._is_enomem(OSError(12)) and rt._is_enomem(OSError(-12))
+    assert not rt._is_enomem(OSError(110)) and not rt._is_enomem(OSError())
+    assert not rt._is_enomem(ValueError("x"))
+
+
+def test_checkin_relieved_passes_a_good_checkin_straight_through():
+    assert rt._checkin_relieved(_script({"ok": 1}), lambda lv: pytest.fail("no relief"),
+                                lambda: pytest.fail("no gc")) == {"ok": 1}
+
+
+def test_checkin_relieved_closes_idle_connections_and_retries_at_once():
+    levels, collected = [], []
+    resp = rt._checkin_relieved(_script(OSError(12), {"ok": 1}),
+                                lambda lv: levels.append(lv) or 2, lambda: collected.append(1))
+    assert resp == {"ok": 1} and levels == [0] and collected == [1]
+
+
+def test_checkin_relieved_escalates_to_watched_connections():
+    levels = []
+    resp = rt._checkin_relieved(_script(OSError(12), MemoryError(), {"ok": 1}),
+                                lambda lv: levels.append(lv) or 1, lambda: None)
+    assert resp == {"ok": 1} and levels == [0, 1]
+
+
+def test_checkin_relieved_skips_a_level_that_released_nothing():
+    levels = []
+    resp = rt._checkin_relieved(_script(OSError(12), {"ok": 1}),
+                                lambda lv: levels.append(lv) or (1 if lv == 1 else 0),
+                                lambda: None)
+    assert resp == {"ok": 1} and levels == [0, 1]
+
+
+def test_checkin_relieved_reraises_when_nothing_helps():
+    with pytest.raises(OSError) as e:
+        rt._checkin_relieved(_script(OSError(12)), lambda lv: 0, lambda: None)
+    assert e.value.args[0] == 12
+    with pytest.raises(MemoryError):
+        rt._checkin_relieved(_script(OSError(12), MemoryError(), MemoryError()),
+                             lambda lv: 1, lambda: None)
+
+
+def test_checkin_relieved_never_hides_another_error():
+    with pytest.raises(OSError, match="refused"):
+        rt._checkin_relieved(_script(OSError(111, "refused")), lambda lv: 1, lambda: None)
+    with pytest.raises(ValueError):
+        rt._checkin_relieved(_script(OSError(12), ValueError("bad json")), lambda lv: 1,
+                             lambda: None)
+
+
+def test_relieve_sums_hooks_and_survives_a_broken_one(monkeypatch):
+    monkeypatch.setattr(rt, "_pressure_hooks", {})
+    rt.register_pressure(lambda lv: 2, key="a")
+    rt.register_pressure(lambda lv: 1 / 0, key="b")      # broken: skipped
+    rt.register_pressure(lambda lv: None)                 # unkeyed, returns nothing
+    rt.register_pressure(lambda lv: lv, key="a")          # same key replaces
+    assert rt._relieve(1) == 1 and rt._relieve(0) == 0

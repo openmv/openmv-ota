@@ -459,3 +459,32 @@ def test_relay_reconnects_warn_once_per_outage():
     # must not fill it with the same line
     assert rt._loud_reconnect(1)
     assert not any(rt._loud_reconnect(n) for n in range(2, 50))
+
+
+class _Sock:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _Writer:                         # MicroPython's asyncio Stream: close() is a no-op
+    def __init__(self):
+        self.s = _Sock()
+
+    def close(self):
+        pass
+
+
+def test_relieve_closes_idle_relays_first_then_all(monkeypatch):
+    monkeypatch.setattr(rt, "_streams", {})
+    idle, watched, down = rt.Stream("idle"), rt.Stream("watched"), rt.Stream("down")
+    idle._writer, watched._writer = _Writer(), _Writer()
+    wi, ww = idle._writer, watched._writer
+    watched._session.streaming = True                    # a viewer is on it
+    assert rt._relieve(0) == 1                           # only the unwatched one
+    assert wi.s.closed and idle._writer is None and not ww.s.closed
+    assert rt._relieve(1) == 1                           # the check-in still needs room
+    assert ww.s.closed and watched._writer is None and not watched.live_active
+    assert down._writer is None and rt._relieve(1) == 0

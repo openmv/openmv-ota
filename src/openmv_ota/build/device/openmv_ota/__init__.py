@@ -635,6 +635,37 @@ def register_checkin(contribute=None, on_response=None, key=None):
         _checkin_observers[ident] = on_response
 
 
+# THE CHECK-IN COMES FIRST. A check-in's TLS handshake needs ~20 KiB of mbedTLS record buffers in
+# one go, and the optional features hold the same kind of buffers resident: each OpenMV Live relay
+# keeps its own TLS session open, and the datalake flushers hold one during a flush. Measured on a
+# Nicla with live[0] + live[console] up and the heap 70-88% used: six periodic check-ins in a row
+# died with OSError(12) right after the socket was created, and the update waited 11 minutes. So
+# openmv_cloud registers a RELEASE hook here, and a check-in that runs out of memory asks those
+# features to let go -- idle ones first, everything optional second -- and retries at once. They
+# reconnect on their own afterwards.
+_pressure_hooks = {}
+
+
+def register_pressure(release, key=None):
+    """The memory-pressure seam. ``release(level) -> int`` closes connections to free heap for a
+    check-in and returns how many it closed: ``level`` 0 = only what nobody is using right now
+    (a relay with no viewer, a datalake flush), 1 = everything optional (a watched relay too).
+    ``key`` makes registration idempotent, as for :func:`register_checkin`."""
+    _pressure_hooks[key if key is not None else object()] = release
+
+
+def _relieve(level):
+    """Run every release hook at ``level``; the total they closed. A raising hook is skipped --
+    it must never cost the check-in it is meant to help."""
+    n = 0
+    for release in list(_pressure_hooks.values()):
+        try:
+            n += release(level) or 0
+        except Exception:
+            continue
+    return n
+
+
 # --- NETWORK RUNTIME: begin --------------------------------------------------
 # Everything to the matching end marker is the server-polling stack: run(),
 # _poll_forever(), _checkin() and their helpers. It needs `ssl`, so on a board whose
@@ -771,6 +802,43 @@ def _notify(resp):
             on_response(resp)
         except Exception:
             pass                                     # never break the loop
+
+
+_ENOMEM = (12, -12)          # errno ENOMEM, positive and as some ports report it
+
+
+def _is_enomem(e):
+    """Out of memory: a MemoryError, or the OSError(ENOMEM) that ``wrap_socket`` raises when it
+    cannot allocate its record buffers."""
+    if isinstance(e, MemoryError):
+        return True
+    return isinstance(e, OSError) and bool(e.args) and e.args[0] in _ENOMEM
+
+
+def _checkin_relieved(attempt, relieve, collect):
+    """Run ``attempt()`` (the check-in); on out-of-memory, ``relieve(level)`` the optional
+    features -- level 0 (idle connections), then 1 (all of them) -- ``collect()`` and retry AT
+    ONCE, so a regular check-in is never starved by Live or the datalake. A level that released
+    nothing is not retried (nothing changed). Any other error, or the last ENOMEM, raises."""
+    try:
+        return attempt()
+    except Exception as e:
+        if not _is_enomem(e):
+            raise
+        err = e
+    for level in (0, 1):
+        if not relieve(level):
+            continue
+        collect()
+        log.warning("checkin: out of memory; closed optional connections (level %d), retrying"
+                    % level)
+        try:
+            return attempt()
+        except Exception as e:
+            if not _is_enomem(e):
+                raise
+            err = e
+    raise err
 
 
 def _offer(resp):
@@ -925,6 +993,7 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
                         recover_after):  # pragma: no cover  (device: the network loop)
     """run()'s whole body, split out ONLY so run() can wrap it in one handler -- see there."""
     import asyncio
+    import gc
     boot = status()
     if boot.get("trial") and self_test is not None and self_test():
         confirm()  # hil-residual: opt-in boot-time self_test confirm; bench apps confirm in their loop (confirm.promoted), not via self_test, so this call-site is unexercised
@@ -948,7 +1017,9 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             st = status()
             slot_states = slots()
             with _wdt_relax():  # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
-                resp = _checkin(server_url, _collect_body(identity(), st, slot_states), ca)
+                body = _collect_body(identity(), st, slot_states)
+                resp = _checkin_relieved(lambda b=body: _checkin(server_url, b, ca),  # hil-residual: host-tested wrapper (_checkin_relieved); the check-in itself is witnessed by its own markers
+                                         _relieve, gc.collect)
         except Exception as e:  # hil-residual: check-in transport failure (the wedge path)
             # THE TRANSPORT IS SUSPECT. This is the failure a wedged stack produces every poll,
             # forever (measured: 39 consecutive EINVAL check-ins on an ATWINC1500), so it is the

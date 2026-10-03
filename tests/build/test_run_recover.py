@@ -200,7 +200,7 @@ def _run_src():
 def test_only_a_failed_checkin_increments_the_streak():
     """The counter must live in the CHECK-IN's own except, not one wrapping the whole cycle."""
     src = _run_src()
-    checkin_block = src.split("resp = _checkin(")[1]
+    checkin_block = src.split("resp = _checkin_relieved(")[1]
     after = checkin_block.split("else:")[0]
     assert "fails += 1" in after, "the streak must be driven by the check-in failing"
     # ...and everything past a SUCCESSFUL check-in must not be able to reach it.
@@ -212,7 +212,7 @@ def test_only_a_failed_checkin_increments_the_streak():
 
 def test_a_successful_checkin_clears_the_streak():
     """Proof the transport works, whatever the release turns out to be."""
-    post = _run_src().split("resp = _checkin(")[1].split("else:")[1]
+    post = _run_src().split("resp = _checkin_relieved(")[1].split("else:")[1]
     assert "fails = 0" in post.split("try:")[0], (
         "reaching the else branch means the link is fine; the streak must reset there")
 
@@ -293,7 +293,7 @@ def test_default_recover_after_spans_minutes_not_hours():
 
 def test_a_failed_checkin_waits_the_backoff_and_success_resets_it():
     src = _run_src()
-    checkin_block = src.split("resp = _checkin(")[1]
+    checkin_block = src.split("resp = _checkin_relieved(")[1]
     failed, ok = checkin_block.split("else:")[0], checkin_block.split("else:")[1]
     assert "wait = _backoff(misses" in failed, "a transport failure must not wait a whole poll"
     assert "misses += 1" in failed
