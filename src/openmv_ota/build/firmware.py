@@ -71,9 +71,11 @@ _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ 
 # failed -- and ~1.9 s with them. Generic-C bignum (no MBEDTLS_HAVE_ASM: the Cortex-M UMAAL
 # multiply-accumulate) and the slow NIST curve reduction are the cost; X25519, Cloudflare's
 # preferred key exchange, was not built at all. Proposed upstream to micropython; until a
-# firmware's own config defines them, an OTA build adds them for the boards whose firmware
-# does TLS updates with room to spare (recovery_ca_bundle: N6, AE3, RT1060). Once the
-# firmware defines them all, nothing is injected and this falls away by itself.
+# firmware's own config defines them, an OTA build adds them on every board that does TLS
+# updates -- a main-role OTA board whose port builds mbedtls. That includes the 1792 KB
+# stm32 parts (Nicla, Portenta, Giga): they reach the same Cloudflare edge, and on their
+# Cortex-M7 the UMAAL assembly is as available as on the M55/N6. Once the firmware defines
+# them all, nothing is injected and this falls away by itself.
 _MBEDTLS_SPEED = ("MBEDTLS_HAVE_ASM", "MBEDTLS_ECP_NIST_OPTIM",
                   "MBEDTLS_ECP_DP_CURVE25519_ENABLED")
 _MBEDTLS_PORT_CONFIG = "mbedtls/mbedtls_config_port.h"     # micropython's default, per port
@@ -187,12 +189,14 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
 
 def _mbedtls_speed_arg(p, repo: Path, name: str, tmp: Path) -> str | None:
     """A make ``MBEDTLS_CONFIG_FILE=`` override adding the missing :data:`_MBEDTLS_SPEED`
-    options, or None: the board isn't a TLS-update board with room, or the firmware's own
-    mbedtls config already defines them all (upstream took them -- nothing left to add).
+    options, or None: the board does no TLS updates (a coprocessor core, or a port built
+    without mbedtls), or the firmware's own mbedtls config already defines them all
+    (upstream took them -- nothing left to add).
 
     A wrapper header, not a patched copy: it includes the port's config unchanged and only
     then adds the options, so the firmware source is never touched and any port works."""
-    if not p.board(name).recovery_ca_bundle:
+    b = p.board(name)
+    if b.role != "main" or not b.mbedtls:
         return None
     port = _board_port(repo, name)
     mpy = repo / "lib" / "micropython"
