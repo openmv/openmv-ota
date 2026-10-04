@@ -29,12 +29,23 @@ images a camera can download, verify, and fall back from.
 
 - **A trust store the firmware can carry.** Recovery needs TLS anchors in the
   firmware itself. On the OpenMV N6, AE3, and RT1062 the firmware is large
-  enough to hold the full public bundle, so nothing needs configuring. On every
-  other board it is not. There, without `--ca`, `new --ota` scaffolds
+  enough to hold the full public bundle, so nothing needs configuring. The
+  OpenMV Cam M4, M7, and H7 need none either. On every other board
+  the bundle does not fit. There, without `--ca`, `new --ota` scaffolds
   `certs/root.pem` with the roots of the hosted OpenMV Cloud (a few KB) and sets
   `[ota].ca = "certs/root.pem"`, so the hosted cloud works out of the box.
   Self-hosting? Replace `certs/root.pem` with your server's root, or pass
   `--ca` with it at `new`.
+
+  The OpenMV Cam M4, M7, and H7 are discontinued. Without `--ca` they connect to
+  the server **without verifying its certificate**, and log
+  `tls: server not verified (this camera has no trust anchors)` the first time
+  they do. Anyone on the network path can then read or alter that camera's
+  traffic: its check-ins, logs, telemetry, and Live video, and the per-device
+  grants the server issues it for those. They still cannot put code on it: every
+  update is signed and checked on the camera against keys baked into its
+  firmware, anti-rollback still applies, and the image stays encrypted. Pass
+  `--ca` (or set `[ota].ca`) and these cameras verify like every other board.
 
 - **Keys provisioned.** `new --ota` generates the product's whole signing key
   set up front and writes it under `keys/`.
@@ -90,7 +101,7 @@ How the floor survives is the one place the two modes differ:
 | Flag | Effect |
 |---|---|
 | `--ota` | Declare the project over-the-air: split each partition into slots and provision the signing keys. |
-| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle when every board's firmware can carry it (N6, AE3, RT1062); otherwise it scaffolds the hosted OpenMV Cloud's roots as `certs/root.pem`. |
+| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle when every board's firmware can carry it (N6, AE3, RT1062); otherwise it scaffolds the hosted OpenMV Cloud's roots as `certs/root.pem`. The M4, M7, and H7 need neither, and connect unverified without it. |
 
 ## Files an OTA project adds
 

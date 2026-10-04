@@ -56,8 +56,12 @@ holding the root(s) your server chains to — a few KB. `project new --ota`
 scaffolds one for you: `certs/root.pem`, the roots of the hosted OpenMV Cloud.
 Self-hosting? Replace that file with your server's root (or pass `--ca` at
 `new`). `build firmware` refuses those boards with `[ota].ca` unset, rather
-than ship a recovery with no trust anchors. Setting `[ota].ca` is never wrong
-on any board: your device talks to one server, so its root is all it needs.
+than ship a recovery with no trust anchors. The OpenMV Cam M4, M7, and H7 are
+the exception: with `[ota].ca` unset their firmware carries no anchors and
+recovery connects unverified, as described in
+[OTA projects](04-ota-projects.md); the image it installs is still signature-checked.
+Setting `[ota].ca` is never wrong on any board: your device talks to one
+server, so its root is all it needs.
 
 ## The network settings file
 
