@@ -63,6 +63,25 @@ def configure(**kw):
     budget.enforce()                                 # a smaller cap sheds now
 
 
+# --- the board's cloud level ------------------------------------------------
+
+_lvl = None                       # cached cloud level (fixed per firmware)
+
+
+def _level():
+    """This camera's cloud level (``openmv_ota.cloud_level()``): ``"full"``, ``"no-live"`` or
+    ``"ota-only"``. Read once and cached -- the firmware fixes it. With no OTA runtime beside
+    us, or one that predates the call, it is ``"full"``: the SDK behaves as it always has."""
+    global _lvl
+    if _lvl is None:
+        try:
+            import openmv_ota
+            _lvl = openmv_ota.cloud_level()
+        except (ImportError, AttributeError):
+            _lvl = "full"
+    return _lvl
+
+
 # --- the shared RAM budget ---------------------------------------------------
 
 class _Budget:

@@ -225,6 +225,7 @@ def test_checkin_body_maps_identity_and_status():
         "payload_version": 5, "publish_seq": 900, "orders_by_seq": True,
         "slot": "A", "representation": "full",
         "fallback_reason": None, "confirmed": True, "slots": reported,
+        "cloud_level": "full",          # host: no _ota_config, so the firmware default
     }
 
 

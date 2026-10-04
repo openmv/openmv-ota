@@ -23,6 +23,9 @@ are what an app uses around an OTA update:
     tls_context(ssl, ca) -> a client SSLContext under the camera's one TLS rule:
                   verify against ``ca``; with none, unverified only on a firmware
                   built ``TLS_VERIFY = False`` (the M4/M7/H7), else refuse.
+    cloud_level() -> what this camera does on the hosted OpenMV Cloud, as its firmware
+                  was built: "full", "no-live" (no Live video) or "ota-only" (no Live,
+                  console or telemetry either). The cloud SDK never starts what it leaves out.
     install()  -> download a gzipped FRONT-slot image over HTTPS and install it:
                   write the FRONT slot, arm the one-shot trial, reboot. Does NOT
                   return on success. Call with the network already up, after any app
@@ -740,6 +743,24 @@ def _relieve(level):
 # Keep the region SELF-CONTAINED: nothing outside it may reference a name defined in
 # it (tests/build/test_runtime_drop.py proves that, and that the remainder compiles).
 
+_CLOUD_CUTS = ("no-live", "ota-only")
+
+
+def cloud_level():
+    """``_ota_config.CLOUD``, the level the build stamped from boards.json: ``"full"`` (OTA,
+    console, telemetry and Live video), ``"no-live"`` (all but Live) or ``"ota-only"`` (OTA
+    alone). A board with no level, firmware built before the stamp, or no ``_ota_config`` at
+    all reads ``"full"``: the SDK then does everything, as it always has. Inside this region:
+    the cloud features it gates all need the network, and a board without one (the M4)
+    spends no heap on it."""
+    try:
+        import _ota_config
+        level = getattr(_ota_config, "CLOUD", None)
+    except ImportError:
+        level = None
+    return level if level in _CLOUD_CUTS else "full"
+
+
 def _remembered(cfg, ssid, psk, uid, netcfg):
     """The settings to write for ``ssid``/``psk`` over the parsed file ``cfg``, or ``None`` when
     the file already says so (a typed plaintext PSK counts: recovery obfuscates it itself) --
@@ -877,6 +898,9 @@ def _checkin_body(info, st, slot_states=None):
         # cannot infer from the running image and the thing A/B made worth knowing. An older
         # server ignores the key; a single-image device sends one entry.
         "slots": list(slot_states or []),
+        # What the SDK on this camera will do (its firmware's level). The server knows the
+        # board's level from its name; this says what the firmware was actually built with.
+        "cloud_level": cloud_level(),
     }
 
 

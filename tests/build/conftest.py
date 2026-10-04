@@ -59,3 +59,13 @@ def make_project(tmp_path, make_firmware, make_sdk):
             f.write_bytes(content if isinstance(content, (bytes, bytearray)) else content.encode())
         return root, repo, app
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cloud_level_caches():
+    """The cloud SDK caches its firmware's cloud level and Live cap (fixed per firmware on a
+    device). A test that fakes ``_ota_config`` must not leak its answer into the next one."""
+    from openmv_ota.build.device.openmv_cloud import _lib, csi
+    _lib._lvl, csi._cap = None, 0
+    yield
+    _lib._lvl, csi._cap = None, 0

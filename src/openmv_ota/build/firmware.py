@@ -380,6 +380,13 @@ def _tls_verify_stamp(p, t) -> bool:
     return bool((p.config.ca or "").strip()) or t.tls_verify
 
 
+def _cloud_stamp(name: str) -> tuple[str | None, str | None]:
+    """``(_ota_config.CLOUD, _ota_config.LIVE_FRAMESIZE)`` for board ``name``: its boards.json
+    cloud level and Live frame-size cap (None where it has none)."""
+    b = get_board(name)
+    return b.cloud, b.live_framesize
+
+
 def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
     """Generate ``_ota_config.py`` -- the build-time constants the frozen ``boot.py``
     reads: the partition geometry, this device's ``product_id`` + the running firmware's
@@ -442,6 +449,11 @@ def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
         + "SERVER_URL = %r\n" % p.config.server_url
         + "CA_PEM = %r\n" % _recovery_ca(p, t)
         + "TLS_VERIFY = %r\n" % _tls_verify_stamp(p, t)
+        # WHAT THIS BOARD DOES ON THE HOSTED CLOUD (boards.json `cloud`), so the device SDK
+        # never starts what the board cannot carry: "no-live" builds no relay stream, and
+        # "ota-only" no datalake sinks either. None = a board with no level. LIVE_FRAMESIZE is
+        # the Live frame-size cap a "full" board downscales to (None elsewhere).
+        + "CLOUD = %r\nLIVE_FRAMESIZE = %r\n" % _cloud_stamp(name)
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
         + "BUILD_TIME = %d\n" % _build_time(p)
         + "TRUSTED_KEYS = {\n%s}\n" % keys
