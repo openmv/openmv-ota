@@ -15,6 +15,10 @@ an OPT-IN disk spool (``enable(spool_path=...)``), at-least-once delivery made
 safe by the datalake's ``(sid, seq)`` dedup. Idle until an ingest grant arrives
 (auto-wired from the OTA check-in); ``post()`` before then just buffers (bounded).
 
+Board level (``openmv_ota.cloud_level()``): on an "ota-only" camera there is no
+datalake -- ``enable()`` does nothing and ``post()`` drops the record and
+returns False, allocating nothing.
+
 RAM BUDGET: this module runs inside your application, so its memory is your
 memory. Topics share ONE byte budget rather than each reserving its own, the
 spool writes record by record, and drains read in bounded windows. Keeping many
@@ -24,7 +28,7 @@ low-rate topics is the intended use. The ceilings are yours to set; see
 
 import json
 
-from ._lib import (_Conn, _drain_disk, _open_disk, _session_id, _timestamp, budget,
+from ._lib import (_Conn, _drain_disk, _level, _open_disk, _session_id, _timestamp, budget,
                    limits)
 
 _FLUSH_MS = 5000
@@ -148,8 +152,11 @@ def post(topic, obj):
     Topics are cheap on purpose: an idle one costs a dict entry and an empty
     list, and they all share ONE byte budget, so "many topics, each at a low
     rate" is the case this is built for. The count cap is not about RAM -- it is
-    that every spooled topic is its own FILE on the card."""
-    if not _valid_topic(topic):
+    that every spooled topic is its own FILE on the card.
+
+    On an "ota-only" camera it drops ``obj`` and returns False: no topic, no
+    record, nothing queued."""
+    if _level() == "ota-only" or not _valid_topic(topic):
         return False
     t = _topics.get(topic)
     if t is None:
@@ -191,13 +198,20 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
 _register()
 
 
-def enable(spool_path=None, write_through=False):  # pragma: no cover  (device)
+def enable(spool_path=None, write_through=False):
     """Start the background telemetry flusher. ``spool_path`` opts into a durable
     disk spool (per topic), same rules as ``logs.enable`` -- off by default, and
-    writing to your card is deliberate. Call once from the app's async world."""
+    writing to your card is deliberate. Call once from the app's async world.
+    A no-op on an "ota-only" camera: no flusher, no spool."""
     global _spool_path, _write_through
+    if _level() == "ota-only":
+        return
     _spool_path = spool_path
     _write_through = write_through
+    _start()
+
+
+def _start():  # pragma: no cover  (device: spawns the task)
     import asyncio
     asyncio.create_task(_flusher())
 

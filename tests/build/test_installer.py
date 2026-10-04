@@ -1890,3 +1890,46 @@ def test_reader_readline_limit_below_the_buffer_size():
     r = _R(_recv_of(b"abcdefgh"), size=64)
     with pytest.raises(ValueError, match="too long"):
         r.readline(limit=4)
+
+
+# --- the TLS rule, standalone (the installer cannot import openmv_ota) --------
+
+class _Warns:
+    def __init__(self):
+        self.lines = []
+
+    def warning(self, msg, *a):
+        self.lines.append(msg)
+
+
+@pytest.mark.parametrize(("ca", "cfg", "want"), [
+    (b"PEM", type("C", (), {"TLS_VERIFY": True}), b"PEM"),     # anchors: always verified
+    (b"PEM", type("C", (), {"TLS_VERIFY": False}), b"PEM"),    # ... even where it may skip
+    (b"PEM", type("C", (), {}), b"PEM"),
+    (b"", type("C", (), {"TLS_VERIFY": False}), None),         # M4/M7/H7: unverified
+    (None, type("C", (), {"TLS_VERIFY": False}), None),
+])
+def test_tls_anchors_allows(monkeypatch, ca, cfg, want):
+    monkeypatch.setattr(_mod, "_tls_warned", False)
+    monkeypatch.setattr(_mod, "log", _Warns())
+    assert inst("_tls_anchors")(ca, cfg) == want
+    assert bool(_mod.log.lines) is (want is None)
+
+
+@pytest.mark.parametrize("cfg", [type("C", (), {"TLS_VERIFY": True}), type("C", (), {}), None])
+def test_tls_anchors_refuses_without_anchors_unless_built_unverified(cfg):
+    """A True stamp, a missing stamp (an older firmware), or no cfg at all: refuse, pre-erase,
+    exactly as before -- never a silent unverified download on a board that can verify."""
+    for ca in (b"", None):
+        with pytest.raises(OSError, match="no TLS trust anchors"):
+            inst("_tls_anchors")(ca, cfg)
+
+
+def test_tls_anchors_warns_once(monkeypatch):
+    """Recovery retries the install with backoff; the warning is once per boot, not per try."""
+    monkeypatch.setattr(_mod, "_tls_warned", False)
+    monkeypatch.setattr(_mod, "log", _Warns())
+    cfg = type("C", (), {"TLS_VERIFY": False})
+    inst("_tls_anchors")(b"", cfg)
+    inst("_tls_anchors")(b"", cfg)
+    assert _mod.log.lines == ["tls: server not verified (this camera has no trust anchors)"]

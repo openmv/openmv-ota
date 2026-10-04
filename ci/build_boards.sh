@@ -110,6 +110,10 @@ expect_file() {  # label  path
   if [ -f "$2" ]; then pass "$1"; else fail "$1" "missing file: $2"; fi
 }
 
+expect_no_file() {  # label  path
+  if [ -f "$2" ]; then fail "$1" "unexpected file: $2"; else pass "$1"; fi
+}
+
 # A verification *verdict* (exit 1, "FAILED"), distinct from a tool error.
 expect_verify_reject() {  # label  cmd...
   local label="$1"; shift
@@ -264,11 +268,11 @@ do_classic() {  # board  work
   # geometry.derive_mode), which is the whole point of the mode. So the assertion is now that
   # these boards are ACCEPTED. What is still refused is a partition with no room for an image
   # even in single mode, which is pure arithmetic -- and that is the `noromfs` class below.
-  # THE PUBLIC CA BUNDLE DOES NOT FIT THESE BOARDS, so without --ca `project new --ota`
-  # scaffolds the hosted OpenMV Cloud's roots (a few KB) instead of ~186 KB...
-  expect_success "project new --ota without --ca (hosted-cloud roots)" \
+  # THESE BOARDS (the discontinued M4/M7/H7) carry tls_verify=false: without --ca
+  # `project new --ota` scaffolds NO trust anchors and the firmware connects unverified...
+  expect_success "project new --ota without --ca (no anchors: connects unverified)" \
     $OTA project new "$work/ota_noca" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
-  expect_file "hosted-cloud roots scaffolded (certs/root.pem)" "$work/ota_noca/certs/root.pem"
+  expect_no_file "no trust anchors scaffolded (certs/root.pem)" "$work/ota_noca/certs/root.pem"
   # ...and accepts your own server's root, which is ~1 KB, as a self-hoster does.
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=openmv-ota-ci" \
     -keyout "$work/root.key" -out "$work/root.pem" >/dev/null 2>&1

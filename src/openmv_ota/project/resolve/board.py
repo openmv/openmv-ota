@@ -43,6 +43,8 @@ class ResolvedBoard:
                                            # plain romfs written by the main core)
     recovery_ca_bundle: bool = False       # firmware fits the full public CA bundle
                                            # for recovery when [ota].ca is unset
+    tls_verify: bool = True                # False: the board may connect unverified when
+                                           # [ota].ca is unset (the discontinued M4/M7/H7)
 
 
 def _firmware_part_lengths(repo: Path, board: str, index: int) -> list[int]:
@@ -151,5 +153,6 @@ def resolve_board(
         mbedtls=_mbedtls_supported(repo, name),
         role=part.role,
         recovery_ca_bundle=cfg.recovery_ca_bundle,
+        tls_verify=cfg.tls_verify,
     )
     return resolved, warnings

@@ -63,6 +63,25 @@ def configure(**kw):
     budget.enforce()                                 # a smaller cap sheds now
 
 
+# --- the board's cloud level ------------------------------------------------
+
+_lvl = None                       # cached cloud level (fixed per firmware)
+
+
+def _level():
+    """This camera's cloud level (``openmv_ota.cloud_level()``): ``"full"``, ``"no-live"`` or
+    ``"ota-only"``. Read once and cached -- the firmware fixes it. With no OTA runtime beside
+    us, or one that predates the call, it is ``"full"``: the SDK behaves as it always has."""
+    global _lvl
+    if _lvl is None:
+        try:
+            import openmv_ota
+            _lvl = openmv_ota.cloud_level()
+        except (ImportError, AttributeError):
+            _lvl = "full"
+    return _lvl
+
+
 # --- the shared RAM budget ---------------------------------------------------
 
 class _Budget:
@@ -225,7 +244,8 @@ def _ca():  # pragma: no cover  (device: filesystem)
     verifies updates against -- the romfs override ``openmv_ota/data/ca.pem`` if the
     image ships one, else the firmware's frozen copy (``openmv_ota.builtin_ca()``).
     Returns None if the OTA runtime is not installed alongside us (or the firmware
-    froze nothing), in which case the platform default applies."""
+    froze nothing), in which case :func:`_tls_ctx` applies the OTA runtime's rule: refuse,
+    except on a firmware built to connect unverified (the M4/M7/H7)."""
     global _ca_pem
     if _ca_pem is None:
         try:
@@ -246,18 +266,21 @@ def _ca():  # pragma: no cover  (device: filesystem)
     return _ca_pem or None
 
 
+def _tls_ctx(ssl):
+    """The client context for a relay connection: the OTA runtime's one TLS rule
+    (``openmv_ota.tls_configure``) over :func:`_ca`'s anchors -- the same bundle and the same
+    behaviour as the check-in. No runtime alongside us is an ImportError: refused, never a
+    silent unverified connection."""
+    import openmv_ota
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    return openmv_ota.tls_configure(ctx, ssl, _ca())
+
+
 async def _open(host, port, tls):  # pragma: no cover
     import asyncio
     if tls:
         import ssl
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ca = _ca()
-        if ca:
-            # Verify the server against the same trust anchors the OTA runtime
-            # uses for updates -- one bundle, one behaviour across the device.
-            ctx.verify_mode = ssl.CERT_REQUIRED
-            ctx.load_verify_locations(cadata=ca)
-        return await asyncio.open_connection(host, port, ssl=ctx)
+        return await asyncio.open_connection(host, port, ssl=_tls_ctx(ssl))
     return await asyncio.open_connection(host, port)
 
 

@@ -333,15 +333,17 @@ def _recovery_ca(p, t) -> bytes:
 
     This is the device's ONE frozen trust store -- recovery uses it, and so does the runtime
     (``openmv_ota.builtin_ca()``) -- so it is paid for once, read straight out of flash, and is
-    there even when the romfs is gone. Recovery runs exactly then, so it must hold real anchors:
-    an empty CA_PEM would leave TLS with nothing to verify against and recovery retrying forever.
+    there even when the romfs is gone. Recovery runs exactly then, so on a board that verifies
+    it must hold real anchors: an empty CA_PEM there leaves TLS with nothing to verify against.
 
     ``[ota].ca`` when set (``project new`` points it at ``certs/root.pem``: the hosted OpenMV
-    Cloud's roots by default, or ``--ca``'s file). With it unset, a board whose firmware has the
-    room (``recovery_ca_bundle`` in boards.json) freezes the project's full public bundle --
-    ``certs/ca.pem``, scaffolded at ``project new``. A board without the room (the ~186 KB
-    bundle overflows FLASH_TEXT on the 1792 KB parts) refuses rather than ship a recovery that
-    cannot connect."""
+    Cloud's roots by default, or ``--ca``'s file) -- on every board, including the ones below.
+    With it unset, a board flagged ``tls_verify: false`` (the discontinued M4/M7/H7) gets an
+    EMPTY CA_PEM and connects unverified (:func:`_tls_verify_stamp` says so to the device). A
+    board whose firmware has the room (``recovery_ca_bundle`` in boards.json) freezes the
+    project's full public bundle -- ``certs/ca.pem``, scaffolded at ``project new``. A board
+    without the room (the ~186 KB bundle overflows FLASH_TEXT on the 1792 KB parts) refuses
+    rather than ship a recovery that cannot connect."""
     rel = (p.config.ca or "").strip()
     if rel:
         path = p.root / rel
@@ -349,6 +351,8 @@ def _recovery_ca(p, t) -> bytes:
             return path.read_bytes()
         except OSError as e:
             raise BuildError("ota.ca %r is not readable: %s" % (rel, e)) from None
+    if not t.tls_verify:
+        return b""
     if t.recovery_ca_bundle:
         bundle = p.root / "certs" / "ca.pem"
         try:
@@ -366,6 +370,21 @@ def _recovery_ca(p, t) -> bytes:
         "root(s) your server's certificate chains to -- for the hosted OpenMV Cloud, a copy "
         "of openmv_ota/data/%s (what `project new` scaffolds as certs/root.pem)."
         % (t.name, CLOUD_ROOTS.name))
+
+
+def _tls_verify_stamp(p, t) -> bool:
+    """``_ota_config.TLS_VERIFY``: False only where :func:`_recovery_ca` froze no anchors on
+    purpose -- a ``tls_verify: false`` board with ``[ota].ca`` unset. Everything else stamps
+    True, including such a board when the project opts in with ``[ota].ca``. The device reads it
+    only when it has no anchors, and a firmware without the stamp counts as True."""
+    return bool((p.config.ca or "").strip()) or t.tls_verify
+
+
+def _cloud_stamp(name: str) -> tuple[str | None, str | None]:
+    """``(_ota_config.CLOUD, _ota_config.LIVE_FRAMESIZE)`` for board ``name``: its boards.json
+    cloud level and Live frame-size cap (None where it has none)."""
+    b = get_board(name)
+    return b.cloud, b.live_framesize
 
 
 def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
@@ -407,6 +426,9 @@ def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
         
         + "PRODUCT_ID = %d\n" % product_id
         + "ACCOUNT_ID = %r\n" % p.config.account_id
+        # The board name system.json carries, for recovery's check-in: with no image there is
+        # no system.json, and the server's registration gate keys on (board, device id).
+        + "BOARD = %r\n" % name
         # THE MODE THE DEVICE IS BUILT FOR. Derived from geometry (A/B wherever two slots fit),
         # honouring the project's single_image opt-out. boot.py needs it to know whether there is a
         # second slot to fall back to at all -- on a SINGLE board a failed trial means recovery,
@@ -421,10 +443,17 @@ def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
         + "MAX_ATTEMPTS = %d\n" % p.config.max_attempts
         # RECOVERY CONFIG -- in the FIRMWARE, deliberately, not the romfs. A device whose image is
         # gone still needs both of these to reach the server, which is exactly when recovery runs;
-        # keeping them in the app is what made recovery impossible in v1. CA_PEM is never empty
-        # (see _recovery_ca), and it is the only frozen copy: the runtime reads it too.
+        # keeping them in the app is what made recovery impossible in v1. CA_PEM is empty only
+        # where TLS_VERIFY is False (see _recovery_ca), and it is the only frozen copy: the
+        # runtime reads it too.
         + "SERVER_URL = %r\n" % p.config.server_url
         + "CA_PEM = %r\n" % _recovery_ca(p, t)
+        + "TLS_VERIFY = %r\n" % _tls_verify_stamp(p, t)
+        # WHAT THIS BOARD DOES ON THE HOSTED CLOUD (boards.json `cloud`), so the device SDK
+        # never starts what the board cannot carry: "no-live" builds no relay stream, and
+        # "ota-only" no datalake sinks either. None = a board with no level. LIVE_FRAMESIZE is
+        # the Live frame-size cap a "full" board downscales to (None elsewhere).
+        + "CLOUD = %r\nLIVE_FRAMESIZE = %r\n" % _cloud_stamp(name)
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
         + "BUILD_TIME = %d\n" % _build_time(p)
         + "TRUSTED_KEYS = {\n%s}\n" % keys

@@ -1246,10 +1246,28 @@ def _install_stream(source, write, readback, slot_size, block, feed,
 # Excluded from host coverage like boot.py's _main; exercised under QEMU only for the
 # exec-into-RAM + clean-failure path (qemu has no network and a read-only rom_ioctl).
 
+_tls_warned = False
+
+
+def _tls_anchors(ca_pem, cfg):
+    """The camera's one TLS rule (``openmv_ota._tls_verify``), standalone: this file runs exec'd
+    into RAM or frozen, so it takes the decision from the ``cfg`` it is handed rather than an
+    import. Anchors -> returned, and verified. None -> ``None`` (unverified) only when the build
+    stamped ``TLS_VERIFY = False`` (the M4/M7/H7), warning once; else refused, pre-erase."""
+    global _tls_warned
+    if not ca_pem and getattr(cfg, "TLS_VERIFY", True):
+        raise OSError("no TLS trust anchors: no data/ca.pem and none frozen; pass ca=")
+    if not ca_pem and not _tls_warned:
+        _tls_warned = True                           # once per boot: recovery retries this
+        log.warning("tls: server not verified (this camera has no trust anchors)")
+    return ca_pem or None
+
+
 def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
-    """A TLS socket to ``host:port`` verified against ``ca_pem`` (CERT_REQUIRED + SNI).
-    mbedtls copies the cert at load, and the handshake completes here -- both before
-    any erase -- so ``ca_pem`` (read from the about-to-be-erased romfs) is safe."""
+    """A TLS socket to ``host:port`` verified against ``ca_pem`` (CERT_REQUIRED + SNI), or
+    unverified when ``ca_pem`` is None -- which ``_tls_anchors`` allows only on a TLS_VERIFY
+    False build. mbedtls copies the cert at load, and the handshake completes here -- both
+    before any erase -- so ``ca_pem`` (read from the about-to-be-erased romfs) is safe."""
     ai = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0]
     sock = socket.socket(ai[0], ai[1], ai[2])
     try:
@@ -1259,8 +1277,9 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
         with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
             sock.connect(ai[-1])
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.verify_mode = ssl.CERT_REQUIRED
-            ctx.load_verify_locations(cadata=ca_pem)
+            ctx.verify_mode = ssl.CERT_REQUIRED if ca_pem else ssl.CERT_NONE
+            if ca_pem:
+                ctx.load_verify_locations(cadata=ca_pem)  # hil-residual: the verifying arm; every bench leg passes a CA and is witnessed by `install: TLS up` just below
             tls = ctx.wrap_socket(sock, server_hostname=host)
         log.debug("install: TLS up")
         return tls  # hil-residual: bare return of the wrapped TLS socket
@@ -1679,6 +1698,7 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
     else:
         import socket  # hil-residual: URL-transport arm; witnessed by install.download on every bench install leg
         import ssl  # hil-residual: URL-transport arm (same witness)
+        ca_pem = _tls_anchors(ca_pem, cfg)  # hil-residual: URL-transport arm (same witness); the rule itself is host-tested
 
     # Watchdog (if the app enabled one): relax() feeds it from a timer ISR ONLY around the
     # single multi-second erase the main loop can't reach; feed() keeps it alive per chunk

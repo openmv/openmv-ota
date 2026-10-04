@@ -273,6 +273,17 @@ def test_board_no_firmware_header_uses_bundled(make_firmware):
     assert rb.geometry_source == "bundled"
     assert rb.board_type is None
     assert rb.npu is None and rb.npu_config is None  # board without an NPU
+    assert rb.tls_verify is False                    # the M4 may connect unverified
+
+
+def test_board_tls_verify_rides_into_the_lock_and_defaults_true(make_firmware):
+    """The build reads tls_verify off the LOCK's resolved board, so it must be carried there --
+    and an older lock without the field must read as verifying."""
+    from dataclasses import asdict
+    rb, _ = board_res.resolve_board(make_firmware(), "OPENMV_N6")
+    assert rb.tls_verify is True and asdict(rb)["tls_verify"] is True
+    old = {k: v for k, v in asdict(rb).items() if k != "tls_verify"}
+    assert board_res.ResolvedBoard(**old).tls_verify is True
 
 
 def test_board_unparseable_firmware_token_falls_back(make_firmware):

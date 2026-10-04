@@ -45,6 +45,11 @@ the dashboard terminal can page history with ``(sid, seq < oldest-seen)`` and
 stitch it to the live tail with no gaps and no duplicates -- timestamps can't
 promise that (RTC jumps, batching); sequence numbers can.
 
+Board level (``openmv_ota.cloud_level()``): on a "no-live" camera there is no
+relay stream, no replay ring and no live flusher -- lines persist to the
+datalake only. On an "ota-only" camera ``enable()`` does nothing and allocates
+nothing: the logger keeps printing wherever ``openmv_log`` sends it.
+
 print() and tracebacks are NOT captured -- only logger records (v1; a dupterm
 tee for full-terminal capture is a documented later option).
 
@@ -60,7 +65,7 @@ import json
 import logging
 
 from . import csi as _csi          # for csi.Stream only (console as a Live stream)
-from ._lib import (_Conn, _drain_disk, _open_disk, _session_id, _timestamp, budget,
+from ._lib import (_Conn, _drain_disk, _level, _open_disk, _session_id, _timestamp, budget,
                    limits)
 
 _STREAM_NAME = "console"
@@ -98,9 +103,11 @@ class _Console:
     pairs plus the pending (unsent) batch. Line-granular so the ring never
     tears a line; seq is the per-boot monotonic line counter."""
 
-    def __init__(self, ring_bytes=None, sid=None):
+    def __init__(self, ring_bytes=None, sid=None, live=True):
         self.sid = sid if sid is not None else _session_id()
-        self._cap = ring_bytes if ring_bytes else limits.ring_bytes
+        # No Live (a "no-live" camera): no viewer will ever be replayed to, so no ring --
+        # the console is just the seq counter the datalake records carry.
+        self._cap = (ring_bytes if ring_bytes else limits.ring_bytes) if live else 0
         self._seq = 0
         self._ring = []               # [(seq, line str)], newest last
         self._ring_size = 0
@@ -114,8 +121,10 @@ class _Console:
         upload, no unbounded queue). Returns the line's ``seq`` so the caller
         can also hand it to the datalake outbox."""
         seq = self._seq
-        entry = (seq, line)
         self._seq += 1
+        if not self._cap:
+            return seq
+        entry = (seq, line)
         self._ring.append(entry)
         self._ring_size += len(line)
         while self._ring_size > self._cap and len(self._ring) > 1:
@@ -333,8 +342,7 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
 
 
 def enable(level=logging.INFO, logger=None, ring_bytes=None, fps=5,
-           spool_path=None,
-           write_through=False):  # pragma: no cover  (device: spawns tasks)
+           spool_path=None, write_through=False):
     """Mirror the logging tree to the cloud: attach the handler (root logger by
     default -- the app's loggers AND openmv_ota's flow through it) and start the
     background flushers (live mirror + datalake persistence). Call once, from
@@ -351,7 +359,18 @@ def enable(level=logging.INFO, logger=None, ring_bytes=None, fps=5,
     line to disk immediately, so even the in-RAM window survives a sudden power
     cut -- WARNING: that's a disk write per log line, and MicroPython does not
     buffer disk writes, so it will slow the app noticeably. Off unless zero-loss
-    matters more than speed."""
+    matters more than speed.
+
+    By board level: "no-live" persists only (no relay stream, no ring, no live
+    flusher); "ota-only" returns None at once, having allocated nothing."""
+    cloud = _level()
+    if cloud == "ota-only":
+        return None
+    return _enable(cloud == "full", level, logger, ring_bytes, fps, spool_path, write_through)
+
+
+def _enable(live, level, logger, ring_bytes, fps, spool_path,
+            write_through):  # pragma: no cover  (device: spawns tasks)
     import asyncio
     disk = _open_disk(spool_path, _SPOOL_NAME)
     if write_through and disk is not None:
@@ -359,7 +378,7 @@ def enable(level=logging.INFO, logger=None, ring_bytes=None, fps=5,
         logging.getLogger("openmv_cloud").warning(
             "logs: write_through on -- a disk write per line; expect slowdown")
     global _kick, _outbox
-    console = _Console(ring_bytes if ring_bytes else limits.ring_bytes)
+    console = _Console(ring_bytes if ring_bytes else limits.ring_bytes, live=live)
     outbox = _Outbox(sid=console.sid, disk=disk, write_through=write_through)
     _kick, _outbox = asyncio.Event(), outbox
     handler = CloudLogHandler(console, outbox)
@@ -368,7 +387,10 @@ def enable(level=logging.INFO, logger=None, ring_bytes=None, fps=5,
     target.addHandler(handler)
     if target.level > level:      # the root default (WARNING) would eat INFO
         target.setLevel(level)
-    stream = _csi.Stream(_STREAM_NAME, fps=fps, encoder=lambda batch, _q: batch)
+    # The console as a Live stream -- only where there is Live: a "no-live" camera opens no
+    # relay socket for it, so its lines go to the datalake alone.
+    stream = _csi.Stream(_STREAM_NAME, fps=fps, encoder=lambda batch, _q: batch) \
+        if live else None
     handler.stream = stream
 
     def ota_handler():
@@ -376,7 +398,8 @@ def enable(level=logging.INFO, logger=None, ring_bytes=None, fps=5,
         h.stream = stream
         return h
     _hear_ota(logging.getLogger("openmv_ota"), ota_handler)
-    asyncio.create_task(_flusher(console, stream))
+    if stream is not None:
+        asyncio.create_task(_flusher(console, stream))
     asyncio.create_task(_datalake_flusher(console.sid, outbox))
     return handler
 

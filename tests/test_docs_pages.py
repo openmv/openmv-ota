@@ -144,3 +144,16 @@ def test_every_setting_named_exists():
             if var not in known and var not in src:
                 bad.append("%s: %s" % (p.name, var))
     assert bad == []
+
+
+def test_the_cloud_level_table_matches_boards_json():
+    """The board table on the OTA projects page is the registry's: every board with a cloud
+    level is listed with that level and Live frame size, and no other board is."""
+    from openmv_ota.romfs.boards import load_boards
+
+    text = TEXTS[DOCS / "tutorial" / "04-ota-projects.md"]
+    rows = {m.group(1): (m.group(2), m.group(3).strip() or None)
+            for m in re.finditer(r"(?m)^\| ([A-Z0-9_]+) \| `([a-z-]+)` \|([^|]*)\|$", text)}
+    want = {n: (b.cloud, b.live_framesize) for n, b in load_boards().items() if b.cloud}
+    assert rows == want
+

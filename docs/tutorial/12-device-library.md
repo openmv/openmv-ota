@@ -88,7 +88,9 @@ either way and the signature is the boundary. Something else decides *which* man
 hand it (how that's obtained is out of scope here). It:
 
 1. Opens an **HTTPS** connection (plaintext HTTP is refused), verifying the server
-   against `ca` with `CERT_REQUIRED` + SNI — all **before** erasing anything. A file
+   against `ca` with `CERT_REQUIRED` + SNI — all **before** erasing anything. With no
+   trust anchors at all it refuses, except on an M4, M7, or H7 built without `[ota].ca`,
+   which connects unverified ([OTA projects](04-ota-projects.md)). A file
    install opens the manifest file instead: no connection, and `ca` is ignored.
 2. **Fetches + verifies the manifest** (into RAM): checks its ECDSA signature against the
    same frozen trusted keys as an image trailer, then applies the device-relative checks
@@ -148,7 +150,9 @@ The built-in store is the trust store frozen into the firmware — the project's
 `[ota].ca` (the hosted OpenMV Cloud's roots on boards that cannot carry more, or
 the roots you supplied with `--ca`), else `certs/ca.pem` (a fresh Mozilla root
 bundle downloaded at `project new`) — read straight out of flash, and exposed as
-**`openmv_ota.builtin_ca()`** so your app's own TLS connections can reuse it. An
+**`openmv_ota.builtin_ca()`** so your app's own TLS connections can reuse it, and
+**`openmv_ota.tls_configure(ctx, ssl, ca)`** sets your `ssl.SSLContext` to the same rule the
+updater and the cloud SDK use. An
 image that ships `app/lib/openmv_ota/data/ca.pem` overrides it: the trust store
 then swaps with a romfs update, no firmware reflash. Broad CA trust is acceptable
 here because **the signature, not TLS, is the integrity boundary** — a TLS MITM

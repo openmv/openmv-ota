@@ -225,6 +225,7 @@ def test_checkin_body_maps_identity_and_status():
         "payload_version": 5, "publish_seq": 900, "orders_by_seq": True,
         "slot": "A", "representation": "full",
         "fallback_reason": None, "confirmed": True, "slots": reported,
+        "cloud_level": "full",          # host: no _ota_config, so the firmware default
     }
 
 
@@ -416,6 +417,92 @@ def test_builtin_ca_is_none_without_frozen_anchors(monkeypatch):
     assert rt.builtin_ca() is None
     monkeypatch.delitem(sys.modules, "_ota_config")
     assert rt.builtin_ca() is None
+
+
+# --- the one TLS rule: _tls_verify / tls_configure --------------------------------
+
+class _Warns:
+    def __init__(self):
+        self.lines = []
+
+    def warning(self, msg, *a):
+        self.lines.append(msg)
+
+
+class _Ssl:
+    """Just enough of MicroPython's ssl to see what tls_configure set."""
+    PROTOCOL_TLS_CLIENT, CERT_NONE, CERT_REQUIRED = 1, 0, 2
+
+    class SSLContext:
+        def __init__(self, proto):
+            self.proto, self.verify_mode, self.cadata = proto, None, None
+
+        def load_verify_locations(self, cadata):
+            self.cadata = cadata
+
+
+def _stamp(monkeypatch, flag):
+    """_ota_config with TLS_VERIFY = flag; "missing" = no attribute; "absent" = no module."""
+    import sys
+    import types
+    monkeypatch.setattr(rt, "_tls_warned", False)
+    monkeypatch.setattr(rt, "log", _Warns())
+    if flag == "absent":
+        monkeypatch.setitem(sys.modules, "_ota_config", None)   # import raises ImportError
+    elif flag == "missing":
+        monkeypatch.setitem(sys.modules, "_ota_config", types.SimpleNamespace(CA_PEM=b""))
+    else:
+        monkeypatch.setitem(sys.modules, "_ota_config",
+                            types.SimpleNamespace(CA_PEM=b"", TLS_VERIFY=flag))
+
+
+@pytest.mark.parametrize("flag", [True, False, "missing", "absent"])
+def test_tls_verify_with_anchors_always_verifies(monkeypatch, flag):
+    _stamp(monkeypatch, flag)
+    assert rt._tls_verify(b"PEM") is True
+    ctx = rt.tls_configure(_Ssl.SSLContext(_Ssl.PROTOCOL_TLS_CLIENT), _Ssl, b"PEM")
+    assert ctx.verify_mode == _Ssl.CERT_REQUIRED and ctx.cadata == "PEM"
+    assert rt.tls_configure(_Ssl.SSLContext(_Ssl.PROTOCOL_TLS_CLIENT), _Ssl, "PEM").cadata == "PEM"
+    assert rt.log.lines == []
+
+
+def test_tls_verify_without_anchors_skips_only_where_built_unverified(monkeypatch):
+    """The M4/M7/H7 (TLS_VERIFY False): CERT_NONE, no anchors loaded, one warning however many
+    connections follow."""
+    _stamp(monkeypatch, False)
+    for ca in (None, b"", ""):
+        ctx = rt.tls_configure(_Ssl.SSLContext(_Ssl.PROTOCOL_TLS_CLIENT), _Ssl, ca)
+        assert ctx.verify_mode == _Ssl.CERT_NONE and ctx.cadata is None
+    assert rt.log.lines == ["tls: server not verified (this camera has no trust anchors)"]
+
+
+def test_tls_configure_pins_tls12_where_the_context_can_say_so(monkeypatch):
+    """CPython's SSLContext takes a protocol floor; MicroPython's (mbedtls, TLS 1.2+ only) has
+    none, and the stub above stands in for it."""
+    import ssl as cpython_ssl
+    _stamp(monkeypatch, True)
+    ctx = rt.tls_configure(cpython_ssl.SSLContext(cpython_ssl.PROTOCOL_TLS_CLIENT), cpython_ssl,
+                           _cpython_pem())
+    assert ctx.minimum_version == cpython_ssl.TLSVersion.TLSv1_2
+    assert ctx.verify_mode == cpython_ssl.CERT_REQUIRED
+
+
+def _cpython_pem():
+    """A real self-signed PEM, so CPython's load_verify_locations accepts it."""
+    from pathlib import Path
+    return (Path(__file__).resolve().parents[2] / "src" / "openmv_ota" / "data"
+            / "openmv-cloud-roots.pem").read_text()
+
+
+@pytest.mark.parametrize("flag", [True, "missing", "absent"])
+def test_tls_verify_without_anchors_refuses_everywhere_else(monkeypatch, flag):
+    """A True stamp, a missing stamp (a firmware built before it existed) or no _ota_config at
+    all: refused by name, never a silent fallback."""
+    _stamp(monkeypatch, flag)
+    with pytest.raises(OSError, match="no TLS trust anchors"):
+        rt.tls_configure(_Ssl.SSLContext(_Ssl.PROTOCOL_TLS_CLIENT), _Ssl, None)
+    assert rt.log.lines == []
+
 
 
 # --- _InstallGate: install from a fresh heap ---------------------------------------------
@@ -640,3 +727,57 @@ def test_register_flush_is_idempotent_by_key(monkeypatch):
     rt.register_flush(a, key="logs")
     rt.register_flush(a)
     assert len(rt._flush_hooks) == 2
+
+
+# --- the recovery network memory ----------------------------------------------
+# wifi() is remembered for firmware-resident recovery after the first check-in that gets
+# through. What is decided here is WHETHER to write and WHAT: the file is on flash, so an
+# unchanged network must not rewrite it every boot.
+
+def _nc():
+    from openmv_ota.build.device import openmv_netcfg
+    return openmv_netcfg
+
+
+_UID = b"\x01\x02\x03\x04"
+
+
+def test_a_new_network_is_saved_obfuscated_and_recovery_reads_it_back():
+    nc = _nc()
+    out = rt._remembered({}, "Home", "pa#ss word", _UID, nc)
+    assert out["interface"] == "wifi" and out["wifi.ssid"] == "Home"
+    assert nc.is_obfuscated(out["wifi.psk"]) and "pa#ss" not in nc.render(out)
+    back = nc.settings(nc.parse(nc.render(out)), _UID)      # exactly what recovery does
+    assert (back["interface"], back["ssid"], back["psk"], back["ipv4"]) == \
+        ("wifi", "Home", "pa#ss word", "dhcp")
+
+
+def test_an_unchanged_network_writes_nothing():
+    nc = _nc()
+    saved = nc.parse(nc.render(rt._remembered({}, "Home", "pw", _UID, nc)))
+    assert rt._remembered(saved, "Home", "pw", _UID, nc) is None
+    # a hand-typed plaintext PSK that matches counts too (recovery obfuscates it itself)
+    assert rt._remembered(nc.parse("wifi.ssid = Home\nwifi.psk = pw\n"), "Home", "pw", _UID,
+                          nc) is None
+
+
+def test_a_new_password_keeps_the_same_network_s_static_address():
+    nc = _nc()
+    cfg = nc.parse("interface = wifi\nwifi.ssid = Home\nwifi.psk = old\nipv4 = static\n"
+                   "ipv4.address = 10.0.0.5\nipv4.netmask = 255.0.0.0\nipv4.gateway = 10.0.0.1\n")
+    out = rt._remembered(cfg, "Home", "new", _UID, nc)
+    assert out["ipv4"] == "static" and out["ipv4.address"] == "10.0.0.5"
+    assert nc.deobfuscate(out["wifi.psk"], _UID) == "new"
+
+
+def test_another_network_or_interface_starts_from_dhcp():
+    """An address written for another network, or for the wired interface, would strand the
+    device on this one."""
+    nc = _nc()
+    static = ("ipv4 = static\nipv4.address = 10.0.0.5\nipv4.netmask = 255.0.0.0\n"
+              "ipv4.gateway = 10.0.0.1\n")
+    for text in ("wifi.ssid = Old\nwifi.psk = pw\n" + static,
+                 "interface = eth\nwifi.ssid = Home\nwifi.psk = pw\n" + static):
+        out = rt._remembered(nc.parse(text), "Home", "pw", _UID, nc)
+        assert out == {"ipv4": "dhcp", "interface": "wifi", "wifi.ssid": "Home",
+                       "wifi.psk": nc.obfuscate("pw", _UID)}

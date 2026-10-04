@@ -221,7 +221,8 @@ def render_config(
                 '# server\'s root (or pass `project new --ca`).\n' % ca) if cloud_roots else "")
             + (('ca = "%s"   # TLS roots for OTA downloads (relative to the project)\n' % ca)
                if ca else
-               "# ca = \"certs/root.pem\"   # relative to the project; unset = the bundled public CAs\n")
+               "# ca = \"certs/root.pem\"   # relative to the project; unset = the bundled public CAs\n"
+               "#                           (none on the M4/M7/H7, which then connect unverified)\n")
             + "\n"
             "# single_image = true     # OPT OUT of A/B: run one slot and buy back a full image of\n"
             "#                           flash. The trade, which is invisible until it bites:\n"

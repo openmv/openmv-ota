@@ -472,8 +472,9 @@ def _no_bundle_fetch(monkeypatch):
     monkeypatch.setattr(proj, "_fetch_ca_bundle", boom)
 
 
-@pytest.mark.parametrize("boards", [["OPENMV4"], ["ARDUINO_NICLA_VISION"],
-                                    ["OPENMV_N6", "ARDUINO_PORTENTA_H7"]])
+@pytest.mark.parametrize("boards", [["OPENMV4P"], ["ARDUINO_NICLA_VISION"],
+                                    ["OPENMV_N6", "ARDUINO_PORTENTA_H7"],
+                                    ["OPENMV4", "OPENMV4P"]])
 def test_create_ota_without_ca_scaffolds_the_hosted_cloud_roots(tmp_path, make_firmware,
                                                                 make_sdk, monkeypatch, boards):
     """A board whose firmware cannot carry the ~186 KB public bundle used to refuse `new --ota`
@@ -493,17 +494,48 @@ def test_create_ota_without_ca_scaffolds_the_hosted_cloud_roots(tmp_path, make_f
     assert b"self-hosting? Replace with your server's root" in proj.CLOUD_ROOTS.read_bytes()
 
 
+def test_create_ota_on_an_unverified_board_alone_scaffolds_no_ca(tmp_path, make_firmware,
+                                                                 make_sdk, monkeypatch):
+    """The discontinued H7 (tls_verify false) joins the hosted cloud unverified: `new` neither
+    scaffolds the cloud roots nor fetches the public bundle, and does not refuse. [ota].ca stays
+    unset, which is what makes the build freeze no anchors and stamp TLS_VERIFY False."""
+    _no_bundle_fetch(monkeypatch)
+    root, (lock, _) = _create(tmp_path, make_firmware, make_sdk, ota=True, boards=["OPENMV4"],
+                              factory_keys=1, ota_keys=2)
+    assert lock.ota is True
+    assert not (root / "certs" / "root.pem").exists()
+    assert not (root / "certs" / "ca.pem").exists()
+    assert proj.load_project(root, verify=False).config.ca == ""
+    toml = proj.ProjectPaths(root).config.read_text()
+    assert "hosted OpenMV Cloud" not in toml and "connect unverified" in toml
+    rb = proj.load_project(root, verify=False).board("OPENMV4")
+    assert rb.tls_verify is False
+
+
+def test_create_ota_mixing_a_bundle_board_with_an_unverified_one(tmp_path, make_firmware,
+                                                                 make_sdk):
+    """N6 + H7: the N6 keeps its anchors -- the public bundle, frozen for it at build -- and the
+    H7 asks for nothing (no cloud roots), so it is the only board that will run unverified."""
+    root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True,
+                      boards=["OPENMV_N6", "OPENMV4"], factory_keys=1, ota_keys=2)
+    assert (root / "certs" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()
+    assert not (root / "certs" / "root.pem").exists()
+    p = proj.load_project(root, verify=False)
+    assert p.config.ca == ""
+    assert p.board("OPENMV_N6").tls_verify is True and p.board("OPENMV4").tls_verify is False
+
+
 def test_create_ota_keeps_a_root_pem_the_user_already_replaced(tmp_path, make_firmware,
                                                                make_sdk, monkeypatch):
     """A self-hoster who swapped their server's root into certs/root.pem keeps it across
     `new --force`; only the hosted default is scaffolded, never forced."""
     _no_bundle_fetch(monkeypatch)
     repo = make_firmware()
-    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True, boards=["OPENMV4"],
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True, boards=["OPENMV4P"],
                       factory_keys=1, ota_keys=2)
     mine = b"-----BEGIN CERTIFICATE-----\nmine\n-----END CERTIFICATE-----\n"
     (root / "certs" / "root.pem").write_bytes(mine)
-    _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True, boards=["OPENMV4"],
+    _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True, boards=["OPENMV4P"],
             force=True, factory_keys=1, ota_keys=2)
     assert (root / "certs" / "root.pem").read_bytes() == mine
 

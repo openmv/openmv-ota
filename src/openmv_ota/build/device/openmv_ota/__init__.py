@@ -20,6 +20,12 @@ are what an app uses around an OTA update:
     builtin_ca() -> the TLS trust anchors frozen into the firmware (or None on a
                   non-OTA build) -- the store install() trusts by default, public
                   so an app's own TLS connections can reuse it.
+    tls_configure(ctx, ssl, ca) -> sets a client SSLContext to the camera's one TLS rule:
+                  verify against ``ca``; with none, unverified only on a firmware
+                  built ``TLS_VERIFY = False`` (the M4/M7/H7), else refuse.
+    cloud_level() -> what this camera does on the hosted OpenMV Cloud, as its firmware
+                  was built: "full", "no-live" (no Live video) or "ota-only" (no Live,
+                  console or telemetry either). The cloud SDK never starts what it leaves out.
     install()  -> download a gzipped FRONT-slot image over HTTPS and install it:
                   write the FRONT slot, arm the one-shot trial, reboot. Does NOT
                   return on success. Call with the network already up, after any app
@@ -616,8 +622,14 @@ def wifi(ssid, password):  # pragma: no cover  (device: the radio)  # hil-residu
     ``network.WLAN`` on most boards, ``network.WINC`` on the OpenMV Cams that reach Wi-Fi
     through the WINC1500 shield (the H7 Plus): one app runs on both. The interface is built
     fresh on every call, which is what resets a wedged chip when the app's ``run(recover=)``
-    hook calls this again."""
+    hook calls this again.
+
+    The network is also REMEMBERED for firmware-resident recovery: the first check-in that gets
+    through saves it to ``/flash/openmv-recovery.txt`` (see :func:`_remember_network`), so a
+    device whose image is later lost can still reach its server without anyone editing a file."""
+    global _net
     import network
+    _net = (ssid, password)
     return _wifi(network, ssid, password)
 
 
@@ -639,6 +651,17 @@ def _wifi(network, ssid, password):
     except OSError:
         log.warning("wifi: could not join %s" % ssid)
     return nic
+
+
+# --- the recovery network memory ----------------------------------------------
+# wifi() stashes its credentials; the first check-in that gets through saves them for recovery
+# (openmv_recovery reads /flash/openmv-recovery.txt when no image is bootable). Saving there and
+# not in wifi() itself: wifi() returns before a WLAN has joined, and only a check-in that reached
+# the server proves these are the credentials that work -- a mistyped password is never saved
+# over a good one. And it keeps the generated main.py unchanged. The save itself
+# (_remembered, _remember_network) sits in the NETWORK RUNTIME region below, beside its caller.
+
+_net = None                 # (ssid, password) from the last wifi(), until it is saved
 
 
 # --- the check-in loop + the openmv_cloud extension seam --------------------
@@ -719,6 +742,79 @@ def _relieve(level):
 # build/romfs.py cuts this region for a board flagged `ota_runtime_drops_network`.
 # Keep the region SELF-CONTAINED: nothing outside it may reference a name defined in
 # it (tests/build/test_runtime_drop.py proves that, and that the remainder compiles).
+
+_CLOUD_CUTS = ("no-live", "ota-only")
+
+
+def cloud_level():
+    """``_ota_config.CLOUD``, the level the build stamped from boards.json: ``"full"`` (OTA,
+    console, telemetry and Live video), ``"no-live"`` (all but Live) or ``"ota-only"`` (OTA
+    alone). A board with no level, firmware built before the stamp, or no ``_ota_config`` at
+    all reads ``"full"``: the SDK then does everything, as it always has. Inside this region:
+    the cloud features it gates all need the network, and a board without one (the M4)
+    spends no heap on it."""
+    try:
+        import _ota_config
+        level = getattr(_ota_config, "CLOUD", None)
+    except ImportError:
+        level = None
+    return level if level in _CLOUD_CUTS else "full"
+
+
+def _remembered(cfg, ssid, psk, uid, netcfg):
+    """The settings to write for ``ssid``/``psk`` over the parsed file ``cfg``, or ``None`` when
+    the file already says so (a typed plaintext PSK counts: recovery obfuscates it itself) --
+    so a device writes its flash once per network, not once per boot.
+
+    The user's other keys stay only for the SAME network (a changed password keeps its static
+    address); a different network starts from DHCP, because an address written for another
+    network, or for the wired interface, would strand the device on this one."""
+    same = cfg.get("interface", "wifi").lower() == "wifi" and cfg.get("wifi.ssid") == ssid
+    if same and netcfg.deobfuscate(cfg.get("wifi.psk", ""), uid) == psk:
+        return None
+    out = dict(cfg) if same else {"ipv4": "dhcp"}
+    out["interface"] = "wifi"
+    out["wifi.ssid"] = ssid
+    out["wifi.psk"] = netcfg.obfuscate(psk, uid)
+    return out
+
+
+def _remember_network():  # pragma: no cover  (device: /flash)  # hil-residual-fn: the decision is host-tested (_remembered); this is the file I/O around it
+    """Save the stashed Wi-Fi network for recovery, once; never raises, never logs the PSK.
+    The BACKUP is written first, as recovery's own rewrite does, so a reset mid-write costs one
+    copy, not both; each write is closed and synced, because an unclosed write followed by a
+    reset was lost on the bench."""
+    global _net
+    net, _net = _net, None
+    if net is None:
+        return
+    try:
+        import os
+
+        import machine
+        import openmv_netcfg as netcfg
+        try:
+            uid = machine.unique_id()
+        except AttributeError:
+            uid = b"openmv"                       # recovery's _uid() fallback: must match
+        try:
+            with open(netcfg.PATH) as f:
+                cfg = netcfg.parse(f.read(netcfg.MAX_BYTES))  # ram-ok: bounded by MAX_BYTES
+        except OSError:
+            cfg = {}
+        cfg = _remembered(cfg, net[0], net[1], uid, netcfg)
+        if cfg is None:
+            return
+        text = netcfg.render(cfg)
+        with _wdt_relax():                        # a FAT write can erase a flash sector
+            for path in (netcfg.BACKUP, netcfg.PATH):
+                with open(path, "w") as f:
+                    f.write(text)
+                os.sync()
+        log.info("wifi: saved the network for recovery")
+    except Exception as e:
+        log.warning("wifi: could not save the network for recovery (%s)" % type(e).__name__)
+
 
 # THE CHECK-IN CADENCE. Pure, so the host suite pins every number below.
 _POLL_DEFAULT_S = 3600       # the wait when neither the app nor the server names one
@@ -802,6 +898,9 @@ def _checkin_body(info, st, slot_states=None):
         # cannot infer from the running image and the thing A/B made worth knowing. An older
         # server ignores the key; a single-image device sends one entry.
         "slots": list(slot_states or []),
+        # What the SDK on this camera will do (its firmware's level). The server knows the
+        # board's level from its name; this says what the firmware was actually built with.
+        "cloud_level": cloud_level(),
     }
 
 
@@ -1042,6 +1141,7 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
         confirm()  # hil-residual: opt-in boot-time self_test confirm; bench apps confirm in their loop (confirm.promoted), not via self_test, so this call-site is unexercised
     here = __file__.rsplit("/", 1)[0]
     ca = _resolve_ca(ca, here)
+    _tls_verify(ca)                       # refuse NOW, out of run(), on a board that must verify
     fails = 0                             # CONSECUTIVE failed cycles; drives the recover escalation
     misses = 0                            # the same streak, NOT reset by a recover: drives the backoff
     cap = poll_after_s or _POLL_DEFAULT_S  # the longest a failed check-in waits to retry
@@ -1086,6 +1186,7 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # have the device tearing down and rebuilding its network forever over an image that
             # is never going to validate. On the WINC that rebuild is a full chip reset. (Measured
             # on the bench: bad_sig / bad_key / bad_version each drove a spurious recover.)
+            _remember_network()  # hil-residual: a no-op after the first check-in; the save is witnessed by its own `wifi: saved` line
             fails = 0  # hil-residual: the streak RESET is witnessed by absence -- a healthy board polls for a whole run and never emits `run: recovering transport`; a marker here would fire every poll and drown the log
             misses = 0  # hil-residual: the backoff reset, witnessed the same way -- a healthy board's check-ins are a poll apart, never 10 s
             try:
@@ -1316,6 +1417,49 @@ def _read_capped(sock, limit, clen=None):  # pragma: no cover  (device network)
     return body  # hil-residual: bare return of the joined body
 
 
+_tls_warned = False
+
+
+def _tls_verify(ca):
+    """THE ONE TLS RULE for every connection this camera opens (the installer, exec'd standalone,
+    carries its own copy: ``installer._tls_anchors``). Anchors -> True: verify against them. None
+    -> False, unverified, ONLY where the build stamped ``_ota_config.TLS_VERIFY = False`` (the
+    discontinued M4/M7/H7 on the hosted cloud), with a one-time warning. A stamp of True, or no
+    stamp at all, refuses: a board that can verify never falls back to unverified silently."""
+    global _tls_warned
+    if ca:
+        return True
+    try:
+        import _ota_config
+        on = getattr(_ota_config, "TLS_VERIFY", True)
+    except ImportError:
+        on = True
+    if on:
+        raise OSError("no TLS trust anchors: no data/ca.pem and none frozen; pass ca=")
+    if not _tls_warned:
+        _tls_warned = True
+        log.warning("tls: server not verified (this camera has no trust anchors)")
+    return False
+
+
+def tls_configure(ctx, ssl, ca):
+    """Set the caller's client ``ssl.SSLContext`` to :func:`_tls_verify`'s rule: CERT_REQUIRED
+    against ``ca`` (PEM ``str``/``bytes``), or CERT_NONE where the rule allows it; raises where it
+    refuses. Returns ``ctx``. Public so the cloud SDK opens its connections exactly the way the
+    check-in does."""
+    if hasattr(ctx, "minimum_version"):   # CPython; MicroPython's mbedtls is TLS 1.2+ already
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    if _tls_verify(ca):
+        # VERIFY the server. MicroPython's PROTOCOL_TLS_CLIENT defaults to CERT_NONE (unlike
+        # CPython), so loading the CA alone checked nothing: anyone on the path could answer
+        # the check-in and hand out Live/ingest grants.
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.load_verify_locations(cadata=ca.decode() if isinstance(ca, bytes) else ca)
+    else:
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
     """POST the check-in body to ``/api/v1/check`` and return the parsed JSON.
 
@@ -1341,11 +1485,7 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         sock.settimeout(_CHECKIN_TIMEOUT)            # bounds handshake + each recv; WINC-safe (no poll)
         sock.connect(ai[-1])
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        # VERIFY the server. MicroPython's PROTOCOL_TLS_CLIENT defaults to CERT_NONE (unlike
-        # CPython), so loading the CA alone checked nothing: anyone on the path could answer
-        # the check-in and hand out Live/ingest grants. The installer always verified.
-        ctx.verify_mode = ssl.CERT_REQUIRED
-        ctx.load_verify_locations(cadata=ca.decode() if isinstance(ca, bytes) else ca)
+        tls_configure(ctx, ssl, ca)                   # verify, or refuse (see _tls_verify)
         ss = ctx.wrap_socket(sock, server_hostname=host)   # blocking TLS handshake (ISR-fed by caller)
         payload = json.dumps(body).encode()
         # HTTP/1.0, not 1.1: a 1.1 reply may be CHUNKED (Cloudflare in front of the hosted
@@ -1714,10 +1854,9 @@ def _resolve_ca(ca, base):  # pragma: no cover
         except OSError:  # hil-residual: no override shipped -- the default default
             ca = builtin_ca()  # hil-residual: frozen-store branch; the bench passes an explicit CA on every leg
             log.debug("ca: builtin")  # hil-residual: builtin witness; see the line above
-            if not ca:  # hil-residual: only a non-OTA firmware (no frozen anchors) reaches this
-                # No override, nothing frozen: refuse here, with a name for the problem,
-                # rather than let TLS fail every connection with an anchorless verify.
-                raise OSError("no TLS trust anchors: no data/ca.pem and none frozen; pass ca=")  # hil-residual: anchorless refusal; needs a non-OTA firmware, which no OTA leg runs
+            # None here (no override, nothing frozen) is NOT refused here: the TLS rule decides,
+            # at run() (_tls_verify) and in the installer (_tls_anchors) -- unverified only on a
+            # firmware built TLS_VERIFY = False, a refusal by name everywhere else.
     elif isinstance(ca, str):
         ca = _read_file(ca, "rb")
         log.debug("ca: from path")                    # HIL path witness (run() passes a CA path)

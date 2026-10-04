@@ -29,12 +29,25 @@ images a camera can download, verify, and fall back from.
 
 - **A trust store the firmware can carry.** Recovery needs TLS anchors in the
   firmware itself. On the OpenMV N6, AE3, and RT1062 the firmware is large
-  enough to hold the full public bundle, so nothing needs configuring. On every
-  other board it is not. There, without `--ca`, `new --ota` scaffolds
+  enough to hold the full public bundle, so nothing needs configuring. The
+  OpenMV Cam M4, M7, and H7 need none either. On every other board
+  the bundle does not fit. There, without `--ca`, `new --ota` scaffolds
   `certs/root.pem` with the roots of the hosted OpenMV Cloud (a few KB) and sets
   `[ota].ca = "certs/root.pem"`, so the hosted cloud works out of the box.
   Self-hosting? Replace `certs/root.pem` with your server's root, or pass
   `--ca` with it at `new`.
+
+  The OpenMV Cam H7 is discontinued. Without `--ca` it connects to
+  the server **without verifying its certificate**, and logs
+  `tls: server not verified (this camera has no trust anchors)` the first time
+  it does. Anyone on the network path can then read or alter that camera's
+  traffic: its check-ins, logs, telemetry, and Live video, and the per-device
+  grants the server issues it for those. They still cannot put code on it: every
+  update is signed and checked on the camera against keys baked into its
+  firmware, anti-rollback still applies, and the image stays encrypted. Pass
+  `--ca` (or set `[ota].ca`) and it verifies like every other board.
+  The OpenMV Cam M4 (also discontinued) does not reach the server at all: to fit
+  its RAM, its runtime leaves out the network stack, so it updates over USB.
 
 - **Keys provisioned.** `new --ota` generates the product's whole signing key
   set up front and writes it under `keys/`.
@@ -90,7 +103,7 @@ How the floor survives is the one place the two modes differ:
 | Flag | Effect |
 |---|---|
 | `--ota` | Declare the project over-the-air: split each partition into slots and provision the signing keys. |
-| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle when every board's firmware can carry it (N6, AE3, RT1062); otherwise it scaffolds the hosted OpenMV Cloud's roots as `certs/root.pem`. |
+| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle when every board's firmware can carry it (N6, AE3, RT1062); otherwise it scaffolds the hosted OpenMV Cloud's roots as `certs/root.pem`. The H7 needs neither, and connects unverified without it; the M4 and M7 have no network updates. |
 
 ## Files an OTA project adds
 
@@ -175,6 +188,51 @@ as `openmv_ota.log`; edit it to enable + pick your board's UART, then rebuild
 firmware. **`openmv_wdt.py`** is a watchdog helper — `openmv_wdt.feed()` from your
 main loop, `with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds
 through them) — and `install()` uses it automatically.
+
+## What each board does on the hosted cloud
+
+Each board has a **cloud level**: how much of the hosted OpenMV Cloud it runs. Smaller
+boards run less, so the app keeps its RAM. `build firmware` stamps the level into the
+firmware, and the cloud SDK (`openmv_cloud`) on the camera never starts a feature its
+level leaves out. Your app code stays the same on every board, and the website hides
+the views a board will never fill.
+
+| Level | OTA updates | Console logs and telemetry | Live video |
+|-------|-------------|----------------------------|------------|
+| `full` | yes | yes | yes, capped at the board's Live frame size |
+| `no-live` | yes | yes (history only, no live console tail) | no |
+| `ota-only` | yes | no | no |
+
+| Board | Level | Live frame size |
+|-------|-------|-----------------|
+| OPENMV_N6 | `full` | QVGA |
+| OPENMV_AE3 | `full` | QVGA |
+| OPENMV_RT1060 | `full` | QVGA |
+| OPENMV4P | `full` | QVGA |
+| OPENMV4 | `full` | QVGA |
+| ARDUINO_PORTENTA_H7 | `full` | QVGA |
+| ARDUINO_GIGA | `full` | QVGA |
+| ARDUINO_NICLA_VISION | `full` | QVGA |
+
+The other boards have no level and are not offered on the hosted cloud. The OpenMV Cam
+M4 (OPENMV2) updates over USB only (see above). The OpenMV Cam M7 (OPENMV3) does too: with
+its 50 KB heap a TLS session cannot be opened once an app is running, even with Live and
+the datalake left out.
+
+On a lower level the SDK calls stay safe:
+
+- **`no-live`.** `csi.CSI()` is the plain camera: `await snapshot()` works, but nothing is
+  streamed and no relay connection is opened. `logs.enable()` sends lines to the
+  datalake only.
+- **`ota-only`.** `logs.enable()` and `datalog.enable()` do nothing and allocate
+  nothing. `datalog.post()` drops the record and returns `False`. Logging still
+  goes wherever `openmv_log` sends it on the camera.
+- **Live frame size.** When the app captures frames larger than the board's Live
+  frame size, Live scales each frame down as it encodes the JPEG. The app still
+  gets full-size frames from `snapshot()`.
+
+`openmv_ota.cloud_level()` returns the level on the camera, and every check-in reports
+it as `cloud_level`.
 
 ## Multi-core boards (a coprocessor partition)
 

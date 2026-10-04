@@ -64,6 +64,14 @@ check-in and the response's per-stream grant
 (``live.streams.<name>.camera_url/poll_url``) is stored via :func:`set_grant` --
 each stream picks up its own URLs. One device credential covers every stream.
 
+Board level: Live runs only where the firmware's cloud level is ``"full"``
+(``openmv_ota.cloud_level()``). Elsewhere a :class:`CSI` is the plain camera --
+``await snapshot()`` still works, but no stream is registered, no relay socket is
+ever opened and the check-in reports no stream names -- and a bare
+:class:`Stream` accepts ``flush()`` and drops it. On a "full" board whose
+firmware caps Live (``_ota_config.LIVE_FRAMESIZE``, e.g. QQVGA on a small-RAM
+camera), a bigger frame is downscaled inside ``to_jpeg`` before it is encoded.
+
 Deep-sleep contract: a stream only uploads while the relay says someone is
 watching (``start``/``stop``). ``csi0.live_active`` is the one-line sleep gate; a
 waking camera asks "anyone watching?" for one HTTPS GET via :func:`poll_watch`
@@ -88,7 +96,7 @@ import json
 import os
 import struct
 
-from ._lib import _UA, _open, _read_capped, _split_url, limits
+from ._lib import _UA, _level, _open, _read_capped, _split_url, limits
 
 
 try:
@@ -165,9 +173,15 @@ def streams():
     return list(_streams)
 
 
+def _live():
+    """Whether this camera streams Live at all (its firmware's cloud level is "full")."""
+    return _level() == "full"
+
+
 def _on_checkin(resp):
-    """Pull the ``live`` grant out of an OTA check-in response (pure)."""
-    set_grant(resp.get("live"))
+    """Pull the ``live`` grant out of an OTA check-in response (pure). A camera without Live
+    keeps none: the server may grant one, and holding it would only cost heap."""
+    set_grant(resp.get("live") if _live() else None)
 
 
 def _contribute():
@@ -455,6 +469,12 @@ class Stream:
         self._task = None
         self._dropped = 0             # fixed-cap mode: oversize frames (warned once)
         self._writer = None           # the relay connection while one is up (see _relieve)
+        # No Live on this board: an inert stream. Never registered (the check-in reports no
+        # names), no buffer, no task and no relay socket; flush() drops at once.
+        self._off = not _live()
+        if self._off:
+            self._buf = None
+            return
         _register(self)
 
     @property
@@ -474,6 +494,8 @@ class Stream:
         untouched. Returns True iff the frame was queued (False also when the
         frame exceeds ``bufsize`` -- dropped with a one-time warning). Must be
         called with the asyncio loop running."""
+        if self._off:
+            return False
         self._ensure_started()
         if not self._session.streaming:
             return False
@@ -506,7 +528,7 @@ class Stream:
     # -- internals ---------------------------------------------------------
 
     def _ensure_started(self):
-        if self._task is None:
+        if self._task is None and not self._off:
             self._start()
 
     def _start(self):  # pragma: no cover  (device: spawns the network task)
@@ -580,14 +602,17 @@ class CSI:
         live stream (encoded in place -- the app is done with it, exactly like
         the builtin recycling its frame buffer)."""
         import asyncio
-        self._stream._ensure_started()
-        pending, self._pending = self._pending, None
-        if pending is not None:
-            self._stream.flush(pending)
+        live = not self._stream._off      # no Live: the plain camera, nothing held back
+        if live:
+            self._stream._ensure_started()
+            pending, self._pending = self._pending, None
+            if pending is not None:
+                self._stream.flush(pending)
         while True:
             img = self._cam.snapshot(blocking=False, **kwargs)
             if img is not None:
-                self._pending = img
+                if live:
+                    self._pending = img
                 return img
             await asyncio.sleep_ms(0)  # type: ignore[attr-defined]
 
@@ -602,9 +627,51 @@ class CSI:
         return self._stream.flush(pending)
 
 
-def _default_encoder(img, quality):  # pragma: no cover  (device: image API)
+# Live frame sizes a firmware may cap at (_ota_config.LIVE_FRAMESIZE) -- the host's
+# boards.LIVE_FRAMESIZES, pinned equal by the tests.
+_FRAMESIZES = {"QQVGA": (160, 120), "QVGA": (320, 240), "VGA": (640, 480)}
+_cap = 0                          # (w, h) cap, None for none; 0 = not read yet
+
+
+def _live_cap():
+    """The firmware's Live frame-size cap as ``(w, h)``, or None (no stamp, an unknown
+    name, or no ``_ota_config``: no cap). Read once and cached."""
+    global _cap
+    if _cap == 0:
+        try:
+            import _ota_config
+            _cap = _FRAMESIZES.get(getattr(_ota_config, "LIVE_FRAMESIZE", None))
+        except ImportError:
+            _cap = None
+    return _cap
+
+
+def _scale_for(w, h, cap):
+    """The one factor, for both axes (aspect kept), that fits a ``w`` x ``h`` frame inside
+    ``cap``; None when it already fits (no cap, or a frame no bigger). Pure."""
+    if not cap or w <= 0 or h <= 0:
+        return None
+    s = min(cap[0] / w, cap[1] / h)
+    return s if s < 1 else None
+
+
+def _default_encoder(img, quality):
     # In-place JPEG, then a zero-copy view of the image's own buffer: the ONLY
     # allocation is the memoryview object itself, never a frame-sized buffer.
+    # Bigger than the firmware's Live cap: to_jpeg scales while it encodes. Its
+    # scaled intermediate lives in the firmware's frame-buffer allocator, not the
+    # GC heap, and the result still lands in place. If scaling fails (that
+    # allocator is full) the frame goes out unscaled and scaling stays off for
+    # this boot -- Live must never raise into the app's snapshot(), nor retry a
+    # failing allocation every frame.
+    global _cap
+    s = _scale_for(img.width(), img.height(), _live_cap())
+    if s is not None:
+        try:
+            return memoryview(img.to_jpeg(quality=quality, x_scale=s, y_scale=s).bytearray())
+        except (MemoryError, OSError, ValueError) as e:
+            _cap = None
+            log.warning("live: frame not scaled (%s); sending full size" % repr(e))
     return memoryview(img.to_jpeg(quality=quality).bytearray())
 
 
