@@ -88,10 +88,14 @@ def test_bench_app_passes_its_bring_up_as_the_recover_hook(board, net):
 def test_winc_recover_reconstructs_the_nic():
     """On the WINC, re-CREATING the object is what clears the wedge: network.WINC() runs
     winc_init -> nm_bsp_reset, which drives EN/RST low and hard-resets the chip. A hook that
-    reused an existing handle would just re-try a wedged chip forever."""
-    src = ota_cycle.bench_main_py("OPENMV4P", "wifi", app="confirm")
-    bring_up = src.split("async def _bring_up():")[1].split("async def main")[0]
-    assert "network.WINC()" in bring_up, "recover must CONSTRUCT the NIC, not reuse a handle"
+    reused an existing handle would just re-try a wedged chip forever. openmv_ota.wifi() builds
+    a fresh one on every call (pinned in tests/build/test_run_recover.py), and the bench app's
+    bring-up must go through it, on every wifi board."""
+    for board in ("OPENMV4P", "ARDUINO_NICLA_VISION"):
+        src = ota_cycle.bench_main_py(board, "wifi", app="confirm")
+        bring_up = src.split("async def _bring_up():")[1].split("async def main")[0]
+        assert "openmv_ota.wifi(" in bring_up, board
+        assert "if not wl.isconnected():" not in bring_up, "recover must not reuse a handle"
 
 
 # --- the CA must live in the ROMFS, not on /flash ---------------------------------------

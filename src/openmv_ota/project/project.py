@@ -713,10 +713,8 @@ async def bring_up_network():
     if USE_LAN:
         nic = network.LAN()
         nic.active(True)
-    else:
-        nic = network.WLAN(network.STA_IF)
-        nic.active(True)
-        nic.connect(WIFI_SSID, WIFI_PASSWORD)
+    else:                             # WLAN, or WINC on the H7 Plus Wi-Fi shield
+        nic = openmv_ota.wifi(WIFI_SSID, WIFI_PASSWORD)
     while not nic.isconnected():
         await asyncio.sleep_ms(200)
     return nic

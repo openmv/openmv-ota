@@ -512,6 +512,20 @@ def test_liveness_any_inbound_frame_keeps_it_alive():
     assert not lv.dead(134999) and lv.dead(135000)
 
 
+def test_the_device_clock_is_a_tick_count_and_the_throttle_gets_the_clock(monkeypatch):
+    """_Liveness does arithmetic on _ticks_ms() and _Throttle calls the clock it is given. The
+    helper used to return the time.ticks_ms FUNCTION, so the relay's keepalive task died on its
+    first tick ("unsupported types for __sub__: 'function', 'function'") on every board: no
+    pings, and a half-open relay socket was never noticed."""
+    import inspect
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "time", types.SimpleNamespace(ticks_ms=lambda: 1234))
+    assert rt._ticks_ms() == 1234
+    assert "_Throttle(self._fps, _ticks_ms)" in inspect.getsource(rt.Stream._start)
+
+
 def test_liveness_survives_the_ticks_wrap():
     near = 0x3FFFFFFF - 1000
     lv = rt._Liveness(near, interval=30000, silence=70000)
