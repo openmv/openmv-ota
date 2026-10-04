@@ -268,11 +268,12 @@ def _ca():  # pragma: no cover  (device: filesystem)
 
 def _tls_ctx(ssl):
     """The client context for a relay connection: the OTA runtime's one TLS rule
-    (``openmv_ota.tls_context``) over :func:`_ca`'s anchors -- the same bundle and the same
+    (``openmv_ota.tls_configure``) over :func:`_ca`'s anchors -- the same bundle and the same
     behaviour as the check-in. No runtime alongside us is an ImportError: refused, never a
     silent unverified connection."""
     import openmv_ota
-    return openmv_ota.tls_context(ssl, _ca())
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    return openmv_ota.tls_configure(ctx, ssl, _ca())
 
 
 async def _open(host, port, tls):  # pragma: no cover

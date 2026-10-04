@@ -20,7 +20,7 @@ are what an app uses around an OTA update:
     builtin_ca() -> the TLS trust anchors frozen into the firmware (or None on a
                   non-OTA build) -- the store install() trusts by default, public
                   so an app's own TLS connections can reuse it.
-    tls_context(ssl, ca) -> a client SSLContext under the camera's one TLS rule:
+    tls_configure(ctx, ssl, ca) -> sets a client SSLContext to the camera's one TLS rule:
                   verify against ``ca``; with none, unverified only on a firmware
                   built ``TLS_VERIFY = False`` (the M4/M7/H7), else refuse.
     cloud_level() -> what this camera does on the hosted OpenMV Cloud, as its firmware
@@ -1442,11 +1442,11 @@ def _tls_verify(ca):
     return False
 
 
-def tls_context(ssl, ca):
-    """A client ``ssl.SSLContext`` under :func:`_tls_verify`'s rule: CERT_REQUIRED against ``ca``
-    (PEM ``str``/``bytes``), or CERT_NONE where the rule allows it; raises where it refuses.
-    Public so the cloud SDK opens its connections exactly the way the check-in does."""
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+def tls_configure(ctx, ssl, ca):
+    """Set the caller's client ``ssl.SSLContext`` to :func:`_tls_verify`'s rule: CERT_REQUIRED
+    against ``ca`` (PEM ``str``/``bytes``), or CERT_NONE where the rule allows it; raises where it
+    refuses. Returns ``ctx``. Public so the cloud SDK opens its connections exactly the way the
+    check-in does."""
     if hasattr(ctx, "minimum_version"):   # CPython; MicroPython's mbedtls is TLS 1.2+ already
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     if _tls_verify(ca):
@@ -1484,7 +1484,8 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
     try:
         sock.settimeout(_CHECKIN_TIMEOUT)            # bounds handshake + each recv; WINC-safe (no poll)
         sock.connect(ai[-1])
-        ctx = tls_context(ssl, ca)                    # verify, or refuse (see _tls_verify)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        tls_configure(ctx, ssl, ca)                   # verify, or refuse (see _tls_verify)
         ss = ctx.wrap_socket(sock, server_hostname=host)   # blocking TLS handshake (ISR-fed by caller)
         payload = json.dumps(body).encode()
         # HTTP/1.0, not 1.1: a 1.1 reply may be CHUNKED (Cloudflare in front of the hosted

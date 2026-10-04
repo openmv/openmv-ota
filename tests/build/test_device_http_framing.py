@@ -29,9 +29,16 @@ def test_the_live_poll_asks_for_an_unchunked_reply():
 
 def test_every_device_tls_client_verifies_the_server():
     """MicroPython's SSLContext(PROTOCOL_TLS_CLIENT) defaults to CERT_NONE -- loading a CA
-    does not turn verification on. Each device TLS client must set CERT_REQUIRED itself."""
+    does not turn verification on. Every context a device TLS client creates is either set to
+    CERT_REQUIRED in place or handed straight to ``tls_configure()``, the one rule (which sets
+    CERT_REQUIRED wherever there are anchors) -- never left at the default."""
     for parts in (("openmv_ota", "__init__.py"), ("openmv_ota", "data", "installer.py"),
                   ("openmv_cloud", "_lib.py")):
         src = _src(*parts)
-        assert src.count("ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)") == \
-            src.count("verify_mode = ssl.CERT_REQUIRED"), parts
+        made = src.count("ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)")
+        set_here = src.count("verify_mode = ssl.CERT_REQUIRED")
+        ruled = src.count("tls_configure(ctx, ssl,")
+        assert made and made <= set_here + ruled, parts
+    rule = _src("openmv_ota", "__init__.py")
+    body = rule[rule.index("def tls_configure("):]
+    assert "ctx.verify_mode = ssl.CERT_REQUIRED" in body[:body.index("return ctx")]

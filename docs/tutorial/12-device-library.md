@@ -151,7 +151,7 @@ The built-in store is the trust store frozen into the firmware — the project's
 the roots you supplied with `--ca`), else `certs/ca.pem` (a fresh Mozilla root
 bundle downloaded at `project new`) — read straight out of flash, and exposed as
 **`openmv_ota.builtin_ca()`** so your app's own TLS connections can reuse it, and
-**`openmv_ota.tls_context(ssl, ca)`** builds an `ssl.SSLContext` by the same rule the
+**`openmv_ota.tls_configure(ctx, ssl, ca)`** sets your `ssl.SSLContext` to the same rule the
 updater and the cloud SDK use. An
 image that ships `app/lib/openmv_ota/data/ca.pem` overrides it: the trust store
 then swaps with a romfs update, no firmware reflash. Broad CA trust is acceptable

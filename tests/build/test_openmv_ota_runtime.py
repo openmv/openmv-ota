@@ -419,7 +419,7 @@ def test_builtin_ca_is_none_without_frozen_anchors(monkeypatch):
     assert rt.builtin_ca() is None
 
 
-# --- the one TLS rule: _tls_verify / tls_context --------------------------------
+# --- the one TLS rule: _tls_verify / tls_configure --------------------------------
 
 class _Warns:
     def __init__(self):
@@ -430,7 +430,7 @@ class _Warns:
 
 
 class _Ssl:
-    """Just enough of MicroPython's ssl to see what tls_context set."""
+    """Just enough of MicroPython's ssl to see what tls_configure set."""
     PROTOCOL_TLS_CLIENT, CERT_NONE, CERT_REQUIRED = 1, 0, 2
 
     class SSLContext:
@@ -460,9 +460,9 @@ def _stamp(monkeypatch, flag):
 def test_tls_verify_with_anchors_always_verifies(monkeypatch, flag):
     _stamp(monkeypatch, flag)
     assert rt._tls_verify(b"PEM") is True
-    ctx = rt.tls_context(_Ssl, b"PEM")
+    ctx = rt.tls_configure(_Ssl.SSLContext(_Ssl.PROTOCOL_TLS_CLIENT), _Ssl, b"PEM")
     assert ctx.verify_mode == _Ssl.CERT_REQUIRED and ctx.cadata == "PEM"
-    assert rt.tls_context(_Ssl, "PEM").cadata == "PEM"
+    assert rt.tls_configure(_Ssl.SSLContext(_Ssl.PROTOCOL_TLS_CLIENT), _Ssl, "PEM").cadata == "PEM"
     assert rt.log.lines == []
 
 
@@ -471,17 +471,18 @@ def test_tls_verify_without_anchors_skips_only_where_built_unverified(monkeypatc
     connections follow."""
     _stamp(monkeypatch, False)
     for ca in (None, b"", ""):
-        ctx = rt.tls_context(_Ssl, ca)
+        ctx = rt.tls_configure(_Ssl.SSLContext(_Ssl.PROTOCOL_TLS_CLIENT), _Ssl, ca)
         assert ctx.verify_mode == _Ssl.CERT_NONE and ctx.cadata is None
     assert rt.log.lines == ["tls: server not verified (this camera has no trust anchors)"]
 
 
-def test_tls_context_pins_tls12_where_the_context_can_say_so(monkeypatch):
+def test_tls_configure_pins_tls12_where_the_context_can_say_so(monkeypatch):
     """CPython's SSLContext takes a protocol floor; MicroPython's (mbedtls, TLS 1.2+ only) has
     none, and the stub above stands in for it."""
     import ssl as cpython_ssl
     _stamp(monkeypatch, True)
-    ctx = rt.tls_context(cpython_ssl, _cpython_pem())
+    ctx = rt.tls_configure(cpython_ssl.SSLContext(cpython_ssl.PROTOCOL_TLS_CLIENT), cpython_ssl,
+                           _cpython_pem())
     assert ctx.minimum_version == cpython_ssl.TLSVersion.TLSv1_2
     assert ctx.verify_mode == cpython_ssl.CERT_REQUIRED
 
@@ -499,7 +500,7 @@ def test_tls_verify_without_anchors_refuses_everywhere_else(monkeypatch, flag):
     all: refused by name, never a silent fallback."""
     _stamp(monkeypatch, flag)
     with pytest.raises(OSError, match="no TLS trust anchors"):
-        rt.tls_context(_Ssl, None)
+        rt.tls_configure(_Ssl.SSLContext(_Ssl.PROTOCOL_TLS_CLIENT), _Ssl, None)
     assert rt.log.lines == []
 
 
