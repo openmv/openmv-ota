@@ -189,6 +189,50 @@ firmware. **`openmv_wdt.py`** is a watchdog helper — `openmv_wdt.feed()` from 
 main loop, `with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds
 through them) — and `install()` uses it automatically.
 
+## What each board does on the hosted cloud
+
+Each board has a **cloud level**: how much of the hosted OpenMV Cloud it runs. Smaller
+boards run less, so the app keeps its RAM. `build firmware` stamps the level into the
+firmware, and the cloud SDK (`openmv_cloud`) on the camera never starts a feature its
+level leaves out. Your app code stays the same on every board, and the website hides
+the views a board will never fill.
+
+| Level | OTA updates | Console logs and telemetry | Live video |
+|-------|-------------|----------------------------|------------|
+| `full` | yes | yes | yes, capped at the board's Live frame size |
+| `no-live` | yes | yes (history only, no live console tail) | no |
+| `ota-only` | yes | no | no |
+
+| Board | Level | Live frame size |
+|-------|-------|-----------------|
+| OPENMV_N6 | `full` | QVGA |
+| OPENMV_AE3 | `full` | QVGA |
+| OPENMV_RT1060 | `full` | QVGA |
+| OPENMV4P | `full` | QVGA |
+| OPENMV4 | `full` | QVGA |
+| ARDUINO_PORTENTA_H7 | `full` | QVGA |
+| ARDUINO_GIGA | `full` | QVGA |
+| ARDUINO_NICLA_VISION | `full` | QVGA |
+| OPENMV3 | `no-live` | |
+
+The other boards have no level and are not offered on the hosted cloud. The OpenMV Cam
+M4 (OPENMV2) updates over USB only (see above).
+
+On a lower level the SDK calls stay safe:
+
+- **`no-live`.** `csi.CSI()` is the plain camera: `await snapshot()` works, but nothing is
+  streamed and no relay connection is opened. `logs.enable()` sends lines to the
+  datalake only.
+- **`ota-only`.** `logs.enable()` and `datalog.enable()` do nothing and allocate
+  nothing. `datalog.post()` drops the record and returns `False`. Logging still
+  goes wherever `openmv_log` sends it on the camera.
+- **Live frame size.** When the app captures frames larger than the board's Live
+  frame size, Live scales each frame down as it encodes the JPEG. The app still
+  gets full-size frames from `snapshot()`.
+
+`openmv_ota.cloud_level()` returns the level on the camera, and every check-in reports
+it as `cloud_level`.
+
 ## Multi-core boards (a coprocessor partition)
 
 On a multi-core board ([Projects](02-projects.md#multi-core-boards)) only the
