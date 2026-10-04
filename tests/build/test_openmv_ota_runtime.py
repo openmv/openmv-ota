@@ -708,3 +708,57 @@ def test_register_flush_is_idempotent_by_key(monkeypatch):
     rt.register_flush(a, key="logs")
     rt.register_flush(a)
     assert len(rt._flush_hooks) == 2
+
+
+# --- the recovery network memory ----------------------------------------------
+# wifi() is remembered for firmware-resident recovery after the first check-in that gets
+# through. What is decided here is WHETHER to write and WHAT: the file is on flash, so an
+# unchanged network must not rewrite it every boot.
+
+def _nc():
+    from openmv_ota.build.device import openmv_netcfg
+    return openmv_netcfg
+
+
+_UID = b"\x01\x02\x03\x04"
+
+
+def test_a_new_network_is_saved_obfuscated_and_recovery_reads_it_back():
+    nc = _nc()
+    out = rt._remembered({}, "Home", "pa#ss word", _UID, nc)
+    assert out["interface"] == "wifi" and out["wifi.ssid"] == "Home"
+    assert nc.is_obfuscated(out["wifi.psk"]) and "pa#ss" not in nc.render(out)
+    back = nc.settings(nc.parse(nc.render(out)), _UID)      # exactly what recovery does
+    assert (back["interface"], back["ssid"], back["psk"], back["ipv4"]) == \
+        ("wifi", "Home", "pa#ss word", "dhcp")
+
+
+def test_an_unchanged_network_writes_nothing():
+    nc = _nc()
+    saved = nc.parse(nc.render(rt._remembered({}, "Home", "pw", _UID, nc)))
+    assert rt._remembered(saved, "Home", "pw", _UID, nc) is None
+    # a hand-typed plaintext PSK that matches counts too (recovery obfuscates it itself)
+    assert rt._remembered(nc.parse("wifi.ssid = Home\nwifi.psk = pw\n"), "Home", "pw", _UID,
+                          nc) is None
+
+
+def test_a_new_password_keeps_the_same_network_s_static_address():
+    nc = _nc()
+    cfg = nc.parse("interface = wifi\nwifi.ssid = Home\nwifi.psk = old\nipv4 = static\n"
+                   "ipv4.address = 10.0.0.5\nipv4.netmask = 255.0.0.0\nipv4.gateway = 10.0.0.1\n")
+    out = rt._remembered(cfg, "Home", "new", _UID, nc)
+    assert out["ipv4"] == "static" and out["ipv4.address"] == "10.0.0.5"
+    assert nc.deobfuscate(out["wifi.psk"], _UID) == "new"
+
+
+def test_another_network_or_interface_starts_from_dhcp():
+    """An address written for another network, or for the wired interface, would strand the
+    device on this one."""
+    nc = _nc()
+    static = ("ipv4 = static\nipv4.address = 10.0.0.5\nipv4.netmask = 255.0.0.0\n"
+              "ipv4.gateway = 10.0.0.1\n")
+    for text in ("wifi.ssid = Old\nwifi.psk = pw\n" + static,
+                 "interface = eth\nwifi.ssid = Home\nwifi.psk = pw\n" + static):
+        out = rt._remembered(nc.parse(text), "Home", "pw", _UID, nc)
+        assert out == {"ipv4": "dhcp", "interface": "wifi", "wifi.ssid": "Home",
+                       "wifi.psk": nc.obfuscate("pw", _UID)}

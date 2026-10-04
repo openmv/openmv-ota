@@ -619,8 +619,14 @@ def wifi(ssid, password):  # pragma: no cover  (device: the radio)  # hil-residu
     ``network.WLAN`` on most boards, ``network.WINC`` on the OpenMV Cams that reach Wi-Fi
     through the WINC1500 shield (the H7 Plus): one app runs on both. The interface is built
     fresh on every call, which is what resets a wedged chip when the app's ``run(recover=)``
-    hook calls this again."""
+    hook calls this again.
+
+    The network is also REMEMBERED for firmware-resident recovery: the first check-in that gets
+    through saves it to ``/flash/openmv-recovery.txt`` (see :func:`_remember_network`), so a
+    device whose image is later lost can still reach its server without anyone editing a file."""
+    global _net
     import network
+    _net = (ssid, password)
     return _wifi(network, ssid, password)
 
 
@@ -642,6 +648,17 @@ def _wifi(network, ssid, password):
     except OSError:
         log.warning("wifi: could not join %s" % ssid)
     return nic
+
+
+# --- the recovery network memory ----------------------------------------------
+# wifi() stashes its credentials; the first check-in that gets through saves them for recovery
+# (openmv_recovery reads /flash/openmv-recovery.txt when no image is bootable). Saving there and
+# not in wifi() itself: wifi() returns before a WLAN has joined, and only a check-in that reached
+# the server proves these are the credentials that work -- a mistyped password is never saved
+# over a good one. And it keeps the generated main.py unchanged. The save itself
+# (_remembered, _remember_network) sits in the NETWORK RUNTIME region below, beside its caller.
+
+_net = None                 # (ssid, password) from the last wifi(), until it is saved
 
 
 # --- the check-in loop + the openmv_cloud extension seam --------------------
@@ -722,6 +739,61 @@ def _relieve(level):
 # build/romfs.py cuts this region for a board flagged `ota_runtime_drops_network`.
 # Keep the region SELF-CONTAINED: nothing outside it may reference a name defined in
 # it (tests/build/test_runtime_drop.py proves that, and that the remainder compiles).
+
+def _remembered(cfg, ssid, psk, uid, netcfg):
+    """The settings to write for ``ssid``/``psk`` over the parsed file ``cfg``, or ``None`` when
+    the file already says so (a typed plaintext PSK counts: recovery obfuscates it itself) --
+    so a device writes its flash once per network, not once per boot.
+
+    The user's other keys stay only for the SAME network (a changed password keeps its static
+    address); a different network starts from DHCP, because an address written for another
+    network, or for the wired interface, would strand the device on this one."""
+    same = cfg.get("interface", "wifi").lower() == "wifi" and cfg.get("wifi.ssid") == ssid
+    if same and netcfg.deobfuscate(cfg.get("wifi.psk", ""), uid) == psk:
+        return None
+    out = dict(cfg) if same else {"ipv4": "dhcp"}
+    out["interface"] = "wifi"
+    out["wifi.ssid"] = ssid
+    out["wifi.psk"] = netcfg.obfuscate(psk, uid)
+    return out
+
+
+def _remember_network():  # pragma: no cover  (device: /flash)  # hil-residual-fn: the decision is host-tested (_remembered); this is the file I/O around it
+    """Save the stashed Wi-Fi network for recovery, once; never raises, never logs the PSK.
+    The BACKUP is written first, as recovery's own rewrite does, so a reset mid-write costs one
+    copy, not both; each write is closed and synced, because an unclosed write followed by a
+    reset was lost on the bench."""
+    global _net
+    net, _net = _net, None
+    if net is None:
+        return
+    try:
+        import os
+
+        import machine
+        import openmv_netcfg as netcfg
+        try:
+            uid = machine.unique_id()
+        except AttributeError:
+            uid = b"openmv"                       # recovery's _uid() fallback: must match
+        try:
+            with open(netcfg.PATH) as f:
+                cfg = netcfg.parse(f.read(netcfg.MAX_BYTES))  # ram-ok: bounded by MAX_BYTES
+        except OSError:
+            cfg = {}
+        cfg = _remembered(cfg, net[0], net[1], uid, netcfg)
+        if cfg is None:
+            return
+        text = netcfg.render(cfg)
+        with _wdt_relax():                        # a FAT write can erase a flash sector
+            for path in (netcfg.BACKUP, netcfg.PATH):
+                with open(path, "w") as f:
+                    f.write(text)
+                os.sync()
+        log.info("wifi: saved the network for recovery")
+    except Exception as e:
+        log.warning("wifi: could not save the network for recovery (%s)" % type(e).__name__)
+
 
 # THE CHECK-IN CADENCE. Pure, so the host suite pins every number below.
 _POLL_DEFAULT_S = 3600       # the wait when neither the app nor the server names one
@@ -1090,6 +1162,7 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # have the device tearing down and rebuilding its network forever over an image that
             # is never going to validate. On the WINC that rebuild is a full chip reset. (Measured
             # on the bench: bad_sig / bad_key / bad_version each drove a spurious recover.)
+            _remember_network()  # hil-residual: a no-op after the first check-in; the save is witnessed by its own `wifi: saved` line
             fails = 0  # hil-residual: the streak RESET is witnessed by absence -- a healthy board polls for a whole run and never emits `run: recovering transport`; a marker here would fire every poll and drown the log
             misses = 0  # hil-residual: the backoff reset, witnessed the same way -- a healthy board's check-ins are a poll apart, never 10 s
             try:
