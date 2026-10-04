@@ -33,7 +33,9 @@ class Partition:
 
 
 # What a board does on the hosted OpenMV Cloud, from most to least: OTA + console + telemetry
-# + Live video; all but Live; OTA updates only.
+# + Live video; all but Live; OTA updates only. A board with tls_verify false (the M4/M7/H7)
+# keeps its level but reaches the cloud without verifying it: the website flags it
+# "unverified" beside that level and shows the disclaimer.
 CLOUD_LEVELS = ("full", "no-live", "ota-only")
 
 
@@ -52,6 +54,12 @@ class BoardConfig:
                                          # public CA bundle (~186 KB) for recovery when
                                          # [ota].ca is unset; smaller boards must pin
                                          # their server's root(s) via [ota].ca instead
+    tls_verify: bool = True              # False only on the discontinued M4/M7/H7: with
+                                         # [ota].ca unset their firmware freezes no anchors
+                                         # and connects to the hosted cloud UNVERIFIED (the
+                                         # build stamps _ota_config.TLS_VERIFY = False).
+                                         # Firmware integrity does not rest on it: images
+                                         # stay signed. Every other board verifies, always
     ota_runtime_drops_network: bool = False
                                          # this board's firmware has no `ssl`, so the OTA
                                          # runtime's polling stack (run/_checkin/...) can
@@ -122,6 +130,7 @@ def load_boards() -> dict[str, BoardConfig]:
             arch=b.get("arch", ""),
             mpy_args=list(b.get("mpy_args", [])),
             recovery_ca_bundle=bool(b.get("recovery_ca_bundle", False)),
+            tls_verify=bool(b.get("tls_verify", True)),
             ota_runtime_drops_network=bool(b.get("ota_runtime_drops_network", False)),
             ota_firmware_drops=dict(b.get("ota_firmware_drops", {})),
             cloud=_cloud_level(name, b.get("cloud")),

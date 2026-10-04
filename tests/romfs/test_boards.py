@@ -65,16 +65,29 @@ def test_unsupported_reason():
 
 def test_cloud_capability_per_board():
     """The hosted-cloud level the website's board picker shows. The six boards proven on the
-    hosted cloud plus the H7 Plus (WINC1500 shield) run all of it, with QVGA Live video."""
+    hosted cloud plus the H7 Plus (WINC1500 shield) run all of it with QVGA Live video; the
+    discontinued M4/M7/H7 join unverified, the H7 at QVGA and the M4/M7 at QQVGA for now."""
     from openmv_ota.romfs.boards import CLOUD_LEVELS, load_boards
 
     boards = load_boards()
-    full = {"OPENMV_N6", "OPENMV_AE3", "OPENMV_RT1060", "OPENMV4P", "ARDUINO_NICLA_VISION",
-            "ARDUINO_GIGA", "ARDUINO_PORTENTA_H7"}
-    assert {n for n, b in boards.items() if b.cloud == "full"} == full
+    qvga = {"OPENMV_N6", "OPENMV_AE3", "OPENMV_RT1060", "OPENMV4P", "ARDUINO_NICLA_VISION",
+            "ARDUINO_GIGA", "ARDUINO_PORTENTA_H7", "OPENMV4"}
+    qqvga = {"OPENMV3", "OPENMV2"}
+    assert {n for n, b in boards.items() if b.cloud == "full"} == qvga | qqvga
     assert all(b.cloud in CLOUD_LEVELS + (None,) for b in boards.values())
-    assert all(boards[n].live_framesize == "QVGA" for n in full)
-    assert boards["OPENMV2"].cloud is None and boards["OPENMV2"].live_framesize is None
+    assert all(boards[n].live_framesize == "QVGA" for n in qvga)
+    assert all(boards[n].live_framesize == "QQVGA" for n in qqvga)
+    assert boards["OPENMVPT"].cloud is None and boards["OPENMVPT"].live_framesize is None
+
+
+def test_only_the_discontinued_classics_skip_tls_verification():
+    """tls_verify false is the M4/M7/H7 and nothing else: every other board verifies, and a
+    board with no entry defaults to verifying."""
+    from openmv_ota.romfs.boards import load_boards
+
+    boards = load_boards()
+    assert {n for n, b in boards.items() if not b.tls_verify} == {"OPENMV2", "OPENMV3", "OPENMV4"}
+    assert boards_mod.BoardConfig("X", "X", "", [], []).tls_verify is True
 
 
 def test_an_unknown_cloud_level_is_refused():
