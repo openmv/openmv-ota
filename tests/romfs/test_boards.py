@@ -76,7 +76,7 @@ def test_cloud_capability_per_board():
     assert {n for n, b in boards.items() if b.cloud == "full"} == qvga
     assert all(b.cloud in CLOUD_LEVELS + (None,) for b in boards.values())
     assert all(boards[n].live_framesize == "QVGA" for n in qvga)
-    assert boards["OPENMV3"].cloud == "no-live" and boards["OPENMV3"].live_framesize is None
+    assert boards["OPENMV3"].cloud is None and boards["OPENMV3"].live_framesize is None   # heap: no TLS
     assert boards["OPENMVPT"].cloud is None and boards["OPENMVPT"].live_framesize is None
     assert boards["OPENMV2"].cloud is None
 

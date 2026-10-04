@@ -46,7 +46,7 @@ def _clean():
 @pytest.mark.parametrize(("board", "want"), [
     ("OPENMV_N6", ("full", "QVGA")),
     ("OPENMV4", ("full", "QVGA")),
-    ("OPENMV3", ("no-live", None)),      # placeholder until the bench says otherwise
+    ("OPENMV3", (None, None)),           # its 50 KB heap can't hold a TLS session with an app running
     ("OPENMV2", (None, None)),           # no level: the M4's runtime has no network stack
     ("OPENMVPT", (None, None)),
 ])

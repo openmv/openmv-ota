@@ -37,15 +37,15 @@ images a camera can download, verify, and fall back from.
   Self-hosting? Replace `certs/root.pem` with your server's root, or pass
   `--ca` with it at `new`.
 
-  The OpenMV Cam M7 and H7 are discontinued. Without `--ca` they connect to
-  the server **without verifying its certificate**, and log
+  The OpenMV Cam H7 is discontinued. Without `--ca` it connects to
+  the server **without verifying its certificate**, and logs
   `tls: server not verified (this camera has no trust anchors)` the first time
-  they do. Anyone on the network path can then read or alter that camera's
+  it does. Anyone on the network path can then read or alter that camera's
   traffic: its check-ins, logs, telemetry, and Live video, and the per-device
   grants the server issues it for those. They still cannot put code on it: every
   update is signed and checked on the camera against keys baked into its
   firmware, anti-rollback still applies, and the image stays encrypted. Pass
-  `--ca` (or set `[ota].ca`) and these cameras verify like every other board.
+  `--ca` (or set `[ota].ca`) and it verifies like every other board.
   The OpenMV Cam M4 (also discontinued) does not reach the server at all: to fit
   its RAM, its runtime leaves out the network stack, so it updates over USB.
 
@@ -103,7 +103,7 @@ How the floor survives is the one place the two modes differ:
 | Flag | Effect |
 |---|---|
 | `--ota` | Declare the project over-the-air: split each partition into slots and provision the signing keys. |
-| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle when every board's firmware can carry it (N6, AE3, RT1062); otherwise it scaffolds the hosted OpenMV Cloud's roots as `certs/root.pem`. The M7 and H7 need neither, and connect unverified without it; the M4 has no network updates. |
+| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle when every board's firmware can carry it (N6, AE3, RT1062); otherwise it scaffolds the hosted OpenMV Cloud's roots as `certs/root.pem`. The H7 needs neither, and connects unverified without it; the M4 and M7 have no network updates. |
 
 ## Files an OTA project adds
 
@@ -213,10 +213,11 @@ the views a board will never fill.
 | ARDUINO_PORTENTA_H7 | `full` | QVGA |
 | ARDUINO_GIGA | `full` | QVGA |
 | ARDUINO_NICLA_VISION | `full` | QVGA |
-| OPENMV3 | `no-live` | |
 
 The other boards have no level and are not offered on the hosted cloud. The OpenMV Cam
-M4 (OPENMV2) updates over USB only (see above).
+M4 (OPENMV2) updates over USB only (see above). The OpenMV Cam M7 (OPENMV3) does too: with
+its 50 KB heap a TLS session cannot be opened once an app is running, even with Live and
+the datalake left out.
 
 On a lower level the SDK calls stay safe:
 
