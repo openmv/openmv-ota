@@ -419,6 +419,9 @@ def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
         
         + "PRODUCT_ID = %d\n" % product_id
         + "ACCOUNT_ID = %r\n" % p.config.account_id
+        # The board name system.json carries, for recovery's check-in: with no image there is
+        # no system.json, and the server's registration gate keys on (board, device id).
+        + "BOARD = %r\n" % name
         # THE MODE THE DEVICE IS BUILT FOR. Derived from geometry (A/B wherever two slots fit),
         # honouring the project's single_image opt-out. boot.py needs it to know whether there is a
         # second slot to fall back to at all -- on a SINGLE board a failed trial means recovery,

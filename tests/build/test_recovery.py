@@ -189,3 +189,104 @@ def test_a_failed_winc_join_is_survived_and_the_key_is_not_logged(monkeypatch):
     nic = rec.join_wifi(_Net(wlan=False, fail=True), "lab", "secret")
     assert nic is not None
     assert lines and all("secret" not in m for m in lines)
+
+
+# --- the check-in -------------------------------------------------------------
+# SERVER_URL is the server, not a manifest: recovery asks /api/v1/check what to install. Built
+# against the bench, where installer.run(SERVER_URL) followed the server's / -> /docs redirect
+# and died on "install URL must be https:// (got '/docs')".
+
+class _Cfg:
+    SERVER_URL = "https://ota.example"
+    PRODUCT_ID = 42
+    ACCOUNT_ID = "acct_x"
+    BOARD = "OPENMV4"
+
+
+def _split(req):
+    head, _, body = req.partition(b"\r\n\r\n")
+    return head.decode().split("\r\n"), body
+
+
+def test_checkin_request_is_the_runtime_post_from_the_firmware_constants():
+    import json
+    lines, body = _split(rec.checkin_request(_Cfg, "ota.example", 443, "ABC123", "stm32", UID))
+    assert lines[0] == "POST /api/v1/check HTTP/1.0"     # 1.0: no proxy may chunk the reply
+    assert "Host: ota.example" in lines
+    assert "Content-Type: application/json" in lines
+    assert "Content-Length: %d" % len(body) in lines
+    assert json.loads(body) == {
+        "device_id": "ABC123", "product_id": 42, "account_id": "acct_x", "board": "OPENMV4",
+        "payload_version": 0, "orders_by_seq": False, "fallback_reason": "recovery"}
+
+
+def test_checkin_request_names_a_non_default_port_and_orders_a_stock_lineage_by_seq():
+    import json
+
+    class Cfg:                                             # an older firmware: no BOARD stamp
+        PRODUCT_ID = 0
+
+    lines, body = _split(rec.checkin_request(Cfg, "h", 8443, "X", "stm32", UID))
+    assert "Host: h:8443" in lines
+    sent = json.loads(body)
+    assert sent["orders_by_seq"] is True and sent["board"] is None and sent["account_id"] == ""
+
+
+def test_checkin_request_rebuilds_the_alif_id_and_only_there():
+    """The Alif's omv.board_id() is empty; the id is the UID bytes padded to 12, uppercase --
+    the same arithmetic as the runtime's _board_id_fallback. Nowhere else is it guessed."""
+    import json
+    uid = bytes.fromhex("0a0b0c0d0e0f1011")
+
+    def dev(board_id, platform, u=uid):
+        return json.loads(_split(rec.checkin_request(_Cfg, "h", 443, board_id, platform, u))[1])[
+            "device_id"]
+
+    assert dev("", "alif") == "0A0B0C0D0E0F101100000000"
+    assert dev("REAL", "alif") == "REAL"                   # a real id always wins
+    assert dev("", "stm32") == ""                          # -> the server's 422, logged
+    assert dev("", "alif", bytes(13)) == ""                # not the 8-byte id this port gives
+    assert dev(None, "alif", b"") == ""
+
+
+def test_the_offer_is_installed_and_nothing_or_a_throttle_waits():
+    assert rec.offered(200, b'{"update": true, "manifest_url": "https://h/d/t/m.bin"}') \
+        == "https://h/d/t/m.bin"
+    assert rec.offered(200, b'{"update": false, "poll_after_s": 300}') is None
+    assert rec.offered(429, b"anything") is None           # the server pacing a crowd
+
+
+def test_a_refusal_raises_so_the_loop_logs_it_and_backs_off():
+    for code in (422, 404, 500, 302):
+        with pytest.raises(OSError, match="HTTP %d" % code):
+            rec.offered(code, b"{}")
+
+
+def test_the_server_answering_ends_the_attempt(monkeypatch):
+    """Nothing offered is an answer, not a failed interface: recovery waits its backoff and asks
+    again, rather than tearing down a working link to try the next one."""
+    seen = []
+    monkeypatch.setattr(rec, "_read_settings", lambda: ({}, None))
+    monkeypatch.setattr(rec, "_has", lambda cfg, kind: True)
+    monkeypatch.setattr(rec, "_bring_up", lambda kind, s, static=False: seen.append(kind) or True)
+    monkeypatch.setattr(rec, "_install", lambda cfg: None)       # the server had nothing
+    monkeypatch.setattr(rec, "backoff_for", lambda n: (_ for _ in ()).throw(_Stop()))
+    settings = nc.settings(nc.parse("interface = eth\nwifi.ssid = N\n"), UID)
+    monkeypatch.setattr(rec, "_read_settings", lambda: ({}, settings))
+    with pytest.raises(_Stop):
+        rec.run(_Cfg)
+    assert seen == ["eth"]                                  # wifi was never brought up
+
+
+def test_the_firmware_stamps_the_board_recovery_reports(make_project, monkeypatch):
+    """With no image there is no system.json; the board the registration gate keys on comes
+    from _ota_config, and it is the same name system.json carries."""
+    from openmv_ota.build import firmware as fw
+
+    from .test_firmware import _fake_make
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+    ns = {}
+    exec((r.build_dir / "_ota_config.py").read_text(), ns)  # noqa: S102 (generated code)
+    assert ns["BOARD"] == "OPENMV_N6"

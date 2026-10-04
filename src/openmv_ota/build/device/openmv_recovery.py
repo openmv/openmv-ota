@@ -16,9 +16,12 @@ different from the update path's:
 * It is allowed to be slow. A recovering device is already out of service; a careful retry that
   takes a minute costs nothing next to a wrong one that bricks it.
 
-The pure logic here (the retry policy, the interface plan) is host-tested; the device entry
-that touches ``network`` and the installer is exercised on hardware, like every other device
-entry in this tree.
+Each attempt brings up a network, checks in with the server (``POST /api/v1/check``, the
+runtime's request reduced to what the firmware knows), and installs the manifest it offers.
+
+The pure logic here (the retry policy, the interface plan, the check-in request and answer) is
+host-tested; the device entry that touches ``network`` and the installer is exercised on
+hardware, like every other device entry in this tree.
 
 RAM BUDGET: this module runs inside your application, so its memory is your memory. Every
 buffer here has a ceiling. Nothing is sized by a file's length, a response body, a length field
@@ -98,6 +101,52 @@ def should_rewrite_psk(cfg):
     and the crash window both stay near zero."""
     psk = cfg.get("wifi.psk", "")
     return bool(psk) and not psk.startswith(_OBFUSCATED)
+
+
+# --- the check-in -------------------------------------------------------------
+# Recovery asks the server what to install exactly as the runtime does -- POST /api/v1/check --
+# because SERVER_URL is the server, not a manifest: the manifest URL is minted per offer (a
+# one-time download token), so there is no fixed URL to install from. The request is the
+# runtime's check-in reduced to what a device with no image knows: who it is, from the firmware.
+
+_RESP_MAX = 8 * 1024      # the runtime's check-in reply cap (openmv_ota._RESP_MAX)
+
+
+def checkin_request(cfg, host, port, board_id, platform, uid):
+    """The check-in POST, head and body, from the firmware's own constants. There is no image,
+    so nothing is installed: payload version 0 (any release is newer), no slots, and
+    ``fallback_reason`` says why, which puts a recovering device on the fleet view.
+
+    ``device_id`` is ``omv.board_id()`` or, on the Alif, whose ``board_id()`` is empty, the same
+    id rebuilt from ``machine.unique_id()`` (see ``openmv_ota._board_id_fallback``). Anything else
+    sends ``""``, which the server refuses with a 422: loud, and logged by the retry loop.
+
+    HTTP/1.0 like the runtime's check-in, so no proxy may chunk the reply."""
+    import json
+    if not board_id and platform == "alif" and uid and len(uid) <= 12:
+        board_id = (bytes(uid) + bytes(12 - len(uid))).hex().upper()
+    pid = getattr(cfg, "PRODUCT_ID", 0)
+    body = json.dumps({"device_id": board_id or "", "product_id": pid,
+                       "account_id": getattr(cfg, "ACCOUNT_ID", ""),
+                       "board": getattr(cfg, "BOARD", None), "payload_version": 0,
+                       "orders_by_seq": pid == 0, "fallback_reason": "recovery"}).encode()
+    if port != 443:
+        host = "%s:%d" % (host, port)
+    return ("POST /api/v1/check HTTP/1.0\r\nHost: %s\r\nContent-Type: application/json\r\n"
+            "Content-Length: %d\r\n\r\n" % (host, len(body))).encode() + body
+
+
+def offered(code, raw):
+    """The manifest URL the server offers, or ``None`` when it has nothing for this device (a
+    429 is the server pacing a crowd: nothing, for now). Any other status is a refusal and
+    raises, so the retry loop logs it and backs off."""
+    if code == 429:
+        return None
+    if code != 200:
+        raise OSError("check-in refused: HTTP %d" % code)
+    import json
+    resp = json.loads(raw)
+    return resp.get("manifest_url") if resp.get("update") else None
 
 
 # --- device entry -----------------------------------------------------------
@@ -234,8 +283,9 @@ def run(cfg):  # pragma: no cover  (device: the whole point is that nothing else
                 # credentials, so the thing to withhold is the address, not the whole config.
                 if not _bring_up(kind, settings, static=(kind == settings_kind(settings))):
                     continue
-                log.info("recovery: installing from %s" % cfg.SERVER_URL)
-                _install(cfg)                # reboots on success
+                log.info("recovery: checking in with %s" % cfg.SERVER_URL)
+                _install(cfg)                # reboots when it installs
+                break                        # the server answered: nothing yet, wait and ask again
             if not order:
                 log.error("recovery: no usable interface")
         except Exception as e:  # hil-residual: recovery must never die -- there is nothing below it
@@ -261,8 +311,33 @@ def _has(cfg, kind):  # pragma: no cover  (device)  # hil-residual-fn: see _uid 
     return has_wifi(network)  # hil-residual: bare capability probe
 
 
-def _install(cfg):  # pragma: no cover  (device)  # hil-residual-fn: see _uid -- delegates to the installer, whose own paths ARE witnessed by every install scenario
-    """Run the frozen installer against the build-stamped server."""
-    import openmv_installer
+def _install(cfg):  # pragma: no cover  (device)  # hil-residual-fn: see _uid -- the request and the answer are host-tested; the connection is the installer's own _connect/_Reader, witnessed by every install scenario
+    """Check in with the build-stamped server and install what it offers (which reboots).
+    Returns when it offers nothing; raises when it refuses or cannot be reached."""
+    import socket
+    import ssl
+    import sys
 
-    openmv_installer.run(cfg.SERVER_URL, getattr(cfg, "CA_PEM", b""), cfg)
+    import openmv_installer as inst
+    try:
+        import omv
+        bid = omv.board_id()
+    except (ImportError, AttributeError):
+        bid = ""
+    ca = getattr(cfg, "CA_PEM", b"")
+    host, port, _ = inst._parse_url(cfg.SERVER_URL)
+    sock = inst._connect(host, port, inst._tls_anchors(ca, cfg), socket, ssl)
+    try:
+        sock.write(checkin_request(cfg, host, port, bid, sys.platform, _uid()))
+        sock.setblocking(False)                # the installer's reader polls (see _open)
+        reader = inst._Reader(sock.readinto)
+        code, headers = inst._read_response(reader)
+        raw = inst._read_all(inst._make_body(reader, headers), _RESP_MAX)  # ram-ok: capped at _RESP_MAX
+    finally:
+        sock.close()
+    url = offered(code, raw)
+    if not url:
+        log.info("recovery: no update offered")
+        return
+    log.info("recovery: update offered")
+    inst.run(url, ca, cfg)
