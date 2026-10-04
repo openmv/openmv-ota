@@ -578,8 +578,9 @@ class _FakeProj:
 
 
 class _FakeTarget:
-    def __init__(self, name="OPENMV_N6", recovery_ca_bundle=False):
+    def __init__(self, name="OPENMV_N6", recovery_ca_bundle=False, tls_verify=True):
         self.name, self.recovery_ca_bundle = name, recovery_ca_bundle
+        self.tls_verify = tls_verify
 
 
 def test_recovery_ca_empty_freezes_the_project_bundle_on_a_board_with_room(tmp_path):
@@ -639,6 +640,51 @@ def test_an_unreadable_ca_fails_the_build_loudly(tmp_path):
         _recovery_ca(_FakeProj(tmp_path, ca="certs/missing.pem"), _FakeTarget())
 
 
+def test_an_unverified_board_without_ca_freezes_no_anchors_and_stamps_false(tmp_path):
+    """The M4/M7/H7 (tls_verify false) with [ota].ca unset: an EMPTY CA_PEM -- not the bundle,
+    not a refusal -- and TLS_VERIFY False, the one stamp that lets the device connect unverified.
+    Every other board stamps True."""
+    from openmv_ota.build.firmware import _recovery_ca, _tls_verify_stamp
+
+    legacy = _FakeTarget(name="OPENMV4", tls_verify=False)
+    assert _recovery_ca(_FakeProj(tmp_path), legacy) == b""
+    assert _tls_verify_stamp(_FakeProj(tmp_path), legacy) is False
+    assert _tls_verify_stamp(_FakeProj(tmp_path, ca="  "), legacy) is False
+    for t in (_FakeTarget(), _FakeTarget(recovery_ca_bundle=True)):
+        assert _tls_verify_stamp(_FakeProj(tmp_path), t) is True
+
+
+def test_an_unverified_board_with_an_explicit_ca_verifies_and_stamps_true(tmp_path):
+    """[ota].ca is an opt-in, and it still works on those boards: its anchors are frozen and
+    the stamp is True, so the device verifies (and refuses without anchors) like any other."""
+    from openmv_ota.build.firmware import _recovery_ca, _tls_verify_stamp
+
+    (tmp_path / "certs").mkdir()
+    (tmp_path / "certs" / "root.pem").write_bytes(b"-----BEGIN CERTIFICATE-----\nxx\n")
+    p = _FakeProj(tmp_path, ca="certs/root.pem")
+    legacy = _FakeTarget(name="OPENMV4", tls_verify=False)
+    assert _recovery_ca(p, legacy).startswith(b"-----BEGIN")
+    assert _tls_verify_stamp(p, legacy) is True
+
+
+@pytest.mark.parametrize(("ca", "want_pem", "want_verify"), [
+    (None, b"", False),                   # H7 alone: no anchors, unverified
+    ("tiny", b"MIGa", True),              # H7 with --ca: verifies against it
+])
+def test_ota_config_stamps_tls_verify_for_the_h7(make_project, monkeypatch, ca, want_pem,
+                                                 want_verify):
+    """End to end through `build firmware`: the generated _ota_config carries the stamp."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    monkeypatch.setattr(fw, "_ensure_mpy_cross", lambda repo: None)
+    root, repo, _app = make_project(boards=("OPENMV4",), ota=True, ca=ca)
+    r = fw.build_firmware(root, firmware=repo, boards=["OPENMV4"], keep_build_dir=True)[0]
+    ns = {}
+    exec((r.build_dir / "_ota_config.py").read_text(), ns)
+    assert want_pem in ns["CA_PEM"] and bool(ns["CA_PEM"]) is want_verify
+    assert ns["TLS_VERIFY"] is want_verify
+
+
 def test_build_firmware_freezes_the_configured_trust_store_once(make_project, monkeypatch):
     """[ota].ca is frozen as _ota_config.CA_PEM -- recovery's anchors AND the runtime's
     (builtin_ca) -- and nowhere else. A second frozen copy (the old openmv_ca module) doubled
@@ -658,6 +704,7 @@ def test_build_firmware_freezes_the_configured_trust_store_once(make_project, mo
     ns = {}
     exec((r.build_dir / "_ota_config.py").read_text(), ns)
     assert ns["CA_PEM"] == pem and b"GTS Root R4" in pem
+    assert ns["TLS_VERIFY"] is True                  # a verifying board always stamps True
 
 
 def test_a_multi_core_board_freezes_the_ota_modules_into_the_main_core_only(make_project,

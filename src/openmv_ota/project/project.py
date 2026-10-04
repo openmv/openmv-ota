@@ -503,7 +503,8 @@ def create_project(
     if _boards_have_coprocessor(boards):  # a slaved second core (e.g. AE3's M55_HE)
         _scaffold_coprocessor(paths, app_version)
     if config.ota:  # the device OTA runtime lib (status/confirm/sync) for the app to use
-        _scaffold_runtime_lib(paths, boards, bundle=not (config.ca or "").strip())
+        _scaffold_runtime_lib(paths, boards, bundle=not (config.ca or "").strip()
+                              and _boards_with_bundle(boards))
         _scaffold_device_files(paths)
         _scaffold_compliance(paths)   # CRA/RED fill-in templates -- per-product paperwork
     _scaffold_license(paths, vendor or name)   # proprietary default; replace freely
@@ -892,10 +893,20 @@ def _install_ca(paths: ProjectPaths, src: str) -> str:
 
 
 def _boards_without_bundle(boards: list[str]) -> list[str]:
-    """The boards whose firmware cannot carry the ~186 KB public CA bundle (``recovery_ca_bundle``
-    unset in boards.json: the 1792 KB parts, and the classics). Recovery needs TLS anchors in the
-    firmware, so these boards need a small trust store of their own."""
-    return sorted(b for b in boards if not boards_mod.get_board(b).recovery_ca_bundle)
+    """The VERIFYING boards whose firmware cannot carry the ~186 KB public CA bundle
+    (``recovery_ca_bundle`` unset in boards.json: the 1792 KB parts). Recovery needs TLS anchors
+    in the firmware, so these boards need a small trust store of their own. A ``tls_verify:
+    false`` board (the discontinued M4/M7/H7) is not one: with no ``[ota].ca`` it freezes no
+    anchors and connects unverified, so it asks for nothing here."""
+    return sorted(b for b in boards
+                  if not boards_mod.get_board(b).recovery_ca_bundle
+                  and boards_mod.get_board(b).tls_verify)
+
+
+def _boards_with_bundle(boards: list[str]) -> bool:
+    """Whether any board freezes the public bundle when ``[ota].ca`` is unset -- the only reason
+    to fetch it. A project of nothing but unverified boards (an H7 alone) has no use for it."""
+    return any(boards_mod.get_board(b).recovery_ca_bundle for b in boards)
 
 
 def _install_cloud_roots(paths: ProjectPaths) -> str:
@@ -936,7 +947,7 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str], bundle: bool) 
     """Scaffold ``app/lib/openmv_ota/`` -- the device OTA runtime helpers
     (status/confirm/sync/install) -- into an OTA project. ``data/`` always gets the
     installer source (shipped uncompiled so ``install()`` can ``exec`` it into RAM). With
-    ``bundle`` (no ``[ota].ca``) the public CA bundle is fetched to ``certs/ca.pem``. For coprocessor boards it
+    ``bundle`` (no ``[ota].ca``, and a board that freezes it) the public CA bundle is fetched to ``certs/ca.pem``. For coprocessor boards it
     also seeds ``data/coprocessor.romfs`` (a placeholder the build swaps for the real
     image) and ``data/resources.json`` (the sync() manifest). Existing files are left
     alone, so a user's replaced ``ca.pem`` survives ``new --force``."""
@@ -961,8 +972,9 @@ def _scaffold_runtime_lib(paths: ProjectPaths, boards: list[str], bundle: bool) 
     data = dst / "data"
     data.mkdir(exist_ok=True)
     # The PUBLIC bundle lives at certs/ca.pem -- OUTSIDE app/, so it does NOT ship in the
-    # romfs. Only a project without [ota].ca gets it, which `new` allows only when every board
-    # is flagged recovery_ca_bundle (N6, AE3, RT1060); `build firmware` freezes it as
+    # romfs. Only a project without [ota].ca gets it, which `new` allows only when every
+    # verifying board is flagged recovery_ca_bundle (N6, AE3, RT1060) and one of them is in the
+    # project (a tls_verify false board -- M4/M7/H7 -- freezes nothing); `build firmware` freezes it as
     # _ota_config.CA_PEM and BOTH the runtime and recovery read that one frozen copy
     # (openmv_ota.builtin_ca()). Shipping it in the romfs too would pay ~186 KB per slot for
     # bytes the firmware already carries; a project that wants a per-image override adds
