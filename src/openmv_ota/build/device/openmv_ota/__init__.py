@@ -20,6 +20,9 @@ are what an app uses around an OTA update:
     builtin_ca() -> the TLS trust anchors frozen into the firmware (or None on a
                   non-OTA build) -- the store install() trusts by default, public
                   so an app's own TLS connections can reuse it.
+    tls_context(ssl, ca) -> a client SSLContext under the camera's one TLS rule:
+                  verify against ``ca``; with none, unverified only on a firmware
+                  built ``TLS_VERIFY = False`` (the M4/M7/H7), else refuse.
     install()  -> download a gzipped FRONT-slot image over HTTPS and install it:
                   write the FRONT slot, arm the one-shot trial, reboot. Does NOT
                   return on success. Call with the network already up, after any app
@@ -1042,6 +1045,7 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
         confirm()  # hil-residual: opt-in boot-time self_test confirm; bench apps confirm in their loop (confirm.promoted), not via self_test, so this call-site is unexercised
     here = __file__.rsplit("/", 1)[0]
     ca = _resolve_ca(ca, here)
+    _tls_verify(ca)                       # refuse NOW, out of run(), on a board that must verify
     fails = 0                             # CONSECUTIVE failed cycles; drives the recover escalation
     misses = 0                            # the same streak, NOT reset by a recover: drives the backoff
     cap = poll_after_s or _POLL_DEFAULT_S  # the longest a failed check-in waits to retry
@@ -1316,6 +1320,47 @@ def _read_capped(sock, limit, clen=None):  # pragma: no cover  (device network)
     return body  # hil-residual: bare return of the joined body
 
 
+_tls_warned = False
+
+
+def _tls_verify(ca):
+    """THE ONE TLS RULE for every connection this camera opens (the installer, exec'd standalone,
+    carries its own copy: ``installer._tls_anchors``). Anchors -> True: verify against them. None
+    -> False, unverified, ONLY where the build stamped ``_ota_config.TLS_VERIFY = False`` (the
+    discontinued M4/M7/H7 on the hosted cloud), with a one-time warning. A stamp of True, or no
+    stamp at all, refuses: a board that can verify never falls back to unverified silently."""
+    global _tls_warned
+    if ca:
+        return True
+    try:
+        import _ota_config
+        on = getattr(_ota_config, "TLS_VERIFY", True)
+    except ImportError:
+        on = True
+    if on:
+        raise OSError("no TLS trust anchors: no data/ca.pem and none frozen; pass ca=")
+    if not _tls_warned:
+        _tls_warned = True
+        log.warning("tls: server not verified (this camera has no trust anchors)")
+    return False
+
+
+def tls_context(ssl, ca):
+    """A client ``ssl.SSLContext`` under :func:`_tls_verify`'s rule: CERT_REQUIRED against ``ca``
+    (PEM ``str``/``bytes``), or CERT_NONE where the rule allows it; raises where it refuses.
+    Public so the cloud SDK opens its connections exactly the way the check-in does."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    if _tls_verify(ca):
+        # VERIFY the server. MicroPython's PROTOCOL_TLS_CLIENT defaults to CERT_NONE (unlike
+        # CPython), so loading the CA alone checked nothing: anyone on the path could answer
+        # the check-in and hand out Live/ingest grants.
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.load_verify_locations(cadata=ca.decode() if isinstance(ca, bytes) else ca)
+    else:
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
     """POST the check-in body to ``/api/v1/check`` and return the parsed JSON.
 
@@ -1340,12 +1385,7 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
     try:
         sock.settimeout(_CHECKIN_TIMEOUT)            # bounds handshake + each recv; WINC-safe (no poll)
         sock.connect(ai[-1])
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        # VERIFY the server. MicroPython's PROTOCOL_TLS_CLIENT defaults to CERT_NONE (unlike
-        # CPython), so loading the CA alone checked nothing: anyone on the path could answer
-        # the check-in and hand out Live/ingest grants. The installer always verified.
-        ctx.verify_mode = ssl.CERT_REQUIRED
-        ctx.load_verify_locations(cadata=ca.decode() if isinstance(ca, bytes) else ca)
+        ctx = tls_context(ssl, ca)                    # verify, or refuse (see _tls_verify)
         ss = ctx.wrap_socket(sock, server_hostname=host)   # blocking TLS handshake (ISR-fed by caller)
         payload = json.dumps(body).encode()
         # HTTP/1.0, not 1.1: a 1.1 reply may be CHUNKED (Cloudflare in front of the hosted
@@ -1714,10 +1754,9 @@ def _resolve_ca(ca, base):  # pragma: no cover
         except OSError:  # hil-residual: no override shipped -- the default default
             ca = builtin_ca()  # hil-residual: frozen-store branch; the bench passes an explicit CA on every leg
             log.debug("ca: builtin")  # hil-residual: builtin witness; see the line above
-            if not ca:  # hil-residual: only a non-OTA firmware (no frozen anchors) reaches this
-                # No override, nothing frozen: refuse here, with a name for the problem,
-                # rather than let TLS fail every connection with an anchorless verify.
-                raise OSError("no TLS trust anchors: no data/ca.pem and none frozen; pass ca=")  # hil-residual: anchorless refusal; needs a non-OTA firmware, which no OTA leg runs
+            # None here (no override, nothing frozen) is NOT refused here: the TLS rule decides,
+            # at run() (_tls_verify) and in the installer (_tls_anchors) -- unverified only on a
+            # firmware built TLS_VERIFY = False, a refusal by name everywhere else.
     elif isinstance(ca, str):
         ca = _read_file(ca, "rb")
         log.debug("ca: from path")                    # HIL path witness (run() passes a CA path)

@@ -286,3 +286,63 @@ def test_relieve_conns_drops_every_open_datalake_connection(monkeypatch):
     sa = a._writer
     assert lib._relieve_conns(0) == 1
     assert sa.closed and a._writer is None and a._reader is None and lib._conns == []
+
+
+# --- TLS: the SDK opens its connections under the OTA runtime's one rule --------
+
+class _Ssl:
+    PROTOCOL_TLS_CLIENT, CERT_NONE, CERT_REQUIRED = 1, 0, 2
+
+    class SSLContext:
+        def __init__(self, proto):
+            self.verify_mode, self.cadata = None, None
+
+        def load_verify_locations(self, cadata):
+            self.cadata = cadata
+
+
+def _runtime(monkeypatch, builtin, flag):
+    """The device openmv_ota runtime installed beside us, with no romfs ca.pem override,
+    ``builtin`` frozen anchors, and _ota_config.TLS_VERIFY = ``flag``."""
+    import sys
+    import types
+
+    from openmv_ota.build.device import openmv_ota as rt
+
+    def no_override(*a):
+        raise OSError("no data/ca.pem")
+    monkeypatch.setattr(rt, "_read_file", no_override)
+    monkeypatch.setattr(rt, "_tls_warned", False)
+    monkeypatch.setitem(sys.modules, "openmv_ota", rt)
+    monkeypatch.setitem(sys.modules, "_ota_config",
+                        types.SimpleNamespace(CA_PEM=builtin, TLS_VERIFY=flag))
+    monkeypatch.setattr(_lib, "_ca_pem", None)
+
+
+def test_sdk_verifies_against_the_frozen_store(monkeypatch):
+    _runtime(monkeypatch, b"PEM", True)
+    assert _lib._ca() == b"PEM"
+    ctx = _lib._tls_ctx(_Ssl)
+    assert ctx.verify_mode == _Ssl.CERT_REQUIRED and ctx.cadata == "PEM"
+
+
+def test_sdk_goes_unverified_only_on_a_build_that_allows_it(monkeypatch):
+    _runtime(monkeypatch, b"", False)
+    assert _lib._ca() is None
+    assert _lib._tls_ctx(_Ssl).verify_mode == _Ssl.CERT_NONE
+
+
+def test_sdk_refuses_without_anchors_on_a_verifying_build(monkeypatch):
+    """It used to fall to MicroPython's default here -- CERT_NONE, silently. Now it refuses."""
+    _runtime(monkeypatch, b"", True)
+    with pytest.raises(OSError, match="no TLS trust anchors"):
+        _lib._tls_ctx(_Ssl)
+
+
+def test_sdk_refuses_without_the_ota_runtime(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "openmv_ota", None)
+    monkeypatch.setattr(_lib, "_ca_pem", None)
+    assert _lib._ca() is None
+    with pytest.raises(ImportError):
+        _lib._tls_ctx(_Ssl)

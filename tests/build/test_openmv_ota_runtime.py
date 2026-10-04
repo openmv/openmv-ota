@@ -418,6 +418,74 @@ def test_builtin_ca_is_none_without_frozen_anchors(monkeypatch):
     assert rt.builtin_ca() is None
 
 
+# --- the one TLS rule: _tls_verify / tls_context --------------------------------
+
+class _Warns:
+    def __init__(self):
+        self.lines = []
+
+    def warning(self, msg, *a):
+        self.lines.append(msg)
+
+
+class _Ssl:
+    """Just enough of MicroPython's ssl to see what tls_context set."""
+    PROTOCOL_TLS_CLIENT, CERT_NONE, CERT_REQUIRED = 1, 0, 2
+
+    class SSLContext:
+        def __init__(self, proto):
+            self.proto, self.verify_mode, self.cadata = proto, None, None
+
+        def load_verify_locations(self, cadata):
+            self.cadata = cadata
+
+
+def _stamp(monkeypatch, flag):
+    """_ota_config with TLS_VERIFY = flag; "missing" = no attribute; "absent" = no module."""
+    import sys
+    import types
+    monkeypatch.setattr(rt, "_tls_warned", False)
+    monkeypatch.setattr(rt, "log", _Warns())
+    if flag == "absent":
+        monkeypatch.setitem(sys.modules, "_ota_config", None)   # import raises ImportError
+    elif flag == "missing":
+        monkeypatch.setitem(sys.modules, "_ota_config", types.SimpleNamespace(CA_PEM=b""))
+    else:
+        monkeypatch.setitem(sys.modules, "_ota_config",
+                            types.SimpleNamespace(CA_PEM=b"", TLS_VERIFY=flag))
+
+
+@pytest.mark.parametrize("flag", [True, False, "missing", "absent"])
+def test_tls_verify_with_anchors_always_verifies(monkeypatch, flag):
+    _stamp(monkeypatch, flag)
+    assert rt._tls_verify(b"PEM") is True
+    ctx = rt.tls_context(_Ssl, b"PEM")
+    assert ctx.verify_mode == _Ssl.CERT_REQUIRED and ctx.cadata == "PEM"
+    assert rt.tls_context(_Ssl, "PEM").cadata == "PEM"
+    assert rt.log.lines == []
+
+
+def test_tls_verify_without_anchors_skips_only_where_built_unverified(monkeypatch):
+    """The M4/M7/H7 (TLS_VERIFY False): CERT_NONE, no anchors loaded, one warning however many
+    connections follow."""
+    _stamp(monkeypatch, False)
+    for ca in (None, b"", ""):
+        ctx = rt.tls_context(_Ssl, ca)
+        assert ctx.verify_mode == _Ssl.CERT_NONE and ctx.cadata is None
+    assert rt.log.lines == ["tls: server not verified (this camera has no trust anchors)"]
+
+
+@pytest.mark.parametrize("flag", [True, "missing", "absent"])
+def test_tls_verify_without_anchors_refuses_everywhere_else(monkeypatch, flag):
+    """A True stamp, a missing stamp (a firmware built before it existed) or no _ota_config at
+    all: refused by name, never a silent fallback."""
+    _stamp(monkeypatch, flag)
+    with pytest.raises(OSError, match="no TLS trust anchors"):
+        rt.tls_context(_Ssl, None)
+    assert rt.log.lines == []
+
+
+
 # --- _InstallGate: install from a fresh heap ---------------------------------------------
 # An in-place install on a periodic check-in ran out of heap on the Nicla (camera + two relay
 # TLS sessions + the batchers), while the same release always installed from the boot check-in.
