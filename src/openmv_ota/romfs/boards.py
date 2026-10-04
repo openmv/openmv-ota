@@ -35,8 +35,14 @@ class Partition:
 # What a board does on the hosted OpenMV Cloud, from most to least: OTA + console + telemetry
 # + Live video; all but Live; OTA updates only. A board with tls_verify false (the M4/M7/H7)
 # keeps its level but reaches the cloud without verifying it: the website flags it
-# "unverified" beside that level and shows the disclaimer.
+# "unverified" beside that level and shows the disclaimer. The build stamps the level into
+# the firmware (_ota_config.CLOUD), and the device SDK never starts what its level leaves out.
 CLOUD_LEVELS = ("full", "no-live", "ota-only")
+
+# The Live frame sizes a "full" board may cap its video at, as (width, height). The device SDK
+# (openmv_cloud/csi.py) carries the same table to downscale a bigger frame before encoding it;
+# tests pin the two together.
+LIVE_FRAMESIZES = {"QQVGA": (160, 120), "QVGA": (320, 240), "VGA": (640, 480)}
 
 
 @dataclass(frozen=True)
@@ -76,7 +82,8 @@ class BoardConfig:
                                          # one of CLOUD_LEVELS, or None (not offered there).
                                          # One place for the website's board picker and the
                                          # tools to agree on
-    live_framesize: str | None = None    # the Live video frame size it streams by default
+    live_framesize: str | None = None    # the Live video frame size cap (a LIVE_FRAMESIZES
+                                         # name); set on every "full" board, on no other
 
     def partition(self, index: int | None = None) -> Partition:
         """Return the partition with the given ``index`` (default: the first).
@@ -104,6 +111,20 @@ def _cloud_level(board: str, level: str | None) -> str | None:
         raise ValueError("boards.json: %s has cloud %r, expected one of %s"
                          % (board, level, ", ".join(CLOUD_LEVELS)))
     return level
+
+
+def _live_framesize(board: str, level: str | None, size: str | None) -> str | None:
+    """A Live frame size belongs to a board that streams Live -- "full" -- and every such
+    board names one: without it the device would stream whatever the app captures."""
+    if level != "full":
+        if size is not None:
+            raise ValueError("boards.json: %s has live_framesize %r but cloud %r; only a "
+                             "\"full\" board streams Live" % (board, size, level))
+        return None
+    if size not in LIVE_FRAMESIZES:
+        raise ValueError("boards.json: %s is cloud \"full\" and needs live_framesize, one of %s"
+                         % (board, ", ".join(LIVE_FRAMESIZES)))
+    return size
 
 
 def load_boards() -> dict[str, BoardConfig]:
@@ -134,7 +155,7 @@ def load_boards() -> dict[str, BoardConfig]:
             ota_runtime_drops_network=bool(b.get("ota_runtime_drops_network", False)),
             ota_firmware_drops=dict(b.get("ota_firmware_drops", {})),
             cloud=_cloud_level(name, b.get("cloud")),
-            live_framesize=b.get("live_framesize"),
+            live_framesize=_live_framesize(name, b.get("cloud"), b.get("live_framesize")),
             partitions=parts,
             flash=b.get("flash"),
             unsupported=b.get("unsupported"),

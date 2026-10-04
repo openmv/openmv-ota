@@ -65,19 +65,18 @@ def test_unsupported_reason():
 
 def test_cloud_capability_per_board():
     """The hosted-cloud level the website's board picker shows. The six boards proven on the
-    hosted cloud plus the H7 Plus (WINC1500 shield) run all of it with QVGA Live video; the
-    discontinued M7/H7 join unverified, the H7 at QVGA and the M7 at QQVGA for now; the M4's
-    runtime drops the network stack to fit its RAM, so it has no cloud level."""
+    hosted cloud plus the H7 Plus (WINC1500 shield) and the discontinued H7 run all of it with
+    QVGA Live video. The M7 drops Live to fit its RAM ("no-live", pending its bench results);
+    the M4's runtime drops the network stack, so it has no cloud level."""
     from openmv_ota.romfs.boards import CLOUD_LEVELS, load_boards
 
     boards = load_boards()
     qvga = {"OPENMV_N6", "OPENMV_AE3", "OPENMV_RT1060", "OPENMV4P", "ARDUINO_NICLA_VISION",
             "ARDUINO_GIGA", "ARDUINO_PORTENTA_H7", "OPENMV4"}
-    qqvga = {"OPENMV3"}
-    assert {n for n, b in boards.items() if b.cloud == "full"} == qvga | qqvga
+    assert {n for n, b in boards.items() if b.cloud == "full"} == qvga
     assert all(b.cloud in CLOUD_LEVELS + (None,) for b in boards.values())
     assert all(boards[n].live_framesize == "QVGA" for n in qvga)
-    assert all(boards[n].live_framesize == "QQVGA" for n in qqvga)
+    assert boards["OPENMV3"].cloud == "no-live" and boards["OPENMV3"].live_framesize is None
     assert boards["OPENMVPT"].cloud is None and boards["OPENMVPT"].live_framesize is None
     assert boards["OPENMV2"].cloud is None
 
@@ -99,3 +98,19 @@ def test_an_unknown_cloud_level_is_refused():
     assert boards_mod._cloud_level("X", "no-live") == "no-live"
     with pytest.raises(ValueError, match="X has cloud 'live'"):
         boards_mod._cloud_level("X", "live")
+
+
+def test_live_framesize_belongs_to_full_boards_only():
+    """Only a "full" board streams Live, so only it names a Live frame size -- and it must
+    name one the device SDK knows how to scale to."""
+    from openmv_ota.romfs import boards as boards_mod
+
+    assert boards_mod._live_framesize("X", "full", "QQVGA") == "QQVGA"
+    assert boards_mod._live_framesize("X", "no-live", None) is None
+    assert boards_mod._live_framesize("X", None, None) is None
+    with pytest.raises(ValueError, match="X has live_framesize 'QVGA' but cloud 'no-live'"):
+        boards_mod._live_framesize("X", "no-live", "QVGA")
+    with pytest.raises(ValueError, match="X is cloud \"full\" and needs live_framesize"):
+        boards_mod._live_framesize("X", "full", None)
+    with pytest.raises(ValueError, match="needs live_framesize"):
+        boards_mod._live_framesize("X", "full", "HD")
