@@ -305,6 +305,13 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
     error and not a NameError in the field."""
     board = get_board(name)
     drops, config = board.ota_firmware_drops, board.ota_firmware_config
+    if config and not _linker_reads_board_dir(repo):
+        # An out-of-tree board dir that adds a GC block compiles but does not LINK on a firmware
+        # whose linker-script generator still reads boards/<TARGET> -- build without the layout
+        # change (the board keeps its stock heap) until the firmware takes the fix.
+        print("warning: %s: this firmware's tools/gen_linker.py ignores OMV_BOARD_CONFIG_DIR, so "
+              "the OTA memory layout (%s) is not applied" % (name, ", ".join(sorted(config))))
+        config = {}
     if not drops and not config:
         return None
     src = repo / "boards" / name
@@ -331,6 +338,16 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
                              "firmware disagree" % (name, define), exit_code=2)
     cfg.write_text(text, encoding="utf-8")
     return overlay
+
+
+def _linker_reads_board_dir(repo: Path) -> bool:
+    """Whether the firmware's linker-script generator takes the board directory from
+    ``OMV_BOARD_CONFIG_DIR`` (its ``--board-dir`` option). Older trees always parse
+    ``boards/<TARGET>``, so a board_config.h overlay would compile one layout and link another."""
+    try:
+        return "--board-dir" in (repo / "tools" / "gen_linker.py").read_text(encoding="utf-8")
+    except OSError:
+        return False
 
 
 def _overlay_board_config(path: Path, name: str, config: dict[str, str]) -> None:
