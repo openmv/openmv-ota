@@ -32,6 +32,11 @@ class Partition:
     npu: dict[str, Any] | None = None
 
 
+# What a board does on the hosted OpenMV Cloud, from most to least: OTA + console + telemetry
+# + Live video; all but Live; OTA updates only.
+CLOUD_LEVELS = ("full", "no-live", "ota-only")
+
+
 @dataclass(frozen=True)
 class BoardConfig:
     name: str
@@ -59,6 +64,11 @@ class BoardConfig:
                                          # to fit this board's flash, `{define: image
                                          # method}` -- the build refuses an app that
                                          # calls the method (see build/firmware.py)
+    cloud: str | None = None             # what this board does on the hosted OpenMV Cloud:
+                                         # one of CLOUD_LEVELS, or None (not offered there).
+                                         # One place for the website's board picker and the
+                                         # tools to agree on
+    live_framesize: str | None = None    # the Live video frame size it streams by default
 
     def partition(self, index: int | None = None) -> Partition:
         """Return the partition with the given ``index`` (default: the first).
@@ -79,6 +89,13 @@ class BoardConfig:
 def _load_raw() -> dict[str, Any]:
     text = files("openmv_ota").joinpath("data/boards.json").read_text(encoding="utf-8")
     return json.loads(text)
+
+
+def _cloud_level(board: str, level: str | None) -> str | None:
+    if level is not None and level not in CLOUD_LEVELS:
+        raise ValueError("boards.json: %s has cloud %r, expected one of %s"
+                         % (board, level, ", ".join(CLOUD_LEVELS)))
+    return level
 
 
 def load_boards() -> dict[str, BoardConfig]:
@@ -107,6 +124,8 @@ def load_boards() -> dict[str, BoardConfig]:
             recovery_ca_bundle=bool(b.get("recovery_ca_bundle", False)),
             ota_runtime_drops_network=bool(b.get("ota_runtime_drops_network", False)),
             ota_firmware_drops=dict(b.get("ota_firmware_drops", {})),
+            cloud=_cloud_level(name, b.get("cloud")),
+            live_framesize=b.get("live_framesize"),
             partitions=parts,
             flash=b.get("flash"),
             unsupported=b.get("unsupported"),

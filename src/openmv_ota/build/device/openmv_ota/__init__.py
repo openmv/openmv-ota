@@ -15,6 +15,8 @@ are what an app uses around an OTA update:
                   chunked write of a whole partition, so NOT quick -- it feeds the
                   watchdog (openmv_wdt) like install() does. Idempotent; call early
                   (before the helper core is used). No-op when nothing is bundled.
+    wifi()     -> start joining a Wi-Fi network on whichever interface the board has
+                  (WLAN, or the WINC1500 shield's WINC) and return it.
     builtin_ca() -> the TLS trust anchors frozen into the firmware (or None on a
                   non-OTA build) -- the store install() trusts by default, public
                   so an app's own TLS connections can reuse it.
@@ -606,6 +608,37 @@ def identity():  # pragma: no cover
         log.error("identity: no usable omv.board_id() -- device_id omitted")  # hil-residual: only reachable on a non-OpenMV MicroPython build (no omv module); every OTA image is built from the openmv tree and has it
     log.debug("identity: ready")                      # HIL path witness (runs every check-in)
     return info  # hil-residual: bare return of the identity dict
+
+
+def wifi(ssid, password):  # pragma: no cover  (device: the radio)  # hil-residual-fn: binds the device's network module; which interface it builds and how it connects is host-tested in _wifi
+    """Start joining a Wi-Fi network and return the interface; wait on its ``isconnected()``.
+
+    ``network.WLAN`` on most boards, ``network.WINC`` on the OpenMV Cams that reach Wi-Fi
+    through the WINC1500 shield (the H7 Plus): one app runs on both. The interface is built
+    fresh on every call, which is what resets a wedged chip when the app's ``run(recover=)``
+    hook calls this again."""
+    import network
+    return _wifi(network, ssid, password)
+
+
+def _wifi(network, ssid, password):
+    """:func:`wifi` with the ``network`` module injected.
+
+    The WINC's connect() blocks until it has joined (up to ~20 s) and raises when it cannot,
+    with the key in the message. That is logged WITHOUT the exception -- the log can reach the
+    cloud console -- and the interface returned unjoined, like a WLAN that is still joining, so
+    the caller's wait and run()'s recover escalation treat both boards the same."""
+    if hasattr(network, "WLAN"):
+        nic = network.WLAN(network.STA_IF)
+        nic.active(True)
+        nic.connect(ssid, password)
+        return nic
+    nic = network.WINC()
+    try:
+        nic.connect(ssid, key=password or None)    # None: an open network
+    except OSError:
+        log.warning("wifi: could not join %s" % ssid)
+    return nic
 
 
 # --- the check-in loop + the openmv_cloud extension seam --------------------

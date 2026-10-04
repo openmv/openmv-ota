@@ -512,7 +512,7 @@ class Stream:
     def _start(self):  # pragma: no cover  (device: spawns the network task)
         import asyncio
         self._frame_event = asyncio.Event()
-        self._throttle = _Throttle(self._fps, _ticks_ms())
+        self._throttle = _Throttle(self._fps, _ticks_ms)
         self._task = asyncio.create_task(_relay_task(self))
 
     def _take_frame(self):
@@ -610,7 +610,7 @@ def _default_encoder(img, quality):  # pragma: no cover  (device: image API)
 
 def _ticks_ms():  # pragma: no cover  (device)
     import time
-    return time.ticks_ms
+    return time.ticks_ms()
 
 
 # --- the wake-cycle check (deep sleep) -----------------------------------------

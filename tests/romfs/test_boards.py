@@ -61,3 +61,26 @@ def test_unsupported_reason():
     assert "crashes at boot" in boards_mod.unsupported_reason("ARDUINO_NANO_RP2040_CONNECT")
     assert boards_mod.unsupported_reason("OPENMV4") is None
     assert boards_mod.unsupported_reason("NOPE") is None        # unknown -> None, not a crash
+
+
+def test_cloud_capability_per_board():
+    """The hosted-cloud level the website's board picker shows. The six boards proven on the
+    hosted cloud plus the H7 Plus (WINC1500 shield) run all of it, with QVGA Live video."""
+    from openmv_ota.romfs.boards import CLOUD_LEVELS, load_boards
+
+    boards = load_boards()
+    full = {"OPENMV_N6", "OPENMV_AE3", "OPENMV_RT1060", "OPENMV4P", "ARDUINO_NICLA_VISION",
+            "ARDUINO_GIGA", "ARDUINO_PORTENTA_H7"}
+    assert {n for n, b in boards.items() if b.cloud == "full"} == full
+    assert all(b.cloud in CLOUD_LEVELS + (None,) for b in boards.values())
+    assert all(boards[n].live_framesize == "QVGA" for n in full)
+    assert boards["OPENMV2"].cloud is None and boards["OPENMV2"].live_framesize is None
+
+
+def test_an_unknown_cloud_level_is_refused():
+    from openmv_ota.romfs import boards as boards_mod
+
+    assert boards_mod._cloud_level("X", None) is None
+    assert boards_mod._cloud_level("X", "no-live") == "no-live"
+    with pytest.raises(ValueError, match="X has cloud 'live'"):
+        boards_mod._cloud_level("X", "live")

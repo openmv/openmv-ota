@@ -179,8 +179,64 @@ def test_generated_app_wires_its_own_bring_up_as_the_hook():
     from openmv_ota.project.project import _APP_MAIN_OTA
 
     assert "recover=bring_up_network" in _APP_MAIN_OTA
-    # And the hook must be the bring-up that CONSTRUCTS the NIC, not one that reuses a handle.
-    assert "network.WLAN(network.STA_IF)" in _APP_MAIN_OTA
+    # And the hook must be the bring-up that CONSTRUCTS the NIC, not one that reuses a handle:
+    # openmv_ota.wifi() builds a fresh WLAN / WINC on every call (pinned in test_wifi_*).
+    assert "openmv_ota.wifi(WIFI_SSID, WIFI_PASSWORD)" in _APP_MAIN_OTA
+
+
+# --- openmv_ota.wifi(): one app for WLAN boards and the WINC1500 shield ---------------
+
+class _Net:
+    """A stand-in ``network`` module; ``wlan`` picks which interface the board has."""
+
+    STA_IF = 0
+
+    def __init__(self, wlan, fail=False):
+        self.calls = []
+        net = self
+
+        class _Nic:
+            def __init__(self, *a):
+                net.calls.append(("new",) + a)
+
+            def active(self, on):
+                net.calls.append(("active", on))
+
+            def connect(self, ssid, *a, **kw):
+                net.calls.append(("connect", ssid) + a + tuple(sorted(kw.items())))
+                if fail:
+                    raise OSError("could not connect to ssid=%s, key=secret" % ssid)
+
+        if wlan:
+            self.WLAN = _Nic
+        else:
+            self.WINC = _Nic
+
+
+def test_wifi_builds_and_joins_a_wlan():
+    net = _Net(wlan=True)
+    nic = rt._wifi(net, "lab", "pw")
+    assert net.calls == [("new", 0), ("active", True), ("connect", "lab", "pw")]
+    assert nic is not None
+
+
+def test_wifi_uses_the_winc_shield_when_there_is_no_wlan():
+    """The H7 Plus: network.WINC, whose connect() takes the key as a keyword and needs no
+    active(). An empty password is an open network (key=None), not an empty WPA key."""
+    net = _Net(wlan=False)
+    rt._wifi(net, "lab", "pw")
+    assert net.calls == [("new",), ("connect", "lab", ("key", "pw"))]
+    net = _Net(wlan=False)
+    rt._wifi(net, "cafe", "")
+    assert net.calls == [("new",), ("connect", "cafe", ("key", None))]
+
+
+def test_a_failed_winc_join_returns_the_nic_and_never_logs_the_key(log):
+    """The WINC raises with the key in the message; the log can reach the cloud console."""
+    net = _Net(wlan=False, fail=True)
+    nic = rt._wifi(net, "lab", "secret")
+    assert nic is not None
+    assert log.lines and all("secret" not in m for _, m in log.lines)
 
 
 # --- the escalation must fire on TRANSPORT faults only ---------------------------------

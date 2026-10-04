@@ -135,3 +135,57 @@ def test_psk_is_rewritten_once_and_then_left_alone():
     assert rec.should_rewrite_psk({"wifi.psk": "hunter2"}) is True
     assert rec.should_rewrite_psk({"wifi.psk": nc.obfuscate("hunter2", UID)}) is False
     assert rec.should_rewrite_psk({}) is False              # nothing to rewrite
+
+
+# --- Wi-Fi bring-up: WLAN boards and the WINC1500 shield (the H7 Plus) -------------------
+
+class _Net:
+    STA_IF = 0
+
+    def __init__(self, wlan, fail=False):
+        self.calls = []
+        net = self
+
+        class _Nic:
+            def __init__(self, *a):
+                net.calls.append(("new",) + a)
+
+            def active(self, on):
+                net.calls.append(("active", on))
+
+            def connect(self, ssid, *a, **kw):
+                net.calls.append(("connect", ssid) + a + tuple(sorted(kw.items())))
+                if fail:
+                    raise OSError("could not connect to ssid=%s, key=secret" % ssid)
+
+        setattr(self, "WLAN" if wlan else "WINC", _Nic)
+
+
+def test_wifi_is_found_on_wlan_and_on_the_winc_shield():
+    """Recovery used to probe only network.WLAN, so a WINC board never tried its Wi-Fi."""
+    assert rec.has_wifi(_Net(wlan=True)) and rec.has_wifi(_Net(wlan=False))
+    assert not rec.has_wifi(object())
+
+
+def test_join_wifi_builds_a_fresh_wlan():
+    net = _Net(wlan=True)
+    rec.join_wifi(net, "lab", "pw")
+    assert net.calls == [("new", 0), ("active", True), ("connect", "lab", "pw")]
+
+
+def test_join_wifi_uses_the_winc_with_a_keyword_key():
+    net = _Net(wlan=False)
+    rec.join_wifi(net, "lab", "pw")
+    assert net.calls == [("new",), ("connect", "lab", ("key", "pw"))]
+    net = _Net(wlan=False)
+    rec.join_wifi(net, "cafe", "")                         # open network: no key at all
+    assert net.calls[-1] == ("connect", "cafe", ("key", None))
+
+
+def test_a_failed_winc_join_is_survived_and_the_key_is_not_logged(monkeypatch):
+    """Recovery must never die, and the WINC's error message carries the key."""
+    lines = []
+    monkeypatch.setattr(rec.log, "warning", lambda m, *a: lines.append(m))
+    nic = rec.join_wifi(_Net(wlan=False, fail=True), "lab", "secret")
+    assert nic is not None
+    assert lines and all("secret" not in m for m in lines)

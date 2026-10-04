@@ -865,6 +865,11 @@ def _run_ota_main(monkeypatch, cam_cls, trial=False):
         def isconnected(self):
             return True
 
+    def wifi(ssid, pw):                 # openmv_ota.wifi(): build the interface, start joining
+        nic = _Nic()
+        nic.connect(ssid, pw)
+        return nic
+
     async def run(url, self_test=None, wdt=None, poll_after_s=None, recover=None):   # run()'s order
         assert self_test is None and wdt is None
         calls.append(("run", url, poll_after_s, recover.__name__))
@@ -898,6 +903,7 @@ def _run_ota_main(monkeypatch, cam_cls, trial=False):
         "logging": types.SimpleNamespace(getLogger=lambda name: _Log()),
         "network": types.SimpleNamespace(WLAN=_Nic, STA_IF=0, LAN=None),
         "openmv_ota": types.SimpleNamespace(identity=lambda: {"app_version": "1.2.3"}, run=run,
+                                            wifi=wifi,
                                             confirm=lambda: calls.append(("confirm",)),
                                             status=lambda: {"trial": trial}),
         "machine": types.SimpleNamespace(reset=_reset),

@@ -160,9 +160,7 @@ def _bring_up(kind, settings, static=False):  # pragma: no cover  (device)  # hi
         nic = network.LAN()
         nic.active(True)
     else:
-        nic = network.WLAN(network.STA_IF)   # CONSTRUCTED, not reused: this is what resets a
-        nic.active(True)                     # wedged chip (see openmv_ota.run's recover hook)
-        nic.connect(settings["ssid"], settings["psk"])
+        nic = join_wifi(network, settings["ssid"], settings["psk"])
     if static and settings and settings.get("ipv4") == "static":
         nic.ifconfig((settings["address"], settings["netmask"],
                       settings["gateway"], settings["gateway"]))
@@ -173,6 +171,37 @@ def _bring_up(kind, settings, static=False):  # pragma: no cover  (device)  # hi
         time.sleep_ms(100)
     log.warning("recovery: %s did not come up" % kind)
     return False  # hil-residual: bare return (this interface failed; the caller tries the next)
+
+
+def join_wifi(network, ssid, psk):
+    """Start joining ``ssid`` and return the interface: ``network.WLAN``, or ``network.WINC`` on
+    the boards that reach Wi-Fi through the WINC1500 shield (the H7 Plus). CONSTRUCTED, not
+    reused: this is what resets a wedged chip (see openmv_ota.run's recover hook).
+
+    The WINC's connect() blocks until it has joined and raises when it cannot, with the key in
+    the message: log without the exception and return the interface unjoined, so the caller's
+    wait gives up on it like on a WLAN that never joined."""
+    if has_wlan(network):
+        nic = network.WLAN(network.STA_IF)
+        nic.active(True)
+        nic.connect(ssid, psk)
+        return nic
+    nic = network.WINC()
+    try:
+        nic.connect(ssid, key=psk or None)   # None: an open network
+    except OSError:
+        log.warning("recovery: wifi join failed")
+    return nic
+
+
+def has_wlan(network):
+    """Whether the board's Wi-Fi is ``network.WLAN`` (else it is the WINC1500's ``WINC``)."""
+    return hasattr(network, "WLAN")
+
+
+def has_wifi(network):
+    """Whether the board has Wi-Fi at all: ``WLAN``, or the WINC1500 shield's ``WINC``."""
+    return has_wlan(network) or hasattr(network, "WINC")
 
 
 def run(cfg):  # pragma: no cover  (device: the whole point is that nothing else is running)  # hil-residual-fn: see _uid -- no recovery scenario yet; the retry policy is host-tested
@@ -229,7 +258,7 @@ def _has(cfg, kind):  # pragma: no cover  (device)  # hil-residual-fn: see _uid 
     import network
     if kind == "eth":
         return hasattr(network, "LAN")  # hil-residual: bare capability probe
-    return hasattr(network, "WLAN")  # hil-residual: bare capability probe
+    return has_wifi(network)  # hil-residual: bare capability probe
 
 
 def _install(cfg):  # pragma: no cover  (device)  # hil-residual-fn: see _uid -- delegates to the installer, whose own paths ARE witnessed by every install scenario
