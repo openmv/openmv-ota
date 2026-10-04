@@ -145,8 +145,9 @@ except OSError as e:
 | `bytes` | used directly |
 
 The built-in store is the trust store frozen into the firmware — the project's
-`certs/ca.pem` (a fresh Mozilla root bundle downloaded at `project new`, or the
-roots you supplied with `--ca`) — read straight out of flash, and exposed as
+`[ota].ca` (the hosted OpenMV Cloud's roots on boards that cannot carry more, or
+the roots you supplied with `--ca`), else `certs/ca.pem` (a fresh Mozilla root
+bundle downloaded at `project new`) — read straight out of flash, and exposed as
 **`openmv_ota.builtin_ca()`** so your app's own TLS connections can reuse it. An
 image that ships `app/lib/openmv_ota/data/ca.pem` overrides it: the trust store
 then swaps with a romfs update, no firmware reflash. Broad CA trust is acceptable

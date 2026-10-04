@@ -276,6 +276,44 @@ async def _read_capped(reader, limit):  # pragma: no cover  (device network)
         chunks.append(d)
 
 
+_conns = []          # every open datalake connection (see _relieve_conns)
+
+
+def _hard_close(writer):
+    """Close a stream's socket NOW, from synchronous code. MicroPython's asyncio
+    ``Stream.close()`` does nothing -- the socket is only closed by ``await wait_closed()`` --
+    and the caller here cannot await (it is inside the blocking OTA check-in). Closing the
+    socket itself frees its TLS buffers immediately. Never raises."""
+    try:
+        sock = getattr(writer, "s", None)
+        (sock if sock is not None else writer).close()
+    except Exception:
+        pass
+
+
+def _relieve_conns(level):
+    """The OTA check-in ran out of memory: drop every open datalake connection (at any level --
+    a flush is never worth a check-in; its records stay queued and go next tick). Returns how
+    many were closed."""
+    n = 0
+    for conn in list(_conns):
+        if conn._writer is not None:
+            _hard_close(conn._writer)
+            n += 1
+        conn._reader = conn._writer = None
+        if conn in _conns:
+            _conns.remove(conn)
+    return n
+
+
+def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
+    try:
+        import openmv_ota
+        openmv_ota.register_pressure(_relieve_conns, key="openmv_cloud.conns")
+    except (ImportError, AttributeError):
+        pass
+
+
 class _Conn:  # pragma: no cover  (device network)
     """A KEEP-ALIVE HTTP/1.1 connection to the ingest base URL, reused for every
     batch of one flush.
@@ -302,6 +340,7 @@ class _Conn:  # pragma: no cover  (device network)
         tls, host, port, path = _split_url(self._url)
         self._reader, self._writer = await _open(host, port, tls)
         self._host, self._base, self._used = host, path.rstrip("/"), False
+        _conns.append(self)                          # reachable by _relieve_conns
 
     async def post(self, topic, body):
         """POST one NDJSON batch. Retries once on a REUSED socket -- the server
@@ -366,6 +405,8 @@ class _Conn:  # pragma: no cover  (device network)
                 pass
         self._reader = self._writer = None
         self._used = False
+        if self in _conns:
+            _conns.remove(self)
 
 
 # --- the durable spool tier (device filesystem) ------------------------------
@@ -509,3 +550,6 @@ async def _drain_disk(conn, topic, disk, max_bytes):  # pragma: no cover  (file+
             off += n
     finally:
         disk.compact(off)                            # also clears when fully drained
+
+
+_register()

@@ -346,72 +346,120 @@ def _chunk_size(line):
 
 
 class _Reader:
-    """A small buffered reader over a ``recv(n) -> bytes`` callable (``b''`` == EOF):
-    line reads for the status/headers/chunk-sizes, plus bounded raw reads for the
-    body. Holds any bytes read past the headers so the body stream sees them."""
+    """A small buffered reader over a ``readinto(mv) -> n`` callable (``0`` == EOF, ``None`` ==
+    nothing yet): line reads for the status/headers/chunk-sizes, plus bounded raw reads for the
+    body. Holds any bytes read past the headers so the body stream sees them.
 
-    def __init__(self, recv, feed=_noop, buf=b""):
-        self._recv = recv
+    ONE BUFFER, ALLOCATED ONCE. Every recv lands in ``_mem`` via ``readinto``; nothing on the read
+    path builds a new ``bytes``. The old reader called ``recv(_CHUNK)``, which allocates a fresh
+    4097-byte object per read and then concatenated it onto the pending bytes (another copy) --
+    thousands of 4 KiB allocations per image, on a heap the app is already using. On a Nicla with
+    the camera, two live-relay TLS sessions and the datalake batchers resident, that churn is what
+    failed: ``manifest fetch failed: MemoryError allocating 4097 bytes``. Only ``readline`` and
+    ``read_exact`` (headers, chunk sizes, a CRLF -- a few hundred bytes per response) still return
+    small ``bytes``; the body is copied straight into the caller's buffer (:meth:`readinto_some`).
+
+    ``size`` bounds the longest line too: a header line that does not fit is refused."""
+
+    def __init__(self, readinto, feed=_noop, size=_CHUNK):
+        self._readinto = readinto
         self._feed = feed          # progress-fed download: fed while WAITING for the next recv
-        self._buf = buf
+        self._mem = bytearray(size)
+        self._mv = memoryview(self._mem)
+        self._lo = 0               # the unread bytes are _mem[_lo:_hi]
+        self._hi = 0
 
     def _fill(self):
-        # MAIN-THREAD progress-fed recv. The socket is NON-BLOCKING (set by _open), so recv returns at
-        # once: data, or None/EAGAIN when nothing has arrived yet -- on which we feed() and sleep one
-        # short slice before retrying. This keeps a fixed feed cadence with NO reliance on select.poll()
-        # or a timer ISR, which is the crux for the AE3: its SSL-socket poll() blocks THROUGH its own
-        # timeout (starving a poll-gated feed), and relax()'s timer ISR is not serviced inside an mbedtls
-        # read -- only a feed driven from the main thread between recvs is reliable there. Reading
-        # WHATEVER IS AVAILABLE (< _CHUNK is fine; the caller re-fills) also avoids a *blocking* read that
-        # waits for a whole chunk -- which mid-stream spans several TLS records on a paced Wi-Fi link and
-        # starves the watchdog between reads (that bit the WWDG on the N6 image download). A dead link
-        # produces nothing until _SOCK_TIMEOUT -> clean install error -> reboot. Feed is a no-op unless a
-        # watchdog is armed; the watchdog-off path is unaffected (recv still returns data the same way).
+        # MAIN-THREAD progress-fed recv. The socket is NON-BLOCKING (set by _open), so readinto
+        # returns at once: data, or None/EAGAIN when nothing has arrived yet -- on which we feed() and
+        # sleep one short slice before retrying. This keeps a fixed feed cadence with NO reliance on
+        # select.poll() or a timer ISR, which is the crux for the AE3: its SSL-socket poll() blocks
+        # THROUGH its own timeout (starving a poll-gated feed), and relax()'s timer ISR is not serviced
+        # inside an mbedtls read -- only a feed driven from the main thread between recvs is reliable
+        # there. Reading WHATEVER IS AVAILABLE (less than the buffer is fine; the caller re-fills) also
+        # avoids a *blocking* read that waits for a whole chunk -- which mid-stream spans several TLS
+        # records on a paced Wi-Fi link and starves the watchdog between reads (that bit the WWDG on
+        # the N6 image download). A dead link produces nothing until _SOCK_TIMEOUT -> clean install
+        # error -> reboot. Feed is a no-op unless a watchdog is armed.
+        if self._lo == self._hi:                     # drained: reuse the whole buffer
+            self._lo = self._hi = 0
+        elif self._hi == len(self._mem):             # data straddles the end: move it to the front
+            if self._lo == 0:
+                raise ValueError("HTTP line too long")   # a full buffer with no line end in it
+            keep = bytes(self._mv[self._lo:self._hi])   # rare (a line split across the end) + small
+            self._mem[:len(keep)] = keep
+            self._lo, self._hi = 0, len(keep)
         waited = 0
         while True:
             self._feed()
             try:
-                d = self._recv(_CHUNK)               # non-blocking: available bytes / None / b'' (EOF)
+                n = self._readinto(self._mv[self._hi:])  # non-blocking: count / None / 0 (EOF)
             except OSError as e:                      # would-block -> treat as "no data yet"
                 if not (e.args and e.args[0] in _EAGAIN):
                     raise                             # a real error (ECONNRESET, ...) -> install fails
-                d = None
-            if d:
-                self._buf += d
+                n = None
+            if n:
+                self._hi += n
                 return True
-            if d is not None:                        # d == b'' -> EOF
+            if n is not None:                        # n == 0 -> EOF
                 return False
-            sleep_ms(_RECV_POLL_MS)                  # d is None -> no data yet; feed + wait a slice
+            sleep_ms(_RECV_POLL_MS)                  # n is None -> no data yet; feed + wait a slice
             waited += _RECV_POLL_MS
             if waited >= _SOCK_TIMEOUT * 1000:
                 raise OSError(_ETIMEDOUT, "recv timed out")  # dead link: NUMERIC errno -> transport (retry)
 
+    def _newline(self):
+        """Index of the first ``\\n`` in the unread bytes, or -1. A byte loop rather than
+        ``find``: MicroPython's bytearray has no ``find``, and copying the buffer into a ``bytes``
+        to search it is the very allocation this class exists to avoid. Headers only."""
+        mem = self._mem
+        for i in range(self._lo, self._hi):
+            if mem[i] == 10:
+                return i
+        return -1
+
     def readline(self, limit=8192):
-        while b"\n" not in self._buf:
-            if len(self._buf) >= limit:
+        while True:
+            nl = self._newline()
+            if nl >= 0:
+                break
+            if self._hi - self._lo >= limit:
                 raise ValueError("HTTP line too long")
             if not self._fill():
-                break
-        nl = self._buf.find(b"\n")
-        if nl < 0:
-            line, self._buf = self._buf, b""
-            return line
-        line, self._buf = self._buf[:nl + 1], self._buf[nl + 1:]
+                line = bytes(self._mv[self._lo:self._hi])    # EOF: whatever is left, maybe b""
+                self._lo = self._hi
+                return line
+        line = bytes(self._mv[self._lo:nl + 1])
+        self._lo = nl + 1
         return line
 
     def read_exact(self, n):
-        while len(self._buf) < n:
+        """Exactly ``n`` bytes as ``bytes`` -- for the small framing reads (a chunk's CRLF)."""
+        while self._hi - self._lo < n:
             if not self._fill():
                 raise ValueError("unexpected EOF")
-        out, self._buf = self._buf[:n], self._buf[n:]
+        out = bytes(self._mv[self._lo:self._lo + n])
+        self._lo += n
         return out
 
+    def readinto_some(self, dst, n):
+        """Copy up to ``n`` bytes (at most one buffer's worth) into ``dst``; ``0`` at EOF.
+        The body path: straight from the receive buffer into the caller's, no ``bytes``."""
+        if self._lo == self._hi and not self._fill():
+            return 0
+        k = self._hi - self._lo
+        if n < k:
+            k = n
+        dst[:k] = self._mv[self._lo:self._lo + k]
+        self._lo += k
+        return k
+
     def read_some(self, n):
-        """Up to ``n`` bytes (one buffer's worth); ``b''`` at EOF."""
-        if not self._buf and not self._fill():
-            return b""
-        out, self._buf = self._buf[:n], self._buf[n:]
-        return out
+        """Up to ``n`` bytes (one buffer's worth) as ``bytes``; ``b''`` at EOF. Small reads only --
+        the body uses :meth:`readinto_some`."""
+        buf = bytearray(n if n < len(self._mem) else len(self._mem))
+        k = self.readinto_some(memoryview(buf), len(buf))
+        return bytes(buf[:k])
 
 
 def _read_response(reader):
@@ -447,9 +495,11 @@ class _Body(io.IOBase):
         self._chunk_left = 0
         self._eof = False
 
-    def _read(self, n):
-        if self._eof:
-            return b""
+    def readinto(self, buf):
+        mv = memoryview(buf)
+        n = len(mv)
+        if self._eof or not n:
+            return 0
         if self._chunked:
             if self._chunk_left == 0:
                 size = _chunk_size(self._r.readline())
@@ -461,33 +511,28 @@ class _Body(io.IOBase):
                             raise ValueError("chunked body sent over %d trailers"
                                              % _HEADERS_MAX)
                     self._eof = True
-                    return b""
+                    return 0
                 self._chunk_left = size
-            data = self._r.read_some(n if n < self._chunk_left else self._chunk_left)
-            if not data:
+            k = self._r.readinto_some(mv, n if n < self._chunk_left else self._chunk_left)
+            if not k:
                 raise ValueError("unexpected EOF in chunk")
-            self._chunk_left -= len(data)
+            self._chunk_left -= k
             if self._chunk_left == 0:
                 self._r.read_exact(2)               # the CRLF after the chunk data
-            return data
+            return k
         if self._left is None:                      # read to EOF
-            data = self._r.read_some(n)
-            if not data:
+            k = self._r.readinto_some(mv, n)
+            if not k:
                 self._eof = True
-            return data
+            return k
         if self._left <= 0:
             self._eof = True
-            return b""
-        data = self._r.read_some(n if n < self._left else self._left)
-        if not data:
+            return 0
+        k = self._r.readinto_some(mv, n if n < self._left else self._left)
+        if not k:
             raise ValueError("unexpected EOF in body")
-        self._left -= len(data)
-        return data
-
-    def readinto(self, buf):
-        data = self._read(len(buf))
-        buf[:len(data)] = data
-        return len(data)
+        self._left -= k
+        return k
 
 
 def _make_body(reader, headers):
@@ -1242,7 +1287,7 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
             # read). A main-thread non-blocking recv + sleep loop feeds it regardless. Bounded by
             # _SOCK_TIMEOUT (the reader's wait counter), so a dead server still fails cleanly.
             sock.setblocking(False)
-            reader = _Reader(sock.read, feed)
+            reader = _Reader(sock.readinto, feed)   # one preallocated buffer per connection
             code, headers = _read_response(reader)
         except Exception:
             sock.close()
@@ -1552,6 +1597,49 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
     # enc: how to decrypt this artifact -- the wraps, the iv and the plaintext length.
     # Signed too, which is what stops a key id or a length being swapped under us.
     return image_url, fmt, expect_sha, rep.get("wbits") or 0, alt, rep.get("enc")
+
+
+_SILENT = 51          # above logging.CRITICAL (50): the level openmv_log sets when logging is off
+_GZIP_WBITS = 15      # deflate's default window for a gzip stream (wbits 0 in a manifest rep)
+
+
+def _window_bytes(wbits):
+    """The inflate window DeflateIO will allocate, in ONE piece, for a rep's ``wbits``."""
+    return 1 << (wbits or _GZIP_WBITS)
+
+
+def _heap_fits(n, alloc=bytearray):
+    """Can the heap hand out ``n`` contiguous bytes right now? A probe, made BEFORE the erase:
+    DeflateIO allocates its whole window on its first read, which for a download is after the
+    erase -- so a heap too full or too fragmented for it used to fail three attempts post-erase
+    (``MemoryError allocating 32768 bytes``) and reboot to the other slot. Asking first turns
+    that into a pre-erase failure: nothing erased, and run()'s loop escalates to installing
+    from a fresh heap (see openmv_ota._InstallGate). The probe's bytes are garbage at once."""
+    try:
+        alloc(n)
+    except MemoryError:
+        return False
+    return True
+
+
+def _quiet_past_commit(lg, keep=None):
+    """Past the erase, log only through FROZEN handlers.
+
+    The one frozen handler is openmv_log's plain ``logging.StreamHandler`` (the UART on a bench
+    or a debug build); ``keep`` is that class (``None`` = import it). Any other handler -- the
+    cloud log handler ``openmv_cloud.logs.enable()`` attaches to this logger, or the root ones
+    MicroPython falls back to when the logger has none of its own -- is ROMFS code, and in
+    single-image mode that is the slot being erased: calling it would execute erased flash.
+    Nothing it queues could be sent anyway -- the install is synchronous and every exit from
+    here reboots. So those are detached, and a logger left with no handler is muted."""
+    handlers = getattr(lg, "handlers", None)
+    if handlers:
+        if keep is None:
+            import logging
+            keep = logging.StreamHandler
+        handlers[:] = [h for h in handlers if type(h) is keep]
+    if not getattr(lg, "handlers", None) and hasattr(lg, "setLevel"):
+        lg.setLevel(_SILENT)
 
 
 def _reset():  # pragma: no cover
@@ -2121,6 +2209,11 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
                 primed = _fill(source, memoryview(work),  # hil-residual: same arm (classic-only, no coverage UART); the primed first chunk is host-tested in test_install_stream_takes_a_primed_first_chunk
                                _CHUNK if slot_size >= _CHUNK else slot_size, feed)
                 log.debug("install: primed")          # first chunk in RAM, nothing erased yet  # hil-residual: same arm; a print, but not a fleet marker (no classic board can deliver one)
+            if not erased and not from_file and not _heap_fits(_window_bytes(wbits)):
+                # Pre-erase, so it raises to the app like any other pre-flight failure (/rom
+                # intact); run() counts it and escalates to a fresh-heap reboot.
+                raise MemoryError("no room for the inflate window")  # hil-residual: needs a heap too fragmented for the window (the Nicla with its relays up, before the fresh-heap reboot existed); host-tested via _heap_fits
+            _quiet_past_commit(log)                   # past here the romfs may be gone
             erased = True                             # from here on every failure reboots
             log.info("install: erasing %s (%d bytes) t=%d" % (target, slot_size, ticks_ms()))
             erase(target_off, slot_size)

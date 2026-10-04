@@ -100,10 +100,10 @@ if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
   # custom step; the lock captures the patched, committed-clean tree.
   # Boards whose firmware cannot carry the ~186 KB public CA bundle (no recovery_ca_bundle in
   # boards.json: the classics, whose ROMFS slot can't hold it either, and the 1792 KB H7-family
-  # boards) are refused by `project new --ota` without a root of your own -- the same refusal a
-  # real user hits, resolved the same way: generate a throwaway ~1 KB bench root once and cache
-  # it. (The classic legs never do TLS at all -- file transport -- so for them it is pure
-  # trust-store ballast the build requires.) Kept OUT of the N6/AE3/RT1060 projects -- those
+  # boards) get the hosted OpenMV Cloud's roots from `project new --ota` unless given a root of
+  # their own. The bench is a self-hosted server, so it does what a self-hoster does: generate a
+  # throwaway ~1 KB bench root once, cache it, and pass it as --ca. (The classic legs never do
+  # TLS at all -- file transport -- so for them it is pure trust-store ballast.) Kept OUT of the N6/AE3/RT1060 projects -- those
   # freeze the real public bundle for recovery, exactly like a production build, which also
   # makes every fleet run the link-fit proof of that default.
   CA_ARGS=()

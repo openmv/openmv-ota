@@ -489,9 +489,11 @@ COVERAGE = {
     "run: transport recovered": "run.recovered",          # ...and the hook returned (under an armed WDT)
     "run: poll wait": "run.poll_tail",                   # run() loop tail reached (post-checkin)
     "clock: resolved": "run.clock",                      # NTP/RTC resolve each poll
-    "clock: syncing": "run.clock",                       # openmv_rtc: untrusted clock -> one NTP sync
+    "clock: syncing": "run.clock",                       # openmv_rtc: no fresh network time -> one NTP sync
     "clock: ntp synced": "run.clock",                    # openmv_rtc: NTP query set the RTC
-    "clock: rtc trusted": "run.clock",                   # openmv_rtc: fast path, clock already good
+    "clock: rtc trusted": "run.clock",                   # openmv_rtc: offline fallback, RTC passes the floor
+    "clock: fresh": "run.clock",                         # openmv_rtc: server Date / NTP still fresh
+    "clock: server date": "run.clock",                   # check-in Date header set/confirmed the clock
     "log: configured": "log.configured",                 # openmv_log: handler/UART attached (bootstrap witness)
     "confirm: floor advanced": "confirm.floor",          # anti-rollback floor raised on confirm
     "checkin: response received": "run.checkin",
@@ -736,7 +738,7 @@ SCENARIOS["watchdog_bite"] = dict(
 
 # The watchdog RECOVERY path: an armed 100 ms watchdog must survive run() rebuilding the network.
 # The wdt_recover app arms + feeds like `wdt`, but points run() at a CLOSED port, so every check-in
-# fails fast; after recover_after (3) failures run() calls the app's _bring_up -- which CONSTRUCTS the
+# fails fast; after recover_after (5) failures run() calls the app's _bring_up -- which CONSTRUCTS the
 # NIC, a long blocking C op (the WINC's chip reset alone sleeps 300 ms). Before the fix that ran
 # unfed inside the async hook's await: the H7 Plus bit on EVERY recovery and reset-looped for as long
 # as its server was unreachable. A bite lands mid-hook, so `run.recovered` can only ever be logged by
@@ -917,6 +919,16 @@ def device_faults(cap):
     return seen
 
 
+def _log_contention(cap):
+    """On a FAIL, say if another process was reading the marker UART: then the missing markers
+    may have been logged by the board and taken by that reader, so the verdict is the bench's,
+    not the device's (see UartCapture._note_contention)."""
+    n = getattr(cap, "contended", 0) if cap is not None else 0
+    if n:
+        log("  the marker UART was being read by ANOTHER process (%d stolen read(s)) -- the missing "
+            "markers may have been logged and taken by it; this is not a verdict on the device" % n)
+
+
 _CAP = None                                  # the live UartCapture (set by start()); see _await_boot
 _BOARD = None                                # the board under test (set in main); see run_cycle
 # How many device lines a second the capture forwards before it starts calling the rest noise.
@@ -928,6 +940,21 @@ _FLASH_MARK = 0                              # index into _CAP.raw at the moment
 #                                              (see verify_golden_uart -- "fresh" must mean "since the
 #                                              flash", not "since the verify call", because the boot
 #                                              being verified happens in between)
+
+
+def _claim_port(ser, on=True):
+    """Set (or lift) the tty's EXCLUSIVE flag (TIOCEXCL) on the marker UART: while it is set, any
+    later open() of the port by a non-root process fails with EBUSY. It cannot evict a reader that
+    already has the port open -- nothing can, short of killing it -- but such a reader is locked
+    out the moment it reopens, which a capture does after the read errors the contention itself
+    causes (see UartCapture._note_contention). Best-effort: a port without a real fd, or a
+    platform without the ioctl, is left as it is."""
+    try:
+        import fcntl
+        import termios
+        fcntl.ioctl(ser.fileno(), termios.TIOCEXCL if on else termios.TIOCNXCL)
+    except Exception:
+        pass
 
 
 class UartCapture:
@@ -948,10 +975,12 @@ class UartCapture:
             time.sleep(1)                    # let the killed reader actually release the fd
         self._port, self._baud = port, baud   # kept so _reopen can re-resolve after a re-enumeration
         self._ser = serial.Serial(dev, baud, timeout=0.5)
+        _claim_port(self._ser)
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
         self.raw = []
         self.flooded = 0                     # noise lines dropped across the whole capture
+        self.contended = 0                   # reads lost to ANOTHER reader of this port (see _run)
         self._window, self._seen_in_window, self._dropped = time.time(), 0, 0
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._run, daemon=True)
@@ -971,7 +1000,8 @@ class UartCapture:
     def _reopen(self):
         """Re-resolve and reopen the marker UART after its port went away. Returns True on success."""
         import serial
-        try:
+        _claim_port(self._ser, False)        # lift OUR exclusive flag first, or the reopen below is
+        try:                                 # refused by it while another fd still holds the tty
             self._ser.close()
         except Exception:
             pass
@@ -980,6 +1010,7 @@ class UartCapture:
             self._ser = serial.Serial(dev, self._baud, timeout=0.5)
         except Exception:
             return False
+        _claim_port(self._ser)
         log("uart: reopened %s after the port dropped" % dev)
         return True
 
@@ -988,7 +1019,8 @@ class UartCapture:
         while not self._stop.is_set():
             try:
                 buf += self._ser.read(256)
-            except Exception:
+            except Exception as e:
+                self._note_contention(e)
                 # THE PORT DIED -- do not spin on it. Linux renumbers ttyUSBn on re-plug and a DFU
                 # flash re-enumerates USB, so the handle opened at start-up can stop existing
                 # mid-leg. `continue` alone span silently for the rest of the run: no lines, no
@@ -1016,6 +1048,30 @@ class UartCapture:
                 for sub, cid in COVERAGE.items():
                     if sub in s:
                         self.markers.append((round(time.time() - self._t0, 1), cid))
+
+    def _note_contention(self, exc):
+        """Count a read that failed because SOMEBODY ELSE drained the port, and say so once.
+
+        A tty does not copy its input to every reader: each byte goes to whichever ``read()`` wins.
+        pyserial notices only sideways -- select() said readable, the read came back empty -- and
+        raises "device reports readiness to read but returned no data (device disconnected or
+        multiple access on port?)". To the capture that is just a dropped port, so it reopens and
+        carries on, and the run fails at the end with markers missing from a board that logged
+        every one of them. Measured on RT1060 wifi `delta`: a leftover bench capture (another
+        user's, so the start-up ``fuser -k`` could not even see it) had been reading /dev/ttyUSB0
+        for four hours; the device installed, trialled, confirmed and promoted, and the leg failed
+        with 14 markers missing -- every one of them sitting in the OTHER reader's log file.
+
+        ``_claim_port`` keeps a newcomer out, and locks the interloper out the next time IT
+        reopens; this makes the theft visible, because the lines already lost cannot come back."""
+        if "multiple access" not in str(exc):
+            return
+        self.contended += 1
+        if self.contended == 1:
+            log("uart: ANOTHER PROCESS IS READING %s -- each byte goes to only one reader, so device "
+                "lines (and their markers) are being lost to it. Find it with `sudo fuser -v` on the "
+                "port: a leftover bench capture or terminal. The run cannot be scored while it "
+                "lives." % self._port)
 
     def _flooding(self, line):
         """True when this line is noise from a board talking faster than it can mean anything.
@@ -1475,8 +1531,31 @@ def _await_cdc(board, budget=150):
         time.sleep(3)
 
 
+def _flash_backend(board):
+    """The board's flash backend from the package config ("dfu", "imx", "arduino", ...), or None."""
+    try:
+        from openmv_ota.flash.targets import flash_config
+        return flash_config(board).backend
+    except Exception:                        # not installed, or an unknown board
+        return None
+
+
+def _reset_pulse_script(board):
+    """The J-Link commander script for jlink_reset_pulse.
+
+    ARDUINO (MCUboot) BOARDS GET THE PIN ONLY. The `connect; r; g` that follows the pulse on the
+    other boards is a SECOND reset ~200 ms after the first, and the Arduino bootloader reads two
+    resets in quick succession as a double-tap: the board lands in DFU (2341:035f) instead of
+    booting the app -- measured on the Nicla. Releasing nRST is enough to boot an MCUboot board
+    (no halted-core case there), so the pin pulse is held a little longer and nothing follows."""
+    if _flash_backend(board) == "arduino":
+        return b"si SWD\nspeed 4000\nSetRESET\nSleep 300\nClrRESET\nqc\n"
+    return b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n"
+
+
 def jlink_reset_pulse(board, timeout=60):
-    """Pulse the board's PHYSICAL nRST line via the J-Link, then connect + reset + GO.
+    """Pulse the board's PHYSICAL nRST line via the J-Link, then connect + reset + GO (pin only
+    on an Arduino board -- see _reset_pulse_script).
 
     The pin pulse (SetRESET/ClrRESET) needs no core connect, so it reaches a HUNG core that a
     SYSRESETREQ cannot; the follow-up `connect; r; g` actually RUNS the firmware, because the pulse
@@ -1487,7 +1566,7 @@ def jlink_reset_pulse(board, timeout=60):
         return False
     _free_jlink()                         # a stale JLinkExe blocks the probe, silently
     fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="recover-")
-    os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 250\nClrRESET\nSleep 200\nconnect\nr\ng\nqc\n")
+    os.write(fd, _reset_pulse_script(board))
     os.close(fd)
     try:
         # -AutoConnect 0: do NOT attach the (possibly hung) core on launch -- the pin pulse is
@@ -1565,8 +1644,12 @@ def _free_jlink():
 
     That is why the N6's SWD reset works when watchdog_bite runs ALONE and fails after nine prior
     scenarios: the leftovers accumulate. Only one J-Link operation is ever in flight per node, so
-    anything still running here is by definition stale."""
-    rc, out = sh("pkill -f JLinkExe 2>/dev/null; true", check=False, quiet=True)
+    anything still running here is by definition stale.
+
+    By EXACT PROCESS NAME (``-x``), never ``-f``: a full-command-line match also hits every process
+    whose argv merely MENTIONS JLinkExe -- the documented ``JLINK=/opt/SEGGER/JLink/JLinkExe
+    ./recover.py ...`` invocation, the shell that ran pkill itself -- so it killed its own caller."""
+    rc, out = sh(["pkill", "-x", "JLinkExe"], check=False, quiet=True)
     del rc, out
 
 
@@ -1634,6 +1717,98 @@ def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
         proc.kill()
         return 124, "dfu_reset_catch timed out"
     return proc.returncode, out or ""
+
+
+# The CLI's --in-bootloader announcements on i.MX (openmv_ota.flash.flash.IMX_ARMED / IMX_CLAIMED;
+# a host test pins the two copies together).
+_IMX_ARMED = "i.MX: catcher armed, waiting for the resident SBL"
+_IMX_CLAIMED = "i.MX: resident SBL claimed"
+# The REPL keystrokes for imx_kick_catch: stop the app, then ONE friendly-REPL line. Two writes
+# (see _imx_kick) so the line cannot be swept by the ring-buffer clear a Ctrl-C triggers.
+_IMX_KICK_STOP = b"\r\x03\x03"
+_IMX_KICK_LINE = b"import machine; machine.bootloader()\r"
+_IMX_KICK_EVERY_S = 2.0
+
+
+def _imx_kick(port):
+    """Send machine.bootloader() to ``port`` as raw REPL keystrokes, no handshake. True if written.
+
+    mpremote cannot do this on a board whose app runs an ARMED short watchdog: its raw-REPL entry
+    (Ctrl-C, Ctrl-A, then a Ctrl-D soft reset and a wait for the banner) takes far longer than the
+    100 ms the Ctrl-C leaves before the watchdog bites, so the board reboots mid-handshake and the
+    CDC reads as "unresponsive" forever. Typed straight into the friendly REPL the call is already
+    queued when the app unwinds, and runs in milliseconds. Fire and forget: success is the SBL
+    enumerating, which the CLI's armed catcher sees."""
+    import serial
+    try:
+        with serial.Serial(port, 115200, timeout=0.2, write_timeout=0.5) as ser:
+            ser.write(_IMX_KICK_STOP)
+            ser.flush()
+            ser.write(_IMX_KICK_LINE)
+            ser.flush()
+        return True
+    except Exception:                        # absent, re-enumerating, or torn down by the call itself
+        return False
+
+
+def imx_kick_catch(board, argv, *, timeout=NOCDC_FLASH_TIMEOUT, pulse=True):
+    """The RT1060's no-CDC route into its resident SBL: run an openmv-ota command with
+    ``--in-bootloader`` (pass it in ``argv``), and once the CLI says its catcher is ARMED, bring
+    the SBL up from the outside -- an nRST pulse for a fresh boot, then machine.bootloader() typed
+    into the REPL (_imx_kick) every couple of seconds until the CLI reports the SBL CLAIMED.
+    Returns (rc, output).
+
+    THIS IS NOT dfu_reset_catch. The OpenMV DFU bootloader parks a window on every reset; the
+    RT1062's resident SBL does not -- it presents USB only when entered through ROM_RunBootloader,
+    i.e. machine.bootloader(), and after nRST it boots the app straight away (measured: an armed
+    catcher plus nRST waited 60 s and the SBL never enumerated). So the reset alone catches nothing;
+    it only restarts the app so the kick meets a live REPL. The kick is what enters the SBL, and the
+    kick is what survives the case this route exists for: an app with an armed 100 ms watchdog that
+    reboots the board whenever mpremote's slow raw-REPL handshake stops it.
+
+    Kicking STOPS at the CLAIMED line: from there the CDC is gone because the SBL is flashing, and
+    nothing may disturb the board until the CLI exits. No raw flash access here -- every byte is
+    written by the openmv-ota CLI; this only gets its bootloader up."""
+    log("recover: %s -- openmv-ota --in-bootloader + nRST + REPL machine.bootloader() kick (the "
+        "resident SBL has no reset window to catch)" % board)
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines, armed, claimed = [], threading.Event(), threading.Event()
+
+    def _read():
+        for line in proc.stdout:
+            lines.append(line)
+            if _IMX_ARMED in line:
+                armed.set()
+            elif _IMX_CLAIMED in line:
+                claimed.set()
+    reader = threading.Thread(target=_read, daemon=True)
+    reader.start()
+    end = time.time() + timeout
+    try:
+        while not armed.wait(0.2):           # spsdk warms before it arms; nothing to do until then
+            if proc.poll() is not None or time.time() > end:
+                break
+        if armed.is_set():
+            if pulse:
+                jlink_reset_pulse(board)     # a fresh boot: the app back on a live REPL
+            kicks = 0
+            while not claimed.is_set() and proc.poll() is None and time.time() < end:
+                if os.path.exists(CFG["acm"]) and _imx_kick(CFG["acm"]):
+                    kicks += 1
+                claimed.wait(_IMX_KICK_EVERY_S)
+            log("recover: %s -- %d kick(s), SBL %s" % (board, kicks,
+                                                       "claimed" if claimed.is_set() else "NOT claimed"))
+        try:
+            proc.wait(timeout=max(1, end - time.time()))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            reader.join(5)
+            return 124, "".join(lines) + "imx_kick_catch timed out"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    reader.join(5)
+    return proc.returncode, "".join(lines)
 
 
 def _dfu_present():
@@ -1772,6 +1947,10 @@ def recover_erase_romfs(board):
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
     if BOARDS[board].get("flash") == "arduino_cli":
         rc, out = _arduino_dfu_run(board, argv, "recover: erase", timeout=300)
+    elif BOARDS[board].get("flash") == "blhost_imx":
+        # The RT1060: `--romfs` (a bare i.MX `erase` wipes the /flash DISK and leaves the app that
+        # breaks the CDC in place), and its SBL is reached by a REPL kick, not a reset window.
+        rc, out = imx_kick_catch(board, argv + ["--romfs", "--in-bootloader"], timeout=300)
     else:
         rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"])
     log("recover: romfs erase rc=%d%s" % (rc, "" if rc == 0 else " -- %s" % out[-300:]))
@@ -1863,7 +2042,7 @@ def _ensure_cdc(board, allow_erase=False):
             "just written) -- caller must handle it" % board)
         return
     recover_erase_romfs(board)
-    log("recover: %s romfs erased -- the golden flash will reprovision it over DFU "
+    log("recover: %s romfs erased -- the golden flash will reprovision it "
         "(no CDC expected until then)" % board)
 
 
@@ -1885,12 +2064,8 @@ def _dfu_leave(board):
 def _flash_arduino_cli(board, bad_romfs=False):
     """Golden flash for the Arduino MCUboot boards (Nicla Vision, Portenta H7) via the openmv-ota
     CLI's `flash factory`. The arduino backend enters DFU with an automatic 1200-baud touch, then
-    writes firmware + romfs (+ the CYW4343 wifi blobs) with address-based `dfu-util -w`.
-
-    Unlike the DFU boards, the CLI's arduino factory resolves the romfs partition as
-    ``<board>-romfs.img``, so stage the dual-slot factory image under that name first
-    (``build factory-romfs`` emits ``<board>-factory-romfs.img``; the wifi blobs are already dropped
-    into build/ by ``build firmware``). Same rename the mimxrt path does.
+    writes firmware + the dual-slot factory romfs (``<board>-factory-romfs.img``) + the CYW4343 wifi
+    blobs (dropped into build/ by ``build firmware``) with address-based dfu-util.
 
     DFU entry is `_arduino_dfu_run`'s business: the 1200-baud touch, or a direct write if the board
     is already in DFU. Note what does NOT work here -- the OpenMV path's "wait on -w and pulse nRST
@@ -1898,8 +2073,6 @@ def _flash_arduino_cli(board, bad_romfs=False):
     live here and only ever hung."""
     if bad_romfs:
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
-    build = CFG["project"] + "/build"
-    sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
     # Mark where THIS golden's account of itself begins: every UART line from here on belongs to the
     # image about to be written, so verify can tell a fresh mount from the one it replaced.
     global _FLASH_MARK
@@ -1994,7 +2167,7 @@ def seed_brick_marker(board):
 
 def _flash_blhost_imx(board, bad_romfs=False):
     """Provision golden on the mimxrt (RT1062) via the openmv-ota CLI's resident-SBL flash path
-    (`flash firmware` + `flash romfs`): the CLI enters the resident SBL with machine.bootloader()
+    (`flash factory`, firmware + the factory romfs): the CLI enters the resident SBL with machine.bootloader()
     (no jumper) and, running post-FCB, needs no FlexSPI config -- see openmv_ota.flash.imx. This
     replaces the harness's hand-rolled blhost sequence: the everyday golden flash now goes through
     the same tooling users ship with.
@@ -2006,7 +2179,6 @@ def _flash_blhost_imx(board, bad_romfs=False):
     # from the one it replaced (see verify_golden_uart).
     global _FLASH_MARK
     _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
-    build = CFG["project"] + "/build"
     if bad_romfs:
         # KEEP THE BOARD OBSERVABLE ACROSS THE BRICK. `.hilcov_uart` is baked into the ROMFS (see
         # _bench_files: /rom is the one volume that survives an armed watchdog), and the erase below
@@ -2035,14 +2207,27 @@ def _flash_blhost_imx(board, bad_romfs=False):
             "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
         time.sleep(12)
         return
-    # Golden: firmware + the factory (dual-slot) romfs. The CLI's `flash romfs` reads <board>-romfs.img,
-    # so stage the factory image under that name (as the AE3 path already does), then flash both via
-    # the CLI's automatable resident-SBL path -- each call does its own machine.bootloader + reset.
-    sh("cp -f %s/%s-factory-romfs.img %s/%s-romfs.img" % (build, board, build, board))
-    for op in ("firmware", "romfs"):
-        log("flash %s -> %s (openmv-ota, resident SBL)" % (op, board))
-        sh([ota("openmv-ota"), "flash", op, CFG["project"], "-b", board,
-            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")], timeout=300)
+    # Golden: firmware + the factory (dual-slot) romfs, in ONE resident-SBL session -- the same
+    # `flash factory` the Getting started page tells a customer to run.
+    #
+    # The CLI enters the SBL with machine.bootloader() over the CDC -- the first choice whenever
+    # the CDC answers. When it does not (an app with an armed 100 ms watchdog reboots the board
+    # under mpremote's handshake; the board fell off USB), the CLI waits `--in-bootloader` while
+    # imx_kick_catch brings the SBL up from outside. The RT1062 SBL has no reset window, so the
+    # nRST pulse a DFU board's reset-catch relies on cannot do that job alone.
+    argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")]
+    rc, out = 1, "CDC not responsive"
+    if _cdc_responsive():
+        log("flash factory -> %s (openmv-ota, resident SBL)" % board)
+        rc, out = sh(argv, timeout=600, check=False)
+    if rc != 0:
+        log("flash factory -> %s: CDC route failed (%s) -- via the no-CDC SBL route"
+            % (board, out.strip().splitlines()[-1] if out.strip() else rc))
+        rc, out = imx_kick_catch(board, argv + ["--in-bootloader"], timeout=600)
+        if rc != 0:
+            raise RuntimeError("command failed (%d): %s\n%s" % (rc, argv + ["--in-bootloader"],
+                                                                out[-2000:]))
     time.sleep(12)                                       # POR + FlexSPI re-enumerate as runtime
 
 
@@ -3138,6 +3323,7 @@ def main():
             if cap is not None:
                 for text, hits in device_faults(cap).items():
                     log("  the device reported this %d time(s): %s" % (hits, text))
+                _log_contention(cap)
         # A SECOND PHASE, for the paths that only exist AFTER a promote. Every scenario above
         # starts from golden, so the whole "what happens to a board that has already taken an
         # update" surface was unreachable: the run ends the moment the first cycle settles. That
@@ -3188,6 +3374,7 @@ def main():
                     % (then["end"], result2["reached_end"], missing2 or "-", forbidden2 or "-"))
                 for text, hits in device_faults(cap).items():
                     log("  the device reported this %d time(s): %s" % (hits, text))
+                _log_contention(cap)
     except Exception as e:
         trace["error"] = str(e)
         log("ERROR: " + str(e))

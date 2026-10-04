@@ -51,9 +51,9 @@ pair right after manufacture and the first update ships as a delta too:
 openmv-ota client release publish . -b OPENMV_N6 -o build/factory
 ```
 
-(A local build already defaults its delta base to the recorded factory image;
-publishing it is what lets `release bases --fleet` cover factory-fresh
-devices as well.)
+(A local build already defaults its delta bases to the recorded factory image
+and the last three releases built in the project; publishing the factory pair
+is what lets `release bases --fleet` cover factory-fresh devices as well.)
 
 Retention has **no depth limit, and no delete**: the published bytes are part of a
 release's history — the SBOM and the manifest hash are testimony about the image,

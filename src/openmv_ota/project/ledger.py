@@ -7,7 +7,8 @@ append-only trail; this is the derived view it acts on):
   delta base automatically instead of the operator hand-pointing ``--delta-from`` at the
   right file, and so a wrong/stale base is caught;
 - the **releases** shipped per board -- so a non-increasing version is refused before it's
-  published.
+  published, and so the next build can delta against the last few (each records where the
+  build kept a copy of its image).
 
 Committable, no secrets (versions + public sha256s + a relative path only). Regenerable: a
 missing/corrupt ledger reads as empty rather than failing.
@@ -65,14 +66,23 @@ def golden_for(root, board: str) -> dict | None:
 
 
 def record_release(root, board: str, *, version: str, payload_version: int,
-                   sha256: str, key_id: int, when: str | None = None) -> None:
-    """Append a shipped OTA release for a board (``when`` defaults to now, UTC)."""
+                   sha256: str, key_id: int, when: str | None = None,
+                   path: str | None = None) -> None:
+    """Append a shipped OTA release for a board (``when`` defaults to now, UTC). ``path`` is
+    where the build kept a copy of its image, so a later build can patch against it."""
     when = when or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     data = _load(root)
-    _board(data, board)["releases"].append(
-        {"version": version, "payload_version": payload_version, "sha256": sha256,
-         "key_id": key_id, "ts": when})
+    rec = {"version": version, "payload_version": payload_version, "sha256": sha256,
+           "key_id": key_id, "ts": when}
+    if path is not None:
+        rec["path"] = path
+    _board(data, board)["releases"].append(rec)
     _save(root, data)
+
+
+def releases(root, board: str) -> list[dict]:
+    """Every recorded release for a board, oldest first."""
+    return list(_load(root)["boards"].get(board, {}).get("releases", []))
 
 
 def last_release(root, board: str) -> dict | None:

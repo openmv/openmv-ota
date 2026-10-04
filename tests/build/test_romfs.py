@@ -1547,3 +1547,75 @@ def test_compose_slot_refuses_a_slot_of_the_wrong_size():
     assert len(ok) == 11
     with pytest.raises(ValueError, match="12 bytes, not 11"):
         build_mod._compose_slot(b"b", 3, b"s" * 4, b"t", 4, 11)
+
+
+# --- default bases: the factory image AND the last few releases built here -----------------
+# A device patches against the release it is RUNNING. Basing only on the factory image (the old
+# default) meant every device that had already updated took the full image on every release
+# after -- measured on an AE3 fleet on 1.3.0 / 1.4.x, offered only a delta from 1.0.0.
+
+def _release(root, repo, version):
+    (root / "app" / "settings.json").write_text('{"app_version": "%s", "vendor": ""}\n' % version)
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    return r
+
+
+def test_default_bases_include_the_previous_releases(make_project):
+    from openmv_ota.ota.manifest import parse_manifest
+    from openmv_ota.project import ledger
+    root, repo = _ota_project_with_factory(make_project)          # factory = 1.0.0
+    r1 = _release(root, repo, "1.1.0")
+    assert [d.name for d in r1.deltas] == ["OPENMV_N6-ota.delta-1.0.0.gz"]
+    kept = root / "build" / "releases" / "OPENMV_N6-ota-1.1.0.img.gz"
+    assert kept.read_bytes() == r1.image.read_bytes()              # the next build's base
+    assert ledger.last_release(root, "OPENMV_N6")["path"] == "build/releases/OPENMV_N6-ota-1.1.0.img.gz"
+    r2 = _release(root, repo, "1.2.0")
+    assert sorted(d.name for d in r2.deltas) == [
+        "OPENMV_N6-ota.delta-1.0.0.gz", "OPENMV_N6-ota.delta-1.1.0.gz"]
+    body = parse_manifest(r2.manifest.read_bytes()).body
+    assert len([r for r in body["representations"] if r["format"] == "ocdl"]) == 2
+
+
+def test_default_bases_are_capped_and_old_copies_pruned(make_project):
+    root, repo = _ota_project_with_factory(make_project)
+    for v in ("1.1.0", "1.2.0", "1.3.0", "1.4.0"):
+        _release(root, repo, v)
+    r = _release(root, repo, "1.5.0")
+    assert sorted(d.name for d in r.deltas) == [                  # factory + the last 3
+        "OPENMV_N6-ota.delta-1.0.0.gz", "OPENMV_N6-ota.delta-1.2.0.gz",
+        "OPENMV_N6-ota.delta-1.3.0.gz", "OPENMV_N6-ota.delta-1.4.0.gz"]
+    kept = sorted(p.name for p in (root / "build" / "releases").iterdir())
+    assert kept == ["OPENMV_N6-ota-1.3.0.img.gz", "OPENMV_N6-ota-1.4.0.img.gz",
+                    "OPENMV_N6-ota-1.5.0.img.gz"]                  # nothing older lingers
+
+
+def test_default_bases_skip_a_missing_copy_and_a_republish(make_project, capsys):
+    root, repo = _ota_project_with_factory(make_project)
+    _release(root, repo, "1.1.0")
+    (root / "build" / "releases" / "OPENMV_N6-ota-1.1.0.img.gz").unlink()   # a cleaned build dir
+    r = _release(root, repo, "1.2.0")
+    assert [d.name for d in r.deltas] == ["OPENMV_N6-ota.delta-1.0.0.gz"]   # quietly full for 1.1.0
+    capsys.readouterr()
+    # the same version again (allowed): its own kept copy is not older -> noted, never fatal
+    [r] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False,
+                                    allow_republish=True)
+    assert "skipping base OPENMV_N6-ota-1.2.0.img.gz" in capsys.readouterr().err
+    assert [d.name for d in r.deltas] == ["OPENMV_N6-ota.delta-1.0.0.gz"]
+
+
+def test_default_bases_without_a_factory_image_still_use_releases(make_project):
+    root, repo = _build_n6_ota_bundle(make_project)               # no factory build at all
+    [r1] = build_mod.build_ota_romfs(root, firmware=repo, compile_py=False, convert_models=False)
+    assert r1.deltas == []
+    r2 = _release(root, repo, "1.1.0")
+    assert [d.name for d in r2.deltas] == ["OPENMV_N6-ota.delta-1.0.0.gz"]
+
+
+def test_kept_release_outside_the_project_is_recorded_absolute(make_project, tmp_path):
+    from openmv_ota.project import ledger
+    root, repo = _build_n6_ota_bundle(make_project)
+    out = tmp_path / "artifacts"
+    build_mod.build_ota_romfs(root, firmware=repo, output=out, compile_py=False,
+                              convert_models=False)
+    assert ledger.last_release(root, "OPENMV_N6")["path"] == str(
+        out / "releases" / "OPENMV_N6-ota-1.0.0.img.gz")

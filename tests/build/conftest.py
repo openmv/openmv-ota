@@ -25,7 +25,7 @@ def make_project(tmp_path, make_firmware, make_sdk):
         repo = make_firmware(with_mpy_cross=with_mpy_cross)
         home = make_sdk(with_bins=True)
         root = tmp_path / "proj"
-        if ca == "tiny":                     # classics refuse --ota without a CA
+        if ca == "tiny":                     # a small --ca of the project's own
             ca_file = tmp_path / "root.pem"
             ca_file.write_text("-----BEGIN CERTIFICATE-----\nMIGa\n-----END CERTIFICATE-----\n")
             ca = str(ca_file)

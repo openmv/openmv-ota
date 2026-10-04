@@ -452,3 +452,68 @@ def test_contribute_reports_the_stream_names():
     rt.Stream("0")
     rt.Stream("tele")
     assert set(rt._contribute()["streams"]) == {"0", "tele"}
+
+
+def test_relay_reconnects_warn_once_per_outage():
+    # the updater's warnings reach the cloud console now; a relay retrying every few seconds
+    # must not fill it with the same line
+    assert rt._loud_reconnect(1)
+    assert not any(rt._loud_reconnect(n) for n in range(2, 50))
+
+
+class _Sock:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _Writer:                         # MicroPython's asyncio Stream: close() is a no-op
+    def __init__(self):
+        self.s = _Sock()
+
+    def close(self):
+        pass
+
+
+def test_relieve_closes_idle_relays_first_then_all(monkeypatch):
+    monkeypatch.setattr(rt, "_streams", {})
+    idle, watched, down = rt.Stream("idle"), rt.Stream("watched"), rt.Stream("down")
+    idle._writer, watched._writer = _Writer(), _Writer()
+    wi, ww = idle._writer, watched._writer
+    watched._session.streaming = True                    # a viewer is on it
+    assert rt._relieve(0) == 1                           # only the unwatched one
+    assert wi.s.closed and idle._writer is None and not ww.s.closed
+    assert rt._relieve(1) == 1                           # the check-in still needs room
+    assert ww.s.closed and watched._writer is None and not watched.live_active
+    assert down._writer is None and rt._relieve(1) == 0
+
+
+# --- application keepalive: a half-open relay socket must not hang the stream forever ------
+
+def test_keepalive_frame_is_a_masked_text_ping():
+    assert rt._KEEPALIVE_FRAME == rt._frame_header(rt._OP_TEXT, 4) + b"ping"
+    b0, b1 = rt._KEEPALIVE_FRAME[0], rt._KEEPALIVE_FRAME[1]
+    assert rt._decode_header(b0, b1) == (True, rt._OP_TEXT, True, 4)
+
+
+def test_liveness_pings_every_interval():
+    lv = rt._Liveness(0, interval=30000, silence=70000)
+    assert not lv.due(29999)
+    assert lv.due(30000) and not lv.due(30001)       # marked sent
+    assert lv.due(60000)
+
+
+def test_liveness_any_inbound_frame_keeps_it_alive():
+    lv = rt._Liveness(0, interval=30000, silence=70000)
+    assert not lv.dead(69999) and lv.dead(70000)      # total silence: dead
+    lv.heard(65000)                                   # a pong, a control message, a ping...
+    assert not lv.dead(134999) and lv.dead(135000)
+
+
+def test_liveness_survives_the_ticks_wrap():
+    near = 0x3FFFFFFF - 1000
+    lv = rt._Liveness(near, interval=30000, silence=70000)
+    assert not lv.dead(5000) and not lv.due(5000)     # wrapped: 6001 ms elapsed
+    assert lv.due(29000) and lv.dead(69000)

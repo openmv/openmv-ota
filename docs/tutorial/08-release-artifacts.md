@@ -116,9 +116,12 @@ release always carries.
 `-ota.img.gz`, or a directory of either. It is **repeatable**, because one delta
 only reaches the devices running its base and a fleet mid-rollout is spread over
 several versions — so a release ships one delta per version still in the field.
-With no `--delta-from` at all, the base is the factory image this project
-recorded when `build factory-romfs` ran — right for a fleet that has never
-updated.
+With no `--delta-from` at all, the bases are the factory image this project
+recorded when `build factory-romfs` ran, plus the last three releases built in
+this project — each build keeps a copy of its image under `build/releases/` for
+exactly this. A device running an older version takes the full image; to cover
+the versions the fleet is actually running, fetch them from the server
+([Building deltas](18-building-deltas.md)).
 
 Two properties keep deltas safe:
 

@@ -11,18 +11,18 @@ Two reset paths to the same place:
   writes the OpenMV boot magic and resets into its own DFU (37c5:9xxx), not the ST one.
 - **Arduino boards** take a 1200-baud serial touch (the MCUboot reset signal).
 
-A board already in its bootloader isn't a serial port, so it isn't discovered here -- the
-backend's ``dfu-util -w`` simply waits for it.
+A board already in its bootloader isn't a serial port, so it isn't discovered here. Nothing here
+waits for the bootloader to appear either: the flash backend polls for the DFU device itself
+(``flash._await_dfu``), which is both faster than a fixed settle and bounded.
 """
 
 from __future__ import annotations
 
-import time
+import sys
+
 from dataclasses import dataclass
 
 from .errors import FlashError
-
-_SETTLE_S = 2.0          # let the bootloader enumerate after the reset before dfu-util looks
 
 
 @dataclass(frozen=True)
@@ -68,20 +68,28 @@ def discover(raw: dict) -> list[Camera]:
             for p in _comports() if (p.vid, p.pid) in ids]
 
 
-def reset(raw: dict, cam: Camera, *, mpremote: list[str]) -> None:
-    """Reset a running camera into its bootloader, then settle while it re-enumerates."""
+def reset(raw: dict, cam: Camera, *, mpremote: list[str]) -> str | None:
+    """Reset a running camera into its bootloader (the caller waits for it to enumerate).
+
+    Returns mpremote's captured output when it exited non-zero, else ``None`` -- NOT an error by
+    itself (see below): the caller shows it only if the bootloader then never appears."""
     from . import runner
     if raw.get("app"):                        # arduino: 1200-baud touch
         _open_1200(cam.port)
-    else:                                     # openmv protocol: machine.bootloader()
-        # exec machine.bootloader() rather than mpremote's `bootloader` subcommand: the subcommand's
-        # entry method works on stm32 (N6) but silently no-ops on the alif (AE3), which drops into DFU
-        # only via a direct machine.bootloader() call. That call tears down the USB-CDC mid-exec, so
-        # mpremote exits non-zero (an I/O error on the now-gone port) even though the reset landed --
-        # tolerate it, exactly as the write step tolerates the ST ROM's missing final-status ACK.
-        runner.run([*mpremote, "connect", cam.port, "exec", "import machine; machine.bootloader()"],
-                   tolerate_fail=True)
-    time.sleep(_SETTLE_S)
+        return None
+    # openmv protocol: exec machine.bootloader() rather than mpremote's `bootloader` subcommand: the
+    # subcommand's entry method works on stm32 (N6) but silently no-ops on the alif (AE3), which
+    # drops into DFU only via a direct machine.bootloader() call. That call tears down the USB-CDC
+    # mid-exec, so mpremote exits non-zero with ~40 lines of traceback (OSError EIO on the now-gone
+    # port) even though the reset landed. A first-time user reads that as a failure, so its output
+    # is captured and one plain line printed instead; whether the reset WORKED is decided by the
+    # caller's bounded wait for the bootloader, which shows this output if it never appears.
+    print("camera rebooting into its bootloader...", file=sys.stderr)
+    rc, out = runner.run_quiet([*mpremote, "connect", cam.port, "exec",
+                                "import machine; machine.bootloader()"])
+    if rc == 0:
+        return None
+    return out.strip() or "mpremote exited %d" % rc
 
 
 def select(raw: dict, serial: str | None) -> Camera | None:

@@ -30,8 +30,11 @@ images a camera can download, verify, and fall back from.
 - **A trust store the firmware can carry.** Recovery needs TLS anchors in the
   firmware itself. On the OpenMV N6, AE3, and RT1062 the firmware is large
   enough to hold the full public bundle, so nothing needs configuring. On every
-  other board it is not — there `new --ota` requires an explicit `--ca` root
-  (your server's own root, a few KB) and refuses without one.
+  other board it is not. There, without `--ca`, `new --ota` scaffolds
+  `certs/root.pem` with the roots of the hosted OpenMV Cloud (a few KB) and sets
+  `[ota].ca = "certs/root.pem"`, so the hosted cloud works out of the box.
+  Self-hosting? Replace `certs/root.pem` with your server's root, or pass
+  `--ca` with it at `new`.
 
 - **Keys provisioned.** `new --ota` generates the product's whole signing key
   set up front and writes it under `keys/`.
@@ -87,7 +90,7 @@ How the floor survives is the one place the two modes differ:
 | Flag | Effect |
 |---|---|
 | `--ota` | Declare the project over-the-air: split each partition into slots and provision the signing keys. |
-| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle — allowed only on boards whose firmware can carry it (N6, AE3, RT1062). |
+| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle when every board's firmware can carry it (N6, AE3, RT1062); otherwise it scaffolds the hosted OpenMV Cloud's roots as `certs/root.pem`. |
 
 ## Files an OTA project adds
 
@@ -102,14 +105,14 @@ my-product/
 │       └── installer.py     # the installer, shipped as source (exec'd into RAM)
 ├── certs/
 │   └── ca.pem               # TLS trust store, frozen into the firmware by `build
-│                            # firmware` (fetched fresh at `new`; `--ca` copies here)
+│                            # firmware` (fetched fresh at `new`; `--ca` copies here;
+│                            # root.pem = the hosted cloud's roots on smaller boards)
 ├── compliance/              # EU CRA/RED fill-in templates (conformity checklist,
 │                            # EU DoC, disclosure policy, security.txt) — see
 │                            # docs/compliance/cra-red-alignment.md
 ├── device/
 │   ├── openmv_log.py               # the OTA debug logger
-│   ├── openmv_wdt.py               # the watchdog helper
-│   └── openmv_ca.py                # only with --ca: your root(s) as a frozen module
+│   └── openmv_wdt.py               # the watchdog helper
 └── keys/
     ├── trusted_keys.json    # committed: the public key set baked into firmware
     └── private/             # GITIGNORED: the private signing keys (PKCS#8 PEM)
@@ -124,12 +127,15 @@ leak (an attacker could sign images your devices would trust) or are lost (you c
 rotate to another provisioned key, but a key never provisioned can't be added).
 Back the private keys up out-of-band.
 
-The `[ota]` section records the mode and the current signing key:
+The `[ota]` section records the mode, the current signing key, and the server
+recovery reaches (`server_url`, the hosted cloud's by default — the same URL the
+generated `main.py` checks in to, so a self-hoster changes both):
 
 ```toml
 [ota]
 enabled = true            # each partition holds two updatable slots (A/B)
 signing_key_id = 256      # current OTA signing key (in keys/trusted_keys.json)
+server_url = "https://ota.cloud.openmv.io"
 max_attempts = 3          # boots a trial gets to confirm (optional; frozen into the firmware)
 # platform = true         # only for a fleet whose cameras are built with product_id 0 and
 #                         # move between products: every build then takes the account's

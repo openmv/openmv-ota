@@ -189,22 +189,16 @@ verify_coprocessor() {  # proj  board  img
 }
 
 do_full() {  # board  work
-  local board="$1" work="$2" proj="$2/ota" keys ca_flag=
-  if needs_own_ca "$board"; then
-    # THE PUBLIC CA BUNDLE DOES NOT FIT THIS BOARD'S FIRMWARE, and firmware-resident recovery
-    # needs TLS anchors there -- so `project new --ota` refuses without a CA, exactly like the
-    # classic boards, and the build proceeds with a generated root.
-    expect_clean_fail "project new --ota refuses without a CA (recovery needs anchors in firmware)" \
-      1 "cannot hold the public CA bundle" \
-      $OTA project new "$work/ota_noca" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
-    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=openmv-ota-ci" \
-      -keyout "$work/root.key" -out "$work/root.pem" >/dev/null 2>&1
-    expect_file "test root generated" "$work/root.pem"
-    ca_flag="--ca $work/root.pem"
-  fi
+  local board="$1" work="$2" proj="$2/ota" keys
+  # No --ca: what a user running the Getting started commands does. Where the public CA bundle
+  # does not fit the firmware, `project new --ota` scaffolds the hosted OpenMV Cloud's roots as
+  # certs/root.pem -- and building this project is the proof that they link.
   expect_success "project new --ota" \
-    $OTA project new "$proj" -f "$FW" -b "$board" --ota --dev $ca_flag $SDK_FLAG
+    $OTA project new "$proj" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
   [ "$LAST_RC" -eq 0 ] || return 0
+  if needs_own_ca "$board"; then
+    expect_file "hosted-cloud roots scaffolded (certs/root.pem)" "$proj/certs/root.pem"
+  fi
   keys="$proj/keys/trusted_keys.json"
 
   # The SBOM renders from the committed lock alone -- prove that against the REAL
@@ -270,12 +264,12 @@ do_classic() {  # board  work
   # geometry.derive_mode), which is the whole point of the mode. So the assertion is now that
   # these boards are ACCEPTED. What is still refused is a partition with no room for an image
   # even in single mode, which is pure arithmetic -- and that is the `noromfs` class below.
-  # THE PUBLIC CA BUNDLE DOES NOT FIT THESE BOARDS, so `project new --ota` refuses without one
-  # rather than scaffolding ~186 KB into a 114,688-byte slot and failing later at a linker.
-  expect_clean_fail "project new --ota refuses without a CA (the public bundle does not fit)" \
-    1 "cannot hold the public CA bundle" \
+  # THE PUBLIC CA BUNDLE DOES NOT FIT THESE BOARDS, so without --ca `project new --ota`
+  # scaffolds the hosted OpenMV Cloud's roots (a few KB) instead of ~186 KB...
+  expect_success "project new --ota without --ca (hosted-cloud roots)" \
     $OTA project new "$work/ota_noca" -f "$FW" -b "$board" --ota --dev $SDK_FLAG
-  # ...and accepts your own server's root, which is ~1 KB and is how these boards do OTA.
+  expect_file "hosted-cloud roots scaffolded (certs/root.pem)" "$work/ota_noca/certs/root.pem"
+  # ...and accepts your own server's root, which is ~1 KB, as a self-hoster does.
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=openmv-ota-ci" \
     -keyout "$work/root.key" -out "$work/root.pem" >/dev/null 2>&1
   expect_file "test root generated" "$work/root.pem"
@@ -299,12 +293,13 @@ do_classic() {  # board  work
       *)
         build_firmware "$ota" "$board" ;;
     esac
-    # The supplied root -- not the public bundle -- is what gets frozen into the firmware.
-    if grep -q "BEGIN CERTIFICATE" "$ota/device/openmv_ca.py" 2>/dev/null \
-       && [ "$(wc -c < "$ota/device/openmv_ca.py")" -lt 8192 ]; then
+    # The supplied root -- not the public bundle, not the cloud roots -- is the trust store
+    # `build firmware` freezes ([ota].ca -> _ota_config.CA_PEM).
+    if cmp -s "$work/root.pem" "$ota/certs/root.pem" \
+       && grep -q '^ca = "certs/root.pem"' "$ota/openmv-ota.toml"; then
       pass "the supplied root is the frozen trust store (not the ~186 KB bundle)"
     else
-      fail "the supplied root is the frozen trust store" "device/openmv_ca.py missing or too big"
+      fail "the supplied root is the frozen trust store" "certs/root.pem or [ota].ca differs"
     fi
     # THE SLOT BUDGET MUST BE THE SINGLE-MODE ONE. `front_size` is an A/B concept and is 0 in
     # SINGLE mode, so the A/B arithmetic used to report a NEGATIVE budget here ("the OTA slot
@@ -352,7 +347,7 @@ do_noromfs() {  # board  work
 }
 
 # Full boards whose firmware cannot carry the public CA bundle (no recovery_ca_bundle
-# in boards.json) -- they must supply their own root, like the classics.
+# in boards.json) -- `project new --ota` gives them the hosted cloud roots, like the classics.
 needs_own_ca() {
   case "$1" in
     OPENMV4P|OPENMVPT|ARDUINO_PORTENTA_H7|ARDUINO_GIGA|ARDUINO_NICLA_VISION) return 0;;

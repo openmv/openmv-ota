@@ -217,7 +217,9 @@ def test_create_ota_scaffolds_runtime_lib_with_coprocessor_data(tmp_path, make_f
     # builtin_ca(); shipping it in the romfs too would pay ~186 KB per slot twice.
     assert (root / "certs" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()
     assert not (lib / "data" / "ca.pem").exists()
-    assert not (root / "device" / proj.CA_MODULE).exists()
+    assert not (root / "device" / "openmv_ca.py").exists()   # CA_PEM is the one frozen copy
+    assert not (root / "certs" / "root.pem").exists()        # every board fits the bundle
+    assert proj.load_project(root, verify=False).config.ca == ""
     res = json.loads((lib / "data" / "resources.json").read_text())
     assert res[0]["handler"] == "partition" and res[0]["partition"] == 1
     read_image((lib / "data" / "coprocessor.romfs").read_bytes())   # valid romfs, no raise
@@ -238,7 +240,7 @@ def test_create_ota_runtime_lib_no_coprocessor_data_without_coprocessor(
     assert "def run(" in (data / "installer.py").read_text()
     assert (root / "certs" / "ca.pem").read_bytes() == proj._fetch_ca_bundle()  # the stubbed bundle
     assert not (data / "ca.pem").exists()   # the bundle rides in firmware, not the romfs
-    assert not (root / "device" / proj.CA_MODULE).exists()   # no openmv_ca module without --ca
+    assert not (root / "device" / "openmv_ca.py").exists()   # no separate frozen module
     assert not (data / "coprocessor.romfs").exists()
     assert not (data / "resources.json").exists()
 
@@ -439,11 +441,13 @@ def test_create_ota_accepts_a_one_sector_board_in_single_mode(tmp_path, make_fir
     rb = next(t for t in lock.targets["resolved"] if t.get("role", "main") == "main")
     assert geometry.derive_mode(rb["partition_size"], rb["erase_size"]) == geometry.SINGLE
     assert root.exists()
-    # the supplied roots are what gets frozen -- NOT the public bundle
-    ns = {}
-    exec(compile((root / "device" / proj.CA_MODULE).read_text(), "openmv_ca.py", "exec"), ns)
-    assert b"BEGIN CERTIFICATE" in ns["PEM"] and len(ns["PEM"]) < 4096
-    assert (root / "certs" / "root.pem").exists()    # copied in, so the project is self-contained
+    # the supplied roots are what gets frozen -- NOT the public bundle, NOT the cloud roots --
+    # copied in, so the project is self-contained
+    supplied = Path(_root_pem(tmp_path)).read_bytes()
+    assert (root / "certs" / "root.pem").read_bytes() == supplied
+    toml = proj.ProjectPaths(root).config.read_text()
+    assert 'ca = "certs/root.pem"' in toml and "hosted OpenMV Cloud" not in toml
+    assert not (root / "certs" / "ca.pem").exists()
 
 
 def test_create_ota_ca_must_exist(tmp_path, make_firmware, make_sdk):
@@ -461,23 +465,47 @@ def test_create_ota_ca_must_look_like_a_pem(tmp_path, make_firmware, make_sdk):
                 factory_keys=1, ota_keys=2, ca=str(bad))
 
 
-def test_trust_store_reports_an_unreadable_configured_ca(tmp_path):
-    """`[ota] ca` pointing at a path that isn't there -- e.g. hand-edited, or not committed."""
-    import types as _t
-    paths = proj.ProjectPaths(tmp_path)
-    cfg = _t.SimpleNamespace(ca="certs/gone.pem")
-    lock = _t.SimpleNamespace(targets={"resolved": []})
-    with pytest.raises(ProjectError, match=r"\[ota\] ca .* is not readable"):
-        proj._trust_store(paths, cfg, lock)
+def _no_bundle_fetch(monkeypatch):
+    """The public bundle must not even be downloaded for a project that cannot use it."""
+    def boom(*a, **k):
+        raise AssertionError("fetched the public CA bundle")
+    monkeypatch.setattr(proj, "_fetch_ca_bundle", boom)
 
 
-def test_create_ota_refuses_a_one_sector_board_without_its_own_ca(tmp_path, make_firmware, make_sdk):
-    """The public bundle does not fit these boards, so scaffolding it would only move the
-    failure to a linker error nobody connects to a certificate. Refuse where it can be
-    explained, and say what to pass."""
-    with pytest.raises(ProjectError, match="cannot hold the public CA bundle"):
-        _create(tmp_path, make_firmware, make_sdk, ota=True, boards=["OPENMV4"],
-                factory_keys=1, ota_keys=2)
+@pytest.mark.parametrize("boards", [["OPENMV4"], ["ARDUINO_NICLA_VISION"],
+                                    ["OPENMV_N6", "ARDUINO_PORTENTA_H7"]])
+def test_create_ota_without_ca_scaffolds_the_hosted_cloud_roots(tmp_path, make_firmware,
+                                                                make_sdk, monkeypatch, boards):
+    """A board whose firmware cannot carry the ~186 KB public bundle used to refuse `new --ota`
+    without --ca. The hosted OpenMV Cloud has to work out of the box on every board, so it now
+    gets the cloud's own roots (a few KB) as certs/root.pem, pointed at by [ota].ca -- with a
+    note telling a self-hoster what to replace. One such board is enough: the whole project
+    shares one trust store."""
+    _no_bundle_fetch(monkeypatch)
+    root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, boards=boards,
+                      factory_keys=1, ota_keys=2)
+    assert (root / "certs" / "root.pem").read_bytes() == proj.CLOUD_ROOTS.read_bytes()
+    assert not (root / "certs" / "ca.pem").exists()
+    toml = proj.ProjectPaths(root).config.read_text()
+    assert 'ca = "certs/root.pem"' in toml
+    assert "# Anchors for the hosted OpenMV Cloud; self-hosting? Replace certs/root.pem" in toml
+    assert proj.load_project(root, verify=False).config.ca == "certs/root.pem"
+    assert b"self-hosting? Replace with your server's root" in proj.CLOUD_ROOTS.read_bytes()
+
+
+def test_create_ota_keeps_a_root_pem_the_user_already_replaced(tmp_path, make_firmware,
+                                                               make_sdk, monkeypatch):
+    """A self-hoster who swapped their server's root into certs/root.pem keeps it across
+    `new --force`; only the hosted default is scaffolded, never forced."""
+    _no_bundle_fetch(monkeypatch)
+    repo = make_firmware()
+    root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True, boards=["OPENMV4"],
+                      factory_keys=1, ota_keys=2)
+    mine = b"-----BEGIN CERTIFICATE-----\nmine\n-----END CERTIFICATE-----\n"
+    (root / "certs" / "root.pem").write_bytes(mine)
+    _create(tmp_path, make_firmware, make_sdk, repo=repo, ota=True, boards=["OPENMV4"],
+            force=True, factory_keys=1, ota_keys=2)
+    assert (root / "certs" / "root.pem").read_bytes() == mine
 
 
 def test_create_non_ota_allows_non_capable_board(tmp_path, make_firmware, make_sdk):
@@ -783,23 +811,188 @@ def test_load_project_verify_false_skips(tmp_path, make_firmware, make_sdk, git_
 def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, make_sdk):
     root, _ = _create(tmp_path, make_firmware, make_sdk, ota=True, ota_keys=2, factory_keys=1)
     main = (proj.ProjectPaths(root).app_dir / "main.py").read_text()
-    assert "openmv_ota.run(" in main               # the cloud lifecycle task
-    assert "from openmv_cloud import" in main       # the SDK wrappers
-    assert "logs.enable()" in main
-    assert "datalog.post(" in main                  # a telemetry example
-    assert "configure(" in main                     # the tunable RAM limits
-    # the app confirms the OTA trial explicitly once it is operational (run() does
-    # not auto-confirm), so a bad update rolls back instead of sticking.
+    assert main == proj._APP_MAIN_OTA      # THE file the website's /start page shows
+    compile(main, "main.py", "exec")       # it parses (CPython syntax is a superset here)
+    assert ('openmv_ota.run("https://ota.cloud.openmv.io", poll_after_s=CHECK_IN_S, '
+            'recover=bring_up_network)') in main
+    assert "CHECK_IN_S = 300 " in main     # the user's check-in interval, one line to edit
+    assert main.count("https://ota.cloud.openmv.io") == 1   # the one URL the website swaps
+    assert "from openmv_cloud import csi, datalog, logs" in main
+    # both sinks started: logs.enable() alone leaves datalog.post() buffering forever
+    assert "logs.enable()" in main and "datalog.enable()" in main
+    # the heap graph: percent of the GC heap in use, one decimal, every 5 s, its own task
+    assert 'datalog.post("heap", {"used_pct": round(100 * used / (used + free), 1)})' in main
+    assert "used, free = gc.mem_alloc(), gc.mem_free()" in main
+    assert "asyncio.create_task(heap_graph())" in main and "await asyncio.sleep(5)" in main
+    assert 'log.info("app version %s, count %d", VERSION, count)' in main
+    assert 'VERSION = openmv_ota.identity().get("app_version")' in main
+    # the app confirms the OTA trial explicitly once it is operational (run() does not
+    # auto-confirm), so a bad update rolls back instead of sticking.
     assert "openmv_ota.confirm()" in main
-    # the labelled sections tell the user what is scaffolding vs their own code
-    assert "GENERATED" in main and "YOUR APP" in main
-    # the opt-in watchdog is wired in seamlessly: arm AFTER the slow camera setup (not at
-    # import) and feed once per loop iteration -- no-ops until the user turns openmv_wdt on.
-    assert "import openmv_wdt" in main
-    assert "openmv_wdt.start()" in main
-    assert "openmv_wdt.feed()" in main
-    # start() comes after cam setup and before the loop; feed() is inside the loop
-    assert main.index("openmv_wdt.start()") < main.index("while True:") < main.index("openmv_wdt.feed()")
+    # a camera without Ethernet must still run it: LAN() is only built inside USE_LAN
+    lan = main.index("network.LAN()")
+    assert main.rindex("if USE_LAN:", 0, lan) < lan < main.index("else:", lan)
+    assert "USE_LAN = False" in main
+    # QVGA RGB565 (150 KB), the IDE's hello-world default: VGA overflowed the Nicla's frame
+    # buffer at boot ("Frame buffer overflow") before the app could even confirm itself
+    assert "cam.framesize(csi.QVGA)" in main and "csi.VGA" not in main
+    # the short version: no banners, no RAM limits (defaults apply), no watchdog
+    for gone in ("GENERATED", "YOUR APP", "configure(", "openmv_wdt"):
+        assert gone not in main, gone
+
+
+def _run_ota_main(monkeypatch, cam_cls, trial=False):
+    """Execute the template's own logic on CPython with stand-in device modules, using camera
+    ``cam_cls``; returns (calls, posted, errors). Catches a NameError or a bad call that
+    compile() cannot. The run ends when something raises SystemExit (the stub camera after a
+    few frames, or the stub Event the crash path parks on)."""
+    import asyncio
+    import sys
+    import types
+
+    posted, calls, errors = [], [], []
+
+    class _Nic:
+        def __init__(self, *a):
+            calls.append(("nic",) + a)
+
+        def active(self, on):
+            calls.append(("active", on))
+
+        def connect(self, ssid, pw):
+            calls.append(("connect", ssid, pw))
+
+        def isconnected(self):
+            return True
+
+    async def run(url, self_test=None, wdt=None, poll_after_s=None, recover=None):   # run()'s order
+        assert self_test is None and wdt is None
+        calls.append(("run", url, poll_after_s, recover.__name__))
+
+    class _Event:                       # the crash path parks here: end the run instead
+        async def wait(self):
+            calls.append(("parked",))
+            for _ in range(5):          # the loop stays alive: the OTA task gets to run
+                await asyncio.sleep(0)
+            raise SystemExit
+
+    def _reset():                       # the trial path reboots: end the run there
+        calls.append(("reset",))
+        raise SystemExit
+
+    class _Log:
+        def info(self, *a):
+            pass
+
+        def error(self, fmt, *a):
+            errors.append(fmt % a)
+
+    gc_mod = types.SimpleNamespace(mem_alloc=lambda: 300, mem_free=lambda: 700)
+    # MicroPython's asyncio, on a loop made BEFORE `asyncio` is swapped in sys.modules
+    loop = asyncio.new_event_loop()
+    aio = types.SimpleNamespace(run=loop.run_until_complete, create_task=loop.create_task,
+                                sleep_ms=lambda ms: asyncio.sleep(0),
+                                sleep=lambda s: asyncio.sleep(0), Event=_Event)
+    mods = {
+        "asyncio": aio, "gc": gc_mod,
+        "logging": types.SimpleNamespace(getLogger=lambda name: _Log()),
+        "network": types.SimpleNamespace(WLAN=_Nic, STA_IF=0, LAN=None),
+        "openmv_ota": types.SimpleNamespace(identity=lambda: {"app_version": "1.2.3"}, run=run,
+                                            confirm=lambda: calls.append(("confirm",)),
+                                            status=lambda: {"trial": trial}),
+        "machine": types.SimpleNamespace(reset=_reset),
+        "openmv_cloud": types.SimpleNamespace(
+            csi=types.SimpleNamespace(CSI=lambda: cam_cls(calls), RGB565="RGB565",
+                                      GRAYSCALE="GRAYSCALE", QVGA="QVGA"),
+            datalog=types.SimpleNamespace(enable=lambda: None,
+                                          post=lambda t, o: posted.append((t, o))),
+            logs=types.SimpleNamespace(enable=lambda: None)),
+    }
+    for k, v in mods.items():
+        monkeypatch.setitem(sys.modules, k, v)
+    try:
+        with pytest.raises(SystemExit):
+            exec(compile(proj._APP_MAIN_OTA, "main.py", "exec"), {"__name__": "__main__"})
+    finally:
+        monkeypatch.undo()
+        pending = asyncio.all_tasks(loop)
+        for t in pending:
+            t.cancel()
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()
+    return calls, posted, errors
+
+
+class _Cam:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def reset(self):
+        pass
+
+    def pixformat(self, f):
+        self.calls.append(("pixformat", f))
+
+    def framesize(self, f):
+        pass
+
+    async def snapshot(self):
+        import asyncio
+        for _ in range(5):              # let the background tasks run once
+            await asyncio.sleep(0)
+        raise SystemExit                # then leave the main loop
+
+
+def test_the_ota_main_runs_against_stub_device_modules(monkeypatch):
+    """The network bring-up (Wi-Fi path), the heap figure and confirm()."""
+    calls, posted, errors = _run_ota_main(monkeypatch, _Cam)
+    assert ("connect", "SSID", "PASSWORD") in calls
+    # CHECK_IN_S reaches run() as its interval (a positional slip would land in self_test)
+    assert ("run", "https://ota.cloud.openmv.io", 300, "bring_up_network") in calls
+    assert ("pixformat", "RGB565") in calls and ("pixformat", "GRAYSCALE") not in calls
+    assert ("confirm",) in calls
+    assert ("heap", {"used_pct": 30.0}) in posted
+    assert errors == [] and ("parked",) not in calls
+
+
+def test_the_ota_main_falls_back_to_grayscale_on_a_mono_sensor(monkeypatch):
+    # an HM0360 / HM01B0 (Portenta, Nicla) rejects RGB565 with "Sensor control failed"; that used
+    # to end asyncio.run(main()) -- and the OTA task with it, so the board never checked in
+    class _Mono(_Cam):
+        def pixformat(self, f):
+            super().pixformat(f)
+            if f == "RGB565":
+                raise RuntimeError("Sensor control failed")
+
+    calls, _posted, errors = _run_ota_main(monkeypatch, _Mono)
+    assert calls.count(("pixformat", "RGB565")) == 1 and ("pixformat", "GRAYSCALE") in calls
+    assert ("confirm",) in calls and errors == []
+
+
+def test_an_app_crash_leaves_updates_running(monkeypatch):
+    # an app bug at boot must not kill the OTA task: log it, keep the loop alive, and do NOT
+    # confirm -- the fix (or a rollback) can still arrive over the air
+    class _Broken(_Cam):
+        def framesize(self, f):
+            raise ValueError("bad app")
+
+    calls, _posted, errors = _run_ota_main(monkeypatch, _Broken)
+    assert ("run", "https://ota.cloud.openmv.io", 300, "bring_up_network") in calls
+    assert errors == ["app crashed: ValueError('bad app')"]
+    assert ("parked",) in calls and ("confirm",) not in calls
+    assert ("reset",) not in calls              # a confirmed image stays up for the fix
+
+
+def test_an_app_crash_on_an_unconfirmed_update_reboots_so_it_rolls_back(monkeypatch):
+    # parked, a crashing TRIAL would never roll back -- and run() defers every update while a
+    # trial is unconfirmed, so no fix could land either. Rebooting spends a trial boot.
+    class _Broken(_Cam):
+        def framesize(self, f):
+            raise ValueError("bad update")
+
+    calls, _posted, errors = _run_ota_main(monkeypatch, _Broken, trial=True)
+    assert errors == ["app crashed: ValueError('bad update')"]
+    assert ("reset",) in calls and ("parked",) not in calls and ("confirm",) not in calls
 
 
 def test_non_ota_project_scaffolds_the_bare_main(tmp_path, make_firmware, make_sdk):

@@ -269,40 +269,61 @@ def _recv_of(*pieces):
     return recv
 
 
+def _into(recv):
+    """Adapt a ``recv(n) -> bytes | None`` script (the shape these tests are written in) to the
+    ``readinto(mv) -> n | None`` the reader takes from the socket: ``b''`` -> 0 (EOF), ``None`` ->
+    None (nothing yet), and a piece larger than the space left is handed over across calls."""
+    left = [b""]
+
+    def readinto(mv):
+        d = left[0] or recv(len(mv))
+        if d is None:
+            return None
+        k = min(len(d), len(mv))
+        mv[:k] = d[:k]
+        left[0] = d[k:]
+        return k
+    return readinto
+
+
+def _R(recv, **kw):
+    return inst("_Reader")(_into(recv), **kw)
+
+
 def test_reader_readline_across_recvs():
-    r = inst("_Reader")(_recv_of(b"HTTP/1.1 ", b"200 OK\r\nX: 1\r\n\r\n"))
+    r = _R(_recv_of(b"HTTP/1.1 ", b"200 OK\r\nX: 1\r\n\r\n"))
     assert r.readline() == b"HTTP/1.1 200 OK\r\n"
     assert r.readline() == b"X: 1\r\n"
     assert r.readline() == b"\r\n"
 
 
 def test_reader_readline_eof_without_newline():
-    r = inst("_Reader")(_recv_of(b"tail-no-newline"))
+    r = _R(_recv_of(b"tail-no-newline"))
     assert r.readline() == b"tail-no-newline"
     assert r.readline() == b""
 
 
 def test_reader_readline_too_long():
-    r = inst("_Reader")(_recv_of(b"x" * 9000))
+    r = _R(_recv_of(b"x" * 9000))
     with pytest.raises(ValueError):
         r.readline(limit=8192)
 
 
 def test_reader_read_exact_and_some():
-    r = inst("_Reader")(_recv_of(b"abcdef", b"ghij"))
+    r = _R(_recv_of(b"abcdef", b"ghij"))
     assert r.read_exact(4) == b"abcd"
     assert r.read_some(100) == b"ef"      # only the buffered remainder
     assert r.read_exact(4) == b"ghij"
 
 
 def test_reader_read_exact_eof():
-    r = inst("_Reader")(_recv_of(b"ab"))
+    r = _R(_recv_of(b"ab"))
     with pytest.raises(ValueError):
         r.read_exact(4)
 
 
 def test_reader_read_some_eof_returns_empty():
-    r = inst("_Reader")(_recv_of())
+    r = _R(_recv_of())
     assert r.read_some(10) == b""
 
 
@@ -311,7 +332,7 @@ def test_reader_feeds_while_waiting_then_reads():
     # slice -- no select.poll(), no relax(); the feed cadence is driven from the loop itself
     fed = []
     seq = iter([None, None, None, b"payload"])
-    r = inst("_Reader")(lambda _n: next(seq), feed=lambda: fed.append(1))
+    r = _R(lambda _n: next(seq), feed=lambda: fed.append(1))
     assert r.read_exact(7) == b"payload"       # 3 no-data slices then the recv that returns data
     assert len(fed) == 4                        # fed each slice incl. the one that read data
 
@@ -320,14 +341,14 @@ def test_reader_would_block_none_then_data():
     # a non-blocking recv returns None while no data has arrived; the reader must keep feeding, not EOF
     seq = iter([None, None, b"hi"])
     fed = []
-    r = inst("_Reader")(lambda _n: next(seq), feed=lambda: fed.append(1))
+    r = _R(lambda _n: next(seq), feed=lambda: fed.append(1))
     assert r.read_exact(2) == b"hi"
     assert len(fed) == 3                        # fed on each no-data slice before data arrived
 
 
 def test_reader_eof_returns_false():
     # a non-blocking recv of b'' is a real EOF -> _fill returns False
-    r = inst("_Reader")(_recv_of(), feed=lambda: None)
+    r = _R(_recv_of(), feed=lambda: None)
     assert r.read_some(5) == b""
 
 
@@ -340,7 +361,7 @@ def test_reader_recv_eagain_then_data():
         if state["n"] == 1:
             raise OSError(11)                  # EAGAIN
         return b"ok"
-    r = inst("_Reader")(recv, feed=lambda: None)
+    r = _R(recv, feed=lambda: None)
     assert r.read_exact(2) == b"ok"
 
 
@@ -348,14 +369,14 @@ def test_reader_recv_oserror_propagates():
     # a non-would-block OSError (e.g. ECONNRESET) is a real failure -> propagate (install -> golden)
     def recv(_n):
         raise OSError(104)                     # ECONNRESET
-    r = inst("_Reader")(recv, feed=lambda: None)
+    r = _R(recv, feed=lambda: None)
     with pytest.raises(OSError):
         r.read_exact(1)
 
 
 def test_reader_dead_link_trips_after_timeout():
     # a link that never produces data feeds until _SOCK_TIMEOUT, then raises (-> clean install -> golden)
-    r = inst("_Reader")(lambda _n: None, feed=lambda: None)
+    r = _R(lambda _n: None, feed=lambda: None)
     with pytest.raises(OSError, match="timed out"):
         r.read_exact(1)
 
@@ -536,7 +557,7 @@ def test_is_transport_error_keys_on_phase_not_exception_type():
 def test_read_response():
     raw = (b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
            b"Transfer-Encoding: chunked\r\nLocation: /x\r\n\r\nBODY!")
-    r = inst("_Reader")(_recv_of(raw))
+    r = _R(_recv_of(raw))
     code, headers = inst("_read_response")(r)
     assert code == 200
     assert headers[b"content-length"] == b"5"
@@ -547,7 +568,7 @@ def test_read_response():
 
 def test_read_response_ignores_non_header_line():
     raw = b"HTTP/1.1 204 No Content\r\nnocolonhere\r\n\r\n"
-    code, headers = inst("_read_response")(inst("_Reader")(_recv_of(raw)))
+    code, headers = inst("_read_response")(_R(_recv_of(raw)))
     assert code == 204 and headers == {}
 
 
@@ -565,13 +586,13 @@ def _drain(body, n=3):
 
 
 def test_body_content_length():
-    r = inst("_Reader")(_recv_of(b"HELLOworld-extra"))
+    r = _R(_recv_of(b"HELLOworld-extra"))
     body = inst("_make_body")(r, {b"content-length": b"5"})
     assert _drain(body) == b"HELLO"
 
 
 def test_body_readinto_idempotent_at_eof():
-    r = inst("_Reader")(_recv_of(b"ab"))
+    r = _R(_recv_of(b"ab"))
     body = inst("_make_body")(r, {b"content-length": b"2"})
     assert _drain(body) == b"ab"
     assert body.readinto(bytearray(4)) == 0    # re-reading past EOF stays at 0
@@ -579,33 +600,33 @@ def test_body_readinto_idempotent_at_eof():
 
 def test_body_chunked():
     raw = b"5\r\nHELLO\r\n6\r\n world\r\n0\r\n\r\n"
-    r = inst("_Reader")(_recv_of(raw))
+    r = _R(_recv_of(raw))
     body = inst("_make_body")(r, {b"transfer-encoding": b"chunked"})
     assert _drain(body) == b"HELLO world"
 
 
 def test_body_chunked_with_trailers():
     raw = b"3\r\nabc\r\n0\r\nX-Trailer: v\r\n\r\n"
-    r = inst("_Reader")(_recv_of(raw))
+    r = _R(_recv_of(raw))
     body = inst("_make_body")(r, {b"transfer-encoding": b"Chunked"})
     assert _drain(body) == b"abc"
 
 
 def test_body_close_delimited():
-    r = inst("_Reader")(_recv_of(b"all", b"the", b"bytes"))
+    r = _R(_recv_of(b"all", b"the", b"bytes"))
     body = inst("_make_body")(r, {})
     assert _drain(body) == b"allthebytes"
 
 
 def test_body_content_length_truncated_raises():
-    r = inst("_Reader")(_recv_of(b"abc"))           # promises 10, gives 3
+    r = _R(_recv_of(b"abc"))           # promises 10, gives 3
     body = inst("_make_body")(r, {b"content-length": b"10"})
     with pytest.raises(ValueError):
         _drain(body)
 
 
 def test_body_chunked_truncated_raises():
-    r = inst("_Reader")(_recv_of(b"5\r\nab"))        # chunk claims 5, only 2 arrive
+    r = _R(_recv_of(b"5\r\nab"))        # chunk claims 5, only 2 arrive
     body = inst("_make_body")(r, {b"transfer-encoding": b"chunked"})
     with pytest.raises(ValueError):
         _drain(body)
@@ -613,7 +634,7 @@ def test_body_chunked_truncated_raises():
 
 def test_make_body_bad_content_length():
     with pytest.raises(ValueError):
-        inst("_make_body")(inst("_Reader")(_recv_of(b"")), {b"content-length": b"x"})
+        inst("_make_body")(_R(_recv_of(b"")), {b"content-length": b"x"})
 
 
 # --- hostile framing (found by tests/fuzz/test_fuzz_http.py) -----------------
@@ -628,15 +649,15 @@ def test_read_response_refuses_a_header_flood():
     server -- before the erase for the manifest, after it for the image. Capped like the
     check-in reader: 64 is fine, 65 is refused."""
     ok = b"HTTP/1.1 200 OK\r\n" + b"".join(b"X-%d: v\r\n" % i for i in range(64)) + b"\r\n"
-    assert inst("_read_response")(inst("_Reader")(_recv_of(ok)))[0] == 200
+    assert inst("_read_response")(_R(_recv_of(ok)))[0] == 200
     flood = b"HTTP/1.1 200 OK\r\n" + b"".join(b"X-%d: v\r\n" % i for i in range(5000))
     with pytest.raises(ValueError, match="over 64 headers"):
-        inst("_read_response")(inst("_Reader")(_recv_of(flood + b"\r\n")))
+        inst("_read_response")(_R(_recv_of(flood + b"\r\n")))
 
 
 def test_chunked_body_refuses_a_trailer_flood():
     raw = b"3\r\nabc\r\n0\r\n" + b"X-T: v\r\n" * 65 + b"\r\n"
-    body = inst("_make_body")(inst("_Reader")(_recv_of(raw)), {b"transfer-encoding": b"chunked"})
+    body = inst("_make_body")(_R(_recv_of(raw)), {b"transfer-encoding": b"chunked"})
     with pytest.raises(ValueError, match="over 64 trailers"):
         _drain(body)
 
@@ -653,7 +674,7 @@ def test_chunk_size_is_hex_digits_only(line):
 
 def test_negative_chunk_hands_nothing_to_the_consumer():
     raw = b"-5\r\nhello world, then the next chunk line\r\n0\r\n\r\n"
-    body = inst("_make_body")(inst("_Reader")(_recv_of(raw)), {b"transfer-encoding": b"chunked"})
+    body = inst("_make_body")(_R(_recv_of(raw)), {b"transfer-encoding": b"chunked"})
     with pytest.raises(ValueError, match="bad chunk size"):
         body.readinto(bytearray(64))
 
@@ -662,7 +683,7 @@ def test_negative_chunk_hands_nothing_to_the_consumer():
 def test_content_length_is_decimal_digits_only(cl):
     """ "-5" read as an EMPTY body (the length check saw <= 0) rather than a malformed one."""
     with pytest.raises(ValueError, match="bad Content-Length"):
-        inst("_make_body")(inst("_Reader")(_recv_of(b"hello")), {b"content-length": cl})
+        inst("_make_body")(_R(_recv_of(b"hello")), {b"content-length": cl})
 
 
 # --- _install_stream --------------------------------------------------------
@@ -1767,3 +1788,105 @@ def test_install_stream_primed_short_image_is_still_rejected():
     with pytest.raises(ValueError, match="image is 4 bytes"):
         inst("_install_stream")(src, flash.write, flash.readback, front, block, _noop,
                                 None, None, None, None, work, None, 0, primed=n)
+
+
+# --- the one-buffer reader: no per-recv allocation ------------------------------------------
+
+def test_reader_reads_into_one_preallocated_buffer():
+    seen = []
+
+    def readinto(mv):
+        seen.append(mv.obj if hasattr(mv, "obj") else None)
+        mv[:2] = b"ok"
+        return 2
+    r = inst("_Reader")(readinto, size=64)
+    assert r.read_exact(2) == b"ok" and r.read_exact(2) == b"ok"
+    assert seen[0] is seen[1] is r._mem            # every recv lands in the SAME buffer
+
+
+def test_reader_line_straddling_the_buffer_end_is_moved_to_the_front():
+    r = _R(_recv_of(b"abcdefg\nhij", b"kl\nmore\n"), size=12)
+    assert r.readline() == b"abcdefg\n"
+    assert r.readline() == b"hijkl\n"               # "hij" was compacted to make room
+    assert r.readline() == b"more\n"
+
+
+def test_reader_line_longer_than_the_buffer_is_refused():
+    r = _R(_recv_of(b"x" * 40), size=16)
+    with pytest.raises(ValueError, match="too long"):
+        r.readline()
+
+
+def test_reader_readinto_some_copies_into_the_callers_buffer():
+    r = _R(_recv_of(b"HTTP/1.1 200 OK\r\n\r\nBODYBYTES"), size=64)
+    inst("_read_response")(r)
+    out = bytearray(4)
+    assert r.readinto_some(memoryview(out), 4) == 4 and out == b"BODY"
+    assert r.readinto_some(memoryview(out), 2) == 2 and out[:2] == b"BY"
+    assert r.read_some(100) == b"TES"
+    assert r.readinto_some(memoryview(out), 4) == 0   # EOF
+
+
+def test_body_readinto_of_an_empty_buffer_reads_nothing():
+    body = inst("_make_body")(_R(_recv_of(b"abc")), {b"content-length": b"3"})
+    assert body.readinto(bytearray(0)) == 0
+    assert body.readinto(bytearray(8)) == 3
+
+
+# --- the pre-erase window probe + the post-commit log mute ----------------------------------
+
+def test_window_bytes_is_the_reps_wbits_or_the_gzip_default():
+    assert inst("_window_bytes")(0) == 32768       # wbits 0 = gzip's default 15
+    assert inst("_window_bytes")(12) == 4096       # a small-window image
+
+
+def test_heap_fits_reports_a_failed_allocation():
+    assert inst("_heap_fits")(32768) is True
+
+    def full(_n):
+        raise MemoryError
+    assert inst("_heap_fits")(32768, alloc=full) is False
+
+
+def test_quiet_past_commit_mutes_a_logger_with_no_handlers_of_its_own():
+    import logging
+    lg = logging.getLogger("test_quiet_past_commit_bare")
+    lg.setLevel(logging.WARNING)
+    inst("_quiet_past_commit")(lg)                 # records would fall through to ROMFS handlers
+    assert lg.level == inst("_SILENT") > logging.CRITICAL
+
+
+def test_quiet_past_commit_keeps_only_the_frozen_handler():
+    import logging
+
+    class Cloud(logging.Handler):                  # romfs code (openmv_cloud.logs)
+        pass
+    lg = logging.getLogger("test_quiet_past_commit_uart")
+    lg.setLevel(logging.DEBUG)
+    uart, cloud = logging.StreamHandler(), Cloud()
+    lg.addHandler(uart)
+    lg.addHandler(cloud)
+    try:
+        inst("_quiet_past_commit")(lg)             # the bench's UART handler keeps logging
+        assert lg.handlers == [uart] and lg.level == logging.DEBUG
+    finally:
+        lg.removeHandler(uart)
+
+
+def test_quiet_past_commit_mutes_when_only_romfs_handlers_were_attached():
+    import logging
+    lg = logging.getLogger("test_quiet_past_commit_cloud_only")
+    lg.setLevel(logging.WARNING)
+    lg.addHandler(logging.NullHandler())
+    inst("_quiet_past_commit")(lg, keep=logging.StreamHandler)
+    assert lg.handlers == [] and lg.level == inst("_SILENT")
+
+
+def test_quiet_past_commit_ignores_the_null_logger():
+    inst("_quiet_past_commit")(object())           # no handlers, no setLevel: nothing to do
+
+
+def test_reader_readline_limit_below_the_buffer_size():
+    r = _R(_recv_of(b"abcdefgh"), size=64)
+    with pytest.raises(ValueError, match="too long"):
+        r.readline(limit=4)

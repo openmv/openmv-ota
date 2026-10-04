@@ -12,4 +12,10 @@ def _no_cameras(monkeypatch):
     # stub the underlying pyserial scan (not device._comports), so the test that checks the
     # _comports wrapper itself can still re-stub list_ports
     monkeypatch.setattr("serial.tools.list_ports.comports", lambda: [])
-    monkeypatch.setattr("openmv_ota.flash.device.time.sleep", lambda _s: None)
+    monkeypatch.setattr("openmv_ota.flash.flash.time.sleep", lambda _s: None)
+    # every DFU wait finds its device at once; a test about the wait itself re-stubs this
+    monkeypatch.setattr("openmv_ota.flash.flash._dfu_listed", lambda tool, usb: True)
+    # the bootloader-entry reset runs mpremote through runner.run_quiet: never let a test reach a
+    # real serial port with it. A test about the reset stubs it with its own answer.
+    monkeypatch.setattr("openmv_ota.flash.runner.run_quiet",
+                        lambda argv: pytest.fail("unstubbed runner.run_quiet(%r)" % (argv,)))

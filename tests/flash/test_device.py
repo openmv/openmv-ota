@@ -67,24 +67,47 @@ def test_select_multiple_without_serial_errors(monkeypatch):
         device.select(_dfu_raw(), None)
 
 
-def test_reset_openmv_runs_mpremote(monkeypatch):
+def test_reset_openmv_runs_mpremote(monkeypatch, capsys):
     from openmv_ota.flash import runner
     ran = []
-    monkeypatch.setattr(runner, "run", lambda argv, **kw: ran.append((argv, kw)))
-    device.reset(_dfu_raw(), device.Camera("/dev/ttyACM0", "SN1"), mpremote=["mpremote"])
-    # exec machine.bootloader() (works on the alif; the `bootloader` subcommand no-ops there), and
-    # tolerate the non-zero exit from the USB-CDC dropping mid-call.
-    assert ran == [(["mpremote", "connect", "/dev/ttyACM0", "exec",
-                     "import machine; machine.bootloader()"], {"tolerate_fail": True})]
+    monkeypatch.setattr(runner, "run_quiet", lambda argv: ran.append(argv) or (0, ""))
+    note = device.reset(_dfu_raw(), device.Camera("/dev/ttyACM0", "SN1"), mpremote=["mpremote"])
+    # exec machine.bootloader() (works on the alif; the `bootloader` subcommand no-ops there)
+    assert ran == [["mpremote", "connect", "/dev/ttyACM0", "exec",
+                    "import machine; machine.bootloader()"]]
+    assert note is None
+    assert capsys.readouterr().err == "camera rebooting into its bootloader...\n"
+
+
+def test_reset_openmv_holds_back_the_usb_drop_traceback(monkeypatch, capsys):
+    # the USB-CDC drops mid-call, so mpremote exits 1 with a page of OSError EIO traceback. That is
+    # the EXPECTED outcome: none of it is printed, it is returned for the caller to show only if
+    # the bootloader then never appears.
+    from openmv_ota.flash import runner
+    tb = "Traceback (most recent call last):\n  ...\nOSError: [Errno 5] Input/output error\n"
+    monkeypatch.setattr(runner, "run_quiet", lambda argv: (1, tb))
+    note = device.reset(_dfu_raw(), device.Camera("/dev/ttyACM0", "SN1"), mpremote=["mpremote"])
+    assert note == tb.strip()
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "warning" not in err
+    assert err == "camera rebooting into its bootloader...\n"
+
+
+def test_reset_openmv_silent_failure_still_says_something(monkeypatch):
+    from openmv_ota.flash import runner
+    monkeypatch.setattr(runner, "run_quiet", lambda argv: (3, "  \n"))
+    assert device.reset(_dfu_raw(), device.Camera("/dev/ttyACM0", "SN1"),
+                        mpremote=["mpremote"]) == "mpremote exited 3"
 
 
 def test_reset_arduino_touches_1200(monkeypatch):
     from openmv_ota.flash import runner
     opened = []
     monkeypatch.setattr(device, "_open_1200", lambda port: opened.append(port))
-    monkeypatch.setattr(runner, "run",
+    monkeypatch.setattr(runner, "run_quiet",
                         lambda argv: (_ for _ in ()).throw(AssertionError("no mpremote")))
-    device.reset(_arduino_raw(), device.Camera("/dev/ttyACM0", None), mpremote=["mpremote"])
+    assert device.reset(_arduino_raw(), device.Camera("/dev/ttyACM0", None),
+                        mpremote=["mpremote"]) is None
     assert opened == ["/dev/ttyACM0"]
 
 

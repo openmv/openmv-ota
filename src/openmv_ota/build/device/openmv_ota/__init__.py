@@ -635,6 +635,47 @@ def register_checkin(contribute=None, on_response=None, key=None):
         _checkin_observers[ident] = on_response
 
 
+# THE CHECK-IN COMES FIRST. A check-in's TLS handshake needs ~20 KiB of mbedTLS record buffers in
+# one go, and the optional features hold the same kind of buffers resident: each OpenMV Live relay
+# keeps its own TLS session open, and the datalake flushers hold one during a flush. Measured on a
+# Nicla with live[0] + live[console] up and the heap 70-88% used: six periodic check-ins in a row
+# died with OSError(12) right after the socket was created, and the update waited 11 minutes. So
+# openmv_cloud registers a RELEASE hook here, and a check-in that runs out of memory asks those
+# features to let go -- idle ones first, everything optional second -- and retries at once. They
+# reconnect on their own afterwards.
+_pressure_hooks = {}
+
+
+def register_pressure(release, key=None):
+    """The memory-pressure seam. ``release(level) -> int`` closes connections to free heap for a
+    check-in and returns how many it closed: ``level`` 0 = only what nobody is using right now
+    (a relay with no viewer, a datalake flush), 1 = everything optional (a watched relay too).
+    ``key`` makes registration idempotent, as for :func:`register_checkin`."""
+    _pressure_hooks[key if key is not None else object()] = release
+
+
+_flush_hooks = {}
+
+
+def register_flush(flush, key=None):
+    """The before-reset seam. ``async flush(timeout_ms)`` pushes a log sink's queued records out
+    and returns within ``timeout_ms``; the runtime awaits it before a reset it chooses to take
+    (the fresh-heap reboot), so the line saying WHY reaches the cloud. ``key`` as above."""
+    _flush_hooks[key if key is not None else object()] = flush
+
+
+def _relieve(level):
+    """Run every release hook at ``level``; the total they closed. A raising hook is skipped --
+    it must never cost the check-in it is meant to help."""
+    n = 0
+    for release in list(_pressure_hooks.values()):
+        try:
+            n += release(level) or 0
+        except Exception:
+            continue
+    return n
+
+
 # --- NETWORK RUNTIME: begin --------------------------------------------------
 # Everything to the matching end marker is the server-polling stack: run(),
 # _poll_forever(), _checkin() and their helpers. It needs `ssl`, so on a board whose
@@ -645,6 +686,63 @@ def register_checkin(contribute=None, on_response=None, key=None):
 # build/romfs.py cuts this region for a board flagged `ota_runtime_drops_network`.
 # Keep the region SELF-CONTAINED: nothing outside it may reference a name defined in
 # it (tests/build/test_runtime_drop.py proves that, and that the remainder compiles).
+
+# THE CHECK-IN CADENCE. Pure, so the host suite pins every number below.
+_POLL_DEFAULT_S = 3600       # the wait when neither the app nor the server names one
+_JITTER = 0.15               # +/- spread on every wait the DEVICE picks (the server jitters its own)
+_BACKOFF_FIRST_S = 10        # first retry after a failed check-in; doubles per consecutive miss
+_BACKOFF_MAX_SHIFT = 16      # bounds the doubling's int long before the cap is ever the limit
+
+
+def _jittered(s, r):
+    """``s`` spread by +/- ``_JITTER``; ``r`` is a uniform draw in [0, 1). A fleet that
+    booted together (a site powering on, an outage clearing) must not check in in step."""
+    return s * (1.0 - _JITTER + 2.0 * _JITTER * r)
+
+
+def _backoff(misses, cap, r):
+    """The wait after the ``misses``-th CONSECUTIVE failed check-in: 10, 20, 40 ... s,
+    capped at the poll interval ``cap``, jittered.
+
+    A transport failure used to wait a whole poll (an hour), so one bad check-in left a
+    device dark for that hour -- and it happened on EVERY boot of the RT1062 over LAN: the
+    mimxrt driver seeds a static address, ``isconnected()`` goes True at once, DHCP swaps
+    the address ~2 s later, and the first check-in dies with EHOSTUNREACH. Ten seconds
+    later it works. Doubling keeps a long outage from becoming a retry storm, and the cap
+    means a device that has been down a while is back to its ordinary cadence."""
+    base = _BACKOFF_FIRST_S << min(misses - 1, _BACKOFF_MAX_SHIFT)
+    return _jittered(min(base, cap), r)
+
+
+def _rand():
+    """A uniform draw in [0, 1) for the jitter -- one byte of ``os.urandom``, so no
+    ``random`` module (absent on some ports) and no seeding at boot to get wrong."""
+    import os
+    return os.urandom(1)[0] / 256
+
+
+def _next_poll(resp, interval, r):
+    """How long to wait after a check-in that GOT THROUGH.
+
+    ``interval`` is the app's own cadence (``run(poll_after_s=...)``). Set, it wins: the
+    device checks in every ``interval`` (jittered) whatever the server's ordinary answer
+    says -- that answer always carries ``poll_after_s`` (the server's DEFAULT pacing, 3600 s
+    on the hosted cloud), so honouring it would silently undo the app's choice. The one
+    exception is LOAD-SHEDDING: a throttled (429) answer's ``poll_after_s`` is honoured when
+    it is LONGER than the device's own wait, so an overloaded server can always slow a
+    device down but never speed it up past what the app asked for.
+
+    ``interval`` None leaves the device SERVER-PACED: it waits whatever the server said (the
+    server has already jittered it), or ``_POLL_DEFAULT_S`` if it said nothing."""
+    told = resp.get("poll_after_s")
+    if interval is None:
+        return told or _POLL_DEFAULT_S
+    own = _jittered(interval, r)
+    if resp.get("throttled") and told and told > own:
+        return told
+    return own
+
+
 def _checkin_body(info, st, slot_states=None):
     """The base check-in payload from identity() + status() (+ slots()) -- pure, so it's
     host-testable; extension fields (e.g. streams) are merged by contributors."""
@@ -716,14 +814,111 @@ def _notify(resp):
             pass                                     # never break the loop
 
 
+_ENOMEM = (12, -12)          # errno ENOMEM, positive and as some ports report it
+
+
+def _is_enomem(e):
+    """Out of memory: a MemoryError, or the OSError(ENOMEM) that ``wrap_socket`` raises when it
+    cannot allocate its record buffers."""
+    if isinstance(e, MemoryError):
+        return True
+    return isinstance(e, OSError) and bool(e.args) and e.args[0] in _ENOMEM
+
+
+def _checkin_relieved(attempt, relieve, collect):
+    """Run ``attempt()`` (the check-in); on out-of-memory, ``relieve(level)`` the optional
+    features -- level 0 (idle connections), then 1 (all of them) -- ``collect()`` and retry AT
+    ONCE, so a regular check-in is never starved by Live or the datalake. A level that released
+    nothing is not retried (nothing changed). Any other error, or the last ENOMEM, raises."""
+    try:
+        return attempt()
+    except Exception as e:
+        if not _is_enomem(e):
+            raise
+        err = e
+    for level in (0, 1):
+        if not relieve(level):
+            continue
+        collect()
+        log.warning("checkin: out of memory; closed optional connections (level %d), retrying"
+                    % level)
+        try:
+            return attempt()
+        except Exception as e:
+            if not _is_enomem(e):
+                raise
+            err = e
+    raise err
+
+
 def _offer(resp):
     """The manifest URL to install, or None -- pure."""
     return resp.get("manifest_url") if resp.get("update") else None
 
 
-async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
+# INSTALL FROM A FRESH HEAP. An update is installed in place only on the BOOT check-in, before
+# the app has built up its heap; one offered later reboots the device first so the boot
+# check-in installs it. Measured on a Nicla: with the camera, two live-relay TLS sessions and
+# the datalake batchers resident, an in-place install died of MemoryError -- before the erase
+# (`manifest fetch failed: MemoryError allocating 4097 bytes`, retried every poll, forever) or
+# after it (`MemoryError 32768` x3, then a reboot to the other slot) -- while the same release
+# installed every time from the boot check-in. The reboot costs one extra boot; the install
+# reboots anyway.
+_REBOOT_GAP_S = 3600   # a device whose BOOT install of a release failed reboots for it again only
+#                        after this much uptime -- at most one such reboot per hour, so a release
+#                        that cannot install from any heap never turns into a reboot loop
+_INPLACE_TRIES = 3     # ...and only after this many in-place attempts in a row have failed too
+
+
+class _InstallGate:
+    """Decides, for each offered release, whether to install it in place or reboot first. Pure:
+    the caller passes the release key and the uptime, and reports what happened.
+
+    The state lives in RAM, deliberately. Nothing here may live on /flash (it corrupts, and
+    nothing load-bearing goes there), and no port OpenMV ships exposes RTC backup memory to
+    MicroPython. RAM is enough: a reboot for a release happens only when THIS boot's first
+    check-in did not already try that release, so every reboot is followed by a boot install of
+    it -- and if that fails, this boot does not reboot for it again until ``_REBOOT_GAP_S`` of
+    uptime and ``_INPLACE_TRIES`` failed in-place attempts have passed. The server's offers are
+    deterministic per device (rollout percentage by device id), so the boot check-in after the
+    reboot is offered the same release."""
+
+    def __init__(self):
+        self._answered = False   # a check-in has been answered (un-throttled) this boot
+        self._boot_key = None    # the release the boot check-in tried in place, if any
+        self._key = None         # the release the failure count below is about
+        self._fails = 0          # consecutive failed in-place installs of _key
+
+    def answered(self):
+        """A check-in was answered with no offer: the boot check-in has passed."""
+        self._answered = True
+
+    def plan(self, key, uptime_s):
+        """``"install"`` (in place, now) or ``"reboot"`` (restart; the boot check-in installs)."""
+        if not self._answered:               # the boot check-in: the freshest heap this boot has
+            self._answered = True
+            self._boot_key = key
+            return "install"
+        if key != self._boot_key:            # offered since boot: reboot, the boot install takes it
+            return "reboot"
+        if (self._key == key and self._fails >= _INPLACE_TRIES
+                and uptime_s >= _REBOOT_GAP_S):
+            return "reboot"                  # the boot install failed, and so has every retry
+        return "install"
+
+    def failed(self, key):
+        """An in-place install of ``key`` raised (before the erase -- after it, it reboots)."""
+        if key != self._key:
+            self._key, self._fails = key, 0
+        self._fails += 1
+
+
+_gate = _InstallGate()   # module-level: survives run()'s restart of a dead loop, not a reboot
+
+
+async def run(server_url, self_test=None, wdt=None, poll_after_s=None,
               ca=None, ntp_host=None, recover=None,
-              recover_after=3):  # pragma: no cover  (device: the network loop)
+              recover_after=5):  # pragma: no cover  (device: the network loop)
     """The OTA lifecycle loop (async, so it coexists with the app's asyncio work
     and openmv_cloud's background tasks). Forever: resolve the clock, poll the
     update server, hand the response to registered extensions (the live + ingest
@@ -741,8 +936,15 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
 
     ``ca`` are TLS anchors (PEM/path); ``None`` uses the romfs override ``data/ca.pem``
     if the image ships one, else the firmware's built-in store (``builtin_ca()``).
-    ``ntp_host`` overrides the NTP server used to set the clock when the RTC is
-    not already trustworthy (``None`` = ntptime's default pool).
+    ``ntp_host`` overrides the NTP server (``None`` = pool.ntp.org). Each check-in's ``Date``
+    header keeps the clock right, so NTP is only used while the server is unreachable.
+
+    ``poll_after_s`` is how often to check in, in seconds (the generated main.py passes its
+    ``CHECK_IN_S``). Set, the device keeps that cadence itself, jittered +/-15%; the server's
+    ordinary answer cannot shorten or lengthen it, but a THROTTLED answer that asks for longer
+    is honoured -- an overloaded server can always slow a device down. ``None`` (the default)
+    leaves the device server-paced: it waits whatever ``poll_after_s`` the server answers
+    with (3600 s if none). See ``_next_poll``.
 
     ``recover`` is how a device gets ITSELF out of a WEDGED NETWORK STACK. Retrying
     a check-in forever is not a recovery strategy: a stack can enter a state where
@@ -760,7 +962,17 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
     (retry forever, never re-initialise).
 
     The counter tracks CONSECUTIVE failures and resets on any completed cycle, so a
-    flaky link that still gets through now and then never triggers it."""
+    flaky link that still gets through now and then never triggers it.
+
+    A failed check-in is retried on a short backoff -- 10, 20, 40 ... s (jittered), capped
+    at ``poll_after_s`` -- not a whole poll later, so ``recover_after`` failures now arrive
+    in minutes rather than hours. Hence the default of 5: the fifth consecutive failure
+    lands ~150 s (10+20+40+80) after the first. That rides out what heals by itself (a
+    DHCP renumbering at boot, an access point rebooting) without tearing the NIC down,
+    while a real wedge -- which never clears on its own -- is rebuilt within a few
+    minutes instead of the ~3 h three hourly polls used to take. The backoff keeps growing
+    across a recover, so a server that is simply down settles at one check-in (and one
+    escalation every ``recover_after`` polls) per interval, not a rebuild every minute."""
     import asyncio  # hil-residual: the restart backoff awaits; imported here for the same reason _poll_forever imports its own
     while True:  # hil-residual: the RESTART loop emits nothing on the happy path -- every marker comes from _poll_forever inside it
         try:  # hil-residual: guard only; a healthy loop never leaves it
@@ -777,7 +989,7 @@ async def run(server_url, self_test=None, wdt=None, poll_after_s=3600,
             # So: log it, wait a poll, and start over. Nothing an OTA device does is worth giving
             # up the ability to be updated.
             log.error("run: OTA LOOP DIED %r -- restarting" % (e,))  # hil-residual: THE witness for a dead OTA loop; no bench scenario kills it on purpose, so it is unexercised -- which is exactly why it must exist before one does
-            await asyncio.sleep(poll_after_s)  # hil-residual: back off one poll before re-entering
+            await asyncio.sleep(poll_after_s or _POLL_DEFAULT_S)  # hil-residual: back off one poll before re-entering
         except BaseException as e:  # hil-residual: cancellation/shutdown -- record, then let it through
             # NOT restarted: CancelledError and KeyboardInterrupt mean somebody is deliberately
             # stopping us (asyncio shutdown, or a probe taking the REPL). Restarting through those
@@ -791,15 +1003,17 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
                         recover_after):  # pragma: no cover  (device: the network loop)
     """run()'s whole body, split out ONLY so run() can wrap it in one handler -- see there."""
     import asyncio
+    import gc
     boot = status()
     if boot.get("trial") and self_test is not None and self_test():
         confirm()  # hil-residual: opt-in boot-time self_test confirm; bench apps confirm in their loop (confirm.promoted), not via self_test, so this call-site is unexercised
     here = __file__.rsplit("/", 1)[0]
     ca = _resolve_ca(ca, here)
     fails = 0                             # CONSECUTIVE failed cycles; drives the recover escalation
+    misses = 0                            # the same streak, NOT reset by a recover: drives the backoff
+    cap = poll_after_s or _POLL_DEFAULT_S  # the longest a failed check-in waits to retry
     while True:
-        wait = poll_after_s
-        _resolve_clock(ntp_host)          # cheap once trusted; retries NTP until network is up
+        wait = cap
         # SPLIT ON PURPOSE: a failed CHECK-IN is a transport fault, everything after it is a
         # verdict on the release. Only the first kind may drive the recover escalation.
         try:
@@ -813,13 +1027,21 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             st = status()
             slot_states = slots()
             with _wdt_relax():  # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
-                resp = _checkin(server_url, _collect_body(identity(), st, slot_states), ca)
+                body = _collect_body(identity(), st, slot_states)
+                resp = _checkin_relieved(lambda b=body: _checkin(server_url, b, ca),  # hil-residual: host-tested wrapper (_checkin_relieved); the check-in itself is witnessed by its own markers
+                                         _relieve, gc.collect)
         except Exception as e:  # hil-residual: check-in transport failure (the wedge path)
             # THE TRANSPORT IS SUSPECT. This is the failure a wedged stack produces every poll,
             # forever (measured: 39 consecutive EINVAL check-ins on an ATWINC1500), so it is the
             # only one allowed to escalate to recover().
             log.warning("run: cycle failed %r" % e)  # hil-residual: transient-failure witness
             fails += 1  # hil-residual: counter arithmetic; the COUNT is witnessed downstream -- N `run: cycle failed` lines followed by exactly one `run: recovering transport` is what proves the streak logic on HW
+            misses += 1  # hil-residual: counter arithmetic, as above; witnessed by the spacing of the `run: cycle failed` lines
+            # RETRY SOON, not in a poll: a transient fault (the RT1062's boot-time DHCP swap) must
+            # cost seconds, not the hour it used to. The backoff keeps on growing across a recover
+            # -- a recover is not proof the link is back -- and only a check-in that gets through
+            # resets it, so a long outage settles at one try per poll, as before.
+            wait = _backoff(misses, cap, _rand())  # hil-residual: pure arithmetic, host-tested (_backoff); its effect is the spacing between `run: cycle failed` lines
             if recover is not None and fails >= recover_after:  # hil-residual: the taken branch is witnessed by `run: recovering transport`; the not-taken branch by its ABSENCE after fewer than recover_after failures
                 fails = 0                 # one escalation per streak, not one per cycle after it  # hil-residual: witnessed by there being ONE `run: recovering transport` per streak of failures, not one per poll after the threshold
                 await _recover(recover)  # hil-residual: the witness for this call is emitted by the CALLEE's first line (`run: recovering transport`); the audit cannot see across the call boundary, and a marker here would duplicate it
@@ -832,11 +1054,16 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # is never going to validate. On the WINC that rebuild is a full chip reset. (Measured
             # on the bench: bad_sig / bad_key / bad_version each drove a spurious recover.)
             fails = 0  # hil-residual: the streak RESET is witnessed by absence -- a healthy board polls for a whole run and never emits `run: recovering transport`; a marker here would fire every poll and drown the log
+            misses = 0  # hil-residual: the backoff reset, witnessed the same way -- a healthy board's check-ins are a poll apart, never 10 s
             try:
                 log.debug("checkin: response received")
                 _notify(resp)
-                wait = resp.get("poll_after_s", poll_after_s)
+                wait = _next_poll(resp, poll_after_s, _rand())
                 manifest_url = _offer(resp)
+                if not manifest_url and not resp.get("throttled"):
+                    _gate.answered()  # hil-residual: gate bookkeeping (host-tested _InstallGate). A THROTTLED answer is not the boot check-in: under a
+                    #                           crowd, counting it would turn the next offer into a
+                    #                           reboot -- and more crowd
                 if manifest_url:
                     log.debug("checkin: update offered")
                     defer = _defer_install(st, slot_states)  # hil-residual: the DEFER path needs a device to be mid-trial at the moment an update is offered, which no current scenario produces (the bench apps confirm as soon as they boot) -- the scenario for it lands with the step-6 catalog rework
@@ -846,14 +1073,26 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
                         # polls, is offered an update, and does nothing is otherwise
                         # indistinguishable in the log from one that is broken.
                         log.info("checkin: deferring the update (%s)" % defer)  # hil-residual: emitted only on the deferred path above (no scenario reaches it yet); it is a field diagnostic until the step-6 defer scenario exists
+                        _gate.answered()  # hil-residual: gate bookkeeping on the (unexercised) defer path -- once confirmed, the offer reboots for a fresh heap
                     else:
-                        install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
+                        key = resp.get("release_id") or manifest_url  # hil-residual: the release key (host-tested gate input); dominated by install.start downstream only across a call
+                        if _gate.plan(key, _uptime_s()) == "reboot":  # hil-residual: host-tested decision (_InstallGate.plan); the reboot arm is witnessed by `run: fresh-heap reboot`, the install arm by install.start
+                            await _reboot_for_install()  # hil-residual: the witness is the CALLEE's first line (`run: fresh-heap reboot`)
+                        try:  # hil-residual: failure-count guard around install(); witnessed by install.start (callee)
+                            install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
+                        except Exception:  # hil-residual: a pre-erase install failure; witnessed by the caller's `run: cycle failed`
+                            _gate.failed(key)  # hil-residual: counter bookkeeping (host-tested _InstallGate)
+                            raise  # hil-residual: bare re-raise to the cycle handler below
             except Exception as e:  # hil-residual: post-check-in failure (a verdict on the release, or an install fault); exercised by corrupt/bad_sig
                 # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install
                 # (e.g. the installer read blowing the heap) is indistinguishable on the wire and in
                 # the log from a board with nothing on offer: the same check-in, the same poll wait,
                 # forever. Bounded: one repr of the exception, no traceback buffer.
                 log.warning("run: cycle failed %r" % e)  # hil-residual: transient-failure witness
+        # AFTER the check-in, not before: its Date header has normally just refreshed the clock
+        # (see _server_date), so this is a comparison and NTP stays off the wire. Only a device
+        # that cannot reach its server falls through to an NTP attempt (rate-limited).
+        _resolve_clock(ntp_host)
         _wdt_feed()
         log.debug("run: poll wait")                  # HIL path witness (loop tail; _wdt_feed fed)
         await asyncio.sleep(wait)  # hil-residual: bare loop-tail await (sleep only; nothing follows)
@@ -888,12 +1127,44 @@ async def _recover(recover):
         log.warning("run: recover failed %r" % e)  # bounded: one repr, no traceback buffer
 
 
+def _uptime_s():  # pragma: no cover  (device clock)
+    """Seconds since boot, from ticks_ms. Its ~12-day wrap only ever reads LOW, which can only
+    postpone a fresh-heap reboot (see _InstallGate), never bring one forward."""
+    import time  # hil-residual: device clock import for the gate's uptime (no marker can witness a clock read)
+    return time.ticks_ms() // 1000  # hil-residual: bare return of the device uptime
+
+
+_REBOOT_FLUSH_MS = 12000   # bound on pushing the log out before the fresh-heap reboot. Measured on a
+#                            Nicla: the console upload lags 14-20 s behind a line (a 5 s flush tick,
+#                            then a TLS handshake + POST); kicking the flush skips the tick.
+
+
+async def _flush_all(budget_ms):  # pragma: no cover  (device: asyncio)
+    """Await every registered flush hook, each bounded by ``budget_ms`` (and guarded by it too,
+    so a hook that ignores its timeout still cannot hold the reset back). Never raises."""
+    import asyncio  # hil-residual: asyncio import for the bounded wait below (no fleet marker)
+    for flush in list(_flush_hooks.values()):  # hil-residual: hook loop; the hooks are openmv_cloud's (host-tested), and the cloud console receiving the reboot line is the witness
+        try:  # hil-residual: isolation guard around an optional hook
+            await asyncio.wait_for_ms(flush(budget_ms), budget_ms + 1000)  # hil-residual: bounded await of the hook (see above)
+        except Exception:  # hil-residual: a slow or broken hook must never block the reset
+            pass  # hil-residual: bare pass
+
+
+async def _reboot_for_install():  # pragma: no cover  (device: reset)
+    """Restart so the BOOT check-in installs the offered update from a fresh heap (see
+    _InstallGate). Pushes the log out first (bounded) so the line below reaches the cloud
+    console: a device that reboots for an update and then does not take it must say so."""
+    import machine  # hil-residual: import ahead of the field-diagnostic line below (no fleet marker)
+    log.warning("run: fresh-heap reboot; the boot check-in installs the update")  # hil-residual: field diagnostic (and the cloud console's record of why the device rebooted); the bench's offers can land on a periodic check-in, but no scenario expects this line yet
+    await _flush_all(_REBOOT_FLUSH_MS)  # hil-residual: bounded log flush (the app keeps running meanwhile)
+    machine.reset()  # hil-residual: terminal reset (no post-reset witness)
+
+
 def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
-    """Establish a trustworthy wall clock so records can carry real timestamps.
-    A no-op once the clock is good (the deep-sleep / coin-cell case resolves on
-    the first pass with no network); otherwise it retries NTP each poll until the
-    network is up. Defensive: a missing clock module or a failed sync just leaves
-    timestamps absent -- ``seq`` still orders every record."""
+    """Keep the wall clock right so records carry real timestamps. A comparison while the
+    last check-in's Date (or an NTP sync) is fresh; otherwise one rate-limited NTP attempt,
+    falling back to the RTC as it stands (see openmv_rtc.resolve). Defensive: a missing clock
+    module or a failed sync just leaves timestamps absent -- ``seq`` still orders every record."""
     try:
         import openmv_rtc
         # An NTP sync is a BLOCKING network op the main loop cannot feed through, so it must relax()
@@ -902,12 +1173,91 @@ def _resolve_clock(ntp_host):  # pragma: no cover  (device: RTC + network)
         # 100 ms, `clock: syncing` was the last line before every reboot, with reset_cause=3 (WDT).
         # It is worst on a network that BLACKHOLES NTP -- each unreachable server burns its full
         # socket timeout, and sync() walks a fallback list -- which is precisely when a device most
-        # needs to stay alive. A no-op once the clock is trusted (the common case: no relax at all).
+        # needs to stay alive. A no-op while the clock is fresh (the common case: no relax at all).
         with _wdt_relax():
             openmv_rtc.resolve(ntp_host)
         log.debug("clock: resolved")                  # HIL path witness (NTP/RTC each poll)
     except Exception:  # hil-residual: clock-unresolved wrapper (missing module / failed NTP)
         pass  # hil-residual: bare pass; clock left unresolved
+
+
+_MONTHS = (b"jan", b"feb", b"mar", b"apr", b"may", b"jun",
+           b"jul", b"aug", b"sep", b"oct", b"nov", b"dec")
+
+
+def _days_from_civil(y, m, d):
+    """Days from 1970-01-01 to the proleptic-Gregorian date ``y-m-d`` (H. Hinnant's
+    algorithm). Pure integer arithmetic: ``time.mktime`` uses the PORT's epoch and,
+    on some ports, local time, so it cannot be trusted to produce Unix seconds."""
+    y -= m <= 2
+    era = y // 400
+    yoe = y - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+
+def _parse_http_date(value):
+    """Unix seconds from an HTTP ``Date`` value (IMF-fixdate, the only form RFC 9110
+    lets a server send: ``Sun, 06 Nov 1994 08:49:37 GMT``), or None when it does
+    not parse. Takes bytes or str -- the raw header value off the socket."""
+    if isinstance(value, str):
+        value = value.encode()
+    parts = value.strip().split()
+    if len(parts) != 6 or parts[5].upper() != b"GMT":
+        return None
+    try:
+        day, year = int(parts[1]), int(parts[3])
+        month = _MONTHS.index(parts[2].lower()) + 1
+        hh, mm, ss = (int(x) for x in parts[4].split(b":"))
+    except ValueError:
+        return None
+    if not (1 <= day <= 31 and 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 60):
+        return None
+    return _days_from_civil(year, month, day) * 86400 + hh * 3600 + mm * 60 + ss
+
+
+_DRIFT_S = 2              # re-set the RTC only past this (Date has 1 s resolution)
+_legacy_rtc_warned = False
+
+
+def _apply_server_time(rtc, unix):
+    """Hand the server's time to the clock module ``rtc`` (the FROZEN openmv_rtc). Pure.
+
+    THE CLOCK POLICY IS SPLIT ON PURPOSE: openmv_rtc is frozen into the firmware (boot.py and
+    recovery need it before any romfs is mounted), so an OTA update never replaces it -- while
+    this runtime ships in the romfs and does. A device updated over the air onto this runtime
+    may therefore be running an older openmv_rtc with no ``server_time``. Then the correction is
+    done here, through the calls every version has (``trusted``/``now``/``set_time``), and a
+    one-time warning says the firmware is behind. Returns True when the time was used."""
+    global _legacy_rtc_warned
+    if unix is None:
+        return False
+    server_time = getattr(rtc, "server_time", None)
+    if server_time is not None:
+        return server_time(unix)
+    if not _legacy_rtc_warned:
+        _legacy_rtc_warned = True
+        log.warning("clock: the firmware's openmv_rtc predates server time -- correcting the "
+                    "RTC from here; rebuild the firmware for the full clock policy")
+    if unix < getattr(rtc, "BUILD_TIME", 0):
+        return False
+    if not rtc.trusted() or abs(rtc.now() - unix) > _DRIFT_S:
+        rtc.set_time(unix)
+    return True
+
+
+def _server_date(value):  # pragma: no cover  (device: RTC)
+    """Hand a check-in's ``Date`` header value to the clock. This is the device's main time
+    source: free (the check-in happens anyway) and authenticated (the TLS session verified the
+    server). Defensive like _resolve_clock: a missing clock module or an RTC fault must never
+    fail the check-in it rides on."""
+    try:
+        import openmv_rtc
+        if _apply_server_time(openmv_rtc, _parse_http_date(value)):
+            log.debug("clock: server date")           # HIL path witness (check-in Date set/confirmed the clock)
+    except Exception:  # hil-residual: missing clock module / RTC fault -> the check-in goes on
+        pass  # hil-residual: bare pass; timestamps stay as they were
 
 
 def _read_capped(sock, limit, clen=None):  # pragma: no cover  (device network)
@@ -976,8 +1326,8 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         status_line = ss.readline()
         # A 429 is the server pacing a crowd (the per-IP / per-/64 check-in limit), not a broken
         # link: its body is an ordinary {"update": false, "poll_after_s": n} with a short, jittered
-        # n. Read it like a 200, so the loop waits n instead of a full poll AND resets its failure
-        # streak -- counted as a transport fault, a throttled board would tear down its network
+        # n. Read it like a 200 -- the loop waits n (or its own interval, if that is longer: see
+        # _next_poll) AND resets its failure streak -- counted as a transport fault, a throttled board would tear down its network
         # (a WINC chip reset) after a few polls, over nothing but a busy server.
         throttled = b" 429 " in status_line or status_line.rstrip().endswith(b" 429")
         if not throttled and b" 200 " not in status_line and not status_line.rstrip().endswith(b" 200"):
@@ -1008,7 +1358,11 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
                     #                                       so the body read is exact -- every board, every poll)
                 except Exception:  # hil-residual: malformed length -> fall back to read-to-EOF
                     clen = None  # hil-residual: bare assign
+            elif line[:5].lower() == b"date:":  # hil-residual: header dispatch; the taken branch is witnessed by the callee's `clock: server date` (every check-in: uvicorn and Cloudflare both send Date)
+                _server_date(line[5:])  # hil-residual: the witness is emitted by the CALLEE (`clock: server date`); the audit cannot see across the call boundary
         resp = json.loads(_read_capped(ss, _RESP_MAX, clen))
+        if throttled:
+            resp["throttled"] = True  # hil-residual: needs a throttling server (see above); tells _next_poll this poll_after_s is load-shedding, not the server's default pacing
         log.debug("checkin: parsed")                  # HIL path witness (headers skipped + JSON)
         return resp  # hil-residual: bare return of the parsed response
     finally:
@@ -1297,19 +1651,14 @@ def install(url, ca=None):  # pragma: no cover
 
 def builtin_ca():  # pragma: no cover  (device: frozen-module imports)
     """The TLS trust anchors frozen into the FIRMWARE, or ``None`` if this firmware carries
-    none (a non-OTA build). Read straight out of flash -- no RAM copy of a ~186 KB bundle.
-    Two frozen homes, oldest first: ``openmv_ca`` (a ``--ca`` project's own roots) and
-    ``_ota_config.CA_PEM`` (what recovery uses -- the full public bundle on boards whose
-    firmware fits it, or the same ``--ca`` roots). Public so an app that opens its own TLS
-    connections can reuse the store the updater trusts."""
-    try:  # hil-residual: import guard; a --ca firmware freezes openmv_ca, the bench (explicit-CA legs) reaches neither arm
-        import openmv_ca  # hil-residual: dominated by the return below
-        return openmv_ca.PEM  # hil-residual: --ca-firmware arm; the bench passes an EXPLICIT ca (path or bytes) on every leg
-    except ImportError:  # hil-residual: bundle-default firmware has no openmv_ca module
-        pass  # hil-residual: fall through to the recovery config's copy
+    none (a non-OTA build). Read straight out of flash -- no RAM copy. One frozen home,
+    ``_ota_config.CA_PEM``, which recovery uses too: the project's ``[ota].ca`` (the hosted
+    OpenMV Cloud's roots by default on boards that cannot fit more, or your own server's root),
+    else the full public bundle on boards whose firmware fits it. Public so an app that opens
+    its own TLS connections can reuse the store the updater trusts."""
     try:  # hil-residual: import guard for the frozen boot config
         import _ota_config  # hil-residual: dominated by the return below
-        return getattr(_ota_config, "CA_PEM", None) or None  # hil-residual: bundle-default arm; the bench passes an explicit CA on every leg
+        return getattr(_ota_config, "CA_PEM", None) or None  # hil-residual: frozen-store arm; the bench passes an explicit CA on every leg
     except ImportError:  # hil-residual: non-OTA firmware (no _ota_config frozen) -- install() then needs an explicit ca
         return None  # hil-residual: no frozen anchors to offer
 

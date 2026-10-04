@@ -96,9 +96,20 @@ def test_erase_plan_wipes_disk_mbr_via_resident_sbl():
     assert not any(a[0] == "sdphost" or "write-memory" in a for a in argvs)
 
 
-def test_factory_plan_writes_fcb_sbl_firmware_romfs_efuse(tmp_path):
+def test_factory_plan_writes_firmware_and_romfs_via_resident_sbl(tmp_path):
+    """Every shipped camera has its SBL: factory is just the two regions, nothing ROM-side."""
+    files = _files(tmp_path, firmware=5000, romfs=9000)
+    argvs = [s.argv for s in _plan("factory", files)]
+    assert [a[5] for a in argvs if "write-memory" in a] == ["0x60040000", "0x60800000"]
+    flat = " ".join(" ".join(a) for a in argvs)
+    for gone in ("sdphost", "SdpUSBInterface", "fill-memory", "0x60000000", "0x60001000", "efuse"):
+        assert gone not in flat, gone
+    assert argvs[-1][-1] == "reset"
+
+
+def test_provision_plan_writes_fcb_sbl_firmware_romfs_efuse(tmp_path):
     files = _files(tmp_path, sdphost_loader=10, blhost_loader=2000, firmware=5000, romfs=9000)
-    steps = _plan("factory", files)
+    steps = _plan("provision", files)
     flat = " ".join(" ".join(s.argv) for s in steps)
     # FCB block, then SBL, firmware, romfs writes, then efuse + reset
     assert "flash-erase-region 0x60000000 0x1000" in flat            # FCB
