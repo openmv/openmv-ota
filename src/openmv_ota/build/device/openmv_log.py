@@ -151,4 +151,7 @@ if ENABLED or _bench is not None:  # pragma: no cover  (device: handler / UART, 
         # HIL wants the WHOLE trace (every path, incl. the DEBUG branch lines the coverage
         # checklist keys on) on the side-channel UART -- so bench mode logs at DEBUG.
         UART, LEVEL = _bench, logging.DEBUG
-    _configure()
+    try:
+        _configure()
+    except Exception:  # hil-residual: a log setting this board cannot honour (e.g. a UART it lacks)
+        pass           # leaves the log off -- it must never stop boot.py, which imports this first
