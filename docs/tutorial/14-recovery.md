@@ -7,9 +7,17 @@
 When `boot.py` rejects **every** slot — a torn install interrupted at the worst
 moment, corruption that fails both signatures — there is no image left to run.
 The device hands off to **firmware-resident recovery**: a frozen flow that
-brings up the network and re-downloads until a working image exists, then
-reboots into its trial. It lives in the firmware, where no update can erase it,
-and reserves no flash of its own.
+brings up the network, **checks in with your server** the way a running app
+does, and installs the release it is offered, then reboots into its trial. It
+lives in the firmware, where no update can erase it, and reserves no flash of
+its own.
+
+The check-in reports the device's id plus the board, product, and account
+stamped into its firmware, with no installed version, so any release in an
+active rollout for that product is newer and is offered. It says
+`fallback_reason: recovery`, so a recovering device shows up as one in the
+fleet view. When the server has nothing for it, or refuses it, recovery logs
+that and asks again on its backoff.
 
 Because there is nothing below it to fall back to, its rules differ from the
 update path's:
@@ -87,6 +95,15 @@ their WiFi is recoverable by dropping a file onto a drive that is already
 mounted over USB — no reflash, no JTAG, no RMA. The format is `key = value`
 with comments rather than JSON because a person edits it in a bad situation,
 and the documented defaults tell them what to type.
+
+**The Getting started app writes this file for you.** An app that joins Wi-Fi
+with `openmv_ota.wifi()`, as the generated `main.py` does, saves that network
+here after its first check-in that reaches the server, so recovery can use it
+with no setup. It writes only when the network or passphrase changed, so a
+device does not rewrite its flash every boot, and a passphrase that never
+reached the server is never saved over one that did. Editing the file by hand
+still works, for a device whose app is gone or never joined Wi-Fi; a running
+app saves its own network over the file again whenever the two differ.
 
 Recovery tries the configured interface first but not only: a board with an
 Ethernet cable is always worth one DHCP attempt (it needs nothing from the
