@@ -66,15 +66,14 @@ def test_unsupported_reason():
 def test_cloud_capability_per_board():
     """The hosted-cloud level the website's board picker shows. The six boards proven on the
     hosted cloud plus the H7 Plus (WINC1500 shield) run all of it with QVGA Live video; the
-    discontinued M7/H7 join unverified, both at QVGA (the M7's OTA firmware moves frame-buffer RAM into its
-    heap); the M4's
+    discontinued M7/H7 join unverified, the H7 at QVGA and the M7 at QQVGA for now; the M4's
     runtime drops the network stack to fit its RAM, so it has no cloud level."""
     from openmv_ota.romfs.boards import CLOUD_LEVELS, load_boards
 
     boards = load_boards()
     qvga = {"OPENMV_N6", "OPENMV_AE3", "OPENMV_RT1060", "OPENMV4P", "ARDUINO_NICLA_VISION",
-            "ARDUINO_GIGA", "ARDUINO_PORTENTA_H7", "OPENMV4", "OPENMV3"}
-    qqvga = set()
+            "ARDUINO_GIGA", "ARDUINO_PORTENTA_H7", "OPENMV4"}
+    qqvga = {"OPENMV3"}
     assert {n for n, b in boards.items() if b.cloud == "full"} == qvga | qqvga
     assert all(b.cloud in CLOUD_LEVELS + (None,) for b in boards.values())
     assert all(boards[n].live_framesize == "QVGA" for n in qvga)
