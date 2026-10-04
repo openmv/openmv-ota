@@ -824,20 +824,6 @@ def test_board_config_overlay_sets_and_adds_defines(tmp_path):
     assert "#define A 3" in bare.read_text()
 
 
-def test_memory_layout_waits_for_a_linker_that_reads_the_board_dir(tmp_path, capsys):
-    """On a firmware whose gen_linker still reads boards/<TARGET>, the M7's GC-block overlay
-    would compile and fail to link: it is left out, with a warning, and no overlay is made."""
-    repo = tmp_path / "fw"
-    bd = repo / "boards" / "OPENMV3"
-    bd.mkdir(parents=True)
-    (bd / "board_config.h").write_text("#define OMV_UMA_BLOCK0_SIZE (383K)\n#endif\n")
-    (repo / "tools").mkdir()
-    (repo / "tools" / "gen_linker.py").write_text('board_dir = f"boards/{args.board}"\n')
-    assert fw._board_overlay(repo, "OPENMV3", tmp_path / "t") is None
-    assert "is not applied" in capsys.readouterr().out
-    assert fw._linker_reads_board_dir(tmp_path / "missing") is False
-
-
 def test_m7_overlay_is_config_only(tmp_path):
     """OPENMV3 drops no imlib feature, only sets memory defines: the overlay is the board
     directory with board_config.h changed and imlib_config.h untouched."""
@@ -846,8 +832,6 @@ def test_m7_overlay_is_config_only(tmp_path):
     bd.mkdir(parents=True)
     (bd / "board_config.h").write_text("#define OMV_UMA_BLOCK0_SIZE (383K)\n#endif\n")
     (bd / "imlib_config.h").write_text("#define IMLIB_ENABLE_BARCODES\n")
-    (repo / "tools").mkdir()
-    (repo / "tools" / "gen_linker.py").write_text('parser.add_argument("--board-dir")\n')
     ov = fw._board_overlay(repo, "OPENMV3", tmp_path / "t")
     assert "(287K)" in (ov / "board_config.h").read_text()
     assert "OMV_GC_BLOCK1_MEMORY SRAM1" in (ov / "board_config.h").read_text()
