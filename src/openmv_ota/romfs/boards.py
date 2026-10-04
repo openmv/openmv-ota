@@ -72,6 +72,11 @@ class BoardConfig:
                                          # to fit this board's flash, `{define: image
                                          # method}` -- the build refuses an app that
                                          # calls the method (see build/firmware.py)
+    ota_firmware_config: dict[str, str] = field(default_factory=dict)
+                                         # board_config.h defines an OTA firmware build sets,
+                                         # `{define: value}` -- e.g. the M7 moves frame-buffer
+                                         # RAM into a second GC block, because a TLS session
+                                         # (~30 KB at handshake) does not fit its 50 KB heap
     cloud: str | None = None             # what this board does on the hosted OpenMV Cloud:
                                          # one of CLOUD_LEVELS, or None (not offered there).
                                          # One place for the website's board picker and the
@@ -133,6 +138,7 @@ def load_boards() -> dict[str, BoardConfig]:
             tls_verify=bool(b.get("tls_verify", True)),
             ota_runtime_drops_network=bool(b.get("ota_runtime_drops_network", False)),
             ota_firmware_drops=dict(b.get("ota_firmware_drops", {})),
+            ota_firmware_config=dict(b.get("ota_firmware_config", {})),
             cloud=_cloud_level(name, b.get("cloud")),
             live_framesize=b.get("live_framesize"),
             partitions=parts,

@@ -802,3 +802,37 @@ def test_speed_options_with_no_port_config_file(tmp_path):
     proj = SimpleNamespace(board=lambda name: SimpleNamespace(role="main", mbedtls=True))
     repo = _fake_fw(tmp_path, port="mimxrt", port_cfg=False)
     assert fw._mbedtls_speed_arg(proj, repo, "OPENMV_N6", tmp_path) is not None
+
+
+def test_board_config_overlay_sets_and_adds_defines(tmp_path):
+    """The M7's OTA firmware moves frame-buffer RAM into a second GC block: an existing
+    define is rewritten in place, a new one lands before the include guard's #endif."""
+    cfg = tmp_path / "board_config.h"
+    cfg.write_text("#ifndef X\n#define X\n#define OMV_UMA_BLOCK0_SIZE (383K)\n#endif // X\n")
+    fw._overlay_board_config(cfg, "B", {"OMV_UMA_BLOCK0_SIZE": "(287K)",
+                                         "OMV_GC_BLOCK1_SIZE": "(96K)"})
+    text = cfg.read_text()
+    assert "#define OMV_UMA_BLOCK0_SIZE (287K)" in text and "(383K)" not in text
+    assert text.index("#define OMV_GC_BLOCK1_SIZE (96K)") < text.rindex("#endif")
+    with pytest.raises(BuildError, match="board_config.h not found"):
+        fw._overlay_board_config(tmp_path / "nope.h", "B", {"A": "1"})
+    bare = tmp_path / "bare.h"
+    bare.write_text("#define A 1\n")
+    with pytest.raises(BuildError, match="no closing #endif"):
+        fw._overlay_board_config(bare, "B", {"NEW": "2"})
+    fw._overlay_board_config(bare, "B", {"A": "3"})        # only a rewrite: no #endif needed
+    assert "#define A 3" in bare.read_text()
+
+
+def test_m7_overlay_is_config_only(tmp_path):
+    """OPENMV3 drops no imlib feature, only sets memory defines: the overlay is the board
+    directory with board_config.h changed and imlib_config.h untouched."""
+    repo = tmp_path / "fw"
+    bd = repo / "boards" / "OPENMV3"
+    bd.mkdir(parents=True)
+    (bd / "board_config.h").write_text("#define OMV_UMA_BLOCK0_SIZE (383K)\n#endif\n")
+    (bd / "imlib_config.h").write_text("#define IMLIB_ENABLE_BARCODES\n")
+    ov = fw._board_overlay(repo, "OPENMV3", tmp_path / "t")
+    assert "(287K)" in (ov / "board_config.h").read_text()
+    assert "OMV_GC_BLOCK1_MEMORY SRAM1" in (ov / "board_config.h").read_text()
+    assert (ov / "imlib_config.h").read_text() == "#define IMLIB_ENABLE_BARCODES\n"

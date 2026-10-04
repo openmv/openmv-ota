@@ -303,12 +303,17 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
     of ``imlib_config.h``. ``build romfs`` refuses an app that calls a dropped method
     (:func:`openmv_ota.build.romfs._refuse_dropped_calls`), so the mismatch is a build
     error and not a NameError in the field."""
-    drops = get_board(name).ota_firmware_drops
-    if not drops:
+    board = get_board(name)
+    drops, config = board.ota_firmware_drops, board.ota_firmware_config
+    if not drops and not config:
         return None
     src = repo / "boards" / name
     overlay = tmp / "board"
     shutil.copytree(src, overlay)
+    if config:
+        _overlay_board_config(overlay / "board_config.h", name, config)
+    if not drops:
+        return overlay
     cfg = overlay / "imlib_config.h"
     try:
         text = cfg.read_text(encoding="utf-8")
@@ -326,6 +331,33 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
                              "firmware disagree" % (name, define), exit_code=2)
     cfg.write_text(text, encoding="utf-8")
     return overlay
+
+
+def _overlay_board_config(path: Path, name: str, config: dict[str, str]) -> None:
+    """Set ``{define: value}`` in the overlay's ``board_config.h``: an existing ``#define`` is
+    rewritten in place, a new one goes in before the include guard's closing ``#endif``. Used
+    for memory layout -- the M7's OTA firmware moves frame-buffer RAM into a second GC block,
+    since a TLS session does not fit its 50 KB heap -- with the firmware tree left untouched."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        raise BuildError("boards/%s/board_config.h not found in the firmware checkout; the OTA "
+                         "firmware build needs it to set %s"
+                         % (name, ", ".join(sorted(config))), exit_code=2) from None
+    added = []
+    for define, value in config.items():
+        line = "#define %s %s  // set by openmv-ota for the OTA firmware" % (define, value)
+        text, n = re.subn(r"(?m)^[ \t]*#define[ \t]+%s\b.*$" % re.escape(define),
+                          lambda _m, line=line: line, text)
+        if not n:
+            added.append(line)
+    if added:
+        end = text.rfind("#endif")
+        if end < 0:
+            raise BuildError("boards/%s/board_config.h has no closing #endif to add %s before"
+                             % (name, ", ".join(sorted(config))), exit_code=2)
+        text = text[:end] + "\n".join(added) + "\n" + text[end:]
+    path.write_text(text, encoding="utf-8")
 
 
 def _recovery_ca(p, t) -> bytes:
