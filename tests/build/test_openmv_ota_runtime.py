@@ -475,6 +475,23 @@ def test_tls_verify_without_anchors_skips_only_where_built_unverified(monkeypatc
     assert rt.log.lines == ["tls: server not verified (this camera has no trust anchors)"]
 
 
+def test_tls_context_pins_tls12_where_the_context_can_say_so(monkeypatch):
+    """CPython's SSLContext takes a protocol floor; MicroPython's (mbedtls, TLS 1.2+ only) has
+    none, and the stub above stands in for it."""
+    import ssl as cpython_ssl
+    _stamp(monkeypatch, True)
+    ctx = rt.tls_context(cpython_ssl, _cpython_pem())
+    assert ctx.minimum_version == cpython_ssl.TLSVersion.TLSv1_2
+    assert ctx.verify_mode == cpython_ssl.CERT_REQUIRED
+
+
+def _cpython_pem():
+    """A real self-signed PEM, so CPython's load_verify_locations accepts it."""
+    from pathlib import Path
+    return (Path(__file__).resolve().parents[2] / "src" / "openmv_ota" / "data"
+            / "openmv-cloud-roots.pem").read_text()
+
+
 @pytest.mark.parametrize("flag", [True, "missing", "absent"])
 def test_tls_verify_without_anchors_refuses_everywhere_else(monkeypatch, flag):
     """A True stamp, a missing stamp (a firmware built before it existed) or no _ota_config at

@@ -1423,6 +1423,8 @@ def tls_context(ssl, ca):
     (PEM ``str``/``bytes``), or CERT_NONE where the rule allows it; raises where it refuses.
     Public so the cloud SDK opens its connections exactly the way the check-in does."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    if hasattr(ctx, "minimum_version"):   # CPython; MicroPython's mbedtls is TLS 1.2+ already
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     if _tls_verify(ca):
         # VERIFY the server. MicroPython's PROTOCOL_TLS_CLIENT defaults to CERT_NONE (unlike
         # CPython), so loading the CA alone checked nothing: anyone on the path could answer
