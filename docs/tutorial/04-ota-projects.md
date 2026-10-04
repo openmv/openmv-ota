@@ -37,7 +37,7 @@ images a camera can download, verify, and fall back from.
   Self-hosting? Replace `certs/root.pem` with your server's root, or pass
   `--ca` with it at `new`.
 
-  The OpenMV Cam M4, M7, and H7 are discontinued. Without `--ca` they connect to
+  The OpenMV Cam M7 and H7 are discontinued. Without `--ca` they connect to
   the server **without verifying its certificate**, and log
   `tls: server not verified (this camera has no trust anchors)` the first time
   they do. Anyone on the network path can then read or alter that camera's
@@ -46,6 +46,8 @@ images a camera can download, verify, and fall back from.
   update is signed and checked on the camera against keys baked into its
   firmware, anti-rollback still applies, and the image stays encrypted. Pass
   `--ca` (or set `[ota].ca`) and these cameras verify like every other board.
+  The OpenMV Cam M4 (also discontinued) does not reach the server at all: to fit
+  its RAM, its runtime leaves out the network stack, so it updates over USB.
 
 - **Keys provisioned.** `new --ota` generates the product's whole signing key
   set up front and writes it under `keys/`.
@@ -101,7 +103,7 @@ How the floor survives is the one place the two modes differ:
 | Flag | Effect |
 |---|---|
 | `--ota` | Declare the project over-the-air: split each partition into slots and provision the signing keys. |
-| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle when every board's firmware can carry it (N6, AE3, RT1062); otherwise it scaffolds the hosted OpenMV Cloud's roots as `certs/root.pem`. The M4, M7, and H7 need neither, and connect unverified without it. |
+| `--ca PEM` | TLS roots the device trusts for OTA downloads, copied into the project and frozen into the firmware. Unset fetches the public Mozilla bundle when every board's firmware can carry it (N6, AE3, RT1062); otherwise it scaffolds the hosted OpenMV Cloud's roots as `certs/root.pem`. The M7 and H7 need neither, and connect unverified without it; the M4 has no network updates. |
 
 ## Files an OTA project adds
 
