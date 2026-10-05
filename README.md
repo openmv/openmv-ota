@@ -38,7 +38,7 @@ project's `compliance/`. Found a vulnerability in this stack itself? See
 
 ## Installation
 
-> Not yet published. Once the package lands on PyPI, all tools install together:
+All tools install together, from [PyPI](https://pypi.org/project/openmv-ota/):
 
 ```bash
 pip install openmv-ota

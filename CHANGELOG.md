@@ -6,6 +6,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-05
+
+### Changed
+
+- The PyPI page has its own description (`PYPI.md`) written for someone installing the
+  package; the repository README stays the contributor's view.
+- The package summary describes what ships, not what may come later.
+
 ## [1.0.0] - 2026-10-05
 
 ### Added

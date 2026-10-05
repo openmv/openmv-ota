@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openmv-ota"
-version = "1.0.0"
-description = "Secure over-the-air update tooling for OpenMV cameras (ROMFS OTA, with room for firmware/bootloader OTA)."
-readme = "README.md"
+version = "1.0.1"
+description = "Secure over-the-air updates for OpenMV cameras: signed, encrypted releases, staged rollouts, and automatic rollback."
+readme = "PYPI.md"   # the PyPI page; README.md is the repository's
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
