@@ -46,8 +46,6 @@ openmv-swd-ids'.
 An external audit (and SOC 2, which certifies company controls, not code) is out of
 budget for now; these are the free/cheap passes to run first, in order.
 
-- **Repo settings (owner)** — switch on secret scanning + push protection and Dependabot
-  alerts in Settings.
 - **Fuzz the rest** — the C ECDSA shim under libFuzzer with ASan/UBSan; the server API via
   Schemathesis from its OpenAPI schema.
 - **Scan the web app** — OWASP ZAP baseline against the fleet simulator.
