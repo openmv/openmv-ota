@@ -45,6 +45,8 @@ regression on the pull request, run on live hardware ([below](#the-hil-gate)).
   only sign with one test key). Needs the repository **secrets** `AZURE_CLIENT_ID`,
   `AZURE_TENANT_ID` and `AZURE_KEY_ID`; without them (and on fork PRs) it reports "not
   configured".
+- **`secrets`** — gitleaks over the commits a push or PR adds (not older history), pinned by
+  checksum; fails on any credential it finds.
 - **`premerged`** — on a push, whether the commit merges a PR whose CI already
   built this exact tree; if so `build` and `qemu` skip (the host tests always run).
 
