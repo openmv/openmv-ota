@@ -214,6 +214,57 @@ jobs:
           grep -q "1 passed" out.txt
 
   # ---------------------------------------------------------------------------
+  # 1e) The Azure Key Vault signer against the REAL Key Vault, keyless like 1c/1d: GitHub's
+  #     OIDC token signs in as an app whose federated credentials trust only this repository's
+  #     main branch and its pull requests, and which can only sign with one test key.
+  #     Needs repository SECRETS AZURE_CLIENT_ID + AZURE_TENANT_ID + AZURE_KEY_ID
+  #     (unset -> "not configured").
+  # ---------------------------------------------------------------------------
+  azure-kms:
+    name: signer on real Azure Key Vault
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      OPENMV_OTA_AZURE_KEY_ID: ${{ secrets.AZURE_KEY_ID }}
+    steps:
+      - name: Configured?
+        id: cfg
+        run: |
+          if [ -n "$AZURE_CLIENT_ID" ] && [ -n "$AZURE_TENANT_ID" ] && [ -n "$OPENMV_OTA_AZURE_KEY_ID" ]; then
+            echo "on=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Azure Key Vault live job not configured (repository secrets unset) -- skipped"
+            echo "on=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: steps.cfg.outputs.on == 'true'
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
+        if: steps.cfg.outputs.on == 'true'
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        if: steps.cfg.outputs.on == 'true'
+        with:
+          python-version: "3.12"
+      - name: Install (azure-kms extra)
+        if: steps.cfg.outputs.on == 'true'
+        run: pip install -e ".[dev,azure-kms]"
+      - name: Live signing pass (must RUN, not skip)
+        if: steps.cfg.outputs.on == 'true'
+        run: |
+          pytest -o addopts="" -q -rs tests/ota/test_signer_azure_live.py | tee out.txt
+          grep -q "1 passed" out.txt
+
+  # ---------------------------------------------------------------------------
   # 1a) Was this push already tested as a PR? A squash merge of PR head H onto base B is the
   #     same tree as the refs/pull/N/merge the PR's CI built -- IF B is still main's tip. So on a
   #     push, find the merged PR, take the last SUCCESSFUL pull_request run of its head, and

@@ -40,6 +40,11 @@ regression on the pull request, run on live hardware ([below](#the-hil-gate)).
 - **`aws-kms`** — the same for AWS KMS (GitHub OIDC → an IAM role that can only
   sign with one test key). Needs the repository **secrets** `AWS_CI_ROLE_ARN` and
   `AWS_KMS_KEY_ARN`; without them (and on fork PRs) it reports "not configured".
+- **`azure-kms`** — the same for Azure Key Vault (GitHub OIDC → an app whose federated
+  credentials trust only this repository's main branch and pull requests, and which can
+  only sign with one test key). Needs the repository **secrets** `AZURE_CLIENT_ID`,
+  `AZURE_TENANT_ID` and `AZURE_KEY_ID`; without them (and on fork PRs) it reports "not
+  configured".
 - **`premerged`** — on a push, whether the commit merges a PR whose CI already
   built this exact tree; if so `build` and `qemu` skip (the host tests always run).
 

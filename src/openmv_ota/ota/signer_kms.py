@@ -174,7 +174,8 @@ def _azure(backend):  # pragma: no cover
     from azure.keyvault.keys.crypto import CryptographyClient, SignatureAlgorithm
 
     from .keys import public_point_hex
-    cc = CryptographyClient(backend["uri"], DefaultAzureCredential())
+    cred = DefaultAzureCredential()
+    cc = CryptographyClient(backend["uri"], cred)
     sig_alg = {"sha256": SignatureAlgorithm.es256, "sha384": SignatureAlgorithm.es384,
                "sha512": SignatureAlgorithm.es512}
 
@@ -184,11 +185,15 @@ def _azure(backend):  # pragma: no cover
             return cc.sign(sig_alg[alg.hash_name], h).signature   # Azure returns raw R||S already
 
         def public_point_hex(self):
+            # The crypto client signs but does not hand out the key: fetch it by its id,
+            # and take the curve from the key itself rather than assuming P-256.
+            from azure.keyvault.keys import KeyClient, KeyVaultKeyIdentifier
             from cryptography.hazmat.primitives.asymmetric import ec
-            jwk = cc.key.key
+            ref = KeyVaultKeyIdentifier(backend["uri"])
+            jwk = KeyClient(ref.vault_url, cred).get_key(ref.name, ref.version).key
+            curve = {"P-256": ec.SECP256R1, "P-384": ec.SECP384R1, "P-521": ec.SECP521R1}[jwk.crv]
             pub = ec.EllipticCurvePublicNumbers(
-                int.from_bytes(jwk.x, "big"), int.from_bytes(jwk.y, "big"),
-                ec.SECP256R1()).public_key()
+                int.from_bytes(jwk.x, "big"), int.from_bytes(jwk.y, "big"), curve()).public_key()
             return public_point_hex(pub)
 
     return _Azure()
