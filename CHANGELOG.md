@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-05
+
+### Fixed
+
+- A release refused for its account says which side is off. A project that names no
+  account gets the exact `account_id = "..."` line to add to `[product]` in
+  `openmv-ota.toml`; a real mismatch names both accounts. It used to say only that the
+  manifest's account did not match the token.
+
 ## [1.0.1] - 2026-10-05
 
 ### Changed
