@@ -813,6 +813,21 @@ async def _pump(stream, reader, writer):  # pragma: no cover
     from ._lib import _hard_close
     live = _Liveness(_ticks_ms())
     silent = [False]
+    failed = [None]                              # what killed the send or keepalive half
+
+    def ends_session(half):
+        # A half that raises must end the session, not die as an unretrieved task while recv
+        # holds the socket open: the camera then looks connected and never streams, and the
+        # error reaches no one. Record it and stop recv; the reconnect loop logs it.
+        async def run():
+            try:
+                await half()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                failed[0] = e
+                recv_t.cancel()
+        return run
 
     async def recv():
         while True:
@@ -856,11 +871,13 @@ async def _pump(stream, reader, writer):  # pragma: no cover
                 await writer.drain()
 
     recv_t = asyncio.create_task(recv())
-    send_t = asyncio.create_task(send())
-    keep_t = asyncio.create_task(keep())
+    send_t = asyncio.create_task(ends_session(send)())
+    keep_t = asyncio.create_task(ends_session(keep)())
     try:
         await recv_t                             # the relay closing ends the session
     except asyncio.CancelledError:
+        if failed[0] is not None:
+            raise failed[0]                      # the half that died, for the reconnect log
         if not silent[0]:
             raise                                # somebody cancelled US: let it through
         raise OSError("relay silent for %d s" % (_SILENCE_MS // 1000))
