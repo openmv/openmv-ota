@@ -210,7 +210,30 @@ def test_publish_account_must_match_token_403(tmp_path):
     app, store, storage = _app(tmp_path, account="acctA")
     img = b"\xA5" * 64
     r = _post(app, _manifest(_body(img)), _gz(img))            # manifest account_id defaults to ''
-    assert r.status_code == 403 and "does not match" in r.json()["detail"]
+    assert r.status_code == 403
+    assert r.json()["detail"] == ('this project names no account: add account_id = "acctA" to the '
+                                  "[product] section of openmv-ota.toml, then rebuild")
+
+
+def test_publish_account_for_another_account_403(tmp_path):
+    # the manifest names an account, just not this token's: say both
+    app, store, storage = _app(tmp_path, account="acctA")
+    img = b"\xA5" * 64
+    body = _body(img)
+    body["account_id"] = "acctB"
+    r = _post(app, _manifest(body), _gz(img))
+    assert r.status_code == 403
+    assert r.json()["detail"] == "this release is built for account acctB, but this token acts for account acctA"
+
+
+def test_publish_account_for_an_unscoped_token_403(tmp_path):
+    # a token with no account (single-tenant self-hosting) cannot publish an account's release
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    body = _body(img)
+    body["account_id"] = "acctB"
+    r = _post(app, _manifest(body), _gz(img))
+    assert r.status_code == 403 and r.json()["detail"].endswith("acts for account (none)")
 
 
 def test_publish_account_match_ok(tmp_path):

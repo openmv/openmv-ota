@@ -264,8 +264,16 @@ async def publish_release(request: Request, background: BackgroundTasks,
     account_id = body.get("account_id", "")           # the maker's account (baked into the signed manifest)
     if account_id != principal.account_id:
         # you can only publish releases under your own account -- the signed manifest's account
-        # must match the token's, so one tenant can't seed another's namespace.
-        raise HTTPException(status_code=403, detail="manifest account_id does not match this token")
+        # must match the token's, so one tenant can't seed another's namespace. Say which side is
+        # off: a project that names no account at all is the common case (a new project whose
+        # [product] account_id was never filled in), and the fix is the token's own account id.
+        if not account_id:
+            detail = ('this project names no account: add account_id = "%s" to the [product] '
+                      "section of openmv-ota.toml, then rebuild" % principal.account_id)
+        else:
+            detail = ("this release is built for account %s, but this token acts for account %s"
+                      % (account_id, principal.account_id or "(none)"))
+        raise HTTPException(status_code=403, detail=detail)
 
     # A product id is 64 bits of sha256("<product>:<board>"), so a collision is remote
     # (a million products, ~5e-8) -- but "remote" is not "impossible", and the id IS the
