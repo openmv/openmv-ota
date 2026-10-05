@@ -10,10 +10,6 @@ file's own history has the longer design notes behind each line.
   verified `firmware.bin` out of a **confirmed** slot into the firmware area at
   a fixed offset (no romfs parser in the bootloader), never downgrade; a power
   loss mid-copy retries, not bricks.
-- **Signer backends: Azure live pass** — GCP KMS and AWS KMS passed live (provision +
-  signed `build romfs` + device-check verify; each re-checked by a keyless CI job).
-  Azure Key Vault is covered by a fake only (documented in tutorial 05) until an
-  account is available.
 
 ## Before the hosted cloud goes live (required)
 
@@ -40,7 +36,7 @@ openmv-swd-ids'.
   Giga an ATECC608, each with factory keys + vendor certificates: sign a server challenge,
   verify the vendor chain. Unclonable identity and the cleanest proof of possession;
   replaces the stored secret where the chip exists.
-- **PyPI release** — only after the Getting started flow passes on all six boards from a
+- **PyPI release** — only after the Getting started flow passes on every board it offers from a
   clean venv installed off a local wheel (no dev checkout).
 - **Pre-launch cleanup** — revoke the test OTA tokens used for board bring-up; log the
   client out on the HIL nodes (`~/cloudtest/xdg`, the AE3's `~/.config/openmv-ota`).
@@ -50,16 +46,10 @@ openmv-swd-ids'.
 An external audit (and SOC 2, which certifies company controls, not code) is out of
 budget for now; these are the free/cheap passes to run first, in order.
 
-- ~~**GitHub-native scanning**~~ — DONE 2026-09-28: CodeQL (`security-extended`, Python + the
-  C shim), Dependabot (pip + actions), Scorecard, every action SHA-pinned, workflow tokens
-  read-only by default. Fork PRs can no longer reach the self-hosted bench. Left for the repo
-  owner: switch on secret scanning + push protection and Dependabot alerts in Settings.
-- ~~**Stricter lint + dependency audit**~~ — DONE 2026-09-28: ruff `S` + `B` enforced (each
-  suppression carries its reason); pip-audit job in CI.
-- **Fuzz the attacker-facing parsers** — Hypothesis half DONE 2026-09-28 (#94): trailer,
-  manifest, romfs, delta, installer HTTP, csi poll and publish, 20k examples per property; 11
-  bugs fixed, no signature/anti-rollback bypass. Left: the C ECDSA shim under libFuzzer with
-  ASan/UBSan; the server API via Schemathesis from its OpenAPI schema.
+- **Repo settings (owner)** — switch on secret scanning + push protection and Dependabot
+  alerts in Settings.
+- **Fuzz the rest** — the C ECDSA shim under libFuzzer with ASan/UBSan; the server API via
+  Schemathesis from its OpenAPI schema.
 - **Scan the web app** — OWASP ZAP baseline against the fleet simulator.
 - **Internal red-team passes** — `/security-review`, and `/code-review ultra` on the
   signing/verify/installer/anti-rollback path.
