@@ -22,19 +22,19 @@ What a camera downloads is **encrypted**, under a key minted with the project an
 baked into your own firmware, so a published release is ciphertext to the update
 server, to the store it sits in, and to anyone who gets hold of it.
 
-**Start with the [tutorial](docs/tutorial/00-introduction.md)** — the complete,
+**Start with the [tutorial](https://github.com/openmv/openmv-ota/blob/main/docs/tutorial/00-introduction.md)** — the complete,
 navigable reference for every command and the update server's HTTP API, in the
 order you use them: install → project → build → flash → device runtime → update
 server. The command documentation lives there and only there, so it has one
 place to be right.
 
-Shipping in the EU? [The compliance mapping](docs/compliance/cra-red-alignment.md)
+Shipping in the EU? [The compliance mapping](https://github.com/openmv/openmv-ota/blob/main/docs/compliance/cra-red-alignment.md)
 lays out how this stack lines up with the Cyber Resilience Act and RED 3.3 —
-what's covered, and the [residual threats](docs/compliance/residual-threats.md)
+what's covered, and the [residual threats](https://github.com/openmv/openmv-ota/blob/main/docs/compliance/residual-threats.md)
 that aren't — and `project new --ota` scaffolds the fill-in templates
 (conformity checklist, EU DoC, disclosure policy, security.txt) into your
 project's `compliance/`. Found a vulnerability in this stack itself? See
-[the security policy](SECURITY.md).
+[the security policy](https://github.com/openmv/openmv-ota/blob/main/SECURITY.md).
 
 ## Installation
 
