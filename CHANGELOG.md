@@ -6,6 +6,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-10-06
+
+### Added
+
+- **`GET /admin/dashboard`**: every count an overview shows in one read -- the fleet's
+  size and adoption, devices checked in / quiet (over `quiet_hours`), fell back and
+  mid-trial, products, active rollouts and those paused for failures, active advisories,
+  and devices the plan's limit refused. Each is the number the matching list's filter
+  totals, so a dashboard can link straight into that list.
+
 ## [1.0.3] - 2026-10-06
 
 ### Added
