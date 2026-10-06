@@ -198,8 +198,34 @@ def _wire():  # pragma: no cover  (device: the openmv_ota runtime package)
         openmv_ota.register_checkin(contribute=_contribute, on_response=_on_checkin,
                                     key="openmv_cloud.csi")
         openmv_ota.register_pressure(_relieve, key="openmv_cloud.csi")
+        openmv_ota.register_quiet(_quiet, key="openmv_cloud.csi")
     except (ImportError, AttributeError):
         pass
+
+
+_cams = []                 # every camera a CSI wraps, for _quiet before a reset
+_CAMS_MAX = 4              # more sensors than any board has: the list never grows past this
+_QUIET_SETTLE_MS = 50      # a sleep takes effect at the frame boundary: one slow frame, with margin
+
+
+def _quiet(sleep_ms=None):
+    """Before a reset (openmv_ota.quiet_all): put every camera to sleep so none is still
+    streaming when the MCU resets -- a PAG7936 streaming through a reset latches its module's
+    I2C level shifter and the camera stays dark until a power cycle. A sleep lands at the frame
+    boundary, so wait one frame after. Returns how many cameras went to sleep."""
+    n = 0
+    for cam in _cams:
+        try:
+            cam.sleep(True)
+        except Exception:
+            continue
+        n += 1
+    if n:
+        if sleep_ms is None:  # pragma: no cover  (device: time.sleep_ms)
+            import time
+            sleep_ms = time.sleep_ms
+        sleep_ms(_QUIET_SETTLE_MS)
+    return n
 
 
 
@@ -577,6 +603,9 @@ class CSI:
             import csi as _builtin
             cam = _builtin.CSI(*args, **kwargs)
         self._cam = cam
+        if cam not in _cams:           # quieted before any reset the runtime takes (_quiet);
+            _cams.append(cam)          # bounded: a recreated camera never grows the list
+            del _cams[:-_CAMS_MAX]
         if stream is None:
             cid = kwargs.get("cid", args[0] if args else -1)
             stream = _DEFAULT_STREAM if cid in (None, -1) else str(cid)
