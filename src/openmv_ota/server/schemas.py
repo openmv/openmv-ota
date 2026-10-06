@@ -33,6 +33,12 @@ class _Row(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class ErrorDetail(BaseModel):
+    """Every non-2xx answer except a 422: ``detail`` says what was wrong, for a person."""
+
+    detail: Any = ""
+
+
 # --- rows -------------------------------------------------------------------------------------
 
 class Account(_Row):
@@ -116,12 +122,14 @@ class Device(_Row):
     product_id_str: str = ""
     """The same id as a string. JSON numbers are doubles in JavaScript, so a 63-bit
     id loses precision in JSON.parse -- silently. Read this one from JS."""
-    board: str = ""
+    board: str | None = None
+    """``null`` = the camera did not say (a check-in's ``board``, ``app_version``, ``slot``
+    and ``representation`` are all optional), as for the fields below."""
     cohort: str = ""
-    current_version: str = ""
+    current_version: str | None = None
     current_payload_version: int = 0
-    slot: str = ""
-    representation: str = ""
+    slot: str | None = None
+    representation: str | None = None
     fallback_reason: str | None = None
     confirmed: int = 0
     last_offered_release_id: str | None = None

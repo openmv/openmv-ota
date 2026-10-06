@@ -58,11 +58,18 @@ def _order(sort, direction, allowed: dict, default: str, tiebreak: str) -> str:
     return " ORDER BY " + default
 
 
+_EPOCH_MAX = 253402300799.0        # 9999-12-31T23:59:59Z, the last instant an ISO string holds
+
+
 def _iso_at(epoch: float) -> str:
     """An epoch as the ISO-8601 UTC string the store keeps timestamps in (so string
-    comparison in SQL orders by time)."""
+    comparison in SQL orders by time). A filter's epoch comes off the query string, so it is
+    clamped to what a timestamp can hold -- 1970 to 9999, NaN as 1970 -- rather than taking
+    the request down: a "seen since" past 9999 still means none, one before 1970 all."""
     from datetime import datetime, timezone
-    return datetime.fromtimestamp(float(epoch), timezone.utc).isoformat()
+    epoch = float(epoch)
+    epoch = 0.0 if epoch != epoch else min(max(epoch, 0.0), _EPOCH_MAX)
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
 
 
 def _limit(sql: str, params: tuple, limit, offset: int) -> tuple[str, tuple]:

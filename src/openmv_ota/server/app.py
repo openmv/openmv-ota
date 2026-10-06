@@ -969,6 +969,16 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
                   description=_API_DESCRIPTION, openapi_tags=_OPENAPI_TAGS,
                   docs_url=None, redoc_url=None)  # /docs is our self-hosted ReDoc page
     app.state.settings = settings
+
+    @app.exception_handler(OverflowError)
+    async def _number_out_of_range(request: Request, exc: OverflowError):
+        # A number past what the store holds (a 64-bit column) reached a query: the request
+        # was wrong, not the server -- a 422 like any other invalid parameter, never a 500.
+        from fastapi.responses import JSONResponse
+        # FastAPI's own 422 shape, so a client parses this one like any other.
+        return JSONResponse(status_code=422, content={"detail": [
+            {"loc": ["request"], "msg": "a number in the request is out of range",
+             "type": "value_error"}]})
     app.state.storage = storage
     app.state.metastore = metastore
     app.state.verifier = verifier
@@ -1034,11 +1044,16 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
                            allow_methods=["GET", "POST", "PATCH", "DELETE"],
                            allow_headers=["Authorization", "Content-Type"])
-    app.include_router(router)
+    # The errors any route can answer with, declared once per router so the schema lists every
+    # status a client must handle (a route's own 409/422 sits on the route).
+    from .schemas import ErrorDetail
+    err = {"model": ErrorDetail}
+    app.include_router(router, responses={c: err for c in (400, 401, 403, 404, 429, 503)})
     from .admin import admin
     from .publish import publish
-    app.include_router(admin, tags=["Admin"])
-    app.include_router(publish, tags=["Publishing"])
+    admin_errors = {c: err for c in (400, 401, 403, 404, 409, 429, 503)}
+    app.include_router(admin, tags=["Admin"], responses=admin_errors)
+    app.include_router(publish, tags=["Publishing"], responses=admin_errors)
 
     def _openapi():
         """The stock schema plus this deployment's public server URL (when ``base_url``

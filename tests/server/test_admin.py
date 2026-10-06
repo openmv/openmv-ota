@@ -1491,3 +1491,27 @@ def test_dashboard_counts_match_the_lists_they_link_to(tmp_path):
     wide = c.get("/api/v1/admin/dashboard?quiet_hours=10", headers=AUTH).json()
     assert (wide["quiet"], wide["checked_in"]) == (0, 4)
     assert c.get("/api/v1/admin/dashboard?quiet_hours=0", headers=AUTH).status_code == 422
+
+
+def test_out_of_range_numbers_are_a_422_not_a_500(tmp_path):
+    """Found by Schemathesis: epochs past what a timestamp holds and integers past a 64-bit
+    column took the server down with a 500. A timestamp filter is clamped (far future means
+    none, far past all); any other oversized number is the request's fault -- a 422."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="d1", product_id=BID, account_id="")
+    c = TestClient(app, raise_server_exceptions=False)
+    for q in ("seen_since=1e300", "not_seen_since=-1e300", "seen_since=nan"):
+        r = c.get("/api/v1/admin/devices?" + q, headers=AUTH)
+        assert r.status_code == 200, (q, r.text)
+    assert c.get("/api/v1/admin/devices?seen_since=1e300", headers=AUTH).json()["total"] == 0
+    assert c.get("/api/v1/admin/devices?not_seen_since=1e300", headers=AUTH).json()["total"] == 1
+    r = c.get("/api/v1/admin/devices?product_id=%d" % (2 ** 70), headers=AUTH)
+    assert r.status_code == 422
+    assert r.json()["detail"][0]["msg"] == "a number in the request is out of range"
+
+
+def test_iso_at_clamps_to_what_a_timestamp_holds():
+    from openmv_ota.server.metastore import _iso_at
+    assert _iso_at(float("nan")) == _iso_at(0) == "1970-01-01T00:00:00+00:00"
+    assert _iso_at(-1e300) == _iso_at(0)
+    assert _iso_at(1e300).startswith("9999-12-31T23:59:59")
