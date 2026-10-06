@@ -6,6 +6,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-10-06
+
+### Fixed
+
+- A device's background flushers (the console's datalake upload, the live console tick, the
+  telemetry upload) outlive a cycle that raises. On a full heap one step raised MemoryError
+  and ended the task for the rest of the boot: the console went quiet until a reboot.
+- Cameras are quieted before every reset the runtime takes (the fresh-heap reboot and the
+  installer's reboot into a new release): a camera still streaming through an MCU reset can
+  latch its module (the PAG7936) dark until its power is cycled. New seam:
+  `register_quiet()` / `quiet_all()`.
+
 ## [1.0.4] - 2026-10-06
 
 ### Added
