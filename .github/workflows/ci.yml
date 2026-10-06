@@ -350,6 +350,48 @@ jobs:
         run: pytest tests/build/test_ecdsa_verify_c.py -o addopts="" -q
 
   # ---------------------------------------------------------------------------
+  # 1b') Fuzz the same shim: libFuzzer + ASan + UBSan over omv_ecdsa_verify, mbedtls built
+  #     with the sanitizers too, seeded with real host-signed vectors (fuzz/seeds.py) so
+  #     mutations reach the curve arithmetic. Five minutes per run; a crashing input is
+  #     uploaded as an artifact to reproduce with `fuzz/ecdsa_verify_fuzz <file>`.
+  # ---------------------------------------------------------------------------
+  fuzz-ecdsa:
+    name: fuzz the ecdsa C shim (libFuzzer + ASan/UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install (editable, with dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Fetch the firmware's mbedtls source
+        run: |
+          git clone --depth 1 https://github.com/openmv/openmv.git "$RUNNER_TEMP/openmv"
+          git -C "$RUNNER_TEMP/openmv" submodule update --init lib/micropython
+          git -C "$RUNNER_TEMP/openmv/lib/micropython" submodule update --init --recursive lib/mbedtls
+          pip install -r "$RUNNER_TEMP/openmv/lib/micropython/lib/mbedtls/scripts/basic.requirements.txt"
+
+      - name: Build the fuzzer
+        run: sh fuzz/build.sh "$RUNNER_TEMP/openmv/lib/micropython/lib/mbedtls" "$RUNNER_TEMP/fuzz"
+
+      - name: Fuzz for five minutes
+        run: |
+          python fuzz/seeds.py "$RUNNER_TEMP/fuzz/corpus"
+          mkdir -p "$RUNNER_TEMP/fuzz/crashes"
+          "$RUNNER_TEMP/fuzz/ecdsa_verify_fuzz" -max_total_time=300 -print_final_stats=1 \
+            -artifact_prefix="$RUNNER_TEMP/fuzz/crashes/" "$RUNNER_TEMP/fuzz/corpus"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: failure()
+        with:
+          name: ecdsa-fuzz-crashes
+          path: ${{ runner.temp }}/fuzz/crashes/
+
+  # ---------------------------------------------------------------------------
   # 1c) Run the real boot.py on actual MicroPython under QEMU (MPS2-AN500):
   #     every boot path (each reject reason + valid) plus the real vfs.rom_ioctl
   #     mount + A/B slot selection. This covers what host tests can't --

@@ -14,6 +14,10 @@ regression on the pull request, run on live hardware ([below](#the-hil-gate)).
   against the firmware's own mbedtls and exercised on the host: the host
   `cryptography` signs, the shim's mbedtls verifies, with gcov asserting 100%
   line coverage of the core.
+- **`fuzz-ecdsa`** — the same shim under libFuzzer with ASan and UBSan (mbedtls built with
+  the sanitizers too), five minutes per run from a seed corpus of real host-signed vectors
+  (`fuzz/seeds.py`). A crashing input is uploaded as an artifact. Locally:
+  `fuzz/build.sh <mbedtls dir> <out>`, then run `<out>/ecdsa_verify_fuzz <corpus dir>`.
 - **`qemu`** — the **real** frozen `boot.py`, the installer, the runtime lib,
   and the manifest + delta paths on actual MicroPython under
   `qemu-system-arm`; [`qemu_boot_test.py`](qemu_boot_test.py) documents its
