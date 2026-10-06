@@ -710,6 +710,31 @@ def register_pressure(release, key=None):
     _pressure_hooks[key if key is not None else object()] = release
 
 
+_quiet_hooks = {}
+
+
+def register_quiet(quiet, key=None):
+    """The before-reset HARDWARE seam. ``quiet()`` puts a peripheral that a reset would cut off
+    mid-activity into a safe state first: a camera still streaming when the MCU resets latches
+    some sensor modules' I2C level shifter (the PAG7936), and the camera then stays dark until
+    its power is cycled. Called synchronously right before every reset the runtime or the
+    installer takes. ``key`` as for :func:`register_checkin`."""
+    _quiet_hooks[key if key is not None else object()] = quiet
+
+
+def quiet_all():
+    """Run every quiet hook before a reset; the number that ran clean. A raising hook is
+    skipped -- quieting is a courtesy to the hardware, it must never hold a reset back."""
+    n = 0
+    for quiet in list(_quiet_hooks.values()):
+        try:
+            quiet()
+        except Exception:
+            continue
+        n += 1
+    return n
+
+
 _flush_hooks = {}
 
 
@@ -1291,6 +1316,7 @@ async def _reboot_for_install():  # pragma: no cover  (device: reset)
     import machine  # hil-residual: import ahead of the field-diagnostic line below (no fleet marker)
     log.warning("run: fresh-heap reboot; the boot check-in installs the update")  # hil-residual: field diagnostic (and the cloud console's record of why the device rebooted); the bench's offers can land on a periodic check-in, but no scenario expects this line yet
     await _flush_all(_REBOOT_FLUSH_MS)  # hil-residual: bounded log flush (the app keeps running meanwhile)
+    quiet_all()  # hil-residual: host-tested (quiet_all); the camera surviving the reset is the witness
     machine.reset()  # hil-residual: terminal reset (no post-reset witness)
 
 

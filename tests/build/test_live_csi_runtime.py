@@ -531,3 +531,45 @@ def test_liveness_survives_the_ticks_wrap():
     lv = rt._Liveness(near, interval=30000, silence=70000)
     assert not lv.dead(5000) and not lv.due(5000)     # wrapped: 6001 ms elapsed
     assert lv.due(29000) and lv.dead(69000)
+
+
+class _Cam:
+    def __init__(self, fail=False):
+        self.slept, self.fail = [], fail
+
+    def sleep(self, enable):
+        if self.fail:
+            raise OSError("no sensor")
+        self.slept.append(enable)
+
+
+def test_quiet_puts_every_wrapped_camera_to_sleep_then_waits_a_frame(monkeypatch):
+    """Before a reset every camera a CSI wraps goes to sleep (a PAG7936 streaming through a
+    reset latches its module until a power cycle), then one frame's wait for it to land. A
+    camera that raises is skipped; with none asleep there is nothing to wait for."""
+    monkeypatch.setattr(rt, "_cams", [])
+    monkeypatch.setattr(rt, "_streams", {})
+    good, bad = _Cam(), _Cam(fail=True)
+    rt.CSI(cam=good, stream="q0")
+    rt.CSI(cam=bad, stream="q1")
+    waited = []
+    assert rt._quiet(sleep_ms=waited.append) == 1
+    assert good.slept == [True] and waited == [rt._QUIET_SETTLE_MS]
+    monkeypatch.setattr(rt, "_cams", [bad])
+    waited.clear()
+    assert rt._quiet(sleep_ms=waited.append) == 0 and waited == []
+
+
+def test_wrapped_cameras_are_remembered_once_and_bounded(monkeypatch):
+    """The list of cameras to quiet never grows without bound: a camera wrapped twice is one
+    entry, and an app that keeps making new ones keeps only the newest few."""
+    monkeypatch.setattr(rt, "_cams", [])
+    monkeypatch.setattr(rt, "_streams", {})
+    cam = _Cam()
+    rt.CSI(cam=cam, stream="r0")
+    rt.CSI(cam=cam, stream="r1")
+    assert rt._cams == [cam]
+    made = [_Cam() for _ in range(rt._CAMS_MAX + 3)]
+    for i, c in enumerate(made):
+        rt.CSI(cam=c, stream="m%d" % i)
+    assert rt._cams == made[-rt._CAMS_MAX:]

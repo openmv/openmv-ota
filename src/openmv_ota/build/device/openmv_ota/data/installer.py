@@ -1671,6 +1671,11 @@ def _reset():  # pragma: no cover
     import time
     import machine
     log.debug("install: rebooting")                   # witnessed before the drain settle below
+    try:  # hil-residual: guard around the optional quiet seam below
+        import openmv_ota  # hil-residual: the runtime the installer runs inside (already loaded)
+        openmv_ota.quiet_all()  # hil-residual: host-tested (quiet_all); the camera still streaming after the reboot is the witness
+    except Exception:  # hil-residual: an older runtime without the seam -- reset as before
+        pass  # hil-residual: bare pass
     time.sleep_ms(50)  # hil-residual: bare settle (drains the logger's UART FIFO before reset)
     machine.reset()  # hil-residual: terminal reset (no post-reset witness)
 

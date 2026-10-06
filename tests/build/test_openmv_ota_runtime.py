@@ -781,3 +781,19 @@ def test_another_network_or_interface_starts_from_dhcp():
         out = rt._remembered(nc.parse(text), "Home", "pw", _UID, nc)
         assert out == {"ipv4": "dhcp", "interface": "wifi", "wifi.ssid": "Home",
                        "wifi.psk": nc.obfuscate("pw", _UID)}
+
+
+def test_quiet_all_runs_every_hook_and_skips_one_that_raises(monkeypatch):
+    """The before-reset hardware seam: every registered quiet hook runs, a raising one is
+    skipped (quieting must never hold a reset back), and a key re-registers in place."""
+    monkeypatch.setattr(rt, "_quiet_hooks", {})
+    ran = []
+
+    def bad():
+        ran.append("bad")
+        raise OSError("sensor gone")
+    rt.register_quiet(lambda: ran.append("a"), key="a")
+    rt.register_quiet(bad)
+    rt.register_quiet(lambda: ran.append("a2"), key="a")      # same key: replaces "a"
+    assert rt.quiet_all() == 1
+    assert sorted(ran) == ["a2", "bad"]
