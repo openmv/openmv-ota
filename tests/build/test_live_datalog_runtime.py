@@ -238,3 +238,31 @@ def test_record_carries_a_timestamp_only_when_one_is_given():
     stamped = json.loads(dl._record("aa00", 0, {"ax": 1}, 1700000000.5))
     assert stamped["ts"] == 1700000000.5
     assert "ts" not in json.loads(dl._record("aa00", 0, {"ax": 1}))
+
+
+def test_flusher_outlives_a_cycle_that_raises(monkeypatch):
+    """A telemetry cycle that raises (box.take() on a full heap) must not end telemetry for
+    the rest of the boot: the next tick tries again."""
+    import asyncio
+    calls = []
+
+    async def cycle():
+        calls.append(1)
+        if len(calls) == 1:
+            raise MemoryError("memory allocation failed")
+    monkeypatch.setattr(dl, "_cycle", cycle)
+    monkeypatch.setattr(asyncio, "sleep_ms", lambda ms: asyncio.sleep(0), raising=False)
+
+    async def go():
+        task = asyncio.ensure_future(dl._flusher())
+        for _ in range(200):
+            await asyncio.sleep(0)
+            if len(calls) >= 3:
+                break
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    asyncio.run(go())
+    assert len(calls) >= 3

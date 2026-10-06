@@ -434,13 +434,19 @@ def _hear_ota(ota, make_handler):
 
 async def _flusher(console, stream):  # pragma: no cover  (device loop)
     import asyncio
+    import gc
     stream._ensure_started()
     while True:
-        batch = console.on_tick(stream.live_active)
-        if batch is not None:
-            first_seq, text = batch
-            if not stream.flush(_envelope(console.sid, first_seq, text)):
-                console.requeue(first_seq, text)  # coalesces into the next tick
+        try:
+            batch = console.on_tick(stream.live_active)
+            if batch is not None:
+                first_seq, text = batch
+                if not stream.flush(_envelope(console.sid, first_seq, text)):
+                    console.requeue(first_seq, text)  # coalesces into the next tick
+        except Exception:
+            # one bad tick -- a MemoryError building the envelope on a full heap -- must not
+            # end the live console for the rest of the boot; NOT logged (it would recurse)
+            gc.collect()
         await asyncio.sleep_ms(_FLUSH_MS)  # type: ignore[attr-defined]
 
 
@@ -496,10 +502,17 @@ async def _datalake_flusher(sid, outbox):  # pragma: no cover  (device loop)
     session, so a long spool drain pays one ~20 KiB handshake instead of one per
     batch. That is what allows a small ``batch_bytes`` at no extra cost."""
     global _cycles
+    import gc
     while True:
         await _tick(_DATALAKE_FLUSH_MS)
         try:
             await _datalake_cycle(sid, outbox)
+        except Exception:
+            # A cycle that raises -- outbox.take() is outside the network try, and on a full
+            # heap it is a MemoryError -- used to end this task for good: the console went
+            # quiet until a reboot while everything else kept running (a Nicla, for hours).
+            # The records stay queued; the next tick tries again. NOT logged (recursion).
+            gc.collect()
         finally:
             _cycles += 1
 

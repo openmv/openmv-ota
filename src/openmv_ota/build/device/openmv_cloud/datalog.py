@@ -221,26 +221,37 @@ async def _flusher():  # pragma: no cover  (device loop)
     :class:`_Conn` serves the whole cycle across ALL topics, so N topics cost
     one ~20 KiB TLS handshake per tick rather than N of them."""
     import asyncio
+    import gc
     while True:
         await asyncio.sleep_ms(_FLUSH_MS)  # type: ignore[attr-defined]
-        target = _ingest
-        if target is None:
-            continue
-        batch = limits.batch_bytes
-        conn = _Conn(target)
         try:
-            for topic, t in list(_topics.items()):
-                box = t["box"]
+            await _cycle()
+        except Exception:
+            # one cycle that raises (box.take() on a full heap is a MemoryError) must not end
+            # telemetry for the rest of the boot: the records stay queued for the next tick
+            gc.collect()
+
+
+async def _cycle():  # pragma: no cover  (device network)
+    """One flush of every topic over one connection."""
+    target = _ingest
+    if target is None:
+        return
+    batch = limits.batch_bytes
+    conn = _Conn(target)
+    try:
+        for topic, t in list(_topics.items()):
+            box = t["box"]
+            try:
+                await _drain_disk(conn, topic, box._disk, batch)
+            except Exception:
+                continue
+            while box.pending_bytes():
+                records = box.take(batch)
                 try:
-                    await _drain_disk(conn, topic, box._disk, batch)
+                    await conn.post(topic, b"\n".join(records))
                 except Exception:
-                    continue
-                while box.pending_bytes():
-                    records = box.take(batch)
-                    try:
-                        await conn.post(topic, b"\n".join(records))
-                    except Exception:
-                        box.requeue(records)
-                        break
-        finally:
-            await conn.close()
+                    box.requeue(records)
+                    break
+    finally:
+        await conn.close()

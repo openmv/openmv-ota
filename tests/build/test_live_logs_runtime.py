@@ -420,3 +420,66 @@ def test_flushed_waits_for_a_cycle_that_started_after_the_kick():
     assert not lg._flushed(start=4, cycles=5, pending=10)      # in-flight one done, lines left
     assert lg._flushed(start=4, cycles=5, pending=0)           # ...but nothing is left: done
     assert lg._flushed(start=4, cycles=6, pending=10)          # a full cycle after: give up waiting
+
+
+def _run_loop(make, ticks, monkeypatch):
+    """Drive a device loop under CPython asyncio for a few ticks: MicroPython's sleep_ms
+    becomes a zero sleep, and the loop is cancelled once ``ticks`` cycles have been tried."""
+    import asyncio
+    monkeypatch.setattr(asyncio, "sleep_ms", lambda ms: asyncio.sleep(0), raising=False)
+
+    async def go():
+        task = asyncio.ensure_future(make())
+        for _ in range(200):
+            await asyncio.sleep(0)
+            if ticks():
+                break
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    asyncio.run(go())
+
+
+def test_datalake_flusher_outlives_a_cycle_that_raises(monkeypatch):
+    """A cycle that raises (a MemoryError from outbox.take() on a full heap) used to end the
+    console uploader for good: the console went quiet until a reboot while telemetry kept
+    flowing. The next tick must try again, and every attempt still counts as a cycle."""
+    calls = []
+
+    async def cycle(sid, outbox):
+        calls.append(sid)
+        if len(calls) == 1:
+            raise MemoryError("memory allocation failed")
+
+    async def tick(ms):
+        import asyncio
+        await asyncio.sleep(0)            # a real tick yields; one that never does starves the test
+    monkeypatch.setattr(lg, "_datalake_cycle", cycle)
+    monkeypatch.setattr(lg, "_tick", tick)
+    monkeypatch.setattr(lg, "_cycles", 0)
+    _run_loop(lambda: lg._datalake_flusher("s1", None), lambda: len(calls) >= 3, monkeypatch)
+    assert len(calls) >= 3 and lg._cycles >= 3
+
+
+def test_live_console_flusher_outlives_a_tick_that_raises(monkeypatch):
+    """The live console's tick survives an error the same way."""
+    seen = []
+
+    class _Console:
+        sid = "s1"
+
+        def on_tick(self, live):
+            seen.append(live)
+            if len(seen) == 1:
+                raise MemoryError("memory allocation failed")
+            return None
+
+    class _Stream:
+        live_active = False
+
+        def _ensure_started(self):
+            pass
+    _run_loop(lambda: lg._flusher(_Console(), _Stream()), lambda: len(seen) >= 3, monkeypatch)
+    assert len(seen) >= 3
