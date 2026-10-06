@@ -273,6 +273,11 @@ _OP_PONG = 0xA
 # gets reconnected after each silent stretch.
 _KEEPALIVE_MS = 30000
 _SILENCE_MS = 70000
+# A write the relay hasn't taken in this long ends the session. Without a bound, one stalled
+# drain (a big frame into a send buffer the network stopped emptying) held the frame "in
+# flight" forever: every later frame dropped, the keepalive and pong writes queued behind it
+# so nothing noticed, and the camera stayed "online" sending nothing until a restart.
+_SEND_STALL_MS = 10000
 _KEEPALIVE_TICK_MS = 5000          # how often the keepalive task checks the clock
 # The whole keepalive frame, built once: FIN+TEXT, masked, length 4, zero mask key (see
 # _frame_header), payload "ping". 10 bytes; sending it allocates nothing.
@@ -740,7 +745,7 @@ async def poll_watch(stream=_DEFAULT_STREAM, grant=None):  # pragma: no cover  (
         # HTTP/1.0 so no proxy can chunk the reply (see openmv_ota's check-in)
         writer.write(("GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: %s\r\n"
                       "Connection: close\r\n\r\n" % (path, host, _UA)).encode())
-        await writer.drain()
+        await _drain(writer)
         status = await reader.readline()
         if b" 200 " not in status and not status.rstrip().endswith(b" 200"):
             raise OSError("poll: HTTP %s" % status)
@@ -757,20 +762,32 @@ async def poll_watch(stream=_DEFAULT_STREAM, grant=None):  # pragma: no cover  (
 # --- device network plumbing (exercised on hardware, not host) -----------------
 
 async def _ws_connect(url):  # pragma: no cover
-    """Open + upgrade a relay WebSocket; returns ``(reader, writer)``."""
+    """Open + upgrade a relay WebSocket; returns ``(reader, writer)``. The upgrade is bounded
+    like every relay write (_SEND_STALL_MS): a relay that never answers fails the attempt
+    rather than parking the stream's task, and a failed attempt closes its socket outright."""
+    import asyncio
+    from ._lib import _hard_close
     tls, host, port, path = _split_url(url)
     reader, writer = await _open(host, port, tls)
-    writer.write(_handshake_request(host, path, _handshake_key(os.urandom(16))))
-    await writer.drain()
-    status = await reader.readline()
-    if not _handshake_ok(status):
-        writer.close()
-        await writer.wait_closed()
-        raise OSError("relay refused upgrade: %s" % status)
-    while True:                                  # drain response headers
-        line = await reader.readline()
-        if line in (b"\r\n", b"\n", b""):
-            break
+
+    async def upgrade():
+        writer.write(_handshake_request(host, path, _handshake_key(os.urandom(16))))
+        await writer.drain()
+        status = await reader.readline()
+        if not _handshake_ok(status):
+            raise OSError("relay refused upgrade: %s" % status)
+        while True:                              # drain response headers
+            line = await reader.readline()
+            if line in (b"\r\n", b"\n", b""):
+                break
+    try:
+        await asyncio.wait_for_ms(upgrade(), _SEND_STALL_MS)
+    except asyncio.TimeoutError:
+        _hard_close(writer)
+        raise OSError("relay upgrade stalled for %d s" % (_SEND_STALL_MS // 1000))
+    except BaseException:
+        _hard_close(writer)
+        raise
     return reader, writer
 
 
@@ -791,6 +808,16 @@ async def _ws_recv(reader):  # pragma: no cover
         raise OSError("relay frame of %d bytes exceeds %d"
                       % (length, limits.frame_max))
     return opcode, await reader.readexactly(length) if length else b""
+
+
+async def _drain(writer):  # pragma: no cover  (device: asyncio streams)
+    """``writer.drain()``, bounded by _SEND_STALL_MS: a stall raises, which ends the session
+    (logged, then a reconnect) instead of hanging it."""
+    import asyncio
+    try:
+        await asyncio.wait_for_ms(writer.drain(), _SEND_STALL_MS)
+    except asyncio.TimeoutError:
+        raise OSError("relay send stalled for %d s" % (_SEND_STALL_MS // 1000))
 
 
 def _loud_reconnect(streak):
@@ -867,7 +894,7 @@ async def _pump(stream, reader, writer):  # pragma: no cover
                     stream._session.on_text(payload)
             elif opcode == _OP_PING:
                 writer.write(_encode_frame(_OP_PONG, payload, os.urandom(4)))
-                await writer.drain()
+                await _drain(writer)
             elif opcode == _OP_CLOSE:
                 return
 
@@ -882,7 +909,7 @@ async def _pump(stream, reader, writer):  # pragma: no cover
                     # (unwritable by flush) until the send drains.
                     writer.write(_frame_header(_OP_BINARY, len(frame)))
                     writer.write(frame)
-                    await writer.drain()
+                    await _drain(writer)
                 finally:
                     stream._release_inflight()
 
@@ -897,7 +924,7 @@ async def _pump(stream, reader, writer):  # pragma: no cover
                 return
             if live.due(now):
                 writer.write(_KEEPALIVE_FRAME)
-                await writer.drain()
+                await _drain(writer)
 
     recv_t = asyncio.create_task(recv())
     send_t = asyncio.create_task(ends_session(send)())
@@ -913,11 +940,9 @@ async def _pump(stream, reader, writer):  # pragma: no cover
     finally:
         send_t.cancel()
         keep_t.cancel()
-        try:
-            writer.close()
-            await writer.wait_closed()           # closes the socket -> its TLS buffers go
-        except OSError:
-            pass                                 # already closed by keep()
+        # A stalled socket may never finish a graceful close either: close it outright, which
+        # frees its TLS buffers at once (as keep() does for a silent relay).
+        _hard_close(writer)
 
 
 # Wire into openmv_ota last: _wire() names functions defined further down.
