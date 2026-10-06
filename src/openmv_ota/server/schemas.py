@@ -309,6 +309,30 @@ class ProductFleet(BaseModel):
     nothing is (with no newest release, a device is outside adoption, not behind it)."""
 
 
+class DashboardCounts(BaseModel):
+    """Every count an overview page shows, from one read. Device counts are the account's (or
+    a product-scoped token's products'); ``quiet_hours`` is the line that ``checked_in`` and
+    ``quiet`` split the fleet on, echoed back."""
+    devices: int
+    up_to_date: int
+    """Devices at or past their own product's newest release (as ``GET /fleet``)."""
+    measured: int
+    """Devices whose product has published something: the adoption denominator."""
+    checked_in: int
+    quiet: int
+    fell_back: int
+    unconfirmed: int
+    products: int
+    rollouts_active: int
+    rollouts_paused_failure: int
+    """Rollouts the server paused because their failures passed the limit."""
+    advisories: int
+    """Active CVE findings in the account's released software."""
+    refused: int
+    """Devices the plan's device limit turned away (one audit row per device id)."""
+    quiet_hours: float
+
+
 class FleetSummary(BaseModel):
     """The fleet, structured per product (version strings and cohort composition only
     mean anything within one product). The top level carries the account-wide alarms;

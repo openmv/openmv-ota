@@ -1458,3 +1458,36 @@ def test_device_neighbors_step_through_a_product_in_name_order(tmp_path):
     assert last["next"] is None and last["position"] == 4 and last["prev"]["device_id"] == "z9"
     assert c.get("/api/v1/admin/devices/b1/neighbors", headers=AUTH).status_code == 404
     assert c.get("/api/v1/admin/devices/nope/neighbors", headers=AUTH).status_code == 404
+
+
+def test_dashboard_counts_match_the_lists_they_link_to(tmp_path):
+    """One read answers every count an overview shows, and each is the same number the
+    matching list filter totals -- so a dashboard can link a count straight into its list.
+    Other accounts' devices are left out; quiet_hours moves the checked-in / quiet line."""
+    import time
+    from openmv_ota.server.metastore import _iso_at
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="ok", product_id=BID, account_id="")
+    store.upsert_device(device_id="fb", product_id=BID, account_id="", fallback_reason="trial-failed")
+    store.upsert_device(device_id="uc", product_id=BID, account_id="", confirmed=0)
+    store.upsert_device(device_id="old", product_id=BID, account_id="")
+    store.execute("UPDATE devices SET last_seen = ? WHERE device_id = 'old'",
+                  (_iso_at(time.time() - 5 * 3600),))
+    store.upsert_device(device_id="theirs", product_id=BID, account_id="acctX")
+    c = TestClient(app)
+
+    def total(q):
+        return c.get("/api/v1/admin/devices?limit=1&" + q, headers=AUTH).json()["total"]
+    got = c.get("/api/v1/admin/dashboard", headers=AUTH).json()
+    fleet = c.get("/api/v1/admin/fleet?totals=true", headers=AUTH).json()
+    assert got["devices"] == fleet["total"] == 4
+    assert (got["up_to_date"], got["measured"]) == (fleet["up_to_date"], fleet["measured"])
+    assert got["fell_back"] == total("fell_back=true") == 1
+    assert got["unconfirmed"] == total("unconfirmed=true") == 1
+    assert got["quiet"] == 1 and got["checked_in"] == 3 and got["quiet_hours"] == 2
+    assert got["products"] == 1
+    assert (got["rollouts_active"], got["rollouts_paused_failure"],
+            got["advisories"], got["refused"]) == (0, 0, 0, 0)
+    wide = c.get("/api/v1/admin/dashboard?quiet_hours=10", headers=AUTH).json()
+    assert (wide["quiet"], wide["checked_in"]) == (0, 4)
+    assert c.get("/api/v1/admin/dashboard?quiet_hours=0", headers=AUTH).status_code == 422

@@ -42,6 +42,7 @@ from .schemas import (
     DeviceBound,
     DeviceForgotten,
     DeviceNeighbors,
+    DashboardCounts,
     DeviceList,
     DevicePinned,
     ActivityList,
@@ -1128,6 +1129,46 @@ def fleet(request: Request, product_id: int | None = None, cohort: str | None = 
             (decode_app_version(k) if k else "unknown"): n
             for k, n in prod["by_fallback"].items()}
     return summary
+
+
+@admin.get("/dashboard", responses={200: {"model": DashboardCounts}})
+def dashboard(request: Request,
+              quiet_hours: float = Query(2, gt=0, le=24 * 30,
+                                         description="hours without a check-in before a device "
+                                                     "counts as quiet"),
+              principal: Principal = Depends(require_scope("observe"))):
+    """Every count an overview page shows, in one read: the fleet's size and adoption, how many
+    devices checked in within ``quiet_hours`` and how many have gone quiet, fell back or are
+    mid-trial, the products, the active rollouts and those paused for failures, active
+    advisories, and devices the plan's limit refused. Each number is the same count the
+    matching list's filter answers (``GET /devices?fell_back=1`` and so on), so a dashboard
+    can link straight into that list -- it is one request instead of one per number."""
+    import time
+
+    ms = request.app.state.metastore
+    acct, scoped = principal.account_id, principal.scoped()
+    fleet = ms.fleet_summary(None, account_id=acct, products=scoped, totals=True)
+    since = time.time() - quiet_hours * 3600
+
+    def n(**kw):
+        return ms.count_devices(account_id=acct, products=scoped, **kw)
+    return {
+        "devices": int(fleet.get("total") or 0),
+        "up_to_date": int(fleet.get("up_to_date") or 0),
+        "measured": int(fleet.get("measured") or 0),
+        "checked_in": n(seen_since=since),
+        "quiet": n(not_seen_since=since),
+        "fell_back": n(fell_back=True),
+        "unconfirmed": n(unconfirmed=True),
+        "products": ms.page_products(account_id=acct, products=scoped, limit=1)[1],
+        "rollouts_active": ms.count_rollouts(account_id=acct, state="active", products=scoped),
+        "rollouts_paused_failure": ms.count_rollouts(account_id=acct, state="paused",
+                                                     pause_reason="failure_limit",
+                                                     products=scoped),
+        "advisories": ms.count_advisories(acct),
+        "refused": ms.count_audit(account_id=acct, action="device.refused", products=scoped),
+        "quiet_hours": quiet_hours,
+    }
 
 
 @admin.get("/activity", responses={200: {"model": ActivityList}})
