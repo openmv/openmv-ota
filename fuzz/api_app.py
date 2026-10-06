@@ -2,7 +2,9 @@
 # construction -- SQLite, local disk, a verifier that registers every camera -- with Live and
 # the datalake configured (grants are signed here, nothing is called), an all-scopes admin
 # token, and a few cameras written the way a check-in writes them so list and detail routes
-# have rows. Serve with: uvicorn --app-dir fuzz api_app:app --port 8765
+# have rows. The admin token is the caller's FUZZ_API_TOKEN (CI makes a random one per run).
+# Serve with: FUZZ_API_TOKEN=... uvicorn --app-dir fuzz api_app:app --port 8765
+import os
 import tempfile
 
 from openmv_ota.server.app import create_app
@@ -13,7 +15,7 @@ from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
 
-TOKEN = "fuzz-admin-token"
+TOKEN = os.environ["FUZZ_API_TOKEN"]
 
 
 class _Verifier:

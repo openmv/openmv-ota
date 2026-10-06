@@ -406,6 +406,9 @@ jobs:
 
       - name: Serve the API (fuzz/api_app.py)
         run: |
+          FUZZ_API_TOKEN=$(python -c "import secrets; print(secrets.token_hex(16))")
+          echo "FUZZ_API_TOKEN=$FUZZ_API_TOKEN" >> "$GITHUB_ENV"
+          export FUZZ_API_TOKEN
           nohup uvicorn --app-dir fuzz api_app:app --host 127.0.0.1 --port 8765 \
             --log-level warning > "$RUNNER_TEMP/server.log" 2>&1 &
           for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:8765/openapi.json && break; sleep 1; done
@@ -413,7 +416,7 @@ jobs:
       - name: Schemathesis (no 5xx, responses match the schema, every status declared)
         run: |
           schemathesis run http://127.0.0.1:8765/openapi.json \
-            -H "Authorization: Bearer fuzz-admin-token" \
+            -H "Authorization: Bearer $FUZZ_API_TOKEN" \
             --checks not_a_server_error,response_schema_conformance,status_code_conformance,content_type_conformance \
             --max-examples 40 --workers 4
 
