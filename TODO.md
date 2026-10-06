@@ -4,12 +4,13 @@ To-do only. Done work is in `git log`; deliberate non-goals are in
 [docs/compliance/residual-threats.md](docs/compliance/residual-threats.md); this
 file's own history has the longer design notes behind each line.
 
-- **Device lockdown** — debug-port and boot protection (residual-threats:
-  planned); until then bench/bus access is accepted.
-- **Firmware updates via the ROMFS** — bootloader as *reconciler*: copy a
+- **Firmware updates via the ROMFS (next)** — bootloader as *reconciler*: copy a
   verified `firmware.bin` out of a **confirmed** slot into the firmware area at
   a fixed offset (no romfs parser in the bootloader), never downgrade; a power
   loss mid-copy retries, not bricks.
+- **Device lockdown** — debug-port and boot protection (residual-threats:
+  planned); until then bench/bus access is accepted. It is also what makes a stored
+  device key unreadable on the boards without a secure element (N6, AE3; see below).
 
 ## Before the hosted cloud goes live (required)
 
@@ -27,17 +28,25 @@ openmv-swd-ids'.
   registered only when the check-in's account matches the claim.
 - **Claim abuse limits** — claims count against the plan's device limit; per-account and
   per-IP rate limits; only known board types claimable; audit every claim/release.
-- **Per-device secrets + signed check-ins (all boards)** — a device's identity today is its
-  chip id, which is not secret, so check-ins/logs/telemetry can be spoofed for a known id.
-  Issue a per-device secret at claim/registration and verify a signature on every check-in.
-  Open question: where the secret lives (not the shared ROMFS; not /flash) — a reserved
-  sector written once at flash time, or the secure element below.
-- **Secure-element attestation (Arduino)** — Portenta H7 / Nicla Vision carry an NXP SE050,
-  Giga an ATECC608, each with factory keys + vendor certificates: sign a server challenge,
-  verify the vendor chain. Unclonable identity and the cleanest proof of possession;
-  replaces the stored secret where the chip exists.
-- **PyPI release** — only after the Getting started flow passes on every board it offers from a
-  clean venv installed off a local wheel (no dev checkout).
+- **Secure-element drivers (first)** — pure-Python drivers in the device package, on
+  `machine.I2C` / `SoftI2C`: the NXP SE050 (T=1 over I2C, APDUs) and the Microchip ATECC608
+  (its wake pulse needs the pin or `SoftI2C`). Demo apps on top: sign a challenge, read the
+  public key and any certificates. Where the chips are: the RT1062's SE050C1 at `I2C(2)` 0x48
+  (beside the accelerometer at 0x15); Nicla Vision and newer Portenta H7, SE050; Giga R1 and
+  older Portenta H7, ATECC608. Read each chip before designing: which factory keys and vendor
+  certificates it really carries varies by part, and Arduino's ATECC608 boards often ship
+  unprovisioned.
+- **Per-device keys + signed check-ins (all boards)** — a device's identity today is its chip
+  id, which is not secret, so check-ins/logs/telemetry can be spoofed for a known id. Every
+  check-in carries a signature over the request and a fresh server value (a nonce, or a
+  timestamp and counter), verified against the key registered when the board was claimed;
+  the Live and datalake grants already hang off the check-in, so this secures them too, with
+  no change to TLS. Per board: the secure-element boards sign with a chip key that never
+  leaves the chip; the N6 keeps a device key wrapped by its hardware unique key (DHUK) --
+  bound to the chip, but readable by code on the device until lockdown or a TrustZone signer;
+  the AE3's Secure Enclave has a factory ECC key but no service to sign with it (ask Alif),
+  so it uses a stored device key like the N6, with its factory public key as a chip-bound
+  serial.
 - **Pre-launch cleanup** — revoke the test OTA tokens used for board bring-up; log the
   client out on the HIL nodes (`~/cloudtest/xdg`, the AE3's `~/.config/openmv-ota`).
 
