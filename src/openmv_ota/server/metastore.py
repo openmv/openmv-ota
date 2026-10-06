@@ -2340,8 +2340,12 @@ class PostgresMetadataStore(SqlMetadataStore):
                               "pip install openmv-ota[server-postgres]", exit_code=2) from None
         from psycopg.rows import dict_row                          # pragma: no cover
         # check= validates a connection on checkout, so a database restart costs one retry
-        # instead of a burst of 500s on dead sockets.
-        return ConnectionPool(dsn, min_size=1, max_size=max(1, int(size)),  # pragma: no cover
+        # instead of a burst of 500s on dead sockets. min_size = max_size: the whole pool
+        # stays open. With one warm connection, a page that fans out ten reads after a
+        # quiet spell made the pool open nine more (TLS + password auth to a small
+        # Postgres, a few at a time) ON the request path -- single reads of 2-6 s.
+        size = max(1, int(size))                                   # pragma: no cover
+        return ConnectionPool(dsn, min_size=size, max_size=size,  # pragma: no cover
                               kwargs={"row_factory": dict_row},
                               check=ConnectionPool.check_connection, open=True)
 

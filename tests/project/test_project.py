@@ -845,8 +845,9 @@ def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, mak
     main = (proj.ProjectPaths(root).app_dir / "main.py").read_text()
     assert main == proj._APP_MAIN_OTA      # THE file the website's /start page shows
     compile(main, "main.py", "exec")       # it parses (CPython syntax is a superset here)
-    assert ('openmv_ota.run("https://ota.cloud.openmv.io", poll_after_s=CHECK_IN_S, '
-            'recover=bring_up_network)') in main
+    assert ('openmv_ota.run("https://ota.cloud.openmv.io", poll_after_s=CHECK_IN_S,\n'
+            '                                       recover=bring_up_network)') in main
+    assert max(len(line) for line in main.splitlines()) <= 99     # fits an editor, unwrapped
     assert "CHECK_IN_S = 300 " in main     # the user's check-in interval, one line to edit
     assert main.count("https://ota.cloud.openmv.io") == 1   # the one URL the website swaps
     assert "from openmv_cloud import csi, datalog, logs" in main

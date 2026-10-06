@@ -739,7 +739,8 @@ async def heap_graph():
 async def main():
     await bring_up_network()
     # Your OTA server. recover= runs if check-ins keep failing, so it must recreate the NIC.
-    asyncio.create_task(openmv_ota.run("https://ota.cloud.openmv.io", poll_after_s=CHECK_IN_S, recover=bring_up_network))
+    asyncio.create_task(openmv_ota.run("https://ota.cloud.openmv.io", poll_after_s=CHECK_IN_S,
+                                       recover=bring_up_network))
     asyncio.create_task(heartbeat())
     asyncio.create_task(heap_graph())
     try:
