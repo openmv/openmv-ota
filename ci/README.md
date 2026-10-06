@@ -18,6 +18,11 @@ regression on the pull request, run on live hardware ([below](#the-hil-gate)).
   the sanitizers too), five minutes per run from a seed corpus of real host-signed vectors
   (`fuzz/seeds.py`). A crashing input is uploaded as an artifact. Locally:
   `fuzz/build.sh <mbedtls dir> <out>`, then run `<out>/ecdsa_verify_fuzz <corpus dir>`.
+- **`fuzz-api`** — Schemathesis against the server's own OpenAPI schema, on the local server
+  in [`fuzz/api_app.py`](../fuzz/api_app.py) (SQLite, Live and the datalake configured, an
+  all-scopes admin token): no 5xx, every response matches its schema, every status is
+  declared. Locally: `uvicorn --app-dir fuzz api_app:app --port 8765`, then the job's
+  `schemathesis run` line.
 - **`qemu`** — the **real** frozen `boot.py`, the installer, the runtime lib,
   and the manifest + delta paths on actual MicroPython under
   `qemu-system-arm`; [`qemu_boot_test.py`](qemu_boot_test.py) documents its

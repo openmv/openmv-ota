@@ -113,6 +113,8 @@ extend-immutable-calls = [
 [tool.ruff.lint.per-file-ignores]
 # tests assert, use fixed fake secrets and throwaway paths by design
 "tests/**" = ["S"]
+# the fuzz harnesses run a throwaway local server with fixed fake secrets, like the tests
+"fuzz/**" = ["S"]
 # MicroPython has no zip(strict=) and no exception chaining (B904/B905); the survival
 # paths (logging, watchdog, RTC, spool replay) must never raise and cannot afford to log
 # the failure they are already handling (S110/S112)
