@@ -1156,6 +1156,35 @@ class SqlMetadataStore:
             r["pinned_release_id"] = pins.get(r["device_id"])
         return out
 
+    def device_neighbors(self, device_id: str, account_id: str) -> dict:
+        """The devices either side of ``device_id`` in its product, in the product's device
+        order (``DEVICE_SORTS["device"]``: name, then id -- the order the product's device
+        list and camera wall use), with its 1-based position and the product's count. What a
+        device page needs to step through a product without paging the whole list."""
+        key = self.DEVICE_SORTS["device"]
+        me = self.query_one("SELECT product_id, " + key + " AS k FROM devices WHERE device_id = ?",
+                            (device_id,))
+        pid, k = me["product_id"], me["k"]
+        where = "WHERE account_id = ? AND product_id = ?"
+        scope = (account_id, pid)
+        before = "(" + key + " < ? OR (" + key + " = ? AND device_id < ?))"
+        after = "(" + key + " > ? OR (" + key + " = ? AND device_id > ?))"
+        at = (*scope, k, k, device_id)
+        cols = "SELECT device_id, display_name FROM devices "
+        prev = self.query_one(cols + where + " AND " + before
+                              + " ORDER BY " + key + " DESC, device_id DESC LIMIT 1", at)
+        nxt = self.query_one(cols + where + " AND " + after
+                             + " ORDER BY " + key + " ASC, device_id ASC LIMIT 1", at)
+        position = self.query_one("SELECT COUNT(*) AS n FROM devices " + where + " AND " + before,
+                                  at)["n"] + 1
+        total = self.query_one("SELECT COUNT(*) AS n FROM devices " + where, scope)["n"]
+
+        def side(r):
+            return None if r is None else {"device_id": r["device_id"],
+                                           "display_name": r["display_name"] or ""}
+        return {"product_id": pid, "prev": side(prev), "next": side(nxt),
+                "position": position, "total": total}
+
     def list_products(self, account_id=None, products=None) -> list[dict]:
         """The account's products: every product id seen on a device or a release, with
         the friendly name from its newest release (None until one is published) and

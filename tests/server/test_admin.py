@@ -1436,3 +1436,25 @@ def test_rollout_status_manual_rollout_has_no_ramp(tmp_path):
                  json={"release_id": "rel1", "percent": 5}).json()["rollout_id"]
     b = c.get("/api/v1/admin/rollouts/%s/status" % rid, headers=AUTH).json()
     assert b["ramp"] is None and b["stages"] == []                  # last stage of a manual rollout
+
+
+def test_device_neighbors_step_through_a_product_in_name_order(tmp_path):
+    """Name order (a display name wins over the id, case-insensitively), ties broken by id,
+    other products and other accounts left out; the ends have no neighbor."""
+    app, store = _app(tmp_path)
+    for d in ("c3", "a1", "b2", "z9"):
+        store.upsert_device(device_id=d, product_id=BID, account_id="")
+    store.set_device_name("z9", "Bench")                  # sorts as "bench", before "c3"
+    store.upsert_device(device_id="b0", product_id=BID + 1, account_id="")
+    store.upsert_device(device_id="b1", product_id=BID, account_id="acctX")
+    c = TestClient(app)
+    got = c.get("/api/v1/admin/devices/b2/neighbors", headers=AUTH).json()
+    assert got == {"product_id": BID, "prev": {"device_id": "a1", "display_name": ""},
+                   "next": {"device_id": "z9", "display_name": "Bench"},
+                   "position": 2, "total": 4}
+    first = c.get("/api/v1/admin/devices/a1/neighbors", headers=AUTH).json()
+    assert first["prev"] is None and first["position"] == 1
+    last = c.get("/api/v1/admin/devices/c3/neighbors", headers=AUTH).json()
+    assert last["next"] is None and last["position"] == 4 and last["prev"]["device_id"] == "z9"
+    assert c.get("/api/v1/admin/devices/b1/neighbors", headers=AUTH).status_code == 404
+    assert c.get("/api/v1/admin/devices/nope/neighbors", headers=AUTH).status_code == 404

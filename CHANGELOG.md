@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-10-06
+
+### Added
+
+- **`GET /admin/devices/{device_id}/neighbors`**: the devices either side of one in its
+  product, in the product's device order (name, then id), with its position and the
+  product's device count -- so a device page can step through a product one camera at a
+  time without paging the whole list.
+
 ## [1.0.2] - 2026-10-05
 
 ### Fixed

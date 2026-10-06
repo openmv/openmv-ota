@@ -574,6 +574,21 @@ class DeliveryList(BaseModel):
     total: int
 
 
+class DeviceNeighbor(BaseModel):
+    device_id: str
+    display_name: str = ""
+
+
+class DeviceNeighbors(BaseModel):
+    """A device's place in its product: the devices either side of it in the product's
+    device order (name, then id) and its position among the product's devices."""
+    product_id: int
+    prev: DeviceNeighbor | None = None
+    next: DeviceNeighbor | None = None
+    position: int
+    total: int
+
+
 class DeviceForgotten(BaseModel):
     device_id: str
     forgotten: bool = True

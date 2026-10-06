@@ -41,6 +41,7 @@ from .schemas import (
     Device,
     DeviceBound,
     DeviceForgotten,
+    DeviceNeighbors,
     DeviceList,
     DevicePinned,
     ActivityList,
@@ -1225,6 +1226,17 @@ def device(device_id: str, request: Request,
     decoding) so a UI can render a list row and a detail page from one model."""
     row = _owned(request.app.state.metastore.get_device(device_id), principal)
     return _with_fallback_version([row])[0]
+
+
+@admin.get("/devices/{device_id}/neighbors", responses={200: {"model": DeviceNeighbors}})
+def device_neighbors(device_id: str, request: Request,
+                     principal: Principal = Depends(require_scope("observe"))):
+    """The devices before and after this one in its product, in the product's device order
+    (name, then id), with its position and the product's device count -- so a device page
+    can step through a product one camera at a time. Another account's device is a 404."""
+    ms = request.app.state.metastore
+    _owned(ms.get_device(device_id), principal)
+    return ms.device_neighbors(device_id, principal.account_id)
 
 
 @admin.get("/releases/{release_id}/image", responses={200: {"content": {"application/gzip": {}}, "description": "the artifact bytes"}})
