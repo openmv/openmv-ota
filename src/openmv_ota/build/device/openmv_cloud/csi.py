@@ -404,6 +404,33 @@ def _frame_header(opcode, length):
     return head + _ZERO_MASK
 
 
+# Room for the largest frame header (2 + 8 length bytes + the 4-byte mask key) in front of every
+# frame in a stream's buffer, so header and payload go out as ONE contiguous write and the
+# header is written in place -- no per-frame header object, no join.
+_HDR = 14
+
+
+def _put_frame_header(buf, end, opcode, length):
+    """Write the :func:`_frame_header` for a ``length``-byte frame into ``buf`` so that it ENDS at
+    ``end`` (where the payload starts); returns where it starts. Pure; allocates nothing."""
+    if length < 126:
+        start = end - 6
+        buf[start + 1] = 0x80 | length
+    elif length < 65536:
+        start = end - 8
+        buf[start + 1] = 0x80 | 126
+        buf[start + 2] = length >> 8
+        buf[start + 3] = length & 0xFF
+    else:
+        start = end - 14
+        buf[start + 1] = 0x80 | 127
+        for i in range(8):
+            buf[start + 2 + i] = (length >> (56 - 8 * i)) & 0xFF
+    buf[start] = 0x80 | opcode
+    buf[end - 4:end] = _ZERO_MASK
+    return start
+
+
 # --- upload throttle (pure) ---------------------------------------------------
 
 class _Throttle:
@@ -493,7 +520,10 @@ class Stream:
         # regrown only on a bigger frame, so allocations converge to zero.
         # bufsize=int: a fixed cap, allocated once here; oversize frames drop.
         self._bufsize = bufsize
-        self._buf = bytearray(bufsize) if bufsize is not None else None
+        self._buf = self._buf_mv = None
+        if bufsize is not None:                  # the payload, after _HDR bytes of header room
+            self._buf = bytearray(bufsize + _HDR)
+            self._buf_mv = memoryview(self._buf)
         self._sending = False         # upload in flight: the buffer is untouchable
         self._frame = None            # latest-only mailbox: a view into _buf
         self._frame_event = None      # asyncio.Event, created with the task
@@ -537,21 +567,22 @@ class Stream:
         view = self._encoder(img, self._quality)
         n = len(view)
         if self._bufsize is not None:            # fixed cap: never realloc
-            if n > len(self._buf):
+            if n > len(self._buf) - _HDR:
                 self._dropped += 1
                 if self._dropped == 1:
                     log.warning("live[%s]: frame dropped (%d bytes; raise bufsize= "
                                 "or lower quality=)" % (self.name, n))
                 return False
-        elif self._buf is None or n > len(self._buf) \
-                or _fit_size(n) < (len(self._buf) >> 1):
+        elif self._buf is None or n + _HDR > len(self._buf) \
+                or _fit_size(n + _HDR) < (len(self._buf) >> 1):
             # Dynamic: reallocate when the frame doesn't fit OR the buffer has
             # become 2x oversized for what the stream now produces (framesize or
             # quality dropped). Headroom + 4 KiB rounding + the 2x shrink
             # hysteresis mean this converges and then never runs again.
-            self._buf = bytearray(_fit_size(n))
-        self._buf[:n] = view          # memcpy: the image is free after this line
-        self._frame = memoryview(self._buf)[:n]
+            self._buf = bytearray(_fit_size(n + _HDR))
+            self._buf_mv = memoryview(self._buf)
+        self._buf[_HDR:_HDR + n] = view   # memcpy: the image is free after this line
+        self._frame = self._buf_mv[_HDR:_HDR + n]
         if self._frame_event is not None:
             self._frame_event.set()
         return True
@@ -564,6 +595,8 @@ class Stream:
 
     def _start(self):  # pragma: no cover  (device: spawns the network task)
         import asyncio
+        from ._lib import _start_collector
+        _start_collector()
         self._frame_event = asyncio.Event()
         self._throttle = _Throttle(self._fps, _ticks_ms)
         self._task = asyncio.create_task(_relay_task(self))
@@ -630,11 +663,13 @@ class CSI:
     def live_active(self):
         return self._stream.live_active
 
-    async def snapshot(self, **kwargs):
+    async def snapshot(self, time=-1, frames=-1, image=None):
         """The AsyncCSI pattern: non-blocking capture, yielding to the scheduler
         until a frame is ready. On entry, the PREVIOUS frame is disposed into the
         live stream (encoded in place -- the app is done with it, exactly like
-        the builtin recycling its frame buffer)."""
+        the builtin recycling its frame buffer). Takes the builtin's keyword
+        arguments by name rather than ``**kwargs``: a ``**kwargs`` parameter is a
+        new dict on every call, and this runs once per frame."""
         import asyncio
         live = not self._stream._off      # no Live: the plain camera, nothing held back
         if live:
@@ -643,7 +678,7 @@ class CSI:
             if pending is not None:
                 self._stream.flush(pending)
         while True:
-            img = self._cam.snapshot(blocking=False, **kwargs)
+            img = self._cam.snapshot(time=time, frames=frames, image=image, blocking=False)
             if img is not None:
                 if live:
                     self._pending = img
@@ -864,12 +899,23 @@ async def _relay_task(stream):  # pragma: no cover
 async def _pump(stream, reader, writer):  # pragma: no cover
     """Run the receive, send and keepalive halves until the socket dies. Sub-tasks: recv
     (control messages, ping/pong, close), send (frames as the mailbox fills) and keep (the
-    application keepalive -- see _KEEPALIVE_MS)."""
+    application keepalive -- see _KEEPALIVE_MS -- and the send-stall check).
+
+    A frame goes out with NO copy and no per-frame timer: its header is written in place in
+    front of the payload (``_put_frame_header``) and the two leave as one slice straight to
+    the socket (``_lib._write_all``). ``writer.write`` copies whatever TLS did not take at once
+    -- everything past the first ~4 KiB record of a larger JPEG, every frame -- and
+    ``wait_for`` costs ~0.5 KiB a call. A send that stops moving for _SEND_STALL_MS is caught
+    by keep instead. ``writing`` keeps the halves from interleaving
+    their writes: one frame (or keepalive, or pong) on the socket at a time."""
     import asyncio
-    from ._lib import _hard_close
+    import time
+    from ._lib import _hard_close, _write_all
     live = _Liveness(_ticks_ms())
     silent = [False]
     failed = [None]                              # what killed the send or keepalive half
+    writing = [False]                            # a write is on the socket: the others wait
+    stall = [0]                                  # ticks_ms by when the frame in flight must be out
 
     def ends_session(half):
         # A half that raises must end the session, not die as an unretrieved task while recv
@@ -885,6 +931,11 @@ async def _pump(stream, reader, writer):  # pragma: no cover
                 recv_t.cancel()
         return run
 
+    async def turn():
+        while writing[0]:
+            await asyncio.sleep_ms(5)
+        writing[0] = True
+
     async def recv():
         while True:
             opcode, payload = await _ws_recv(reader)
@@ -893,8 +944,12 @@ async def _pump(stream, reader, writer):  # pragma: no cover
                 if payload != _PONG:             # the keepalive answer carries nothing else
                     stream._session.on_text(payload)
             elif opcode == _OP_PING:
-                writer.write(_encode_frame(_OP_PONG, payload, os.urandom(4)))
-                await _drain(writer)
+                await turn()
+                try:
+                    writer.write(_encode_frame(_OP_PONG, payload, os.urandom(4)))
+                    await _drain(writer)
+                finally:
+                    writing[0] = False
             elif opcode == _OP_CLOSE:
                 return
 
@@ -904,14 +959,17 @@ async def _pump(stream, reader, writer):  # pragma: no cover
             frame = stream._take_frame()
             if frame is not None and stream._session.streaming:
                 try:
-                    # Copy-free: header (with the RFC-legal zero mask key), then
-                    # the buffer view unmodified. The buffer stays in-flight
-                    # (unwritable by flush) until the send drains.
-                    writer.write(_frame_header(_OP_BINARY, len(frame)))
-                    writer.write(frame)
-                    await _drain(writer)
+                    n = len(frame)
+                    start = _put_frame_header(stream._buf, _HDR, _OP_BINARY, n)
+                    await turn()
+                    stall[0] = time.ticks_add(time.ticks_ms(), _SEND_STALL_MS)
+                    await _write_all(writer, stream._buf_mv[start:_HDR + n])
                 finally:
+                    stall[0] = 0
+                    writing[0] = False
                     stream._release_inflight()
+            elif frame is not None:
+                stream._release_inflight()
 
     async def keep():
         while True:
@@ -922,9 +980,16 @@ async def _pump(stream, reader, writer):  # pragma: no cover
                 _hard_close(writer)              # frees the TLS buffers NOW, not at the next GC
                 recv_t.cancel()                  # recv is parked on a half-open read
                 return
-            if live.due(now):
-                writer.write(_KEEPALIVE_FRAME)
-                await _drain(writer)
+            if stall[0] and time.ticks_diff(now, stall[0]) > 0:
+                # the frame in flight stopped moving: end the session (a reconnect follows)
+                raise OSError("relay send stalled for %d s" % (_SEND_STALL_MS // 1000))
+            if not writing[0] and live.due(now):
+                writing[0] = True
+                try:
+                    writer.write(_KEEPALIVE_FRAME)
+                    await _drain(writer)
+                finally:
+                    writing[0] = False
 
     recv_t = asyncio.create_task(recv())
     send_t = asyncio.create_task(ends_session(send)())

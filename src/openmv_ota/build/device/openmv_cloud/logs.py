@@ -65,8 +65,8 @@ import json
 import logging
 
 from . import csi as _csi          # for csi.Stream only (console as a Live stream)
-from ._lib import (_Conn, _drain_disk, _level, _open_disk, _session_id, _timestamp, budget,
-                   limits)
+from ._lib import (_datalake_conn, _drain_disk, _level, _open_disk, _session_id, _start_collector,
+                   _timestamp, budget, limits)
 
 _STREAM_NAME = "console"
 _FLUSH_MS = 500                   # relay batcher tick while watched
@@ -86,6 +86,23 @@ except ImportError:               # host / no frozen openmv_log: minimal fallbac
 def _now_stamp():  # pragma: no cover  (device clock)
     import time
     return _stamp(time.localtime(), time.ticks_ms())
+
+
+def _line(localtime, ticks_ms, levelname, name, msg):
+    """``_format(_stamp(...)) + "\\n"`` in ONE formatting pass. A console line is logged
+    every few seconds for as long as the camera runs; building the stamp, the line and then
+    the line plus its newline as three strings made two of them garbage at once. Pure; the
+    host tests pin it to the frozen formatter's output."""
+    if localtime[0] >= 2023:
+        return "[%04d-%02d-%02d %02d:%02d:%02d] %s %s: %s\n" % (
+            localtime[0], localtime[1], localtime[2], localtime[3], localtime[4], localtime[5],
+            levelname, name, msg)
+    return "[%5d.%03d] %s %s: %s\n" % (ticks_ms // 1000, ticks_ms % 1000, levelname, name, msg)
+
+
+def _line_now(levelname, name, msg):  # pragma: no cover  (device clock)
+    import time
+    return _line(time.localtime(), time.ticks_ms(), levelname, name, msg)
 
 
 def _envelope(sid, seq, text, ts=None):
@@ -118,13 +135,17 @@ class _Console:
     def add(self, line, active):
         """A new log line: always into the ring; into the pending batch only
         while watched (unwatched consoles cost memory-bounded ring space, no
-        upload, no unbounded queue). Returns the line's ``seq`` so the caller
-        can also hand it to the datalake outbox."""
+        upload, no unbounded queue). Returns the line's ``seq``."""
+        return self.push(line, active)[0]
+
+    def push(self, line, active):
+        """:meth:`add`, returning the line's ``(seq, line)`` entry -- the one tuple the ring,
+        the live batch and the datalake outbox all hold, rather than one each."""
         seq = self._seq
         self._seq += 1
-        if not self._cap:
-            return seq
         entry = (seq, line)
+        if not self._cap:
+            return entry
         self._ring.append(entry)
         self._ring_size += len(line)
         while self._ring_size > self._cap and len(self._ring) > 1:
@@ -133,7 +154,7 @@ class _Console:
             self._pending.append(entry)
             self._pending_size += len(line)
             self._trim_pending()
-        return seq
+        return entry
 
     def _trim_pending(self):
         """The live mirror is BEST-EFFORT: if the relay stalls while we're being
@@ -169,12 +190,13 @@ class _Console:
 
 
 def _ndjson(sid, records):
-    """Encode ``[(seq, line)]`` as an NDJSON batch of ``{sid, seq, text}``
-    records -- one per line, so history pages at exact per-line seq granularity.
-    The datalake requires one sid + non-decreasing seq per batch, which the
-    monotonic console counter guarantees."""
+    """Encode ``[(seq, line)]`` as the records of an NDJSON batch of ``{sid, seq, text}`` --
+    one per line, so history pages at exact per-line seq granularity. A list: the connection
+    joins it into its own reused buffer rather than this allocating the joined batch. The
+    datalake requires one sid + non-decreasing seq per batch, which the monotonic console
+    counter guarantees."""
     ts = _timestamp()
-    return b"\n".join(_envelope(sid, seq, line, ts) for seq, line in records)
+    return [_envelope(sid, seq, line, ts) for seq, line in records]
 
 
 class _Outbox:
@@ -215,7 +237,12 @@ class _Outbox:
         self._budget.join(self)
 
     def add(self, seq, line):
-        self._buf.append((seq, line))
+        self.add_entry((seq, line))
+
+    def add_entry(self, entry):
+        """Queue a ``(seq, line)`` entry -- the console's own tuple, shared, not copied."""
+        line = entry[1]
+        self._buf.append(entry)
         self._bytes += len(line)
         # Charging may push the pool over cap and shed from the largest member
         # -- possibly us -- so append and account BEFORE charging.
@@ -287,22 +314,25 @@ class _Outbox:
 class CloudLogHandler(logging.Handler):
     """The bridge from the standard logging tree into both sinks."""
 
-    def __init__(self, console, outbox=None, stamper=_now_stamp):
+    def __init__(self, console, outbox=None, stamper=None):
         super().__init__()
         self._console = console
         self._outbox = outbox         # datalake persistence (None = live-only)
-        self._stamper = stamper
+        self._stamper = stamper       # None: the clock, formatted in the line's own pass
         self.stream = None            # set by enable(); read for live_active
 
     def emit(self, record):
         # CPython builds the message via getMessage(); MicroPython's logging
         # pre-bakes it into record.message. Support both.
         msg = record.getMessage() if hasattr(record, "getMessage") else record.message
-        line = _format(self._stamper(), record.levelname, record.name, msg) + "\n"
+        if self._stamper is None:  # pragma: no cover  (device clock)
+            line = _line_now(record.levelname, record.name, msg)
+        else:
+            line = _format(self._stamper(), record.levelname, record.name, msg) + "\n"
         active = self.stream is not None and self.stream.live_active
-        seq = self._console.add(line, active)     # live mirror (ring + relay)
+        entry = self._console.push(line, active)  # live mirror (ring + relay)
         if self._outbox is not None:
-            self._outbox.add(seq, line)           # persistence (datalake)
+            self._outbox.add_entry(entry)         # persistence (datalake), the same tuple
 
 
 # The datalake ingest target, set from the OTA check-in's `ingest` grant. Until
@@ -401,6 +431,7 @@ def _enable(live, level, logger, ring_bytes, fps, spool_path,
     if stream is not None:
         asyncio.create_task(_flusher(console, stream))
     asyncio.create_task(_datalake_flusher(console.sid, outbox))
+    _start_collector()
     return handler
 
 
@@ -498,9 +529,9 @@ async def _datalake_flusher(sid, outbox):  # pragma: no cover  (device loop)
     failures leave data in place (nothing lost short of the budget / spool). NOT
     logged -- our handler is on the logging tree, so a warning here would recurse.
 
-    One :class:`_Conn` serves the whole cycle: every batch rides the same TLS
-    session, so a long spool drain pays one ~20 KiB handshake instead of one per
-    batch. That is what allows a small ``batch_bytes`` at no extra cost."""
+    Every batch rides the one shared datalake connection, held open between cycles, so a
+    cycle pays no handshake and a long spool drain no more than one. That is what allows a
+    small ``batch_bytes`` at no extra cost."""
     global _cycles
     import gc
     while True:
@@ -518,26 +549,24 @@ async def _datalake_flusher(sid, outbox):  # pragma: no cover  (device loop)
 
 
 async def _datalake_cycle(sid, outbox):  # pragma: no cover  (device network)
-    """One flush: the disk spool, then the RAM tier, over one connection."""
+    """One flush: the disk spool, then the RAM tier, over the shared datalake connection
+    (kept open between cycles -- see ``_lib._datalake_conn``)."""
     target = _ingest
     if target is None:
         return
     batch = limits.batch_bytes
-    conn = _Conn(target)
+    conn = _datalake_conn(target)
     try:
+        await _drain_disk(conn, _STREAM_NAME, outbox._disk, batch)
+    except Exception:
+        return                                        # network down: retry next tick
+    while outbox.pending_bytes():
+        records = outbox.take(batch)
         try:
-            await _drain_disk(conn, _STREAM_NAME, outbox._disk, batch)
+            await conn.post(_STREAM_NAME, _ndjson(sid, records))
         except Exception:
-            return                                    # network down: retry next tick
-        while outbox.pending_bytes():
-            records = outbox.take(batch)
-            try:
-                await conn.post(_STREAM_NAME, _ndjson(sid, records))
-            except Exception:
-                outbox.requeue(records)
-                break
-    finally:
-        await conn.close()
+            outbox.requeue(records)
+            break
 
 
 # Wire into openmv_ota last: _register() names functions defined further down.
