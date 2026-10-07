@@ -54,6 +54,12 @@ taken whenever the camera's clock has been set. Your object is kept as you poste
 On the camera, records wait in RAM, all topics sharing one byte budget. Many topics,
 each posting slowly, is the intended use. `openmv_cloud.configure()` sets the budget.
 
+Uploading reuses one connection and fixed buffers, so it adds next to nothing to the heap.
+What a camera app cannot avoid allocating -- the camera returns a new image object every
+frame -- is collected by the SDK after a little has piled up (2% of the heap by default),
+which keeps the heap chart flat instead of climbing to full and dropping back. Change the
+amount with `openmv_cloud.configure(gc_bytes=...)`.
+
 ### What becomes a field
 
 Every value in the posted object becomes a **field**, typed by its JSON:

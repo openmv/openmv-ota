@@ -17,7 +17,8 @@ enabling a sink::
     from openmv_cloud import configure
     configure(budget_bytes=32 * 1024,   # total RAM buffered across ALL sinks
               batch_bytes=4 * 1024,     # bytes per ingest POST
-              topics_max=64)            # datalog topics
+              topics_max=64,            # datalog topics
+              gc_bytes=16 * 1024)       # collect after this much allocation (default 2% of heap)
 
 The defaults are deliberately modest (16 KiB of total buffering). Raise them if
 you have heap to spare and want more history to survive a long outage; lower
