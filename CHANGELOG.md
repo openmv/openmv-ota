@@ -6,6 +6,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-10-07
+
+### Fixed
+
+- **A flat heap on the camera.** The cloud SDK allocated constantly, so every camera's heap
+  graph climbed to full and dropped back, and on the small-RAM boards (H7, H7 Plus, Nicla)
+  the heap ended up so fragmented that Live's TLS connection could not find an 8 KiB block
+  with half the heap free -- no video. Measured on an H7, an idle camera went from ~11 KiB/s
+  of allocation to ~4 KiB/s, and the heap now holds within ~4% instead of swinging 0-100%:
+  - the console and telemetry share ONE keep-alive datalake connection (each opened a new TLS
+    session every 5 s -- the datalake's chunked reply made the client drop the socket);
+  - requests are written into reused buffers and replies parsed in place;
+  - Live frames go out without a copy (the WebSocket header is written in front of the frame
+    and both go straight to the socket);
+  - `await cam.snapshot()` no longer builds a keyword dict per frame, and a console line is
+    formatted once;
+  - a small collector gathers garbage once ~2% of the heap has been allocated (a few
+    milliseconds each), so what cannot be avoided -- the camera's own image object every
+    frame -- never piles up. Tune it with `openmv_cloud.configure(gc_bytes=...)`.
+- Live video: a frame taken while nobody was watching stayed "in flight", so the next viewer
+  got no frames until the camera restarted. It is released now.
+
+### Added
+
+- Rollout ramps, server side: a ramp's status reports the current stage's progress toward its
+  gates (`soak_left_s`, `attempted_left`, its failure rate against the ceiling); raising a ramp
+  by hand jumps to the furthest stage the percent reaches and restarts that stage's soak;
+  resuming restarts the stage's window; list rows carry `ramp: {stage, of}`; the auto-raise
+  never lowers a hand-raised percent; `rollout.autoraise` is a documented webhook event.
+
 ## [1.0.6] - 2026-10-07
 
 ### Fixed
