@@ -40,6 +40,7 @@ EVENTS = {
     "rollout.create": "a rollout started",
     "rollout.update": "a rollout was raised, paused, resumed or its failure limit changed",
     "rollout.autopause": "a rollout paused itself at its failure limit",
+    "rollout.autoraise": "a ramping rollout raised itself to its next stage",
     "rollout.stop": "a rollout was stopped for good",
     "rollout.superseded": "a rollout was replaced by a newer one for the same cohort",
     "rollout.rename": "a rollout's display name changed",

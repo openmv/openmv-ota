@@ -170,6 +170,14 @@ That starts at 1%, holds a day and at least 50 devices, then 10% under the same 
 500 devices, then 100% — each `--stage` is `PERCENT[:SOAK[:ATTEMPTED[:MAXFAIL]]]`. A
 manual rollout (no stages) behaves exactly as before.
 
+You can still act on a ramp by hand. `raise N` jumps ahead to the furthest stage N
+reaches, and that stage's soak and failure window start over; a raise that stays inside
+the current stage only widens it. `resume` also starts the current stage's window over, so
+a ramp paused at its ceiling isn't paused again at once by the failures that stopped it.
+`rollout status` reports the ramp: which stage, the next one, and the current stage's
+`progress` toward each gate (`soak_left_s`, `attempted_left`, and its failure rate against
+the stage's ceiling).
+
 From there the lifecycle is four actions:
 
 ```

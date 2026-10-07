@@ -37,6 +37,7 @@ the URL, the subscription or the description, or switches the endpoint off and o
 | `release.publish`, `release.rename` | a release is published, or relabelled |
 | `rollout.create`, `rollout.update`, `rollout.stop`, `rollout.superseded`, `rollout.rename` | a rollout's lifecycle |
 | `rollout.autopause` | a rollout paused itself at its failure limit |
+| `rollout.autoraise` | a ramping rollout raised itself to its next stage |
 | `cohort.create`, `cohort.assign`, `cohort.pin`, `cohort.rename`, `cohort.delete` | cohort changes |
 | `product.create`, `product.rename` | product changes |
 | `advisory.found` | a scan found a **new** security advisory for a release the fleet runs (one event per finding, never one per scan) |

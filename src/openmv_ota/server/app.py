@@ -43,7 +43,7 @@ from .metastore import build_metastore
 from .ratelimit import RateLimiter, SharedRateLimiter
 from .schemas import CheckAnswer, Health, Ok
 from .rollout import (fallback_payload_version, offers_update, ramp_action,
-                      running_body_sha256, settled, should_autopause)
+                      running_body_sha256, settled, should_autopause, soak_elapsed_s)
 from .storage import build_storage
 from .verify import Registration, build_verifier
 
@@ -617,12 +617,7 @@ def _account(ms, ro, rel, checkin, existing, offered):
 
 def _soak_elapsed_s(entered_at: str | None) -> float:
     """Seconds since the current stage began, from its stored ISO timestamp. 0 if unknown."""
-    if not entered_at:
-        return 0.0
-    try:
-        return (datetime.now(timezone.utc) - datetime.fromisoformat(entered_at)).total_seconds()
-    except ValueError:                                        # a malformed stored timestamp
-        return 0.0
+    return soak_elapsed_s(entered_at, datetime.now(timezone.utc))
 
 
 def _ramp_or_autopause(ms, rid, ro):
@@ -646,6 +641,8 @@ def _ramp_or_autopause(ms, rid, ro):
                                    _soak_elapsed_s(fresh["stage_entered_at"]),
                                    fresh["failure_threshold"])
         if action == "raise":
+            # never lower the dial: an operator may have raised past the next stage by hand
+            nxt = max(nxt, fresh["percent"])
             ms.update_rollout(rid, percent=nxt, stage_index=idx + 1,
                               stage_entered_at=datetime.now(timezone.utc).isoformat(),
                               stage_attempted_base=fresh["attempted"],

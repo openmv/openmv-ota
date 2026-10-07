@@ -273,6 +273,8 @@ class RolloutRow(_Row):
     percent: float = 0.0
     state: str = ""
     cohort_devices: int = 0
+    ramp: dict | None = None
+    """``{"stage": i, "of": n}`` for a ramping rollout (stage is 0-based); null for manual."""
 
 
 class RolloutList(BaseModel):
@@ -443,6 +445,16 @@ class RolloutStatus(BaseModel):
     ``updated`` / ``failures``); null until anything is staged."""
     reported: dict[str, int]
     """Explicit device reports (``POST /feedback``) for this rollout's release."""
+    stages: list[dict] = []
+    """The declared ramp (``percent``, ``min_soak`` seconds, ``min_attempted``, optional
+    ``max_failure_rate`` per stage); empty for a manual rollout."""
+    stage_index: int = 0
+    stage_entered_at: str | None = None
+    ramp: dict | None = None
+    """For a ramping rollout: ``stage``/``of``, the ``current`` and ``next`` stage, and the
+    current stage's ``progress`` toward its raise gates (``soaked_s``, ``soak_left_s``,
+    ``attempted``, ``attempted_left``, ``failures``, ``failure_rate``, ``max_failure_rate``).
+    Null for a manual rollout."""
 
 
 class CohortDeleted(BaseModel):

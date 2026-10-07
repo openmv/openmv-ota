@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
 from pydantic import BaseModel
@@ -17,7 +18,7 @@ from . import datalog as datalog_mod
 from . import live as live_mod
 from .auth import Principal, hash_token, require_scope
 from .datalake import DatalakeError
-from .rollout import validate_stages
+from .rollout import ramp_progress, soak_elapsed_s, stage_for_percent, validate_stages
 from . import webhooks as webhooks_mod
 from .schemas import (
     Account,
@@ -659,13 +660,29 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
         changes["state"] = body.state
     if not changes:
         raise HTTPException(status_code=400, detail="nothing to change")
-    ms.update_rollout(rollout_id, **changes,
+    stage: dict = {}
+    if ro.get("stages"):
+        stages = json.loads(ro["stages"])
+        idx = ro["stage_index"]
+        if "percent" in changes:
+            # a hand raise on a ramp skips to the furthest stage that percent reached
+            idx = stage_for_percent(stages, idx, changes["percent"])
+        if idx != ro["stage_index"] or (body.state == "active" and ro["state"] != "active"):
+            # a new stage, or a resume, starts the stage's soak and failure window afresh --
+            # otherwise a rollout resumed after a failure-limit pause would re-pause at once
+            stage = {"stage_index": idx,
+                     "stage_entered_at": datetime.now(timezone.utc).isoformat(),
+                     "stage_attempted_base": ro["attempted"],
+                     "stage_failures_base": ro["failures"]}
+    ms.update_rollout(rollout_id, **changes, **stage,
                       **({"pause_reason": "operator" if body.state == "paused" else None}
                          if body.state is not None else {}))
+    if stage and stage["stage_index"] != ro["stage_index"]:
+        changes["stage"] = stage["stage_index"]
     ms.append_audit(actor=principal.name, action="rollout.update", entity_type="rollout",
                     entity_id=rollout_id, data=changes, account_id=principal.account_id,
                     product_id=ro["product_id"])
-    return ms.get_rollout(rollout_id)
+    return _ramp_view(ms.get_rollout(rollout_id))
 
 
 @admin.post("/rollouts/{rollout_id}/stop", responses={200: {"model": RolloutState}})
@@ -691,6 +708,12 @@ _ROLLOUT_ROW = ("rollout_id", "release_id", "product_id", "product_id_str", "coh
                 "cohort_devices", "up_to_date", "pause_reason", "display_name")
 
 
+def _ramp_brief(r: dict) -> dict | None:
+    """A list row's ramp: which stage of how many, or null for a manual rollout."""
+    n = len(json.loads(r["stages"])) if r.get("stages") else 0
+    return {"stage": r.get("stage_index", 0), "of": n} if n else None
+
+
 @admin.get("/rollouts", responses={200: {"model": RolloutList}})
 def list_rollouts(request: Request, product_id: int | None = None, limit: int = _LIMIT_Q,
                   offset: int = 0, state: str | None = None, cohort: str | None = None,
@@ -710,28 +733,35 @@ def list_rollouts(request: Request, product_id: int | None = None, limit: int = 
                             limit=limit, offset=offset, state=state, cohort=cohort,
                             sort=sort, direction=dir, release_id=release_id,
                             pause_reason=pause_reason, products=principal.scoped())
-    return {"rollouts": [{k: r[k] for k in _ROLLOUT_ROW} for r in rows],
+    return {"rollouts": [{**{k: r[k] for k in _ROLLOUT_ROW}, "ramp": _ramp_brief(r)}
+                         for r in rows],
             "total": ms.count_rollouts(product_id, principal.account_id, state, cohort,
                                        release_id, pause_reason, products=principal.scoped())}
 
 
 def _ramp_view(ro: dict) -> dict:
     """Present a rollout's ramp for reading. The stored ``stages`` is a JSON string; parse it to a
-    list, add a ``ramp`` summary (which stage, of how many, the current stage and the next one) when
-    there is one, and drop the internal per-stage baselines. A manual rollout gets ``stages: []`` and
-    ``ramp: null``."""
+    list, add a ``ramp`` summary (which stage, of how many, the current stage, the next one, and
+    the current stage's ``progress`` toward its raise gates) when there is one, and drop the
+    internal per-stage baselines. A manual rollout gets ``stages: []`` and ``ramp: null``."""
     raw = ro.get("stages")
     stages = json.loads(raw) if raw else []
-    ro = {k: v for k, v in ro.items()
-          if k not in ("stages", "stage_attempted_base", "stage_failures_base")}
-    ro["stages"] = stages
+    view = {k: v for k, v in ro.items()
+            if k not in ("stages", "stage_attempted_base", "stage_failures_base")}
+    view["stages"] = stages
     if stages:
         i = ro.get("stage_index", 0)
-        ro["ramp"] = {"stage": i, "of": len(stages), "current": stages[i],
-                      "next": stages[i + 1] if i + 1 < len(stages) else None}
+        progress = ramp_progress(
+            stages, i, ro.get("attempted", 0) - ro.get("stage_attempted_base", 0),
+            ro.get("failures", 0) - ro.get("stage_failures_base", 0),
+            soak_elapsed_s(ro.get("stage_entered_at"), datetime.now(timezone.utc)),
+            ro.get("failure_threshold", 0.0))
+        view["ramp"] = {"stage": i, "of": len(stages), "current": stages[i],
+                        "next": stages[i + 1] if i + 1 < len(stages) else None,
+                        "progress": progress}
     else:
-        ro["ramp"] = None
-    return ro
+        view["ramp"] = None
+    return view
 
 
 @admin.get("/rollouts/{rollout_id}/status", responses={200: {"model": RolloutStatus}})

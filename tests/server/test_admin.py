@@ -1438,6 +1438,110 @@ def test_rollout_status_manual_rollout_has_no_ramp(tmp_path):
     assert b["ramp"] is None and b["stages"] == []                  # last stage of a manual rollout
 
 
+def _ramp_rollout(c, stages=None):
+    return c.post("/api/v1/admin/rollouts", headers=AUTH,
+                  json={"release_id": "rel1",
+                        "stages": stages or [{"percent": 5, "min_soak": 3600, "min_attempted": 10},
+                                             {"percent": 25, "min_soak": 3600},
+                                             {"percent": 50}, {"percent": 100}]}).json()["rollout_id"]
+
+
+def test_rollout_status_reports_stage_progress_toward_its_gates(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    c = TestClient(app)
+    rid = _ramp_rollout(c, [{"percent": 5, "min_soak": 3600, "min_attempted": 10,
+                             "max_failure_rate": 0.2}, {"percent": 100}])
+    store.update_rollout(rid, stage_attempted_base=2, stage_failures_base=1)
+    store.bump_rollout(rid, attempted=6, failures=2)            # 4 attempts, 1 failure this stage
+    p = c.get("/api/v1/admin/rollouts/%s/status" % rid, headers=AUTH).json()["ramp"]["progress"]
+    assert p["attempted"] == 4 and p["failures"] == 1 and p["failure_rate"] == 0.25
+    assert p["attempted_left"] == 6 and p["max_failure_rate"] == 0.2
+    assert 3500 < p["soak_left_s"] <= 3600 and p["soaked_s"] < 100
+
+
+def test_stage_progress_defaults_the_ceiling_and_reads_zero_rate_before_any_attempt(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    c = TestClient(app)
+    rid = _ramp_rollout(c)
+    p = c.get("/api/v1/admin/rollouts/%s/status" % rid, headers=AUTH).json()["ramp"]["progress"]
+    assert p["failure_rate"] == 0.0 and p["attempted"] == 0
+    assert p["max_failure_rate"] == store.get_rollout(rid)["failure_threshold"]
+
+
+def test_hand_raise_on_a_ramp_skips_to_the_stage_it_reaches(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    c = TestClient(app)
+    rid = _ramp_rollout(c)
+    store.bump_rollout(rid, attempted=7, failures=1)
+    store.update_rollout(rid, stage_entered_at="2020-01-01T00:00:00+00:00")
+    b = c.patch("/api/v1/admin/rollouts/" + rid, headers=AUTH, json={"percent": 30}).json()
+    assert b["percent"] == 30 and b["ramp"]["stage"] == 1      # past 25, short of 50
+    assert b["ramp"]["next"]["percent"] == 50
+    assert b["ramp"]["progress"]["attempted"] == 0             # the stage window starts afresh
+    assert not b["stage_entered_at"].startswith("2020")        # and so does its soak
+    assert "stage_attempted_base" not in b
+    upd = [e for e in store.read_audit() if e["action"] == "rollout.update"][-1]
+    assert upd["data"] == {"percent": 30, "stage": 1}
+
+
+def test_hand_raise_within_a_stage_keeps_its_soak(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    c = TestClient(app)
+    rid = _ramp_rollout(c)
+    store.update_rollout(rid, stage_entered_at="2020-01-01T00:00:00+00:00")
+    b = c.patch("/api/v1/admin/rollouts/" + rid, headers=AUTH, json={"percent": 10}).json()
+    assert b["percent"] == 10 and b["ramp"]["stage"] == 0
+    assert b["stage_entered_at"].startswith("2020")
+    upd = [e for e in store.read_audit() if e["action"] == "rollout.update"][-1]
+    assert upd["data"] == {"percent": 10}
+
+
+def test_resuming_a_ramp_restarts_the_stage_window(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    c = TestClient(app)
+    rid = _ramp_rollout(c)
+    store.bump_rollout(rid, attempted=10, failures=5)
+    store.update_rollout(rid, state="paused", pause_reason="failure_limit",
+                         stage_entered_at="2020-01-01T00:00:00+00:00")
+    b = c.patch("/api/v1/admin/rollouts/" + rid, headers=AUTH, json={"state": "active"}).json()
+    assert b["state"] == "active" and b["ramp"]["stage"] == 0
+    assert b["ramp"]["progress"]["failures"] == 0              # not re-paused by the old window
+    assert not b["stage_entered_at"].startswith("2020")
+    # pausing does not touch the window
+    store.bump_rollout(rid, attempted=3)
+    b = c.patch("/api/v1/admin/rollouts/" + rid, headers=AUTH, json={"state": "paused"}).json()
+    assert b["ramp"]["progress"]["attempted"] == 3
+
+
+def test_patch_on_a_manual_rollout_returns_no_ramp(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    c = TestClient(app)
+    rid = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                 json={"release_id": "rel1", "percent": 5}).json()["rollout_id"]
+    b = c.patch("/api/v1/admin/rollouts/" + rid, headers=AUTH, json={"percent": 50}).json()
+    assert b["percent"] == 50 and b["ramp"] is None and b["stages"] == []
+
+
+def test_list_rollouts_rows_carry_the_ramp_stage(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    c = TestClient(app)
+    ramp = _ramp_rollout(c)
+    manual = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                    json={"release_id": "rel1", "percent": 5, "cohort": "other"}).json()["rollout_id"]
+    store.update_rollout(ramp, stage_index=2)
+    rows = {r["rollout_id"]: r for r in
+            c.get("/api/v1/admin/rollouts", headers=AUTH).json()["rollouts"]}
+    assert rows[ramp]["ramp"] == {"stage": 2, "of": 4}
+    assert rows[manual]["ramp"] is None
+
+
 def test_device_neighbors_step_through_a_product_in_name_order(tmp_path):
     """Name order (a display name wins over the id, case-insensitively), ties broken by id,
     other products and other accounts left out; the ends have no neighbor."""

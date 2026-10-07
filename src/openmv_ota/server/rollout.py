@@ -9,6 +9,7 @@ rollout isn't systematically the canary in the next.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 
 
 def staged_in(rollout_id: str, device_id: str, percent: float) -> bool:
@@ -143,6 +144,39 @@ def validate_stages(stages):
         out.append(clean)
         last_pct = pct
     return out
+
+
+def soak_elapsed_s(entered_at: str | None, now: datetime) -> float:
+    """Seconds from a stage's stored ISO entry time to ``now``. 0 if unknown or malformed."""
+    if not entered_at:
+        return 0.0
+    try:
+        return (now - datetime.fromisoformat(entered_at)).total_seconds()
+    except ValueError:                                        # a malformed stored timestamp
+        return 0.0
+
+
+def ramp_progress(stages, stage_index, stage_attempted, stage_failures, soak_elapsed_s,
+                  default_max_failure_rate):
+    """How far the current stage is toward its raise gates, for a reader (the same numbers
+    ``ramp_action`` judges). ``soak_left_s``/``attempted_left`` reach 0 when a gate is met."""
+    stage = stages[stage_index]
+    return {"soaked_s": round(soak_elapsed_s), "attempted": stage_attempted,
+            "failures": stage_failures,
+            "failure_rate": stage_failures / stage_attempted if stage_attempted > 0 else 0.0,
+            "max_failure_rate": stage.get("max_failure_rate", default_max_failure_rate),
+            "soak_left_s": max(0, round(stage["min_soak"] - soak_elapsed_s)),
+            "attempted_left": max(0, stage["min_attempted"] - stage_attempted)}
+
+
+def stage_for_percent(stages, stage_index, percent):
+    """The stage a hand-raised ``percent`` lands in: the furthest stage whose percent it has
+    reached, never behind ``stage_index`` (an operator raise skips stages, it never rewinds)."""
+    j = stage_index
+    for i, s in enumerate(stages):
+        if i > j and s["percent"] <= percent:
+            j = i
+    return j
 
 
 def ramp_action(stages, stage_index, stage_attempted, stage_failures, soak_elapsed_s,

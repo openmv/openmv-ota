@@ -899,6 +899,15 @@ def test_ramp_auto_pauses_when_a_stage_exceeds_its_ceiling(tmp_path):
     assert paused and paused[0]["data"]["stage"] == 0
 
 
+def test_ramp_auto_raise_never_lowers_a_hand_raised_percent(tmp_path):
+    app, store, storage, v = _app(tmp_path)
+    _seed_ramp(store, [{"percent": 5, "min_soak": 0}, {"percent": 50}, {"percent": 100}])
+    store.update_rollout("ro1", percent=70)                   # raised by hand past stage 1
+    TestClient(app).post("/api/v1/check", json=_checkin(pv=0x01000000))
+    ro = store.get_rollout("ro1")
+    assert ro["stage_index"] == 1 and ro["percent"] == 70
+
+
 def test_soak_elapsed_s_handles_missing_and_malformed():
     from datetime import datetime, timedelta, timezone
 
