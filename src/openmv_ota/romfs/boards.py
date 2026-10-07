@@ -84,6 +84,12 @@ class BoardConfig:
                                          # tools to agree on
     live_framesize: str | None = None    # the Live video frame size cap (a LIVE_FRAMESIZES
                                          # name); set on every "full" board, on no other
+    secure_element: dict[str, Any] | None = None
+                                         # the board's secure element: {"chip": one of
+                                         # SE_CHIPS, "bus": machine.I2C id, "addr": 7-bit
+                                         # address, "enable": Pin name or None, "freq": Hz}.
+                                         # The romfs build ships only that chip's module
+                                         # and its wiring (see openmv_ota.se); None = none
 
     def partition(self, index: int | None = None) -> Partition:
         """Return the partition with the given ``index`` (default: the first).
@@ -99,6 +105,28 @@ class BoardConfig:
             "board %r has no partition index %d (available: %s)"
             % (self.name, index, ", ".join(str(p.index) for p in self.partitions))
         )
+
+
+SE_CHIPS = ("se050", "atecc608")
+
+
+def _secure_element(board: str, se: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A board's secure element wiring, checked: a chip this tool has a module for, an I2C
+    bus id, a 7-bit address and an optional enable pin name."""
+    if se is None:
+        return None
+    chip = se.get("chip")
+    if chip not in SE_CHIPS:
+        raise ValueError("boards.json: %s has secure_element chip %r, expected one of %s"
+                         % (board, chip, ", ".join(SE_CHIPS)))
+    bus, addr, enable = se.get("bus"), se.get("addr"), se.get("enable")
+    if not isinstance(bus, int) or not isinstance(addr, int) or not 0 < addr < 0x80:
+        raise ValueError("boards.json: %s secure_element needs an integer bus and a 7-bit addr"
+                         % board)
+    if enable is not None and not isinstance(enable, str):
+        raise ValueError("boards.json: %s secure_element enable must be a Pin name" % board)
+    return {"chip": chip, "bus": bus, "addr": addr, "enable": enable,
+            "freq": int(se.get("freq", 400000))}
 
 
 def _load_raw() -> dict[str, Any]:
@@ -156,6 +184,7 @@ def load_boards() -> dict[str, BoardConfig]:
             ota_firmware_drops=dict(b.get("ota_firmware_drops", {})),
             cloud=_cloud_level(name, b.get("cloud")),
             live_framesize=_live_framesize(name, b.get("cloud"), b.get("live_framesize")),
+            secure_element=_secure_element(name, b.get("secure_element")),
             partitions=parts,
             flash=b.get("flash"),
             unsupported=b.get("unsupported"),
