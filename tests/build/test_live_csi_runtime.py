@@ -573,3 +573,20 @@ def test_wrapped_cameras_are_remembered_once_and_bounded(monkeypatch):
     for i, c in enumerate(made):
         rt.CSI(cam=c, stream="m%d" % i)
     assert rt._cams == made[-rt._CAMS_MAX:]
+
+
+# --- the in-place frame header (copy-free sends) --------------------------------------------
+
+@pytest.mark.parametrize("n", [0, 6, 125, 126, 300, 65535, 65536, 70000])
+def test_put_frame_header_matches_frame_header_and_ends_at_the_payload(n):
+    buf = bytearray(rt._HDR + 4)
+    start = rt._put_frame_header(buf, rt._HDR, rt._OP_BINARY, n)
+    assert bytes(buf[start:rt._HDR]) == rt._frame_header(rt._OP_BINARY, n)
+
+
+def test_stream_buffer_keeps_header_room_in_front_of_the_frame():
+    s = _bare_stream(name="room", encoder=lambda img, q: img)
+    s._session.streaming = True
+    assert s.flush(b"JPEG") is True
+    assert bytes(s._buf[rt._HDR:rt._HDR + 4]) == b"JPEG"
+    assert bytes(s._take_frame()) == b"JPEG"

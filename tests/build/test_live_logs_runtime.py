@@ -190,7 +190,7 @@ def test_outbox_requeue_re_trims_under_a_persistent_outage():
 # --- NDJSON encoding (the datalake batch body) ---------------------------------------------
 
 def test_ndjson_one_record_per_line():
-    body = lg._ndjson("aa00", [(0, "one\n"), (1, "two\n")])
+    body = b"\n".join(lg._ndjson("aa00", [(0, "one\n"), (1, "two\n")]))   # as the connection joins it
     # embedded newlines inside `text` are JSON-escaped, so the only real \n
     # bytes are the NDJSON record separators -> safe line-based parsing.
     recs = [json.loads(x) for x in body.split(b"\n") if x.strip()]
@@ -483,3 +483,21 @@ def test_live_console_flusher_outlives_a_tick_that_raises(monkeypatch):
             pass
     _run_loop(lambda: lg._flusher(_Console(), _Stream()), lambda: len(seen) >= 3, monkeypatch)
     assert len(seen) >= 3
+
+
+# --- one-pass line formatting and the shared entry ------------------------------------------
+
+def test_line_is_the_frozen_format_plus_newline_in_one_pass():
+    from openmv_ota.build.device import openmv_log as frozen   # the device's own formatter
+    for lt in ((2026, 10, 7, 6, 5, 4, 0, 0), (2000, 1, 1, 0, 0, 0, 0, 0)):   # RTC set / unset
+        assert lg._line(lt, 12345, "INFO", "app", "m") == frozen._format(
+            frozen._stamp(lt, 12345), "INFO", "app", "m") + "\n"
+
+
+def test_handler_shares_one_entry_between_console_and_outbox():
+    c = _console()
+    ob = lg._Outbox()
+    h = lg.CloudLogHandler(c, ob, stamper=lambda: "S")
+    _emit(h, "hello")
+    assert ob._buf[0] is c._ring[0]                       # the same tuple, not a copy
+    ob._budget.leave(ob)

@@ -28,7 +28,7 @@ low-rate topics is the intended use. The ceilings are yours to set; see
 
 import json
 
-from ._lib import (_Conn, _drain_disk, _level, _open_disk, _session_id, _timestamp, budget,
+from ._lib import (_datalake_conn, _drain_disk, _level, _open_disk, _session_id, _timestamp, budget,
                    limits)
 
 _FLUSH_MS = 5000
@@ -138,6 +138,9 @@ class _ByteOutbox:
 # --- module state (topics + config + the ingest grant) -----------------------
 
 _topics = {}                          # topic -> {"seq": int, "box": _ByteOutbox}
+_order = []                           # the same topics, append-only: the flusher walks this by
+                                      # index, so a post() adding one mid-flush is safe and the
+                                      # walk copies nothing
 _ingest = None
 _spool_path = None
 _write_through = False
@@ -163,8 +166,10 @@ def post(topic, obj):
         if len(_topics) >= limits.topics_max:
             return False
         disk = _open_disk(_spool_path, _SPOOL_NAME % topic)
-        t = {"seq": 0, "box": _ByteOutbox(disk=disk, write_through=_write_through)}
+        t = {"topic": topic, "seq": 0,
+             "box": _ByteOutbox(disk=disk, write_through=_write_through)}
         _topics[topic] = t
+        _order.append(t)
     t["box"].add(_record(_sid, t["seq"], obj, _timestamp()))
     t["seq"] += 1
     return True
@@ -213,13 +218,14 @@ def enable(spool_path=None, write_through=False):
 
 def _start():  # pragma: no cover  (device: spawns the task)
     import asyncio
+    from ._lib import _start_collector
     asyncio.create_task(_flusher())
+    _start_collector()
 
 
 async def _flusher():  # pragma: no cover  (device loop)
-    """Drain every topic: its disk spool first, then its RAM tier. ONE
-    :class:`_Conn` serves the whole cycle across ALL topics, so N topics cost
-    one ~20 KiB TLS handshake per tick rather than N of them."""
+    """Drain every topic: its disk spool first, then its RAM tier. Every topic rides the
+    one shared datalake connection, so N topics cost no handshake at all once it is up."""
     import asyncio
     import gc
     while True:
@@ -233,25 +239,26 @@ async def _flusher():  # pragma: no cover  (device loop)
 
 
 async def _cycle():  # pragma: no cover  (device network)
-    """One flush of every topic over one connection."""
+    """One flush of every topic over the shared datalake connection (kept open between
+    cycles -- see ``_lib._datalake_conn``)."""
     target = _ingest
     if target is None:
         return
     batch = limits.batch_bytes
-    conn = _Conn(target)
-    try:
-        for topic, t in list(_topics.items()):
-            box = t["box"]
+    conn = _datalake_conn(target)
+    i = 0
+    while i < len(_order):
+        t = _order[i]
+        i += 1
+        topic, box = t["topic"], t["box"]
+        try:
+            await _drain_disk(conn, topic, box._disk, batch)
+        except Exception:
+            continue
+        while box.pending_bytes():
+            records = box.take(batch)
             try:
-                await _drain_disk(conn, topic, box._disk, batch)
+                await conn.post(topic, records)      # joined into the connection's buffer
             except Exception:
-                continue
-            while box.pending_bytes():
-                records = box.take(batch)
-                try:
-                    await conn.post(topic, b"\n".join(records))
-                except Exception:
-                    box.requeue(records)
-                    break
-    finally:
-        await conn.close()
+                box.requeue(records)
+                break

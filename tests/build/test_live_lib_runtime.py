@@ -346,3 +346,86 @@ def test_sdk_refuses_without_the_ota_runtime(monkeypatch):
     assert _lib._ca() is None
     with pytest.raises(ImportError):
         _lib._tls_ctx(_Ssl)
+
+
+# --- the datalake connection's request/response codec (allocation-free on device) ----------
+
+def test_put_and_put_int_write_in_place():
+    buf = bytearray(16)
+    off = _lib._put(buf, 0, b"len=")
+    off = _lib._put_int(buf, off, 4096)
+    assert bytes(buf[:off]) == b"len=4096"
+    for n in (0, 7, 10, 65535, 1234567):
+        b = bytearray(12)
+        end = _lib._put_int(b, 2, n)
+        assert bytes(b[2:end]) == str(n).encode()
+
+
+def test_num_at_decimal_and_hex():
+    buf = bytearray(b"  1234\r\n1aF;ext\r\nzz")
+    assert _lib._num_at(buf, 0, 8, 10) == 1234           # leading spaces skipped
+    assert _lib._num_at(buf, 8, 17, 16) == 0x1AF         # stops at ';'
+    assert _lib._num_at(buf, 17, 19, 16) == -1           # no digits
+    assert _lib._num_at(buf, 8, 17, 10) == 1             # a decimal read stops at the letter
+
+
+def test_request_head_and_body_fill():
+    buf = bytearray(256)
+    n = _lib._request_head(buf, b"POST /ingest/a/p/d/", b"heap",
+                           b" HTTP/1.1\r\nHost: h\r\nContent-Length: ", 42)
+    assert bytes(buf[:n]) == b"POST /ingest/a/p/d/heap HTTP/1.1\r\nHost: h\r\nContent-Length: 42\r\n\r\n"
+    recs = [b'{"a":1}', b'{"b":2}', b"x"]
+    assert _lib._body_len(recs, b"\n") == len(b"\n".join(recs))
+    assert _lib._body_len([], b"\n") == 0
+    out = bytearray(64)
+    assert bytes(out[:_lib._fill(out, recs, b"\n")]) == b"\n".join(recs)
+
+
+_CF_HEAD = (b"HTTP/1.1 200 OK\r\nDate: x\r\nContent-Type: application/json\r\n"
+            b"Transfer-Encoding: chunked\r\nConnection: keep-alive\r\nServer: cloudflare\r\n\r\n")
+
+
+def _resp(raw):
+    buf = bytearray(len(raw) + 8)
+    buf[:len(raw)] = raw
+    return _lib._response(buf, len(raw))
+
+
+def test_response_chunked_reply_from_cloudflare_is_read_and_reused():
+    body = b"17\r\n" + b'{"stored":1,"bytes":83}' + b"\r\n0\r\n\r\n"
+    assert _resp(_CF_HEAD + body) == (True, True)
+    assert _resp(_CF_HEAD + body[:10]) is None            # mid-chunk: keep reading
+    assert _resp(_CF_HEAD + b"1") is None                 # the size line not finished yet
+    assert _resp(_CF_HEAD + body[:-2]) is None            # the final empty line not yet in
+    assert _resp(_CF_HEAD + b"5\r\nhello\r\n0\r\nX-T: 1\r\n\r\n") == (True, True)   # a trailer
+    assert _resp(_CF_HEAD + b"zz\r\n") == (True, False)   # not hex: out of sync, drop
+    assert _resp(_CF_HEAD + body + b"HTTP") == (True, False)   # bytes past the end: drop
+
+
+def test_response_content_length_and_drop_cases():
+    ok = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n"
+    assert _resp(ok + b"{}") == (True, True)
+    assert _resp(ok + b"{") is None
+    assert _resp(b"HTTP/1.1 200 OK\r\n\r\n") == (True, True)           # no body at all
+    assert _resp(b"HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 0\r\nConnection: close\r\n\r\n") \
+        == (True, False)                                              # any case; close drops
+    assert _resp(b"HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\n") == (True, False)
+    assert _resp(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n") == (True, False)
+    assert _resp(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")[0] is False
+    assert _resp(b"HTTP/1.1 200 OK\r\nContent-Le") is None             # headers incomplete
+
+
+def test_gc_step_is_two_percent_of_the_heap_with_a_floor():
+    assert _lib._gc_step(328 * 1024, 0) == 328 * 1024 // 50
+    assert _lib._gc_step(64 * 1024, 0) == _lib._GC_MIN
+    assert _lib._gc_step(8 << 20, 0) == (8 << 20) // 50
+    assert _lib._gc_step(8 << 20, 12345) == 12345                    # configured wins
+
+
+def test_configure_accepts_gc_bytes():
+    old = _lib.limits.gc_bytes
+    try:
+        _lib.configure(gc_bytes=8192)
+        assert _lib.limits.gc_bytes == 8192
+    finally:
+        _lib.limits.gc_bytes = old

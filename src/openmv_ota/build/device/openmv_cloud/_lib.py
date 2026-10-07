@@ -45,6 +45,7 @@ class _Limits:
     frame_max = 2 * 1024          # ceiling on a relay-declared frame length
     resp_max = 8 * 1024           # ceiling on a response body we read
     topics_max = 32               # datalog topics (each spooled topic = a file)
+    gc_bytes = 0                  # collect after this much allocation; 0 = 2% of heap (_collector)
 
 
 limits = _Limits()
@@ -337,99 +338,424 @@ def _register():  # pragma: no cover  (device: the openmv_ota runtime package)
         pass
 
 
+# --- the datalake connection, allocation-free in steady state ------------------
+#
+# A camera posts its console and telemetry every few seconds, for as long as it runs. Anything
+# that request allocates is garbage a few seconds later, and garbage at that rate is what makes
+# the heap graph a sawtooth (and, on the small-RAM boards, what fragments the heap until a TLS
+# handshake can no longer find its buffers). So the request is written into a reused buffer,
+# the response is read into another and parsed in place, and the connection stays open. The
+# helpers below are pure so the host tests pin them.
+
+_RESP_BUF = 1536     # a whole response (status, headers, a small body) must fit, else reconnect
+_IO_MS = 15000       # one request on the datalake connection, sent and answered, or it is dropped
+
+
+def _put(buf, off, data):
+    """Copy ``data`` into ``buf`` at ``off``; the offset after it. No allocation."""
+    end = off + len(data)
+    buf[off:end] = data
+    return end
+
+
+def _put_int(buf, off, n):
+    """Write the decimal digits of ``n`` (>= 0) into ``buf`` at ``off``; the offset after them.
+    By hand: ``str(n).encode()`` would allocate twice per request."""
+    start = off
+    while True:
+        buf[off] = 48 + n % 10
+        off += 1
+        n //= 10
+        if not n:
+            break
+    i, j = start, off - 1
+    while i < j:                                     # the digits went in backwards
+        buf[i], buf[j] = buf[j], buf[i]
+        i += 1
+        j -= 1
+    return off
+
+
+def _num_at(buf, i, end, base):
+    """The number in ``base`` (10 or 16) starting at ``buf[i]`` (leading spaces skipped), or -1
+    when there is none."""
+    while i < end and buf[i] == 32:
+        i += 1
+    v = -1
+    while i < end:
+        c = buf[i]
+        if 48 <= c <= 57:
+            d = c - 48
+        elif base == 16 and 97 <= c <= 102:
+            d = c - 87
+        elif base == 16 and 65 <= c <= 70:
+            d = c - 55
+        else:
+            break
+        v = (v if v > 0 else 0) * base + d
+        i += 1
+    return v
+
+
+def _chunked_end(buf, pos, n):
+    """Where a chunked body starting at ``pos`` ends within ``buf[:n]``: the offset after its
+    final empty line, -1 while incomplete, -2 if malformed."""
+    while True:
+        eol = buf.find(b"\r\n", pos, n)
+        if eol < 0:
+            return -1
+        size = _num_at(buf, pos, eol, 16)
+        if size < 0:
+            return -2
+        if size == 0:
+            p = eol + 2
+            while True:                              # trailers, then the empty line
+                e = buf.find(b"\r\n", p, n)
+                if e < 0:
+                    return -1
+                if e == p:
+                    return e + 2
+                p = e + 2
+        pos = eol + 2 + size + 2
+        if pos > n:
+            return -1
+
+
+def _response(buf, n):
+    """Where an HTTP response in ``buf[:n]`` stands: None while it is incomplete, else
+    ``(ok, reusable)`` -- a 200, and whether the connection is still in sync for the next
+    request (a complete body, nothing after it, no ``Connection: close``). Lowercases the header
+    block in place so names match whatever case the server or proxy used."""
+    h = buf.find(b"\r\n\r\n", 0, n)
+    if h < 0:
+        return None
+    ok = h >= 12 and buf[9] == 50 and buf[10] == 48 and buf[11] == 48     # "HTTP/1.x 200"
+    i = 0
+    while i < h:
+        c = buf[i]
+        if 65 <= c <= 90:
+            buf[i] = c + 32
+        i += 1
+    body = h + 4
+    keep = buf.find(b"\r\nconnection: close", 0, h) < 0
+    if buf.find(b"\r\ntransfer-encoding:", 0, h) >= 0:
+        # Cloudflare re-encodes the datalake's reply as chunked: read it, don't reconnect over it
+        if buf.find(b"chunked", 0, h) < 0:
+            return ok, False
+        end = _chunked_end(buf, body, n)
+        if end == -1:
+            return None
+        return ok, keep and end == n
+    i = buf.find(b"\r\ncontent-length:", 0, h)
+    length = _num_at(buf, i + 17, h, 10) if i >= 0 else 0
+    if length < 0:
+        return ok, False
+    if n < body + length:
+        return None
+    return ok, keep and n == body + length
+
+
+def _request_head(buf, pre, topic, mid, length):
+    """``POST <base>/<topic> HTTP/1.1 ... Content-Length: <length>`` into ``buf``; its length.
+    ``pre`` and ``mid`` are the parts that only change with the connection or the token."""
+    off = _put(buf, 0, pre)
+    off = _put(buf, off, topic)
+    off = _put(buf, off, mid)
+    off = _put_int(buf, off, length)
+    return _put(buf, off, b"\r\n\r\n")
+
+
+def _body_len(pieces, sep):
+    """The body's length: ``pieces`` joined by ``sep``."""
+    n = 0
+    for p in pieces:
+        n += len(p)
+    return n + len(sep) * (len(pieces) - 1) if pieces else 0
+
+
+def _fill(buf, pieces, sep):
+    """``pieces`` joined by ``sep`` into ``buf`` -- the join without the allocation."""
+    off = 0
+    first = True
+    for p in pieces:
+        if not first:
+            off = _put(buf, off, sep)
+        first = False
+        off = _put(buf, off, p)
+    return off
+
+
+_shared = None       # the one datalake connection both sinks post on (see _datalake_conn)
+
+
+def _datalake_conn(target):  # pragma: no cover  (device network)
+    """THE datalake connection: one keep-alive socket shared by the console and the datalog
+    sinks and held open across their flush cycles. A fresh TLS session costs ~40 KiB of
+    short-lived heap (the handshake plus its record buffers); with each sink reconnecting
+    every 5 s that was ~8 KiB/s of allocation on an idle camera, measured on an H7 -- the heap
+    graph's sawtooth, and the fragmentation that later failed TLS at check-in. Held open, the
+    buffers are allocated once and stay put. A renewed grant updates the token in place; a
+    moved URL reconnects."""
+    global _shared
+    if _shared is None:
+        _shared = _Conn(target)
+    else:
+        _shared.retarget(target)
+    return _shared
+
+
+def _write_all(stream, data):  # pragma: no cover  (device: asyncio internals)
+    """Send all of ``data`` on an asyncio stream's socket, waiting for room as needed -- what
+    ``write()`` + ``drain()`` do, minus their copy: MicroPython's ``Stream.write`` copies
+    whatever the socket did not take at once into a new buffer, and TLS takes about one 4 KiB
+    record per call. A generator (awaitable), like the asyncio stream methods themselves."""
+    from asyncio import core
+    s = stream.s
+    mv = data if isinstance(data, memoryview) else memoryview(data)
+    off, n = 0, len(mv)
+    while off < n:
+        ret = s.write(mv[off:] if off else mv)
+        if ret:
+            off += ret
+        if off < n:
+            yield core._io_queue.queue_write(s)
+
+
 class _Conn:  # pragma: no cover  (device network)
     """A KEEP-ALIVE HTTP/1.1 connection to the ingest base URL, reused for every
-    batch of one flush.
+    batch of every flush (see :func:`_datalake_conn`).
 
     Measured: each fresh TLS handshake allocates ~20 KiB of mbedTLS record
     buffers (IN 16 KiB + OUT 4 KiB; MicroPython does not enable
     MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH, so they stay full size for the
-    connection's life) plus a couple of round trips. Reusing one connection
-    across N batches pays that once instead of N times, which is what makes a
-    small ``batch_bytes`` cheap: draining a large spool in 4 KiB posts costs the
-    same handshake as draining it in 16 KiB posts.
+    connection's life) plus the handshake's own transient allocations. Holding
+    one connection pays that once per outage instead of once per batch.
 
-    The response is fully consumed after each POST so the stream stays in sync
-    for the next one; anything we can't cheaply resync from (a body over
-    ``resp_max``, chunked encoding, ``Connection: close``) just drops the socket
-    and the next post reconnects."""
+    Steady state allocates next to nothing: the request head and body are written into
+    ``_out``, sent straight on the socket, and the response is read into ``_resp`` and parsed
+    in place (see :func:`_response`) -- one generator per request (:meth:`_exchange`). A response that does not fit, or leaves the
+    stream out of sync, drops the socket; the next post reconnects. Every failure closes the
+    socket, so a broken one is never reused. A request that takes longer than ``_IO_MS`` is
+    cut off by :func:`_watchdog` (``asyncio.wait_for`` would allocate ~0.5 KiB per request).
+    Posts are serialized: two sinks share the socket, one request at a time."""
 
     def __init__(self, target):
         self._url, self._token = target
         self._reader = self._writer = None
         self._used = False
+        self._busy = False
+        self._owner = None          # the task whose request is in flight
+        self._deadline = 0          # ticks_ms by when it must finish
+        self._expired = False
+        self._mid = None            # request text after the topic, up to Content-Length
+        self._topics = {}           # topic -> its bytes, encoded once
+        self._out = self._resp = None
 
-    async def _connect(self):
-        tls, host, port, path = _split_url(self._url)
-        self._reader, self._writer = await _open(host, port, tls)
-        self._host, self._base, self._used = host, path.rstrip("/"), False
-        _conns.append(self)                          # reachable by _relieve_conns
+    def retarget(self, target):
+        """A new grant: the token renews in place; a different URL drops the socket."""
+        url, token = target
+        if token != self._token:
+            self._token = token
+            self._mid = None
+        if url != self._url:
+            self._url = url
+            self._drop()
 
-    async def post(self, topic, body):
-        """POST one NDJSON batch. Retries once on a REUSED socket -- the server
-        may have closed an idle keep-alive connection between batches, which is
-        not an error, just a reconnect."""
-        if self._reader is None:
-            await self._connect()
-        try:
-            await self._send(topic, body)
-        except OSError:
-            if not self._used:
-                raise                                # a fresh socket failing is real
-            await self.close()
-            await self._connect()
-            await self._send(topic, body)
-
-    async def _send(self, topic, body):
-        self._writer.write((
-            "POST %s/%s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
-            "Authorization: Bearer %s\r\nContent-Type: application/x-ndjson\r\n"
-            "Content-Length: %d\r\n\r\n"
-            % (self._base, topic, self._host, _UA, self._token, len(body))).encode())
-        self._writer.write(body)                     # separate write: no body copy
-        await self._writer.drain()
-        self._used = True
-        await self._read_response()
-
-    async def _read_response(self):
-        status = await self._reader.readline()
-        if b" 200 " not in status and not status.rstrip().endswith(b" 200"):
-            await self.close()                       # mid-response: can't reuse
-            raise OSError("datalake HTTP %s" % status)
-        length, drop = 0, False
-        while True:
-            line = await self._reader.readline()
-            if line in (b"\r\n", b"\n", b""):
-                break
-            low = line.lower()
-            if low.startswith(b"content-length:"):
-                try:
-                    length = int(line.split(b":", 1)[1].strip())
-                except ValueError:
-                    drop = True
-            elif low.startswith(b"transfer-encoding:"):
-                drop = True                          # chunked: not worth resyncing
-            elif low.startswith(b"connection:") and b"close" in low:
-                drop = True
-        if drop or length > limits.resp_max:
-            await self.close()
-            return
-        left = length                                # consume the body to resync
-        while left > 0:
-            got = await self._reader.readexactly(left if left < _CHUNK else _CHUNK)
-            left -= len(got)
-
-    async def close(self):
+    def _drop(self):
         if self._writer is not None:
-            try:
-                self._writer.close()
-                await self._writer.wait_closed()
-            except OSError:
-                pass
+            _hard_close(self._writer)
         self._reader = self._writer = None
         self._used = False
         if self in _conns:
             _conns.remove(self)
+
+    async def _connect(self):
+        tls, host, port, path = _split_url(self._url)
+        self._reader, self._writer = await _open(host, port, tls)
+        self._used = False
+        self._pre = ("POST %s/" % path.rstrip("/")).encode()
+        self._host = host
+        self._mid = None
+        if self._resp is None:
+            self._resp = bytearray(_RESP_BUF)
+            self._resp_mv = memoryview(self._resp)
+        _conns.append(self)                          # reachable by _relieve_conns
+
+    async def post(self, topic, body):
+        """POST one NDJSON batch: ``body`` is the bytes, or a list of records to join with
+        newlines (in the reused buffer). Retries once on a REUSED socket -- the server may have
+        closed an idle keep-alive connection, which is not an error, just a reconnect. A fresh
+        socket failing is real: it raises."""
+        import asyncio
+        import time
+        while self._busy:                            # the other sink's request is in flight
+            await asyncio.sleep_ms(20)
+        self._busy = True
+        self._owner = asyncio.current_task()
+        try:
+            for attempt in (0, 1):
+                if self._reader is None:
+                    await self._connect()
+                reused = self._used
+                self._expired = False
+                self._deadline = time.ticks_add(time.ticks_ms(), _IO_MS)
+                _start_watchdog()
+                try:
+                    await self._send(topic, body)
+                    return
+                except asyncio.CancelledError:
+                    if not self._expired:
+                        raise                        # somebody else cancelled the task
+                    self._drop()
+                    raise OSError("datalake request stalled")
+                except BaseException as e:
+                    self._drop()
+                    if attempt or not reused or not isinstance(e, OSError):
+                        raise
+        finally:
+            self._deadline = 0
+            self._owner = None
+            self._busy = False
+
+    def _prepare(self, topic, body):
+        """Request head and body into the reused ``_out`` buffer; how many bytes to send.
+        ``body`` is bytes-like, or a list of records to join with newlines."""
+        if self._mid is None:
+            self._mid = (" HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nAuthorization: Bearer %s\r\n"
+                         "Content-Type: application/x-ndjson\r\nContent-Length: "
+                         % (self._host, _UA, self._token)).encode()
+        pieces = body if isinstance(body, list) else None
+        n = _body_len(pieces, b"\n") if pieces is not None else len(body)
+        need = len(self._pre) + len(self._mid) + 32 + 24 + n
+        if self._out is None or len(self._out) < need:
+            # once per connection in practice: sized for a full batch, not this one
+            self._out = bytearray(max(need, len(self._pre) + len(self._mid) + 56
+                                      + limits.batch_bytes))
+            self._out_mv = memoryview(self._out)
+        t = self._topics.get(topic)
+        if t is None:
+            t = self._topics[topic] = topic.encode()
+        head = _request_head(self._out, self._pre, t, self._mid, n)
+        if pieces is None:
+            _put(self._out, head, body)
+        else:
+            _fill(self._out_mv[head:], pieces, b"\n")
+        return head + n
+
+    def _exchange(self, n):  # a generator: awaited, like the asyncio stream methods
+        """Send ``_out[:n]`` and read the whole response into ``_resp``, on the socket
+        directly: one generator per request, no copies (``Stream.write`` copies whatever TLS
+        does not take at once). Returns ``(ok, reusable)``."""
+        from asyncio import core
+        s = self._writer.s
+        out = self._out_mv
+        off = 0
+        while off < n:
+            ret = s.write(out[off:n])
+            if ret:
+                off += ret
+            if off < n:
+                yield core._io_queue.queue_write(s)
+        self._used = True
+        buf, mv, got = self._resp, self._resp_mv, 0
+        while True:
+            if got >= len(buf):
+                return True, False                   # bigger than we read in place: resync
+            yield core._io_queue.queue_read(s)
+            r = s.readinto(mv[got:])
+            if r is None:
+                continue
+            if not r:
+                raise OSError("datalake closed the connection")
+            got += r
+            state = _response(buf, got)
+            if state is not None:
+                if not state[0]:
+                    raise OSError("datalake HTTP %s"
+                                  % bytes(mv[:min(got, 64)]).split(b"\r\n", 1)[0])
+                return state
+
+    async def _send(self, topic, body):
+        ok, reusable = await self._exchange(self._prepare(topic, body))
+        if not reusable:
+            self._drop()
+
+    async def close(self):
+        self._drop()
+
+
+_dog = None          # the watchdog task (see _watchdog)
+
+
+def _start_watchdog():  # pragma: no cover  (device: spawns a task)
+    global _dog
+    if _dog is None:
+        import asyncio
+        _dog = asyncio.create_task(_watchdog())
+
+
+_gc_task = None      # the collector (see _collector)
+
+
+def _start_collector():  # pragma: no cover  (device: spawns a task)
+    """Start the SDK's garbage collector task, once, whichever sink starts first."""
+    global _gc_task
+    if _gc_task is None:
+        import asyncio
+        _gc_task = asyncio.create_task(_collector())
+
+
+_GC_POLL_MS = 500    # how often the collector looks at the heap
+_GC_MIN = 4096       # never collect for less garbage than this
+
+
+def _gc_step(heap_total, configured):
+    """How much allocation the collector lets pile up before it collects: ``configured``
+    (``limits.gc_bytes``), else 2% of the heap and at least ``_GC_MIN``. Pure."""
+    return configured if configured else max(_GC_MIN, heap_total // 50)
+
+
+async def _collector():  # pragma: no cover  (device loop)
+    """Collect once a little garbage has piled up (:func:`_gc_step`), looking every
+    _GC_POLL_MS. Some allocation every frame cannot be avoided -- the camera's own
+    ``snapshot()`` returns a new image object each time -- and MicroPython only collects once
+    the heap is FULL: until then every allocation walks further up the heap, and whatever
+    outlives a collection is left scattered across all of it. That is the heap graph's
+    sawtooth, and on the small-RAM boards it shredded the heap until a TLS handshake found no
+    8 KiB block with half the heap free (measured on an H7). Collecting a few KiB at a time
+    keeps the graph flat (garbage never exceeds ~2% of the heap) and the live objects packed
+    at the bottom, so the big blocks stay available. Measured at 3.8 ms per collect on an H7
+    with ~190 KiB live; a board that allocates less collects less often."""
+    import asyncio
+    import gc
+    gc.collect()
+    total = gc.mem_alloc() + gc.mem_free()
+    floor = gc.mem_alloc()
+    while True:
+        await asyncio.sleep_ms(_GC_POLL_MS)
+        a = gc.mem_alloc()
+        if a < floor:
+            floor = a                                # something else collected
+        elif a - floor >= _gc_step(total, limits.gc_bytes):
+            gc.collect()
+            floor = gc.mem_alloc()
+
+
+async def _watchdog():  # pragma: no cover  (device loop)
+    """Cut off a datalake request that has run past its deadline: drop the socket and cancel
+    the task waiting on it (``post`` turns that into an OSError for the flusher). One task for
+    the life of the program, so a request costs no timer allocation."""
+    import asyncio
+    import time
+    while True:
+        await asyncio.sleep_ms(1000)
+        c = _shared
+        if c is not None and c._deadline and c._owner is not None \
+                and time.ticks_diff(time.ticks_ms(), c._deadline) > 0:
+            c._expired = True
+            c._deadline = 0
+            c._drop()
+            c._owner.cancel()
 
 
 # --- the durable spool tier (device filesystem) ------------------------------
