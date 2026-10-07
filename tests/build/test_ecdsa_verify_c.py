@@ -59,7 +59,40 @@ static size_t unhex(const char *h, uint8_t *out) {
     return n;
 }
 
+extern int omv_ecdsa_public_key(const uint8_t *, size_t, uint8_t *, const uint8_t *, size_t);
+extern int omv_ecdsa_sign(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *,
+                          const uint8_t *, size_t);
+
+static void phex(const char *tag, const uint8_t *b, size_t n) {
+    printf("%s ", tag);
+    for (size_t i = 0; i < n; i++) printf("%02x", b[i]);
+    printf("\n");
+}
+
+// sign.txt rows: "P <priv> <entropy>" or "S <priv> <digest> <entropy>"; each prints its result
+// (or "P -" / "S -" on refusal) for the Python side to check with the host's own crypto.
+static void sign_rows(const char *path) {
+    FILE *f = fopen(path, "r");
+    char op[4], a[200], b[200], c[400];
+    uint8_t priv[100], dg[100], ent[200], out[65];
+    while (fscanf(f, "%3s %199s", op, a) == 2) {
+        size_t np = unhex(a, priv);
+        if (op[0] == 'P') {
+            fscanf(f, "%399s", c);
+            if (omv_ecdsa_public_key(priv, np, out, ent, unhex(c, ent))) phex("P", out, 65);
+            else printf("P -\n");
+        } else {
+            fscanf(f, "%199s %399s", b, c);
+            size_t nd = unhex(b, dg);
+            if (omv_ecdsa_sign(priv, np, dg, nd, out, ent, unhex(c, ent))) phex("S", out, 64);
+            else printf("S -\n");
+        }
+    }
+    fclose(f);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 2) sign_rows(argv[2]);
     FILE *f = fopen(argv[1], "r");
     if (!f) return 2;
     char alg[16], ph[600], sh[600], mh[4096];
@@ -110,6 +143,48 @@ def _vectors():
     return rows
 
 
+def _sign_rows():
+    """Rows for the C signer and, per row, a check of what it printed -- each against the
+    host's own crypto: the public key must be the host's, the signature must verify."""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import (Prehashed,
+                                                                 encode_dss_signature)
+    rows, checks = [], []
+    ent = os.urandom(160).hex()
+    for _ in range(3):
+        key = ec.generate_private_key(ec.SECP256R1())
+        priv = key.private_numbers().private_value.to_bytes(32, "big")
+        pub = key.public_key().public_bytes(serialization.Encoding.X962,
+                                            serialization.PublicFormat.UncompressedPoint)
+        digest = os.urandom(32)
+        rows.append("P %s %s" % (priv.hex(), ent))
+        checks.append(lambda out, pub=pub: _eq(bytes.fromhex(out), pub))
+
+        def verify(out, key=key, digest=digest):
+            rs = bytes.fromhex(out)
+            der = encode_dss_signature(int.from_bytes(rs[:32], "big"),
+                                       int.from_bytes(rs[32:], "big"))
+            key.public_key().verify(der, digest, ec.ECDSA(Prehashed(hashes.SHA256())))
+        rows.append("S %s %s %s" % (priv.hex(), digest.hex(), ent))
+        checks.append(verify)
+    n = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+    refused = lambda out: _eq(out, "-")                        # noqa: E731
+    good = priv.hex()
+    for bad in ("00" * 32, n.to_bytes(32, "big").hex(), good[:-2]):   # 0, n, 31 bytes
+        rows.append("P %s %s" % (bad, ent))
+        checks.append(refused)
+    rows += ["S %s %s %s" % (good, "00" * 31, ent),            # a 31-byte digest
+             "S %s %s %s" % (good, "00" * 32, "00"),           # not enough entropy to sign
+             "P %s %s" % (good, "00")]                         # ...or to blind the multiply
+    checks += [refused, refused, refused]
+    return rows, checks
+
+
+def _eq(a, b):
+    assert a == b
+
+
 @_NEEDS_MBEDTLS
 def test_ecdsa_verify_c_shim(tmp_path):
     lib = _MBEDTLS / "library" / "libmbedcrypto.a"
@@ -134,9 +209,16 @@ def test_ecdsa_verify_c_shim(tmp_path):
     subprocess.run(["gcc", "--coverage", "ecdsa_verify.o", "harness.o", str(lib),
                     "-o", "harness"], cwd=tmp_path, check=True)
 
-    run = subprocess.run([str(tmp_path / "harness"), str(tmp_path / "vec.txt")],
+    rows, checks = _sign_rows()
+    (tmp_path / "sign.txt").write_text("".join(r + "\n" for r in rows))
+    run = subprocess.run([str(tmp_path / "harness"), str(tmp_path / "vec.txt"),
+                          str(tmp_path / "sign.txt")],
                          cwd=tmp_path, capture_output=True, text=True)
     assert run.returncode == 0, run.stdout + run.stderr     # every vector matched
+    outs = [ln for ln in run.stdout.splitlines() if ln[:2] in ("P ", "S ")]
+    assert len(outs) == len(checks)
+    for line, check in zip(outs, checks, strict=True):
+        check(line[2:])
 
     gcov = subprocess.run(["gcov", "-n", "ecdsa_verify.c"], cwd=tmp_path,
                           capture_output=True, text=True)
