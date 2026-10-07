@@ -6,6 +6,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-10-07
+
+### Fixed
+
+- **Live video no longer dies silently.** A relay write had no time limit: a large frame
+  the network stopped taking parked the video sender in `drain()` forever -- every later
+  frame dropped as "in flight", the keepalive and pong writes queued behind it, nothing was
+  logged, and the camera stayed "online" sending nothing until a restart (seen on the N6,
+  RT1062 and H7 Plus). Every relay write is now bounded (10 s): a stall ends the session with
+  `live[0]: relay send stalled for 10 s; reconnecting` in the console, and video resumes on
+  its own. The WebSocket upgrade is bounded the same way.
+- Server: an out-of-range number in a request (a timestamp past what a datetime holds, an
+  integer past a 64-bit column) is a 422, not a 500; every route's error statuses are in the
+  OpenAPI schema (checked with Schemathesis in CI).
+- Server: the Postgres connection pool stays open (min = max), so a burst of reads after a
+  quiet spell no longer waits on new connections -- single reads of 2-6 s.
+- The generated app's `openmv_ota.run(...)` line is wrapped (it was 121 characters).
+
+### Documentation
+
+- The datalake tutorial covers sending data from the camera: how `datalog.post()` becomes
+  topics, fields, tiles and charts, how labels come from names, and adding a metric.
+
 ## [1.0.5] - 2026-10-06
 
 ### Fixed
