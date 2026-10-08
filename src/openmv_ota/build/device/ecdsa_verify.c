@@ -11,7 +11,8 @@
 //     msg    : the trailer's signed region; hashed here with the alg's hash
 //   ecdsa_verify.public_key(priv, entropy) -> 65 bytes, 04 || X || Y   (P-256)
 //   ecdsa_verify.sign(priv, digest, entropy) -> 64 bytes, R || S        (P-256)
-//     the camera's own key, on a board with no secure element (see openmv_ota.se)
+//   ecdsa_verify.ecdh(priv, peer, entropy) -> 32 bytes, the shared secret (P-256)
+//     the camera's own keys, on a board with no secure element (see openmv_ota.se)
 //
 // It reuses the firmware's already-compiled mbedtls (ECDSA + the NIST P-curves +
 // SHA-256/384/512 -- the same primitives TLS uses), so there is no bespoke crypto.
@@ -33,6 +34,7 @@
 // ecdsa_verify module, treats the core as non-OTA, and keeps the stock romfs mount.
 #if defined(OMV_ECDSA_VERIFY_HOST_TEST) || (defined(MICROPY_SSL_MBEDTLS) && MICROPY_SSL_MBEDTLS)
 
+#include "mbedtls/ecdh.h"
 #include "mbedtls/ecdsa.h"
 #include "mbedtls/ecp.h"
 #include "mbedtls/md.h"
@@ -178,6 +180,32 @@ int omv_ecdsa_sign(const uint8_t *priv, size_t priv_len, const uint8_t *digest, 
     return ok;
 }
 
+// ECDH: the 32-byte shared secret of ``priv`` and the peer's public point -- what the peer gets
+// from its own private key and our public one. mbedtls's own ECDH (mbedtls_ecdh_compute_shared,
+// which checks the peer's point is on the curve before using it); here only bytes in and out.
+// 1 = done, 0 = bad key, bad peer point or not enough entropy (it blinds the multiplication).
+int omv_ecdh(const uint8_t *priv, size_t priv_len, const uint8_t *peer, size_t peer_len,
+             uint8_t *secret, const uint8_t *entropy, size_t entropy_len) {
+    entropy_t e = { entropy, entropy_len, 0 };
+    mbedtls_ecp_group grp;
+    mbedtls_ecp_point P;
+    mbedtls_mpi d, z;
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_ecp_point_init(&P);
+    mbedtls_mpi_init(&d);
+    mbedtls_mpi_init(&z);
+    int ok = peer_len == 65 &&
+             load_key(&grp, &d, priv, priv_len) &&
+             mbedtls_ecp_point_read_binary(&grp, &P, peer, peer_len) == 0 &&
+             mbedtls_ecdh_compute_shared(&grp, &z, &P, &d, entropy_rng, &e) == 0 &&
+             mbedtls_mpi_write_binary(&z, secret, 32) == 0;
+    mbedtls_mpi_free(&z);
+    mbedtls_mpi_free(&d);
+    mbedtls_ecp_point_free(&P);
+    mbedtls_ecp_group_free(&grp);
+    return ok;
+}
+
 #ifndef OMV_ECDSA_VERIFY_HOST_TEST   // MicroPython binding (compiled in the firmware)
 
 #include "py/runtime.h"
@@ -226,11 +254,27 @@ static mp_obj_t mod_ecdsa_sign(mp_obj_t priv_in, mp_obj_t digest_in, mp_obj_t en
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(ecdsa_sign_obj, mod_ecdsa_sign);
 
+// ecdsa_verify.ecdh(priv, peer, entropy) -> 32 bytes. ValueError on a bad key or peer point.
+static mp_obj_t mod_ecdsa_ecdh(mp_obj_t priv_in, mp_obj_t peer_in, mp_obj_t ent_in) {
+    mp_buffer_info_t priv, peer, ent;
+    mp_get_buffer_raise(priv_in, &priv, MP_BUFFER_READ);
+    mp_get_buffer_raise(peer_in, &peer, MP_BUFFER_READ);
+    mp_get_buffer_raise(ent_in, &ent, MP_BUFFER_READ);
+    uint8_t secret[32];
+    if (!omv_ecdh((const uint8_t *)priv.buf, priv.len, (const uint8_t *)peer.buf, peer.len,
+                  secret, (const uint8_t *)ent.buf, ent.len)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("bad key, peer or entropy"));
+    }
+    return mp_obj_new_bytes(secret, sizeof(secret));
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(ecdsa_ecdh_obj, mod_ecdsa_ecdh);
+
 static const mp_rom_map_elem_t ecdsa_verify_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__),   MP_ROM_QSTR(MP_QSTR_ecdsa_verify) },
     { MP_ROM_QSTR(MP_QSTR_verify),     MP_ROM_PTR(&ecdsa_verify_obj) },
     { MP_ROM_QSTR(MP_QSTR_public_key), MP_ROM_PTR(&ecdsa_public_key_obj) },
     { MP_ROM_QSTR(MP_QSTR_sign),       MP_ROM_PTR(&ecdsa_sign_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ecdh),       MP_ROM_PTR(&ecdsa_ecdh_obj) },
 };
 static MP_DEFINE_CONST_DICT(ecdsa_verify_globals, ecdsa_verify_globals_table);
 

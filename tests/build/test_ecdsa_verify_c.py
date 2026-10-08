@@ -62,6 +62,8 @@ static size_t unhex(const char *h, uint8_t *out) {
 extern int omv_ecdsa_public_key(const uint8_t *, size_t, uint8_t *, const uint8_t *, size_t);
 extern int omv_ecdsa_sign(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *,
                           const uint8_t *, size_t);
+extern int omv_ecdh(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *,
+                    const uint8_t *, size_t);
 
 static void phex(const char *tag, const uint8_t *b, size_t n) {
     printf("%s ", tag);
@@ -69,8 +71,9 @@ static void phex(const char *tag, const uint8_t *b, size_t n) {
     printf("\n");
 }
 
-// sign.txt rows: "P <priv> <entropy>" or "S <priv> <digest> <entropy>"; each prints its result
-// (or "P -" / "S -" on refusal) for the Python side to check with the host's own crypto.
+// sign.txt rows: "P <priv> <entropy>", "S <priv> <digest> <entropy>" or "E <priv> <peer>
+// <entropy>"; each prints its result (or "P -" / "S -" / "E -" on refusal) for the Python side
+// to check with the host's own crypto.
 static void sign_rows(const char *path) {
     FILE *f = fopen(path, "r");
     char op[4], a[200], b[200], c[400];
@@ -81,6 +84,11 @@ static void sign_rows(const char *path) {
             fscanf(f, "%399s", c);
             if (omv_ecdsa_public_key(priv, np, out, ent, unhex(c, ent))) phex("P", out, 65);
             else printf("P -\n");
+        } else if (op[0] == 'E') {
+            fscanf(f, "%199s %399s", b, c);
+            size_t nq = unhex(b, dg);
+            if (omv_ecdh(priv, np, dg, nq, out, ent, unhex(c, ent))) phex("E", out, 32);
+            else printf("E -\n");
         } else {
             fscanf(f, "%199s %399s", b, c);
             size_t nd = unhex(b, dg);
@@ -178,6 +186,19 @@ def _sign_rows():
              "S %s %s %s" % (good, "00" * 32, "00"),           # not enough entropy to sign
              "P %s %s" % (good, "00")]                         # ...or to blind the multiply
     checks += [refused, refused, refused]
+    # ECDH: the C side's secret must be the one the host's own ECDH derives from the other end
+    peer = ec.generate_private_key(ec.SECP256R1())
+    peer_pub = peer.public_key().public_bytes(serialization.Encoding.X962,
+                                              serialization.PublicFormat.UncompressedPoint)
+    want = peer.exchange(ec.ECDH(), key.public_key())
+    rows.append("E %s %s %s" % (good, peer_pub.hex(), ent))
+    checks.append(lambda out, want=want: _eq(bytes.fromhex(out), want))
+    off_curve = peer_pub[:40] + bytes([peer_pub[40] ^ 0xFF]) + peer_pub[41:]
+    rows += ["E %s %s %s" % (good, off_curve.hex(), ent),       # a peer point off the curve
+             "E %s %s %s" % (good, peer_pub[:-1].hex(), ent),   # a short peer point
+             "E %s %s %s" % ("00" * 32, peer_pub.hex(), ent),   # a bad private key
+             "E %s %s %s" % (good, peer_pub.hex(), "00")]       # not enough entropy to blind
+    checks += [refused] * 4
     return rows, checks
 
 
@@ -215,7 +236,7 @@ def test_ecdsa_verify_c_shim(tmp_path):
                           str(tmp_path / "sign.txt")],
                          cwd=tmp_path, capture_output=True, text=True)
     assert run.returncode == 0, run.stdout + run.stderr     # every vector matched
-    outs = [ln for ln in run.stdout.splitlines() if ln[:2] in ("P ", "S ")]
+    outs = [ln for ln in run.stdout.splitlines() if ln[:2] in ("P ", "S ", "E ")]
     assert len(outs) == len(checks)
     for line, check in zip(outs, checks, strict=True):
         check(line[2:])

@@ -101,12 +101,14 @@ would run: blhost -u 0x15A2,0x0073 -- reset
 would run: mpremote connect <camera> exec import binascii; from openmv_ota import se; c = se.open(); ...
 ```
 
-On a board with a secure element (the RT1060, Nicla Vision, Portenta H7 and
-Giga R1), `flash factory` ends by checking it. It waits for the camera to come
-back running its new firmware, opens the secure element through the camera's
-own code, asks it to sign a fresh random challenge and verifies that signature
-against the public key the camera reports. The key is printed with the result;
-a camera whose secure element fails the check fails the flash.
+On a board with its own keys, `flash factory` ends by checking them. That is
+a secure element on the RT1060, Nicla Vision, Portenta H7 and Giga R1, and a
+key area at the end of the boot partition on the OpenMV Cam M4, M7, H7, H7
+Plus and Pure Thermal. The tool waits for the camera to come back running its
+new firmware, opens its keys through the camera's own code (making them, the
+first time), asks it to sign a fresh random challenge and verifies that
+signature against the public key the camera reports. The key is printed with
+the result; a camera whose keys fail the check fails the flash.
 
 The Giga's ATECC608 leaves Microchip's factory blank, so opening it the first
 time provisions it, the same way Arduino Cloud does: Arduino's configuration,

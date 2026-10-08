@@ -48,8 +48,8 @@ def back(monkeypatch):
     monkeypatch.setattr(fl.time, "sleep", lambda s: None)
 
 
-def test_a_board_without_a_secure_element_has_nothing_to_check():
-    assert fl.factory_identity(board="OPENMV4") == []
+def test_a_board_without_keys_has_nothing_to_check():
+    assert fl.factory_identity(board="OPENMV_N6") == []
 
 
 def test_dry_run_shows_the_command():

@@ -18,8 +18,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   without changing the camera's key. A power cut part way resumes on the next open.
 - **`flash factory` checks the secure element** as its last step: the camera signs a fresh
   challenge and the tool verifies it against the key the camera reports, then prints the key.
-- `ecdsa_verify.sign` / `ecdsa_verify.public_key` on the camera, for P-256 signing on boards
-  without a secure element.
+- **Boards without a secure element keep their own keys** (OpenMV Cam M4, M7, H7, H7 Plus,
+  Pure Thermal): an identity key and an exchange (ECDH) key, made on the camera from its hardware
+  RNG the first time `se.open()` runs, and written once into a 256-byte key area at the end of the
+  boot partition -- past the bootloader, untouched by firmware and romfs updates, and where a
+  later lockdown's read protection will cover it. The build refuses a bootloader that would grow
+  into it. The new `key_store` C module only programs blank flash there; the record format, key
+  making and every check are Python, and all curve math is mbedtls's.
+- `ecdsa_verify.sign` / `public_key` / `ecdh` on the camera: P-256 signing and ECDH (mbedtls's
+  own `mbedtls_ecdh_compute_shared`) for boards without a secure element.
 
 ## [1.0.7] - 2026-10-07
 

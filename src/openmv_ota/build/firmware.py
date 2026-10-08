@@ -58,6 +58,8 @@ _FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py",
                           "openmv_netcfg.py", "openmv_recovery.py")
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
+_KEY_STORE_C = _DEVICE_DIR / "key_store.c"
+_KEY_STORE_MODULE = "key_store.c"        # likewise, on a board that keeps its own keys
 
 # The OTA installer verifies its download's TLS against a PEM CA bundle. micropython used to
 # build mbedtls DER-only, so an OTA build pointed it at a patched copy of the per-port config;
@@ -160,6 +162,7 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
     ota = p.config.ota
     tmp: Path | None = None
     cmod: Path | None = None
+    kmod: Path | None = None
     try:
         build_args = ["TARGET=%s" % name, "-j%d" % (jobs or os.cpu_count() or 1)]
         if ota:
@@ -169,6 +172,7 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
             if overlay is not None:
                 build_args.append("OMV_BOARD_CONFIG_DIR=%s/" % overlay.as_posix())
             cmod = _install_verify_module(repo)
+            kmod = _install_key_store_module(repo, name)
             speed = _mbedtls_speed_arg(p, repo, name, tmp)
             if speed is not None:
                 build_args.append(speed)
@@ -181,8 +185,9 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
         return FirmwareResult(name, outputs, ota=ota,
                               build_dir=tmp if (ota and keep_build_dir) else None)
     finally:
-        if cmod is not None:                       # restore the firmware tree
-            cmod.unlink(missing_ok=True)
+        for mod in (cmod, kmod):                   # restore the firmware tree
+            if mod is not None:
+                mod.unlink(missing_ok=True)
         if tmp is not None and not (ota and keep_build_dir):
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -493,6 +498,43 @@ def _install_verify_module(repo: Path) -> Path | None:
     return dst
 
 
+def _soft_key_store(name: str) -> dict | None:
+    """The board's key area (``secure_element`` chip ``soft`` in boards.json), or None."""
+    from openmv_ota.romfs.boards import load_boards
+
+    board = load_boards().get(name)
+    se = board.secure_element if board else None
+    return se if se and se["chip"] == "soft" else None
+
+
+def _install_key_store_module(repo: Path, name: str) -> Path | None:
+    """On a board that keeps its own keys, drop the key-store C module into the firmware's
+    ``modules/`` dir with the board's key-area address defined at its top -- board data, so
+    the C knows only how to program its port's flash, never where. Returns the installed path
+    for the caller to remove after the build; None on any other board, or if a file is
+    already there (left intact rather than clobbered)."""
+    se = _soft_key_store(name)
+    dst = repo / "modules" / _KEY_STORE_MODULE
+    if se is None or dst.exists():
+        return None
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text("// Added by `openmv-ota build firmware`: %s's key area (boards.json).\n"
+                   "#define OMV_KEY_AREA_ADDR (0x%08XUL)\n\n" % (name, se["key_area"])
+                   + _KEY_STORE_C.read_text(encoding="utf-8"), encoding="utf-8")
+    return dst
+
+
+def _check_bootloader_room(name: str, boot: Path) -> None:
+    """A bootloader that grows into the board's key area is refused: its keys sit at the end
+    of the boot partition, and flashing such a bootloader would overwrite them."""
+    se = _soft_key_store(name)
+    if se is not None and boot.stat().st_size > se["bootloader_max"]:
+        raise BuildError("the %s bootloader is %d bytes, but must stay within %d: past that is "
+                         "the board's key area (0x%08X), which flashing it would overwrite"
+                         % (name, boot.stat().st_size, se["bootloader_max"], se["key_area"]),
+                         exit_code=1)
+
+
 def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:
     """Copy the firmware image(s) the build produced into ``out_dir``. Both ports
     name their images ``firmware*.bin`` in ``build/<board>/bin``: stm32 emits a
@@ -514,6 +556,7 @@ def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:
                          "firmware*.bin in %s)" % (name, bdir), exit_code=1)
     boot = bdir / "bootloader.bin"
     if boot.exists():                              # the OpenMV bootloader (STM32/N6 ports);
+        _check_bootloader_room(name, boot)
         collected.append(_copy(boot, out_dir / ("%s-bootloader.bin" % name)))   # `flash bootloader`
     toc = bdir / "firmware_pad.toc"
     if toc.exists():                               # AE3: the padded TOC written with the SBL

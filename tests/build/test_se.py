@@ -9,6 +9,7 @@ The certificate and key bytes are the ones read off the bench RT1062's chip.
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 import types
 
@@ -427,6 +428,18 @@ def test_board_table_secure_element_entries_are_checked():
     with pytest.raises(ValueError, match="Pin name"):
         se("X", {"chip": "se050", "bus": 2, "addr": 0x48, "enable": 5})
     assert boards_mod.get_board("OPENMV_RT1060").secure_element["chip"] == "se050"
+    assert se("X", {"chip": "soft", "key_area": 0x08007F00, "bootloader_max": 0x7F00}) == {
+        "chip": "soft", "key_area": 0x08007F00, "bootloader_max": 0x7F00}
+    for bad in ({"key_area": "0x0800"}, {"key_area": 1, "bootloader_max": 0}, {"key_area": 1}):
+        with pytest.raises(ValueError, match="integer key_area and bootloader_max"):
+            se("X", {"chip": "soft", **bad})
+    for name, area in (("OPENMV2", 0x08007F00), ("OPENMV3", 0x08007F00),
+                       ("OPENMV4", 0x0801FF00), ("OPENMV4P", 0x0801FF00),
+                       ("OPENMVPT", 0x0801FF00)):
+        k = boards_mod.get_board(name).secure_element
+        # the key area is the last 256 bytes of the boot partition, right after the room
+        # the bootloader may use (the partition starts at 0x08000000)
+        assert k["chip"] == "soft" and k["key_area"] == area == 0x08000000 + k["bootloader_max"]
 
 
 def test_the_pack_ships_only_the_board_s_chip_and_its_wiring(tmp_path):
@@ -449,6 +462,12 @@ def test_the_pack_ships_only_the_board_s_chip_and_its_wiring(tmp_path):
     board = (rt / "board.py").read_text(encoding="utf-8")
     assert "from .se050 import SecureElement" in board
     assert "BUS = 2\nADDR = 0x48\nENABLE = None\nFREQ = 400000\n" in board
+    compile(board, "board.py", "exec")
+
+    h7 = stage_for("OPENMV4")                            # its own keys: soft, no wiring
+    assert sorted(p.name for p in h7.iterdir()) == ["__init__.py", "board.py", "soft.py"]
+    board = (h7 / "board.py").read_text(encoding="utf-8")
+    assert "from .soft import SecureElement" in board and "BUS = None\n" in board
     compile(board, "board.py", "exec")
 
     assert not stage_for("OPENMV_N6").exists()          # no secure element: no package
@@ -747,3 +766,156 @@ def test_atecc_crc_matches_the_chip_s_wake_answer():
 
 def test_der_sig_pads_and_strips():
     assert atecc608._der_sig(bytes(64)) == b"\x30\x06\x02\x01\x00\x02\x01\x00"
+
+
+# --- a board's own keys (no secure element) -------------------------------------------------
+#
+# The device imports the C modules ``key_store`` and ``ecdsa_verify``; here ``key_store`` is a
+# 256-byte flash that follows the C module's rules (whole 32-byte words, blank flash only) and
+# ``ecdsa_verify`` is the host's own `cryptography` -- so a signature from the soft key is
+# checked by real ECDSA and its ECDH by a real exchange.
+
+from cryptography.hazmat.primitives import hashes, serialization  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import utils as ec_utils  # noqa: E402
+
+for _name in ("key_store", "ecdsa_verify"):
+    sys.modules.setdefault(_name, types.ModuleType(_name))
+from openmv_ota.build.device.openmv_ota.se import soft  # noqa: E402
+
+_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+
+
+def _pub(priv):
+    return priv.public_key().public_bytes(serialization.Encoding.X962,
+                                          serialization.PublicFormat.UncompressedPoint)
+
+
+class _Ecdsa:
+    """``ecdsa_verify`` on the host's cryptography; ``bad`` keys are refused once each, as
+    mbedtls refuses 0 and n."""
+
+    def __init__(self):
+        self.calls = []
+
+    @staticmethod
+    def _key(d):
+        v = int.from_bytes(d, "big")
+        if len(d) != 32 or not 0 < v < _N:
+            raise ValueError("bad key")
+        return ec.derive_private_key(v, ec.SECP256R1())
+
+    def public_key(self, d, entropy):
+        self.calls.append(("public_key", len(entropy)))
+        return _pub(self._key(d))
+
+    def sign(self, d, digest, entropy):
+        self.calls.append(("sign", len(entropy)))
+        der = self._key(d).sign(digest, ec.ECDSA(ec_utils.Prehashed(hashes.SHA256())))
+        r, s = ec_utils.decode_dss_signature(der)
+        return r.to_bytes(32, "big") + s.to_bytes(32, "big")
+
+    def ecdh(self, d, peer, entropy):
+        self.calls.append(("ecdh", len(entropy)))
+        point = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), peer)
+        return self._key(d).exchange(ec.ECDH(), point)
+
+
+class _KeyArea:
+    """``key_store``: 256 bytes of flash, written in whole 32-byte words onto blank flash."""
+
+    SIZE = 256
+
+    def __init__(self):
+        self.flash = bytearray(b"\xff" * 256)
+        self.writes = 0
+        self.drop = False                     # the flash takes the write but keeps nothing
+
+    def read(self):
+        return bytes(self.flash)
+
+    def write(self, off, data):
+        assert off % 32 == 0 and len(data) % 32 == 0 and off + len(data) <= 256
+        if self.flash[off:off + len(data)] != b"\xff" * len(data):
+            raise OSError(17)
+        self.writes += 1
+        if not self.drop:
+            self.flash[off:off + len(data)] = data
+
+
+
+@pytest.fixture
+def area(monkeypatch):
+    a = _KeyArea()
+    monkeypatch.setattr(soft, "key_store", a)
+    monkeypatch.setattr(soft, "ecdsa_verify", _Ecdsa())
+    return a
+
+
+def test_soft_keys_are_made_on_first_open_and_kept(area):
+    se = soft.SecureElement()
+    rec = bytes(area.flash[:96])
+    assert rec[:5] == b"OMVK\x01" and rec[5:16] == bytes(11)
+    assert hashlib.sha256(rec[:80]).digest()[:16] == rec[80:96]
+    assert area.flash[96:] == b"\xff" * 160 and area.writes == 1
+    again = soft.SecureElement()                          # opened again: the same keys
+    assert area.writes == 1
+    assert again.public_key() == se.public_key() and len(se.public_key()) == 65
+    assert again.ecdh_public_key() == se.ecdh_public_key() != se.public_key()
+
+
+def test_soft_identity_signs_and_exchange_key_agrees(area):
+    se = soft.SecureElement()
+    digest = hashlib.sha256(b"challenge").digest()
+    sig = se.sign(digest)
+    ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), se.public_key()).verify(
+        sig, digest, ec.ECDSA(ec_utils.Prehashed(hashes.SHA256())))
+    server = ec.generate_private_key(ec.SECP256R1())                 # the other end of ECDH
+    cam_kx = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), se.ecdh_public_key())
+    assert se.ecdh(_pub(server)) == server.exchange(ec.ECDH(), cam_kx)
+    assert se.certificate() is None and len(se.random(7)) == 7
+    with pytest.raises(ValueError):
+        se.sign(digest[:31])
+    assert all(n == soft._ENTROPY for _, n in soft.ecdsa_verify.calls)
+
+
+def test_soft_draws_again_for_a_key_mbedtls_refuses(area, monkeypatch):
+    draws = iter([bytes(32), _N.to_bytes(32, "big")] + [os.urandom(32) for _ in range(4)])
+    real = os.urandom
+    monkeypatch.setattr(soft.os, "urandom", lambda n: next(draws) if n == 32 else real(n))
+    soft.SecureElement()
+    assert soft._valid(bytes(area.flash[:96]))
+
+
+def test_soft_skips_a_slot_a_power_cut_spoiled(area):
+    area.flash[:40] = b"\x00" * 40                          # half a record: neither valid nor blank
+    se = soft.SecureElement()
+    assert soft._valid(bytes(area.flash[128:224])) and se.public_key()
+    assert soft.SecureElement().public_key() == se.public_key()
+
+
+def test_soft_refuses_a_key_area_with_no_record_and_no_room(area):
+    area.flash[:] = b"\x00" * 256
+    with pytest.raises(OSError, match="no usable key record"):
+        soft.SecureElement()
+
+
+def test_soft_refuses_keys_that_did_not_stick(area):
+    area.drop = True
+    with pytest.raises(OSError, match="did not read back"):
+        soft.SecureElement()
+
+
+def test_soft_der_sig_pads_and_strips():
+    assert soft._der_sig(bytes(64)) == b"\x30\x06\x02\x01\x00\x02\x01\x00"
+
+
+def test_open_gives_a_board_s_own_keys_with_no_bus(monkeypatch):
+    from openmv_ota.build.device.openmv_ota import se as se_pkg
+    made = object()
+    board = types.ModuleType("board")
+    board.BUS = None
+    board.SecureElement = lambda: made
+    monkeypatch.setitem(sys.modules, "openmv_ota.build.device.openmv_ota.se.board", board)
+    monkeypatch.setattr(se_pkg, "board", board, raising=False)
+    assert se_pkg.open() is made

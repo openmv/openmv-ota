@@ -3,6 +3,7 @@
   "_source_firmware_version": "4.8.1",
   "boards": {
     "OPENMV2": {
+      "secure_element": {"chip": "soft", "key_area": 134250240, "bootloader_max": 32512},
       "ota_runtime_drops_network": true,
       "display_name": "OpenMV Cam M4 (STM32F427)",
       "tls_verify": false,
@@ -36,6 +37,7 @@
       ]
     },
     "OPENMV3": {
+      "secure_element": {"chip": "soft", "key_area": 134250240, "bootloader_max": 32512},
       "display_name": "OpenMV Cam M7 (STM32F765/67)",
       "tls_verify": false,
       "arch": "OMV3 F7 512",
@@ -68,6 +70,7 @@
       ]
     },
     "OPENMV4": {
+      "secure_element": {"chip": "soft", "key_area": 134348544, "bootloader_max": 130816},
       "display_name": "OpenMV Cam H7 (STM32H743)",
       "tls_verify": false,
       "cloud": "full",
@@ -104,6 +107,7 @@
       ]
     },
     "OPENMV4P": {
+      "secure_element": {"chip": "soft", "key_area": 134348544, "bootloader_max": 130816},
       "display_name": "OpenMV Cam H7 Plus (STM32H743 w/ SDRAM)",
       "cloud": "full",
       "live_framesize": "QVGA",
@@ -137,6 +141,7 @@
       ]
     },
     "OPENMVPT": {
+      "secure_element": {"chip": "soft", "key_area": 134348544, "bootloader_max": 130816},
       "display_name": "OpenMV Pure Thermal (STM32H743 w/ SDRAM)",
       "arch": "OPENMVPT 65536 SDRAM",
       "flash": {"backend": "dfu", "usb": "37c5:9205", "erase": [{"alt": 3}], "runtime": "37c5:1205", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
