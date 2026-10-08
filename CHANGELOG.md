@@ -6,6 +6,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The camera's secure element.** `openmv_ota.se.open()` gives one interface -- public key,
+  maker's certificate, sign, random -- over the SE050 (RT1060, Nicla Vision, Portenta H7) and
+  the ATECC608 (Giga R1). The romfs ships only the board's own chip driver; boards without a
+  secure element ship none of it.
+- **The Giga's ATECC608 provisions itself** the first time it is opened, exactly as Arduino
+  Cloud would (Arduino's configuration, then both one-way locks). The camera's key lives in
+  slot 2, which Arduino never uses, so the board can still be onboarded to Arduino Cloud
+  without changing the camera's key. A power cut part way resumes on the next open.
+- **`flash factory` checks the secure element** as its last step: the camera signs a fresh
+  challenge and the tool verifies it against the key the camera reports, then prints the key.
+- `ecdsa_verify.sign` / `ecdsa_verify.public_key` on the camera, for P-256 signing on boards
+  without a secure element.
+
 ## [1.0.7] - 2026-10-07
 
 ### Fixed

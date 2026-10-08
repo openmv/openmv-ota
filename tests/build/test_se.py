@@ -481,12 +481,54 @@ XY = bytes(range(1, 65))
 RS = b"\x80" + bytes(31) + b"\x00\x00\x01" + bytes(29)   # r needs a 0x00 pad, s has zeros to strip
 
 
+# Arduino's configuration, copied byte for byte from ArduinoECCX08 (cc52117)
+# src/utility/ECCX08DefaultTLSConfig.h -- the oracle the driver's own copy is checked against.
+ARD = bytes((
+    0x01, 0x23, 0x00, 0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x71, 0x00,
+    0xC0, 0x00, 0x55, 0x00, 0x83, 0x20, 0x87, 0x20, 0x87, 0x20, 0x87, 0x2F, 0x87, 0x2F, 0x8F, 0x8F,
+    0x9F, 0x8F, 0xAF, 0x8F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xAF, 0x8F, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+    0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x55, 0x55, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x33, 0x00, 0x33, 0x00, 0x33, 0x00, 0x33, 0x00, 0x33, 0x00, 0x1C, 0x00, 0x1C, 0x00, 0x1C, 0x00,
+    0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x1C, 0x00,
+))
+
+# The bench Giga's configuration zone as Microchip shipped it (read 2026-10-08, before provisioning).
+FACTORY = bytes.fromhex(
+    "012363f2000060034097bfd9ee614900"
+    "c0000000832087208f20c48f8f8f8f8f"
+    "9f8faf8f000000000000000000000000"
+    "0000af8fffffffff00000000ffffffff"
+    "00000000000000000000000000000000"
+    "0000000000005555ffff000000000000"
+    "3300330033001c001c001c001c001c00"
+    "3c003c003c003c003c003c003c001c00")
+
+
 class Ecc:
     """An ATECC608 as the bench Giga's answers it: asleep until a wake pulse, NACKing while it
-    executes, a status-only answer for Nonce, and ``locked`` deciding the lock bytes."""
+    executes, status-only answers for Write/Lock/Nonce, and real configuration and data zones.
+    ``state`` is how the chip arrives: ``"blank"`` (Microchip's factory), ``"arduino"`` (after
+    Arduino Cloud onboarding: Arduino's config, both locks, a key in slot 0, no OpenMV record) or
+    ``"ours"`` (provisioned by the driver, key XY in slot 2)."""
 
-    def __init__(self, locked=True):
-        self.locked = locked
+    def __init__(self, state="ours"):
+        self.config = bytearray(FACTORY)
+        self.data = {s: bytearray(416 if s == 8 else 72) for s in range(16)}
+        self.keys = {}
+        if state != "blank":
+            self.config[16:84] = ARD[16:84]
+            self.config[88:] = ARD[88:]
+            self.config[86] = self.config[87] = 0
+        if state == "arduino":
+            self.keys[0] = bytes(range(64, 128))
+        if state == "ours":
+            self.keys[2] = XY
+            self.data[8][:32] = atecc608._MAGIC + hashlib.sha256(XY).digest()[:28]
+        self.genkeys = 0
+        self.ignore_word = None                   # a config word the chip drops on the floor
+        self.cut = None                           # the command number the power fails on
         self.awake = False
         self.out = b""
         self.busy = 0
@@ -511,21 +553,49 @@ class Ecc:
         assert _acrc(buf[1:n - 1]) == buf[n - 1] | (buf[n] << 8)
         op, p1, p2 = buf[2], buf[3], buf[4] | (buf[5] << 8)
         self.rx.append((op, p1, p2, buf[6:n - 1]))
-        if op == 0x02:
-            data = b"\x00\x00\x00\x00" if self.locked else b"\x00\x00\x55\x55"
-        elif op == 0x40:
-            data = XY
-        elif op == 0x16:
-            data = bytes([self.status if self.status != 0xEE else 0])
-        elif op == 0x41:
-            data = RS
-        elif op == 0x1B:
-            data = bytes(range(32))
-        else:                                    # pragma: no cover - a test asked for nothing
-            raise AssertionError(op)
-        self.out = _aresp(data)
+        if self.cut == len(self.rx):
+            raise OSError(5)                      # power gone: the command never ran
+        self.out = _aresp(self._do(op, p1, p2, buf[6:n - 1]))
         if self.corrupt:
             self.out = self.out[:-1] + bytes([self.out[-1] ^ 1])
+
+    def _do(self, op, p1, p2, data):
+        cfg = self.config
+        if op == 0x02:                            # Read
+            if p1 == 0x00:
+                return bytes(cfg[p2 * 4:p2 * 4 + 4])
+            if p1 == 0x80:
+                return bytes(cfg[(p2 >> 3) * 32:(p2 >> 3) * 32 + 32])
+            assert p1 == 0x82 and not cfg[86]     # the data zone reads only once locked
+            return bytes(self.data[p2 >> 3][:32])
+        if op == 0x12:                            # Write
+            if p1 == 0x82:
+                self.data[p2 >> 3][:32] = data
+            else:
+                assert p1 == 0x00 and cfg[87] and 4 <= p2 < 32 and p2 != 21 and len(data) == 4
+                if p2 != self.ignore_word:
+                    cfg[p2 * 4:p2 * 4 + 4] = data
+            return b"\x00"
+        if op == 0x17:                            # Lock
+            if p1 == 0x00:
+                assert cfg[87] and _acrc(bytes(cfg)) == p2
+                cfg[87] = 0
+            else:
+                assert p1 == 0x81 and not cfg[87] and cfg[86]
+                cfg[86] = 0
+            return b"\x00"
+        if op == 0x40:                            # GenKey
+            if p1 == 0x04:
+                assert not cfg[86]
+                self.genkeys += 1
+                self.keys[p2] = bytes([self.genkeys]) * 64
+            return self.keys[p2]
+        if op == 0x16:
+            return bytes([self.status if self.status != 0xEE else 0])
+        if op == 0x41:
+            return RS
+        assert op == 0x1B
+        return bytes(range(32))
 
     def readfrom(self, addr, n):
         assert addr == 0x60
@@ -543,9 +613,77 @@ def clock_us(clock, monkeypatch):
     return clock
 
 
-def test_atecc_refuses_an_unprovisioned_chip(clock_us):
-    with pytest.raises(OSError, match="not provisioned"):
-        atecc608.SecureElement(Ecc(locked=False))
+def _arduino_end_state(chip):
+    """The chip's configuration is what Arduino's provisioning leaves: its own bytes 0-15, Arduino's
+    16-127 (word 21 aside), both zones locked."""
+    cfg = bytes(chip.config)
+    return (cfg[:16] == FACTORY[:16] and cfg[16:84] == ARD[16:84] and cfg[88:] == ARD[88:]
+            and cfg[86] == 0 and cfg[87] == 0)
+
+
+def _record(chip):
+    return bytes(chip.data[8][:32]) == atecc608._MAGIC + hashlib.sha256(chip.keys[2]).digest()[:28]
+
+
+def test_atecc_driver_config_is_arduino_s():
+    assert atecc608._CONFIG == ARD[16:]
+
+
+def test_atecc_provisions_a_blank_chip_as_arduino_would(clock_us):
+    chip = Ecc("blank")
+    se = atecc608.SecureElement(chip)
+    assert _arduino_end_state(chip)
+    writes = [p2 for op, p1, p2, _ in chip.rx if op == 0x12 and p1 == 0x00]
+    assert writes == [w for w in range(4, 32) if w != 21]
+    locks = [(p1, p2) for op, p1, p2, _ in chip.rx if op == 0x17]
+    assert locks[0][0] == 0x00 and locks[1] == (0x81, 0)
+    assert [p2 for op, p1, p2, _ in chip.rx if op == 0x40] == [2]      # slot 2, and only it
+    assert _record(chip) and 0 not in chip.keys
+    assert se.public_key() == b"\x04" + chip.keys[2]
+    chip.rx.clear()
+    atecc608.SecureElement(chip)                          # provisioned: two reads, nothing else
+    assert [(op, p1) for op, p1, _, _ in chip.rx] == [(0x02, 0x00), (0x02, 0x82)]
+    assert chip.genkeys == 1
+
+
+def test_atecc_keeps_the_arduino_cloud_key(clock_us):
+    chip = Ecc("arduino")
+    arduino_key = chip.keys[0]
+    atecc608.SecureElement(chip)
+    assert not [r for r in chip.rx if r[0] in (0x17,) or (r[0] == 0x12 and r[1] == 0x00)]
+    assert chip.keys[0] == arduino_key and _record(chip) and _arduino_end_state(chip)
+
+
+def test_atecc_resumes_after_a_power_cut_at_any_step(clock_us):
+    probe = Ecc("blank")
+    atecc608.SecureElement(probe)
+    total = len(probe.rx)
+    for cut in range(1, total + 1):
+        chip = Ecc("blank")
+        chip.cut = cut
+        with pytest.raises(OSError):
+            atecc608.SecureElement(chip)
+        chip.cut = None
+        se = atecc608.SecureElement(chip)
+        assert _arduino_end_state(chip) and _record(chip), cut
+        assert se.public_key() == b"\x04" + chip.keys[2]
+
+
+def test_atecc_refuses_a_chip_someone_else_configured(clock_us):
+    chip = Ecc("blank")
+    chip.config[20] = 0x00                       # slot 0 configured differently, then locked
+    chip.config[87] = 0
+    with pytest.raises(OSError, match="not Arduino's configuration"):
+        atecc608.SecureElement(chip)
+    assert chip.config[86] == 0x55 and not chip.keys        # data left unlocked, no key made
+
+
+def test_atecc_does_not_lock_a_configuration_that_did_not_take(clock_us):
+    chip = Ecc("blank")
+    chip.ignore_word = 6                         # factory 8F 20 C4 8F, Arduino 87 20 87 2F
+    with pytest.raises(OSError, match="not Arduino's configuration"):
+        atecc608.SecureElement(chip)
+    assert chip.config[87] == 0x55 and not [r for r in chip.rx if r[0] == 0x17]
 
 
 def test_atecc_identity_operations(clock_us):
@@ -555,7 +693,7 @@ def test_atecc_identity_operations(clock_us):
     assert se.certificate() is None
     digest = hashlib.sha256(b"x").digest()
     sig = se.sign(digest)
-    assert chip.rx[-2] == (0x16, 0x03, 0, digest) and chip.rx[-1][:3] == (0x41, 0x80, 0)
+    assert chip.rx[-2] == (0x16, 0x03, 0, digest) and chip.rx[-1][:3] == (0x41, 0x80, 2)
     from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
     assert decode_dss_signature(sig) == (int.from_bytes(RS[:32], "big"), int.from_bytes(RS[32:], "big"))
     assert se.random(5) == bytes(range(5))

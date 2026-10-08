@@ -85,6 +85,7 @@ would run: dfu-util -d ,2341:035b -a 1 -s 0x90F00000 -D .../cyw4343_7_45_98_102.
 would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90FC0000 -D .../cyw4343_btfw.bin
 would run: dfu-util -w -d ,2341:035b -a 0 -s 0x08040000 -D ARDUINO_PORTENTA_H7-firmware.bin
 would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90B00000:leave -D ARDUINO_PORTENTA_H7-factory-romfs.img
+would run: mpremote connect <camera> exec import binascii; from openmv_ota import se; c = se.open(); ...
 ```
 
 The RT1060 goes through the resident secure bootloader every shipped camera
@@ -97,7 +98,21 @@ would run: blhost -u 0x15A2,0x0073 -- write-memory 0x60040000 build/OPENMV_RT106
 would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60800000 ...
 would run: blhost -u 0x15A2,0x0073 -- write-memory 0x60800000 build/OPENMV_RT1060-factory-romfs.img
 would run: blhost -u 0x15A2,0x0073 -- reset
+would run: mpremote connect <camera> exec import binascii; from openmv_ota import se; c = se.open(); ...
 ```
+
+On a board with a secure element (the RT1060, Nicla Vision, Portenta H7 and
+Giga R1), `flash factory` ends by checking it. It waits for the camera to come
+back running its new firmware, opens the secure element through the camera's
+own code, asks it to sign a fresh random challenge and verifies that signature
+against the public key the camera reports. The key is printed with the result;
+a camera whose secure element fails the check fails the flash.
+
+The Giga's ATECC608 leaves Microchip's factory blank, so opening it the first
+time provisions it, the same way Arduino Cloud does: Arduino's configuration,
+then both locks, which are permanent for the life of the chip. The camera's
+own key goes in slot 2, a slot Arduino never uses, so the board can still be
+onboarded to Arduino Cloud afterwards without changing the camera's key.
 
 A blank board has no secure bootloader yet. `flash factory --provision` is the
 manufacturing path for one: with the SBL boot jumper fitted it loads a

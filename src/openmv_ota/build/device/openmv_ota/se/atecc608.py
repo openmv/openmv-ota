@@ -1,31 +1,57 @@
 """``openmv_ota.se.atecc608`` -- the Microchip ATECC608 (Arduino Giga R1 WiFi): its I2C command
 protocol and the commands the camera's identity needs.
 
-Unlike the SE050 this chip leaves Microchip's factory BLANK: no key, no certificate, its
-configuration and data zones unlocked. It can only generate and sign once someone has written
-its configuration and locked both zones -- one-way, for the life of the chip -- which is
-provisioning, not something this module does. Until then :class:`SecureElement` refuses to open
-("not provisioned") rather than hand out the fixed pattern an unlocked chip returns for random.
-The identity is then the P-256 key in slot 0 (Arduino's layout: private, never readable, signs
-external digests); it carries no maker's certificate, so :meth:`SecureElement.certificate` is
-None and the server learns the key when the camera is first registered.
+Unlike the SE050 this chip leaves Microchip's factory BLANK: no key, its configuration and data
+zones unlocked. :class:`SecureElement` provisions it the first time it is opened, and every step
+leaves the chip exactly as Arduino's own Cloud provisioning would (ArduinoECCX08's
+``ECCX08_DEFAULT_TLS_CONFIG``, then both locks), so the board still onboards to Arduino Cloud:
+
+1. write Arduino's configuration, read it back and compare (refusing a chip someone else
+   configured), and lock it -- with the chip checking the CRC of what it locks;
+2. lock the data zone;
+3. generate the identity key in slot 2 and write a record of it to slot 8.
+
+The locks are one-way, for the life of the chip. Each step checks the chip's state first, so a
+power cut part way resumes on the next open. Slot 2 and slot 8 are slots Arduino never touches:
+its Cloud onboarding regenerates the key in slot 0 every time it runs, so an identity there would
+not survive it. The record in slot 8 marks the key as made; until it is written the key is made
+again, so a key is never reported that a later open replaces. The chip carries no maker's
+certificate, so :meth:`SecureElement.certificate` is None and the server learns the key when the
+camera is first registered.
 
 The chip sleeps; every exchange starts with a WAKE -- SDA held low >= 60 us, done by addressing
 0x00 at 100 kHz -- answered ``04 11 33 43``, and ends by sending it to idle. A command is
 ``03 | count | opcode | param1 | param2 (LE) | data | CRC16 (LE)``, the CRC polynomial 0x8005
 fed least-significant bit first; the chip NACKs while it executes. (Microchip cryptoauthlib
-and Arduino's ArduinoECCX08; framing checked against a Giga's chip.)
+and Arduino's ArduinoECCX08; framing and provisioning checked against a Giga's chip.)
 
 RAM BUDGET: this module runs inside your application, so its memory is your memory. One packet
-buffer is allocated once; a command's answer is at most 64 bytes.
+buffer is allocated once; a command's answer is at most 64 bytes. Provisioning, once in the
+chip's life, reads the 128-byte configuration back.
 """
 
+import hashlib
 import time
 
 _ADDR = 0x60
 _WAKE = b"\x04\x11\x33\x43"
-_SLOT = 0                         # the identity key's slot
+_SLOT = 2                         # the identity key's slot (Arduino uses 0 and 1)
+_REC = 8                          # the record that the key was made (a clear slot Arduino leaves)
+_MAGIC = b"OMV1"
 _WAIT_MS = 1500                   # a command's slowest case (GenKey/Sign at a divided clock)
+
+# Configuration bytes 16-127 as Arduino writes them (ECCX08_DEFAULT_TLS_CONFIG). Bytes 0-15 are
+# the chip's own; bytes 68-71 here (config 84-87: UserExtra, Selector and the two lock bytes) are
+# set only by commands, so they are never written and never compared.
+_CONFIG = bytes((
+    0xC0, 0x00, 0x55, 0x00, 0x83, 0x20, 0x87, 0x20, 0x87, 0x20, 0x87, 0x2F, 0x87, 0x2F, 0x8F, 0x8F,
+    0x9F, 0x8F, 0xAF, 0x8F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xAF, 0x8F, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+    0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x55, 0x55, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x33, 0x00, 0x33, 0x00, 0x33, 0x00, 0x33, 0x00, 0x33, 0x00, 0x1C, 0x00, 0x1C, 0x00, 0x1C, 0x00,
+    0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x1C, 0x00,
+))
 
 
 def _crc(buf, start, end):
@@ -58,16 +84,18 @@ def _der_sig(rs):
 
 class SecureElement:
     """The ATECC608 on ``i2c`` (a ``machine.I2C``, at most 100 kHz so the wake pulse is long
-    enough). ``enable`` is unused: the chip has no enable pin. Raises OSError if the chip is
-    not provisioned. See :mod:`openmv_ota.se` for the interface."""
+    enough), provisioned on first open (see the module). ``enable`` is unused: the chip has no
+    enable pin. Raises OSError if the chip can't be provisioned -- for one, a chip someone else
+    configured. See :mod:`openmv_ota.se` for the interface."""
 
     def __init__(self, i2c, addr=_ADDR, enable=None):
         self._i2c = i2c
         self._addr = addr
         self._pkt = bytearray(8 + 32 + 2)
         lock = self._run(0x02, 0x00, 0x15)        # config word 0x15: ..., LockValue, LockConfig
-        if lock[2] or lock[3]:                    # 0x00 = locked, 0x55 = unlocked
-            raise OSError("atecc608: not provisioned (zones unlocked)")
+        # 0x00 = locked, 0x55 = unlocked. Provisioned = data locked and the key's record present.
+        if lock[2] or self._run(0x02, 0x82, _REC << 3)[:4] != _MAGIC:
+            self._provision(lock[2], lock[3])
 
     def public_key(self):
         """The identity key's public half: 65 bytes, ``04 || X || Y``."""
@@ -91,16 +119,33 @@ class SecureElement:
             raise ValueError("1..32 bytes at a time")
         return self._run(0x1B, 0x00, 0x0000)[:n]
 
+    # -- provisioning, once in the chip's life ---------------------------------------------
+
+    def _provision(self, data_open, config_open):
+        if config_open:
+            for i in range(0, 112, 4):
+                if i != 68:                                      # word 21: commands only
+                    self._run(0x12, 0x00, 4 + i // 4, _CONFIG[i:i + 4])
+        cfg = b"".join(self._run(0x02, 0x80, b << 3) for b in range(4))
+        if cfg[16:84] != _CONFIG[:68] or cfg[88:] != _CONFIG[72:]:
+            raise OSError("atecc608: not Arduino's configuration; not provisioning it")
+        if config_open:
+            self._run(0x17, 0x00, _crc(cfg, 0, 128))             # lock config, CRC-checked
+        if data_open:
+            self._run(0x17, 0x81, 0x0000)                        # lock data (as Arduino)
+        pub = self._run(0x40, 0x04, _SLOT)                       # GenKey: a new private key
+        self._run(0x12, 0x82, _REC << 3, _MAGIC + hashlib.sha256(pub).digest()[:28])
+
     # -- the chip's command protocol ------------------------------------------------------
 
-    def _run(self, op, p1, p2, nonce=None):
+    def _run(self, op, p1, p2, data=b"", nonce=None):
         """Wake the chip, run one command (after a Nonce pass-through of ``nonce``, if given),
         send it to idle; the command's answer."""
         self._wake()
         try:
             if nonce is not None:
                 self._cmd(0x16, 0x03, 0x0000, nonce)
-            return self._cmd(op, p1, p2)
+            return self._cmd(op, p1, p2, data)
         finally:
             try:
                 self._i2c.writeto(self._addr, b"\x02")      # idle: keep the chip's state light

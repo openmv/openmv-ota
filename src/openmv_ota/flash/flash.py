@@ -518,6 +518,68 @@ def flash_factory(project: str = ".", *, board: str, output: str | None = None,
 
 
 @dataclass(frozen=True)
+class IdentityStep:
+    label: str
+    argv: list[str]
+
+
+_IDENTITY_WAIT_S = 60     # the camera back on USB, running the firmware just flashed
+_IDENTITY_POLL_S = 1.0
+# Runs on the camera: opening the secure element provisions it if it never was (the ATECC608),
+# then it proves the key by signing the host's challenge.
+_IDENTITY_CODE = ("import binascii; from openmv_ota import se; c = se.open(); "
+                  "print('SE-ID', binascii.hexlify(c.public_key()).decode(), "
+                  "binascii.hexlify(c.sign(binascii.unhexlify('%s'))).decode())")
+
+
+def factory_identity(*, board: str, serial: str | None = None, mpremote: str | None = None,
+                     dry_run: bool = False):
+    """The last step of ``flash factory`` on a board with a secure element: wait for the camera to
+    come back running its new firmware, open the secure element through the camera's own romfs
+    code (which provisions a blank ATECC608, Arduino-compatible), and check the key by verifying a
+    signature over a fresh challenge here. The camera leaves the factory with a working key, and
+    its public key is in the report. Boards with no secure element: nothing to do."""
+    import hashlib
+    import os
+    import re
+
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
+
+    from openmv_ota.romfs.boards import get_board
+
+    if not get_board(board).secure_element:
+        return []
+    digest = hashlib.sha256(os.urandom(32)).digest()
+    code = _IDENTITY_CODE % digest.hex()
+    if dry_run:
+        return [IdentityStep("secure element", [*_mpremote(mpremote), "connect", "<camera>",
+                                                "exec", code])]
+    raw = flash_config(board).raw
+    deadline = time.monotonic() + _IDENTITY_WAIT_S
+    while (cam := device.select(raw, serial)) is None:
+        if time.monotonic() > deadline:
+            raise FlashError("the camera did not come back on USB after flashing; its secure "
+                             "element was not checked")
+        time.sleep(_IDENTITY_POLL_S)
+    argv = [*_mpremote(mpremote), "connect", cam.port, "exec", code]
+    rc, out = runner.run_quiet(argv)
+    m = re.search(r"SE-ID ([0-9a-f]{130}) ([0-9a-f]+)", out)
+    if rc or not m:
+        raise FlashError("secure element check failed on the camera:\n%s" % out.strip())
+    pub, sig = bytes.fromhex(m.group(1)), bytes.fromhex(m.group(2))
+    try:
+        key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), pub)
+        key.verify(sig, digest, ec.ECDSA(Prehashed(hashes.SHA256())))
+    except (ValueError, InvalidSignature):
+        raise FlashError("secure element check failed: the camera's signature does not verify "
+                         "against its public key") from None
+    return [IdentityStep("secure element key %s" % pub.hex(), argv)]
+
+
+@dataclass(frozen=True)
 class EraseStep:
     label: str
     argv: list[str]

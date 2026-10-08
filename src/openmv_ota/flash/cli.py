@@ -143,6 +143,9 @@ def cmd_factory(args: argparse.Namespace) -> int:
             sdk_home=_sdk_home(args), reset=args.reset, enter_bootloader=args.enter_bootloader,
             serial=args.serial, mpremote=args.mpremote, provision=args.provision,
             dry_run=args.dry_run)
+        _report(args, steps)
+        steps = flash_mod.factory_identity(board=args.board, serial=args.serial,
+                                           mpremote=args.mpremote, dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
