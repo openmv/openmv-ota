@@ -8,25 +8,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **The camera's secure element.** `openmv_ota.se.open()` gives one interface -- public key,
-  maker's certificate, sign, random -- over the SE050 (RT1060, Nicla Vision, Portenta H7) and
-  the ATECC608 (Giga R1). The romfs ships only the board's own chip driver; boards without a
-  secure element ship none of it.
-- **The Giga's ATECC608 provisions itself** the first time it is opened, exactly as Arduino
-  Cloud would (Arduino's configuration, then both one-way locks). The camera's key lives in
-  slot 2, which Arduino never uses, so the board can still be onboarded to Arduino Cloud
-  without changing the camera's key. A power cut part way resumes on the next open.
-- **`flash factory` checks the secure element** as its last step: the camera signs a fresh
-  challenge and the tool verifies it against the key the camera reports, then prints the key.
-- **Boards without a secure element keep their own keys** (OpenMV Cam M4, M7, H7, H7 Plus,
-  Pure Thermal): an identity key and an exchange (ECDH) key, made on the camera from its hardware
-  RNG the first time `se.open()` runs, and written once into a 256-byte key area at the end of the
-  boot partition -- past the bootloader, untouched by firmware and romfs updates, and where a
-  later lockdown's read protection will cover it. The build refuses a bootloader that would grow
-  into it. The new `key_store` C module only programs blank flash there; the record format, key
-  making and every check are Python, and all curve math is mbedtls's.
-- `ecdsa_verify.sign` / `public_key` / `ecdh` on the camera: P-256 signing and ECDH (mbedtls's
-  own `mbedtls_ecdh_compute_shared`) for boards without a secure element.
+- **Device keys on every board but the AE3.** Each camera holds two P-256 private keys that
+  never leave it: an identity key (signs) and an exchange key (ECDH only), behind one interface,
+  `openmv_ota.se`. Where they live is board data, and the romfs ships only that board's module:
+  - **SE050** (RT1060, Nicla Vision, Portenta H7): NXP's factory identity key and certificate,
+    and an exchange key the chip generates, whose policy allows key agreement only.
+  - **ATECC608** (Giga R1): configured and locked exactly as Arduino Cloud does it, so the board
+    still onboards there; the keys in slots 2 and 3, which Arduino never touches.
+  - **Soft** (M4, M7, H7, H7 Plus, Pure Thermal, N6): the camera's own keys in a 4 KB key area
+    at the end of the boot partition -- past the bootloader, untouched by firmware and romfs
+    updates. Sixteen write-once slots, each record committed by a SHA-256 written last, so a
+    power cut never silently changes the keys. On the N6 the keys are sealed with AES-256-GCM
+    under the chip's hardware unique key, so its external flash alone opens nothing.
+  - The build refuses a bootloader that would grow into the key area; `flash bootloader` warns
+    that on these boards it erases the camera's keys.
+- **Keys are made at a desk, never in the field.** `se.open()` only reads: a camera without
+  keys, or with damaged ones, raises. Every `flash factory` / `firmware` / `romfs` ends by
+  provisioning the camera's keys (made if missing, never replaced), checking a signature over a
+  fresh challenge, and printing both public keys; a camera whose keys fail fails the flash.
+- `ecdsa_verify.sign` / `public_key` / `ecdh` on the camera (mbedtls; ECDH is its own
+  `mbedtls_ecdh_compute_shared`), and the `key_store` C module (reads the key area, programs
+  blank flash in it, and on the N6 seals and unseals with ST's SAES driver).
+- [Device keys](docs/reference/device-keys.md): the reference for all of the above.
 
 ## [1.0.7] - 2026-10-07
 

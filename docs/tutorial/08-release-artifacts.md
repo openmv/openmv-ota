@@ -89,7 +89,9 @@ Be clear about what this buys. It puts the store, the URL, a leaked bucket and a
 copy of a backup out of reach — everything cheaper than holding one of your boards.
 It does not survive someone reading the flash off a board: the key is a constant in
 the firmware, and one firmware image serves a board type. That boundary is recorded
-in [the residual-threats register](../compliance/residual-threats.md).
+in [the residual-threats register](../compliance/residual-threats.md). Each camera
+also holds keys of its own, made when it is flashed; they are described in
+[device keys](../reference/device-keys.md).
 
 Two things follow from "the key lives in the firmware":
 

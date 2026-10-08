@@ -3,8 +3,10 @@ Portenta H7): T=1 over I2C and the applet commands the camera's identity needs.
 
 Every SE050C leaves NXP's factory with a die-individual P-256 key pair at ``0xF0000000`` that
 signs any digest and cannot be erased, and its certificate at ``0xF0000001``, issued by "NXP
-Intermediate-ConnectivityCAvE206". That pair is the identity: nothing is provisioned on our
-side. (NXP AN12436 rev 2.4 table 12; read and signature-checked on an RT1062.)
+Intermediate-ConnectivityCAvE206". That pair is the identity. (NXP AN12436 rev 2.4 table 12;
+read and signature-checked on an RT1062.) The exchange key is ours: a P-256 key pair the chip
+generates at ``0x4F4D0002`` when the camera is provisioned, whose policy allows key agreement and
+reading its public half only -- it can't sign, and nobody can delete or regenerate it.
 
 The link is ISO 7816-3 T=1 framed for I2C (NXP UM11225): ``NAD | PCB | LEN | INF | CRC16``, the
 host sending NAD ``0x5A`` and the chip answering ``0xA5``; the chip NACKs its address while it
@@ -28,6 +30,9 @@ _NAD = 0x5A                # host -> chip (the chip answers 0xA5)
 _IFS = 254                 # most INF bytes in one frame, either way (the ATR's IFSC)
 _KEY = 0xF0000000          # the factory identity key pair
 _CERT = 0xF0000001         # ...and its NXP certificate
+_KX = 0x4F4D0002           # the exchange key pair ("OM" 0002): made at provisioning
+_KX_POLICY = b"\x11\x09\x08\x00\x00\x00\x00\x04\x20\x00\x00"   # TAG_POLICY: for any session
+#                            (auth object 0), POLICY_OBJ_ALLOW_KA | ALLOW_READ (AN12413 table 50)
 _CHUNK = 200               # bytes per object read: one frame each way
 _CERT_MAX = 2048
 _DRAIN_MAX = 512           # bytes read off a reply someone else abandoned, at most
@@ -62,11 +67,23 @@ def _der_len(cert):
     return 2 + k + int.from_bytes(cert[2:2 + k], "big")
 
 
+class NotProvisioned(OSError):
+    """The camera has no exchange key yet: it was never provisioned."""
+
+
 class SecureElement:
     """The SE050 on ``i2c`` (a ``machine.I2C``), powered by ``enable`` (a ``machine.Pin``, or
-    None where it is always on). See :mod:`openmv_ota.se` for the interface."""
+    None where it is always on). Raises :class:`NotProvisioned` if the camera has no exchange
+    key. See :mod:`openmv_ota.se` for the interface."""
 
-    def __init__(self, i2c, addr=_ADDR, enable=None):
+    @classmethod
+    def provision(cls, i2c, addr=_ADDR, enable=None):
+        """``(keys, made)``: generate the exchange key on the chip if it has none, then open.
+        ``made`` is False if it had it already. A desk step (see :mod:`openmv_ota.se`)."""
+        se = cls(i2c, addr, enable, _make=True)
+        return se, se._made
+
+    def __init__(self, i2c, addr=_ADDR, enable=None, _make=False):
         self._i2c = i2c
         self._addr = addr
         self._frame = bytearray(3 + _IFS + 2)
@@ -79,6 +96,17 @@ class SecureElement:
             enable(1)
             time.sleep_ms(10)
         self._start()
+        self._made = False
+        if not self._exists(_KX):
+            if not _make:
+                raise NotProvisioned("se050: this camera has no exchange key; provision it")
+            f = self._frame                       # WriteECKey: the chip makes the key pair
+            f[8:19] = _KX_POLICY
+            f[19], f[20] = 0x41, 4
+            _put_u32(f, 21, _KX)
+            f[25:28] = b"\x42\x01\x03"           # curve NIST P-256
+            self._apdu(0x01, 0x61, 0x00, 28)      # INS_WRITE, P1 KEY_PAIR | EC
+            self._made = True
 
     # -- the commands --------------------------------------------------------------
 
@@ -113,6 +141,21 @@ class SecureElement:
         f[k + 5:k + 37] = digest
         return bytes(self._apdu(0x03, 0x0C, 0x09, k + 37))
 
+    def ecdh_public_key(self):
+        """The exchange key's public half: 65 bytes, ``04 || X || Y``."""
+        return bytes(self._apdu(0x02, 0x00, 0x00, self._tlv_id(_KX)))
+
+    def ecdh(self, peer):
+        """The 32-byte ECDH secret of the exchange key and ``peer`` (65 bytes, ``04 || X || Y``),
+        computed on the chip (ECDHGenerateSharedSecret)."""
+        if len(peer) != 65:
+            raise ValueError("peer must be a 65-byte public key")
+        f = self._frame
+        k = self._tlv_id(_KX)
+        f[k], f[k + 1] = 0x42, 65
+        f[k + 2:k + 67] = peer
+        return bytes(self._apdu(0x03, 0x01, 0x0F, k + 67))   # INS_CRYPTO, P1_EC, P2_DH
+
     def random(self, n):
         """``n`` (at most 200) random bytes from the chip's TRNG."""
         if not 0 < n <= _CHUNK:
@@ -121,6 +164,10 @@ class SecureElement:
         f[8:12] = b"\x41\x02\x00\x00"
         f[11] = n
         return bytes(self._apdu(0x04, 0x00, 0x49, 12))
+
+    def _exists(self, oid):
+        """Whether the chip holds an object ``oid`` (CheckObjectExists)."""
+        return self._apdu(0x04, 0x00, 0x27, self._tlv_id(oid))[0] == 0x01
 
     # -- the APDU layer ----------------------------------------------------------
 

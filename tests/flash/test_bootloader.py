@@ -45,6 +45,18 @@ def test_bootloader_flash_via_system_dfu(bl_project, capsys):
     assert "jumper BOOT0 to 3.3V" in capsys.readouterr().err
 
 
+def test_bootloader_warns_it_erases_the_camera_s_own_keys(bl_project, capsys):
+    root, _ran = bl_project
+    fl.flash_bootloader(str(root), board="OPENMV4", dry_run=True)       # keys in its sector
+    assert "erases this camera's keys" in capsys.readouterr().err
+    (root / "build" / "ARDUINO_GIGA-bootloader.bin").write_bytes(b"BOOT")
+    try:
+        fl.flash_bootloader(str(root), board="ARDUINO_GIGA", dry_run=True)  # keys in a chip
+    except fl.FlashError:
+        pass
+    assert "erases this camera's keys" not in capsys.readouterr().err
+
+
 def test_bootloader_no_auto_reset(bl_project, monkeypatch):
     # bootloader entry is manual (system DFU); never the mpremote/touch path
     root, _ran = bl_project

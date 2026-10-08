@@ -16,7 +16,7 @@ def proj(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
     monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: None)   # imx hardware step; stub
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
-    monkeypatch.setattr(fl, "factory_identity", lambda **k: [])   # its own tests: test_identity
+    monkeypatch.setattr(fl, "provision_keys", lambda **k: [])   # its own tests: test_identity
 
     def artifact(name):
         (tmp_path / "build" / name).write_bytes(b"x")

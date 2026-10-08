@@ -1,7 +1,7 @@
 """Host test for the key-store C module's checks (``device/key_store.c``).
 
 The firmware build gives it a real flash backend per port; here ``OMV_KEY_STORE_HOST_TEST``
-swaps that for a 256-byte buffer, so the part that decides what may be written -- whole flash
+swaps that for a 4 KB buffer, so the part that decides what may be written -- whole flash
 words, inside the area, onto blank flash only -- runs and is measured on the host.
 """
 
@@ -22,7 +22,7 @@ _HARNESS_C = r"""
 #include <stdio.h>
 #include <string.h>
 
-uint8_t omv_key_store_host_area[256];
+uint8_t omv_key_store_host_area[4096];
 #define AREA omv_key_store_host_area
 static int fail_program;
 
@@ -35,14 +35,14 @@ int omv_key_store_program(uintptr_t addr, const uint8_t *src, size_t len) {
 extern int omv_key_store_write(size_t, const uint8_t *, size_t);
 
 int main(void) {
-    uint8_t data[256];
+    uint8_t data[4096];
     memset(AREA, 0xFF, sizeof(AREA));
     memset(data, 0x5A, sizeof(data));
     printf("%d\n", omv_key_store_write(0, data, 0));      // nothing to write
     printf("%d\n", omv_key_store_write(16, data, 32));    // not on a flash word
     printf("%d\n", omv_key_store_write(0, data, 48));     // not whole flash words
-    printf("%d\n", omv_key_store_write(288, data, 32));   // starts past the area
-    printf("%d\n", omv_key_store_write(224, data, 64));   // runs past the area
+    printf("%d\n", omv_key_store_write(4128, data, 32));  // starts past the area
+    printf("%d\n", omv_key_store_write(4064, data, 64));  // runs past the area
     printf("%d\n", omv_key_store_write(0, data, 96));     // fine
     printf("%d\n", AREA[0] == 0x5A && AREA[95] == 0x5A && AREA[96] == 0xFF);
     printf("%d\n", omv_key_store_write(64, data, 64));    // over what's written: refused

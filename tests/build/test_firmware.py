@@ -807,13 +807,13 @@ def test_speed_options_with_no_port_config_file(tmp_path):
 def test_install_key_store_module_is_for_boards_that_keep_their_own_keys(tmp_path):
     repo = tmp_path / "fw"
     repo.mkdir()
-    assert fw._install_key_store_module(repo, "OPENMV_N6") is None     # no key area (yet)
+    assert fw._install_key_store_module(repo, "OPENMV_AE3") is None    # no key area (yet)
     assert fw._install_key_store_module(repo, "OPENMV_RT1060") is None  # a secure element
     dst = fw._install_key_store_module(repo, "OPENMV4")
     assert dst == repo / "modules" / "key_store.c"
     text = dst.read_text()
     assert text.startswith("// Added by `openmv-ota build firmware`: OPENMV4's key area")
-    assert "#define OMV_KEY_AREA_ADDR (0x0801FF00UL)\n" in text
+    assert "#define OMV_KEY_AREA_ADDR (0x0801F000UL)\n" in text
     assert fw._KEY_STORE_C.read_text() in text                        # the module, unchanged
     assert fw._install_key_store_module(repo, "OPENMV4") is None       # not clobbered
 
@@ -844,8 +844,8 @@ def test_a_bootloader_that_reaches_the_key_area_fails_the_build(make_project, mo
         fake(repo_, args)
         if "clean" not in args:
             boot = Path(repo_) / "build" / "OPENMV4" / "bin" / "bootloader.bin"
-            boot.write_bytes(b"\0" * (0x1FF00 + 1))                  # one byte too many
+            boot.write_bytes(b"\0" * (0x1F000 + 1))                  # one byte too many
     monkeypatch.setattr(fw, "_run_make", big_boot)
-    with pytest.raises(BuildError, match="must stay within 130816.*0x0801FF00"):
+    with pytest.raises(BuildError, match="must stay within 126976.*0x0801F000"):
         fw.build_firmware(root, firmware=repo, boards=["OPENMV4"])
     assert not (Path(repo) / "modules" / "key_store.c").exists()     # tree restored all the same

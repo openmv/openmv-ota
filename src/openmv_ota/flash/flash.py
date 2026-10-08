@@ -28,12 +28,14 @@ in DFU.
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from openmv_ota.project import history
+from openmv_ota.romfs import boards as _boards
 
 from . import alif, arduino, device, dfu, imx, inventory, runner, tools
 from .errors import FlashError
@@ -525,23 +527,29 @@ class IdentityStep:
 
 _IDENTITY_WAIT_S = 60     # the camera back on USB, running the firmware just flashed
 _IDENTITY_POLL_S = 1.0
-# Runs on the camera: opening the secure element provisions it if it never was (the ATECC608),
-# then it proves the key by signing the host's challenge.
-_IDENTITY_CODE = ("import binascii; from openmv_ota import se; c = se.open(); "
-                  "print('SE-ID', binascii.hexlify(c.public_key()).decode(), "
-                  "binascii.hexlify(c.sign(binascii.unhexlify('%s'))).decode())")
+# Runs on the camera: provision its keys if it has none (a desk step -- an application never
+# does), then prove the identity key by signing the host's challenge, and report both keys.
+_IDENTITY_CODE = ("import binascii; from openmv_ota import se; r = se.provision(); "
+                  "print('SE-NONE') if r is None else print('SE-ID', "
+                  "binascii.hexlify(r[0].public_key()).decode(), "
+                  "binascii.hexlify(r[0].ecdh_public_key()).decode(), "
+                  "binascii.hexlify(r[0].sign(binascii.unhexlify('%s'))).decode(), int(r[1]))")
+_NO_SE = re.compile(r"ImportError: .*openmv_ota|no module named '?openmv_ota", re.IGNORECASE)
 
 
-def factory_identity(*, board: str, serial: str | None = None, mpremote: str | None = None,
-                     dry_run: bool = False):
-    """The last step of ``flash factory`` on a board with a secure element: wait for the camera to
-    come back running its new firmware, open the secure element through the camera's own romfs
-    code (which provisions a blank ATECC608, Arduino-compatible), and check the key by verifying a
-    signature over a fresh challenge here. The camera leaves the factory with a working key, and
-    its public key is in the report. Boards with no secure element: nothing to do."""
+def provision_keys(*, board: str, serial: str | None = None, mpremote: str | None = None,
+                   dry_run: bool = False, required: bool = True):
+    """The last step of every ``flash`` that leaves the camera on OTA firmware and romfs, on a
+    board with keys: wait for the camera to come back, provision its keys through the camera's
+    own romfs code (``se.provision()``: made if it has none, never replaced if it has), and check
+    the identity key by verifying a signature over a fresh challenge here. The keys are printed.
+    The camera leaves the desk provisioned, or the flash fails.
+
+    ``required=False`` (``flash firmware``/``romfs``): a camera whose romfs has no
+    ``openmv_ota.se`` yet is skipped with a note instead of failing. Boards with no keys at all:
+    nothing to do."""
     import hashlib
     import os
-    import re
 
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
@@ -550,33 +558,48 @@ def factory_identity(*, board: str, serial: str | None = None, mpremote: str | N
 
     from openmv_ota.romfs.boards import get_board
 
-    if not get_board(board).secure_element:
+    se = get_board(board).secure_element
+    if not se:
         return []
     digest = hashlib.sha256(os.urandom(32)).digest()
     code = _IDENTITY_CODE % digest.hex()
     if dry_run:
-        return [IdentityStep("secure element", [*_mpremote(mpremote), "connect", "<camera>",
-                                                "exec", code])]
+        return [IdentityStep("keys", [*_mpremote(mpremote), "connect", "<camera>", "exec", code])]
     raw = flash_config(board).raw
     deadline = time.monotonic() + _IDENTITY_WAIT_S
     while (cam := device.select(raw, serial)) is None:
         if time.monotonic() > deadline:
-            raise FlashError("the camera did not come back on USB after flashing; its secure "
-                             "element was not checked")
+            raise FlashError("the camera did not come back on USB after flashing; its keys were "
+                             "not provisioned")
         time.sleep(_IDENTITY_POLL_S)
     argv = [*_mpremote(mpremote), "connect", cam.port, "exec", code]
     rc, out = runner.run_quiet(argv)
-    m = re.search(r"SE-ID ([0-9a-f]{130}) ([0-9a-f]+)", out)
+    if rc and "could not enter raw repl" in out:
+        # A camera just back from a flash can refuse the raw REPL behind mpremote's soft reset
+        # while answering one without it (measured on an M7, every time for a while): resume.
+        argv = [*_mpremote(mpremote), "connect", cam.port, "resume", "exec", code]
+        rc, out = runner.run_quiet(argv)
+    m = re.search(r"SE-ID ([0-9a-f]{130}) ([0-9a-f]{130}) ([0-9a-f]+) ([01])", out)
+    if m is None and not required and _NO_SE.search(out):
+        print("note: this camera's romfs has no openmv_ota.se yet, so its keys were not "
+              "provisioned; `flash factory` (or `flash romfs` with an OTA romfs) does it",
+              file=sys.stderr)
+        return []
     if rc or not m:
-        raise FlashError("secure element check failed on the camera:\n%s" % out.strip())
-    pub, sig = bytes.fromhex(m.group(1)), bytes.fromhex(m.group(2))
+        raise FlashError("provisioning the camera's keys failed:\n%s" % out.strip())
+    pub, kx = bytes.fromhex(m.group(1)), bytes.fromhex(m.group(2))
+    sig, made = bytes.fromhex(m.group(3)), m.group(4) == "1"
     try:
         key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), pub)
         key.verify(sig, digest, ec.ECDSA(Prehashed(hashes.SHA256())))
     except (ValueError, InvalidSignature):
-        raise FlashError("secure element check failed: the camera's signature does not verify "
-                         "against its public key") from None
-    return [IdentityStep("secure element key %s" % pub.hex(), argv)]
+        raise FlashError("the camera's keys failed the check: its signature does not verify "
+                         "against its identity key") from None
+    if made and se["chip"] == "atecc608":
+        print("configured this board's ATECC608 the Arduino-compatible way (one-time) and made "
+              "its keys", file=sys.stderr)
+    return [IdentityStep("keys %s: identity %s, exchange %s"
+                         % ("made" if made else "present", pub.hex(), kx.hex()), argv)]
 
 
 @dataclass(frozen=True)
@@ -774,6 +797,13 @@ def flash_bootloader(project: str = ".", *, board: str, output: str | None = Non
     bl = cfg.raw.get("bootloader")
     if not bl:
         raise FlashError("board %r has no bootloader to flash with this tool" % board)
+    known = _boards.load_boards().get(board)
+    se = known.secure_element if known else None
+    if se and se["chip"] == "soft":                  # the keys share the bootloader's sector
+        print("warning: flashing the bootloader erases this camera's keys -- they live at the "
+              "end of the bootloader's flash sector. Afterwards it has a new identity: it is "
+              "provisioned again by the next `flash`, and must be registered again.",
+              file=sys.stderr)
     backend = bl["backend"]
     if backend not in ("dfu", "cubeprog", "imx", "alif"):
         raise FlashError("bootloader flashing for %r isn't available here: %s"

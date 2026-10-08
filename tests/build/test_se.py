@@ -59,6 +59,8 @@ def _der(body):
 CERT = _der(b"\x01" * 460)                 # 464 bytes of DER, like the factory certificate
 CERT_OBJECT = CERT + b"\x00" * 6           # the object pads it to a fixed size (470)
 PUB = b"\x04" + bytes(range(64))
+KXPUB = b"\x04" + bytes(range(64, 128))    # the exchange key the chip generates
+SECRET = bytes(range(100, 132))             # its ECDH secret with any peer, here
 SIG = _der(b"\x02\x01\x01\x02\x01\x02")
 
 
@@ -100,7 +102,8 @@ ATR = bytes.fromhex("00a0000003960403e800fe020b03e8080100000000640000"
 class Chip:
     """Speaks T=1 over I2C the way the bench's SE050 does. ``busy`` NACKs the next reads,
     ``wtx`` asks for more time before the next answer, ``chain`` splits it in two, ``sw``
-    overrides the status word and ``corrupt`` breaks the next answer's CRC."""
+    overrides the status word and ``corrupt`` breaks the next answer's CRC. ``kx`` is whether
+    the exchange key exists yet (a provisioned camera's chip: it does)."""
 
     addr = 0x48
 
@@ -114,6 +117,7 @@ class Chip:
         self.corrupt = False
         self.rx = []              # (pcb, inf) the chip received
         self.extra = None         # a frame to send instead of the answer
+        self.kx = True            # the exchange key 0x4F4D0002 exists
 
     # machine.I2C surface ---------------------------------------------------------------
     def writeto(self, addr, buf):
@@ -164,6 +168,18 @@ class Chip:
             off = int.from_bytes(body[8:10], "big")
             n = int.from_bytes(body[12:14], "big")
             data = tlv(0x41, CERT_OBJECT[off:off + n])
+        elif (ins, p2) == (0x04, 0x27):         # CheckObjectExists
+            known = body[2:6] == b"OM\x00\x02" and self.kx or body[2:6] == b"\xf0\x00\x00\x00"
+            data = tlv(0x41, b"\x01" if known else b"\x02")
+        elif (ins, p1, p2) == (0x01, 0x61, 0x00):   # WriteECKey: generate the key pair
+            assert body == se050._KX_POLICY + b"\x41\x04OM\x00\x02\x42\x01\x03"
+            self.kx = True
+            data = b""
+        elif (ins, p1, p2) == (0x03, 0x01, 0x0F):   # ECDHGenerateSharedSecret
+            assert body[2:6] == b"OM\x00\x02" and body[6:8] == b"\x42\x41" and len(body) == 73
+            data = tlv(0x41, SECRET)
+        elif (ins, p2) == (0x02, 0x00) and body[2:6] == b"OM\x00\x02":
+            data = tlv(0x41, KXPUB)
         elif (ins, p2) == (0x02, 0x00):
             data = tlv(0x41, PUB)
         elif (ins, p1, p2) == (0x03, 0x0C, 0x09):
@@ -230,7 +246,27 @@ def test_block_sequence_numbers_alternate(chip):
     se = _open(chip)
     se.random(4)
     se.random(4)
-    assert [p for p, _ in chip.rx if not p & 0x80] == [0x00, 0x40, 0x00]
+    # SELECT, the exchange key's CheckObjectExists, then the two
+    assert [p for p, _ in chip.rx if not p & 0x80] == [0x00, 0x40, 0x00, 0x40]
+
+
+def test_the_exchange_key_does_ecdh_on_the_chip(chip):
+    se = _open(chip)
+    peer = b"\x04" + bytes(64)
+    assert se.ecdh_public_key() == KXPUB
+    assert se.ecdh(peer) == SECRET
+    assert chip.rx[-1][1][:4] == b"\x80\x03\x01\x0f" and chip.rx[-1][1][13:78] == peer
+    with pytest.raises(ValueError):
+        se.ecdh(peer[:64])
+
+
+def test_open_refuses_a_chip_without_the_exchange_key_and_provision_makes_it(chip):
+    chip.kx = False
+    with pytest.raises(se050.NotProvisioned):
+        _open(chip)
+    se, made = se050.SecureElement.provision(chip)
+    assert made and chip.kx and se.ecdh_public_key() == KXPUB
+    assert se050.SecureElement.provision(chip)[1] is False      # had it: nothing made
 
 
 def test_sign_and_random_refuse_bad_sizes(chip):
@@ -428,17 +464,18 @@ def test_board_table_secure_element_entries_are_checked():
     with pytest.raises(ValueError, match="Pin name"):
         se("X", {"chip": "se050", "bus": 2, "addr": 0x48, "enable": 5})
     assert boards_mod.get_board("OPENMV_RT1060").secure_element["chip"] == "se050"
-    assert se("X", {"chip": "soft", "key_area": 0x08007F00, "bootloader_max": 0x7F00}) == {
-        "chip": "soft", "key_area": 0x08007F00, "bootloader_max": 0x7F00}
+    assert se("X", {"chip": "soft", "key_area": 0x08007000, "bootloader_max": 0x7000}) == {
+        "chip": "soft", "key_area": 0x08007000, "bootloader_max": 0x7000}
     for bad in ({"key_area": "0x0800"}, {"key_area": 1, "bootloader_max": 0}, {"key_area": 1}):
         with pytest.raises(ValueError, match="integer key_area and bootloader_max"):
             se("X", {"chip": "soft", **bad})
-    for name, area in (("OPENMV2", 0x08007F00), ("OPENMV3", 0x08007F00),
-                       ("OPENMV4", 0x0801FF00), ("OPENMV4P", 0x0801FF00),
-                       ("OPENMVPT", 0x0801FF00)):
+    # PINNED: a board's key area never moves -- its cameras' keys are there
+    for name, area in (("OPENMV2", 0x08007000), ("OPENMV3", 0x08007000),
+                       ("OPENMV4", 0x0801F000), ("OPENMV4P", 0x0801F000),
+                       ("OPENMVPT", 0x0801F000)):
         k = boards_mod.get_board(name).secure_element
-        # the key area is the last 256 bytes of the boot partition, right after the room
-        # the bootloader may use (the partition starts at 0x08000000)
+        # the key area is the last 4 KB of the boot partition, right after the room the
+        # bootloader may use (the partition starts at 0x08000000)
         assert k["chip"] == "soft" and k["key_area"] == area == 0x08000000 + k["bootloader_max"]
 
 
@@ -470,7 +507,9 @@ def test_the_pack_ships_only_the_board_s_chip_and_its_wiring(tmp_path):
     assert "from .soft import SecureElement" in board and "BUS = None\n" in board
     compile(board, "board.py", "exec")
 
-    assert not stage_for("OPENMV_N6").exists()          # no secure element: no package
+    n6 = stage_for("OPENMV_N6")                          # keys sealed in its own NOR: soft
+    assert sorted(p.name for p in n6.iterdir()) == ["__init__.py", "board.py", "soft.py"]
+    assert not stage_for("OPENMV_AE3").exists()          # no keys at all (yet): no package
     _stage_secure_element(tmp_path / "plain", "OPENMV_RT1060")   # no se/ staged: nothing to do
 
 
@@ -497,6 +536,7 @@ def _aresp(data):
 
 
 XY = bytes(range(1, 65))
+KX = bytes(range(65, 129))
 RS = b"\x80" + bytes(31) + b"\x00\x00\x01" + bytes(29)   # r needs a 0x00 pad, s has zeros to strip
 
 
@@ -543,8 +583,8 @@ class Ecc:
         if state == "arduino":
             self.keys[0] = bytes(range(64, 128))
         if state == "ours":
-            self.keys[2] = XY
-            self.data[8][:32] = atecc608._MAGIC + hashlib.sha256(XY).digest()[:28]
+            self.keys[2], self.keys[3] = XY, KX
+            self.data[8][:32] = atecc608._MAGIC + hashlib.sha256(XY + KX).digest()[:27]
         self.genkeys = 0
         self.ignore_word = None                   # a config word the chip drops on the floor
         self.cut = None                           # the command number the power fails on
@@ -609,6 +649,9 @@ class Ecc:
                 self.genkeys += 1
                 self.keys[p2] = bytes([self.genkeys]) * 64
             return self.keys[p2]
+        if op == 0x43:                            # ECDH, the secret in the clear
+            assert p1 == 0x00 and p2 == 3 and len(data) == 64 and 3 in self.keys
+            return SECRET
         if op == 0x16:
             return bytes([self.status if self.status != 0xEE else 0])
         if op == 0x41:
@@ -641,49 +684,59 @@ def _arduino_end_state(chip):
 
 
 def _record(chip):
-    return bytes(chip.data[8][:32]) == atecc608._MAGIC + hashlib.sha256(chip.keys[2]).digest()[:28]
+    keys = chip.keys[2] + chip.keys[3]
+    return bytes(chip.data[8][:32]) == atecc608._MAGIC + hashlib.sha256(keys).digest()[:27]
 
 
 def test_atecc_driver_config_is_arduino_s():
     assert atecc608._CONFIG == ARD[16:]
 
 
+def test_atecc_open_never_provisions(clock_us):
+    for state in ("blank", "arduino"):
+        chip = Ecc(state)
+        with pytest.raises(atecc608.NotProvisioned):
+            atecc608.SecureElement(chip)
+        assert not [r for r in chip.rx if r[0] in (0x12, 0x17, 0x40) and r[1] != 0x00]
+
+
 def test_atecc_provisions_a_blank_chip_as_arduino_would(clock_us):
     chip = Ecc("blank")
-    se = atecc608.SecureElement(chip)
-    assert _arduino_end_state(chip)
+    se, made = atecc608.SecureElement.provision(chip)
+    assert made and _arduino_end_state(chip)
     writes = [p2 for op, p1, p2, _ in chip.rx if op == 0x12 and p1 == 0x00]
     assert writes == [w for w in range(4, 32) if w != 21]
     locks = [(p1, p2) for op, p1, p2, _ in chip.rx if op == 0x17]
     assert locks[0][0] == 0x00 and locks[1] == (0x81, 0)
-    assert [p2 for op, p1, p2, _ in chip.rx if op == 0x40] == [2]      # slot 2, and only it
+    assert [p2 for op, p1, p2, _ in chip.rx if op == 0x40] == [2, 3]   # slots 2 and 3 only
     assert _record(chip) and 0 not in chip.keys
     assert se.public_key() == b"\x04" + chip.keys[2]
+    assert se.ecdh_public_key() == b"\x04" + chip.keys[3]
     chip.rx.clear()
     atecc608.SecureElement(chip)                          # provisioned: two reads, nothing else
     assert [(op, p1) for op, p1, _, _ in chip.rx] == [(0x02, 0x00), (0x02, 0x82)]
-    assert chip.genkeys == 1
+    assert atecc608.SecureElement.provision(chip)[1] is False and chip.genkeys == 2        # had them: nothing made
 
 
 def test_atecc_keeps_the_arduino_cloud_key(clock_us):
     chip = Ecc("arduino")
     arduino_key = chip.keys[0]
-    atecc608.SecureElement(chip)
+    atecc608.SecureElement.provision(chip)
     assert not [r for r in chip.rx if r[0] in (0x17,) or (r[0] == 0x12 and r[1] == 0x00)]
     assert chip.keys[0] == arduino_key and _record(chip) and _arduino_end_state(chip)
 
 
 def test_atecc_resumes_after_a_power_cut_at_any_step(clock_us):
     probe = Ecc("blank")
-    atecc608.SecureElement(probe)
+    atecc608.SecureElement.provision(probe)
     total = len(probe.rx)
     for cut in range(1, total + 1):
         chip = Ecc("blank")
         chip.cut = cut
         with pytest.raises(OSError):
-            atecc608.SecureElement(chip)
+            atecc608.SecureElement.provision(chip)
         chip.cut = None
-        se = atecc608.SecureElement(chip)
+        se, _ = atecc608.SecureElement.provision(chip)
         assert _arduino_end_state(chip) and _record(chip), cut
         assert se.public_key() == b"\x04" + chip.keys[2]
 
@@ -693,7 +746,7 @@ def test_atecc_refuses_a_chip_someone_else_configured(clock_us):
     chip.config[20] = 0x00                       # slot 0 configured differently, then locked
     chip.config[87] = 0
     with pytest.raises(OSError, match="not Arduino's configuration"):
-        atecc608.SecureElement(chip)
+        atecc608.SecureElement.provision(chip)
     assert chip.config[86] == 0x55 and not chip.keys        # data left unlocked, no key made
 
 
@@ -701,7 +754,7 @@ def test_atecc_does_not_lock_a_configuration_that_did_not_take(clock_us):
     chip = Ecc("blank")
     chip.ignore_word = 6                         # factory 8F 20 C4 8F, Arduino 87 20 87 2F
     with pytest.raises(OSError, match="not Arduino's configuration"):
-        atecc608.SecureElement(chip)
+        atecc608.SecureElement.provision(chip)
     assert chip.config[87] == 0x55 and not [r for r in chip.rx if r[0] == 0x17]
 
 
@@ -716,6 +769,16 @@ def test_atecc_identity_operations(clock_us):
     from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
     assert decode_dss_signature(sig) == (int.from_bytes(RS[:32], "big"), int.from_bytes(RS[32:], "big"))
     assert se.random(5) == bytes(range(5))
+
+
+def test_atecc_exchange_key_does_ecdh_on_the_chip(clock_us):
+    chip = Ecc()
+    se = atecc608.SecureElement(chip)
+    peer = b"\x04" + bytes(range(64))
+    assert se.ecdh(peer) == SECRET and chip.rx[-1][:4] == (0x43, 0x00, 3, peer[1:])
+    for bad in (peer[:64], b"\x02" + peer[1:]):
+        with pytest.raises(ValueError):
+            se.ecdh(bad)
 
 
 def test_atecc_bad_sizes_and_chip_errors(clock_us):
@@ -822,26 +885,39 @@ class _Ecdsa:
 
 
 class _KeyArea:
-    """``key_store``: 256 bytes of flash, written in whole 32-byte words onto blank flash."""
+    """``key_store``: 4 KB of flash, written in whole 32-byte words onto blank flash only.
+    ``cut`` stops the Nth write after ``cut_bytes`` bytes, or -- with ``cut_bits`` -- leaves a
+    random subset of that write's bits programmed: a power cut mid-write."""
 
-    SIZE = 256
+    SIZE = 4096
+    BLANK = 0xFF
 
     def __init__(self):
-        self.flash = bytearray(b"\xff" * 256)
-        self.writes = 0
-        self.drop = False                     # the flash takes the write but keeps nothing
+        self.flash = bytearray(b"\xff" * self.SIZE)
+        self.writes = []
+        self.cut = None                       # (write index, bytes kept) or (index, "bits", seed)
 
-    def read(self):
-        return bytes(self.flash)
+    def read(self, off, n):
+        assert 0 <= off and off + n <= self.SIZE
+        return bytes(self.flash[off:off + n])
 
     def write(self, off, data):
-        assert off % 32 == 0 and len(data) % 32 == 0 and off + len(data) <= 256
+        assert off % 32 == 0 and len(data) % 32 == 0 and off + len(data) <= self.SIZE
         if self.flash[off:off + len(data)] != b"\xff" * len(data):
             raise OSError(17)
-        self.writes += 1
-        if not self.drop:
-            self.flash[off:off + len(data)] = data
-
+        self.writes.append((off, bytes(data)))
+        cut = self.cut
+        if cut is not None and cut[0] == len(self.writes) - 1:
+            if cut[1] == "bits":                # some of the 1->0 transitions made, not all
+                import random
+                rnd = random.Random(cut[2])
+                for i, byte in enumerate(data):
+                    keep = rnd.getrandbits(8)
+                    self.flash[off + i] = byte | (~keep & 0xFF & ~byte)
+            else:                               # programmed in order, stopped part way
+                self.flash[off:off + cut[1]] = data[:cut[1]]
+            raise OSError(5)
+        self.flash[off:off + len(data)] = data
 
 
 @pytest.fixture
@@ -852,20 +928,46 @@ def area(monkeypatch):
     return a
 
 
-def test_soft_keys_are_made_on_first_open_and_kept(area):
-    se = soft.SecureElement()
-    rec = bytes(area.flash[:96])
-    assert rec[:5] == b"OMVK\x01" and rec[5:16] == bytes(11)
-    assert hashlib.sha256(rec[:80]).digest()[:16] == rec[80:96]
-    assert area.flash[96:] == b"\xff" * 160 and area.writes == 1
-    again = soft.SecureElement()                          # opened again: the same keys
-    assert area.writes == 1
-    assert again.public_key() == se.public_key() and len(se.public_key()) == 65
-    assert again.ecdh_public_key() == se.ecdh_public_key() != se.public_key()
+TOP = 4096 - 256                                 # slot 0: the top of the area
+
+
+def _soft_record(types, keys, version=1, protection=0):
+    """A record as ``provision`` writes it, for any description (to test what reads it)."""
+    desc = b"OMVK" + bytes([version, protection, len(types), 0xFF]) + bytes(types)
+    words = desc + b"\xff" * (32 - len(desc)) + b"".join(keys)
+    words += b"\xff" * (224 - len(words))
+    return words + hashlib.sha256(words).digest()
+
+
+def _key_bytes(n):
+    return bytes([n]) * 32
+
+
+def test_soft_open_never_makes_keys(area):
+    with pytest.raises(soft.NotProvisioned):
+        soft.SecureElement()
+    assert area.writes == []
+
+
+def test_soft_provision_makes_keys_once_in_the_top_slot(area):
+    se, made = soft.SecureElement.provision()
+    assert made
+    slot = bytes(area.flash[TOP:])
+    desc = slot[:32]
+    assert desc[:8] == b"OMVK\x01\x00\x02\xff" and desc[8:10] == b"\x01\x02"
+    assert desc[10:] == b"\xff" * 22                       # reserved bytes stay blank
+    assert slot[96:224] == b"\xff" * 128                   # spare keys and word 6: never written
+    assert slot[224:] == hashlib.sha256(slot[:224]).digest()
+    assert [o for o, _ in area.writes] == [TOP, TOP + 224]  # keys, then the check last
+    assert area.flash[:TOP] == b"\xff" * TOP
+    again, made_again = soft.SecureElement.provision()
+    assert not made_again and len(area.writes) == 2
+    assert again.public_key() == se.public_key() == soft.SecureElement().public_key()
+    assert se.ecdh_public_key() != se.public_key()
 
 
 def test_soft_identity_signs_and_exchange_key_agrees(area):
-    se = soft.SecureElement()
+    se, _ = soft.SecureElement.provision()
     digest = hashlib.sha256(b"challenge").digest()
     sig = se.sign(digest)
     ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), se.public_key()).verify(
@@ -883,39 +985,214 @@ def test_soft_draws_again_for_a_key_mbedtls_refuses(area, monkeypatch):
     draws = iter([bytes(32), _N.to_bytes(32, "big")] + [os.urandom(32) for _ in range(4)])
     real = os.urandom
     monkeypatch.setattr(soft.os, "urandom", lambda n: next(draws) if n == 32 else real(n))
-    soft.SecureElement()
-    assert soft._valid(bytes(area.flash[:96]))
+    soft.SecureElement.provision()
+    assert soft.SecureElement().public_key()
 
 
-def test_soft_skips_a_slot_a_power_cut_spoiled(area):
-    area.flash[:40] = b"\x00" * 40                          # half a record: neither valid nor blank
+def _cut_cases():
+    """Every way the two writes of a provisioning can be stopped: each write, after each byte;
+    and each write with random partial bit patterns."""
+    cases = [(w, n) for w, size in ((0, 96), (1, 32)) for n in range(size)]
+    cases += [(w, "bits", seed) for w in (0, 1) for seed in range(40)]
+    return cases
+
+
+@pytest.mark.parametrize("cut", _cut_cases())
+def test_soft_a_power_cut_at_any_point_never_silently_changes_the_keys(area, cut):
+    area.cut = cut
+    with pytest.raises(OSError):
+        soft.SecureElement.provision()
+    area.cut = None
+    check = bytes(area.flash[TOP + 224:])
+    if check == b"\xff" * 32:
+        # cut before the check: the keys were never used -- skipped, made again one slot down
+        # (or in the same slot, if nothing at all reached the flash)
+        untouched = area.flash[TOP:] == b"\xff" * 256
+        with pytest.raises(soft.NotProvisioned):
+            soft.SecureElement()
+        se, made = soft.SecureElement.provision()
+        slot = TOP if untouched else TOP - 256
+        assert made and area.writes[-1][0] == slot + 224 and se.public_key()
+    else:
+        # cut inside the check itself: indistinguishable from damage -- loud, never new keys
+        writes = len(area.writes)
+        for step in (soft.SecureElement, soft.SecureElement.provision):
+            with pytest.raises(OSError, match="damaged"):
+                step()
+        assert len(area.writes) == writes
+
+
+def test_soft_a_damaged_record_is_an_error_and_never_replaced(area):
+    soft.SecureElement.provision()
+    area.flash[TOP + 40] ^= 0x01                           # one bit of the identity key
+    writes = len(area.writes)
+    for step in (soft.SecureElement, soft.SecureElement.provision):
+        with pytest.raises(OSError, match="damaged"):
+            step()
+    assert len(area.writes) == writes
+
+
+@pytest.mark.parametrize("record", [
+    _soft_record([1, 2], [_key_bytes(1), _key_bytes(2)], version=2),           # a newer format
+    _soft_record([1, 2], [_key_bytes(1), _key_bytes(2)], protection=1),       # sealed by a chip
+    _soft_record([1, 9], [_key_bytes(1), _key_bytes(2)]),                     # an unknown key type
+    _soft_record([1, 1], [_key_bytes(1), _key_bytes(2)]),                     # a type twice
+    _soft_record([], []),                                                     # no keys at all
+    _soft_record([1, 2, 1, 2, 1, 2], [_key_bytes(1)] * 6),                    # more than five
+    b"XXXX" + _soft_record([1, 2], [_key_bytes(1), _key_bytes(2)])[4:],       # not our magic
+])
+def test_soft_a_complete_record_it_does_not_understand_is_an_error(area, record):
+    if record[:4] == b"XXXX":                              # recompute the check over it
+        record = record[:224] + hashlib.sha256(record[:224]).digest()
+    area.flash[TOP:] = record
+    for step in (soft.SecureElement, soft.SecureElement.provision):
+        with pytest.raises(OSError, match="newer firmware"):
+            step()
+    assert area.writes == []
+
+
+def test_soft_the_newest_complete_record_wins(area):
+    area.flash[TOP:] = _soft_record([1, 2], [_key_bytes(1), _key_bytes(2)])
+    area.flash[TOP - 256:TOP] = _soft_record([1, 2], [_key_bytes(3), _key_bytes(4)])
     se = soft.SecureElement()
-    assert soft._valid(bytes(area.flash[128:224])) and se.public_key()
+    assert se._id == _key_bytes(3) and se._kx == _key_bytes(4)
+    area.flash[TOP + 40] ^= 1                              # damage under a newer record: history
+    assert soft.SecureElement()._id == _key_bytes(3)
+    area.flash[TOP - 256 + 40] ^= 1                        # the newest damaged: an error
+    with pytest.raises(OSError, match="damaged"):
+        soft.SecureElement()
+
+
+def test_soft_keys_are_found_by_type_and_one_job_each(area):
+    area.flash[TOP:] = _soft_record([2, 1], [_key_bytes(7), _key_bytes(8)])     # stored the other way
+    se = soft.SecureElement()
+    assert se._id == _key_bytes(8) and se._kx == _key_bytes(7)
+    area.flash[TOP - 256:TOP] = _soft_record([1], [_key_bytes(9)])              # identity only
+    se = soft.SecureElement()
+    assert se.sign(bytes(32))
+    for job in (se.ecdh_public_key, lambda: se.ecdh(b"\x04" + bytes(64))):
+        with pytest.raises(OSError, match="no key for that job"):
+            job()
+
+
+def test_soft_a_full_key_area_refuses_new_keys(area):
+    for i in range(16):                                    # every slot a cut-off write
+        area.flash[4096 - (i + 1) * 256] = 0x00
+    with pytest.raises(soft.NotProvisioned):
+        soft.SecureElement()
+    with pytest.raises(OSError, match="no blank slot"):
+        soft.SecureElement.provision()
+
+
+class _SealedArea(_KeyArea):
+    """The N6's key store: the same flash, plus seal/unseal -- real AES-256-GCM (the host's
+    cryptography) under a fixed key standing in for the chip's DHUK."""
+
+    DHUK = bytes(range(32))
+
+    def __init__(self, hvalid=True):
+        super().__init__()
+        self.hvalid = hvalid
+
+    def seal(self, aad, iv, plain):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        assert len(aad) == 32 and len(iv) == 12
+        return AESGCM(self.DHUK).encrypt(iv, plain, aad)
+
+    def unseal(self, aad, iv, ct, tag):
+        from cryptography.exceptions import InvalidTag
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        if not self.hvalid:
+            raise OSError(13)
+        try:
+            return AESGCM(self.DHUK).decrypt(iv, bytes(ct) + bytes(tag), aad)
+        except InvalidTag:
+            raise OSError(13) from None
+
+
+@pytest.fixture
+def sealed(monkeypatch):
+    a = _SealedArea()
+    monkeypatch.setattr(soft, "key_store", a)
+    monkeypatch.setattr(soft, "ecdsa_verify", _Ecdsa())
+    return a
+
+
+def test_soft_sealed_keys_never_reach_the_flash_in_the_clear(sealed):
+    se, made = soft.SecureElement.provision()
+    slot = bytes(sealed.flash[TOP:])
+    assert made and slot[5] == 1                           # protection: sealed by the chip
+    word6 = slot[192:224]
+    assert word6[12:16] == b"\xff" * 4                     # IV, reserved, tag
+    keys = sealed.unseal(slot[:32], word6[:12], slot[32:96], word6[16:])
+    assert se._id == keys[:32] and se._kx == keys[32:]
+    assert keys[:32] not in slot and keys[32:] not in slot
+    assert [o for o, _ in sealed.writes] == [TOP, TOP + 192, TOP + 224]   # check last
     assert soft.SecureElement().public_key() == se.public_key()
 
 
-def test_soft_refuses_a_key_area_with_no_record_and_no_room(area):
-    area.flash[:] = b"\x00" * 256
-    with pytest.raises(OSError, match="no usable key record"):
+def test_soft_sealed_keys_another_chip_cannot_open(sealed):
+    soft.SecureElement.provision()
+    sealed.DHUK = bytes(32)                               # the same NOR on another chip
+    with pytest.raises(OSError, match="can't unseal"):
         soft.SecureElement()
 
 
-def test_soft_refuses_keys_that_did_not_stick(area):
-    area.drop = True
-    with pytest.raises(OSError, match="did not read back"):
+def test_soft_sealed_keys_refuse_a_chip_without_its_hardware_key(sealed):
+    soft.SecureElement.provision()
+    sealed.hvalid = False
+    for step in (soft.SecureElement, soft.SecureElement.provision):
+        with pytest.raises(OSError, match="can't unseal"):
+            step()
+
+
+def test_soft_a_sealed_record_on_a_board_that_cannot_unseal_is_not_understood(sealed, area):
+    sealed_record = _SealedArea()
+    soft.key_store = sealed_record
+    soft.SecureElement.provision()
+    area.flash[:] = sealed_record.flash                    # moved to a plain key store
+    soft.key_store = area
+    with pytest.raises(OSError, match="newer firmware"):
         soft.SecureElement()
+
+
+@pytest.mark.parametrize("cut", [(w, n) for w in (0, 1, 2) for n in (0, 16, 31)])
+def test_soft_a_sealed_record_cut_short_is_skipped_or_loud(sealed, cut):
+    sealed.cut = cut
+    with pytest.raises(OSError):
+        soft.SecureElement.provision()
+    sealed.cut = None
+    if bytes(sealed.flash[TOP + 224:]) == b"\xff" * 32:
+        se, made = soft.SecureElement.provision()
+        assert made and se.public_key()
+    else:
+        with pytest.raises(OSError, match="damaged"):
+            soft.SecureElement()
 
 
 def test_soft_der_sig_pads_and_strips():
     assert soft._der_sig(bytes(64)) == b"\x30\x06\x02\x01\x00\x02\x01\x00"
 
 
-def test_open_gives_a_board_s_own_keys_with_no_bus(monkeypatch):
+def test_open_and_provision_take_a_board_s_own_keys_with_no_bus(monkeypatch):
     from openmv_ota.build.device.openmv_ota import se as se_pkg
     made = object()
+
+    class Keys:
+        def __init__(self):
+            self.opened = made
+
+        @classmethod
+        def provision(cls):
+            return made, True
+
     board = types.ModuleType("board")
     board.BUS = None
-    board.SecureElement = lambda: made
+    board.SecureElement = Keys
     monkeypatch.setitem(sys.modules, "openmv_ota.build.device.openmv_ota.se.board", board)
     monkeypatch.setattr(se_pkg, "board", board, raising=False)
-    assert se_pkg.open() is made
+    assert se_pkg.open().opened is made
+    assert se_pkg.provision() == (made, True)
+    monkeypatch.delitem(sys.modules, "openmv_ota.build.device.openmv_ota.se.board")
+    monkeypatch.delattr(se_pkg, "board")
+    assert se_pkg.provision() is None                     # a board with no keys at all

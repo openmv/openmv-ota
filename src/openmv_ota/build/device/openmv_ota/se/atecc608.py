@@ -2,22 +2,26 @@
 protocol and the commands the camera's identity needs.
 
 Unlike the SE050 this chip leaves Microchip's factory BLANK: no key, its configuration and data
-zones unlocked. :class:`SecureElement` provisions it the first time it is opened, and every step
-leaves the chip exactly as Arduino's own Cloud provisioning would (ArduinoECCX08's
-``ECCX08_DEFAULT_TLS_CONFIG``, then both locks), so the board still onboards to Arduino Cloud:
+zones unlocked. :meth:`SecureElement.provision` -- a desk step (see :mod:`openmv_ota.se`) --
+makes it ready, every step leaving the chip exactly as Arduino's own Cloud provisioning would
+(ArduinoECCX08's ``ECCX08_DEFAULT_TLS_CONFIG``, then both locks), so the board still onboards
+to Arduino Cloud:
 
 1. write Arduino's configuration, read it back and compare (refusing a chip someone else
    configured), and lock it -- with the chip checking the CRC of what it locks;
 2. lock the data zone;
-3. generate the identity key in slot 2 and write a record of it to slot 8.
+3. generate the identity key in slot 2 and the exchange key in slot 3, then write a record of
+   both to slot 8.
 
-The locks are one-way, for the life of the chip. Each step checks the chip's state first, so a
-power cut part way resumes on the next open. Slot 2 and slot 8 are slots Arduino never touches:
-its Cloud onboarding regenerates the key in slot 0 every time it runs, so an identity there would
-not survive it. The record in slot 8 marks the key as made; until it is written the key is made
-again, so a key is never reported that a later open replaces. The chip carries no maker's
-certificate, so :meth:`SecureElement.certificate` is None and the server learns the key when the
-camera is first registered.
+The locks are one-way, for the life of the chip; the keys are not -- those slots allow GenKey
+again after the locks. Each step checks the chip's state first, so a power cut part way resumes
+on the next provisioning. Slots 2, 3 and 8 are slots Arduino never touches: its Cloud onboarding
+regenerates the key in slot 0 every time it runs, so an identity there would not survive it.
+The record in slot 8 marks the keys as made; until it is written they are made again, so keys
+are never reported that a later provisioning replaces. Opening only reads: a chip without the
+record raises :class:`NotProvisioned`. The chip carries no maker's certificate, so
+:meth:`SecureElement.certificate` is None and the server learns the key when the camera is
+registered.
 
 The chip sleeps; every exchange starts with a WAKE -- SDA held low >= 60 us, done by addressing
 0x00 at 100 kHz -- answered ``04 11 33 43``, and ends by sending it to idle. A command is
@@ -36,8 +40,9 @@ import time
 _ADDR = 0x60
 _WAKE = b"\x04\x11\x33\x43"
 _SLOT = 2                         # the identity key's slot (Arduino uses 0 and 1)
-_REC = 8                          # the record that the key was made (a clear slot Arduino leaves)
-_MAGIC = b"OMV1"
+_KX_SLOT = 3                      # the exchange key's slot
+_REC = 8                          # the record that the keys were made (a clear slot Arduino leaves)
+_MAGIC = b"OMVK\x01"
 _WAIT_MS = 1500                   # a command's slowest case (GenKey/Sign at a divided clock)
 
 # Configuration bytes 16-127 as Arduino writes them (ECCX08_DEFAULT_TLS_CONFIG). Bytes 0-15 are
@@ -82,20 +87,35 @@ def _der_sig(rs):
     return b"\x30" + bytes([len(body)]) + body
 
 
+class NotProvisioned(OSError):
+    """The chip has no keys of ours yet: the camera was never provisioned."""
+
+
 class SecureElement:
     """The ATECC608 on ``i2c`` (a ``machine.I2C``, at most 100 kHz so the wake pulse is long
-    enough), provisioned on first open (see the module). ``enable`` is unused: the chip has no
-    enable pin. Raises OSError if the chip can't be provisioned -- for one, a chip someone else
-    configured. See :mod:`openmv_ota.se` for the interface."""
+    enough). ``enable`` is unused: the chip has no enable pin. Raises :class:`NotProvisioned`
+    if the camera was never provisioned. See :mod:`openmv_ota.se` for the interface."""
 
-    def __init__(self, i2c, addr=_ADDR, enable=None):
+    @classmethod
+    def provision(cls, i2c, addr=_ADDR, enable=None):
+        """``(keys, made)``: on a chip without our keys, configure and lock it as Arduino would
+        (if it isn't already) and make the keys, then open. ``made`` is False if it had them.
+        Raises, changing nothing, on a chip someone else configured. A desk step."""
+        se = cls(i2c, addr, enable, _make=True)
+        return se, se._made
+
+    def __init__(self, i2c, addr=_ADDR, enable=None, _make=False):
         self._i2c = i2c
         self._addr = addr
-        self._pkt = bytearray(8 + 32 + 2)
+        self._pkt = bytearray(8 + 64 + 2)          # the largest command: ECDH, a 64-byte point
+        self._made = False
         lock = self._run(0x02, 0x00, 0x15)        # config word 0x15: ..., LockValue, LockConfig
-        # 0x00 = locked, 0x55 = unlocked. Provisioned = data locked and the key's record present.
-        if lock[2] or self._run(0x02, 0x82, _REC << 3)[:4] != _MAGIC:
+        # 0x00 = locked, 0x55 = unlocked. Provisioned = data locked and the keys' record there.
+        if lock[2] or self._run(0x02, 0x82, _REC << 3)[:5] != _MAGIC:
+            if not _make:
+                raise NotProvisioned("atecc608: this camera has no keys; provision it")
             self._provision(lock[2], lock[3])
+            self._made = True
 
     def public_key(self):
         """The identity key's public half: 65 bytes, ``04 || X || Y``."""
@@ -113,13 +133,24 @@ class SecureElement:
         # one wake: TempKey does not survive the chip going back to sleep.
         return _der_sig(self._run(0x41, 0x80, _SLOT, nonce=digest))
 
+    def ecdh_public_key(self):
+        """The exchange key's public half: 65 bytes, ``04 || X || Y``."""
+        return b"\x04" + self._run(0x40, 0x00, _KX_SLOT)
+
+    def ecdh(self, peer):
+        """The 32-byte ECDH secret of the exchange key and ``peer`` (65 bytes, ``04 || X || Y``),
+        computed on the chip (ECDH; slot 3's config puts the secret in the clear output)."""
+        if len(peer) != 65 or peer[0] != 4:
+            raise ValueError("peer must be a 65-byte uncompressed public key")
+        return self._run(0x43, 0x00, _KX_SLOT, peer[1:])
+
     def random(self, n):
         """``n`` (at most 32) random bytes from the chip's TRNG."""
         if not 0 < n <= 32:
             raise ValueError("1..32 bytes at a time")
         return self._run(0x1B, 0x00, 0x0000)[:n]
 
-    # -- provisioning, once in the chip's life ---------------------------------------------
+    # -- provisioning, at a desk ---------------------------------------------------------
 
     def _provision(self, data_open, config_open):
         if config_open:
@@ -133,8 +164,9 @@ class SecureElement:
             self._run(0x17, 0x00, _crc(cfg, 0, 128))             # lock config, CRC-checked
         if data_open:
             self._run(0x17, 0x81, 0x0000)                        # lock data (as Arduino)
-        pub = self._run(0x40, 0x04, _SLOT)                       # GenKey: a new private key
-        self._run(0x12, 0x82, _REC << 3, _MAGIC + hashlib.sha256(pub).digest()[:28])
+        pub = self._run(0x40, 0x04, _SLOT)                       # GenKey: new private keys
+        kx = self._run(0x40, 0x04, _KX_SLOT)
+        self._run(0x12, 0x82, _REC << 3, _MAGIC + hashlib.sha256(pub + kx).digest()[:27])
 
     # -- the chip's command protocol ------------------------------------------------------
 
