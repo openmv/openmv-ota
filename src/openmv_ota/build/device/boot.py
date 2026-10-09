@@ -692,8 +692,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
                                    lambda: time.ticks_diff(time.ticks_ms(), start))
         answer = factory_keys(trailer.key_id, se, challenge)
         if challenge is not None:
-            print(answer)
-            log.info("boot: key request answered")
+            print(answer)  # hil-residual: answered during `flash factory`, before a HIL run's capture starts; the flash's own "keys made/present" report proves it
         log.info("boot: keys %s" % answer)
     log.info("boot: ready, running app")
 
