@@ -209,7 +209,8 @@ def _bring_up(kind, settings, static=False):  # pragma: no cover  (device)  # hi
         nic = network.LAN()
         nic.active(True)
     else:
-        nic = join_wifi(network, settings["ssid"], settings["psk"])
+        import openmv_netcfg
+        nic = join_wifi(network, settings["ssid"], settings["psk"], openmv_netcfg)
     if static and settings and settings.get("ipv4") == "static":
         nic.ifconfig((settings["address"], settings["netmask"],
                       settings["gateway"], settings["gateway"]))
@@ -222,7 +223,7 @@ def _bring_up(kind, settings, static=False):  # pragma: no cover  (device)  # hi
     return False  # hil-residual: bare return (this interface failed; the caller tries the next)
 
 
-def join_wifi(network, ssid, psk):
+def join_wifi(network, ssid, psk, netcfg):
     """Start joining ``ssid`` and return the interface: ``network.WLAN``, or ``network.WINC`` on
     the boards that reach Wi-Fi through the WINC1500 shield (the H7 Plus). CONSTRUCTED, not
     reused: this is what resets a wedged chip (see openmv_ota.run's recover hook).
@@ -231,10 +232,7 @@ def join_wifi(network, ssid, psk):
     the message: log without the exception and return the interface unjoined, so the caller's
     wait gives up on it like on a WLAN that never joined."""
     if has_wlan(network):
-        nic = network.WLAN(network.STA_IF)
-        nic.active(True)
-        nic.connect(ssid, psk)
-        return nic
+        return netcfg.join_wlan(network, ssid, psk, log.warning)
     nic = network.WINC()
     try:
         nic.connect(ssid, key=psk or None)   # None: an open network

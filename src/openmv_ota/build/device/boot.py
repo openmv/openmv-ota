@@ -509,6 +509,85 @@ last_publish_seq = 0          # ...and its publish_seq; confirm() raises the flo
 last_failure_reason = None    # why the OTHER slot was rejected, if this one is a fallback
 
 
+# --- The camera's keys, on a factory image's boot ---------------------------
+# A factory image is written only by `openmv-ota flash factory`, at a desk, and is signed with a
+# factory key (below the OTA key range). Booting one, before the app runs, is where the camera's
+# keys are made if it has none (``openmv_ota.se.provision``, which never replaces keys it has) --
+# never by the app, so a camera in the field can't make or change keys, and never by a host
+# breaking into a running app, which on an app that arms a watchdog resets the board. For a
+# short window the flashing tool may ask, with an ``OMVKEYS <challenge>`` line on the console;
+# the camera answers with its keys and a signature over the challenge. Without a request the
+# keys are still made, silently.
+#
+# The window must not delay a boot nobody is flashing. Where the port can tell (stm32: the host
+# has the console open, DTR), it closes after a short grace unless a host has the console open --
+# a tool opens it within ~0.4 s of the camera mounting its image. Holding every factory boot for
+# the full window moved the app's start into the second or two after reset when a USB host probes
+# the /flash drive: on the Giga that collides with the Wi-Fi firmware load (both are on the same
+# QSPI flash) and the radio fails, or hangs. The tool, if it misses the window, soft-resets the
+# camera with the console held open, and the next boot waits for it.
+
+_OTA_KEY_ID_BASE = 0x0100        # factory images are signed below this (openmv_ota.ota.keys)
+_KEYS_WINDOW_MS = 2000           # how long a factory boot waits for the flashing tool's request
+_KEYS_REQUEST = "OMVKEYS "       # ...followed by 64 hex digits: the 32-byte challenge
+_KEYS_GRACE_MS = 750             # how long it waits for a host to open the console at all
+_KEYS_STEP_MS = 50               # how often it looks, while it waits for one
+
+
+def keys_challenge(stream, poll, elapsed, window_ms=_KEYS_WINDOW_MS, attended=None):
+    """The 32-byte challenge of an ``OMVKEYS <hex>`` line read off ``stream`` within ``window_ms``,
+    or None. ``poll(ms)`` says whether a byte is waiting; ``elapsed()`` is the milliseconds since
+    the window opened (``ticks_diff`` on the device: the tick counter wraps). ``attended()``, where
+    the port has one, says whether a host has the console open: without one past
+    ``_KEYS_GRACE_MS`` the window closes early. Other lines (the IDE, noise) are skipped; a bad
+    request is no request. Pure I/O shuffling."""
+    line = ""
+    while True:
+        now = elapsed()
+        left = window_ms - now
+        if attended is not None:
+            if now >= _KEYS_GRACE_MS and not attended():
+                return None
+            left = min(left, _KEYS_STEP_MS)
+        if left <= 0:
+            return None
+        if not poll(left):
+            continue
+        c = stream.read(1)
+        if c == "\n":
+            if line.startswith(_KEYS_REQUEST):
+                try:
+                    challenge = binascii.unhexlify(line[len(_KEYS_REQUEST):].strip())
+                except ValueError:
+                    challenge = b""
+                if len(challenge) == 32:
+                    return challenge
+            line = ""
+        elif len(line) < 80:                       # bounded: a request is 72 characters
+            line += c
+
+
+def factory_keys(key_id, se, challenge):
+    """Make the camera's keys if it has none, when booting a factory image (``key_id``, the
+    image's signing key, below the OTA range); the answer line for the flashing tool -- printed
+    by the caller only if it asked (``challenge``) -- or None when there is nothing to do: an OTA
+    image, or a romfs without ``openmv_ota.se`` (``se`` None)."""
+    if key_id >= _OTA_KEY_ID_BASE or se is None:
+        return None
+    try:
+        r = se.provision()
+        if r is None:
+            return "SE-NONE"                       # a board with no keys at all
+        keys, made = r
+        if challenge is None:
+            return "SE-OK"
+        return "SE-ID %s %s %s %d" % (binascii.hexlify(keys.public_key()).decode(),
+                                      binascii.hexlify(keys.ecdh_public_key()).decode(),
+                                      binascii.hexlify(keys.sign(challenge)).decode(), made)
+    except Exception as e:                         # damaged keys: say so, never stop the boot
+        return "SE-ERROR %s" % e
+
+
 # --- Device entry -----------------------------------------------------------
 # Wires vfs + the ECDSA C module + the build-generated _ota_config into OtaBoot
 # and runs. Device-only: on the host these imports are absent, so the module is
@@ -618,6 +697,28 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     os.chdir("/rom")
     sys.path.append("/rom")
     sys.path.append("/rom/lib")
+    if trailer.key_id < _OTA_KEY_ID_BASE:          # a factory image: the camera's keys
+        try:
+            from openmv_ota import se
+        except ImportError:  # hil-residual: a factory romfs without openmv_ota.se (a board with no keys, the AE3); boot.keys after it reads "None"
+            se = None  # hil-residual: same branch as the line above
+        import select
+        import time
+        p = select.poll()
+        p.register(sys.stdin, select.POLLIN)
+        try:
+            import pyb
+            attended = pyb.USB_VCP().isconnected   # hil-residual: stm32 DTR query; no marker tells the branches apart (boot.keys after it fires either way), host-tested via keys_challenge(attended=)
+        except (ImportError, AttributeError):  # hil-residual: ports without pyb.USB_VCP (mimxrt, alif) have no DTR query; their window runs in full
+            attended = None  # hil-residual: same branch as the line above
+        start = time.ticks_ms()
+        challenge = keys_challenge(sys.stdin, lambda ms: p.poll(ms),
+                                   lambda: time.ticks_diff(time.ticks_ms(), start),
+                                   attended=attended)
+        answer = factory_keys(trailer.key_id, se, challenge)
+        if challenge is not None:
+            print(answer)  # hil-residual: answered during `flash factory`, before a HIL run's capture starts; the flash's own "keys made/present" report proves it
+        log.info("boot: keys %s" % answer)
     log.info("boot: ready, running app")
 
 

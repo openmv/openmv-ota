@@ -293,6 +293,7 @@ def test_arduino_erase_enters_dfu_after_its_prechecks(tmp_path, monkeypatch):
 def test_cli_factory_provision_flag_reaches_the_rom_path(tmp_path, monkeypatch, capsys):
     seen = {}
     monkeypatch.setattr(fl, "flash_factory", lambda *a, **k: seen.update(k) or [])
+    monkeypatch.setattr(fl, "provision_keys", lambda **k: [])
     assert main(["flash", "factory", str(tmp_path), "-b", "OPENMV_RT1060", "--provision"]) == 0
     assert seen["provision"] is True
     assert main(["flash", "factory", str(tmp_path), "-b", "OPENMV_RT1060"]) == 0

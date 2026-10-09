@@ -169,16 +169,16 @@ def test_wifi_is_found_on_wlan_and_on_the_winc_shield():
 
 def test_join_wifi_builds_a_fresh_wlan():
     net = _Net(wlan=True)
-    rec.join_wifi(net, "lab", "pw")
+    rec.join_wifi(net, "lab", "pw", nc)
     assert net.calls == [("new", 0), ("active", True), ("connect", "lab", "pw")]
 
 
 def test_join_wifi_uses_the_winc_with_a_keyword_key():
     net = _Net(wlan=False)
-    rec.join_wifi(net, "lab", "pw")
+    rec.join_wifi(net, "lab", "pw", nc)
     assert net.calls == [("new",), ("connect", "lab", ("key", "pw"))]
     net = _Net(wlan=False)
-    rec.join_wifi(net, "cafe", "")                         # open network: no key at all
+    rec.join_wifi(net, "cafe", "", nc)                     # open network: no key at all
     assert net.calls[-1] == ("connect", "cafe", ("key", None))
 
 
@@ -186,7 +186,7 @@ def test_a_failed_winc_join_is_survived_and_the_key_is_not_logged(monkeypatch):
     """Recovery must never die, and the WINC's error message carries the key."""
     lines = []
     monkeypatch.setattr(rec.log, "warning", lambda m, *a: lines.append(m))
-    nic = rec.join_wifi(_Net(wlan=False, fail=True), "lab", "secret")
+    nic = rec.join_wifi(_Net(wlan=False, fail=True), "lab", "secret", nc)
     assert nic is not None
     assert lines and all("secret" not in m for m in lines)
 

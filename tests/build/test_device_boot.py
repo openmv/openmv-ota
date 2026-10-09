@@ -663,3 +663,109 @@ def test_a_stock_camera_with_no_counter_has_no_floor_to_clear():
                   body, _status(True, False, False), product_id=0,
                   trusted={0x100: pub}, floor=0)
     assert t.publish_seq == 0
+
+
+# --- the camera's keys, on a factory image's boot --------------------------------------------
+
+class _Console:
+    """The console as boot.py's key window sees it: bytes arrive over time (``feed``), ``poll``
+    advances the clock while it waits."""
+
+    def __init__(self, text=""):
+        self.buf = list(text)
+        self.now = 0
+
+    def read(self, n):
+        return self.buf.pop(0)
+
+    def poll(self, ms):
+        if self.buf:
+            return True
+        self.now += ms                          # nothing came: the wait used the time
+        return False
+
+    def elapsed(self):
+        return self.now
+
+
+CH = bytes(range(32))
+
+
+def test_the_key_window_returns_the_tool_s_challenge():
+    con = _Console("noise from the IDE\n" + B._KEYS_REQUEST + CH.hex() + "\r\n")
+    assert B.keys_challenge(con, con.poll, con.elapsed) == CH
+
+
+@pytest.mark.parametrize("text", [
+    "",                                                     # nobody asked
+    B._KEYS_REQUEST + CH.hex()[:-2] + "\n",                 # 31 bytes
+    B._KEYS_REQUEST + "zz" * 32 + "\n",                     # not hex
+    B._KEYS_REQUEST + CH.hex(),                             # never finished
+    "x" * 500 + "\n",                                       # a runaway line stays bounded
+])
+def test_the_key_window_ignores_anything_else_and_closes(text):
+    con = _Console(text)
+    assert B.keys_challenge(con, con.poll, con.elapsed, window_ms=2000) is None
+    assert con.now >= 2000 or text
+
+
+class _Keys:
+    def public_key(self):
+        return b"\x04" + bytes(64)
+
+    def ecdh_public_key(self):
+        return b"\x04" + b"\x01" * 64
+
+    def sign(self, digest):
+        assert digest == CH
+        return b"\x30\x06\x02\x01\x01\x02\x01\x01"
+
+
+class _Se:
+    def __init__(self, result=None, error=None):
+        self.result, self.error, self.calls = result, error, 0
+
+    def provision(self):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return self.result
+
+
+def test_a_factory_boot_makes_the_keys_and_answers_the_tool():
+    se = _Se((_Keys(), True))
+    line = B.factory_keys(0x0001, se, CH)
+    assert line == "SE-ID %s %s %s 1" % ("04" + "00" * 64, "04" + "01" * 64, "3006020101020101")
+    assert B.factory_keys(0x0001, _Se((_Keys(), False)), None) == "SE-OK"   # nobody asked
+
+
+def test_only_a_factory_image_with_the_keys_code_makes_keys():
+    se = _Se((_Keys(), True))
+    assert B.factory_keys(B._OTA_KEY_ID_BASE, se, CH) is None              # an OTA image
+    assert se.calls == 0
+    assert B.factory_keys(0x0001, None, CH) is None                         # no openmv_ota.se
+    assert B.factory_keys(0x0001, _Se(None), CH) == "SE-NONE"               # a board with none
+
+
+def test_damaged_keys_are_reported_and_never_stop_the_boot():
+    se = _Se(error=OSError("key store: the camera's newest key record is damaged"))
+    assert B.factory_keys(0x0001, se, CH) == ("SE-ERROR key store: the camera's newest key "
+                                              "record is damaged")
+
+
+def test_the_key_window_closes_early_when_no_host_has_the_console_open():
+    """stm32: no DTR past the grace -> nobody is flashing; don't hold the app back."""
+    con = _Console()
+    assert B.keys_challenge(con, con.poll, con.elapsed, attended=lambda: False) is None
+    assert B._KEYS_GRACE_MS <= con.now < B._KEYS_GRACE_MS + B._KEYS_STEP_MS
+
+
+def test_the_key_window_waits_for_a_host_that_has_the_console_open():
+    con = _Console()
+    assert B.keys_challenge(con, con.poll, con.elapsed, attended=lambda: True) is None
+    assert con.now >= B._KEYS_WINDOW_MS
+
+
+def test_the_key_window_answers_a_host_that_opened_the_console():
+    con = _Console(B._KEYS_REQUEST + CH.hex() + "\n")
+    assert B.keys_challenge(con, con.poll, con.elapsed, attended=lambda: True) == CH

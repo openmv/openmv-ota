@@ -113,3 +113,94 @@ def test_a_hash_inside_a_password_is_not_a_comment():
     assert nc.parse(nc.render({"wifi.psk": "pa#ss"}))["wifi.psk"] == "pa#ss"   # round-trips
     assert nc.parse("   # a fully commented line\nx = 1\n") == {"x": "1"}
     assert nc.parse("wifi.psk = ##\n")["wifi.psk"] == "##"
+
+
+# --- join_wlan: a radio that failed to start is started again --------------------------------
+
+class _Radio:
+    """A stand-in ``network``: connect() raises each error in ``errors`` in turn, then joins."""
+
+    STA_IF = 0
+
+    def __init__(self, errors, deinit=True):
+        self.calls = []
+        self.errors = list(errors)
+        net = self
+
+        class _Nic:
+            def __init__(self, itf):
+                net.calls.append(("new", itf))
+
+            def active(self, on):
+                net.calls.append(("active", on))
+
+            def connect(self, ssid, psk):
+                net.calls.append(("connect", ssid, psk))
+                if net.errors:
+                    raise net.errors.pop(0)
+
+        if deinit:
+            _Nic.deinit = lambda nic: net.calls.append(("deinit",))
+        self.WLAN = _Nic
+
+
+def _join(net):
+    warned, slept = [], []
+    nic = nc.join_wlan(net, "lab", "pw", warned.append, slept.append)
+    return nic, warned, slept
+
+
+def test_join_wlan_starts_and_joins_once_when_the_radio_comes_up():
+    net = _Radio([])
+    nic, warned, slept = _join(net)
+    assert nic is not None
+    assert net.calls == [("new", 0), ("active", True), ("connect", "lab", "pw")]
+    assert warned == [] and slept == []
+
+
+def test_join_wlan_restarts_a_radio_that_did_not_start():
+    """The Giga: a USB host probing /flash mid-download leaves the radio down -> EPERM."""
+    net = _Radio([OSError(1)])
+    nic, warned, slept = _join(net)
+    assert nic is not None
+    assert net.calls == [("new", 0), ("active", True), ("connect", "lab", "pw"), ("deinit",),
+                         ("new", 0), ("active", True), ("connect", "lab", "pw")]
+    assert warned == ["wifi: radio did not start, starting it again"]
+    assert slept == [nc._RADIO_SETTLE_MS]
+
+
+def test_join_wlan_without_deinit_turns_the_radio_off_instead():
+    net = _Radio([OSError(1)], deinit=False)
+    _join(net)
+    assert ("active", False) in net.calls and ("deinit",) not in net.calls
+
+
+def test_join_wlan_gives_up_after_its_tries():
+    net = _Radio([OSError(1)] * nc._RADIO_TRIES)
+    try:
+        _join(net)
+    except OSError as e:
+        assert e.args[0] == 1
+    else:
+        raise AssertionError("expected the last EPERM to be raised")
+    assert net.calls.count(("new", 0)) == nc._RADIO_TRIES
+
+
+def test_join_wlan_raises_any_other_error_at_once():
+    for err in (OSError(110), OSError()):
+        net = _Radio([err])
+        try:
+            _join(net)
+        except OSError as e:
+            assert e is err
+        else:
+            raise AssertionError("expected the error to be raised")
+        assert net.calls.count(("new", 0)) == 1
+
+
+def test_join_wlan_sleeps_with_the_device_clock_by_default(monkeypatch):
+    import time
+    slept = []
+    monkeypatch.setattr(time, "sleep_ms", slept.append, raising=False)
+    nc.join_wlan(_Radio([OSError(1)]), "lab", "pw", lambda msg: None)
+    assert slept == [nc._RADIO_SETTLE_MS]

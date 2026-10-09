@@ -24,6 +24,7 @@ import asyncio
 import pytest
 
 from openmv_ota.build.device import openmv_ota as rt
+from openmv_ota.build.device import openmv_netcfg as _netcfg
 
 
 class _Log:
@@ -215,7 +216,7 @@ class _Net:
 
 def test_wifi_builds_and_joins_a_wlan():
     net = _Net(wlan=True)
-    nic = rt._wifi(net, "lab", "pw")
+    nic = rt._wifi(net, "lab", "pw", _netcfg)
     assert net.calls == [("new", 0), ("active", True), ("connect", "lab", "pw")]
     assert nic is not None
 
@@ -224,17 +225,17 @@ def test_wifi_uses_the_winc_shield_when_there_is_no_wlan():
     """The H7 Plus: network.WINC, whose connect() takes the key as a keyword and needs no
     active(). An empty password is an open network (key=None), not an empty WPA key."""
     net = _Net(wlan=False)
-    rt._wifi(net, "lab", "pw")
+    rt._wifi(net, "lab", "pw", _netcfg)
     assert net.calls == [("new",), ("connect", "lab", ("key", "pw"))]
     net = _Net(wlan=False)
-    rt._wifi(net, "cafe", "")
+    rt._wifi(net, "cafe", "", _netcfg)
     assert net.calls == [("new",), ("connect", "cafe", ("key", None))]
 
 
 def test_a_failed_winc_join_returns_the_nic_and_never_logs_the_key(log):
     """The WINC raises with the key in the message; the log can reach the cloud console."""
     net = _Net(wlan=False, fail=True)
-    nic = rt._wifi(net, "lab", "secret")
+    nic = rt._wifi(net, "lab", "secret", _netcfg)
     assert nic is not None
     assert log.lines and all("secret" not in m for _, m in log.lines)
 

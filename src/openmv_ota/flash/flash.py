@@ -28,12 +28,14 @@ in DFU.
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from openmv_ota.project import history
+from openmv_ota.romfs import boards as _boards
 
 from . import alif, arduino, device, dfu, imx, inventory, runner, tools
 from .errors import FlashError
@@ -518,6 +520,102 @@ def flash_factory(project: str = ".", *, board: str, output: str | None = None,
 
 
 @dataclass(frozen=True)
+class IdentityStep:
+    label: str
+    argv: list[str]
+
+
+_IDENTITY_WAIT_S = 60     # the camera back on USB, running the firmware just flashed
+_IDENTITY_POLL_S = 0.1    # fast: the camera listens for the request only briefly at boot
+_IDENTITY_ANSWER_S = 15   # from the port appearing to the camera's answer
+_IDENTITY_SEND_S = 0.1    # how often the request is repeated until it is answered
+# No answer this long after opening the console: the camera's boot closed its window before the
+# port was open (it waits only briefly for a host). Soft-reset it with the console held open --
+# Ctrl-C out of the app, Ctrl-D at the REPL reruns boot.py -- and that boot waits for us.
+_IDENTITY_RESET_S = 3
+_SOFT_RESET = (b"\r\x03", b"\r\x03", b"\r\x03", b"\x04")
+
+
+def _open_console(port: str):
+    import serial
+    return serial.Serial(port, 115200, timeout=_IDENTITY_SEND_S)
+
+
+def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = False):
+    """The last step of ``flash factory`` on a board with keys. Booting the factory image just
+    written, the camera makes its keys if it has none -- in boot.py, before the app runs -- and,
+    for a short window, answers an ``OMVKEYS <challenge>`` line on its console with both public
+    keys and a signature over the challenge. This sends that request from the moment the camera
+    is back on USB until it answers, verifies the signature against the identity key, and
+    reports the keys. Only if the camera's boot closed its window before the console was open
+    does this break into the app, to soft-reset it (see ``_IDENTITY_RESET_S``). A camera whose
+    keys are damaged fails the flash. Boards with no keys: nothing."""
+    import hashlib
+    import os
+
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
+
+    from openmv_ota.romfs.boards import get_board
+
+    se = get_board(board).secure_element
+    if not se:
+        return []
+    digest = hashlib.sha256(os.urandom(32)).digest()
+    request = "OMVKEYS %s" % digest.hex()
+    if dry_run:
+        return [IdentityStep("keys", ["send", "'%s'" % request, "to the camera's console at boot"])]
+    raw = flash_config(board).raw
+    deadline = time.monotonic() + _IDENTITY_WAIT_S
+    while (cam := device.select(raw, serial)) is None:
+        if time.monotonic() > deadline:
+            raise FlashError("the camera did not come back on USB after flashing; its keys were "
+                             "not checked")
+        time.sleep(_IDENTITY_POLL_S)
+    answer, heard = None, ""
+    con = _open_console(cam.port)
+    try:
+        opened = time.monotonic()
+        deadline = opened + _IDENTITY_ANSWER_S
+        reset = False
+        while answer is None and time.monotonic() < deadline:
+            if not reset and time.monotonic() - opened >= _IDENTITY_RESET_S:
+                reset = True
+                for key in _SOFT_RESET:
+                    con.write(key)
+                    time.sleep(0.2)
+            con.write((request + "\r\n").encode())
+            heard += con.read(4096).decode("utf-8", "replace")
+            answer = re.search(r"SE-(ID|NONE|ERROR)([^\r\n]*)\r?\n", heard)
+    finally:
+        con.close()
+    if answer is None:
+        from openmv_ota.build.device import boot
+        raise FlashError("the camera did not answer for its keys while booting its factory image "
+                         "(it listens for %d s); flash it again" % (boot._KEYS_WINDOW_MS // 1000))
+    kind, rest = answer.group(1), answer.group(2).split()
+    if kind == "NONE":
+        return []
+    if kind == "ERROR":
+        raise FlashError("the camera's keys: %s" % " ".join(rest))
+    pub, kx, sig = (bytes.fromhex(x) for x in rest[:3])
+    made = rest[3] == "1"
+    try:
+        key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), pub)
+        key.verify(sig, digest, ec.ECDSA(Prehashed(hashes.SHA256())))
+    except (ValueError, InvalidSignature):
+        raise FlashError("the camera's keys failed the check: its signature does not verify "
+                         "against its identity key") from None
+    if made and se["chip"] == "atecc608":
+        print("configured this board's ATECC608 the Arduino-compatible way (one-time) and made "
+              "its keys", file=sys.stderr)
+    return [IdentityStep("keys %s: identity %s, exchange %s"
+                         % ("made" if made else "present", pub.hex(), kx.hex()), [cam.port])]
+
+
+@dataclass(frozen=True)
 class EraseStep:
     label: str
     argv: list[str]
@@ -712,6 +810,13 @@ def flash_bootloader(project: str = ".", *, board: str, output: str | None = Non
     bl = cfg.raw.get("bootloader")
     if not bl:
         raise FlashError("board %r has no bootloader to flash with this tool" % board)
+    known = _boards.load_boards().get(board)
+    se = known.secure_element if known else None
+    if se and se["chip"] == "soft":                  # the keys share the bootloader's sector
+        print("warning: flashing the bootloader erases this camera's keys -- they live at the "
+              "end of the bootloader's flash sector. Afterwards it has a new identity: it is "
+              "provisioned again by the next `flash`, and must be registered again.",
+              file=sys.stderr)
     backend = bl["backend"]
     if backend not in ("dfu", "cubeprog", "imx", "alif"):
         raise FlashError("bootloader flashing for %r isn't available here: %s"

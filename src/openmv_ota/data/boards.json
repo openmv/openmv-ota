@@ -3,6 +3,7 @@
   "_source_firmware_version": "4.8.1",
   "boards": {
     "OPENMV2": {
+      "secure_element": {"chip": "soft", "key_area": 134246400, "bootloader_max": 28672},
       "ota_runtime_drops_network": true,
       "display_name": "OpenMV Cam M4 (STM32F427)",
       "tls_verify": false,
@@ -36,6 +37,7 @@
       ]
     },
     "OPENMV3": {
+      "secure_element": {"chip": "soft", "key_area": 134246400, "bootloader_max": 28672},
       "display_name": "OpenMV Cam M7 (STM32F765/67)",
       "tls_verify": false,
       "arch": "OMV3 F7 512",
@@ -68,6 +70,7 @@
       ]
     },
     "OPENMV4": {
+      "secure_element": {"chip": "soft", "key_area": 134344704, "bootloader_max": 126976},
       "display_name": "OpenMV Cam H7 (STM32H743)",
       "tls_verify": false,
       "cloud": "full",
@@ -104,6 +107,7 @@
       ]
     },
     "OPENMV4P": {
+      "secure_element": {"chip": "soft", "key_area": 134344704, "bootloader_max": 126976},
       "display_name": "OpenMV Cam H7 Plus (STM32H743 w/ SDRAM)",
       "cloud": "full",
       "live_framesize": "QVGA",
@@ -137,6 +141,7 @@
       ]
     },
     "OPENMVPT": {
+      "secure_element": {"chip": "soft", "key_area": 134344704, "bootloader_max": 126976},
       "display_name": "OpenMV Pure Thermal (STM32H743 w/ SDRAM)",
       "arch": "OPENMVPT 65536 SDRAM",
       "flash": {"backend": "dfu", "usb": "37c5:9205", "erase": [{"alt": 3}], "runtime": "37c5:1205", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
@@ -172,6 +177,7 @@
       "display_name": "OpenMV Cam RT1062 (MIMXRT1062)",
       "cloud": "full",
       "live_framesize": "QVGA",
+      "secure_element": {"chip": "se050", "bus": 2, "addr": 72},
       "arch": "OMVRT1060 32768 SDRAM",
       "flash": {"backend": "imx", "runtime": "37c5:1060", "bootloader": {"backend": "imx", "instructions": "The recovery pin is SBL (like BOOT0 on the STM32 boards), sampled at power-on. On an already-programmed camera, jumper SBL to 3.3V (VCC) and keep it connected, then unplug and replug the camera to drop into the ROM serial-download bootloader. A virgin (unprogrammed) camera drops into it on its own -- no jumper needed. Wait for the ROM device to enumerate; remove the SBL jumper only after flashing finishes."}, "sdphost": {"usb": "0x1FC9,0x0135", "loader": "sdphost_flash_loader.bin", "loader_addr": "0x20001C00"}, "blhost": {"usb": "0x15A2,0x0073", "cfg_addr": "0x2000", "cfg_spi": "0xC0000008", "cfg_fcb": "0xF000000F", "cfg_type": "9", "fcb_addr": "0x60000000", "fcb_len": "0x1000", "sbl_addr": "0x60001000", "sbl_loader": "blhost_flash_loader.bin", "firmware_addr": "0x60040000", "disk_addr": "0x60400000", "disk_size": "0x1000", "romfs_addr": "0x60800000", "romfs_size": "0x800000", "efuse_addr": "0x06", "efuse_data": "00000010"}},
       "mpy_args": [
@@ -277,6 +283,7 @@
       ]
     },
     "OPENMV_N6": {
+      "secure_element": {"chip": "soft", "key_area": 1879568384, "bootloader_max": 258048},
       "recovery_ca_bundle": true,
       "display_name": "OpenMV N6 (STM32N657)",
       "cloud": "full",
@@ -323,6 +330,7 @@
       ]
     },
     "ARDUINO_PORTENTA_H7": {
+      "secure_element": {"chip": "se050", "bus": 1, "addr": 72, "enable": "SE05X_EN"},
       "display_name": "Arduino Portenta",
       "cloud": "full",
       "live_framesize": "QVGA",
@@ -356,6 +364,7 @@
       ]
     },
     "ARDUINO_GIGA": {
+      "secure_element": {"chip": "atecc608", "bus": 4, "addr": 96, "freq": 100000},
       "display_name": "Arduino Giga",
       "cloud": "full",
       "live_framesize": "QVGA",
@@ -389,6 +398,7 @@
       ]
     },
     "ARDUINO_NICLA_VISION": {
+      "secure_element": {"chip": "se050", "bus": 2, "addr": 72, "enable": "SE05X_EN"},
       "display_name": "Arduino Nicla Vision",
       "cloud": "full",
       "live_framesize": "QVGA",

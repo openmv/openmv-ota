@@ -85,6 +85,7 @@ would run: dfu-util -d ,2341:035b -a 1 -s 0x90F00000 -D .../cyw4343_7_45_98_102.
 would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90FC0000 -D .../cyw4343_btfw.bin
 would run: dfu-util -w -d ,2341:035b -a 0 -s 0x08040000 -D ARDUINO_PORTENTA_H7-firmware.bin
 would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90B00000:leave -D ARDUINO_PORTENTA_H7-factory-romfs.img
+would run: send 'OMVKEYS ...' to the camera's console at boot
 ```
 
 The RT1060 goes through the resident secure bootloader every shipped camera
@@ -97,13 +98,16 @@ would run: blhost -u 0x15A2,0x0073 -- write-memory 0x60040000 build/OPENMV_RT106
 would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60800000 ...
 would run: blhost -u 0x15A2,0x0073 -- write-memory 0x60800000 build/OPENMV_RT1060-factory-romfs.img
 would run: blhost -u 0x15A2,0x0073 -- reset
+would run: send 'OMVKEYS ...' to the camera's console at boot
 ```
 
-A blank board has no secure bootloader yet. `flash factory --provision` is the
-manufacturing path for one: with the SBL boot jumper fitted it loads a
-flashloader over the i.MX ROM's serial download, writes the flash-config block
-and the secure bootloader, the firmware and the factory image, and burns the
-boot e-fuse. It is refused on every other board.
+`flash factory` ends, on the boards that have keys, by provisioning them. The
+camera makes its keys if it has none while booting its new factory image,
+before the app runs, and for a moment answers a request on its console with
+both public keys and a signature over a fresh challenge. The tool verifies
+that signature and prints both keys; a camera whose keys fail the check fails
+the flash. Which boards keep keys where, and how, is in
+[device keys](../reference/device-keys.md).
 
 ## Options
 

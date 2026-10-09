@@ -6,6 +6,42 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Device keys on every board but the AE3.** Each camera holds two P-256 private keys that
+  never leave it: an identity key (signs) and an exchange key (ECDH only), behind one interface,
+  `openmv_ota.se`. Where they live is board data, and the romfs ships only that board's module:
+  - **SE050** (RT1060, Nicla Vision, Portenta H7): NXP's factory identity key and certificate,
+    and an exchange key the chip generates, whose policy allows key agreement only.
+  - **ATECC608** (Giga R1): configured and locked exactly as Arduino Cloud does it, so the board
+    still onboards there; the keys in slots 2 and 3, which Arduino never touches.
+  - **Soft** (M4, M7, H7, H7 Plus, Pure Thermal, N6): the camera's own keys in a 4 KB key area
+    at the end of the boot partition -- past the bootloader, untouched by firmware and romfs
+    updates. Sixteen write-once slots, each record committed by a SHA-256 written last, so a
+    power cut never silently changes the keys. On the N6 the keys are sealed with AES-256-GCM
+    under the chip's hardware unique key, so its external flash alone opens nothing.
+  - The build refuses a bootloader that would grow into the key area; `flash bootloader` warns
+    that on these boards it erases the camera's keys.
+- **Keys are made at a desk, never in the field.** `se.open()` only reads: a camera without
+  keys, or with damaged ones, raises. Keys are made by `boot.py` booting a factory image, before
+  the app runs (made if missing, never replaced); `flash factory` asks the camera for them in that
+  boot's short window, checks a signature over a fresh challenge, and prints both public keys. On
+  STM32 boards the window closes after 0.75 s unless a host has the console open, so a boot
+  nobody is flashing starts its app on time; a tool that misses it soft-resets the camera with
+  the console held open. A camera whose keys fail fails the flash.
+- `ecdsa_verify.sign` / `public_key` / `ecdh` on the camera (mbedtls; ECDH is its own
+  `mbedtls_ecdh_compute_shared`), and the `key_store` C module (reads the key area, programs
+  blank flash in it, and on the N6 seals and unseals with ST's SAES driver).
+- [Device keys](docs/reference/device-keys.md): the reference for all of the above.
+
+### Fixed
+
+- **A Wi-Fi radio that fails to start is started again.** `active(True)` hides a failed radio
+  start, so the app died on `connect()` with `OSError(EPERM)`. On the Giga this happens when a
+  USB host reads the `/flash` drive while the radio's firmware loads, since both come from the
+  same QSPI flash. `openmv_ota.wifi()` and recovery now stop the radio and start it again, up to
+  three tries.
+
 ## [1.0.7] - 2026-10-07
 
 ### Fixed

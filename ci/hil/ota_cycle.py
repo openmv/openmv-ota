@@ -457,6 +457,7 @@ COVERAGE = {
     "sync: applied resource(s)": "sync.applied",              # sync wrote >=1 resource
     "sync: already applied": "sync.skip",                     # idempotent skip (partition matches)
     "boot: ready, running app": "boot.ready",                 # boot.py finished, handing off to app
+    "boot: keys": "boot.keys",                                # a factory image's boot ran its key step
     "boot: marked slot block-device": "boot.marked",          # trial slot marked TRIED (pre-run)
     "boot: marked slot XIP": "boot.marked",
     "boot: slot marker verified": "boot.marked_verify",       # marker read back + verified
@@ -530,7 +531,7 @@ SCENARIOS = {
                    "install.fetch_manifest",
                    "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
                    "status.slots", "install.survey", "install.start", "install.floor",
-                   "{cov_write}",
+                   "{cov_write}", "boot.keys",
                    "install.download",
                    # the artifact is ciphertext on the wire: this marker is the fleet's
                    # proof that a real board decrypted a real published release
