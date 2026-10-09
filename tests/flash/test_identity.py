@@ -160,3 +160,24 @@ def test_a_failed_provisioning_fails_the_flash(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(fl, "provision_keys", fail)
     assert main(["flash", "factory", str(tmp_path), "-b", "ARDUINO_GIGA"]) != 0
     assert "the camera's keys: damaged" in capsys.readouterr().err
+
+
+class _MissedWindow(_Console):
+    """A camera whose boot closed its key window before the console opened: silent until it is
+    soft-reset (Ctrl-C out of the app, Ctrl-D at the REPL), then it answers like any boot."""
+
+    def read(self, n):
+        if b"\x04" not in self.sent:
+            return b""
+        return super().read(n)
+
+
+def test_a_missed_window_soft_resets_the_camera_with_the_console_held(camera, monkeypatch):
+    con = camera(_signed(0))
+    con.__class__ = _MissedWindow
+    clock = (i / 10 for i in range(100_000))                 # 0.1 s a look
+    monkeypatch.setattr(fl.time, "monotonic", lambda: next(clock))
+    (step,) = fl.provision_keys(board="ARDUINO_GIGA")
+    assert step.label.startswith("keys present")
+    keys = [d for d in con.sent if not d.startswith(b"OMVKEYS")]
+    assert keys == list(fl._SOFT_RESET)                     # once, Ctrl-C x3 then Ctrl-D

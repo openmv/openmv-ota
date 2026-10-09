@@ -25,9 +25,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Keys are made at a desk, never in the field.** `se.open()` only reads: a camera without
   keys, or with damaged ones, raises. Keys are made by `boot.py` booting a factory image, before
   the app runs (made if missing, never replaced); `flash factory` asks the camera for them in that
-  boot's two-second window, checks a signature over a fresh challenge, and prints both public
-  keys. Nothing breaks into the running app, so an app that arms a watchdog is unaffected; a
-  camera whose keys fail fails the flash.
+  boot's short window, checks a signature over a fresh challenge, and prints both public keys. On
+  STM32 boards the window closes after 0.75 s unless a host has the console open, so a boot
+  nobody is flashing starts its app on time; a tool that misses it soft-resets the camera with
+  the console held open. A camera whose keys fail fails the flash.
 - `ecdsa_verify.sign` / `public_key` / `ecdh` on the camera (mbedtls; ECDH is its own
   `mbedtls_ecdh_compute_shared`), and the `key_store` C module (reads the key area, programs
   blank flash in it, and on the N6 seals and unseals with ST's SAES driver).

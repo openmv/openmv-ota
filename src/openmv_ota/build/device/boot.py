@@ -518,22 +518,41 @@ last_failure_reason = None    # why the OTHER slot was rejected, if this one is 
 # short window the flashing tool may ask, with an ``OMVKEYS <challenge>`` line on the console;
 # the camera answers with its keys and a signature over the challenge. Without a request the
 # keys are still made, silently.
+#
+# The window must not delay a boot nobody is flashing. Where the port can tell (stm32: the host
+# has the console open, DTR), it closes after a short grace unless a host has the console open --
+# a tool opens it within ~0.4 s of the camera mounting its image. Holding every factory boot for
+# the full window moved the app's start into the second or two after reset when a USB host probes
+# the /flash drive: on the Giga that collides with the Wi-Fi firmware load (both are on the same
+# QSPI flash) and the radio fails, or hangs. The tool, if it misses the window, soft-resets the
+# camera with the console held open, and the next boot waits for it.
 
 _OTA_KEY_ID_BASE = 0x0100        # factory images are signed below this (openmv_ota.ota.keys)
 _KEYS_WINDOW_MS = 2000           # how long a factory boot waits for the flashing tool's request
 _KEYS_REQUEST = "OMVKEYS "       # ...followed by 64 hex digits: the 32-byte challenge
+_KEYS_GRACE_MS = 750             # how long it waits for a host to open the console at all
+_KEYS_STEP_MS = 50               # how often it looks, while it waits for one
 
 
-def keys_challenge(stream, poll, elapsed, window_ms=_KEYS_WINDOW_MS):
+def keys_challenge(stream, poll, elapsed, window_ms=_KEYS_WINDOW_MS, attended=None):
     """The 32-byte challenge of an ``OMVKEYS <hex>`` line read off ``stream`` within ``window_ms``,
     or None. ``poll(ms)`` says whether a byte is waiting; ``elapsed()`` is the milliseconds since
-    the window opened (``ticks_diff`` on the device: the tick counter wraps). Other lines (the
-    IDE, noise) are skipped; a bad request is no request. Pure I/O shuffling."""
+    the window opened (``ticks_diff`` on the device: the tick counter wraps). ``attended()``, where
+    the port has one, says whether a host has the console open: without one past
+    ``_KEYS_GRACE_MS`` the window closes early. Other lines (the IDE, noise) are skipped; a bad
+    request is no request. Pure I/O shuffling."""
     line = ""
     while True:
-        left = window_ms - elapsed()
-        if left <= 0 or not poll(left):
+        now = elapsed()
+        left = window_ms - now
+        if attended is not None:
+            if now >= _KEYS_GRACE_MS and not attended():
+                return None
+            left = min(left, _KEYS_STEP_MS)
+        if left <= 0:
             return None
+        if not poll(left):
+            continue
         c = stream.read(1)
         if c == "\n":
             if line.startswith(_KEYS_REQUEST):
@@ -687,9 +706,15 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         import time
         p = select.poll()
         p.register(sys.stdin, select.POLLIN)
+        try:
+            import pyb
+            attended = pyb.USB_VCP().isconnected   # hil-residual: stm32 DTR query; no marker tells the branches apart (boot.keys after it fires either way), host-tested via keys_challenge(attended=)
+        except (ImportError, AttributeError):  # hil-residual: ports without pyb.USB_VCP (mimxrt, alif) have no DTR query; their window runs in full
+            attended = None  # hil-residual: same branch as the line above
         start = time.ticks_ms()
         challenge = keys_challenge(sys.stdin, lambda ms: p.poll(ms),
-                                   lambda: time.ticks_diff(time.ticks_ms(), start))
+                                   lambda: time.ticks_diff(time.ticks_ms(), start),
+                                   attended=attended)
         answer = factory_keys(trailer.key_id, se, challenge)
         if challenge is not None:
             print(answer)  # hil-residual: answered during `flash factory`, before a HIL run's capture starts; the flash's own "keys made/present" report proves it

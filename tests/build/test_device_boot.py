@@ -751,3 +751,21 @@ def test_damaged_keys_are_reported_and_never_stop_the_boot():
     se = _Se(error=OSError("key store: the camera's newest key record is damaged"))
     assert B.factory_keys(0x0001, se, CH) == ("SE-ERROR key store: the camera's newest key "
                                               "record is damaged")
+
+
+def test_the_key_window_closes_early_when_no_host_has_the_console_open():
+    """stm32: no DTR past the grace -> nobody is flashing; don't hold the app back."""
+    con = _Console()
+    assert B.keys_challenge(con, con.poll, con.elapsed, attended=lambda: False) is None
+    assert B._KEYS_GRACE_MS <= con.now < B._KEYS_GRACE_MS + B._KEYS_STEP_MS
+
+
+def test_the_key_window_waits_for_a_host_that_has_the_console_open():
+    con = _Console()
+    assert B.keys_challenge(con, con.poll, con.elapsed, attended=lambda: True) is None
+    assert con.now >= B._KEYS_WINDOW_MS
+
+
+def test_the_key_window_answers_a_host_that_opened_the_console():
+    con = _Console(B._KEYS_REQUEST + CH.hex() + "\n")
+    assert B.keys_challenge(con, con.poll, con.elapsed, attended=lambda: True) == CH

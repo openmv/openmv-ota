@@ -529,6 +529,11 @@ _IDENTITY_WAIT_S = 60     # the camera back on USB, running the firmware just fl
 _IDENTITY_POLL_S = 0.1    # fast: the camera listens for the request only briefly at boot
 _IDENTITY_ANSWER_S = 15   # from the port appearing to the camera's answer
 _IDENTITY_SEND_S = 0.1    # how often the request is repeated until it is answered
+# No answer this long after opening the console: the camera's boot closed its window before the
+# port was open (it waits only briefly for a host). Soft-reset it with the console held open --
+# Ctrl-C out of the app, Ctrl-D at the REPL reruns boot.py -- and that boot waits for us.
+_IDENTITY_RESET_S = 3
+_SOFT_RESET = (b"\r\x03", b"\r\x03", b"\r\x03", b"\x04")
 
 
 def _open_console(port: str):
@@ -542,8 +547,9 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
     for a short window, answers an ``OMVKEYS <challenge>`` line on its console with both public
     keys and a signature over the challenge. This sends that request from the moment the camera
     is back on USB until it answers, verifies the signature against the identity key, and
-    reports the keys. Nothing breaks into a running app (an app that arms a watchdog is reset by
-    that), and a camera whose keys are damaged fails the flash. Boards with no keys: nothing."""
+    reports the keys. Only if the camera's boot closed its window before the console was open
+    does this break into the app, to soft-reset it (see ``_IDENTITY_RESET_S``). A camera whose
+    keys are damaged fails the flash. Boards with no keys: nothing."""
     import hashlib
     import os
 
@@ -571,8 +577,15 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
     answer, heard = None, ""
     con = _open_console(cam.port)
     try:
-        deadline = time.monotonic() + _IDENTITY_ANSWER_S
+        opened = time.monotonic()
+        deadline = opened + _IDENTITY_ANSWER_S
+        reset = False
         while answer is None and time.monotonic() < deadline:
+            if not reset and time.monotonic() - opened >= _IDENTITY_RESET_S:
+                reset = True
+                for key in _SOFT_RESET:
+                    con.write(key)
+                    time.sleep(0.2)
             con.write((request + "\r\n").encode())
             heard += con.read(4096).decode("utf-8", "replace")
             answer = re.search(r"SE-(ID|NONE|ERROR)([^\r\n]*)\r?\n", heard)
