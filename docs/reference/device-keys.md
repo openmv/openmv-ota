@@ -50,11 +50,15 @@ The romfs ships only the module for the board's own kind of keys: one chip drive
 
 ## Provisioning
 
-Keys are made once, at a desk, by `se.provision()`. Every `openmv-ota flash` that leaves the
-camera running OTA firmware and an OTA romfs ends with that step: `flash factory`, `flash
-firmware` and `flash romfs`. The tool waits for the camera to come back, has it provision its
-keys, asks it to sign a fresh random challenge, verifies that signature against the identity
-key it reports, and prints both keys:
+Keys are made once, at a desk, by `se.provision()`, and the only place that calls it on the
+camera is `boot.py`, booting a **factory image**. A factory image is written only by `openmv-ota
+flash factory` and is signed with a factory key; an OTA update never installs one. Booting it,
+before the app runs, the camera makes its keys if it has none (never replacing keys it has).
+
+For two seconds of that boot the camera also listens on its USB console for the flashing tool:
+`flash factory` sends `OMVKEYS <challenge>` from the moment the camera is back on USB until it
+answers with both public keys and a signature over the challenge. The tool verifies the
+signature against the identity key and prints both keys:
 
 ```
 Flashed OPENMV2-firmware.bin -> alt 2 (OPENMV2)
@@ -62,9 +66,10 @@ Flashed OPENMV2-factory-romfs.img -> alt 3 (OPENMV2)
 keys made: identity 041591b4aef12b0f98f456477bdb7c246b0d5c2262ec3db94febf4856b871ac01217fd3856f9b0af3ffe6ba5f2cc6fab0f635a3fef7d3e28e4debe322fd4fc0a93, exchange 04e3e3e35592ada9f6cd5e02aa4d816612d3cd93c3513aaaf6c630917491eee6b76ab3d3e4743bc132b8cd724341a84c190bb7c49c762bb861018880543616bcd3 (OPENMV2)
 ```
 
-A camera that already has keys keeps them and reports `keys present`. A camera whose keys
-fail the check fails the flash. After `flash firmware` or `flash romfs`, a camera whose romfs
-doesn't carry `openmv_ota.se` yet is skipped with a note; after `flash factory` it is an error.
+Nothing interrupts the app to do this, so it works with an app that arms a watchdog as it
+starts. A camera that already has keys keeps them and reports `keys present`; a camera whose keys
+are damaged fails the flash. `flash firmware` and `flash romfs` don't write a factory image and
+don't provision.
 
 What provisioning does per kind:
 

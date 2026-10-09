@@ -23,9 +23,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - The build refuses a bootloader that would grow into the key area; `flash bootloader` warns
     that on these boards it erases the camera's keys.
 - **Keys are made at a desk, never in the field.** `se.open()` only reads: a camera without
-  keys, or with damaged ones, raises. Every `flash factory` / `firmware` / `romfs` ends by
-  provisioning the camera's keys (made if missing, never replaced), checking a signature over a
-  fresh challenge, and printing both public keys; a camera whose keys fail fails the flash.
+  keys, or with damaged ones, raises. Keys are made by `boot.py` booting a factory image, before
+  the app runs (made if missing, never replaced); `flash factory` asks the camera for them in that
+  boot's two-second window, checks a signature over a fresh challenge, and prints both public
+  keys. Nothing breaks into the running app, so an app that arms a watchdog is unaffected; a
+  camera whose keys fail fails the flash.
 - `ecdsa_verify.sign` / `public_key` / `ecdh` on the camera (mbedtls; ECDH is its own
   `mbedtls_ecdh_compute_shared`), and the `key_store` C module (reads the key area, programs
   blank flash in it, and on the N6 seals and unseals with ST's SAES driver).

@@ -1,11 +1,10 @@
-"""The last step of every ``flash`` that leaves a camera on OTA firmware + romfs, on a board with
-keys: the camera, back on its new firmware, provisions its keys (``se.provision()``: made if it
-has none, never replaced) and signs the host's challenge; the host checks that signature against
-the identity key it reports, and prints both keys."""
+"""The last step of ``flash factory`` on a board with keys. Booting its new factory image, the
+camera makes its keys if it has none (boot.py, before the app runs) and, for a short window,
+answers an ``OMVKEYS <challenge>`` line on its console with both public keys and a signature over
+the challenge. The tool sends the request until it is answered, verifies the signature against
+the identity key, and prints both keys -- never breaking into a running app."""
 
 from __future__ import annotations
-
-import re
 
 import pytest
 from cryptography.hazmat.primitives import hashes, serialization
@@ -24,101 +23,104 @@ KX = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
     serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
 
 
-def _challenge(argv):
-    return bytes.fromhex(re.search(r"unhexlify\('([0-9a-f]{64})'\)", argv[-1]).group(1))
+class _Console:
+    """The camera's console: silent for ``boot`` reads (still verifying its image), then
+    ``answer(challenge)``'s line, delivered across two reads like a real USB stream."""
+
+    def __init__(self, answer, boot=2):
+        self.answer, self.boot, self.sent, self.closed, self.out = answer, boot, [], False, None
+
+    def write(self, data):
+        self.sent.append(data)
+
+    def read(self, n):
+        if self.boot:
+            self.boot -= 1
+            return b""
+        if self.out is None:
+            request = self.sent[-1].decode()
+            assert request.startswith("OMVKEYS ") and request.endswith("\r\n")
+            self.out = self.answer(bytes.fromhex(request.split()[1])).encode()
+        chunk, self.out = self.out[:20], self.out[20:]
+        return chunk
+
+    def close(self):
+        self.closed = True
 
 
-def _camera(answer):
-    """A camera whose `mpremote exec` answers with ``answer(digest) -> (rc, output)``."""
-    seen = []
-
-    def run_quiet(argv):
-        seen.append(argv)
-        return answer(_challenge(argv))
-    return seen, run_quiet
-
-
-def _signed(digest, made=1, key=KEY):
-    sig = key.sign(digest, ec.ECDSA(Prehashed(hashes.SHA256())))
-    return 0, "noise\r\nSE-ID %s %s %s %d\r\n" % (PUB.hex(), KX.hex(), sig.hex(), made)
+def _signed(made=1, key=KEY):
+    def answer(digest):
+        sig = key.sign(digest, ec.ECDSA(Prehashed(hashes.SHA256())))
+        return "boot noise\r\nSE-ID %s %s %s %d\r\n" % (PUB.hex(), KX.hex(), sig.hex(), made)
+    return answer
 
 
 @pytest.fixture
-def back(monkeypatch):
-    """The camera re-enumerates on the second look."""
+def camera(monkeypatch):
+    """The camera re-enumerates on the second look; ``set(answer)`` gives its console."""
     looks = iter([None, Camera("/dev/ttyACM9", "SN1")])
     monkeypatch.setattr(fl.device, "select", lambda raw, serial: next(looks))
     monkeypatch.setattr(fl.time, "sleep", lambda s: None)
+    box = {}
+
+    def set_answer(answer, **kw):
+        box["con"] = _Console(answer, **kw)
+        monkeypatch.setattr(fl, "_open_console", lambda port: box["con"])
+        return box["con"]
+    return set_answer
 
 
 def test_a_board_without_keys_has_nothing_to_provision():
     assert fl.provision_keys(board="OPENMV_AE3") == []
 
 
-def test_dry_run_shows_the_command():
-    (step,) = fl.provision_keys(board="ARDUINO_GIGA", dry_run=True, mpremote="/x/mpremote")
-    assert step.argv[:4] == ["/x/mpremote", "connect", "<camera>", "exec"]
-    assert "se.provision()" in step.argv[-1] and len(_challenge(step.argv)) == 32
+def test_dry_run_shows_the_request():
+    (step,) = fl.provision_keys(board="ARDUINO_GIGA", dry_run=True)
+    assert step.argv[0] == "send" and step.argv[1].startswith("'OMVKEYS ")
 
 
 @pytest.mark.parametrize("made,word", [(1, "made"), (0, "present")])
-def test_the_camera_s_signature_is_checked_and_its_keys_reported(back, monkeypatch, made, word):
-    seen, run_quiet = _camera(lambda d: _signed(d, made))
-    monkeypatch.setattr(fl.runner, "run_quiet", run_quiet)
-    (step,) = fl.provision_keys(board="OPENMV4", mpremote="mp")
+def test_the_camera_s_signature_is_checked_and_its_keys_reported(camera, made, word):
+    con = camera(_signed(made))
+    (step,) = fl.provision_keys(board="OPENMV4")
     assert step.label == "keys %s: identity %s, exchange %s" % (word, PUB.hex(), KX.hex())
-    assert seen[0][:3] == ["mp", "connect", "/dev/ttyACM9"]
+    assert len(con.sent) >= 3 and len(set(con.sent)) == 1 and con.closed   # repeated, then shut
 
 
-def test_a_camera_refusing_the_raw_repl_after_a_flash_is_asked_again_without_a_reset(
-        back, monkeypatch):
-    answers = iter([lambda d: (1, "TransportError: could not enter raw repl"), _signed])
-    seen, run_quiet = _camera(lambda d: next(answers)(d))
-    monkeypatch.setattr(fl.runner, "run_quiet", run_quiet)
-    (step,) = fl.provision_keys(board="OPENMV3", mpremote="mp")
-    assert "resume" not in seen[0] and seen[1][3:5] == ["resume", "exec"]
-    assert step.label.startswith("keys made")
-
-
-def test_a_giga_says_its_chip_was_configured(back, monkeypatch, capsys):
-    monkeypatch.setattr(fl.runner, "run_quiet", _camera(lambda d: _signed(d, 1))[1])
+def test_a_giga_says_its_chip_was_configured(camera, capsys):
+    camera(_signed(1))
     fl.provision_keys(board="ARDUINO_GIGA")
     assert "ATECC608 the Arduino-compatible way (one-time)" in capsys.readouterr().err
 
 
-def test_a_signature_that_does_not_verify_fails_the_flash(back, monkeypatch):
-    _, run_quiet = _camera(lambda d: _signed(bytes(32)))    # signed something else
-    monkeypatch.setattr(fl.runner, "run_quiet", run_quiet)
+def test_a_signature_that_does_not_verify_fails_the_flash(camera):
+    camera(lambda d: _signed()(bytes(32)))                 # signed something else
     with pytest.raises(FlashError, match="does not verify"):
         fl.provision_keys(board="OPENMV_RT1060")
 
 
-def test_a_key_that_is_not_a_curve_point_fails_the_flash(back, monkeypatch):
-    answer = "SE-ID 04%s %s 3006020101020101 0" % ("00" * 64, KX.hex())
-    monkeypatch.setattr(fl.runner, "run_quiet", _camera(lambda d: (0, answer))[1])
+def test_a_key_that_is_not_a_curve_point_fails_the_flash(camera):
+    camera(lambda d: "SE-ID 04%s %s 3006020101020101 0\r\n" % ("00" * 64, KX.hex()))
     with pytest.raises(FlashError, match="does not verify"):
         fl.provision_keys(board="OPENMV_RT1060")
 
 
-def test_damaged_keys_fail_the_flash_with_the_camera_s_words(back, monkeypatch):
-    answer = (1, "OSError: key store: the camera's newest key record is damaged")
-    monkeypatch.setattr(fl.runner, "run_quiet", _camera(lambda d: answer)[1])
+def test_damaged_keys_fail_the_flash_with_the_camera_s_words(camera):
+    camera(lambda d: "SE-ERROR key store: the camera's newest key record is damaged\r\n")
     with pytest.raises(FlashError, match="newest key record is damaged"):
-        fl.provision_keys(board="OPENMV4", required=False)    # never skipped, even then
+        fl.provision_keys(board="OPENMV4")
 
 
-def test_a_romfs_without_the_keys_code_is_skipped_only_when_not_required(back, monkeypatch,
-                                                                         capsys):
-    answer = (1, "ImportError: no module named 'openmv_ota.se'")
-    monkeypatch.setattr(fl.runner, "run_quiet", _camera(lambda d: answer)[1])
-    assert fl.provision_keys(board="OPENMV4", required=False) == []
-    assert "has no openmv_ota.se yet" in capsys.readouterr().err
+def test_a_camera_whose_romfs_says_it_has_no_keys_is_fine(camera):
+    camera(lambda d: "SE-NONE\r\n")
+    assert fl.provision_keys(board="OPENMV4") == []
 
 
-def test_a_romfs_without_the_keys_code_fails_a_factory_flash(back, monkeypatch):
-    answer = (1, "ImportError: no module named 'openmv_ota.se'")
-    monkeypatch.setattr(fl.runner, "run_quiet", _camera(lambda d: answer)[1])
-    with pytest.raises(FlashError, match="provisioning the camera's keys failed"):
+def test_a_camera_that_never_answers_fails_the_flash(camera, monkeypatch):
+    camera(_signed(), boot=10 ** 6)
+    clock = iter(range(0, 10_000, 1))
+    monkeypatch.setattr(fl.time, "monotonic", lambda: next(clock))
+    with pytest.raises(FlashError, match="did not answer for its keys"):
         fl.provision_keys(board="OPENMV4")
 
 
@@ -131,18 +133,22 @@ def test_a_camera_that_never_comes_back_fails_the_flash(monkeypatch):
         fl.provision_keys(board="ARDUINO_NICLA_VISION")
 
 
-@pytest.mark.parametrize("verb,required", [("factory", True), ("firmware", False),
-                                           ("romfs", False)])
-def test_every_flash_ends_by_provisioning(monkeypatch, tmp_path, capsys, verb, required):
-    monkeypatch.setattr(fl, "flash_" + verb, lambda *a, **k: [])
+def test_open_console_is_a_serial_port(monkeypatch):
+    import serial
     seen = {}
+    monkeypatch.setattr(serial, "Serial", lambda port, baud, timeout: seen.update(p=port) or "S")
+    assert fl._open_console("/dev/ttyACM3") == "S" and seen["p"] == "/dev/ttyACM3"
 
-    def provision(**k):
-        seen.update(k)
-        return [fl.IdentityStep("keys made: identity 04ab, exchange 04cd", ["mp"])]
-    monkeypatch.setattr(fl, "provision_keys", provision)
-    assert main(["flash", verb, str(tmp_path), "-b", "ARDUINO_GIGA"]) == 0
-    assert seen.get("required", True) is required
+
+def test_flash_factory_ends_by_provisioning_and_firmware_romfs_do_not(monkeypatch, tmp_path,
+                                                                     capsys):
+    calls = []
+    monkeypatch.setattr(fl, "provision_keys", lambda **k: calls.append(k) or [
+        fl.IdentityStep("keys made: identity 04ab, exchange 04cd", ["port"])])
+    for verb in ("factory", "firmware", "romfs"):
+        monkeypatch.setattr(fl, "flash_" + verb, lambda *a, **k: [])
+        assert main(["flash", verb, str(tmp_path), "-b", "ARDUINO_GIGA"]) == 0
+    assert len(calls) == 1
     assert "keys made: identity 04ab, exchange 04cd (ARDUINO_GIGA)" in capsys.readouterr().out
 
 
@@ -150,7 +156,7 @@ def test_a_failed_provisioning_fails_the_flash(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(fl, "flash_factory", lambda *a, **k: [])
 
     def fail(**k):
-        raise FlashError("provisioning the camera's keys failed:\nboom")
+        raise FlashError("the camera's keys: damaged")
     monkeypatch.setattr(fl, "provision_keys", fail)
     assert main(["flash", "factory", str(tmp_path), "-b", "ARDUINO_GIGA"]) != 0
-    assert "provisioning the camera's keys failed" in capsys.readouterr().err
+    assert "the camera's keys: damaged" in capsys.readouterr().err

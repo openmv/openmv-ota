@@ -457,6 +457,8 @@ COVERAGE = {
     "sync: applied resource(s)": "sync.applied",              # sync wrote >=1 resource
     "sync: already applied": "sync.skip",                     # idempotent skip (partition matches)
     "boot: ready, running app": "boot.ready",                 # boot.py finished, handing off to app
+    "boot: keys": "boot.keys",                                # a factory image's boot ran its key step
+    "boot: key request answered": "boot.keys_answered",       # ...and answered `flash factory`'s request
     "boot: marked slot block-device": "boot.marked",          # trial slot marked TRIED (pre-run)
     "boot: marked slot XIP": "boot.marked",
     "boot: slot marker verified": "boot.marked_verify",       # marker read back + verified
@@ -530,7 +532,7 @@ SCENARIOS = {
                    "install.fetch_manifest",
                    "install.tls", "install.fetched", "install.manifest_ok", "install.staged",
                    "status.slots", "install.survey", "install.start", "install.floor",
-                   "{cov_write}",
+                   "{cov_write}", "{cov_keys}",
                    "install.download",
                    # the artifact is ciphertext on the wire: this marker is the fleet's
                    # proof that a real board decrypted a real published release
@@ -752,7 +754,8 @@ SCENARIOS["watchdog_recover"] = dict(
 
 
 def scenario_markers(board, key):
-    """(expect, forbid) marker sets for a scenario, with {cov_write} and {sync_idle} resolved per board.
+    """(expect, forbid) marker sets for a scenario, with {cov_write}, {cov_keys} and {sync_idle}
+    resolved per board.
 
     {sync_idle} is what the app's boot-time sync() does when there is nothing to write: a board
     with a coprocessor finds its partition already matching the bundle (the golden flash wrote it)
@@ -770,6 +773,13 @@ def scenario_markers(board, key):
         for n in names:
             if n == "{cov_write}":
                 out.add(BOARDS[board]["cov_write"])
+            elif n == "{cov_keys}":
+                # the factory boot's key step: every board logs it; a board with keys also
+                # answers `flash factory`'s request (the board table says which have keys)
+                from openmv_ota.romfs.boards import get_board
+                out.add("boot.keys")
+                if get_board(board).secure_element:
+                    out.add("boot.keys_answered")
             elif n == "{sync_idle}":
                 out.add("sync.skip" if "coproc_boot" in BOARDS[board] else "sync.none")
             elif n == "boot.read" and not xip:

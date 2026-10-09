@@ -509,6 +509,66 @@ last_publish_seq = 0          # ...and its publish_seq; confirm() raises the flo
 last_failure_reason = None    # why the OTHER slot was rejected, if this one is a fallback
 
 
+# --- The camera's keys, on a factory image's boot ---------------------------
+# A factory image is written only by `openmv-ota flash factory`, at a desk, and is signed with a
+# factory key (below the OTA key range). Booting one, before the app runs, is where the camera's
+# keys are made if it has none (``openmv_ota.se.provision``, which never replaces keys it has) --
+# never by the app, so a camera in the field can't make or change keys, and never by a host
+# breaking into a running app, which on an app that arms a watchdog resets the board. For a
+# short window the flashing tool may ask, with an ``OMVKEYS <challenge>`` line on the console;
+# the camera answers with its keys and a signature over the challenge. Without a request the
+# keys are still made, silently.
+
+_OTA_KEY_ID_BASE = 0x0100        # factory images are signed below this (openmv_ota.ota.keys)
+_KEYS_WINDOW_MS = 2000           # how long a factory boot waits for the flashing tool's request
+_KEYS_REQUEST = "OMVKEYS "       # ...followed by 64 hex digits: the 32-byte challenge
+
+
+def keys_challenge(stream, poll, elapsed, window_ms=_KEYS_WINDOW_MS):
+    """The 32-byte challenge of an ``OMVKEYS <hex>`` line read off ``stream`` within ``window_ms``,
+    or None. ``poll(ms)`` says whether a byte is waiting; ``elapsed()`` is the milliseconds since
+    the window opened (``ticks_diff`` on the device: the tick counter wraps). Other lines (the
+    IDE, noise) are skipped; a bad request is no request. Pure I/O shuffling."""
+    line = ""
+    while True:
+        left = window_ms - elapsed()
+        if left <= 0 or not poll(left):
+            return None
+        c = stream.read(1)
+        if c == "\n":
+            if line.startswith(_KEYS_REQUEST):
+                try:
+                    challenge = binascii.unhexlify(line[len(_KEYS_REQUEST):].strip())
+                except ValueError:
+                    challenge = b""
+                if len(challenge) == 32:
+                    return challenge
+            line = ""
+        elif len(line) < 80:                       # bounded: a request is 72 characters
+            line += c
+
+
+def factory_keys(key_id, se, challenge):
+    """Make the camera's keys if it has none, when booting a factory image (``key_id``, the
+    image's signing key, below the OTA range); the answer line for the flashing tool -- printed
+    by the caller only if it asked (``challenge``) -- or None when there is nothing to do: an OTA
+    image, or a romfs without ``openmv_ota.se`` (``se`` None)."""
+    if key_id >= _OTA_KEY_ID_BASE or se is None:
+        return None
+    try:
+        r = se.provision()
+        if r is None:
+            return "SE-NONE"                       # a board with no keys at all
+        keys, made = r
+        if challenge is None:
+            return "SE-OK"
+        return "SE-ID %s %s %s %d" % (binascii.hexlify(keys.public_key()).decode(),
+                                      binascii.hexlify(keys.ecdh_public_key()).decode(),
+                                      binascii.hexlify(keys.sign(challenge)).decode(), made)
+    except Exception as e:                         # damaged keys: say so, never stop the boot
+        return "SE-ERROR %s" % e
+
+
 # --- Device entry -----------------------------------------------------------
 # Wires vfs + the ECDSA C module + the build-generated _ota_config into OtaBoot
 # and runs. Device-only: on the host these imports are absent, so the module is
@@ -618,6 +678,23 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     os.chdir("/rom")
     sys.path.append("/rom")
     sys.path.append("/rom/lib")
+    if trailer.key_id < _OTA_KEY_ID_BASE:          # a factory image: the camera's keys
+        try:
+            from openmv_ota import se
+        except ImportError:  # hil-residual: a factory romfs without openmv_ota.se (a board with no keys, the AE3); boot.keys after it reads "None"
+            se = None  # hil-residual: same branch as the line above
+        import select
+        import time
+        p = select.poll()
+        p.register(sys.stdin, select.POLLIN)
+        start = time.ticks_ms()
+        challenge = keys_challenge(sys.stdin, lambda ms: p.poll(ms),
+                                   lambda: time.ticks_diff(time.ticks_ms(), start))
+        answer = factory_keys(trailer.key_id, se, challenge)
+        if challenge is not None:
+            print(answer)
+            log.info("boot: key request answered")
+        log.info("boot: keys %s" % answer)
     log.info("boot: ready, running app")
 
 
