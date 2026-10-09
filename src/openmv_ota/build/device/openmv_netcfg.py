@@ -175,3 +175,40 @@ def render(cfg):
     for key in sorted(cfg):
         lines.append("%-14s = %s" % (key, cfg[key]))
     return "\n".join(lines) + "\n"
+
+
+# --- starting the radio ---------------------------------------------------------
+# A WLAN radio that fails to start does so SILENTLY: active(True) swallows the firmware
+# download's error and the interface stays down, so the first connect() raises EPERM. Seen on
+# the Giga, whose CYW43 firmware streams by DMA straight out of memory-mapped QSPI: a USB host
+# reading the /flash drive in the same moment (it does, a second or two after every reset, when
+# it probes the disk) takes the QSPI out of memory-mapped mode under the DMA. The radio is fine;
+# starting it again once the host is done brings it up.
+_RADIO_TRIES = 3
+_RADIO_SETTLE_MS = 1000       # a host's probe of the drive is over in well under this
+_EPERM = 1
+
+
+def join_wlan(network, ssid, psk, warn, sleep_ms=None):
+    """``network.WLAN``'s station interface, started and joining ``ssid``. A radio that did not
+    start (connect() raising EPERM) is torn down and started again, up to ``_RADIO_TRIES`` times,
+    ``warn`` told each time; any other error, or the last try's, is raised. ``sleep_ms`` defaults
+    to the device's ``time.sleep_ms``."""
+    for attempt in range(_RADIO_TRIES):
+        nic = network.WLAN(network.STA_IF)
+        nic.active(True)
+        try:
+            nic.connect(ssid, psk)
+            return nic
+        except OSError as e:
+            if not e.args or e.args[0] != _EPERM or attempt == _RADIO_TRIES - 1:
+                raise
+        warn("wifi: radio did not start, starting it again")  # hil-residual: needs a USB host probing /flash mid-download; timing, not scriptable
+        if hasattr(nic, "deinit"):  # hil-residual: see above
+            nic.deinit()  # hil-residual: see above -- cyw43: power the chip off so active() redoes the download
+        else:
+            nic.active(False)  # hil-residual: see above
+        if sleep_ms is None:  # hil-residual: see above
+            import time  # hil-residual: see above
+            sleep_ms = time.sleep_ms  # hil-residual: see above
+        sleep_ms(_RADIO_SETTLE_MS)  # hil-residual: see above

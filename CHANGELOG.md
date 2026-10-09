@@ -33,6 +33,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   blank flash in it, and on the N6 seals and unseals with ST's SAES driver).
 - [Device keys](docs/reference/device-keys.md): the reference for all of the above.
 
+### Fixed
+
+- **A Wi-Fi radio that fails to start is started again.** `active(True)` hides a failed radio
+  start, so the app died on `connect()` with `OSError(EPERM)`. On the Giga this happens when a
+  USB host reads the `/flash` drive while the radio's firmware loads, since both come from the
+  same QSPI flash. `openmv_ota.wifi()` and recovery now stop the radio and start it again, up to
+  three tries.
+
 ## [1.0.7] - 2026-10-07
 
 ### Fixed

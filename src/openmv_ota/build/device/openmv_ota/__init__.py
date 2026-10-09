@@ -629,22 +629,21 @@ def wifi(ssid, password):  # pragma: no cover  (device: the radio)  # hil-residu
     device whose image is later lost can still reach its server without anyone editing a file."""
     global _net
     import network
+
+    import openmv_netcfg
     _net = (ssid, password)
-    return _wifi(network, ssid, password)
+    return _wifi(network, ssid, password, openmv_netcfg)
 
 
-def _wifi(network, ssid, password):
-    """:func:`wifi` with the ``network`` module injected.
+def _wifi(network, ssid, password, netcfg):
+    """:func:`wifi` with the ``network`` and ``openmv_netcfg`` modules injected.
 
     The WINC's connect() blocks until it has joined (up to ~20 s) and raises when it cannot,
     with the key in the message. That is logged WITHOUT the exception -- the log can reach the
     cloud console -- and the interface returned unjoined, like a WLAN that is still joining, so
     the caller's wait and run()'s recover escalation treat both boards the same."""
     if hasattr(network, "WLAN"):
-        nic = network.WLAN(network.STA_IF)
-        nic.active(True)
-        nic.connect(ssid, password)
-        return nic
+        return netcfg.join_wlan(network, ssid, password, log.warning)
     nic = network.WINC()
     try:
         nic.connect(ssid, key=password or None)    # None: an open network
