@@ -735,10 +735,20 @@ def _alif_toolkit(project: str, bl: dict, dry_run: bool) -> str:
         return str(Path(project) / bl["toolkit"])
 
 
+# The AE3's key area (boards.json ``secure_element``), written as zeros -- MRAM's blank -- with
+# the bootloader. On the STM32 boards erasing the bootloader's sector takes the keys with it; on
+# the AE3 the Alif tools write only the bytes they're given, so the blanking is explicit.
+_ALIF_KEY_AREA = "key_area.bin"
+_KEY_AREA_SIZE = 4096
+
+
 def _alif_files(board: str, bl: dict, out_dir: Path) -> dict[str, Path]:
     files = {i["file"]: out_dir / ("%s-%s" % (board, i["file"])) for i in bl["images"]}
-    for f in files.values():
-        if not f.exists():
+    for name, f in files.items():
+        if name == _ALIF_KEY_AREA:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(bytes(_KEY_AREA_SIZE))
+        elif not f.exists():
             raise FlashError("missing %s -- run `build firmware` first" % f)
     return files
 
@@ -814,7 +824,7 @@ def flash_bootloader(project: str = ".", *, board: str, output: str | None = Non
     se = known.secure_element if known else None
     if se and se["chip"] == "soft":                  # the keys share the bootloader's sector
         print("warning: flashing the bootloader erases this camera's keys -- they live at the "
-              "end of the bootloader's flash sector. Afterwards it has a new identity: it is "
+              "end of the bootloader's partition. Afterwards it has a new identity: it is "
               "provisioned again by the next `flash`, and must be registered again.",
               file=sys.stderr)
     backend = bl["backend"]

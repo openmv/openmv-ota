@@ -25,6 +25,7 @@ _HARNESS_C = r"""
 uint8_t omv_key_store_host_area[4096];
 #define AREA omv_key_store_host_area
 static int fail_program;
+static uintptr_t bad_word = 1;                 /* a flash word whose ECC fails; 1 = none */
 
 int omv_key_store_program(uintptr_t addr, const uint8_t *src, size_t len) {
     if (fail_program) return -1;
@@ -32,7 +33,13 @@ int omv_key_store_program(uintptr_t addr, const uint8_t *src, size_t len) {
     return 0;
 }
 
+int omv_key_store_copy(uint8_t *dst, uintptr_t addr, size_t len) {
+    memcpy(dst, (const void *)addr, len);
+    return (bad_word >= addr && bad_word < addr + len) ? -1 : 0;
+}
+
 extern int omv_key_store_write(size_t, const uint8_t *, size_t);
+extern int omv_key_store_read(size_t, uint8_t *, size_t);
 
 int main(void) {
     uint8_t data[4096];
@@ -49,6 +56,15 @@ int main(void) {
     printf("%d\n", AREA[96] == 0xFF);                     // ...and nothing written
     fail_program = 1;
     printf("%d\n", omv_key_store_write(128, data, 32));   // the flash refuses
+    fail_program = 0;
+    uint8_t got[64];
+    printf("%d\n", omv_key_store_read(0, got, 64));       // fine
+    printf("%d\n", got[0] == 0x5A && got[63] == 0x5A);
+    printf("%d\n", omv_key_store_read(4064, got, 64));    // runs past the area
+    bad_word = (uintptr_t)AREA + 256;                      // a word whose ECC fails
+    printf("%d\n", omv_key_store_read(256, got, 32));     // reads as EIO, not a crash
+    printf("%d\n", omv_key_store_read(224, got, 32));     // its neighbour reads fine
+    printf("%d\n", omv_key_store_write(256, data, 32));   // can't tell it's blank: EIO
     return 0;
 }
 """
@@ -68,7 +84,8 @@ def test_key_store_writes_only_whole_words_onto_blank_flash_in_the_area(tmp_path
                    cwd=tmp_path, check=True)
     out = subprocess.run([str(tmp_path / "harness")], capture_output=True, text=True,
                          check=True).stdout.split()
-    assert out == ["-22", "-22", "-22", "-22", "-22", "0", "1", "-17", "1", "-5"]
+    assert out == ["-22", "-22", "-22", "-22", "-22", "0", "1", "-17", "1", "-5",
+                   "0", "1", "-22", "-5", "0", "-5"]
 
     gcov = subprocess.run(["gcov", "-n", "key_store.c"], cwd=tmp_path,
                           capture_output=True, text=True)

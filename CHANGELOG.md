@@ -8,16 +8,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Device keys on every board but the AE3.** Each camera holds two P-256 private keys that
+- **Device keys on every OpenMV Cam and Arduino camera board.** Each camera holds two P-256 private keys that
   never leave it: an identity key (signs) and an exchange key (ECDH only), behind one interface,
   `openmv_ota.se`. Where they live is board data, and the romfs ships only that board's module:
   - **SE050** (RT1060, Nicla Vision, Portenta H7): NXP's factory identity key and certificate,
     and an exchange key the chip generates, whose policy allows key agreement only.
   - **ATECC608** (Giga R1): configured and locked exactly as Arduino Cloud does it, so the board
     still onboards there; the keys in slots 2 and 3, which Arduino never touches.
-  - **Soft** (M4, M7, H7, H7 Plus, Pure Thermal, N6): the camera's own keys in a 4 KB key area
-    at the end of the boot partition -- past the bootloader, untouched by firmware and romfs
-    updates. Sixteen write-once slots, each record committed by a SHA-256 written last, so a
+  - **Soft** (M4, M7, H7, H7 Plus, Pure Thermal, N6, AE3): the camera's own keys in a 4 KB key
+    area at the end of the boot partition -- past the bootloader, untouched by firmware and romfs
+    updates. On the AE3 that's MRAM, written with interrupts off; `flash bootloader` blanks it. Sixteen write-once slots, each record committed by a SHA-256 written last, so a
     power cut never silently changes the keys. On the N6 the keys are sealed with AES-256-GCM
     under the chip's hardware unique key, so its external flash alone opens nothing.
   - The build refuses a bootloader that would grow into the key area; `flash bootloader` warns
@@ -36,6 +36,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A half-programmed key word no longer crashes an H7 at boot.** A power cut while the OpenMV
+  Cam H7, H7 Plus or Pure Thermal programs its keys can leave a flash word with an error its ECC
+  can't correct, and reading it was a bus fault: the camera crashed every time it read its keys.
+  `key_store` now reads such a word as EIO, and the key scan treats it like any other write cut
+  off before it was committed (skipped) or after (damaged). Reproduced on a Pure Thermal by
+  programming one flash word twice.
 - **A Wi-Fi radio that fails to start is started again.** `active(True)` hides a failed radio
   start, so the app died on `connect()` with `OSError(EPERM)`. On the Giga this happens when a
   USB host reads the `/flash` drive while the radio's firmware loads, since both come from the

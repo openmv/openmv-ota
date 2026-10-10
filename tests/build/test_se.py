@@ -509,7 +509,9 @@ def test_the_pack_ships_only_the_board_s_chip_and_its_wiring(tmp_path):
 
     n6 = stage_for("OPENMV_N6")                          # keys sealed in its own NOR: soft
     assert sorted(p.name for p in n6.iterdir()) == ["__init__.py", "board.py", "soft.py"]
-    assert not stage_for("OPENMV_AE3").exists()          # no keys at all (yet): no package
+    ae3 = stage_for("OPENMV_AE3")                        # its own keys in MRAM: soft
+    assert sorted(p.name for p in ae3.iterdir()) == ["__init__.py", "board.py", "soft.py"]
+    assert not stage_for("ARDUINO_NANO_RP2040_CONNECT").exists()   # no keys at all: no package
     _stage_secure_element(tmp_path / "plain", "OPENMV_RT1060")   # no se/ staged: nothing to do
 
 
@@ -896,9 +898,12 @@ class _KeyArea:
         self.flash = bytearray(b"\xff" * self.SIZE)
         self.writes = []
         self.cut = None                       # (write index, bytes kept) or (index, "bits", seed)
+        self.unreadable = set()               # offsets of flash words that fail their ECC
 
     def read(self, off, n):
         assert 0 <= off and off + n <= self.SIZE
+        if any(off <= w < off + n for w in self.unreadable):
+            raise OSError(5)                    # the H7: a word whose ECC fails reads as EIO
         return bytes(self.flash[off:off + n])
 
     def write(self, off, data):
@@ -1020,6 +1025,33 @@ def test_soft_a_power_cut_at_any_point_never_silently_changes_the_keys(area, cut
             with pytest.raises(OSError, match="damaged"):
                 step()
         assert len(area.writes) == writes
+
+
+@pytest.mark.parametrize("word", range(7))
+def test_soft_an_unreadable_word_before_the_check_is_a_cut_write(area, word):
+    """The H7: a power cut mid-program can leave a flash word its ECC can't correct, which reads
+    as EIO (a crash, before key_store caught it). Before the check, that's a write that never
+    finished: skipped, and the keys made in the next slot."""
+    area.flash[TOP:TOP + 224] = bytes(range(224))
+    area.unreadable.add(TOP + word * 32)
+    with pytest.raises(soft.NotProvisioned):
+        soft.SecureElement()
+    se, made = soft.SecureElement.provision()
+    assert made and area.writes[0][0] == TOP - 256 and se.public_key()
+    assert soft.SecureElement()._id == se._id
+
+
+@pytest.mark.parametrize("word", range(8))
+def test_soft_an_unreadable_word_in_a_committed_record_is_damage(area, word):
+    """An unreadable check (cut while committing), or keys under a check that can't be verified:
+    loud, never new keys -- as for any other cut inside the check."""
+    soft.SecureElement.provision()
+    area.unreadable.add(TOP + word * 32)
+    writes = len(area.writes)
+    for step in (soft.SecureElement, soft.SecureElement.provision):
+        with pytest.raises(OSError, match="damaged"):
+            step()
+    assert len(area.writes) == writes
 
 
 def test_soft_a_damaged_record_is_an_error_and_never_replaced(area):
