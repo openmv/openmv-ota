@@ -92,6 +92,89 @@ What provisioning does per kind:
   identity. `flash` notes when it configures a blank chip.
 - **Soft:** draws both keys from the hardware RNG and writes one record to the key area.
 
+## Registration
+
+A camera's keys mean something to a server only once they are registered: tied, by a signature
+the server can check, to the account that owns the camera. `flash factory` does that right after
+it checks the keys. It writes a **registration record**, signs it with a **desk key**, and
+uploads it:
+
+```json
+{"v": 1, "account": "acct_...", "device_id": "OPENMV_N6:0036...", "board": "OPENMV_N6",
+ "identity": "04...", "exchange": "04...", "desk": 1, "issued": "2026-10-10T12:00:00Z"}
+```
+
+The server stores the record exactly as signed. It can't write one itself: that takes a desk
+key, which only the project holds. So a server that has been broken into can't swap a camera's
+keys for its own.
+
+A **desk** is wherever cameras are first flashed: a bench, a factory station. Each desk gets its
+own key, so one can be revoked without touching the others:
+
+```
+openmv-ota project keys desk create bench-1 .     # a new key for the desk "bench-1"
+openmv-ota project keys desk push .               # tell the server about it
+openmv-ota project keys desk list .
+openmv-ota project keys desk renew 1 .            # another 90 days
+openmv-ota project keys desk revoke 1 .           # stop trusting it, at once
+```
+
+The public halves are in `keys/desk_keys.json`, the private halves in `keys/private/`, encrypted
+with the project passphrase (or in an HSM or KMS, like the signing keys). A desk key never signs
+firmware.
+
+Desk keys **expire** after 90 days unless renewed. An expired key stops registering cameras;
+every camera it registered stays registered. The server only takes a record from a desk key that
+is unrevoked and unexpired, and only one issued within the last hour, so an old key can't
+back-date records.
+
+Uploading takes an API token with the `register` scope (a `manage` token also works). A token
+that can only register is what belongs on a factory station. `flash factory` takes the server and
+token like the other commands (`--server`, `--token`) and the desk with `--desk <label>` (default:
+the newest usable key); `--no-register` skips registration.
+
+Registering a camera that is already registered to the account with different keys -- it was
+reflashed with `flash bootloader`, which erases its keys -- replaces its record, and the audit log
+records it as `device.rekeyed` with the old key's fingerprint. A camera registered to one account
+can't be registered by another.
+
+`GET /api/v1/admin/devices/{device_id}/registration` returns a camera's record, its identity
+key's fingerprint (the SHA-256 of the key), and how its signed check-ins are going.
+
+## Signed check-ins
+
+A registered camera signs every check-in with its identity key, once its clock is set. The
+signature goes in one header:
+
+```
+X-OMV-Signature: v=1;ts=1791720000;sig=3045...
+```
+
+`sig` is a DER ECDSA P-256 signature over `SHA-256("omv-checkin-v1\n" + ts + "\n" + body)`,
+with `ts` the camera's Unix time and `body` the exact bytes of the check-in. The server checks
+it against the identity key in the camera's registration, and takes it only within five minutes
+of its own clock, so a recorded check-in can't be replayed later.
+
+A camera that has just booted cold has no clock yet: its first check-in goes unsigned, and the
+server's reply (its `Date` header) sets the clock for the next one. Recovery never signs.
+
+What the server does with a check-in depends on the `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` switch:
+
+| Check-in | Switch off (default) | Switch on |
+| --- | --- | --- |
+| Signed, verifies | served as usual; noted | served as usual; noted |
+| Unsigned | served as usual | update offers only: no fleet row, telemetry, Live or ingest |
+| Signature doesn't verify | served as usual; counted | nothing; counted |
+
+Offers stay open to unsigned check-ins because they are safe to anyone: an update is signed, and
+installs only on the camera it was built for. A refusal is counted on the camera's registration
+with its reason (`bad signature`, `stale`, `malformed`, `unknown version`), and the audit log
+records `device.checkin_refused` when the reason changes, not on every poll. A signature from a
+camera with no registration leaves no trace.
+
+With the switch off, the server checks every signature anyway, so a fleet can be watched going
+green before anything depends on it.
+
 ## The soft key area
 
 The key area is 4 KB at the end of the boot partition, past the bootloader. Firmware and romfs

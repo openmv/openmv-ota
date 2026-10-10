@@ -527,6 +527,13 @@ class Registration(BaseModel):
     record: str
     """The record exactly as the desk signed it."""
     signature: str
+    last_signed_at: str | None = None
+    """When the camera last checked in with a good signature (null: never yet)."""
+    refused_checkins: int = 0
+    """Check-ins whose signature didn't verify against this registration."""
+    last_refused_at: str | None = None
+    last_refusal: str | None = None
+    """Why the last one was refused (``bad signature``, ``stale``, ``malformed``, ...)."""
 
 
 class CohortPinned(BaseModel):

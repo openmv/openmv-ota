@@ -1485,6 +1485,31 @@ def tls_configure(ctx, ssl, ca):
     return ctx
 
 
+def _signature_header(payload, rtc=None, se=None):
+    """The ``X-OMV-Signature`` header line for a check-in body, or ``""`` when there is none to give.
+
+    The camera signs its check-in with its identity key (``openmv_se.checkin_signature``) over the
+    body and the time, so a server can tell the camera itself from anything that merely knows its
+    id. The time is what keeps a recorded check-in from being replayed later, so a camera signs only
+    once its clock is TRUSTED (set from the server's Date or NTP): a cold boot's first check-in goes
+    unsigned, and the server answers it with offers only. No keys, an untrusted clock or a failed
+    sign all give no header -- never a failed check-in. ``rtc``/``se`` are injectable for tests."""
+    try:
+        if rtc is None:
+            import openmv_rtc as rtc
+        if not rtc.trusted():
+            return ""
+        if se is None:
+            import openmv_se as se
+        value = se.checkin_signature(payload, int(rtc.now()))
+    except Exception:
+        return ""
+    if not value:
+        return ""
+    log.debug("checkin: signed")                     # HIL path witness (a registered camera, clock set)
+    return "X-OMV-Signature: %s\r\n" % value
+
+
 def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
     """POST the check-in body to ``/api/v1/check`` and return the parsed JSON.
 
@@ -1519,8 +1544,9 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         # reply to a 1.0 request; it sends Content-Length or closes at the end of the body.
         ss.write((
             "POST /api/v1/check HTTP/1.0\r\nHost: %s\r\nUser-Agent: openmv-cam/1.0\r\n"
-            "Content-Type: application/json\r\nContent-Length: %d\r\n"
-            "Connection: close\r\n\r\n" % (host, len(payload))).encode() + payload)
+            "Content-Type: application/json\r\nContent-Length: %d\r\n%s"
+            "Connection: close\r\n\r\n" % (host, len(payload), _signature_header(payload))
+        ).encode() + payload)
         status_line = ss.readline()
         # A 429 is the server pacing a crowd (the per-IP / per-/64 check-in limit), not a broken
         # link: its body is an ordinary {"update": false, "poll_after_s": n} with a short, jittered

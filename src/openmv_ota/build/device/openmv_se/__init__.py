@@ -63,3 +63,41 @@ def provision():
     except ImportError:
         return None
     return board.SecureElement.provision(*wiring)
+
+
+# --- signed check-ins ----------------------------------------------------------------------
+# Every check-in (the app's, and recovery's) carries the camera's signature, so the server knows
+# which camera is talking: its registered identity key verifies it. The signed message binds the
+# body to the time, so a captured check-in stops working minutes later.
+
+CHECKIN_CONTEXT = b"omv-checkin-v1\n"
+_keys = None                                      # opened once: a soft board scans its key area
+
+
+def checkin_digest(payload, ts):
+    """The 32-byte SHA-256 a check-in's signature covers: a fixed context, the unix time, the
+    body. The server computes the same from what it received."""
+    import hashlib
+    return hashlib.sha256(CHECKIN_CONTEXT + ("%d\n" % ts).encode() + payload).digest()
+
+
+def checkin_signature(payload, ts, keys=None):
+    """The check-in's ``X-OMV-Signature`` value, ``v=1;ts=<unix>;sig=<DER hex>``, for ``payload``
+    sent at unix time ``ts`` -- or None with no trusted time (``ts`` None: a cold boot before the
+    first check-in has set the clock) or no keys. Never raises: a camera whose keys fail sends
+    unsigned, and the server decides what an unsigned check-in gets."""
+    global _keys
+    if ts is None:
+        return None
+    try:
+        if keys is None:
+            if _keys is None:
+                _keys = open()
+            keys = _keys
+        if keys is None:
+            return None
+        import binascii
+        sig = keys.sign(checkin_digest(payload, ts))
+        return "v=1;ts=%d;sig=%s" % (ts, binascii.hexlify(sig).decode())
+    except Exception:
+        return None

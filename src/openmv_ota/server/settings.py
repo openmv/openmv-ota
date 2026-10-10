@@ -69,6 +69,16 @@ class ServerSettings(BaseSettings):
     # turn it OFF once Arduino board claiming and signed check-ins ship. A boolean: 1/true/yes/on
     # (any case) is on, 0/false/no/off is off, anything else refuses to start.
     serve_unregistered_boards: bool = False
+    # THE SIGNED CHECK-IN SWITCH. A registered camera signs its check-ins with its identity key
+    # once its clock is set (see ota/checkin_sig.py). Off, check-ins are served as before, and
+    # every signature is still checked, noted on the camera's registration and refusals audited
+    # -- so the fleet can be watched going green before anything depends on it. On, only a
+    # check-in signed by the camera's registered key gets the full treatment (fleet row,
+    # telemetry, Live and ingest grants); an unsigned one (a cold boot's first, before its
+    # clock is set; a camera never registered) gets update offers only; a signature that
+    # doesn't verify is refused. Offers stay open because they are safe to anyone: what is
+    # downloaded is signed, and installs only on the camera it was built for.
+    require_signed_checkins: bool = False
     # Postgres connections per server process. Each request borrows one instead of queueing on a
     # single locked connection; size it under the database plan's connection limit divided by the
     # number of server instances.

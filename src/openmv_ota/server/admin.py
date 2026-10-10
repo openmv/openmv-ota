@@ -1169,14 +1169,17 @@ def register_device(body: RegistrationIn, request: Request,
 @admin.get("/devices/{device_id}/registration", responses={200: {"model": Registration}})
 def device_registration(device_id: str, request: Request,
                         principal: Principal = Depends(require_scope("observe"))):
-    """A camera's registration: its keys, which desk registered it and when, and the signed
-    record itself, exactly as the desk signed it."""
+    """A camera's registration: its keys, which desk registered it and when, the signed record
+    itself (exactly as the desk signed it), and how its signed check-ins are going: the last good
+    one, and how many were refused and why."""
     row = _owned(request.app.state.metastore.get_registration(device_id), principal)
     return {"device_id": device_id, "fingerprint": _fingerprint(row["identity"]),
             "identity": row["identity"], "exchange": row["exchange"],
             "desk_key_id": row["desk_key_id"], "issued": row["issued"],
             "registered_at": row["registered_at"], "registered_by": row["registered_by"],
-            "record": row["record"].decode("utf-8"), "signature": row["signature"]}
+            "record": row["record"].decode("utf-8"), "signature": row["signature"],
+            "last_signed_at": row["last_signed_at"], "refused_checkins": row["refused_checkins"],
+            "last_refused_at": row["last_refused_at"], "last_refusal": row["last_refusal"]}
 
 
 @admin.delete("/devices/{device_id}", responses={200: {"model": DeviceForgotten}})

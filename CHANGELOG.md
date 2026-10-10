@@ -34,6 +34,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `mbedtls_ecdh_compute_shared`), and the `key_store` C module (reads the key area, programs
   blank flash in it, and on the N6 seals and unseals with ST's SAES driver).
 - [Device keys](docs/reference/device-keys.md): the reference for all of the above.
+- **Registration: a camera's keys, signed to its account.** `flash factory` signs a registration
+  record (the camera's two public keys, its id and the account) with a **desk key** and uploads
+  it; a server can store records but can't make one. `project keys desk create|list|renew|revoke|
+  push` manage desk keys -- one per desk, encrypted at rest, expiring after 90 days. New `register`
+  token scope for factory stations; `POST /api/v1/admin/registrations`, `PUT|GET
+  /api/v1/admin/desk-keys`, `GET /api/v1/admin/devices/{id}/registration`. A changed key is
+  audited as `device.rekeyed`.
+- **Signed check-ins.** A registered camera with a set clock signs each check-in with its
+  identity key (`X-OMV-Signature`). The server checks every signature; with
+  `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` on, an unsigned check-in gets update offers only and a bad
+  signature gets nothing. Off by default.
 
 ### Fixed
 

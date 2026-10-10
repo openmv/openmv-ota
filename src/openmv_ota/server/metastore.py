@@ -493,7 +493,8 @@ _MIGRATIONS: list[list[str]] = [
         # device_registrations: a camera's registration record (its identity and exchange keys,
         # signed by a desk key), stored VERBATIM -- the signature covers those exact bytes.
         # Keyed by device id with no fleet row needed: a camera is registered at the desk,
-        # before its first check-in, and forgetting the fleet row doesn't unregister it.
+        # before its first check-in, and forgetting the fleet row doesn't unregister it. Its
+        # signed check-ins are noted here too: when the last one was, and how many were refused.
         "CREATE TABLE IF NOT EXISTS desk_keys ("
         "account_id TEXT NOT NULL, key_id INTEGER NOT NULL, label TEXT NOT NULL, "
         "pubkey TEXT NOT NULL, expires TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, "
@@ -502,7 +503,8 @@ _MIGRATIONS: list[list[str]] = [
         "device_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, record TEXT NOT NULL, "
         "signature TEXT NOT NULL, identity TEXT NOT NULL, exchange TEXT NOT NULL, "
         "desk_key_id INTEGER NOT NULL, issued TEXT NOT NULL, registered_at TEXT NOT NULL, "
-        "registered_by TEXT NOT NULL)",
+        "registered_by TEXT NOT NULL, last_signed_at TEXT, "
+        "refused_checkins INTEGER NOT NULL DEFAULT 0, last_refused_at TEXT, last_refusal TEXT)",
         "CREATE INDEX IF NOT EXISTS device_registrations_account "
         "ON device_registrations (account_id)",
     ],
@@ -1683,6 +1685,25 @@ class SqlMetadataStore:
         out = _d(row)
         out["record"] = out["record"].encode("utf-8")
         return out
+
+    def note_signed_checkin(self, device_id: str) -> None:
+        """A registered camera's check-in carried a good signature: note when."""
+        self.execute("UPDATE device_registrations SET last_signed_at = ? WHERE device_id = ?",
+                     (_now_iso(), device_id))
+
+    def note_refused_checkin(self, device_id: str, reason: str) -> bool:
+        """A registered camera's check-in carried a signature that didn't verify: count it.
+        Returns True when it is news -- the first refusal, or a different reason than the last
+        -- so the caller audits a change, not every poll of a camera that keeps failing."""
+        row = self.query_one("SELECT refused_checkins, last_refusal FROM device_registrations "
+                             "WHERE device_id = ?", (device_id,))
+        if row is None:
+            return False
+        prev = _d(row)
+        self.execute("UPDATE device_registrations SET refused_checkins = refused_checkins + 1, "
+                     "last_refused_at = ?, last_refusal = ? WHERE device_id = ?",
+                     (_now_iso(), reason, device_id))
+        return not prev["refused_checkins"] or prev["last_refusal"] != reason
 
     def registrations_for(self, device_ids) -> dict:
         """``{device_id: registration}`` for a page of devices, in one query."""
