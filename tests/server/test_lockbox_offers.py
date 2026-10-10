@@ -177,5 +177,7 @@ def test_build_keykeeper_follows_the_settings():
     kk = kk_mod.build_keykeeper(ServerSettings(keykeeper_url="http://kk:8090",
                                                keykeeper_token="t"))
     assert kk.url == "http://kk:8090" and kk.token == "t"
+    bare = kk_mod.build_keykeeper(ServerSettings(keykeeper_url="keykeeper-x:8090"))
+    assert bare.url == "http://keykeeper-x:8090"
     assert kk_mod.sealed_of(None) is None
     assert kk_mod.sealed_of({"representations": ["junk", {"enc": None}]}) is None

@@ -70,7 +70,10 @@ def build_keykeeper(settings) -> KeykeeperClient | None:
     if not settings.keykeeper_url:
         return None
     import httpx
-    return KeykeeperClient(settings.keykeeper_url, settings.keykeeper_token, httpx.Client())
+    url = settings.keykeeper_url
+    if "://" not in url:              # a bare host:port, as a PaaS hands out a private service's
+        url = "http://" + url         # address: plain HTTP, on the private network only
+    return KeykeeperClient(url, settings.keykeeper_token, httpx.Client())
 
 
 def sealed_of(release: dict | None) -> dict | None:
