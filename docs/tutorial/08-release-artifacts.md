@@ -102,6 +102,39 @@ Two things follow from "the key lives in the firmware":
   and a release carries one wrap per live key, so a fleet keeps updating while the
   new firmware reaches it. Retire the old key once nothing is running it.
 
+#### Encrypted for each camera
+
+A project can instead give each camera its own way in, so that reading one camera's
+flash opens nothing else:
+
+```toml
+[ota]
+per_camera_encryption = true
+keykeeper_pin = "1:04..."     # from `openmv-ota keykeeper pin` on your keykeeper
+```
+
+```bash
+openmv-ota project keys keykeeper sync .    # fetch and verify keykeeper's keys; commit keys/keykeeper.json
+```
+
+Each release then gets one fresh key, **sealed** to keykeeper together with your account
+and your desk keys. When a camera is offered the release, the update server asks
+keykeeper for a **lockbox**: the release key, wrapped for that camera's own exchange key
+(see [device keys](../reference/device-keys.md)). Keykeeper makes one only for a camera
+one of your desks registered to your account, checking against what you sealed rather
+than anything the server says. The camera opens it before it erases anything.
+
+What changes:
+
+- **No firmware holds a payload key.** `build firmware` leaves them out; your board keys
+  stay in `keys/private/` so you can still read your own releases, for deltas.
+- **Only registered cameras can be offered these releases.** A camera with no
+  registration, or a server with no keykeeper, is simply not offered one.
+- **Desks are sealed in.** A desk added later reaches cameras through releases built after
+  it, so build a release after adding one.
+- **Sync after keykeeper rotates.** A build refuses to seal once keykeeper has rotated
+  since your last sync, and says so.
+
 ### Deltas (`--delta-from`)
 
 ```bash

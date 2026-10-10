@@ -128,10 +128,18 @@ def decrypt(ciphertext: bytes, key: bytes, iv: bytes, size: int) -> bytes:
     return (dec.update(bytes(ciphertext)) + dec.finalize())[:size]
 
 
-def encrypt_artifact(plaintext: bytes, board_keys: dict[int, bytes]) -> tuple[bytes, dict]:
+def encrypt_artifact(plaintext: bytes, board_keys: dict[int, bytes], *,
+                     content_key: bytes | None = None,
+                     sealed: dict | None = None) -> tuple[bytes, dict]:
     """``(ciphertext, enc)`` for one representation: a fresh content key, wrapped
     under every live board key, and the ``enc`` block that goes in the signed
     manifest. Keyed by key id as a STRING, because the block is JSON.
+
+    **Encrypted for each camera** (``sealed``, see :mod:`openmv_ota.ota.lockbox`): every
+    representation of the release shares one ``content_key``, sealed to keykeeper, and a camera
+    gets it in a lockbox with the offer. The board-key wraps stay, for the publisher's own use
+    (decrypting a stored release to build a delta against it) -- in this mode no firmware holds
+    a board key.
 
     ``sha256`` is the CIPHERTEXT's digest. It is what the update server checks at
     publish (it cannot read the plaintext, and should not be able to), and it is
@@ -139,9 +147,9 @@ def encrypt_artifact(plaintext: bytes, board_keys: dict[int, bytes]) -> tuple[by
     the top-level ``sha256`` the device verifies after decrypting."""
     if not board_keys:
         raise OtaError("no board key to encrypt for")
-    content_key = new_key()
+    content_key = content_key or new_key()
     iv, ciphertext = encrypt(plaintext, content_key)
-    return ciphertext, {
+    enc = {
         "alg": ALG,
         "wraps": {str(kid): wrap_key(key, content_key).hex()
                   for kid, key in sorted(board_keys.items())},
@@ -149,6 +157,9 @@ def encrypt_artifact(plaintext: bytes, board_keys: dict[int, bytes]) -> tuple[by
         "size": len(plaintext),
         "sha256": hashlib.sha256(ciphertext).hexdigest(),
     }
+    if sealed is not None:
+        enc["sealed"] = sealed
+    return ciphertext, enc
 
 
 def select_wrap(wraps: dict, board_keys: dict[int, bytes]) -> tuple[int, bytes]:

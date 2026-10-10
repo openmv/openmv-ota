@@ -149,6 +149,14 @@ def offered(code, raw):
     return resp.get("manifest_url") if resp.get("update") else None
 
 
+def offered_lockbox(raw):
+    """The lockbox (hex) that came with an offer, or ``None``: an update encrypted for each
+    camera is opened with it (see the installer's ``_lockbox_key``). Read only after
+    :func:`offered` has found an offer in the same answer."""
+    import json
+    return json.loads(raw).get("lockbox")
+
+
 # --- device entry -----------------------------------------------------------
 # Touches network/vfs/machine and the frozen installer; exercised on hardware.
 
@@ -338,4 +346,4 @@ def _install(cfg):  # pragma: no cover  (device)  # hil-residual-fn: see _uid --
         log.info("recovery: no update offered")
         return
     log.info("recovery: update offered")
-    inst.run(url, ca, cfg)
+    inst.run(url, ca, cfg, offered_lockbox(raw))

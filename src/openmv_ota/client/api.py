@@ -59,6 +59,11 @@ class Api:
                          json={"label": entry.label, "pubkey": entry.pubkey,
                                "expires": entry.expires, "revoked": entry.revoked})
 
+    def keykeeper_chain(self) -> list:
+        """The chain of keykeeper's public keys, as the server passes it on (unverified: the
+        caller verifies it from its pin)."""
+        return self._req("GET", "/api/v1/keykeeper/chain")["chain"]
+
     def register_device(self, record: bytes, signature: str):
         """Upload a desk-signed registration record (sent as the exact text it was signed as)."""
         return self._req("POST", "/api/v1/admin/registrations",

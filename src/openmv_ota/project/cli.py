@@ -155,6 +155,16 @@ def register(project_parser: argparse.ArgumentParser):
     p_kdp.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_kdp.set_defaults(func=cmd_desk_push, _command="project keys desk push")
 
+    p_kk = keys_sub.add_parser("keykeeper", help="keykeeper's keys: what releases encrypted "
+                                                 "for each camera are sealed to")
+    kk_sub = p_kk.add_subparsers(dest="_keykeeper_action", required=True)
+    p_kks = kk_sub.add_parser("sync", help="fetch keykeeper's chain from the server and verify "
+                                           "it from this project's pin")
+    p_kks.add_argument("--server", help="server URL (default: client config)")
+    p_kks.add_argument("--token", help="an API token (default: client config)")
+    p_kks.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kks.set_defaults(func=cmd_keykeeper_sync, _command="project keys keykeeper sync")
+
     p_kb = keys_sub.add_parser("backup",
                                help="archive the private keys (already encrypted at rest) to one file")
     p_kb.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
@@ -504,7 +514,7 @@ def cmd_keys_rotate(args: argparse.Namespace) -> int:
 
 
 def _desk_error(fn):
-    """Run a desk-key command, turning a project or client error into its message."""
+    """Run a desk-key or keykeeper command, turning a project or client error into its message."""
     from openmv_ota.client.errors import ClientError
     try:
         return fn()
@@ -580,6 +590,24 @@ def cmd_desk_push(args: argparse.Namespace) -> int:
         for e in keys:
             api.put_desk_key(e)
         print("Pushed %d desk key%s." % (len(keys), "" if len(keys) == 1 else "s"))
+        return 0
+    return _desk_error(run)
+
+
+def cmd_keykeeper_sync(args: argparse.Namespace) -> int:
+    from openmv_ota.client import config as client_config
+    from openmv_ota.client.api import Api
+
+    from . import keykeeper_pins
+    from .config import CONFIG_NAME, load_config
+
+    def run():
+        cfg = load_config(Path(args.dir) / CONFIG_NAME)
+        chain = Api(client_config.resolve(args.server, args.token)).keykeeper_chain()
+        gens = keykeeper_pins.sync(args.dir, cfg.keykeeper_pin, chain)
+        print("Keykeeper chain verified: generations %d-%d; releases seal to the one in effect."
+              % (gens[0].key_id, gens[-1].key_id))
+        print("  Commit %s." % keykeeper_pins.path_for(args.dir).relative_to(args.dir))
         return 0
     return _desk_error(run)
 

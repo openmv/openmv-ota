@@ -79,6 +79,11 @@ class ServerSettings(BaseSettings):
     # doesn't verify is refused. Offers stay open because they are safe to anyone: what is
     # downloaded is signed, and installs only on the camera it was built for.
     require_signed_checkins: bool = False
+    # KEYKEEPER: the private service that wraps a release's content key for one registered camera
+    # (see keykeeper.py). Needed only to offer releases encrypted for each camera; without it,
+    # such a release is never offered. A URL on a private network and the shared secret.
+    keykeeper_url: str = ""
+    keykeeper_token: str = ""
     # Postgres connections per server process. Each request borrows one instead of queueing on a
     # single locked connection; size it under the database plan's connection limit divided by the
     # number of server instances.

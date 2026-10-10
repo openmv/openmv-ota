@@ -762,7 +762,8 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         # Published like any other release, so encrypted like any other release: these
         # are the bytes a factory-fresh fleet's first delta is built against, and they
         # sit in the same bucket behind the same URL as everything else.
-        _encrypt_rep(reps[0], gz, img_path, _payload_keys_for(p, t.name, key_passphrase_file))
+        _encrypt_rep(reps[0], gz, img_path, _payload_keys_for(p, t.name, key_passphrase_file),
+                     **_release_sealing(p, name))
         m = Manifest(body=_manifest_body(p, parse_trailer(trailer0), dl, reps),
                      key_id=signer.key_id, sig_alg=signer.sig_alg)
         m.signature = signer.backend.sign(signed_region(m))
@@ -975,7 +976,31 @@ def _payload_keys_for(p, board: str, key_passphrase_file) -> dict:
         raise BuildError(str(e), exit_code=e.exit_code) from None
 
 
-def _encrypt_rep(rep: dict, data: bytes, path: Path, board_keys: dict) -> Path:
+def _release_sealing(p, release: str) -> dict:
+    """For a project encrypted for each camera, one release's ``content_key`` and its seal to
+    keykeeper (``encrypt_artifact`` keyword arguments, shared by every representation of the
+    release); for any other project, nothing. Sealed with the account and every desk key the
+    project has: keykeeper wraps the key only for cameras those desks registered to it."""
+    if not p.config.per_camera_encryption:
+        return {}
+    from openmv_ota.ota import lockbox, payload
+    from openmv_ota.project import desk_keys, keykeeper_pins
+
+    try:
+        gen = keykeeper_pins.sealing_generation(p.root)
+        desks = [e.to_dict() for e in desk_keys.read(p.root)]
+        key = payload.new_key()
+        sealed = lockbox.seal_release(key, account=p.config.account_id, desks=desks,
+                                      keykeeper_public=gen.seal, key_id=gen.key_id,
+                                      release=release)
+    except ProjectError as e:
+        raise BuildError(str(e), exit_code=e.exit_code) from None
+    except lockbox.LockboxError as e:
+        raise BuildError("per-camera encryption: %s" % e, exit_code=1) from None
+    return {"content_key": key, "sealed": sealed}
+
+
+def _encrypt_rep(rep: dict, data: bytes, path: Path, board_keys: dict, **sealing) -> Path:
     """Encrypt one representation's artifact in place in the manifest: write the
     ciphertext beside the plaintext, and point the (about to be signed) rep at it.
 
@@ -984,7 +1009,7 @@ def _encrypt_rep(rep: dict, data: bytes, path: Path, board_keys: dict) -> Path:
     ``enc`` block, which is how the device knows where the artifact ends."""
     from openmv_ota.ota import payload
 
-    ciphertext, enc = payload.encrypt_artifact(data, board_keys)
+    ciphertext, enc = payload.encrypt_artifact(data, board_keys, **sealing)
     out = path.with_name(path.name + ENC_SUFFIX)
     out.write_bytes(ciphertext)
     rep["url"] = rep["url"] + ENC_SUFFIX
@@ -1101,7 +1126,8 @@ def build_manifest(
         board_keys = _payload_keys_for(p, t.name, key_passphrase_file)
         reps = [{"format": "full", "url": _rep_url(img_path.name),
                  "size": img_path.stat().st_size}]
-        _encrypt_rep(reps[0], img_path.read_bytes(), img_path, board_keys)
+        sealing = _release_sealing(p, name)      # one key for every representation
+        _encrypt_rep(reps[0], img_path.read_bytes(), img_path, board_keys, **sealing)
         if geometry.resolve_mode(t.partition_size, t.erase_size,
                                  p.config.single_image) == geometry.SINGLE:
             # A single-image device inflates with a SMALL window (the renderer
@@ -1129,7 +1155,7 @@ def build_manifest(
                    "base_body_sha256": base_body_sha}
             # A delta is a diff of two images: it leaks the parts that changed, which is
             # most of what an attacker wanted from the image. Encrypted like the image.
-            _encrypt_rep(rep, delta_path.read_bytes(), delta_path, board_keys)
+            _encrypt_rep(rep, delta_path.read_bytes(), delta_path, board_keys, **sealing)
             reps.append(rep)
 
         body = _manifest_body(p, tr, image, reps)

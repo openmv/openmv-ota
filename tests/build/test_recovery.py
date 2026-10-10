@@ -254,6 +254,8 @@ def test_the_offer_is_installed_and_nothing_or_a_throttle_waits():
         == "https://h/d/t/m.bin"
     assert rec.offered(200, b'{"update": false, "poll_after_s": 300}') is None
     assert rec.offered(429, b"anything") is None           # the server pacing a crowd
+    assert rec.offered_lockbox(b'{"update": true, "manifest_url": "u", "lockbox": "ab"}') == "ab"
+    assert rec.offered_lockbox(b'{"update": true, "manifest_url": "u"}') is None
 
 
 def test_a_refusal_raises_so_the_loop_logs_it_and_backs_off():

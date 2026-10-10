@@ -41,6 +41,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   token scope for factory stations; `POST /api/v1/admin/registrations`, `PUT|GET
   /api/v1/admin/desk-keys`, `GET /api/v1/admin/devices/{id}/registration`. A changed key is
   audited as `device.rekeyed`.
+- **Releases encrypted for each camera, and keykeeper.** With `[ota].per_camera_encryption`,
+  a release's key is sealed to **keykeeper** -- a small private service (`openmv-ota keykeeper
+  init|serve|chain|pin|rotate`) -- with the account and its desk keys, and each camera is
+  offered it in a 145-byte lockbox only its exchange key opens. Keykeeper checks the camera's
+  registration against the desk keys in the seal, not the server's word; no firmware holds a
+  payload key. Keykeeper's keys rotate on a schedule, each generation signed by the one before,
+  and `project keys keykeeper sync` follows them from `[ota].keykeeper_pin`. The update server
+  takes `OPENMV_OTA_KEYKEEPER_URL` / `..._TOKEN` and serves the chain at
+  `GET /api/v1/keykeeper/chain`.
 - **Signed check-ins.** A registered camera with a set clock signs each check-in with its
   identity key (`X-OMV-Signature`). The server checks every signature; with
   `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` on, an unsigned check-in gets update offers only and a bad

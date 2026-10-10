@@ -175,6 +175,22 @@ camera with no registration leaves no trace.
 With the switch off, the server checks every signature anyway, so a fleet can be watched going
 green before anything depends on it.
 
+## Lockboxes
+
+A release encrypted for each camera reaches a camera with a **lockbox**: the release's key,
+wrapped for that camera's exchange key. It is 145 bytes:
+
+```
+ephemeral public key (65) || iv (16) || AES-256-CBC(k_enc, release key) (32) || HMAC-SHA256 (32)
+```
+
+with `k_enc || k_mac = HKDF-SHA256(ECDH(exchange key, ephemeral key), info="omv-lockbox-v1")`
+and the HMAC, under `k_mac`, over everything before it. The camera computes the ECDH secret
+with its exchange key (`keys.ecdh`), checks the HMAC, and only then decrypts; a lockbox made
+for another camera, or altered, fails the check and the update is rejected before anything is
+erased. The code that opens it is frozen into the firmware with the rest of the key code, so
+recovery can open one too.
+
 ## The soft key area
 
 The key area is 4 KB at the end of the boot partition, past the bootloader. Firmware and romfs

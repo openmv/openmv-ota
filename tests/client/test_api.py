@@ -379,3 +379,9 @@ def test_desk_keys_and_registrations_go_to_their_endpoints():
     method, path, kw = c.calls[1]
     assert (method, path) == ("POST", "/api/v1/admin/registrations")
     assert kw["json"] == {"record": '{"v":1}', "signature": "aa"}     # the exact text
+
+
+def test_the_keykeeper_chain_comes_from_its_endpoint():
+    api, c = _api(_Resp(200, {"chain": [{"record": "{}", "signature": "00"}]}))
+    assert api.keykeeper_chain() == [{"record": "{}", "signature": "00"}]
+    assert c.calls[0][:2] == ("GET", "/api/v1/keykeeper/chain")

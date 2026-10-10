@@ -128,6 +128,33 @@ device row, no feedback, no grants, no device-limit counting).
 |---|---|
 | `OPENMV_OTA_SERVE_UNREGISTERED_BOARDS` | a **pre-launch operator switch** (boolean: `1`/`true`/`yes`/`on` turns it on, `0`/`false`/`no`/`off` off; default off). On, such a board is treated as **registered for every account**: it gets a device row and is enrolled, its install feedback is recorded, it receives Live and ingest grants, and it counts toward its account's device limit like any other device. It takes the board's claimed id on trust, so turn it off once Arduino board claiming and signed check-ins ship. The server prints a note at startup while it is on |
 
+**Signed check-ins and per-camera encryption**
+
+| env var | what it does |
+|---|---|
+| `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` | boolean, default off. Off, every check-in signature is checked and noted, and nothing else changes. On, only a check-in signed by the camera's registered key gets the full treatment; an unsigned one gets update offers only, and one whose signature doesn't verify gets nothing. See [device keys](../reference/device-keys.md) |
+| `OPENMV_OTA_KEYKEEPER_URL`, `OPENMV_OTA_KEYKEEPER_TOKEN` | where keykeeper runs, on a private network, and the secret it expects. Needed only to offer releases encrypted for each camera; without it such a release is never offered |
+
+Keykeeper is a second, small process from the same package. It holds the only key that
+opens a release's sealed content key, and answers the update server with a lockbox for one
+registered camera. Keep it off the internet: localhost, a private network, or a private
+service on your platform.
+
+```bash
+export OPENMV_KEYKEEPER_DIR=/var/lib/keykeeper        # its keys and audit log
+export OPENMV_KEYKEEPER_PASSPHRASE=...                # encrypts its private keys at rest
+export OPENMV_KEYKEEPER_TOKEN=...                     # the same as OPENMV_OTA_KEYKEEPER_TOKEN
+openmv-ota keykeeper init                             # once: prints the pin publishers start from
+openmv-ota keykeeper serve --host 10.0.0.5 --port 8090
+```
+
+It rotates its own keys on a schedule (`OPENMV_KEYKEEPER_PERIOD_DAYS`, default 365),
+always announcing the next generation ahead of time, and signs each new generation with
+the one before it, so publishers follow rotations without being told. `openmv-ota
+keykeeper rotate --now` rotates at once. Every lockbox request is appended to
+`audit.jsonl` in its directory. Back the directory up: without its keys, no camera can
+open a release sealed to them.
+
 One more setting exists — `OPENMV_OTA_TEST_OFFER_DOWNGRADES` — and it is **test-only**:
 it makes the server willing to *offer* a release at or below a device's current version,
 which a correct server never does, and which is the only way to exercise the device's own

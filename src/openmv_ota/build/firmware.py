@@ -133,8 +133,10 @@ def _payload_keys(p, names: list[str], key_passphrase_file) -> dict[str, dict[in
 
     A board added to the project after it was created has no key yet; it gets one
     here rather than failing the build, because adding a board is a normal edit and
-    should not be a key ceremony. Non-OTA projects have no payload keys at all."""
-    if not p.config.ota:
+    should not be a key ceremony. Non-OTA projects have no payload keys at all, and nor do
+    projects encrypted for each camera: their cameras open each release with a lockbox made
+    for them alone, so no firmware holds a key that opens the fleet's updates."""
+    if not p.config.ota or p.config.per_camera_encryption:
         return {}
     from openmv_ota.project import passphrase as passphrase_mod
     from openmv_ota.project import payload_keys as payload_mod

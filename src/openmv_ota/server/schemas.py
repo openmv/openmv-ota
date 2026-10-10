@@ -749,10 +749,19 @@ class CheckAnswer(_Row):
     manifest_url: str | None = None
     release_id: str | None = None
     poll_after_s: int | None = None
+    lockbox: str | None = None
+    """With an offer of a release encrypted for each camera: its content key, wrapped for this
+    camera's exchange key alone (145 bytes, hex)."""
 
 
 class Ok(BaseModel):
     ok: bool
+
+
+class KeykeeperChain(BaseModel):
+    chain: list[dict]
+    """``[{"record": str, "signature": hex}]``, oldest first: each record names a generation of
+    keykeeper keys and is signed by the generation before it."""
 
 
 class Health(BaseModel):
