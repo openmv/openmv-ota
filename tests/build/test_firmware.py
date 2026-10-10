@@ -807,8 +807,11 @@ def test_speed_options_with_no_port_config_file(tmp_path):
 def test_install_key_store_module_is_for_boards_that_keep_their_own_keys(tmp_path):
     repo = tmp_path / "fw"
     repo.mkdir()
-    assert fw._install_key_store_module(repo, "OPENMV_AE3") is None    # no key area (yet)
+    assert fw._install_key_store_module(repo, "ARDUINO_NANO_RP2040_CONNECT") is None  # no keys
     assert fw._install_key_store_module(repo, "OPENMV_RT1060") is None  # a secure element
+    ae3 = fw._install_key_store_module(repo, "OPENMV_AE3")             # MRAM, past its bootloader
+    assert "#define OMV_KEY_AREA_ADDR (0x8001F000UL)" in ae3.read_text()
+    ae3.unlink()
     dst = fw._install_key_store_module(repo, "OPENMV4")
     assert dst == repo / "modules" / "key_store.c"
     text = dst.read_text()

@@ -22,7 +22,7 @@ does the cryptography. Both look the same to code on the camera, through `openmv
 | Arduino Giga R1 | hard: Microchip ATECC608 | slot 2, generated on the chip | slot 3, generated on the chip |
 | OpenMV Cam M4, M7, H7, H7 Plus, Pure Thermal | soft | the key area at the end of the boot partition | the same record |
 | OpenMV Cam N6 | soft, sealed by the chip | the key area in the boot partition of its NOR flash | the same record |
-| OpenMV Cam AE3 | none yet | | |
+| OpenMV Cam AE3 | soft | the key area in MRAM, past the bootloader | the same record |
 
 On the SE050 the exchange key's policy allows key agreement and reading its public half only:
 it can't sign, and it can't be deleted or regenerated. The factory identity key can't be
@@ -100,10 +100,16 @@ read protection covers them there. The build refuses a bootloader that would gro
 | M4 (STM32F427), M7 (STM32F765) | `0x08007000`–`0x08007FFF` | 28 KB |
 | H7, H7 Plus, Pure Thermal (STM32H743) | `0x0801F000`–`0x0801FFFF` | 124 KB |
 | N6 (STM32N657) | NOR `0x7F000`–`0x7FFFF`, its own 4 KB sector | 252 KB (the backup bootloader slot starts at `0x40000`) |
+| AE3 (Alif E3) | MRAM `0x8001F000`–`0x8001FFFF` | 124 KB (the firmware starts at `0x80020000`) |
 
-On the STM32 boards the key area shares a flash sector with the bootloader, so **flashing the
-bootloader erases the camera's keys**. `flash bootloader` warns about it. The next `flash`
-provisions new keys: a new identity, to be registered again.
+**Flashing the bootloader erases the camera's keys.** On the STM32 boards the key area shares a
+flash sector with the bootloader. On the AE3 the Alif tools write only the bytes they're given,
+so `flash bootloader` writes the key area as well, blank. `flash bootloader` warns about it. The
+next `flash` provisions new keys: a new identity, to be registered again.
+
+The AE3's MRAM has no erased state: the Secure Enclave's MRAM erase writes zeros, so blank there
+is `0x00` rather than flash's `0xFF`. Each 16-byte MRAM write runs with interrupts off, since an
+interrupt during an MRAM write hangs the chip until a power cycle.
 
 ### Format
 
@@ -123,7 +129,8 @@ its own size:
 | 6 | `0xC0` | sealed records only: GCM IV (bytes 0–11) and tag (bytes 16–31) |
 | 7 | `0xE0` | check: SHA-256 of words 0–6 exactly as stored |
 
-Bytes and words with nothing in them are left blank (`0xFF`) and never programmed. The keys
+Bytes and words with nothing in them are left blank (`0xFF`; `0x00` on the AE3) and never
+programmed. The keys
 and word 6 are written first; the check is written **last**, and it is what commits the record.
 
 The M4's record, read back over SWD:
@@ -144,8 +151,11 @@ A complete record whose version, protection or key types this firmware doesn't k
 error ("from newer firmware"), never skipped, so an older firmware can't mistake a newer
 identity for none. The check is SHA-256 over words 0–6 in every version, for the same reason.
 
-A power cut can only interrupt provisioning at a desk; the H7's flash ECC turns a read of a
-half-programmed word into a bus fault, so an H7 with such a slot is provisioned again there.
+A power cut can only interrupt provisioning at a desk. On the H7, H7 Plus and Pure Thermal it
+can leave a flash word with an error the flash's ECC can't correct. Such a word reads as unreadable
+rather than crashing the camera, and counts like any other cut-off write: before the check word,
+the slot is skipped and the keys are made in the next one; in the check word, or under a check
+that can't be verified, the record is damaged.
 
 ## Sealed keys on the N6
 

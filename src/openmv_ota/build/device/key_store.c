@@ -13,12 +13,19 @@
 //
 //   key_store.SIZE, key_store.BLANK  the key area's size in bytes, and what a blank byte reads
 //   key_store.read(offset, length)   ``length`` bytes at ``offset`` in the key area (inside it,
-//                                    else ValueError) -- the caller reads it a slot at a time
+//                                    else ValueError) -- the caller reads it a slot at a time.
+//                                    OSError(EIO) if a flash word there can't be read (below)
 //   key_store.seal / unseal          N6 only: AES-256-GCM under the chip's own key (see below)
 //   key_store.write(offset, data)    program ``data`` at ``offset`` in it. Both a multiple of
 //                                    32 bytes (one flash word on every backend), inside the area,
 //                                    and every byte there still blank -- else OSError (EINVAL,
-//                                    EEXIST) and nothing written. EIO if the flash refused.
+//                                    EEXIST) and nothing written. EIO if the flash refused, or
+//                                    if a flash word there can't be read.
+//
+// A flash word that can't be read: the H7's flash keeps ECC per 256-bit word, and a power cut
+// while one is being programmed can leave it with an error ECC can't correct. Reading it answers
+// with a bus fault, so a plain read would crash the board -- at every boot, since the keys are
+// read at boot. Here it reads as EIO instead (see omv_key_store_copy).
 //
 // The area's address is board data: `openmv-ota build firmware` puts this file in the firmware's
 // modules/ dir with ``OMV_KEY_AREA_ADDR`` defined at the top (boards.json, ``secure_element``),
@@ -35,15 +42,25 @@
 
 #define KEY_AREA_SIZE   (4096)
 #define KEY_WRITE_UNIT  (32)
-#define KEY_BLANK       (0xFF)
 
 #if defined(OMV_KEY_STORE_HOST_TEST)
 
 extern uint8_t omv_key_store_host_area[];       // the host test's stand-in for the flash
 int omv_key_store_program(uintptr_t addr, const uint8_t *src, size_t len);
+int omv_key_store_copy(uint8_t *dst, uintptr_t addr, size_t len);
 
 #else
 #include "py/mphal.h"                            // the port's HAL: defines its family (STM32H7, ...)
+#endif
+
+// The AE3's helper core (M55_HE) is slaved to the main core and never touches the keys: on it
+// this whole unit is empty, so there is no module, and no second core that could program MRAM.
+#if !defined(CORE_M55_HE)
+
+#if defined(CORE_M55_HP)
+#define KEY_BLANK       (0x00)                   // MRAM: no erased state; erasing writes zeros
+#else
+#define KEY_BLANK       (0xFF)                   // flash: what an erase leaves
 #endif
 
 #if defined(OMV_KEY_STORE_HOST_TEST)
@@ -81,6 +98,89 @@ static int omv_key_store_program(uintptr_t addr, const uint8_t *src, size_t len)
     // next read sees what was just programmed.
     SCB_InvalidateDCache_by_Addr((void *)addr, (int32_t)len);
     #endif
+    return 0;
+}
+
+#if defined(STM32H7)
+
+// The key area is the end of the bootloader's sector, always in bank 1.
+static int omv_key_store_ecc_failed(uintptr_t lo, int32_t span) {
+    if (!__HAL_FLASH_GET_FLAG(FLASH_FLAG_DBECCERR_BANK1)) {
+        return 0;
+    }
+    // Only a failure in what was just read: the M7 also fetches flash speculatively, so a bad
+    // word nearby could raise the flag during a read of good ones (seen on a Pure Thermal: the
+    // flag was back, set by nothing this code read, after a read had cleared it).
+    uintptr_t at = FLASH_BANK1_BASE + (FLASH->ECC_FA1 & FLASH_ECC_FA_FAIL_ECC_ADDR) * 32;
+    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_DBECCERR_BANK1);
+    return at >= lo && at < lo + (uintptr_t)span;
+}
+
+// Copy ``len`` bytes of the key area at ``addr``: 0, or -1 if a flash word there failed its ECC
+// (a double error: a power cut while it was programmed; reproduced on a Pure Thermal by
+// programming one flash word twice). The read runs with bus faults ignored
+// -- FAULTMASK raises the CPU to priority -1, where CCR.BFHFNMIGN applies -- and the flash
+// controller's double-error flag says afterwards whether any of it was bad. The D-cache lines are
+// dropped first so the bytes come from the flash, not from a line cached before it went bad.
+static int omv_key_store_copy(uint8_t *dst, uintptr_t addr, size_t len) {
+    uintptr_t lo = addr & ~(uintptr_t)31;
+    int32_t span = (int32_t)(((addr + len + 31) & ~(uintptr_t)31) - lo);
+    SCB_InvalidateDCache_by_Addr((void *)lo, span);
+    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_DBECCERR_BANK1);
+    uint32_t ccr = SCB->CCR;
+    __disable_fault_irq();
+    SCB->CCR = ccr | SCB_CCR_BFHFNMIGN_Msk;
+    __DSB();
+    __ISB();
+    for (size_t i = 0; i < len; i++) {
+        dst[i] = ((const volatile uint8_t *)addr)[i];
+    }
+    __DSB();
+    SCB->CCR = ccr;
+    __ISB();
+    __enable_fault_irq();
+    if (omv_key_store_ecc_failed(lo, span)) {
+        SCB_InvalidateDCache_by_Addr((void *)lo, span);   // don't keep what the bad word gave
+        return -1;
+    }
+    return 0;
+}
+
+#else
+
+// F4/F7: no ECC on the flash, so nothing it holds fails a read.
+static int omv_key_store_copy(uint8_t *dst, uintptr_t addr, size_t len) {
+    memcpy(dst, (const void *)addr, len);
+    return 0;
+}
+
+#endif
+
+#elif defined(CORE_M55_HP)
+
+#include "irq.h"
+#include "mpu.h"
+#include "mram.h"
+
+// The AE3 keeps its keys in MRAM, programmed 16 bytes at a time by Alif's mram_write_128bit,
+// each with interrupts OFF: an interrupt taken while MRAM programs wedges its controller until a
+// power cycle (Alif's Driver_MRAM.c requires them off; openmv_ota._write_masked does the same).
+// MRAM has no erased state -- the Secure Enclave's MRAM erase writes zeros, and so does
+// `openmv-ota flash bootloader` over this area -- so blank here is 0x00. The MPU maps MRAM
+// write-through, so the cache never holds a stale copy of what was just programmed.
+static int omv_key_store_program(uintptr_t addr, const uint8_t *src, size_t len) {
+    mpu_config_mram(false);
+    for (size_t off = 0; off < len; off += 16) {
+        uint32_t irq = disable_irq();
+        mram_write_128bit((uint8_t *)(addr + off), src + off);
+        enable_irq(irq);
+    }
+    mpu_config_mram(true);
+    return 0;
+}
+
+static int omv_key_store_copy(uint8_t *dst, uintptr_t addr, size_t len) {
+    memcpy(dst, (const void *)addr, len);
     return 0;
 }
 
@@ -160,9 +260,24 @@ static int omv_key_store_gcm(int encrypt, const uint8_t *aad, const uint8_t *iv,
     return ok ? 0 : -5;
 }
 
+// NOR flash with no ECC of its own: a read always succeeds.
+static int omv_key_store_copy(uint8_t *dst, uintptr_t addr, size_t len) {
+    memcpy(dst, (const void *)addr, len);
+    return 0;
+}
+
 #else
 #error "key_store: no flash backend for this port"
 #endif
+
+// Copy ``len`` bytes at ``offset`` in the key area into ``dst``: 0, or -22 (EINVAL: outside the
+// area) or -5 (EIO: a flash word there can't be read).
+int omv_key_store_read(size_t offset, uint8_t *dst, size_t len) {
+    if (offset > KEY_AREA_SIZE || len > KEY_AREA_SIZE - offset) {
+        return -22;
+    }
+    return omv_key_store_copy(dst, OMV_KEY_AREA_ADDR + offset, len) == 0 ? 0 : -5;
+}
 
 // Program ``len`` bytes of ``src`` at ``offset`` in the key area: 0, or -22 (EINVAL: not whole
 // write units, or outside the area), -17 (EEXIST: not blank there) or -5 (EIO: flash refused).
@@ -171,10 +286,15 @@ int omv_key_store_write(size_t offset, const uint8_t *src, size_t len) {
         offset > KEY_AREA_SIZE || len > KEY_AREA_SIZE - offset) {
         return -22;
     }
-    const volatile uint8_t *dst = (const volatile uint8_t *)(OMV_KEY_AREA_ADDR + offset);
-    for (size_t i = 0; i < len; i++) {
-        if (dst[i] != KEY_BLANK) {
-            return -17;
+    uint8_t there[KEY_WRITE_UNIT];
+    for (size_t at = offset; at < offset + len; at += KEY_WRITE_UNIT) {
+        if (omv_key_store_copy(there, OMV_KEY_AREA_ADDR + at, KEY_WRITE_UNIT) != 0) {
+            return -5;
+        }
+        for (size_t i = 0; i < KEY_WRITE_UNIT; i++) {
+            if (there[i] != KEY_BLANK) {
+                return -17;
+            }
         }
     }
     return omv_key_store_program(OMV_KEY_AREA_ADDR + offset, src, len) == 0 ? 0 : -5;
@@ -203,7 +323,14 @@ static mp_obj_t mod_key_store_read(mp_obj_t offset_in, mp_obj_t length_in) {
     if (offset < 0 || length < 0 || offset > KEY_AREA_SIZE || length > KEY_AREA_SIZE - offset) {
         mp_raise_ValueError(MP_ERROR_TEXT("outside the key area"));
     }
-    return mp_obj_new_bytes((const uint8_t *)(OMV_KEY_AREA_ADDR + offset), length);
+    vstr_t vstr;
+    vstr_init_len(&vstr, length);
+    int r = omv_key_store_read((size_t)offset, (uint8_t *)vstr.buf, (size_t)length);
+    if (r != 0) {
+        vstr_clear(&vstr);
+        mp_raise_OSError(-r);
+    }
+    return mp_obj_new_bytes_from_vstr(&vstr);
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(key_store_read_obj, mod_key_store_read);
 
@@ -268,3 +395,5 @@ const mp_obj_module_t key_store_module = {
 MP_REGISTER_MODULE(MP_QSTR_key_store, key_store_module);
 
 #endif // !OMV_KEY_STORE_HOST_TEST
+
+#endif // not the AE3's helper core

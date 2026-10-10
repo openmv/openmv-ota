@@ -35,8 +35,10 @@ A complete record of a version or key type this firmware doesn't know is an erro
 firmware"), never skipped: an older firmware must not mistake a newer identity for none. The
 check is always SHA-256 over words 0-6, in every version, for the same reason.
 
-The H7's flash ECC turns a read of a half-programmed word into a bus fault. Keys are only written
-at a desk, so that needs a power cut there; a camera with such a slot is re-provisioned there.
+A power cut while an H7 flash word is being programmed can leave it with an error its ECC can't
+correct, and reading such a word is a bus fault. ``key_store`` reads it as EIO instead, and an
+unreadable word counts like any other cut-off write: before the check, the slot is skipped; in the
+check, or under a check that can't be verified, the record is damaged.
 
 Until the device is locked down, any code on the camera can read these keys (and a debugger can
 read the flash). The lockdown's read protection covers the key area where it already is.
@@ -91,22 +93,41 @@ class NotProvisioned(OSError):
     """The camera has no keys: it was never provisioned, or its key area was wiped."""
 
 
+def _words(off):
+    """The slot at ``off`` as its eight words, None for a word the flash can't read: on the H7, a
+    flash word a power cut left with an error its ECC can't correct reads as EIO."""
+    try:
+        slot = key_store.read(off, _SLOT)
+        return [slot[i:i + _WORD] for i in range(0, _SLOT, _WORD)]
+    except OSError:
+        words = []
+        for i in range(0, _SLOT, _WORD):
+            try:
+                words.append(key_store.read(off + i, _WORD))
+            except OSError:
+                words.append(None)
+        return words
+
+
 def _scan():
     """The newest complete record and the offset of the next blank slot (None if full). Raises
-    if the newest record that wasn't cut off before its check is damaged."""
+    if the newest record that wasn't cut off before its check is damaged -- or can't be read."""
     blank = bytes([key_store.BLANK]) * _WORD
     newest = free = None
     damaged = False
     for i in range(key_store.SIZE // _SLOT):           # top down: the order they're written in
         off = key_store.SIZE - (i + 1) * _SLOT
-        slot = key_store.read(off, _SLOT)
-        if slot == blank * (_SLOT // _WORD):
+        words = _words(off)
+        if all(w == blank for w in words):
             free = off                                 # written in order: nothing past here
             break
-        check = slot[7 * _WORD:]
+        check = words[7]
         if check == blank:
             continue                                   # cut off before its check: never used
-        damaged = check != hashlib.sha256(slot[:7 * _WORD]).digest()
+        damaged = None in words                        # an unreadable check, or keys under it
+        if not damaged:
+            slot = b"".join(words)
+            damaged = check != hashlib.sha256(slot[:7 * _WORD]).digest()
         if not damaged:
             newest = slot
     if damaged:

@@ -700,7 +700,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     if trailer.key_id < _OTA_KEY_ID_BASE:          # a factory image: the camera's keys
         try:
             from openmv_ota import se
-        except ImportError:  # hil-residual: a factory romfs without openmv_ota.se (a board with no keys, the AE3); boot.keys after it reads "None"
+        except ImportError:  # hil-residual: a factory romfs without openmv_ota.se (a board with no keys, e.g. the Nano RP2040 Connect); boot.keys after it reads "None"
             se = None  # hil-residual: same branch as the line above
         import select
         import time

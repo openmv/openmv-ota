@@ -71,7 +71,7 @@ def camera(monkeypatch):
 
 
 def test_a_board_without_keys_has_nothing_to_provision():
-    assert fl.provision_keys(board="OPENMV_AE3") == []
+    assert fl.provision_keys(board="ARDUINO_NANO_RP2040_CONNECT") == []
 
 
 def test_dry_run_shows_the_request():

@@ -172,3 +172,20 @@ def test_bootloader_cli_error_returns_exit_code(bl_project, capsys):
     root, _ran = bl_project    # the AE3 needs the Alif toolkit submodule, absent under bl_project
     assert main(["flash", "bootloader", str(root), "-b", "OPENMV_AE3"]) == 2
     assert "Alif Security Toolkit not found" in capsys.readouterr().err
+
+
+def test_the_ae3_bootloader_flash_blanks_its_key_area(tmp_path):
+    """The AE3 keeps its keys in MRAM just past the bootloader, and the Alif tools write only
+    the bytes they're given: so the flash writes the key area too, as zeros (MRAM's blank), and
+    `flash bootloader` erases the keys on the AE3 as it does on the STM32 boards."""
+    from openmv_ota.flash.targets import flash_config
+    from openmv_ota.romfs.boards import load_boards
+
+    bl = flash_config("OPENMV_AE3").raw["bootloader"]
+    for f in ("bootloader.bin", "firmware_pad.toc"):
+        (tmp_path / ("OPENMV_AE3-" + f)).write_bytes(b"x")
+    files = fl._alif_files("OPENMV_AE3", bl, tmp_path)
+    key_area = files["key_area.bin"]
+    assert key_area.read_bytes() == bytes(4096)
+    addr = {i["file"]: int(i["addr"], 16) for i in bl["images"]}["key_area.bin"]
+    assert addr == load_boards()["OPENMV_AE3"].secure_element["key_area"]
