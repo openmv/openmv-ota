@@ -128,6 +128,33 @@ def register(project_parser: argparse.ArgumentParser):
     p_kun.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_kun.set_defaults(func=cmd_keys_unrevoke, _command="project keys unrevoke")
 
+    p_kd = keys_sub.add_parser("desk", help="desk keys: what registers cameras at a bench or "
+                                            "factory station")
+    kd_sub = p_kd.add_subparsers(dest="_desk_action", required=True)
+    p_kdc = kd_sub.add_parser("create", help="make a key for a desk (expires in --days)")
+    p_kdc.add_argument("label", help="which desk, e.g. bench-1 or factory-a")
+    p_kdc.add_argument("--days", type=int, default=90, help="days until it expires (default 90)")
+    p_kdc.add_argument("--key-passphrase-file", help="file holding the project passphrase")
+    p_kdc.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kdc.set_defaults(func=cmd_desk_create, _command="project keys desk create")
+    p_kdl = kd_sub.add_parser("list", help="list the desk keys")
+    p_kdl.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kdl.set_defaults(func=cmd_desk_list, _command="project keys desk list")
+    p_kdr = kd_sub.add_parser("renew", help="push a desk key's expiry out --days from now")
+    p_kdr.add_argument("key_id", type=int, help="desk key id")
+    p_kdr.add_argument("--days", type=int, default=90, help="days from now (default 90)")
+    p_kdr.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kdr.set_defaults(func=cmd_desk_renew, _command="project keys desk renew")
+    p_kdv = kd_sub.add_parser("revoke", help="stop trusting a desk key, at once and for good")
+    p_kdv.add_argument("key_id", type=int, help="desk key id")
+    p_kdv.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kdv.set_defaults(func=cmd_desk_revoke, _command="project keys desk revoke")
+    p_kdp = kd_sub.add_parser("push", help="send the desk keys' public halves to the server")
+    p_kdp.add_argument("--server", help="server URL (default: client config)")
+    p_kdp.add_argument("--token", help="a manage token (default: client config)")
+    p_kdp.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kdp.set_defaults(func=cmd_desk_push, _command="project keys desk push")
+
     p_kb = keys_sub.add_parser("backup",
                                help="archive the private keys (already encrypted at rest) to one file")
     p_kb.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
@@ -474,6 +501,87 @@ def cmd_keys_rotate(args: argparse.Namespace) -> int:
     print("Rotated OTA signing key: 0x%04x -> 0x%04x" % (old, new))
     print("Commit openmv-ota.toml to record the rotation.")
     return 0
+
+
+def _desk_error(fn):
+    """Run a desk-key command, turning a project or client error into its message."""
+    from openmv_ota.client.errors import ClientError
+    try:
+        return fn()
+    except (ProjectError, ClientError) as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+
+
+def cmd_desk_create(args: argparse.Namespace) -> int:
+    from . import desk_keys
+    from .passphrase import resolve_passphrase
+
+    def run():
+        phrase, _ = resolve_passphrase(args.dir, passphrase_file=args.key_passphrase_file)
+        e = desk_keys.create(args.dir, args.label, phrase, days=args.days)
+        history.record(args.dir, "desk-key-create", key_id=e.key_id, label=e.label)
+        print("Desk key %d for %r, expires %s." % (e.key_id, e.label, e.expires))
+        print("  Commit keys/desk_keys.json, then `openmv-ota project keys desk push` so the")
+        print("  server accepts the cameras this desk registers.")
+        return 0
+    return _desk_error(run)
+
+
+def cmd_desk_list(args: argparse.Namespace) -> int:
+    from . import desk_keys
+
+    def run():
+        keys = desk_keys.read(args.dir)
+        if not keys:
+            print("No desk keys -- `openmv-ota project keys desk create <label>` makes one.")
+        for e in keys:
+            state = "revoked" if e.revoked else "expires %s" % e.expires
+            print("%3d  %-20s  %s  %s" % (e.key_id, e.label, state, e.pubkey[:16] + "..."))
+        return 0
+    return _desk_error(run)
+
+
+def cmd_desk_renew(args: argparse.Namespace) -> int:
+    from . import desk_keys
+
+    def run():
+        e = desk_keys.renew(args.dir, args.key_id, days=args.days)
+        history.record(args.dir, "desk-key-renew", key_id=e.key_id, expires=e.expires)
+        print("Desk key %d now expires %s. Push it: `openmv-ota project keys desk push`."
+              % (e.key_id, e.expires))
+        return 0
+    return _desk_error(run)
+
+
+def cmd_desk_revoke(args: argparse.Namespace) -> int:
+    from . import desk_keys
+
+    def run():
+        e = desk_keys.revoke(args.dir, args.key_id)
+        history.record(args.dir, "desk-key-revoke", key_id=e.key_id)
+        print("Revoked desk key %d (%s). Push it now: `openmv-ota project keys desk push` --"
+              % (e.key_id, e.label))
+        print("  the server keeps accepting it until it knows. Cameras it registered must be")
+        print("  registered again from another desk.")
+        return 0
+    return _desk_error(run)
+
+
+def cmd_desk_push(args: argparse.Namespace) -> int:
+    from openmv_ota.client import config as client_config
+    from openmv_ota.client.api import Api
+
+    from . import desk_keys
+
+    def run():
+        keys = desk_keys.read(args.dir)
+        api = Api(client_config.resolve(args.server, args.token))
+        for e in keys:
+            api.put_desk_key(e)
+        print("Pushed %d desk key%s." % (len(keys), "" if len(keys) == 1 else "s"))
+        return 0
+    return _desk_error(run)
 
 
 def cmd_keys_revoke(args: argparse.Namespace) -> int:

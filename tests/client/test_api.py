@@ -364,3 +364,18 @@ def test_audit_names_an_account_or_every_account_for_the_root():
     assert c.calls[0][2]["params"] == {"since": 0, "account_id": "acct_1"}
     api.audit(all_accounts=True)
     assert c.calls[1][2]["params"] == {"since": 0, "all": "true"}
+
+
+def test_desk_keys_and_registrations_go_to_their_endpoints():
+    api, c = _api(_Resp(200, {"key_id": 3}))
+    entry = SimpleNamespace(key_id=3, label="bench-1", pubkey="04ab", expires="2027-01-01T00:00:00Z",
+                            revoked=False)
+    api.put_desk_key(entry)
+    method, path, kw = c.calls[0]
+    assert (method, path) == ("PUT", "/api/v1/admin/desk-keys/3")
+    assert kw["json"] == {"label": "bench-1", "pubkey": "04ab",
+                          "expires": "2027-01-01T00:00:00Z", "revoked": False}
+    api.register_device(b'{"v":1}', "aa")
+    method, path, kw = c.calls[1]
+    assert (method, path) == ("POST", "/api/v1/admin/registrations")
+    assert kw["json"] == {"record": '{"v":1}', "signature": "aa"}     # the exact text
