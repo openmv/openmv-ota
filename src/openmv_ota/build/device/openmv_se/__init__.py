@@ -1,5 +1,5 @@
-"""``openmv_ota.se`` -- the camera's keys: private keys that never leave the camera, so a
-signature from one proves which camera is talking.
+"""``openmv_se`` (applications use it as ``openmv_ota.se``) -- the camera's keys: private keys
+that never leave the camera, so a signature from one proves which camera is talking.
 
     from openmv_ota import se
     keys = se.open()                  # None on a board without any
@@ -20,9 +20,13 @@ field never makes new keys, or changes its identity, on its own.
 
 Where the keys live is board data, not code: a secure element chip (``se050``, ``atecc608``) or,
 on a board with none, the camera's own key area at the end of its boot partition (``soft``).
-Every module implements the same ``SecureElement`` interface. The romfs build ships only the
-board's module and writes its wiring into ``board.py`` here (bus, address, enable pin); a board
-with neither ships none of this package.
+Every module implements the same ``SecureElement`` interface.
+
+FROZEN INTO THE FIRMWARE, not shipped in the romfs: recovery runs exactly when the romfs is gone,
+and it signs its check-ins and opens its updates with these keys too. The firmware build freezes
+only the board's module and writes its wiring into ``board.py`` here (bus, address, enable pin);
+a board with neither freezes none of this package. The romfs's ``openmv_ota.se`` is this, by
+another name.
 
 RAM BUDGET: this module runs inside your application, so its memory is your memory. Nothing is
 allocated until :func:`open`; a module's buffers are a few hundred bytes.

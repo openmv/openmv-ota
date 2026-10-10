@@ -238,6 +238,12 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     for mod in ("openmv_netcfg.py", "openmv_recovery.py", "openmv_installer.py"):
         assert mod in manifest, "%s is not frozen -- recovery could not run" % mod
         assert (r.build_dir / mod).exists()
+    # ...and so are the camera's keys: recovery signs its check-ins and opens its updates
+    # with them. Only the N6's own module (soft) is frozen, with its generated wiring.
+    for mod in ("openmv_se/__init__.py", "openmv_se/soft.py", "openmv_se/board.py"):
+        assert mod in manifest, "%s is not frozen -- recovery has no keys" % mod
+        assert (r.build_dir / mod).exists()
+    assert not (r.build_dir / "openmv_se" / "se050.py").exists()
     # ...and the frozen installer is byte-identical to the one the romfs ships, so a fix
     # cannot land on the normal path and miss the recovery one
     shipped = (Path(fw.__file__).parent / "device" / "openmv_ota" / "data" / "installer.py")

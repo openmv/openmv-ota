@@ -512,7 +512,7 @@ last_failure_reason = None    # why the OTHER slot was rejected, if this one is 
 # --- The camera's keys, on a factory image's boot ---------------------------
 # A factory image is written only by `openmv-ota flash factory`, at a desk, and is signed with a
 # factory key (below the OTA key range). Booting one, before the app runs, is where the camera's
-# keys are made if it has none (``openmv_ota.se.provision``, which never replaces keys it has) --
+# keys are made if it has none (``openmv_se.provision``, which never replaces keys it has) --
 # never by the app, so a camera in the field can't make or change keys, and never by a host
 # breaking into a running app, which on an app that arms a watchdog resets the board. For a
 # short window the flashing tool may ask, with an ``OMVKEYS <challenge>`` line on the console;
@@ -571,7 +571,7 @@ def factory_keys(key_id, se, challenge):
     """Make the camera's keys if it has none, when booting a factory image (``key_id``, the
     image's signing key, below the OTA range); the answer line for the flashing tool -- printed
     by the caller only if it asked (``challenge``) -- or None when there is nothing to do: an OTA
-    image, or a romfs without ``openmv_ota.se`` (``se`` None)."""
+    image, or a firmware without ``openmv_se`` (``se`` None)."""
     if key_id >= _OTA_KEY_ID_BASE or se is None:
         return None
     try:
@@ -699,8 +699,8 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     sys.path.append("/rom/lib")
     if trailer.key_id < _OTA_KEY_ID_BASE:          # a factory image: the camera's keys
         try:
-            from openmv_ota import se
-        except ImportError:  # hil-residual: a factory romfs without openmv_ota.se (a board with no keys, e.g. the Nano RP2040 Connect); boot.keys after it reads "None"
+            import openmv_se as se                 # frozen: the keys don't depend on the romfs
+        except ImportError:  # hil-residual: a firmware without openmv_se (a board with no keys, e.g. the Nano RP2040 Connect); boot.keys after it reads "None"
             se = None  # hil-residual: same branch as the line above
         import select
         import time

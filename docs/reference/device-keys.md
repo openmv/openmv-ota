@@ -46,7 +46,10 @@ keys.ecdh(peer)                   # 32 bytes: the ECDH secret with a peer's publ
 on damaged keys it raises `OSError`. An application never creates keys, and a camera in the
 field never changes its identity on its own: it either has its keys or it fails.
 
-The romfs ships only the module for the board's own kind of keys: one chip driver, or `soft`.
+This code is part of the firmware, not the romfs: recovery runs when the romfs is gone, and it
+uses the camera's keys too. The firmware carries only the module for the board's own kind of
+keys (one chip driver, or `soft`), about 3.5 KB. `openmv_ota.se` is that module under the name
+applications use; on a board with no keys, `se.open()` returns None.
 
 ## Provisioning
 

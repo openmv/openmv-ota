@@ -10,7 +10,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Device keys on every OpenMV Cam and Arduino camera board.** Each camera holds two P-256 private keys that
   never leave it: an identity key (signs) and an exchange key (ECDH only), behind one interface,
-  `openmv_ota.se`. Where they live is board data, and the romfs ships only that board's module:
+  `openmv_ota.se`. Where they live is board data, and the firmware carries only that board's
+  module (frozen as `openmv_se`, so recovery has the keys too; about 3.5 KB):
   - **SE050** (RT1060, Nicla Vision, Portenta H7): NXP's factory identity key and certificate,
     and an exchange key the chip generates, whose policy allows key agreement only.
   - **ATECC608** (Giga R1): configured and locked exactly as Arduino Cloud does it, so the board
