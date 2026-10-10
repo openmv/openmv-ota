@@ -316,7 +316,8 @@ def test_init_rotates_the_bootstrap_token_to_a_changed_env_value(tmp_path, monke
     s = _store(tmp_path)
     old, new = s.get_token(hash_token("first-root")), s.get_token(hash_token("second-root"))
     assert old["revoked"] and new["name"] == "bootstrap" and not new["revoked"]
-    assert set(new["scopes"]) == {"publish", "manage", "observe", "accounts", "accounts.all"}
+    assert set(new["scopes"]) == {"publish", "manage", "observe", "accounts", "accounts.all",
+                                  "register"}
     assert not s.get_token(hash_token("site-token"))["revoked"]     # nobody else's business
     assert s.count_tokens() == 3
     s.close()

@@ -24,7 +24,12 @@ ACCOUNT_ADMIN = "accounts"
 # it. A partner gets the first and not the second, or its account directory is ours.
 ACCOUNT_ROOT = "accounts.all"
 
-ALL_SCOPES = (*SCOPES, ACCOUNT_ADMIN, ACCOUNT_ROOT)
+# register is a *desk* scope: the one thing a factory station's token may do is upload the
+# registration records its desk key signed. It is off the ladder -- a factory needs no fleet
+# reads or rollouts -- and `manage` implies it (see allows()), so an account admin can too.
+REGISTER = "register"
+
+ALL_SCOPES = (*SCOPES, ACCOUNT_ADMIN, ACCOUNT_ROOT, REGISTER)
 
 
 def expand(scopes) -> list[str]:
@@ -42,4 +47,12 @@ def expand(scopes) -> list[str]:
     if ACCOUNT_ROOT in out and ACCOUNT_ADMIN not in out:
         out.append(ACCOUNT_ADMIN)
     return out
+
+
+def allows(scopes, scope: str) -> bool:
+    """Whether a token's ``scopes`` satisfy ``scope``: the ladder, plus ``register`` for any
+    token that can ``manage`` (an account admin can do what a desk does). Kept out of
+    :func:`expand`, so a token's listing shows what it was issued, not every implication."""
+    held = expand(scopes)
+    return scope in held or (scope == REGISTER and "manage" in held)
 

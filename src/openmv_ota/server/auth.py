@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
 
-from .scopes import SCOPES, expand
+from .scopes import SCOPES, allows, expand
 
 __all__ = ["SCOPES", "Principal", "TokenAuth", "hash_token", "require_scope"]
 
@@ -72,7 +72,7 @@ def require_scope(scope: str):
     def dep(request: Request) -> Principal:
         principal = request.app.state.admin_auth.authenticate(
             request.headers.get("Authorization", ""))
-        if scope not in expand(principal.scopes):     # the ladder: publish implies manage, observe
+        if not allows(principal.scopes, scope):       # the ladder: publish implies manage, observe
             raise HTTPException(status_code=403, detail="missing scope: %s" % scope)
         return principal
     dep.openmv_scope = scope

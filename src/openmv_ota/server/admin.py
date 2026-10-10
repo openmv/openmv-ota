@@ -41,6 +41,10 @@ from .schemas import (
     CohortRenamed,
     Device,
     DeviceBound,
+    DeskKeyInfo,
+    DeskKeyList,
+    DeviceRegistered,
+    Registration,
     DeviceForgotten,
     DeviceNeighbors,
     DashboardCounts,
@@ -158,6 +162,18 @@ class CohortRename(BaseModel):
 
 class DevicePin(BaseModel):
     release_id: str | None = None          # null unpins
+
+
+class DeskKeyIn(BaseModel):
+    label: str
+    pubkey: str                            # uncompressed P-256 point, hex
+    expires: str                           # ISO 8601 UTC
+    revoked: bool = False
+
+
+class RegistrationIn(BaseModel):
+    record: str                            # the record's exact JSON text, as the desk signed it
+    signature: str                         # raw R||S, hex
 
 
 class CohortPin(BaseModel):
@@ -1058,6 +1074,109 @@ def bind_device(device_id: str, request: Request,
                     # before the device that will fill it exists
                     product_id=(ms.get_device(device_id) or {}).get("product_id"))
     return {"device_id": device_id, "account_id": principal.account_id}
+
+
+# --- signed identity: desk keys and camera registrations ----------------------------------
+
+def _fingerprint(identity_hex: str) -> str:
+    import hashlib
+    return hashlib.sha256(bytes.fromhex(identity_hex)).hexdigest()
+
+
+@admin.put("/desk-keys/{key_id}", responses={200: {"model": DeskKeyInfo}})
+def put_desk_key(key_id: int, body: DeskKeyIn, request: Request,
+                 principal: Principal = Depends(require_scope("manage"))):
+    """Record one of the account's desk keys (`openmv-ota project keys desk push` sends them):
+    the public half of a key a desk signs registration records with. A key's public half is fixed
+    once recorded (a different one under the same id is a 409), and revoking is one-way."""
+    from openmv_ota.ota import registration as reg
+    try:
+        reg.check_public_key(body.pubkey)
+        if datetime.fromisoformat(body.expires.replace("Z", "+00:00")).tzinfo is None:
+            raise ValueError("no time zone")
+    except (reg.RegistrationError, ValueError):
+        raise HTTPException(status_code=422, detail="not a P-256 public key and UTC expiry") from None
+    ms = request.app.state.metastore
+    try:
+        ms.put_desk_key(principal.account_id, key_id, label=body.label,
+                        pubkey=body.pubkey.lower(), expires=body.expires, revoked=body.revoked)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    row = next(k for k in ms.desk_keys(principal.account_id) if k["key_id"] == key_id)
+    ms.append_audit(actor=principal.name, action="desk_key.put", entity_type="desk_key",
+                    entity_id=str(key_id), data={"label": row["label"], "expires": row["expires"],
+                                                 "revoked": row["revoked"]},
+                    account_id=principal.account_id)
+    return row
+
+
+@admin.get("/desk-keys", responses={200: {"model": DeskKeyList}})
+def list_desk_keys(request: Request, principal: Principal = Depends(require_scope("observe"))):
+    """The account's desk keys: the public halves of the keys its desks sign camera registrations
+    with, each with its label (which desk), expiry and whether it has been revoked."""
+    return {"desk_keys": request.app.state.metastore.desk_keys(principal.account_id)}
+
+
+@admin.post("/registrations", responses={200: {"model": DeviceRegistered}})
+def register_device(body: RegistrationIn, request: Request,
+                    principal: Principal = Depends(require_scope("register"))):
+    """Register a camera's keys to the account: a record signed by one of the account's desk keys
+    (`openmv-ota flash factory` uploads it). The signature is checked against the account's desk
+    keys -- unrevoked, unexpired now, and the record freshly issued -- so a token alone registers
+    nothing. Registering binds the camera to the account. A camera registered or bound to another
+    account is a 404. Registering again with new keys (after a bootloader reflash wiped them)
+    replaces the old ones and is audited as a re-key."""
+    from openmv_ota.ota import registration as reg
+    ms = request.app.state.metastore
+    record = body.record.encode("utf-8")
+    keys = [reg.DeskKey(k["key_id"], k["pubkey"], k["expires"], k["revoked"])
+            for k in ms.desk_keys(principal.account_id)]
+    try:
+        got = reg.verify(record, body.signature, keys, account=principal.account_id)
+        reg.check_upload(got, keys, datetime.now(timezone.utc))
+        if not got.device_id.startswith(got.board + ":"):
+            raise reg.RegistrationError("the device id isn't the board's")
+    except reg.RegistrationError as e:
+        ms.append_audit(actor=principal.name, action="device.register_refused",
+                        entity_type="device", entity_id="", data={"reason": str(e)},
+                        account_id=principal.account_id)
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    prev = ms.get_registration(got.device_id)
+    bound = ms.device_account(got.device_id)
+    if (prev is not None and prev["account_id"] != principal.account_id) or \
+            (bound is not None and bound["source"] == "admin"
+             and bound["account_id"] != principal.account_id):
+        raise HTTPException(status_code=404)                # another account's camera
+    ms.put_registration(got.device_id, principal.account_id, record=record,
+                        signature=body.signature, identity=got.identity, exchange=got.exchange,
+                        desk_key_id=got.desk, issued=got.issued, registered_by=principal.name)
+    ms.bind_device_account(got.device_id, principal.account_id, source="admin")
+    ms.set_device_account(got.device_id, principal.account_id)
+    rekeyed = prev is not None and prev["identity"] != got.identity
+    fp = _fingerprint(got.identity)
+    ms.append_audit(actor=principal.name,
+                    action="device.rekeyed" if rekeyed else "device.registered",
+                    entity_type="device", entity_id=got.device_id,
+                    data={"fingerprint": fp, "desk_key_id": got.desk,
+                          **({"previous_fingerprint": _fingerprint(prev["identity"])}
+                             if rekeyed else {})},
+                    account_id=principal.account_id,
+                    product_id=(ms.get_device(got.device_id) or {}).get("product_id"))
+    return {"device_id": got.device_id, "account_id": principal.account_id,
+            "fingerprint": fp, "rekeyed": rekeyed}
+
+
+@admin.get("/devices/{device_id}/registration", responses={200: {"model": Registration}})
+def device_registration(device_id: str, request: Request,
+                        principal: Principal = Depends(require_scope("observe"))):
+    """A camera's registration: its keys, which desk registered it and when, and the signed
+    record itself, exactly as the desk signed it."""
+    row = _owned(request.app.state.metastore.get_registration(device_id), principal)
+    return {"device_id": device_id, "fingerprint": _fingerprint(row["identity"]),
+            "identity": row["identity"], "exchange": row["exchange"],
+            "desk_key_id": row["desk_key_id"], "issued": row["issued"],
+            "registered_at": row["registered_at"], "registered_by": row["registered_by"],
+            "record": row["record"].decode("utf-8"), "signature": row["signature"]}
 
 
 @admin.delete("/devices/{device_id}", responses={200: {"model": DeviceForgotten}})

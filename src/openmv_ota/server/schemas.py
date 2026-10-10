@@ -493,6 +493,42 @@ class DeviceBound(BaseModel):
     account_id: str
 
 
+class DeskKeyInfo(BaseModel):
+    key_id: int
+    label: str
+    pubkey: str
+    expires: str
+    revoked: bool
+    updated_at: str = ""
+
+
+class DeskKeyList(BaseModel):
+    desk_keys: list[DeskKeyInfo]
+
+
+class DeviceRegistered(BaseModel):
+    device_id: str
+    account_id: str
+    fingerprint: str
+    """SHA-256 of the identity public key, hex: the camera's key as a person compares it."""
+    rekeyed: bool
+    """True when this replaced a registration with a different identity key."""
+
+
+class Registration(BaseModel):
+    device_id: str
+    fingerprint: str
+    identity: str
+    exchange: str
+    desk_key_id: int
+    issued: str
+    registered_at: str
+    registered_by: str
+    record: str
+    """The record exactly as the desk signed it."""
+    signature: str
+
+
 class CohortPinned(BaseModel):
     product_id: int
     product_id_str: str = ""

@@ -87,6 +87,11 @@ def _point(hex_point: str, name: str) -> None:
         raise RegistrationError("the %s key isn't a P-256 public key" % name) from None
 
 
+def check_public_key(hex_point: str, name: str = "desk") -> None:
+    """Raise :class:`RegistrationError` unless ``hex_point`` is an uncompressed P-256 point."""
+    _point(hex_point, name)
+
+
 def build(*, account: str, device_id: str, board: str, identity: str, exchange: str,
           desk: int, issued: datetime) -> bytes:
     """A record's bytes, ready to sign. Keys are compared case-insensitively, so they're

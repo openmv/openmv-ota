@@ -488,6 +488,24 @@ _MIGRATIONS: list[list[str]] = [
         "FROM jsonb_array_elements(representations::jsonb) j "
         "WHERE j ->> 'format' = 'full' LIMIT 1), 0)",
     ],
+    [   # v34 -- signed identity. desk_keys: the public halves of an account's desk keys (what
+        # registers a camera); a key's public half never changes and revoking is one-way.
+        # device_registrations: a camera's registration record (its identity and exchange keys,
+        # signed by a desk key), stored VERBATIM -- the signature covers those exact bytes.
+        # Keyed by device id with no fleet row needed: a camera is registered at the desk,
+        # before its first check-in, and forgetting the fleet row doesn't unregister it.
+        "CREATE TABLE IF NOT EXISTS desk_keys ("
+        "account_id TEXT NOT NULL, key_id INTEGER NOT NULL, label TEXT NOT NULL, "
+        "pubkey TEXT NOT NULL, expires TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, "
+        "updated_at TEXT NOT NULL, PRIMARY KEY (account_id, key_id))",
+        "CREATE TABLE IF NOT EXISTS device_registrations ("
+        "device_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, record TEXT NOT NULL, "
+        "signature TEXT NOT NULL, identity TEXT NOT NULL, exchange TEXT NOT NULL, "
+        "desk_key_id INTEGER NOT NULL, issued TEXT NOT NULL, registered_at TEXT NOT NULL, "
+        "registered_by TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS device_registrations_account "
+        "ON device_registrations (account_id)",
+    ],
 ]
 
 
@@ -1612,6 +1630,74 @@ class SqlMetadataStore:
             "pinned_at = excluded.pinned_at",
             (device_id, release_id, account_id, _now_iso()))
 
+    # --- signed identity: desk keys and camera registrations ------------------------------
+
+    def put_desk_key(self, account_id: str, key_id: int, *, label: str, pubkey: str,
+                     expires: str, revoked: bool) -> None:
+        """Record (or update) one of an account's desk keys. Its public half is fixed once
+        recorded -- a different key under the same id is a ValueError -- and revoking is one-way:
+        a key revoked here stays revoked whatever a later upload says."""
+        cur = self.query_one("SELECT pubkey, revoked FROM desk_keys "
+                             "WHERE account_id = ? AND key_id = ?", (account_id, key_id))
+        if cur is not None and cur["pubkey"] != pubkey:
+            raise ValueError("desk key %d already has a different public key" % key_id)
+        revoked = bool(revoked) or bool(cur and cur["revoked"])
+        self.execute(
+            "INSERT INTO desk_keys (account_id, key_id, label, pubkey, expires, revoked, "
+            "updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT (account_id, key_id) DO UPDATE SET "
+            "label = excluded.label, expires = excluded.expires, revoked = excluded.revoked, "
+            "updated_at = excluded.updated_at",
+            (account_id, key_id, label, pubkey, expires, int(revoked), _now_iso()))
+
+    def desk_keys(self, account_id: str) -> list[dict]:
+        """An account's desk keys, by id."""
+        return [_d(r) | {"revoked": bool(r["revoked"])} for r in self.query_all(
+            "SELECT key_id, label, pubkey, expires, revoked, updated_at FROM desk_keys "
+            "WHERE account_id = ? ORDER BY key_id", (account_id,))]
+
+    def put_registration(self, device_id: str, account_id: str, *, record: bytes,
+                         signature: str, identity: str, exchange: str, desk_key_id: int,
+                         issued: str, registered_by: str) -> dict | None:
+        """Store a camera's verified registration record (verbatim), replacing any earlier one.
+        Returns the one it replaced, or None."""
+        prev = self.get_registration(device_id)
+        self.execute(
+            "INSERT INTO device_registrations (device_id, account_id, record, signature, "
+            "identity, exchange, desk_key_id, issued, registered_at, registered_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT (device_id) DO UPDATE SET "
+            "account_id = excluded.account_id, record = excluded.record, "
+            "signature = excluded.signature, identity = excluded.identity, "
+            "exchange = excluded.exchange, desk_key_id = excluded.desk_key_id, "
+            "issued = excluded.issued, registered_at = excluded.registered_at, "
+            "registered_by = excluded.registered_by",
+            (device_id, account_id, record.decode("utf-8"), signature, identity, exchange,
+             desk_key_id, issued, _now_iso(), registered_by))
+        return prev
+
+    def get_registration(self, device_id: str) -> dict | None:
+        """A camera's registration (``record`` as the exact bytes it was signed as), or None."""
+        row = self.query_one("SELECT * FROM device_registrations WHERE device_id = ?",
+                             (device_id,))
+        if row is None:
+            return None
+        out = _d(row)
+        out["record"] = out["record"].encode("utf-8")
+        return out
+
+    def registrations_for(self, device_ids) -> dict:
+        """``{device_id: registration}`` for a page of devices, in one query."""
+        ids = list(device_ids)
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        out = {}
+        for r in self.query_all("SELECT * FROM device_registrations WHERE device_id IN (%s)"
+                                % marks, tuple(ids)):
+            d = _d(r)
+            d["record"] = d["record"].encode("utf-8")
+            out[d["device_id"]] = d
+        return out
+
     def get_device_pin(self, device_id: str) -> str | None:
         """The release this device is pinned to, whether or not it has ever checked in."""
         row = self.query_one("SELECT release_id FROM device_pins WHERE device_id = ?",
@@ -1784,6 +1870,8 @@ class SqlMetadataStore:
             ("webhooks", "DELETE FROM webhooks WHERE account_id = ?"),
             ("advisories", "DELETE FROM advisories WHERE account_id = ?"),
             ("device_pins", "DELETE FROM device_pins WHERE account_id = ?"),
+            ("device_registrations", "DELETE FROM device_registrations WHERE account_id = ?"),
+            ("desk_keys", "DELETE FROM desk_keys WHERE account_id = ?"),
             ("cohort_pins", "DELETE FROM cohort_pins WHERE account_id = ?"),
             ("cohorts", "DELETE FROM cohorts WHERE account_id = ?"),
             ("deployments", "DELETE FROM deployments WHERE account_id = ?"),
