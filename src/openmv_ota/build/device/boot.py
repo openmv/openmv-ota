@@ -567,11 +567,12 @@ def keys_challenge(stream, poll, elapsed, window_ms=_KEYS_WINDOW_MS, attended=No
             line += c
 
 
-def factory_keys(key_id, se, challenge):
+def factory_keys(key_id, se, challenge, device_id=""):
     """Make the camera's keys if it has none, when booting a factory image (``key_id``, the
     image's signing key, below the OTA range); the answer line for the flashing tool -- printed
     by the caller only if it asked (``challenge``) -- or None when there is nothing to do: an OTA
-    image, or a firmware without ``openmv_se`` (``se`` None)."""
+    image, or a firmware without ``openmv_se`` (``se`` None). The answer ends with the camera's
+    ``device_id``, which the desk registers the keys under."""
     if key_id >= _OTA_KEY_ID_BASE or se is None:
         return None
     try:
@@ -581,9 +582,10 @@ def factory_keys(key_id, se, challenge):
         keys, made = r
         if challenge is None:
             return "SE-OK"
-        return "SE-ID %s %s %s %d" % (binascii.hexlify(keys.public_key()).decode(),
-                                      binascii.hexlify(keys.ecdh_public_key()).decode(),
-                                      binascii.hexlify(keys.sign(challenge)).decode(), made)
+        return "SE-ID %s %s %s %d %s" % (binascii.hexlify(keys.public_key()).decode(),
+                                         binascii.hexlify(keys.ecdh_public_key()).decode(),
+                                         binascii.hexlify(keys.sign(challenge)).decode(), made,
+                                         device_id or "-")
     except Exception as e:                         # damaged keys: say so, never stop the boot
         return "SE-ERROR %s" % e
 
@@ -715,7 +717,14 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         challenge = keys_challenge(sys.stdin, lambda ms: p.poll(ms),
                                    lambda: time.ticks_diff(time.ticks_ms(), start),
                                    attended=attended)
-        answer = factory_keys(trailer.key_id, se, challenge)
+        device_id = ""
+        if challenge is not None:                  # a desk is asking: it registers this id
+            try:  # hil-residual: runs only during `flash factory`, before a HIL run's capture starts
+                import openmv_ota  # hil-residual: same; the id the check-in sends, so the registry matches
+                device_id = openmv_ota.identity().get("device_id", "")  # hil-residual: same
+            except Exception:  # hil-residual: a factory romfs without openmv_ota can't name the camera; the desk then refuses to register it
+                pass  # hil-residual: same branch as the line above
+        answer = factory_keys(trailer.key_id, se, challenge, device_id)
         if challenge is not None:
             print(answer)  # hil-residual: answered during `flash factory`, before a HIL run's capture starts; the flash's own "keys made/present" report proves it
         log.info("boot: keys %s" % answer)

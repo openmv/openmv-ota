@@ -541,7 +541,8 @@ def _open_console(port: str):
     return serial.Serial(port, 115200, timeout=_IDENTITY_SEND_S)
 
 
-def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = False):
+def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = False,
+                   registrar=None):
     """The last step of ``flash factory`` on a board with keys. Booting the factory image just
     written, the camera makes its keys if it has none -- in boot.py, before the app runs -- and,
     for a short window, answers an ``OMVKEYS <challenge>`` line on its console with both public
@@ -549,7 +550,11 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
     is back on USB until it answers, verifies the signature against the identity key, and
     reports the keys. Only if the camera's boot closed its window before the console was open
     does this break into the app, to soft-reset it (see ``_IDENTITY_RESET_S``). A camera whose
-    keys are damaged fails the flash. Boards with no keys: nothing."""
+    keys are damaged fails the flash. Boards with no keys: nothing.
+
+    ``registrar(board, device_id, identity_hex, exchange_hex)``, given, then registers the keys
+    with the server (a desk-signed record; see ``flash.cli``) and returns its answer; a camera
+    that can't say which camera it is can't be registered, and fails the flash."""
     import hashlib
     import os
 
@@ -566,7 +571,10 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
     digest = hashlib.sha256(os.urandom(32)).digest()
     request = "OMVKEYS %s" % digest.hex()
     if dry_run:
-        return [IdentityStep("keys", ["send", "'%s'" % request, "to the camera's console at boot"])]
+        steps = [IdentityStep("keys", ["send", "'%s'" % request, "to the camera's console at boot"])]
+        if registrar is not None:
+            steps.append(IdentityStep("register", ["register its keys, signed by the desk key"]))
+        return steps
     raw = flash_config(board).raw
     deadline = time.monotonic() + _IDENTITY_WAIT_S
     while (cam := device.select(raw, serial)) is None:
@@ -602,6 +610,7 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
         raise FlashError("the camera's keys: %s" % " ".join(rest))
     pub, kx, sig = (bytes.fromhex(x) for x in rest[:3])
     made = rest[3] == "1"
+    device_id = rest[4] if len(rest) > 4 else "-"
     try:
         key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), pub)
         key.verify(sig, digest, ec.ECDSA(Prehashed(hashes.SHA256())))
@@ -611,8 +620,18 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
     if made and se["chip"] == "atecc608":
         print("configured this board's ATECC608 the Arduino-compatible way (one-time) and made "
               "its keys", file=sys.stderr)
-    return [IdentityStep("keys %s: identity %s, exchange %s"
-                         % ("made" if made else "present", pub.hex(), kx.hex()), [cam.port])]
+    steps = [IdentityStep("keys %s: identity %s, exchange %s"
+                          % ("made" if made else "present", pub.hex(), kx.hex()), [cam.port])]
+    if registrar is not None:
+        if device_id == "-":
+            raise FlashError("the camera didn't say which camera it is, so its keys can't be "
+                             "registered; its factory romfs needs the openmv_ota runtime")
+        got = registrar(board, device_id, pub.hex(), kx.hex())
+        steps.append(IdentityStep("registered %s (key %s)%s"
+                                  % (got["device_id"], got["fingerprint"][:16],
+                                     ", replacing its old keys" if got["rekeyed"] else ""),
+                                  [got["account_id"]]))
+    return steps
 
 
 @dataclass(frozen=True)

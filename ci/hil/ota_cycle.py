@@ -365,6 +365,12 @@ def log(msg):
 # These are the SAME lines the device logs normally -- the bench just captures them at DEBUG.
 # Update this when a path's log wording changes (the one coupling we accept for a single,
 # no-special-markers logging channel).
+# `flash factory` registers each camera's keys with the server by default. The bench server
+# doesn't take registrations yet (the HIL fleet's own desk key and register token come with
+# signed check-ins), so the golden flash skips it for now; the camera still makes and proves
+# its keys.
+_NO_REGISTER = ("--no-register",)
+
 COVERAGE = {
     # v2 HAS NO GOLDEN SLOT, so these no longer name one. boot.py mounts whichever slot is
     # newest and valid (A or B, by install counter), and the interesting distinction is not
@@ -1427,7 +1433,8 @@ def _flash_dfu_cli(board, bad_romfs=False):
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
     _ensure_cdc(board, allow_erase=True)   # pre-flash: safe to erase; the flash below reprovisions
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
-            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote"),
+            *_NO_REGISTER]
     if _cdc_responsive():
         # BOUNDED, AND WITH A FALLBACK. `_cdc_responsive()` answers "did the port reply once", which
         # a board RESET-LOOPING at ~1 Hz does -- it is alive for most of every second. So this route
@@ -2076,7 +2083,8 @@ def _flash_arduino_cli(board, bad_romfs=False):
         jlink_core_reset(board)
         _await_boot(board, budget=90)
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
-            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote"),
+            *_NO_REGISTER]
     # RETRY THE DFU WRITE. dfu-util intermittently fails to read the device's descriptors right
     # after the 1200-baud touch -- "Failed to retrieve string descriptor 7 / Could not read name /
     # Failed to parse memory layout for alternate interface 1", exit 74 -- i.e. it opened the
@@ -2205,7 +2213,7 @@ def _flash_blhost_imx(board, bad_romfs=False):
     # imx_kick_catch brings the SBL up from outside. The RT1062 SBL has no reset window, so the
     # nRST pulse a DFU board's reset-catch relies on cannot do that job alone.
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
-            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")]
+            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote"), *_NO_REGISTER]
     rc, out = 1, "CDC not responsive"
     if _cdc_responsive():
         log("flash factory -> %s (openmv-ota, resident SBL)" % board)

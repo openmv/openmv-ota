@@ -36,7 +36,7 @@ def test_flash_factory_ok(proj, capsys):
     root, ran, artifact = proj
     artifact("OPENMV4-firmware.bin")
     artifact("OPENMV4-factory-romfs.img")
-    assert main(["flash", "factory", str(root), "-b", "OPENMV4"]) == 0
+    assert main(["flash", "factory", str(root), "-b", "OPENMV4", "--no-register"]) == 0
     assert len(ran) == 2
 
 
@@ -80,7 +80,7 @@ def test_sdk_home_passed_through(proj, monkeypatch, capsys):
 
 def test_factory_error_returns_exit_code(proj, capsys):
     root, _ran, _artifact = proj
-    assert main(["flash", "factory", str(root), "-b", "OPENMV4"]) == 2   # nothing built
+    assert main(["flash", "factory", str(root), "-b", "OPENMV4", "--no-register"]) == 2   # nothing built
     assert "error: missing artifact" in capsys.readouterr().err
 
 
@@ -142,6 +142,7 @@ def test_ae3_factory_flashes_all_partitions(proj, capsys):
     for n in ("firmware-M55_HP.bin", "firmware-M55_HE.bin", "coprocessor-romfs.img",
               "factory-romfs.img"):
         artifact("OPENMV_AE3-%s" % n)
-    assert main(["flash", "factory", str(root), "-b", "OPENMV_AE3", "--no-reset"]) == 0
+    assert main(["flash", "factory", str(root), "-b", "OPENMV_AE3", "--no-reset",
+                 "--no-register"]) == 0
     assert [a[a.index("-a") + 1] for a in ran] == ["1", "2", "3", "6"]   # HP, HE, coproc + main romfs
     assert all("--reset" not in a for a in ran)          # --no-reset honored on every step
