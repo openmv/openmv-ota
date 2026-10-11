@@ -54,3 +54,19 @@ def test_an_ordinary_boards_output_is_untouched():
     cap = _Capture()
     lines = ["[t] DEBUG openmv_ota: run: poll wait", "MPY: soft reboot", "OK", "anything else"]
     assert [cap._flooding(line) for line in lines] == [False, False, False, False]
+
+
+def _boots(*seq):
+    cap = _Capture()
+    cap.markers = [(float(i), p) for i, p in enumerate(seq)]
+    return cap
+
+
+def test_a_watchdog_reset_counts_only_after_the_harness_reset_boot():
+    # The first boot is the harness's own reset: a stale mimxrt WRSR can call it a watchdog reset.
+    first = _boots("run.poll_tail", "log.configured", "app.wdt_reset", "wdt.armed", "run.checkin")
+    assert not first.wdt_reset_after_first_boot()
+    # A later boot that woke from a bite is the device's doing (the N6's reset loop).
+    later = _boots("log.configured", "wdt.armed", "log.configured", "app.wdt_reset")
+    assert later.wdt_reset_after_first_boot()
+    assert not _boots("log.configured", "log.configured", "run.checkin").wdt_reset_after_first_boot()

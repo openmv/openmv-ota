@@ -1142,6 +1142,24 @@ class UartCapture:
     def points(self):
         return sorted({p for _, p in self.markers})
 
+    def wdt_reset_after_first_boot(self):
+        """True if a boot AFTER the scored window's first one woke from a watchdog reset.
+
+        The window opens with the harness's own hard reset, so its first boot's cause is ours, not
+        the device's -- and on the RT1060 it can even read as a watchdog reset. mimxrt's
+        reset_cause() decodes WDOG1's WRSR, which only a watchdog-generated reset rewrites
+        (IMXRT1060RM 57.8.1.4.2), so an SWD/nRST reset leaves a stale TOUT from any bite earlier in
+        the leg: seen as `reset_cause=3` on the first boot of a watchdog_recover window. Every later
+        boot comes from machine.reset() -- a WDOG software reset on mimxrt, which does rewrite WRSR
+        -- or from a real bite, so from the second boot on the marker means what it says."""
+        boots = 0
+        for _, p in self.markers:
+            if p == "log.configured":
+                boots += 1
+            elif p == "app.wdt_reset" and boots >= 2:
+                return True
+        return False
+
     def reset(self, t0):
         """Drop everything captured so far and restart the clock, WITHOUT closing the port.
 
@@ -3355,6 +3373,10 @@ def main():
                 by_marker=spec.get("by_marker", False), after_reset=publish))
         time.sleep(2)                            # let the last UART lines land
         marks = set(cap.points()) if cap is not None else set()   # file legs run capture-less
+        if "app.wdt_reset" in marks and not cap.wdt_reset_after_first_boot():
+            marks.discard("app.wdt_reset")
+            log("note: the window's first boot reported a watchdog reset -- that boot is the "
+                "harness's own reset (a stale WRSR on mimxrt), so it is not scored")
         missing = sorted(expect - marks)
         forbidden = sorted(forbid & marks)
         trace["result"] = result
