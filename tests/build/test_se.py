@@ -857,8 +857,17 @@ def test_atecc_crc_matches_the_chip_s_wake_answer():
     assert atecc608._crc(b"\x04\x11", 0, 2) == 0x4333     # what the bench Giga answered
 
 
+# A value whose top bit is set gets a 0x00 pad (DER INTEGERs are signed); leading zeros go. Fixed
+# inputs, because a real signature only hits the pad branch by chance -- which left coverage at
+# the mercy of the random nonces.
+_R_HIGH = b"\x80" + b"\x01" * 31
+_S_ZEROS = b"\x00\x7f" + b"\x02" * 30
+_PADDED = b"\x30\x44" + b"\x02\x21\x00" + _R_HIGH + b"\x02\x1f" + _S_ZEROS[1:]
+
+
 def test_der_sig_pads_and_strips():
     assert atecc608._der_sig(bytes(64)) == b"\x30\x06\x02\x01\x00\x02\x01\x00"
+    assert atecc608._der_sig(_R_HIGH + _S_ZEROS) == _PADDED
 
 
 # --- a board's own keys (no secure element) -------------------------------------------------
@@ -1232,6 +1241,7 @@ def test_soft_a_sealed_record_cut_short_is_skipped_or_loud(sealed, cut):
 
 def test_soft_der_sig_pads_and_strips():
     assert soft._der_sig(bytes(64)) == b"\x30\x06\x02\x01\x00\x02\x01\x00"
+    assert soft._der_sig(_R_HIGH + _S_ZEROS) == _PADDED
 
 
 def test_open_and_provision_take_a_board_s_own_keys_with_no_bus(monkeypatch):
