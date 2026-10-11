@@ -19,6 +19,7 @@ waits for the bootloader to appear either: the flash backend polls for the DFU d
 from __future__ import annotations
 
 import sys
+import time
 
 from dataclasses import dataclass
 
@@ -68,6 +69,45 @@ def discover(raw: dict) -> list[Camera]:
             for p in _comports() if (p.vid, p.pid) in ids]
 
 
+_INTERRUPT = b"\r\x03\x03\r\nimport machine;machine.bootloader()\r\n"
+_INTERRUPT_TRIES = 5
+_GONE_WAIT_S = 1.5       # a camera that took the interrupt drops off USB well inside this
+
+
+def _interrupt(port: str) -> None:
+    """Break into the camera's REPL and ask for the bootloader in ONE write, repeated a few times:
+    Ctrl-C stops the app and the line lands at the REPL it falls into. Faster than mpremote's
+    raw-REPL handshake, so it beats an app whose armed watchdog resets the board ~100 ms after
+    Ctrl-C, and it needs no REPL handshake at all. Best effort: the port vanishing mid-write is
+    the call working."""
+    import serial
+    try:
+        s = serial.Serial(port, 115200, timeout=0.05, write_timeout=1)
+    except (OSError, ValueError):
+        return
+    try:
+        for _ in range(_INTERRUPT_TRIES):
+            s.write(_INTERRUPT)
+            time.sleep(0.03)
+    except OSError:                            # the port went: it's on its way to the bootloader
+        pass
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+def _gone(raw: dict, cam: Camera) -> bool:
+    """Whether ``cam`` dropped off USB (into its bootloader) within ``_GONE_WAIT_S``."""
+    deadline = time.monotonic() + _GONE_WAIT_S
+    while time.monotonic() < deadline:
+        if not any(c.port == cam.port and c.serial == cam.serial for c in discover(raw)):
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def reset(raw: dict, cam: Camera, *, mpremote: list[str]) -> str | None:
     """Reset a running camera into its bootloader (the caller waits for it to enumerate).
 
@@ -85,6 +125,9 @@ def reset(raw: dict, cam: Camera, *, mpremote: list[str]) -> str | None:
     # is captured and one plain line printed instead; whether the reset WORKED is decided by the
     # caller's bounded wait for the bootloader, which shows this output if it never appears.
     print("camera rebooting into its bootloader...", file=sys.stderr)
+    _interrupt(cam.port)
+    if _gone(raw, cam):
+        return None
     rc, out = runner.run_quiet([*mpremote, "connect", cam.port, "exec",
                                 "import machine; machine.bootloader()"])
     if rc == 0:

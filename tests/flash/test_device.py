@@ -130,3 +130,61 @@ def test_open_1200_opens_at_1200_and_closes(monkeypatch):
     monkeypatch.setattr(serial, "Serial", _FakeSerial)
     device._open_1200("/dev/ttyACM0")
     assert made == {"port": "/dev/ttyACM0", "baud": 1200, "closed": True}
+
+
+class _Serial:
+    """A camera's port: takes ``ok`` writes, then is gone (it reset into its bootloader)."""
+    opened = []
+
+    def __init__(self, port, baud, **kw):
+        if port == "/dev/missing":
+            raise OSError("no such port")
+        self.port, self.writes, self.closed = port, [], False
+        _Serial.opened.append(self)
+
+    def write(self, data):
+        if len(self.writes) >= self.ok:
+            raise OSError("write failed: device disconnected")
+        self.writes.append(data)
+
+    def close(self):
+        self.closed = True
+        if self.port == "/dev/bad-close":
+            raise OSError("already gone")
+
+
+@pytest.fixture
+def real_interrupt(monkeypatch):
+    import serial
+    monkeypatch.setattr(device, "_interrupt", _INTERRUPT_REAL)
+    monkeypatch.setattr(serial, "Serial", _Serial)
+    monkeypatch.setattr(device.time, "sleep", lambda s: None)
+    _Serial.opened = []
+    return _Serial
+
+
+_INTERRUPT_REAL = device._interrupt
+
+
+@pytest.mark.parametrize("ok, port", [(99, "/dev/ttyACM0"), (2, "/dev/ttyACM0"),
+                                      (0, "/dev/bad-close")])
+def test_the_interrupt_is_one_write_repeated_and_never_raises(real_interrupt, ok, port):
+    real_interrupt.ok = ok
+    device._interrupt(port)
+    (s,) = real_interrupt.opened
+    assert s.writes == [device._INTERRUPT] * min(ok, device._INTERRUPT_TRIES) and s.closed
+    assert device._INTERRUPT.startswith(b"\r\x03\x03") and b"machine.bootloader()" in \
+        device._INTERRUPT
+    device._interrupt("/dev/missing")                     # no port to open: nothing to do
+
+
+def test_a_camera_that_takes_the_interrupt_skips_mpremote(monkeypatch, capsys):
+    monkeypatch.setattr(device, "_GONE_WAIT_S", 5)
+    looks = iter([[_Port(0x37C5, 0x1204, "/dev/ttyACM0", "SN1")], []])
+    monkeypatch.setattr(device, "_comports", lambda: next(looks))
+    monkeypatch.setattr(device.time, "sleep", lambda s: None)
+    monkeypatch.setattr("openmv_ota.flash.runner.run_quiet",
+                        lambda argv: pytest.fail("mpremote ran after the camera had gone"))
+    assert device.reset(_dfu_raw(), device.Camera("/dev/ttyACM0", "SN1"),
+                        mpremote=["mpremote"]) is None
+    assert "rebooting into its bootloader" in capsys.readouterr().err

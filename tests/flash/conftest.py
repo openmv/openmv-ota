@@ -19,3 +19,7 @@ def _no_cameras(monkeypatch):
     # real serial port with it. A test about the reset stubs it with its own answer.
     monkeypatch.setattr("openmv_ota.flash.runner.run_quiet",
                         lambda argv: pytest.fail("unstubbed runner.run_quiet(%r)" % (argv,)))
+    # ...and the direct REPL interrupt that comes first writes to a real port too: a no-op here,
+    # and the camera stays put, so a test's reset goes on to its stubbed mpremote as before.
+    monkeypatch.setattr("openmv_ota.flash.device._interrupt", lambda port: None)
+    monkeypatch.setattr("openmv_ota.flash.device._GONE_WAIT_S", 0)
