@@ -1441,6 +1441,17 @@ def _partial_download(out):
     return "Download" in text and ("LIBUSB_ERROR" in text or "get_status" in text)
 
 
+def _log_cli_tail(rc, out, lines=25):
+    """On a failed flash route, the CLI's own account of it: the error the harness raises keeps
+    only its last 400 characters, and the cause is usually further up."""
+    if rc == 0:
+        return
+    tail = [ln for ln in (out or "").replace("\r", "\n").splitlines()
+            if ln.strip() and "Download\t[" not in ln and "Erase   \t[" not in ln][-lines:]
+    for ln in tail:
+        log("  [cli] " + ln[:240])
+
+
 def _flash_dfu_cli(board, bad_romfs=False):
     """Golden flash for the DFU boards (N6, AE3) via the openmv-ota CLI's `flash factory` -- the SAME
     tooling users ship with (and the recipe the OpenMV IDE uses). It enters DFU with
@@ -1478,6 +1489,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
         # SEQUENCE against a looping board -- the two have to overlap.
         log("flash factory -> %s (openmv-ota, DFU -w)" % board)
         rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False)
+        _log_cli_tail(rc, out)
         if rc != 0 and jlink_reset_pulse(board):
             # A board that has run its app for a while can stop taking input on its CDC (and an
             # armed watchdog resets it the moment Ctrl-C lands), so the CLI's interrupt never gets
@@ -1487,6 +1499,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
             log("flash: %s CDC route failed (rc=%d) -- reset over SWD, retrying as it boots"
                 % (board, rc))
             rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False)
+            _log_cli_tail(rc, out)
         if rc != 0:
             log("flash: %s CDC route failed (rc=%d) -- retrying through the bootloader DFU window"
                 % (board, rc))
@@ -1494,6 +1507,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
             if rc != 0 and _partial_download(out) and recover_firmware(board):
                 rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
             if rc != 0:
+                _log_cli_tail(rc, out)
                 raise RuntimeError("flash factory failed on both routes rc=%d: %s" % (rc, out[-400:]))
     else:
         # No CDC, so machine.bootloader() cannot be used to enter DFU -- and this is exactly the
@@ -1517,6 +1531,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
             if recover_firmware(board):
                 rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
         if rc != 0:
+            _log_cli_tail(rc, out)
             raise RuntimeError("flash factory (no-CDC path) failed rc=%d: %s" % (rc, out[-400:]))
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
     _ensure_cdc(board)                       # POST-flash: allow_erase stays False -- never wipe the golden just written
