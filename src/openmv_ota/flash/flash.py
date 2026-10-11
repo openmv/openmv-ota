@@ -530,12 +530,14 @@ _IDENTITY_POLL_S = 0.1    # fast: the camera listens for the request only briefl
 _IDENTITY_ANSWER_S = 15   # from the port appearing to the camera's answer
 _IDENTITY_SEND_S = 0.1    # how often the request is repeated until it is answered
 # No answer this long after opening the console: the camera's boot closed its window before the
-# port was open (it waits only briefly for a host). Reset it with the console held open -- Ctrl-C
-# out of the app, then machine.reset() at the REPL -- and that boot waits for us. A HARD reset,
-# not Ctrl-D: an app that armed a watchdog leaves it running through a soft reboot (it can't be
-# stopped), and it then bit the reboot's key window 100 ms in, every time.
+# port was open (it waits only briefly for a host). Soft-reset it with the console held open --
+# Ctrl-C out of the app, Ctrl-D at the REPL reruns boot.py -- and that boot waits for us. SOFT, not
+# machine.reset(): on the classic STM32 boards USB comes up only after boot.py, so a cold boot's
+# key window has no port to hear the desk on. (An app's armed watchdog may bite during the soft
+# reboot instead -- a hard reset after all, on a board whose USB is up in boot.py, like the N6;
+# the reopen below catches that boot.)
 _IDENTITY_RESET_S = 3
-_SOFT_RESET = (b"\r\x03", b"\r\x03", b"\r\x03", b"import machine;machine.reset()\r\n")
+_SOFT_RESET = (b"\r\x03", b"\r\x03", b"\r\x03", b"\x04")
 _IDENTITY_RECONNECTS = 3  # the camera dropping off USB mid-exchange, survived this many times
 _IDENTITY_QUIET_S = 1.0  # nothing new this long: a line short of its newline is all there is
 # A whole SE-ID line short of only its newline: an older boot.py print()ed it and the N6 started
@@ -587,7 +589,7 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
     keys and a signature over the challenge. This sends that request from the moment the camera
     is back on USB until it answers, verifies the signature against the identity key, and
     reports the keys. Only if the camera's boot closed its window before the console was open
-    does this break into the app, to reset it (see ``_IDENTITY_RESET_S``). A camera whose
+    does this break into the app, to soft-reset it (see ``_IDENTITY_RESET_S``). A camera whose
     keys are damaged fails the flash. Boards with no keys: nothing.
 
     ``registrar(board, device_id, identity_hex, exchange_hex)``, given, then registers the keys

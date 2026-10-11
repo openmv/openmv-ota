@@ -167,7 +167,7 @@ def test_a_failed_provisioning_fails_the_flash(monkeypatch, tmp_path, capsys):
 
 class _MissedWindow(_Console):
     """A camera whose boot closed its key window before the console opened: silent until it is
-    reset (Ctrl-C out of the app, machine.reset() at the REPL), then it answers like any boot."""
+    soft-reset (Ctrl-C out of the app, Ctrl-D at the REPL), then it answers like any boot."""
 
     def read(self, n):
         if fl._SOFT_RESET[-1] not in self.sent:
@@ -175,7 +175,7 @@ class _MissedWindow(_Console):
         return super().read(n)
 
 
-def test_a_missed_window_resets_the_camera_with_the_console_held(camera, monkeypatch):
+def test_a_missed_window_soft_resets_the_camera_with_the_console_held(camera, monkeypatch):
     con = camera(_signed(0))
     con.__class__ = _MissedWindow
     clock = (i / 10 for i in range(100_000))                 # 0.1 s a look
@@ -183,7 +183,7 @@ def test_a_missed_window_resets_the_camera_with_the_console_held(camera, monkeyp
     (step,) = fl.provision_keys(board="ARDUINO_GIGA")
     assert step.label.startswith("keys present")
     keys = [d for d in con.sent if not d.startswith(b"OMVKEYS")]
-    assert keys == list(fl._SOFT_RESET)                     # once: Ctrl-C x3, then a hard reset
+    assert keys == list(fl._SOFT_RESET)                     # once, Ctrl-C x3 then Ctrl-D
 
 
 class _Gone:
