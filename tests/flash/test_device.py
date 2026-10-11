@@ -179,12 +179,37 @@ def test_the_interrupt_is_one_write_repeated_and_never_raises(real_interrupt, ok
 
 
 def test_a_camera_that_takes_the_interrupt_skips_mpremote(monkeypatch, capsys):
-    monkeypatch.setattr(device, "_GONE_WAIT_S", 5)
-    looks = iter([[_Port(0x37C5, 0x1204, "/dev/ttyACM0", "SN1")], []])
+    """Interrupted, it reboots (its watchdog bit) and comes back on another port; interrupted
+    again, it stays off USB: in its bootloader. mpremote never runs."""
+    monkeypatch.setattr(device, "_INTERRUPT_FOR_S", 60)
+    cam = [_Port(0x37C5, 0x1204, "/dev/ttyACM0", "SN1")]
+    back = [_Port(0x37C5, 0x1204, "/dev/ttyACM1", "SN1")]
+    looks = iter([cam, [], back] + [[]] * 1000)
+    hit = []
+    monkeypatch.setattr(device, "_interrupt", lambda port: hit.append(port))
     monkeypatch.setattr(device, "_comports", lambda: next(looks))
+    clock = (i / 10 for i in range(100_000))
+    monkeypatch.setattr(device.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(device.time, "sleep", lambda s: None)
     monkeypatch.setattr("openmv_ota.flash.runner.run_quiet",
                         lambda argv: pytest.fail("mpremote ran after the camera had gone"))
     assert device.reset(_dfu_raw(), device.Camera("/dev/ttyACM0", "SN1"),
                         mpremote=["mpremote"]) is None
+    assert hit == ["/dev/ttyACM0", "/dev/ttyACM1"]
     assert "rebooting into its bootloader" in capsys.readouterr().err
+
+
+def test_a_camera_that_ignores_the_interrupt_falls_back_to_mpremote(monkeypatch):
+    monkeypatch.setattr(device, "_INTERRUPT_FOR_S", 2)
+    monkeypatch.setattr(device, "_interrupt", lambda port: None)
+    monkeypatch.setattr(device, "_comports",
+                        lambda: [_Port(0x37C5, 0x1204, "/dev/ttyACM0", "SN1")])
+    clock = (i / 10 for i in range(100_000))
+    monkeypatch.setattr(device.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(device.time, "sleep", lambda s: None)
+    ran = []
+    monkeypatch.setattr("openmv_ota.flash.runner.run_quiet",
+                        lambda argv: (ran.append(argv), (1, "EIO"))[1])
+    assert device.reset(_dfu_raw(), device.Camera("/dev/ttyACM0", "SN1"),
+                        mpremote=["mpremote"]) == "EIO"
+    assert ran and ran[0][-1] == "import machine; machine.bootloader()"

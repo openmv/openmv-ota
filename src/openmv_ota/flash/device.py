@@ -71,7 +71,8 @@ def discover(raw: dict) -> list[Camera]:
 
 _INTERRUPT = b"\r\x03\x03\r\nimport machine;machine.bootloader()\r\n"
 _INTERRUPT_TRIES = 5
-_GONE_WAIT_S = 1.5       # a camera that took the interrupt drops off USB well inside this
+_INTERRUPT_FOR_S = 12    # keep at it across a reboot or two (see _interrupt_until_gone)
+_GONE_WAIT_S = 3         # off USB this long = in its bootloader, not just rebooting
 
 
 def _interrupt(port: str) -> None:
@@ -98,11 +99,24 @@ def _interrupt(port: str) -> None:
             pass
 
 
-def _gone(raw: dict, cam: Camera) -> bool:
-    """Whether ``cam`` dropped off USB (into its bootloader) within ``_GONE_WAIT_S``."""
-    deadline = time.monotonic() + _GONE_WAIT_S
+def _interrupt_until_gone(raw: dict, cam: Camera) -> bool:
+    """Interrupt the camera into its bootloader, following it through reboots, until it has been
+    off USB for ``_GONE_WAIT_S`` (it is in its bootloader) or ``_INTERRUPT_FOR_S`` runs out.
+
+    WHY KEEP AT IT: an app that arms a watchdog resets the board ~100 ms after Ctrl-C, before the
+    bootloader call can run. The board then reboots, and an app arms its watchdog only once it is
+    up and running -- seconds after boot. Interrupting again as soon as the port is back lands in
+    that window, and the call goes through."""
+    deadline = time.monotonic() + _INTERRUPT_FOR_S
+    absent = None
     while time.monotonic() < deadline:
-        if not any(c.port == cam.port and c.serial == cam.serial for c in discover(raw)):
+        here = [c for c in discover(raw) if c.serial == cam.serial or c.port == cam.port]
+        if here:
+            absent = None
+            _interrupt(here[0].port)
+        elif absent is None:
+            absent = time.monotonic()
+        elif time.monotonic() - absent >= _GONE_WAIT_S:
             return True
         time.sleep(0.1)
     return False
@@ -125,8 +139,7 @@ def reset(raw: dict, cam: Camera, *, mpremote: list[str]) -> str | None:
     # is captured and one plain line printed instead; whether the reset WORKED is decided by the
     # caller's bounded wait for the bootloader, which shows this output if it never appears.
     print("camera rebooting into its bootloader...", file=sys.stderr)
-    _interrupt(cam.port)
-    if _gone(raw, cam):
+    if _interrupt_until_gone(raw, cam):
         return None
     rc, out = runner.run_quiet([*mpremote, "connect", cam.port, "exec",
                                 "import machine; machine.bootloader()"])

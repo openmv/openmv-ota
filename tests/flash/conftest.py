@@ -22,4 +22,4 @@ def _no_cameras(monkeypatch):
     # ...and the direct REPL interrupt that comes first writes to a real port too: a no-op here,
     # and the camera stays put, so a test's reset goes on to its stubbed mpremote as before.
     monkeypatch.setattr("openmv_ota.flash.device._interrupt", lambda port: None)
-    monkeypatch.setattr("openmv_ota.flash.device._GONE_WAIT_S", 0)
+    monkeypatch.setattr("openmv_ota.flash.device._INTERRUPT_FOR_S", 0)

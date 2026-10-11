@@ -1478,6 +1478,15 @@ def _flash_dfu_cli(board, bad_romfs=False):
         # SEQUENCE against a looping board -- the two have to overlap.
         log("flash factory -> %s (openmv-ota, DFU -w)" % board)
         rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False)
+        if rc != 0 and jlink_reset_pulse(board):
+            # A board that has run its app for a while can stop taking input on its CDC (and an
+            # armed watchdog resets it the moment Ctrl-C lands), so the CLI's interrupt never gets
+            # through. Just after a reset it does: the port takes writes and the app has not armed
+            # its watchdog yet. So reset it over SWD and go again AT ONCE -- the CLI follows the
+            # camera through its boot and interrupts it there.
+            log("flash: %s CDC route failed (rc=%d) -- reset over SWD, retrying as it boots"
+                % (board, rc))
+            rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False)
         if rc != 0:
             log("flash: %s CDC route failed (rc=%d) -- retrying through the bootloader DFU window"
                 % (board, rc))
