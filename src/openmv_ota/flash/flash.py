@@ -537,7 +537,10 @@ _IDENTITY_SEND_S = 0.1    # how often the request is repeated until it is answer
 _IDENTITY_RESET_S = 3
 _SOFT_RESET = (b"\r\x03", b"\r\x03", b"\r\x03", b"import machine;machine.reset()\r\n")
 _IDENTITY_RECONNECTS = 3  # the camera dropping off USB mid-exchange, survived this many times
-_IDENTITY_QUIET_READS = 5  # reads with nothing new: a line short of its newline is all there is
+_IDENTITY_QUIET_S = 1.0  # nothing new this long: a line short of its newline is all there is
+# A whole SE-ID line short of only its newline: an older boot.py print()ed it and the N6 started
+# its app before sending the newline (see boot.py). Taken once nothing more is coming.
+_UNTERMINATED = re.compile(r"SE-(ID)( [0-9a-f]+ [0-9a-f]+ [0-9a-f]+ [01] [^\s]+)\s*$")
 
 
 
@@ -620,9 +623,9 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
         time.sleep(_IDENTITY_POLL_S)
     answer, heard = None, ""
     con = _open_console(cam.port)
-    drops = quiet = 0
+    drops = 0
     try:
-        opened = time.monotonic()
+        opened = last_rx = time.monotonic()
         deadline = opened + _IDENTITY_ANSWER_S
         reset = False
         while answer is None and time.monotonic() < deadline:
@@ -635,12 +638,17 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                 _write(con, (request + "\r\n").encode(), serial_mod)
                 got = con.read(4096).decode("utf-8", "replace")
                 heard += got
-                quiet = 0 if got else quiet + 1
+                if got:
+                    last_rx = time.monotonic()
             except OSError as e:
                 # The port went away under us (pyserial's SerialException is an OSError): the
-                # camera re-enumerated (a reset, ours or its watchdog's). Reopen it and start over:
-                # its next boot waits for us, and if the window has closed again, reset it
-                # again. An answer it sent as the port went is lost; it is asked again.
+                # camera re-enumerated (a reset, ours or its watchdog's). What it said before it
+                # went is all it will say: an answer short of only its newline is taken. Else
+                # reopen and start over: its next boot waits for us, and if the window has
+                # closed again, reset it again.
+                answer = _UNTERMINATED.search(heard)
+                if answer is not None:
+                    break
                 drops += 1
                 print("the camera dropped off USB while its keys were asked for (%s); "
                       "reopening" % e, file=sys.stderr)
@@ -652,11 +660,8 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                 deadline, reset, heard = opened + _IDENTITY_ANSWER_S, False, ""
                 continue
             answer = re.search(r"SE-(ID|NONE|ERROR)([^\r\n]*)\r?\n", heard)
-            if answer is None and quiet >= _IDENTITY_QUIET_READS:
-                # A whole SE-ID line short of only its newline, and nothing more coming: an older
-                # boot.py that print()ed it, the newline lost as the app started (see boot.py)
-                answer = re.search(r"SE-(ID)( [0-9a-f]+ [0-9a-f]+ [0-9a-f]+ [01] [^\s]+)\s*$",
-                                   heard)
+            if answer is None and time.monotonic() - last_rx >= _IDENTITY_QUIET_S:
+                answer = _UNTERMINATED.search(heard)
     finally:
         if con is not None:
             con.close()

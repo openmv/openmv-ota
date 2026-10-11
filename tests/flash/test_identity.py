@@ -280,10 +280,27 @@ def test_an_answer_missing_only_its_newline_is_taken_once_the_port_goes_quiet(ca
     newline: the whole line, short of its end, and nothing more."""
     def unterminated(digest):
         return _signed(0)(digest).rstrip("\r\n")
-    con = camera(unterminated)
+    camera(unterminated)
     (step,) = fl.provision_keys(board="OPENMV_N6")
     assert step.label.startswith("keys present")
-    assert len([d for d in con.sent if d.startswith(b"OMVKEYS")]) >= fl._IDENTITY_QUIET_READS
+
+
+def test_an_answer_short_of_its_newline_survives_the_camera_dropping_off(monkeypatch):
+    """The N6's watchdog bit a few seconds after it answered: the port went with the newline
+    still unsent. What was heard before it went is the answer."""
+    class AnswersThenGoes(_Console):
+        def read(self, n):
+            if self.out == b"":
+                raise OSError("device disconnected")
+            return super().read(n)
+    def unterminated(digest):
+        return _signed(0)(digest).rstrip("\r\n")
+    con = AnswersThenGoes(unterminated, boot=0)
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: Camera("/dev/ttyACM9", "SN1"))
+    monkeypatch.setattr(fl.time, "sleep", lambda s: None)
+    monkeypatch.setattr(fl, "_open_console", lambda port: con)
+    (step,) = fl.provision_keys(board="OPENMV_N6")
+    assert step.label.startswith("keys present")
 
 
 def test_a_cut_off_answer_is_not_taken(camera, monkeypatch):
