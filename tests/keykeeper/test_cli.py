@@ -67,3 +67,14 @@ def test_serve_builds_the_app_and_needs_a_token(tmp_path, monkeypatch, capsys):
     assert served == [("127.0.0.1", 9000)]
     monkeypatch.setenv(kc.TOKEN_VAR, "")
     assert main(["keykeeper", "serve"]) == 1 and "shared secret" in capsys.readouterr().err
+
+
+def test_serve_init_makes_the_keys_once(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(kc, "_serve", lambda app, host, port: None)
+    assert main(["keykeeper", "serve", "--init"]) == 0
+    pin = capsys.readouterr().out.strip().rsplit(" ", 1)[1]
+    assert main(["keykeeper", "pin"]) == 0 and capsys.readouterr().out.strip() == pin
+    assert main(["keykeeper", "serve", "--init"]) == 0               # keys kept, not replaced
+    assert "keys made" not in capsys.readouterr().out
+    assert main(["keykeeper", "pin"]) == 0 and capsys.readouterr().out.strip() == pin

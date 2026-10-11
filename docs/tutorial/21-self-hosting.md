@@ -148,6 +148,10 @@ openmv-ota keykeeper init                             # once: prints the pin pub
 openmv-ota keykeeper serve --host 10.0.0.5 --port 8090
 ```
 
+On a platform whose start command runs one program, with no shell to chain two, use
+`openmv-ota keykeeper serve --init`: it makes the keys on the first start against an empty
+directory and prints the pin to the log, and it never replaces keys that exist.
+
 It rotates its own keys on a schedule (`OPENMV_KEYKEEPER_PERIOD_DAYS`, default 365),
 always announcing the next generation ahead of time, and signs each new generation with
 the one before it, so publishers follow rotations without being told. `openmv-ota

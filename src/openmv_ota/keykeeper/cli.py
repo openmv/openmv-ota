@@ -1,7 +1,8 @@
 """CLI handlers for ``openmv-ota keykeeper``.
 
     init      make the first two generations of keys (the current one, and the next)
-    serve     run the private service (needs the [server] extra)
+    serve     run the private service (needs the [server] extra); --init makes the keys on
+              the first start, for a container whose command can't chain two steps
     chain     print the chain of public keys, as JSON
     pin       print the pin a publisher starts from (the first generation)
     rotate    an emergency rotation: a new generation in effect now
@@ -42,6 +43,9 @@ def register(parser: argparse.ArgumentParser) -> None:
             p.add_argument("--host", default="127.0.0.1",
                            help="bind host (default 127.0.0.1: keykeeper is private)")
             p.add_argument("--port", type=int, default=8090, help="bind port (default 8090)")
+            p.add_argument("--init", action="store_true",
+                           help="make the keys first if there are none (a container's first start "
+                                "on an empty disk); keys that exist are never replaced")
         if name == "rotate":
             p.add_argument("--now", action="store_true", required=True,
                            help="required: rotation happens on its own schedule otherwise")
@@ -131,6 +135,10 @@ def cmd_serve(args) -> int:
     from .service import Keykeeper, create_app
     ring = _ring(args)
     try:
+        if args.init and not ring.chain_path.exists():
+            gens = ring.init(_now(), _period())
+            print("Keykeeper keys made; publishers start from this pin: %s" % gens[0].pin(),
+                  flush=True)
         keeper = Keykeeper(ring, os.environ.get(TOKEN_VAR, ""), ring.root / "audit.jsonl",
                            _period())
     except KeykeeperError as e:
