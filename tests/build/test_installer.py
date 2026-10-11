@@ -1933,3 +1933,63 @@ def test_tls_anchors_warns_once(monkeypatch):
     inst("_tls_anchors")(b"", cfg)
     inst("_tls_anchors")(b"", cfg)
     assert _mod.log.lines == ["tls: server not verified (this camera has no trust anchors)"]
+
+
+def test_an_update_encrypted_for_each_camera_opens_with_its_lockbox():
+    """One content key for the release, sealed to keykeeper; the camera gets it in a lockbox
+    opened BEFORE the erase, and every representation decrypts with it."""
+    import gzip
+
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    from openmv_ota.build.device.openmv_se import trust
+    from openmv_ota.ota import lockbox, payload
+
+    class Camera:
+        key = ec.generate_private_key(ec.SECP256R1())
+
+        @classmethod
+        def ecdh(cls, peer):
+            return cls.key.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(
+                ec.SECP256R1(), bytes(peer)))
+
+    class Se:
+        @staticmethod
+        def open_lockbox(box):
+            return trust.open_lockbox(box, Camera, _HostAes)
+
+    content_key = payload.new_key()
+    publisher_keys = {1: payload.new_key()}                # NOT on the camera
+    artifact = gzip.compress(b"per-camera image" * 40, mtime=0)
+    sealed = {"v": 1, "key_id": 1, "eph": "", "nonce": "", "ct": ""}   # opaque to the camera
+    ciphertext, enc = payload.encrypt_artifact(artifact, publisher_keys,
+                                               content_key=content_key, sealed=sealed)
+    point = Camera.key.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+    box = lockbox.make_lockbox(content_key, point).hex()
+    key = inst("_lockbox_key")(box, enc, Se)
+    assert key == content_key
+    stream = inst("_decrypting")(_Dribble(ciphertext, 5), enc, {}, _HostAes, key)
+    assert _drain(stream) == artifact
+    assert payload.decrypt_artifact(ciphertext, publisher_keys, enc) == artifact   # the publisher
+    assert inst("_lockbox_key")(None, {"wraps": {}}) is None             # not per-camera
+    assert inst("_lockbox_key")(box, None) is None
+    with pytest.raises(ValueError, match="without this camera's lockbox"):
+        inst("_lockbox_key")(None, enc, Se)
+    with pytest.raises(ValueError, match="without this camera's lockbox"):
+        inst("_unwrap_key")(enc, publisher_keys, _HostAes)
+    other = lockbox.make_lockbox(content_key, ec.generate_private_key(ec.SECP256R1())
+                                 .public_key().public_bytes(Encoding.X962,
+                                                            PublicFormat.UncompressedPoint))
+    with pytest.raises(ValueError, match="isn't for this camera"):
+        inst("_lockbox_key")(other.hex(), enc, Se)
+
+
+def test_the_lockbox_opens_with_the_frozen_key_code(monkeypatch):
+    import sys
+    import types
+    calls = []
+    fake = types.SimpleNamespace(open_lockbox=lambda box: calls.append(box) or b"k" * 32)
+    monkeypatch.setitem(sys.modules, "openmv_se", types.SimpleNamespace(trust=fake))
+    assert inst("_lockbox_key")("ab", {"sealed": {}}) == b"k" * 32
+    assert calls == [b"\xab"]

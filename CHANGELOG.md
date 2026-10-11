@@ -10,7 +10,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Device keys on every OpenMV Cam and Arduino camera board.** Each camera holds two P-256 private keys that
   never leave it: an identity key (signs) and an exchange key (ECDH only), behind one interface,
-  `openmv_ota.se`. Where they live is board data, and the romfs ships only that board's module:
+  `openmv_ota.se`. Where they live is board data, and the firmware carries only that board's
+  module (frozen as `openmv_se`, so recovery has the keys too; about 3.5 KB):
   - **SE050** (RT1060, Nicla Vision, Portenta H7): NXP's factory identity key and certificate,
     and an exchange key the chip generates, whose policy allows key agreement only.
   - **ATECC608** (Giga R1): configured and locked exactly as Arduino Cloud does it, so the board
@@ -33,6 +34,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `mbedtls_ecdh_compute_shared`), and the `key_store` C module (reads the key area, programs
   blank flash in it, and on the N6 seals and unseals with ST's SAES driver).
 - [Device keys](docs/reference/device-keys.md): the reference for all of the above.
+- **Registration: a camera's keys, signed to its account.** `flash factory` signs a registration
+  record (the camera's two public keys, its id and the account) with a **desk key** and uploads
+  it; a server can store records but can't make one. `project keys desk create|list|renew|revoke|
+  push` manage desk keys -- one per desk, encrypted at rest, expiring after 90 days. New `register`
+  token scope for factory stations; `POST /api/v1/admin/registrations`, `PUT|GET
+  /api/v1/admin/desk-keys`, `GET /api/v1/admin/devices/{id}/registration`. A changed key is
+  audited as `device.rekeyed`.
+- **Releases encrypted for each camera, and keykeeper.** With `[ota].per_camera_encryption`,
+  a release's key is sealed to **keykeeper** -- a small private service (`openmv-ota keykeeper
+  init|serve|chain|pin|rotate`) -- with the account and its desk keys, and each camera is
+  offered it in a 145-byte lockbox only its exchange key opens. Keykeeper checks the camera's
+  registration against the desk keys in the seal, not the server's word; no firmware holds a
+  payload key. Keykeeper's keys rotate on a schedule, each generation signed by the one before,
+  and `project keys keykeeper sync` follows them from `[ota].keykeeper_pin`. The update server
+  takes `OPENMV_OTA_KEYKEEPER_URL` / `..._TOKEN` and serves the chain at
+  `GET /api/v1/keykeeper/chain`.
+- **Signed check-ins.** A registered camera with a set clock signs each check-in with its
+  identity key (`X-OMV-Signature`). The server checks every signature; with
+  `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` on, an unsigned check-in gets update offers only and a bad
+  signature gets nothing. Off by default.
 
 ### Fixed
 

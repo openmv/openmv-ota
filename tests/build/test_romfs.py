@@ -1619,3 +1619,106 @@ def test_kept_release_outside_the_project_is_recorded_absolute(make_project, tmp
                               convert_models=False)
     assert ledger.last_release(root, "OPENMV_N6")["path"] == str(
         out / "releases" / "OPENMV_N6-ota-1.0.0.img.gz")
+
+
+def _per_camera(root, tmp_path, *, sync=True):
+    """Turn a built OTA project into one encrypted for each camera: the switch, an account, a
+    desk key, and keykeeper's chain synced from its pin. Returns keykeeper's ring."""
+    import os
+    from datetime import datetime, timezone
+
+    from openmv_ota.keykeeper.ring import Ring
+    from openmv_ota.project import desk_keys, keykeeper_pins
+
+    toml = root / "openmv-ota.toml"
+    text = toml.read_text().replace("[ota]\n", "[ota]\nper_camera_encryption = true\n", 1)
+    import re
+    text = re.sub(r'(?m)^account_id = .*$', "", text)
+    toml.write_text(text.replace("[product]\n", '[product]\naccount_id = "acct_a"\n', 1))
+    desk_keys.create(root, "bench-1", os.environ["OPENMV_OTA_KEY_PASSPHRASE"])
+    ring = Ring(tmp_path / "kk", "kk-pass")
+    ring.init(datetime.now(timezone.utc))
+    if sync:
+        keykeeper_pins.sync(root, ring.genesis_pin(), ring.chain())
+    return ring
+
+
+def test_a_release_encrypted_for_each_camera_is_sealed_to_keykeeper(make_project, tmp_path):
+    """Every representation shares one content key, sealed to keykeeper with the account and
+    the desks; keykeeper's lockbox for a registered camera opens every one of them."""
+    import gzip
+    from datetime import datetime, timezone
+
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    from openmv_ota.keykeeper import service
+    from openmv_ota.ota import lockbox, payload
+    from openmv_ota.ota import registration as reg
+    from openmv_ota.ota.keys import public_point_hex
+    from openmv_ota.ota.manifest import parse_manifest
+    from openmv_ota.project import desk_keys
+
+    root, repo = _build_n6_ota_artifacts(make_project)
+    ring = _per_camera(root, tmp_path)
+    img = root / "build" / "OPENMV_N6-ota.img.gz"
+    image = gzip.decompress(img.read_bytes())
+    base = bytearray(image)
+    base[100:110] = b"OLDOLDOLD!"
+    (root / "build" / "golden.img").write_bytes(bytes(base))
+    (root / "build" / "new.img").write_bytes(image)
+    delta_path = root / "build" / "OPENMV_N6-v0-to-v1.delta.gz"
+    build_mod.build_delta(root / "build" / "golden.img", root / "build" / "new.img", delta_path)
+    [r] = build_mod.build_manifest(root, url_base=_URL, firmware=repo, boards=["OPENMV_N6"],
+                                   deltas=[(delta_path, "1.0.0", "ab" * 32)])
+    reps = parse_manifest(r.output.read_bytes()).body["representations"]
+    sealed = {str(rep["enc"]["sealed"]) for rep in reps}
+    assert len(reps) == 2 and len(sealed) == 1                    # one seal for the release
+
+    # keykeeper, given a camera the project's desk registered, makes its lockbox
+    import os
+    entry = desk_keys.current(root)
+    signer = desk_keys.signer(root, entry, passphrase_provider=lambda: (
+        os.environ["OPENMV_OTA_KEY_PASSPHRASE"], "env"))
+    exchange = ec.generate_private_key(ec.SECP256R1())
+    record = reg.build(account="acct_a", device_id="OPENMV_N6:01", board="OPENMV_N6",
+                       identity=public_point_hex(ec.generate_private_key(ec.SECP256R1())
+                                                 .public_key()),
+                       exchange=public_point_hex(exchange.public_key()), desk=entry.key_id,
+                       issued=datetime.now(timezone.utc))
+    contents = lockbox.open_seal(reps[0]["enc"]["sealed"], ring.seal_key(1))
+    box, _ = service.lockbox_for(contents, record, reg.sign(record, signer))
+    key = lockbox.open_lockbox(box, exchange)
+    plain = {}
+    for rep in reps:
+        enc = rep["enc"]
+        published = (root / "build" / rep["url"].rsplit("/", 1)[1]).read_bytes()
+        plain[rep["format"]] = payload.decrypt(published, key, bytes.fromhex(enc["iv"]),
+                                               enc["size"])
+    assert plain["full"] == img.read_bytes()
+    assert plain["ocdl"] == delta_path.read_bytes()
+
+
+def test_a_per_camera_build_needs_a_synced_chain_and_a_desk(make_project, tmp_path):
+    from openmv_ota.project import desk_keys
+
+    root, repo = _build_n6_ota_artifacts(make_project)
+    _per_camera(root, tmp_path, sync=False)
+    with pytest.raises(BuildError, match="keykeeper sync"):
+        build_mod.build_manifest(root, firmware=repo)
+    from openmv_ota.project import keykeeper_pins
+    from openmv_ota.keykeeper.ring import Ring
+    ring = Ring(tmp_path / "kk", "kk-pass")
+    keykeeper_pins.sync(root, ring.genesis_pin(), ring.chain())
+    desk_keys.path_for(root).unlink()
+    with pytest.raises(BuildError, match="at least one desk key"):
+        build_mod.build_manifest(root, firmware=repo)
+
+
+def test_per_camera_firmware_carries_no_payload_key(make_project, tmp_path):
+    from openmv_ota.build import firmware as fw
+
+    root, _repo = _build_n6_ota_artifacts(make_project)
+    _per_camera(root, tmp_path)
+    from openmv_ota.project.project import load_project
+    p = load_project(root, firmware=_repo)
+    assert fw._payload_keys(p, ["OPENMV_N6"], None) == {}

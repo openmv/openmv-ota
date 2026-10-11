@@ -46,7 +46,10 @@ keys.ecdh(peer)                   # 32 bytes: the ECDH secret with a peer's publ
 on damaged keys it raises `OSError`. An application never creates keys, and a camera in the
 field never changes its identity on its own: it either has its keys or it fails.
 
-The romfs ships only the module for the board's own kind of keys: one chip driver, or `soft`.
+This code is part of the firmware, not the romfs: recovery runs when the romfs is gone, and it
+uses the camera's keys too. The firmware carries only the module for the board's own kind of
+keys (one chip driver, or `soft`), about 3.5 KB. `openmv_ota.se` is that module under the name
+applications use; on a board with no keys, `se.open()` returns None.
 
 ## Provisioning
 
@@ -69,7 +72,8 @@ keys made: identity 041591b4aef12b0f98f456477bdb7c246b0d5c2262ec3db94febf4856b87
 On STM32 boards, a boot with no host holding the console open stops listening after under a
 second, so the app starts as soon as it always has. If the tool opens the console too late for
 that window, it soft-resets the camera (Ctrl-C, then Ctrl-D) with the console still open, and
-the next boot waits for it.
+the next boot waits for it. If the camera drops off USB meanwhile (a watchdog the app armed
+biting during the reboot), the tool reopens the console and keeps asking.
 
 Apart from that soft reset, nothing interrupts the app, so this works with an app that arms a
 watchdog as it starts. A camera that already has keys keeps them and reports `keys present`; a
@@ -88,6 +92,109 @@ What provisioning does per kind:
   slots 2, 3 or 8, so the board can still be onboarded there without changing the camera's
   identity. `flash` notes when it configures a blank chip.
 - **Soft:** draws both keys from the hardware RNG and writes one record to the key area.
+
+## Registration
+
+A camera's keys mean something to a server only once they are registered: tied, by a signature
+the server can check, to the account that owns the camera. `flash factory` does that right after
+it checks the keys. It writes a **registration record**, signs it with a **desk key**, and
+uploads it:
+
+```json
+{"v": 1, "account": "acct_...", "device_id": "OPENMV_N6:0036...", "board": "OPENMV_N6",
+ "identity": "04...", "exchange": "04...", "desk": 1, "issued": "2026-10-10T12:00:00Z"}
+```
+
+The server stores the record exactly as signed. It can't write one itself: that takes a desk
+key, which only the project holds. So a server that has been broken into can't swap a camera's
+keys for its own.
+
+A **desk** is wherever cameras are first flashed: a bench, a factory station. Each desk gets its
+own key, so one can be revoked without touching the others:
+
+```
+openmv-ota project keys desk create bench-1 .     # a new key for the desk "bench-1"
+openmv-ota project keys desk push .               # tell the server about it
+openmv-ota project keys desk list .
+openmv-ota project keys desk renew 1 .            # another 90 days
+openmv-ota project keys desk revoke 1 .           # stop trusting it, at once
+```
+
+The public halves are in `keys/desk_keys.json`, the private halves in `keys/private/`, encrypted
+with the project passphrase (or in an HSM or KMS, like the signing keys). A desk key never signs
+firmware.
+
+Desk keys **expire** after 90 days unless renewed. An expired key stops registering cameras;
+every camera it registered stays registered. The server only takes a record from a desk key that
+is unrevoked and unexpired, and only one issued within the last hour, so an old key can't
+back-date records.
+
+Uploading takes an API token with the `register` scope (a `manage` token also works). A token
+that can only register is what belongs on a factory station. `flash factory` takes the server and
+token like the other commands (`--server`, `--token`) and the desk with `--desk <label>` (default:
+the newest usable key); `--no-register` skips registration.
+
+Registering a camera that is already registered to the account with different keys -- it was
+reflashed with `flash bootloader`, which erases its keys -- replaces its record, and the audit log
+records it as `device.rekeyed` with the old key's fingerprint. A camera registered to one account
+can't be registered by another.
+
+`GET /api/v1/admin/devices/{device_id}/registration` returns a camera's record, its identity
+key's fingerprint (the SHA-256 of the key), and how its signed check-ins are going.
+
+## Signed check-ins
+
+A registered camera signs every check-in with its identity key, once its clock is set. The
+signature goes in one header:
+
+```
+X-OMV-Signature: v=1;ts=1791720000;sig=3045...
+```
+
+`sig` is a DER ECDSA P-256 signature over `SHA-256("omv-checkin-v1\n" + ts + "\n" + body)`,
+with `ts` the camera's Unix time and `body` the exact bytes of the check-in. The server checks
+it against the identity key in the camera's registration, and takes it only within five minutes
+of its own clock, so a recorded check-in can't be replayed later.
+
+The M4 (OPENMV2) has no room in its firmware for this, or for opening lockboxes: it checks in
+unsigned, so a server requiring signed check-ins answers it with update offers only, and it
+can't install a release encrypted for each camera.
+
+A camera that has just booted cold has no clock yet: its first check-in goes unsigned, and the
+server's reply (its `Date` header) sets the clock for the next one. Recovery never signs.
+
+What the server does with a check-in depends on the `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` switch:
+
+| Check-in | Switch off (default) | Switch on |
+| --- | --- | --- |
+| Signed, verifies | served as usual; noted | served as usual; noted |
+| Unsigned | served as usual | update offers only: no fleet row, telemetry, Live or ingest |
+| Signature doesn't verify | served as usual; counted | nothing; counted |
+
+Offers stay open to unsigned check-ins because they are safe to anyone: an update is signed, and
+installs only on the camera it was built for. A refusal is counted on the camera's registration
+with its reason (`bad signature`, `stale`, `malformed`, `unknown version`), and the audit log
+records `device.checkin_refused` when the reason changes, not on every poll. A signature from a
+camera with no registration leaves no trace.
+
+With the switch off, the server checks every signature anyway, so a fleet can be watched going
+green before anything depends on it.
+
+## Lockboxes
+
+A release encrypted for each camera reaches a camera with a **lockbox**: the release's key,
+wrapped for that camera's exchange key. It is 145 bytes:
+
+```
+ephemeral public key (65) || iv (16) || AES-256-CBC(k_enc, release key) (32) || HMAC-SHA256 (32)
+```
+
+with `k_enc || k_mac = HKDF-SHA256(ECDH(exchange key, ephemeral key), info="omv-lockbox-v1")`
+and the HMAC, under `k_mac`, over everything before it. The camera computes the ECDH secret
+with its exchange key (`keys.ecdh`), checks the HMAC, and only then decrypts; a lockbox made
+for another camera, or altered, fails the check and the update is rejected before anything is
+erased. The code that opens it is frozen into the firmware with the rest of the key code, so
+recovery can open one too.
 
 ## The soft key area
 

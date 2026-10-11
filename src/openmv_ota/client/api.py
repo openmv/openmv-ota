@@ -52,6 +52,23 @@ class Api:
             params["display_name"] = display_name
         return self._req("POST", "/api/v1/admin/releases", files=files, params=params)
 
+    def put_desk_key(self, entry):
+        """Record one of the project's desk keys on the server (its public half, label, expiry
+        and whether it is revoked) -- what the server checks camera registrations against."""
+        return self._req("PUT", "/api/v1/admin/desk-keys/%d" % entry.key_id,
+                         json={"label": entry.label, "pubkey": entry.pubkey,
+                               "expires": entry.expires, "revoked": entry.revoked})
+
+    def keykeeper_chain(self) -> list:
+        """The chain of keykeeper's public keys, as the server passes it on (unverified: the
+        caller verifies it from its pin)."""
+        return self._req("GET", "/api/v1/keykeeper/chain")["chain"]
+
+    def register_device(self, record: bytes, signature: str):
+        """Upload a desk-signed registration record (sent as the exact text it was signed as)."""
+        return self._req("POST", "/api/v1/admin/registrations",
+                         json={"record": record.decode("utf-8"), "signature": signature})
+
     def viewer_grants(self, device_ids):
         """Viewer grants for a page of devices in one call; ``{device_id: grant | None}``."""
         return self._req("POST", "/api/v1/admin/devices/viewer-grants",

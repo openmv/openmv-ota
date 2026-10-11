@@ -1237,7 +1237,7 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
                         if _gate.plan(key, _uptime_s()) == "reboot":  # hil-residual: host-tested decision (_InstallGate.plan); the reboot arm is witnessed by `run: fresh-heap reboot`, the install arm by install.start
                             await _reboot_for_install()  # hil-residual: the witness is the CALLEE's first line (`run: fresh-heap reboot`)
                         try:  # hil-residual: failure-count guard around install(); witnessed by install.start (callee)
-                            install(manifest_url, ca)  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
+                            install(manifest_url, ca, resp.get("lockbox"))  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
                         except Exception:  # hil-residual: a pre-erase install failure; witnessed by the caller's `run: cycle failed`
                             _gate.failed(key)  # hil-residual: counter bookkeeping (host-tested _InstallGate)
                             raise  # hil-residual: bare re-raise to the cycle handler below
@@ -1485,6 +1485,31 @@ def tls_configure(ctx, ssl, ca):
     return ctx
 
 
+def _signature_header(payload, rtc=None, se=None):
+    """The ``X-OMV-Signature`` header line for a check-in body, or ``""`` when there is none to give.
+
+    The camera signs its check-in with its identity key (``openmv_se.trust.checkin_signature``) over the
+    body and the time, so a server can tell the camera itself from anything that merely knows its
+    id. The time is what keeps a recorded check-in from being replayed later, so a camera signs only
+    once its clock is TRUSTED (set from the server's Date or NTP): a cold boot's first check-in goes
+    unsigned, and the server answers it with offers only. No keys, an untrusted clock or a failed
+    sign all give no header -- never a failed check-in. ``rtc``/``se`` are injectable for tests."""
+    try:
+        if rtc is None:
+            import openmv_rtc as rtc
+        if not rtc.trusted():
+            return ""
+        if se is None:
+            from openmv_se import trust as se
+        value = se.checkin_signature(payload, int(rtc.now()))
+    except Exception:
+        return ""
+    if not value:
+        return ""
+    log.debug("checkin: signed")                     # HIL path witness (a registered camera, clock set)
+    return "X-OMV-Signature: %s\r\n" % value
+
+
 def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
     """POST the check-in body to ``/api/v1/check`` and return the parsed JSON.
 
@@ -1519,8 +1544,9 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         # reply to a 1.0 request; it sends Content-Length or closes at the end of the body.
         ss.write((
             "POST /api/v1/check HTTP/1.0\r\nHost: %s\r\nUser-Agent: openmv-cam/1.0\r\n"
-            "Content-Type: application/json\r\nContent-Length: %d\r\n"
-            "Connection: close\r\n\r\n" % (host, len(payload))).encode() + payload)
+            "Content-Type: application/json\r\nContent-Length: %d\r\n%s"
+            "Connection: close\r\n\r\n" % (host, len(payload), _signature_header(payload))
+        ).encode() + payload)
         status_line = ss.readline()
         # A 429 is the server pacing a crowd (the per-IP / per-/64 check-in limit), not a broken
         # link: its body is an ordinary {"update": false, "poll_after_s": n} with a short, jittered
@@ -1782,7 +1808,7 @@ def sync():  # pragma: no cover
     return applied  # hil-residual: bare return of the applied names
 
 
-def install(url, ca=None):  # pragma: no cover
+def install(url, ca=None, lockbox=None):  # pragma: no cover
     """Fetch the signed update **manifest** at ``url`` and install the image it points to:
     verify the manifest's signature (same trusted keys as the image trailer), check the
     device-relative fields (board / platform / anti-rollback) and pick a representation,
@@ -1814,7 +1840,8 @@ def install(url, ca=None):  # pragma: no cover
     are the TLS trust anchors (PEM): ``None`` uses the romfs override ``data/ca.pem`` if the
     image ships one, else the firmware's built-in store (``builtin_ca()``); ``bytes`` are
     used as-is, and a ``str`` is a path to read. Ignored for a file install -- there is no
-    connection to authenticate."""
+    connection to authenticate. ``lockbox`` is what the server sends with an offer of an update
+    encrypted for each camera: its key, wrapped for this camera alone."""
     import _ota_config as cfg
     _use_cfg_stride(cfg)
     here = __file__.rsplit("/", 1)[0]
@@ -1844,7 +1871,7 @@ def install(url, ca=None):  # pragma: no cover
             import openmv_installer  # hil-residual: frozen module (firmware-resident); no bench marker until a classic joins the fleet
             run = openmv_installer.run  # hil-residual: same-source binding (the freeze copies data/installer.py verbatim)
             log.info("install: staged frozen installer (exec would not fit)")  # hil-residual: witnessed on classic boards only
-    run(url, ca, cfg)  # hil-residual: terminal call into the installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
+    run(url, ca, cfg, lockbox)  # hil-residual: terminal call into the installer (reboots on success, no post-return witness); that it ran is proven by install.download / install.writing / install.armed
 
 
 def builtin_ca():  # pragma: no cover  (device: frozen-module imports)

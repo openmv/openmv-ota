@@ -84,3 +84,15 @@ def test_scope_ladder_implies_lower_rungs():
     with pytest.raises(HTTPException) as e:
         require_scope("publish")(_req(TokenAuth(_store(("manage",))), "Bearer secret-token"))
     assert e.value.status_code == 403
+
+
+def test_register_is_a_desk_scope_that_manage_implies():
+    """A factory desk's token carries only `register`; an admin token can register too, but the
+    implication doesn't clutter what a token lists."""
+    from openmv_ota.server.scopes import allows, expand
+    assert allows(["register"], "register") and not allows(["register"], "observe")
+    assert allows(["manage"], "register") and allows(["publish"], "register")
+    assert not allows(["observe"], "register")
+    assert expand(["manage"]) == ["manage", "observe"]
+    p = require_scope("register")(_req(TokenAuth(_store(("register",))), "Bearer secret-token"))
+    assert p.scopes == ["register"]

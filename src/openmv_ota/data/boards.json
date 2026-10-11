@@ -3,7 +3,7 @@
   "_source_firmware_version": "4.8.1",
   "boards": {
     "OPENMV2": {
-      "secure_element": {"chip": "soft", "key_area": 134246400, "bootloader_max": 28672},
+      "secure_element": {"chip": "soft", "key_area": 134246400, "bootloader_max": 28672, "trust": false},
       "ota_runtime_drops_network": true,
       "display_name": "OpenMV Cam M4 (STM32F427)",
       "tls_verify": false,

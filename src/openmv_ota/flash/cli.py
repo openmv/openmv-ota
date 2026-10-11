@@ -61,6 +61,15 @@ def register(flash_parser: argparse.ArgumentParser):
                            "(SBL boot jumper) -- flash-config block, secure bootloader, boot "
                            "e-fuse, firmware and romfs. Without it, factory goes through the "
                            "resident bootloader every shipped camera has")
+    p_fa.add_argument("--no-register", dest="register", action="store_false",
+                      help="don't register the camera's keys with the server (a bench with no "
+                           "server: the camera then can't check in until it is registered)")
+    p_fa.add_argument("--desk", metavar="LABEL",
+                      help="the desk key to register with (default: the newest usable one)")
+    p_fa.add_argument("--server", help="server to register with (default: the project's)")
+    p_fa.add_argument("--token", help="a register-scope token (default: client config)")
+    p_fa.add_argument("--key-passphrase-file",
+                      help="file holding the project passphrase (unlocks the desk key)")
     p_fa.set_defaults(func=cmd_factory, _command="flash factory")
 
     p_bl = sub.add_parser("bootloader", help="flash the bootloader (board in system ROM DFU)")
@@ -136,8 +145,60 @@ def cmd_romfs(args: argparse.Namespace) -> int:
     return _report(args, steps)
 
 
+class _Registrar:
+    """Registers a camera's keys with the server: a record signed by the project's desk key,
+    uploaded with a register-scope token. Everything it needs is checked BEFORE anything is
+    flashed (:meth:`check`), so a desk that isn't set up fails at once, not after a camera has
+    been written and booted."""
+
+    def __init__(self, args):
+        self.args = args
+        self.root = Path(args.project)
+
+    def _fail(self, e):
+        raise FlashError("can't register cameras from this desk: %s" % e) from None
+
+    def check(self) -> None:
+        from openmv_ota.client import config as client_config
+        from openmv_ota.client.errors import ClientError
+        from openmv_ota.project import desk_keys
+        from openmv_ota.project.config import CONFIG_NAME, load_config
+        from openmv_ota.project.errors import ProjectError
+        try:
+            cfg = load_config(self.root / CONFIG_NAME)
+            self.account = cfg.account_id
+            self.entry = desk_keys.current(self.root, self.args.desk)
+            self.client_cfg = client_config.resolve(self.args.server or cfg.server_url or None,
+                                                    self.args.token)
+        except (ProjectError, ClientError) as e:
+            self._fail(e)
+
+    def __call__(self, board, device_id, identity, exchange):
+        from datetime import datetime, timezone
+
+        from openmv_ota.client.api import Api
+        from openmv_ota.client.errors import ClientError
+        from openmv_ota.ota import registration as reg
+        from openmv_ota.ota.errors import OtaError
+        from openmv_ota.project import desk_keys
+        from openmv_ota.project.errors import ProjectError
+        from openmv_ota.project.passphrase import resolve_passphrase
+        try:
+            signer = desk_keys.signer(self.root, self.entry, passphrase_provider=lambda: (
+                resolve_passphrase(self.root, passphrase_file=self.args.key_passphrase_file)))
+            record = reg.build(account=self.account, device_id="%s:%s" % (board, device_id),
+                               board=board, identity=identity, exchange=exchange,
+                               desk=self.entry.key_id, issued=datetime.now(timezone.utc))
+            return Api(self.client_cfg).register_device(record, reg.sign(record, signer))
+        except (ProjectError, ClientError, OtaError) as e:
+            self._fail(e)
+
+
 def cmd_factory(args: argparse.Namespace) -> int:
     try:
+        registrar = _Registrar(args) if args.register else None
+        if registrar is not None and not args.dry_run:
+            registrar.check()
         steps = flash_mod.flash_factory(
             args.project, board=args.board, output=args.output, dfu_util=args.dfu_util,
             sdk_home=_sdk_home(args), reset=args.reset, enter_bootloader=args.enter_bootloader,
@@ -145,7 +206,7 @@ def cmd_factory(args: argparse.Namespace) -> int:
             dry_run=args.dry_run)
         _report(args, steps)
         steps = flash_mod.provision_keys(board=args.board, serial=args.serial,
-                                         dry_run=args.dry_run)
+                                         dry_run=args.dry_run, registrar=registrar)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

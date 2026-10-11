@@ -119,6 +119,10 @@ def _secure_element(board: str, se: dict[str, Any] | None) -> dict[str, Any] | N
     area at the end of its boot partition, with the room the bootloader may use before it."""
     if se is None:
         return None
+    # ``trust`` false: firmware too small for openmv_se.trust (signed check-ins, lockboxes)
+    trust = se.get("trust", True)
+    if not isinstance(trust, bool):
+        raise ValueError("boards.json: %s secure_element trust must be true or false" % board)
     chip = se.get("chip")
     if chip not in SE_CHIPS:
         raise ValueError("boards.json: %s has secure_element chip %r, expected one of %s"
@@ -128,7 +132,7 @@ def _secure_element(board: str, se: dict[str, Any] | None) -> dict[str, Any] | N
         if not isinstance(area, int) or not isinstance(room, int) or room <= 0:
             raise ValueError("boards.json: %s soft key store needs an integer key_area and "
                              "bootloader_max" % board)
-        return {"chip": chip, "key_area": area, "bootloader_max": room}
+        return {"chip": chip, "key_area": area, "bootloader_max": room, "trust": trust}
     bus, addr, enable = se.get("bus"), se.get("addr"), se.get("enable")
     if not isinstance(bus, int) or not isinstance(addr, int) or not 0 < addr < 0x80:
         raise ValueError("boards.json: %s secure_element needs an integer bus and a 7-bit addr"
@@ -136,7 +140,7 @@ def _secure_element(board: str, se: dict[str, Any] | None) -> dict[str, Any] | N
     if enable is not None and not isinstance(enable, str):
         raise ValueError("boards.json: %s secure_element enable must be a Pin name" % board)
     return {"chip": chip, "bus": bus, "addr": addr, "enable": enable,
-            "freq": int(se.get("freq", 400000))}
+            "freq": int(se.get("freq", 400000)), "trust": trust}
 
 
 def _load_raw() -> dict[str, Any]:

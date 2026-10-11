@@ -104,3 +104,20 @@ def test_run_quiet_missing_binary_is_a_flash_error(monkeypatch, _real_run_quiet)
                         lambda argv, **k: (_ for _ in ()).throw(FileNotFoundError()))
     with pytest.raises(FlashError, match="mpremote not found"):
         runner.run_quiet(["mpremote"])
+
+
+def test_run_quiet_is_bounded(monkeypatch, _real_run_quiet):
+    """mpremote waiting on an app that never yields its REPL can't hang the flash."""
+    seen = {}
+
+    def hang(argv, **k):
+        seen.update(k)
+        raise subprocess.TimeoutExpired(argv, k["timeout"], output=b"connecting...")
+
+    monkeypatch.setattr(runner.subprocess, "run", hang)
+    rc, out = runner.run_quiet(["mpremote"])
+    assert rc == 124 and out.startswith("connecting...") and "timed out" in out
+    assert seen["timeout"] == runner.QUIET_TIMEOUT_S
+    monkeypatch.setattr(runner.subprocess, "run", lambda argv, **k: (_ for _ in ()).throw(
+        subprocess.TimeoutExpired(argv, 1, output=None)))
+    assert runner.run_quiet(["mpremote"])[0] == 124

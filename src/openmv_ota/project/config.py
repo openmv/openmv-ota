@@ -55,6 +55,14 @@ class OtaConfig:
     # from the server. That is a real cost (there is no offline build once this is on), so
     # it is opt-in and off for everyone who does not need it.
     platform: bool = False
+    # ENCRYPTED FOR EACH CAMERA. On, a release's key is sealed to keykeeper and each camera gets
+    # it in a lockbox only it opens (see openmv_ota.ota.lockbox), and the firmware carries no
+    # payload key at all -- so a dump of one camera no longer opens the fleet's updates. Needs
+    # keykeeper on the update server, `keykeeper_pin` here, and registered cameras.
+    per_camera_encryption: bool = False
+    # The keykeeper generation this project trusts first ("<key_id>:<sign key>", from
+    # `openmv-ota keykeeper pin`). `client keykeeper sync` walks the chain forward from it.
+    keykeeper_pin: str = ""
     overrides: dict[str, dict] = field(default_factory=dict)
 
 
@@ -124,6 +132,8 @@ def parse_config(text: str, default_name: str) -> OtaConfig:
         single_image=bool(ota.get("single_image", False)),
         max_attempts=_max_attempts(ota),
         platform=bool(ota.get("platform", False)),
+        per_camera_encryption=bool(ota.get("per_camera_encryption", False)),
+        keykeeper_pin=str(ota.get("keykeeper_pin") or ""),
         overrides=overrides,
     )
 

@@ -512,7 +512,7 @@ last_failure_reason = None    # why the OTHER slot was rejected, if this one is 
 # --- The camera's keys, on a factory image's boot ---------------------------
 # A factory image is written only by `openmv-ota flash factory`, at a desk, and is signed with a
 # factory key (below the OTA key range). Booting one, before the app runs, is where the camera's
-# keys are made if it has none (``openmv_ota.se.provision``, which never replaces keys it has) --
+# keys are made if it has none (``openmv_se.provision``, which never replaces keys it has) --
 # never by the app, so a camera in the field can't make or change keys, and never by a host
 # breaking into a running app, which on an app that arms a watchdog resets the board. For a
 # short window the flashing tool may ask, with an ``OMVKEYS <challenge>`` line on the console;
@@ -567,11 +567,12 @@ def keys_challenge(stream, poll, elapsed, window_ms=_KEYS_WINDOW_MS, attended=No
             line += c
 
 
-def factory_keys(key_id, se, challenge):
+def factory_keys(key_id, se, challenge, device_id=""):
     """Make the camera's keys if it has none, when booting a factory image (``key_id``, the
     image's signing key, below the OTA range); the answer line for the flashing tool -- printed
     by the caller only if it asked (``challenge``) -- or None when there is nothing to do: an OTA
-    image, or a romfs without ``openmv_ota.se`` (``se`` None)."""
+    image, or a firmware without ``openmv_se`` (``se`` None). The answer ends with the camera's
+    ``device_id``, which the desk registers the keys under."""
     if key_id >= _OTA_KEY_ID_BASE or se is None:
         return None
     try:
@@ -581,9 +582,10 @@ def factory_keys(key_id, se, challenge):
         keys, made = r
         if challenge is None:
             return "SE-OK"
-        return "SE-ID %s %s %s %d" % (binascii.hexlify(keys.public_key()).decode(),
-                                      binascii.hexlify(keys.ecdh_public_key()).decode(),
-                                      binascii.hexlify(keys.sign(challenge)).decode(), made)
+        return "SE-ID %s %s %s %d %s" % (binascii.hexlify(keys.public_key()).decode(),
+                                         binascii.hexlify(keys.ecdh_public_key()).decode(),
+                                         binascii.hexlify(keys.sign(challenge)).decode(), made,
+                                         device_id or "-")
     except Exception as e:                         # damaged keys: say so, never stop the boot
         return "SE-ERROR %s" % e
 
@@ -699,8 +701,8 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     sys.path.append("/rom/lib")
     if trailer.key_id < _OTA_KEY_ID_BASE:          # a factory image: the camera's keys
         try:
-            from openmv_ota import se
-        except ImportError:  # hil-residual: a factory romfs without openmv_ota.se (a board with no keys, e.g. the Nano RP2040 Connect); boot.keys after it reads "None"
+            import openmv_se as se                 # frozen: the keys don't depend on the romfs
+        except ImportError:  # hil-residual: a firmware without openmv_se (a board with no keys, e.g. the Nano RP2040 Connect); boot.keys after it reads "None"
             se = None  # hil-residual: same branch as the line above
         import select
         import time
@@ -715,9 +717,21 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         challenge = keys_challenge(sys.stdin, lambda ms: p.poll(ms),
                                    lambda: time.ticks_diff(time.ticks_ms(), start),
                                    attended=attended)
-        answer = factory_keys(trailer.key_id, se, challenge)
+        device_id = ""
+        if challenge is not None:                  # a desk is asking: it registers this id
+            try:  # hil-residual: runs only during `flash factory`, before a HIL run's capture starts
+                import openmv_ota  # hil-residual: same; the id the check-in sends, so the registry matches
+                device_id = openmv_ota.identity().get("device_id", "")  # hil-residual: same
+            except Exception:  # hil-residual: a factory romfs without openmv_ota can't name the camera; the desk then refuses to register it
+                pass  # hil-residual: same branch as the line above
+        answer = factory_keys(trailer.key_id, se, challenge, device_id)
         if challenge is not None:
-            print(answer)  # hil-residual: answered during `flash factory`, before a HIL run's capture starts; the flash's own "keys made/present" report proves it
+            # ONE write, newline included, then a beat for USB to send it: print() writes the
+            # newline separately, and on the N6 that last write could still be queued when the app
+            # started and stopped servicing the port -- the desk got the whole line but its end.
+            # "\n", not "\r\n": stdout turns it into "\r\n" itself (and "\r\n" into "\r\r\n")
+            sys.stdout.write(answer + "\n")  # hil-residual: answered during `flash factory`, before a HIL run's capture starts; the flash's own "keys made/present" report proves it
+            time.sleep_ms(100)  # hil-residual: same branch as the line above
         log.info("boot: keys %s" % answer)
     log.info("boot: ready, running app")
 

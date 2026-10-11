@@ -365,6 +365,41 @@ def log(msg):
 # These are the SAME lines the device logs normally -- the bench just captures them at DEBUG.
 # Update this when a path's log wording changes (the one coupling we accept for a single,
 # no-special-markers logging channel).
+# `flash factory` registers each camera's keys with the server, as a real desk does: the HIL
+# project's own desk key signs the record and this run's bench server takes it (see _desk_ready).
+# The file legs have no server, so they skip it; the camera still makes and proves its keys.
+_DESK = "hil-bench"
+
+
+def _register_args():
+    """`flash factory`'s registration arguments for this run."""
+    if not CFG.get("bench_server"):          # the file legs start none
+        return ("--no-register",)
+    return ("--server", CFG["server"], "--token", CFG["token"])
+
+
+def _desk_ready():
+    """Give the HIL project a usable desk key (made once, renewed when it lapses -- the node's
+    project outlives 90 days) and record it on this run's bench server, which starts empty."""
+    from openmv_ota.project import desk_keys
+    from openmv_ota.project import passphrase as passphrase_mod
+    from openmv_ota.project.errors import ProjectError
+
+    root = CFG["project"]
+    try:
+        desk_keys.current(root, _DESK)
+    except ProjectError:
+        live = [k for k in desk_keys.read(root) if k.label == _DESK and not k.revoked]
+        if live:
+            desk_keys.renew(root, live[-1].key_id)
+            log("desk: renewed the bench desk key")
+        else:
+            desk_keys.create(root, _DESK, passphrase_mod.resolve_passphrase(root)[0])
+            log("desk: made the bench desk key")
+    subprocess.run([ota("openmv-ota"), "project", "keys", "desk", "push", "--server",
+                    CFG["server"], "--token", CFG["token"], root],
+                   env=dict(os.environ, SSL_CERT_FILE=CFG["ca_node"]), check=True, timeout=60)
+
 COVERAGE = {
     # v2 HAS NO GOLDEN SLOT, so these no longer name one. boot.py mounts whichever slot is
     # newest and valid (A or B, by install counter), and the interesting distinction is not
@@ -1406,6 +1441,17 @@ def _partial_download(out):
     return "Download" in text and ("LIBUSB_ERROR" in text or "get_status" in text)
 
 
+def _log_cli_tail(rc, out, lines=25):
+    """On a failed flash route, the CLI's own account of it: the error the harness raises keeps
+    only its last 400 characters, and the cause is usually further up."""
+    if rc == 0:
+        return
+    tail = [ln for ln in (out or "").replace("\r", "\n").splitlines()
+            if ln.strip() and "Download\t[" not in ln and "Erase   \t[" not in ln][-lines:]
+    for ln in tail:
+        log("  [cli] " + ln[:240])
+
+
 def _flash_dfu_cli(board, bad_romfs=False):
     """Golden flash for the DFU boards (N6, AE3) via the openmv-ota CLI's `flash factory` -- the SAME
     tooling users ship with (and the recipe the OpenMV IDE uses). It enters DFU with
@@ -1427,7 +1473,8 @@ def _flash_dfu_cli(board, bad_romfs=False):
         raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
     _ensure_cdc(board, allow_erase=True)   # pre-flash: safe to erase; the flash below reprovisions
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
-            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote"),
+            *_register_args()]
     if _cdc_responsive():
         # BOUNDED, AND WITH A FALLBACK. `_cdc_responsive()` answers "did the port reply once", which
         # a board RESET-LOOPING at ~1 Hz does -- it is alive for most of every second. So this route
@@ -1442,6 +1489,17 @@ def _flash_dfu_cli(board, bad_romfs=False):
         # SEQUENCE against a looping board -- the two have to overlap.
         log("flash factory -> %s (openmv-ota, DFU -w)" % board)
         rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False)
+        _log_cli_tail(rc, out)
+        if rc != 0 and jlink_reset_pulse(board):
+            # A board that has run its app for a while can stop taking input on its CDC (and an
+            # armed watchdog resets it the moment Ctrl-C lands), so the CLI's interrupt never gets
+            # through. Just after a reset it does: the port takes writes and the app has not armed
+            # its watchdog yet. So reset it over SWD and go again AT ONCE -- the CLI follows the
+            # camera through its boot and interrupts it there.
+            log("flash: %s CDC route failed (rc=%d) -- reset over SWD, retrying as it boots"
+                % (board, rc))
+            rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False)
+            _log_cli_tail(rc, out)
         if rc != 0:
             log("flash: %s CDC route failed (rc=%d) -- retrying through the bootloader DFU window"
                 % (board, rc))
@@ -1449,6 +1507,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
             if rc != 0 and _partial_download(out) and recover_firmware(board):
                 rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
             if rc != 0:
+                _log_cli_tail(rc, out)
                 raise RuntimeError("flash factory failed on both routes rc=%d: %s" % (rc, out[-400:]))
     else:
         # No CDC, so machine.bootloader() cannot be used to enter DFU -- and this is exactly the
@@ -1472,6 +1531,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
             if recover_firmware(board):
                 rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
         if rc != 0:
+            _log_cli_tail(rc, out)
             raise RuntimeError("flash factory (no-CDC path) failed rc=%d: %s" % (rc, out[-400:]))
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
     _ensure_cdc(board)                       # POST-flash: allow_erase stays False -- never wipe the golden just written
@@ -2076,7 +2136,8 @@ def _flash_arduino_cli(board, bad_romfs=False):
         jlink_core_reset(board)
         _await_boot(board, budget=90)
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
-            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote"),
+            *_register_args()]
     # RETRY THE DFU WRITE. dfu-util intermittently fails to read the device's descriptors right
     # after the 1200-baud touch -- "Failed to retrieve string descriptor 7 / Could not read name /
     # Failed to parse memory layout for alternate interface 1", exit 74 -- i.e. it opened the
@@ -2205,7 +2266,7 @@ def _flash_blhost_imx(board, bad_romfs=False):
     # imx_kick_catch brings the SBL up from outside. The RT1062 SBL has no reset window, so the
     # nRST pulse a DFU board's reset-catch relies on cannot do that job alone.
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
-            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote")]
+            "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote"), *_register_args()]
     rc, out = 1, "CDC not responsive"
     if _cdc_responsive():
         log("flash factory -> %s (openmv-ota, resident SBL)" % board)
@@ -3196,6 +3257,9 @@ def main():
                                      offer_downgrades=(args.scenario == "bad_version"))
             CFG["server"], CFG["ca_node"], CFG["artifacts"], CFG["token"] = (
                 srv["url"], srv["ca"], srv["store"], srv["token"])
+            CFG["bench_server"] = True
+            os.environ["SSL_CERT_FILE"] = CFG["ca_node"]    # `flash factory` registers over TLS
+            _desk_ready()
         if network == "file":
             # No server record and no marker UART: the classic legs score the device's own CDC
             # account. expect/forbid are empty for these scenarios, so the shared scoring below

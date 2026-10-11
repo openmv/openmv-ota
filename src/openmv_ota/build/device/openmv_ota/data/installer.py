@@ -1475,13 +1475,20 @@ class _Decrypt(io.IOBase):
         self._src.close()
 
 
-def _unwrap_key(enc, payload_keys, aes):
-    """The content key for this artifact, out of the wrap made for a key we hold.
+def _unwrap_key(enc, payload_keys, aes, content_key=None):
+    """The content key for this artifact: for one encrypted for each camera (``sealed``), the
+    one this camera's lockbox gave (``content_key``); otherwise out of the wrap made for a key
+    we hold.
 
     Newest first: a camera that has been through a key rotation uses the key it was
     updated to, so the day the old wrap stops being published is a day nothing
     notices. A device that holds none of the offered keys says so as itself, rather
     than downloading an image it would decrypt into noise."""
+    if enc.get("sealed") is not None:
+        if content_key is None:
+            raise ValueError("this update is encrypted for each camera, and came without this "
+                             "camera's lockbox")
+        return content_key
     wraps = enc.get("wraps") or {}
     for key_id in sorted(payload_keys, reverse=True):
         wrap = wraps.get(str(key_id))
@@ -1494,7 +1501,7 @@ def _unwrap_key(enc, payload_keys, aes):
     raise ValueError("no payload key for this image (have %s)" % sorted(payload_keys))
 
 
-def _decrypting(body, enc, payload_keys, aes):
+def _decrypting(body, enc, payload_keys, aes, content_key=None):
     """Wrap ``body`` so what comes out of it is the artifact. ``enc`` is the signed
     manifest's encryption block; ``payload_keys`` are the constants this firmware was
     built with."""
@@ -1503,7 +1510,7 @@ def _decrypting(body, enc, payload_keys, aes):
     size = enc.get("size")
     if not isinstance(size, int) or size < 0:
         raise ValueError("bad encrypted payload size %s" % (size,))
-    return _Decrypt(body, _unwrap_key(enc, payload_keys, aes),
+    return _Decrypt(body, _unwrap_key(enc, payload_keys, aes, content_key),
                     binascii.unhexlify(enc["iv"]), size, aes)
 
 
@@ -1516,6 +1523,23 @@ def _open_body(image_url, ca_pem, socket, ssl, feed):
         return open(image_url, "rb")
     sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)  # pragma: no cover  # hil-residual: HTTPS body open, relocated verbatim from run(); witnessed by install.download on every bench install leg
     return _ResumingBody(image_url, ca_pem, socket, ssl, feed, sock, raw_body)  # pragma: no cover  # hil-residual: the resume wrapper, relocated verbatim from run(); its resume path is exercised by the bench drop/resume scenario
+
+
+def _lockbox_key(lockbox, enc, se=None):
+    """The content key in the server's ``lockbox`` (hex) for an update encrypted for each camera,
+    opened with this camera's exchange key; None for any other update. Pre-erase: a lockbox that
+    is missing, or isn't this camera's, rejects the update with the slot untouched. ``se`` is
+    injectable for tests (default: the frozen ``openmv_se.trust``)."""
+    if not enc or enc.get("sealed") is None:
+        return None
+    if not lockbox:
+        raise ValueError("this update is encrypted for each camera, and came without this "
+                         "camera's lockbox")
+    if se is None:
+        from openmv_se import trust as se
+    key = se.open_lockbox(binascii.unhexlify(lockbox))
+    log.debug("install: lockbox opened")
+    return key
 
 
 def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop,
@@ -1680,7 +1704,7 @@ def _reset():  # pragma: no cover
     machine.reset()  # hil-residual: terminal reset (no post-reset witness)
 
 
-def run(manifest_url, ca_pem, cfg):  # pragma: no cover
+def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     """Fetch the signed manifest at ``manifest_url`` -- an ``https://`` URL, or a file
     path (a manifest on a mounted filesystem, e.g. an SD card) with the artifacts
     beside it -- verify + vet it, then stream in and install the chosen image. Never returns: reboots into the new image's trial on
@@ -2133,6 +2157,13 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
         else:
             log.warning("install: rejected before erase (%r)" % e)       # /rom untouched (%r shows the class)
         raise  # hil-residual: bare re-raise to the app (reject -> install.reject; transport -> retry next poll, marker-less)
+    # An update encrypted for each camera opens with the lockbox the server sent with the offer.
+    # Opened here, before the erase, so a missing or foreign one rejects with /rom untouched.
+    try:
+        content_key = _lockbox_key(lockbox, enc)
+    except Exception as e:  # hil-residual: a missing/foreign lockbox -- no bench scenario publishes a per-camera release yet; _lockbox_key's refusals are host-tested
+        log.warning("install: rejected before erase (%r)" % e)  # hil-residual: same branch as the line above
+        raise  # hil-residual: bare re-raise to the app (same branch)
 
     # Commit point: from the erase on we can't unwind into the (erased) app, so any
     # failure reboots -- into the OTHER slot under A/B (the previous working image, which was
@@ -2182,7 +2213,8 @@ def run(manifest_url, ca_pem, cfg):  # pragma: no cover
             # ciphertext, what DeflateIO sees is the gzip stream, and a dropped link
             # still re-opens at a byte offset neither layer has to know about.
             import cryptolib
-            body = _decrypting(body, enc, getattr(cfg, "PAYLOAD_KEYS", {}), cryptolib.aes)
+            body = _decrypting(body, enc, getattr(cfg, "PAYLOAD_KEYS", {}), cryptolib.aes,
+                               content_key)
             log.info("install: decrypting")   # the marker a HIL run sees on this path
         # Collect BEFORE building the decompress chain, unconditionally: DeflateIO
         # allocates its whole inflate window in one piece (4 KiB on small-window

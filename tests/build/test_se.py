@@ -1,4 +1,4 @@
-"""Host tests for the device-side secure element: ``openmv_ota.se`` and its ``se050`` driver.
+"""Host tests for the device-side secure element: ``openmv_se`` (``openmv_ota.se``) and its drivers.
 
 The driver is pure protocol over ``machine.I2C``, so it runs here against an emulated SE050: real
 T=1-over-I2C frames with their CRCs, a chip that NACKs while it works, asks for more time, chains
@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-from openmv_ota.build.device.openmv_ota.se import se050
+from openmv_ota.build.device.openmv_se import se050
 
 # --- the device clock, on the host --------------------------------------------------------
 
@@ -418,13 +418,13 @@ def test_crc_matches_the_t1_test_vectors():
 # --- the package entry point -----------------------------------------------------------------
 
 def test_open_returns_none_on_a_board_without_a_secure_element(monkeypatch):
-    from openmv_ota.build.device.openmv_ota import se
-    monkeypatch.delitem(sys.modules, "openmv_ota.build.device.openmv_ota.se.board", raising=False)
+    from openmv_ota.build.device import openmv_se as se
+    monkeypatch.delitem(sys.modules, "openmv_ota.build.device.openmv_se.board", raising=False)
     assert se.open() is None
 
 
 def test_open_builds_the_board_s_chip_from_its_wiring(monkeypatch):
-    from openmv_ota.build.device.openmv_ota import se
+    from openmv_ota.build.device import openmv_se as se
     made = {}
 
     class FakeChip:
@@ -436,10 +436,10 @@ def test_open_builds_the_board_s_chip_from_its_wiring(monkeypatch):
     machine.Pin = type("Pin", (), {"OUT": 1, "__init__": lambda s, name, mode: setattr(s, "n", name)})
     monkeypatch.setitem(sys.modules, "machine", machine)
     for enable in ("SE05X_EN", None):
-        board = types.ModuleType("openmv_ota.build.device.openmv_ota.se.board")
+        board = types.ModuleType("openmv_ota.build.device.openmv_se.board")
         board.SecureElement, board.BUS, board.ADDR = FakeChip, 2, 0x48
         board.ENABLE, board.FREQ = enable, 400000
-        monkeypatch.setitem(sys.modules, "openmv_ota.build.device.openmv_ota.se.board", board)
+        monkeypatch.setitem(sys.modules, "openmv_ota.build.device.openmv_se.board", board)
         monkeypatch.setattr(se, "board", board, raising=False)
         se.open()
         assert made["i2c"] == ("I2C", 2, 400000) and made["addr"] == 0x48
@@ -453,7 +453,7 @@ def test_board_table_secure_element_entries_are_checked():
     se = boards_mod._secure_element
     assert se("X", None) is None
     assert se("X", {"chip": "se050", "bus": 2, "addr": 0x48}) == {
-        "chip": "se050", "bus": 2, "addr": 0x48, "enable": None, "freq": 400000}
+        "chip": "se050", "bus": 2, "addr": 0x48, "enable": None, "freq": 400000, "trust": True}
     assert se("X", {"chip": "se050", "bus": 1, "addr": 0x48, "enable": "SE05X_EN",
                     "freq": 100000})["enable"] == "SE05X_EN"
     with pytest.raises(ValueError, match="chip 'tpm'"):
@@ -465,7 +465,11 @@ def test_board_table_secure_element_entries_are_checked():
         se("X", {"chip": "se050", "bus": 2, "addr": 0x48, "enable": 5})
     assert boards_mod.get_board("OPENMV_RT1060").secure_element["chip"] == "se050"
     assert se("X", {"chip": "soft", "key_area": 0x08007000, "bootloader_max": 0x7000}) == {
-        "chip": "soft", "key_area": 0x08007000, "bootloader_max": 0x7000}
+        "chip": "soft", "key_area": 0x08007000, "bootloader_max": 0x7000, "trust": True}
+    assert not se("X", {"chip": "soft", "key_area": 1, "bootloader_max": 1,
+                        "trust": False})["trust"]
+    with pytest.raises(ValueError, match="trust must be true or false"):
+        se("X", {"chip": "soft", "key_area": 1, "bootloader_max": 1, "trust": "no"})
     for bad in ({"key_area": "0x0800"}, {"key_area": 1, "bootloader_max": 0}, {"key_area": 1}):
         with pytest.raises(ValueError, match="integer key_area and bootloader_max"):
             se("X", {"chip": "soft", **bad})
@@ -479,45 +483,69 @@ def test_board_table_secure_element_entries_are_checked():
         assert k["chip"] == "soft" and k["key_area"] == area == 0x08000000 + k["bootloader_max"]
 
 
-def test_the_pack_ships_only_the_board_s_chip_and_its_wiring(tmp_path):
-    from pathlib import Path
-
-    from openmv_ota.build.romfs import _stage_secure_element
-    src = Path(se050.__file__).parent
+def test_the_firmware_freezes_only_the_board_s_chip_and_its_wiring(tmp_path):
+    """The keys are frozen into the firmware (recovery needs them with no romfs), and only this
+    board's module of them: every other driver would be dead flash."""
+    from openmv_ota.build.firmware import _stage_key_package
 
     def stage_for(board):
-        lib = tmp_path / board / "lib" / "openmv_ota"
-        (lib / "se").mkdir(parents=True)
-        for f in src.glob("*.py"):
-            (lib / "se" / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
-        (lib / "se" / "atecc608.py").write_text("# another chip\n", encoding="utf-8")
-        _stage_secure_element(lib, board)
-        return lib / "se"
+        mods = tmp_path / board
+        mods.mkdir()
+        return mods, _stage_key_package(mods, board)
 
-    rt = stage_for("OPENMV_RT1060")
-    assert sorted(p.name for p in rt.iterdir()) == ["__init__.py", "board.py", "se050.py"]
+    mods, frozen = stage_for("OPENMV_RT1060")
+    rt = mods / "openmv_se"
+    assert sorted(p.name for p in rt.iterdir()) == ["__init__.py", "board.py", "se050.py",
+                                                    "trust.py"]
+    assert frozen == ["openmv_se/__init__.py", "openmv_se/se050.py", "openmv_se/trust.py",
+                      "openmv_se/board.py"]
     board = (rt / "board.py").read_text(encoding="utf-8")
     assert "from .se050 import SecureElement" in board
     assert "BUS = 2\nADDR = 0x48\nENABLE = None\nFREQ = 400000\n" in board
     compile(board, "board.py", "exec")
 
-    h7 = stage_for("OPENMV4")                            # its own keys: soft, no wiring
-    assert sorted(p.name for p in h7.iterdir()) == ["__init__.py", "board.py", "soft.py"]
+    mods, _ = stage_for("OPENMV4")                       # its own keys: soft, no wiring
+    h7 = mods / "openmv_se"
+    assert sorted(p.name for p in h7.iterdir()) == ["__init__.py", "board.py", "soft.py",
+                                                    "trust.py"]
     board = (h7 / "board.py").read_text(encoding="utf-8")
     assert "from .soft import SecureElement" in board and "BUS = None\n" in board
     compile(board, "board.py", "exec")
 
-    n6 = stage_for("OPENMV_N6")                          # keys sealed in its own NOR: soft
-    assert sorted(p.name for p in n6.iterdir()) == ["__init__.py", "board.py", "soft.py"]
-    ae3 = stage_for("OPENMV_AE3")                        # its own keys in MRAM: soft
-    assert sorted(p.name for p in ae3.iterdir()) == ["__init__.py", "board.py", "soft.py"]
-    assert not stage_for("ARDUINO_NANO_RP2040_CONNECT").exists()   # no keys at all: no package
-    _stage_secure_element(tmp_path / "plain", "OPENMV_RT1060")   # no se/ staged: nothing to do
+    for name in ("OPENMV_N6", "OPENMV_AE3"):             # sealed in its NOR / in its MRAM
+        mods, _ = stage_for(name)
+        assert sorted(p.name for p in (mods / "openmv_se").iterdir()) == \
+            ["__init__.py", "board.py", "soft.py", "trust.py"]
+    # the M4 has no room for openmv_se.trust: its keys alone (it checks in unsigned)
+    mods, frozen = stage_for("OPENMV2")
+    assert frozen == ["openmv_se/__init__.py", "openmv_se/soft.py", "openmv_se/board.py"]
+    mods, frozen = stage_for("ARDUINO_NANO_RP2040_CONNECT")     # no keys at all: nothing
+    assert frozen == [] and not (mods / "openmv_se").exists()
+
+
+def test_the_romfs_name_is_the_frozen_package(monkeypatch):
+    """Applications import ``openmv_ota.se``: the frozen ``openmv_se`` by another name, and on a
+    board with no keys (nothing frozen) an ``open()`` that says so."""
+    import importlib
+    import types
+
+    path = "openmv_ota.build.device.openmv_ota.se"
+    frozen = types.ModuleType("openmv_se")
+    frozen.open = lambda: "keys"
+    frozen.provision = lambda: ("keys", False)
+    monkeypatch.setitem(sys.modules, "openmv_se", frozen)
+    monkeypatch.delitem(sys.modules, path, raising=False)
+    shim = importlib.import_module(path)
+    assert shim.open() == "keys" and shim.provision() == ("keys", False)
+
+    monkeypatch.setitem(sys.modules, "openmv_se", None)          # import openmv_se -> ImportError
+    shim = importlib.reload(shim)
+    assert shim.open() is None and shim.provision() is None
 
 
 # --- the ATECC608 ----------------------------------------------------------------------------
 
-from openmv_ota.build.device.openmv_ota.se import atecc608  # noqa: E402
+from openmv_ota.build.device.openmv_se import atecc608  # noqa: E402
 
 
 def _acrc(data):
@@ -846,7 +874,7 @@ from cryptography.hazmat.primitives.asymmetric import utils as ec_utils  # noqa:
 
 for _name in ("key_store", "ecdsa_verify"):
     sys.modules.setdefault(_name, types.ModuleType(_name))
-from openmv_ota.build.device.openmv_ota.se import soft  # noqa: E402
+from openmv_ota.build.device.openmv_se import soft  # noqa: E402
 
 _N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 
@@ -1207,7 +1235,7 @@ def test_soft_der_sig_pads_and_strips():
 
 
 def test_open_and_provision_take_a_board_s_own_keys_with_no_bus(monkeypatch):
-    from openmv_ota.build.device.openmv_ota import se as se_pkg
+    from openmv_ota.build.device import openmv_se as se_pkg
     made = object()
 
     class Keys:
@@ -1221,10 +1249,10 @@ def test_open_and_provision_take_a_board_s_own_keys_with_no_bus(monkeypatch):
     board = types.ModuleType("board")
     board.BUS = None
     board.SecureElement = Keys
-    monkeypatch.setitem(sys.modules, "openmv_ota.build.device.openmv_ota.se.board", board)
+    monkeypatch.setitem(sys.modules, "openmv_ota.build.device.openmv_se.board", board)
     monkeypatch.setattr(se_pkg, "board", board, raising=False)
     assert se_pkg.open().opened is made
     assert se_pkg.provision() == (made, True)
-    monkeypatch.delitem(sys.modules, "openmv_ota.build.device.openmv_ota.se.board")
+    monkeypatch.delitem(sys.modules, "openmv_ota.build.device.openmv_se.board")
     monkeypatch.delattr(se_pkg, "board")
     assert se_pkg.provision() is None                     # a board with no keys at all

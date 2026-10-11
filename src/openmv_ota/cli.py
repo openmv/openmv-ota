@@ -52,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     server_cli.register(p_server)
 
+    p_keykeeper = sub.add_parser("keykeeper", help="run the private per-camera key service "
+                                 "(needs [server] extra)")
+    from openmv_ota.keykeeper import cli as keykeeper_cli
+
+    keykeeper_cli.register(p_keykeeper)
+
     p_client = sub.add_parser("client", help="talk to an update server's admin API")
     from openmv_ota.client import cli as client_cli
 

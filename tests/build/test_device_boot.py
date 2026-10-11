@@ -734,8 +734,10 @@ class _Se:
 
 def test_a_factory_boot_makes_the_keys_and_answers_the_tool():
     se = _Se((_Keys(), True))
-    line = B.factory_keys(0x0001, se, CH)
-    assert line == "SE-ID %s %s %s 1" % ("04" + "00" * 64, "04" + "01" * 64, "3006020101020101")
+    line = B.factory_keys(0x0001, se, CH, "0036324E4236")
+    assert line == "SE-ID %s %s %s 1 0036324E4236" % ("04" + "00" * 64, "04" + "01" * 64,
+                                                      "3006020101020101")
+    assert B.factory_keys(0x0001, se, CH).endswith(" 1 -")              # couldn't name itself
     assert B.factory_keys(0x0001, _Se((_Keys(), False)), None) == "SE-OK"   # nobody asked
 
 

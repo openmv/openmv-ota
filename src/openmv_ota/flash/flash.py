@@ -531,17 +531,58 @@ _IDENTITY_ANSWER_S = 15   # from the port appearing to the camera's answer
 _IDENTITY_SEND_S = 0.1    # how often the request is repeated until it is answered
 # No answer this long after opening the console: the camera's boot closed its window before the
 # port was open (it waits only briefly for a host). Soft-reset it with the console held open --
-# Ctrl-C out of the app, Ctrl-D at the REPL reruns boot.py -- and that boot waits for us.
+# Ctrl-C out of the app, Ctrl-D at the REPL reruns boot.py -- and that boot waits for us. SOFT, not
+# machine.reset(): on the classic STM32 boards USB comes up only after boot.py, so a cold boot's
+# key window has no port to hear the desk on. (An app's armed watchdog may bite during the soft
+# reboot instead -- a hard reset after all, on a board whose USB is up in boot.py, like the N6;
+# the reopen below catches that boot.)
 _IDENTITY_RESET_S = 3
 _SOFT_RESET = (b"\r\x03", b"\r\x03", b"\r\x03", b"\x04")
+_IDENTITY_RECONNECTS = 3  # the camera dropping off USB mid-exchange, survived this many times
+_IDENTITY_QUIET_S = 1.0  # nothing new this long: a line short of its newline is all there is
+# A whole SE-ID line short of only its newline: an older boot.py print()ed it and the N6 started
+# its app before sending the newline (see boot.py). Taken once nothing more is coming.
+_UNTERMINATED = re.compile(r"SE-(ID)( [0-9a-f]+ [0-9a-f]+ [0-9a-f]+ [01] [^\s]+)\s*$")
+
 
 
 def _open_console(port: str):
     import serial
-    return serial.Serial(port, 115200, timeout=_IDENTITY_SEND_S)
+    # write_timeout: a camera still booting can leave its port not taking input yet, and an
+    # unbounded write then blocks forever -- the flash hung there, the camera long since ready
+    return serial.Serial(port, 115200, timeout=_IDENTITY_SEND_S, write_timeout=1)
 
 
-def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = False):
+def _write(con, data: bytes, serial_mod) -> None:
+    """Write to the camera's console, or skip it: a port not taking input -- still booting, or its
+    input full because the app doesn't read it, the camera having already answered -- is no
+    reason to stop LISTENING. A port that is gone still raises."""
+    try:
+        con.write(data)
+    except serial_mod.SerialTimeoutException:
+        pass
+
+
+def _reconnect(con, raw, serial, until: float):
+    """The console again after the camera dropped off USB (a reset re-enumerates it), or None if
+    it isn't back by ``until``."""
+    try:
+        con.close()
+    except OSError:
+        pass
+    while time.monotonic() < until:
+        cam = device.select(raw, serial)
+        if cam is not None:
+            try:
+                return _open_console(cam.port)
+            except OSError:                       # enumerated, not ready to open yet
+                pass
+        time.sleep(_IDENTITY_POLL_S)
+    return None
+
+
+def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = False,
+                   registrar=None):
     """The last step of ``flash factory`` on a board with keys. Booting the factory image just
     written, the camera makes its keys if it has none -- in boot.py, before the app runs -- and,
     for a short window, answers an ``OMVKEYS <challenge>`` line on its console with both public
@@ -549,10 +590,15 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
     is back on USB until it answers, verifies the signature against the identity key, and
     reports the keys. Only if the camera's boot closed its window before the console was open
     does this break into the app, to soft-reset it (see ``_IDENTITY_RESET_S``). A camera whose
-    keys are damaged fails the flash. Boards with no keys: nothing."""
+    keys are damaged fails the flash. Boards with no keys: nothing.
+
+    ``registrar(board, device_id, identity_hex, exchange_hex)``, given, then registers the keys
+    with the server (a desk-signed record; see ``flash.cli``) and returns its answer; a camera
+    that can't say which camera it is can't be registered, and fails the flash."""
     import hashlib
     import os
 
+    import serial as serial_mod
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -566,7 +612,10 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
     digest = hashlib.sha256(os.urandom(32)).digest()
     request = "OMVKEYS %s" % digest.hex()
     if dry_run:
-        return [IdentityStep("keys", ["send", "'%s'" % request, "to the camera's console at boot"])]
+        steps = [IdentityStep("keys", ["send", "'%s'" % request, "to the camera's console at boot"])]
+        if registrar is not None:
+            steps.append(IdentityStep("register", ["register its keys, signed by the desk key"]))
+        return steps
     raw = flash_config(board).raw
     deadline = time.monotonic() + _IDENTITY_WAIT_S
     while (cam := device.select(raw, serial)) is None:
@@ -576,21 +625,50 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
         time.sleep(_IDENTITY_POLL_S)
     answer, heard = None, ""
     con = _open_console(cam.port)
+    drops = 0
     try:
-        opened = time.monotonic()
+        opened = last_rx = time.monotonic()
         deadline = opened + _IDENTITY_ANSWER_S
         reset = False
         while answer is None and time.monotonic() < deadline:
-            if not reset and time.monotonic() - opened >= _IDENTITY_RESET_S:
-                reset = True
-                for key in _SOFT_RESET:
-                    con.write(key)
-                    time.sleep(0.2)
-            con.write((request + "\r\n").encode())
-            heard += con.read(4096).decode("utf-8", "replace")
-            answer = re.search(r"SE-(ID|NONE|ERROR)([^\r\n]*)\r?\n", heard)
+            try:
+                if not reset and time.monotonic() - opened >= _IDENTITY_RESET_S:
+                    reset = True
+                    for key in _SOFT_RESET:
+                        _write(con, key, serial_mod)
+                        time.sleep(0.2)
+                _write(con, (request + "\r\n").encode(), serial_mod)
+                got = con.read(4096).decode("utf-8", "replace")
+                heard += got
+                if got:
+                    last_rx = time.monotonic()
+            except OSError as e:
+                # The port went away under us (pyserial's SerialException is an OSError): the
+                # camera re-enumerated (a reset, ours or its watchdog's). What it said before it
+                # went is all it will say: an answer short of only its newline is taken. Else
+                # reopen and start over: its next boot waits for us, and if the window has
+                # closed again, reset it again.
+                answer = _UNTERMINATED.search(heard)
+                if answer is not None:
+                    break
+                drops += 1
+                print("the camera dropped off USB while its keys were asked for (%s); "
+                      "reopening" % e, file=sys.stderr)
+                con = _reconnect(con, raw, serial, time.monotonic() + _IDENTITY_WAIT_S) \
+                    if drops <= _IDENTITY_RECONNECTS else None
+                if con is None:
+                    break
+                opened = time.monotonic()
+                deadline, reset, heard = opened + _IDENTITY_ANSWER_S, False, ""
+                continue
+            # \r*: a port's stdout turns "\n" into "\r\n", and a line already ending "\r\n" into
+            # "\r\r\n" -- an answer is a line however many carriage returns end it
+            answer = re.search(r"SE-(ID|NONE|ERROR)([^\r\n]*)\r*\n", heard)
+            if answer is None and time.monotonic() - last_rx >= _IDENTITY_QUIET_S:
+                answer = _UNTERMINATED.search(heard)
     finally:
-        con.close()
+        if con is not None:
+            con.close()
     if answer is None:
         from openmv_ota.build.device import boot
         raise FlashError("the camera did not answer for its keys while booting its factory image "
@@ -602,6 +680,7 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
         raise FlashError("the camera's keys: %s" % " ".join(rest))
     pub, kx, sig = (bytes.fromhex(x) for x in rest[:3])
     made = rest[3] == "1"
+    device_id = rest[4] if len(rest) > 4 else "-"
     try:
         key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), pub)
         key.verify(sig, digest, ec.ECDSA(Prehashed(hashes.SHA256())))
@@ -611,8 +690,18 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
     if made and se["chip"] == "atecc608":
         print("configured this board's ATECC608 the Arduino-compatible way (one-time) and made "
               "its keys", file=sys.stderr)
-    return [IdentityStep("keys %s: identity %s, exchange %s"
-                         % ("made" if made else "present", pub.hex(), kx.hex()), [cam.port])]
+    steps = [IdentityStep("keys %s: identity %s, exchange %s"
+                          % ("made" if made else "present", pub.hex(), kx.hex()), [cam.port])]
+    if registrar is not None:
+        if device_id == "-":
+            raise FlashError("the camera didn't say which camera it is, so its keys can't be "
+                             "registered; its factory romfs needs the openmv_ota runtime")
+        got = registrar(board, device_id, pub.hex(), kx.hex())
+        steps.append(IdentityStep("registered %s (key %s)%s"
+                                  % (got["device_id"], got["fingerprint"][:16],
+                                     ", replacing its old keys" if got["rekeyed"] else ""),
+                                  [got["account_id"]]))
+    return steps
 
 
 @dataclass(frozen=True)

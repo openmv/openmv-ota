@@ -493,6 +493,49 @@ class DeviceBound(BaseModel):
     account_id: str
 
 
+class DeskKeyInfo(BaseModel):
+    key_id: int
+    label: str
+    pubkey: str
+    expires: str
+    revoked: bool
+    updated_at: str = ""
+
+
+class DeskKeyList(BaseModel):
+    desk_keys: list[DeskKeyInfo]
+
+
+class DeviceRegistered(BaseModel):
+    device_id: str
+    account_id: str
+    fingerprint: str
+    """SHA-256 of the identity public key, hex: the camera's key as a person compares it."""
+    rekeyed: bool
+    """True when this replaced a registration with a different identity key."""
+
+
+class Registration(BaseModel):
+    device_id: str
+    fingerprint: str
+    identity: str
+    exchange: str
+    desk_key_id: int
+    issued: str
+    registered_at: str
+    registered_by: str
+    record: str
+    """The record exactly as the desk signed it."""
+    signature: str
+    last_signed_at: str | None = None
+    """When the camera last checked in with a good signature (null: never yet)."""
+    refused_checkins: int = 0
+    """Check-ins whose signature didn't verify against this registration."""
+    last_refused_at: str | None = None
+    last_refusal: str | None = None
+    """Why the last one was refused (``bad signature``, ``stale``, ``malformed``, ...)."""
+
+
 class CohortPinned(BaseModel):
     product_id: int
     product_id_str: str = ""
@@ -706,10 +749,19 @@ class CheckAnswer(_Row):
     manifest_url: str | None = None
     release_id: str | None = None
     poll_after_s: int | None = None
+    lockbox: str | None = None
+    """With an offer of a release encrypted for each camera: its content key, wrapped for this
+    camera's exchange key alone (145 bytes, hex)."""
 
 
 class Ok(BaseModel):
     ok: bool
+
+
+class KeykeeperChain(BaseModel):
+    chain: list[dict]
+    """``[{"record": str, "signature": hex}]``, oldest first: each record names a generation of
+    keykeeper keys and is signed by the generation before it."""
 
 
 class Health(BaseModel):

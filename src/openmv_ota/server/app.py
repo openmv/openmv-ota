@@ -27,21 +27,23 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from openmv_ota import __version__
+from openmv_ota.ota import checkin_sig
 
 from . import capability
 from . import datalog as datalog_mod
+from . import keykeeper as keykeeper_mod
 from . import live as live_mod
 from .auth import TokenAuth
 from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter, SharedRateLimiter
-from .schemas import CheckAnswer, Health, Ok
+from .schemas import CheckAnswer, Health, KeykeeperChain, Ok
 from .rollout import (fallback_payload_version, offers_update, ramp_action,
                       running_body_sha256, settled, should_autopause, soak_elapsed_s)
 from .storage import build_storage
@@ -693,6 +695,23 @@ def _effective_account(ms, checkin):
     return ""
 
 
+@router.get("/api/v1/keykeeper/chain", tags=["Publishing"],
+            responses={200: {"model": KeykeeperChain}})
+def keykeeper_chain(request: Request):
+    """The chain of keykeeper's public keys, for publishers sealing releases encrypted for each
+    camera. Public, and no reason to trust this server for it: each generation is signed by the
+    one before, and a publisher verifies the chain from the generation it pinned
+    (``openmv-ota client keykeeper sync``). 404 when this server has no keykeeper; 503 when it
+    can't be reached."""
+    kk = request.app.state.keykeeper
+    if kk is None:
+        raise HTTPException(status_code=404, detail="this server has no keykeeper")
+    chain = kk.chain()
+    if chain is None:
+        raise HTTPException(status_code=503, detail="keykeeper is unavailable")
+    return {"chain": chain}
+
+
 @router.get("/healthz", tags=["Health"], responses={200: {"model": Health}})
 def healthz():
     """Liveness. No token, no database read -- a load balancer can poll it freely.
@@ -704,8 +723,64 @@ def healthz():
     return {"ok": True, "commit": os.environ.get("RENDER_GIT_COMMIT", "")[:7]}
 
 
+async def _raw_body(request: Request) -> bytes:
+    """The request body as sent: a signed check-in is signed over these exact bytes, not over
+    the model they parse into. Starlette caches it, so the model is parsed from the same read."""
+    return await request.body()
+
+
+def _signature(ms, device_id: str, header: str | None, body: bytes) -> tuple[str, str | None]:
+    """How a check-in is signed: ``("signed", None)``, ``("unsigned", None)``, or
+    ``("refused", reason)`` -- a signature from a camera with no registration, or one that doesn't
+    verify against the identity key its registration names."""
+    if header is None:
+        return "unsigned", None
+    reg = ms.get_registration(device_id)
+    if reg is None:
+        return "refused", "unregistered"
+    try:
+        checkin_sig.verify(header, body, reg["identity"], time.time())
+    except checkin_sig.CheckinSignatureError as e:
+        return "refused", str(e)
+    return "signed", None
+
+
+def _lockbox(st, rel, device_id: str):
+    """``(offerable, lockbox)`` for offering ``rel`` to ``device_id``: a release encrypted for
+    each camera needs this camera's lockbox from keykeeper, and without one it isn't offered."""
+    sealed = keykeeper_mod.sealed_of(rel)
+    if sealed is None:
+        return True, None
+    reg = st.metastore.get_registration(device_id) if st.keykeeper is not None else None
+    if reg is None:
+        return False, None
+    box = st.keykeeper.lockbox(sealed, reg["record"], reg["signature"])
+    return box is not None, box
+
+
+def _offer_answer(st, rel, manifest_url, device_id: str):
+    """The answer offering ``rel``, or None when it can't be offered to this camera."""
+    ok, box = _lockbox(st, rel, device_id)
+    if not ok:
+        return None
+    answer = {"update": True, "manifest_url": manifest_url, "release_id": rel["release_id"],
+              "poll_after_s": _paced(st.settings)}
+    if box is not None:
+        answer["lockbox"] = box
+    return answer
+
+
+def _offer_only(st, checkin, cohort, existing, account_id, nothing):
+    """An update offer and nothing else: no fleet row, no telemetry, no grants. What a check-in
+    gets that can't prove which camera sent it, once signed check-ins are required."""
+    _, rel, _offered, manifest_url = _decide(st, checkin, cohort, existing, account_id)
+    if manifest_url:
+        return _offer_answer(st, rel, manifest_url, checkin.device_id) or nothing
+    return nothing
+
+
 @router.post("/api/v1/check", tags=["Device API"], responses={200: {"model": CheckAnswer}})
-def check(checkin: CheckIn, request: Request):
+def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     """A camera asks whether there is an update for it. This is the only endpoint a
     device calls on a schedule, and the whole device-side protocol besides the
     download and `/api/v1/feedback`.
@@ -721,6 +796,12 @@ def check(checkin: CheckIn, request: Request):
     downloads. The account a device belongs to is *learned* from the first valid
     check-in that reports one, and that binding is sticky -- see
     `POST /api/v1/admin/devices/{device_id}/account` for the operator override.
+
+    **Signed check-ins.** A registered camera whose clock is set signs the body with its
+    identity key, in an `X-OMV-Signature: v=1;ts=<unix>;sig=<DER hex>` header. With the
+    server's `require_signed_checkins` on, only a signed check-in gets the full treatment; an
+    unsigned one gets update offers only, and one whose signature doesn't verify gets nothing.
+    Off, signatures are checked and noted but change nothing.
 
     `poll_after_s` is the server pacing the fleet; respect it rather than polling on a
     fixed timer, so a large fleet does not arrive in step."""
@@ -746,8 +827,7 @@ def check(checkin: CheckIn, request: Request):
         _, rel, offered, manifest_url = _decide(st, checkin, "__default__",
                                                 account_id=checkin.account_id)
         if manifest_url:
-            return {"update": True, "manifest_url": manifest_url,
-                    "release_id": rel["release_id"], "poll_after_s": _paced(st.settings)}
+            return _offer_answer(st, rel, manifest_url, checkin.device_id) or nothing
         return nothing
 
     reg = _verify(st, checkin)
@@ -763,8 +843,7 @@ def check(checkin: CheckIn, request: Request):
         _, rel, offered, manifest_url = _decide(st, checkin, "__default__",
                                                 account_id=checkin.account_id)
         if manifest_url:
-            return {"update": True, "manifest_url": manifest_url,
-                    "release_id": rel["release_id"], "poll_after_s": _paced(st.settings)}
+            return _offer_answer(st, rel, manifest_url, checkin.device_id) or nothing
         return nothing
     if not reg.registered:
         return nothing                                          # ZERO footprint for unregistered ids
@@ -772,6 +851,24 @@ def check(checkin: CheckIn, request: Request):
     ms = st.metastore
     account_id = _effective_account(ms, checkin)                # sticky binding, not the raw report
     existing = ms.get_device(checkin.device_id)
+    signed, refusal = _signature(ms, checkin.device_id, request.headers.get(checkin_sig.HEADER),
+                                 raw)
+    required = st.settings.require_signed_checkins
+    if signed == "signed":
+        ms.note_signed_checkin(checkin.device_id)
+    elif signed == "refused":
+        # Counted on the camera's registration (none to count on for an unregistered id: zero
+        # footprint), and audited when it is news, not on every poll of a camera that keeps failing.
+        if ms.note_refused_checkin(checkin.device_id, refusal):
+            ms.append_audit(actor="checkin", action="device.checkin_refused", entity_type="device",
+                            entity_id=checkin.device_id,
+                            data={"reason": refusal, "enforced": required},
+                            account_id=account_id, product_id=checkin.product_id)
+        if required:
+            return nothing
+    elif required:
+        return _offer_only(st, checkin, existing["cohort"] if existing else "__default__",
+                           existing, account_id, nothing)
     if existing is None and ms.over_device_limit(account_id):
         # A NEW device past the account's entitlement: not registered (zero footprint,
         # like an unregistered id), served nothing, and audited once so the overrun is
@@ -784,6 +881,11 @@ def check(checkin: CheckIn, request: Request):
         return nothing
     cohort = existing["cohort"] if existing else "__default__"
     ro, rel, offered, manifest_url = _decide(st, checkin, cohort, existing, account_id)
+    box = None
+    if manifest_url:
+        ok, box = _lockbox(st, rel, checkin.device_id)
+        if not ok:                       # encrypted for each camera, and no lockbox for this one
+            offered, manifest_url = False, None
     _account(ms, ro, rel, checkin, existing, offered)
     release_id = rel["release_id"] if offered else None
     if existing is None:
@@ -813,6 +915,8 @@ def check(checkin: CheckIn, request: Request):
     if manifest_url:
         resp = {"update": True, "manifest_url": manifest_url, "release_id": release_id,
                 "poll_after_s": _paced(st.settings)}
+        if box is not None:
+            resp["lockbox"] = box
     else:
         resp = dict(nothing)
     # OpenMV Live: registered devices get a fresh camera grant each check-in (the
@@ -939,7 +1043,7 @@ def _rate_limiter(settings, metastore):
 
 
 def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_auth=None,
-               osv=None, datalake=None, webhooks=None):
+               osv=None, datalake=None, webhooks=None, keykeeper=None):
     """Build the ASGI app. Collaborators default to the settings-driven backends; the website
     injects its own. The server HMAC secret comes from the DB (seeded by ``server init``) or
     ``OPENMV_OTA_CAPABILITY_SECRET`` -- required so capability tokens are stable across workers."""
@@ -966,6 +1070,8 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
                   description=_API_DESCRIPTION, openapi_tags=_OPENAPI_TAGS,
                   docs_url=None, redoc_url=None)  # /docs is our self-hosted ReDoc page
     app.state.settings = settings
+    app.state.keykeeper = (keykeeper if keykeeper is not None
+                           else keykeeper_mod.build_keykeeper(settings))
 
     @app.exception_handler(OverflowError)
     async def _number_out_of_range(request: Request, exc: OverflowError):

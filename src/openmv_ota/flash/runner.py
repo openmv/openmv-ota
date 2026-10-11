@@ -24,17 +24,25 @@ def output(argv: list[str]) -> str:
         raise FlashError("%s failed: exit %d" % (argv[0], e.returncode), exit_code=1) from None
 
 
+QUIET_TIMEOUT_S = 30     # mpremote against an app that never gives up its REPL waits forever
+
+
 def run_quiet(argv: list[str]) -> tuple[int, str]:
     """Run ``argv`` with its stdout+stderr CAPTURED, returning ``(exit code, output)`` and never
     raising on a non-zero exit -- for a step whose failure is the expected outcome (mpremote's
     ``machine.bootloader()``, which drops the USB link mid-call and prints a page of traceback
     about it). The caller judges success by what happens next, and shows the output only if
-    that fails. ``FlashError`` on a missing binary, like :func:`run`."""
+    that fails. ``FlashError`` on a missing binary, like :func:`run`. Bounded by
+    ``QUIET_TIMEOUT_S``: a step that hangs (mpremote waiting on an app that never yields its REPL)
+    returns 124, like ``timeout(1)``, with what it printed."""
     try:
         p = subprocess.run(argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           text=True, errors="replace")
+                           text=True, errors="replace", timeout=QUIET_TIMEOUT_S)
     except FileNotFoundError:
         raise FlashError("%s not found -- is it installed?" % argv[0], exit_code=1) from None
+    except subprocess.TimeoutExpired as e:
+        out = e.output.decode("utf-8", "replace") if isinstance(e.output, bytes) else (e.output or "")
+        return 124, out + "\n(timed out after %d s)" % QUIET_TIMEOUT_S
     return p.returncode, p.stdout or ""
 
 

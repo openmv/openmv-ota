@@ -133,11 +133,13 @@ def test_openapi_declares_the_bearer_scheme_and_every_route_that_needs_it(tmp_pa
                 guarded[(method, path)] = op["description"]
             else:
                 open_ops.add((method.upper(), path))
-    # Open by design: liveness, the two device endpoints (gated by registration and
+    # Open by design: liveness, keykeeper's public chain (publishers verify it themselves),
+    # the two device endpoints (gated by registration and
     # rate limit, never by an account credential), and the capability download URL.
     assert open_ops == {("GET", "/healthz"), ("POST", "/api/v1/check"),
-                        ("POST", "/api/v1/feedback"), ("GET", "/d/{token}/{filename}")}
-    assert len(guarded) == 66                                 # + GET /admin/dashboard
+                        ("POST", "/api/v1/feedback"), ("GET", "/d/{token}/{filename}"),
+                        ("GET", "/api/v1/keykeeper/chain")}
+    assert len(guarded) == 70                                 # + GET /admin/dashboard
     assert "`observe`" in guarded[("get", "/api/v1/admin/devices")]
     assert "`publish`" in guarded[("post", "/api/v1/admin/releases")]
     assert "`accounts`" in guarded[("post", "/api/v1/admin/accounts")]
