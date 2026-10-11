@@ -1943,7 +1943,7 @@ def test_an_update_encrypted_for_each_camera_opens_with_its_lockbox():
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-    from openmv_ota.build.device import openmv_se
+    from openmv_ota.build.device.openmv_se import trust
     from openmv_ota.ota import lockbox, payload
 
     class Camera:
@@ -1957,7 +1957,7 @@ def test_an_update_encrypted_for_each_camera_opens_with_its_lockbox():
     class Se:
         @staticmethod
         def open_lockbox(box):
-            return openmv_se.open_lockbox(box, Camera, _HostAes)
+            return trust.open_lockbox(box, Camera, _HostAes)
 
     content_key = payload.new_key()
     publisher_keys = {1: payload.new_key()}                # NOT on the camera
@@ -1990,6 +1990,6 @@ def test_the_lockbox_opens_with_the_frozen_key_code(monkeypatch):
     import types
     calls = []
     fake = types.SimpleNamespace(open_lockbox=lambda box: calls.append(box) or b"k" * 32)
-    monkeypatch.setitem(sys.modules, "openmv_se", fake)
+    monkeypatch.setitem(sys.modules, "openmv_se", types.SimpleNamespace(trust=fake))
     assert inst("_lockbox_key")("ab", {"sealed": {}}) == b"k" * 32
     assert calls == [b"\xab"]

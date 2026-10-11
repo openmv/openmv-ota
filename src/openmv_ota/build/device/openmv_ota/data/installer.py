@@ -1529,14 +1529,14 @@ def _lockbox_key(lockbox, enc, se=None):
     """The content key in the server's ``lockbox`` (hex) for an update encrypted for each camera,
     opened with this camera's exchange key; None for any other update. Pre-erase: a lockbox that
     is missing, or isn't this camera's, rejects the update with the slot untouched. ``se`` is
-    injectable for tests (default: the frozen ``openmv_se``)."""
+    injectable for tests (default: the frozen ``openmv_se.trust``)."""
     if not enc or enc.get("sealed") is None:
         return None
     if not lockbox:
         raise ValueError("this update is encrypted for each camera, and came without this "
                          "camera's lockbox")
     if se is None:
-        import openmv_se as se
+        from openmv_se import trust as se
     key = se.open_lockbox(binascii.unhexlify(lockbox))
     log.debug("install: lockbox opened")
     return key

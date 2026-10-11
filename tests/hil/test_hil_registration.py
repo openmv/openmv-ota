@@ -33,8 +33,10 @@ def _project(tmp_path, monkeypatch):
 def test_flash_factory_registers_against_the_run_s_server(monkeypatch):
     monkeypatch.setitem(ota_cycle.CFG, "server", "https://bench:8443")
     monkeypatch.setitem(ota_cycle.CFG, "token", "tok")
+    monkeypatch.setitem(ota_cycle.CFG, "bench_server", True)
     assert ota_cycle._register_args() == ("--server", "https://bench:8443", "--token", "tok")
-    monkeypatch.setitem(ota_cycle.CFG, "server", "")          # the file legs: no server
+    # the file legs start no bench server (CFG["server"] keeps its env default): no register
+    monkeypatch.setitem(ota_cycle.CFG, "bench_server", False)
     assert ota_cycle._register_args() == ("--no-register",)
 
 

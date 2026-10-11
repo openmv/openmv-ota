@@ -453,7 +453,7 @@ def test_board_table_secure_element_entries_are_checked():
     se = boards_mod._secure_element
     assert se("X", None) is None
     assert se("X", {"chip": "se050", "bus": 2, "addr": 0x48}) == {
-        "chip": "se050", "bus": 2, "addr": 0x48, "enable": None, "freq": 400000}
+        "chip": "se050", "bus": 2, "addr": 0x48, "enable": None, "freq": 400000, "trust": True}
     assert se("X", {"chip": "se050", "bus": 1, "addr": 0x48, "enable": "SE05X_EN",
                     "freq": 100000})["enable"] == "SE05X_EN"
     with pytest.raises(ValueError, match="chip 'tpm'"):
@@ -465,7 +465,11 @@ def test_board_table_secure_element_entries_are_checked():
         se("X", {"chip": "se050", "bus": 2, "addr": 0x48, "enable": 5})
     assert boards_mod.get_board("OPENMV_RT1060").secure_element["chip"] == "se050"
     assert se("X", {"chip": "soft", "key_area": 0x08007000, "bootloader_max": 0x7000}) == {
-        "chip": "soft", "key_area": 0x08007000, "bootloader_max": 0x7000}
+        "chip": "soft", "key_area": 0x08007000, "bootloader_max": 0x7000, "trust": True}
+    assert not se("X", {"chip": "soft", "key_area": 1, "bootloader_max": 1,
+                        "trust": False})["trust"]
+    with pytest.raises(ValueError, match="trust must be true or false"):
+        se("X", {"chip": "soft", "key_area": 1, "bootloader_max": 1, "trust": "no"})
     for bad in ({"key_area": "0x0800"}, {"key_area": 1, "bootloader_max": 0}, {"key_area": 1}):
         with pytest.raises(ValueError, match="integer key_area and bootloader_max"):
             se("X", {"chip": "soft", **bad})
@@ -491,8 +495,10 @@ def test_the_firmware_freezes_only_the_board_s_chip_and_its_wiring(tmp_path):
 
     mods, frozen = stage_for("OPENMV_RT1060")
     rt = mods / "openmv_se"
-    assert sorted(p.name for p in rt.iterdir()) == ["__init__.py", "board.py", "se050.py"]
-    assert frozen == ["openmv_se/__init__.py", "openmv_se/se050.py", "openmv_se/board.py"]
+    assert sorted(p.name for p in rt.iterdir()) == ["__init__.py", "board.py", "se050.py",
+                                                    "trust.py"]
+    assert frozen == ["openmv_se/__init__.py", "openmv_se/se050.py", "openmv_se/trust.py",
+                      "openmv_se/board.py"]
     board = (rt / "board.py").read_text(encoding="utf-8")
     assert "from .se050 import SecureElement" in board
     assert "BUS = 2\nADDR = 0x48\nENABLE = None\nFREQ = 400000\n" in board
@@ -500,7 +506,8 @@ def test_the_firmware_freezes_only_the_board_s_chip_and_its_wiring(tmp_path):
 
     mods, _ = stage_for("OPENMV4")                       # its own keys: soft, no wiring
     h7 = mods / "openmv_se"
-    assert sorted(p.name for p in h7.iterdir()) == ["__init__.py", "board.py", "soft.py"]
+    assert sorted(p.name for p in h7.iterdir()) == ["__init__.py", "board.py", "soft.py",
+                                                    "trust.py"]
     board = (h7 / "board.py").read_text(encoding="utf-8")
     assert "from .soft import SecureElement" in board and "BUS = None\n" in board
     compile(board, "board.py", "exec")
@@ -508,7 +515,10 @@ def test_the_firmware_freezes_only_the_board_s_chip_and_its_wiring(tmp_path):
     for name in ("OPENMV_N6", "OPENMV_AE3"):             # sealed in its NOR / in its MRAM
         mods, _ = stage_for(name)
         assert sorted(p.name for p in (mods / "openmv_se").iterdir()) == \
-            ["__init__.py", "board.py", "soft.py"]
+            ["__init__.py", "board.py", "soft.py", "trust.py"]
+    # the M4 has no room for openmv_se.trust: its keys alone (it checks in unsigned)
+    mods, frozen = stage_for("OPENMV2")
+    assert frozen == ["openmv_se/__init__.py", "openmv_se/soft.py", "openmv_se/board.py"]
     mods, frozen = stage_for("ARDUINO_NANO_RP2040_CONNECT")     # no keys at all: nothing
     assert frozen == [] and not (mods / "openmv_se").exists()
 

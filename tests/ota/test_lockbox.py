@@ -1,6 +1,6 @@
 """Seals and lockboxes: a release's content key, for keykeeper and for one camera.
 
-The lockbox is opened by camera code (``openmv_se.open_lockbox``: hand-rolled HMAC/HKDF over
+The lockbox is opened by camera code (``trust.open_lockbox``: hand-rolled HMAC/HKDF over
 ``hashlib``, ``cryptolib`` AES), so every lockbox test opens it with that code as well as the
 host's, the way a real camera meets keykeeper.
 """
@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from openmv_ota.build.device import openmv_se
+from openmv_ota.build.device.openmv_se import trust
 from openmv_ota.ota import lockbox as lb
 
 
@@ -51,12 +52,12 @@ def test_a_lockbox_opens_on_its_camera_and_nowhere_else():
     cam, other = _Camera(), _Camera()
     key = secrets.token_bytes(32)
     box = lb.make_lockbox(key, cam.public().hex())
-    assert len(box) == lb.LOCKBOX_SIZE == openmv_se.LOCKBOX_SIZE
-    assert openmv_se.open_lockbox(box, cam, _Aes) == key           # the camera's own code
+    assert len(box) == lb.LOCKBOX_SIZE == trust.LOCKBOX_SIZE
+    assert trust.open_lockbox(box, cam, _Aes) == key           # the camera's own code
     assert lb.open_lockbox(box, cam.key) == key                    # the host twin
     assert lb.open_lockbox(box, cam) == key                        # an ecdh()-object key
     with pytest.raises(ValueError, match="isn't for this camera"):
-        openmv_se.open_lockbox(box, other, _Aes)
+        trust.open_lockbox(box, other, _Aes)
     with pytest.raises(lb.LockboxError, match="isn't for this camera"):
         lb.open_lockbox(box, other.key)
 
@@ -67,44 +68,44 @@ def test_an_altered_lockbox_never_gives_a_key(at):
     box = bytearray(lb.make_lockbox(secrets.token_bytes(32), cam.public()))
     box[at] ^= 1
     with pytest.raises(ValueError):
-        openmv_se.open_lockbox(bytes(box), cam, _Aes)
+        trust.open_lockbox(bytes(box), cam, _Aes)
 
 
 def test_the_camera_s_hkdf_and_hmac_are_the_standard_ones():
     import hashlib
     import hmac
     secret = secrets.token_bytes(32)
-    assert openmv_se._hkdf64(secret, b"info") == lb.hkdf(secret, b"info", 64)
-    assert openmv_se._hmac(b"k" * 32, b"msg") == hmac.new(b"k" * 32, b"msg",
+    assert trust._hkdf64(secret, b"info") == lb.hkdf(secret, b"info", 64)
+    assert trust._hmac(b"k" * 32, b"msg") == hmac.new(b"k" * 32, b"msg",
                                                           hashlib.sha256).digest()
 
 
 def test_wrong_sizes_and_keys_are_refused(monkeypatch):
     cam = _Camera()
     with pytest.raises(ValueError, match="145"):
-        openmv_se.open_lockbox(b"\0" * 10, cam, _Aes)
+        trust.open_lockbox(b"\0" * 10, cam, _Aes)
     with pytest.raises(lb.LockboxError, match="is 145 bytes, not 10"):
         lb.open_lockbox(b"\0" * 10, cam.key)
     with pytest.raises(lb.LockboxError, match="content key must be 32"):
         lb.make_lockbox(b"short", cam.public())
     with pytest.raises(lb.LockboxError, match="exchange key isn't"):
         lb.make_lockbox(bytes(32), "04abcd")
-    monkeypatch.setattr(openmv_se, "_keys", None)
+    monkeypatch.setattr(trust, "_keys", None)
     monkeypatch.setattr(openmv_se, "open", lambda: None)
     with pytest.raises(ValueError, match="no keys"):
-        openmv_se.open_lockbox(bytes(145))
+        trust.open_lockbox(bytes(145))
 
 
 def test_the_camera_opens_its_keys_once_and_uses_cryptolib(monkeypatch):
     import sys
     import types
     cam, opened = _Camera(), []
-    monkeypatch.setattr(openmv_se, "_keys", None)
+    monkeypatch.setattr(trust, "_keys", None)
     monkeypatch.setattr(openmv_se, "open", lambda: opened.append(1) or cam)
     monkeypatch.setitem(sys.modules, "cryptolib", types.SimpleNamespace(aes=_Aes))
     key = secrets.token_bytes(32)
     for _ in range(2):
-        assert openmv_se.open_lockbox(lb.make_lockbox(key, cam.public())) == key
+        assert trust.open_lockbox(lb.make_lockbox(key, cam.public())) == key
     assert opened == [1]
 
 

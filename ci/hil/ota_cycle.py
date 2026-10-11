@@ -373,7 +373,7 @@ _DESK = "hil-bench"
 
 def _register_args():
     """`flash factory`'s registration arguments for this run."""
-    if not CFG.get("server"):
+    if not CFG.get("bench_server"):          # the file legs start none
         return ("--no-register",)
     return ("--server", CFG["server"], "--token", CFG["token"])
 
@@ -3233,6 +3233,7 @@ def main():
                                      offer_downgrades=(args.scenario == "bad_version"))
             CFG["server"], CFG["ca_node"], CFG["artifacts"], CFG["token"] = (
                 srv["url"], srv["ca"], srv["store"], srv["token"])
+            CFG["bench_server"] = True
             os.environ["SSL_CERT_FILE"] = CFG["ca_node"]    # `flash factory` registers over TLS
             _desk_ready()
         if network == "file":

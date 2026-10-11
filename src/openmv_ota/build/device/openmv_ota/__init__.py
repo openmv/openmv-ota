@@ -1488,7 +1488,7 @@ def tls_configure(ctx, ssl, ca):
 def _signature_header(payload, rtc=None, se=None):
     """The ``X-OMV-Signature`` header line for a check-in body, or ``""`` when there is none to give.
 
-    The camera signs its check-in with its identity key (``openmv_se.checkin_signature``) over the
+    The camera signs its check-in with its identity key (``openmv_se.trust.checkin_signature``) over the
     body and the time, so a server can tell the camera itself from anything that merely knows its
     id. The time is what keeps a recorded check-in from being replayed later, so a camera signs only
     once its clock is TRUSTED (set from the server's Date or NTP): a cold boot's first check-in goes
@@ -1500,7 +1500,7 @@ def _signature_header(payload, rtc=None, se=None):
         if not rtc.trusted():
             return ""
         if se is None:
-            import openmv_se as se
+            from openmv_se import trust as se
         value = se.checkin_signature(payload, int(rtc.now()))
     except Exception:
         return ""

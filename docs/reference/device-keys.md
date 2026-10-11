@@ -155,6 +155,10 @@ with `ts` the camera's Unix time and `body` the exact bytes of the check-in. The
 it against the identity key in the camera's registration, and takes it only within five minutes
 of its own clock, so a recorded check-in can't be replayed later.
 
+The M4 (OPENMV2) has no room in its firmware for this, or for opening lockboxes: it checks in
+unsigned, so a server requiring signed check-ins answers it with update offers only, and it
+can't install a release encrypted for each camera.
+
 A camera that has just booted cold has no clock yet: its first check-in goes unsigned, and the
 server's reply (its `Date` header) sets the clock for the next one. Recovery never signs.
 
