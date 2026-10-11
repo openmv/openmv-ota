@@ -185,6 +185,74 @@ def test_a_missed_window_soft_resets_the_camera_with_the_console_held(camera, mo
     assert keys == list(fl._SOFT_RESET)                     # once, Ctrl-C x3 then Ctrl-D
 
 
+class _Gone:
+    """A console whose camera re-enumerated (a soft reset drops the N6 off USB)."""
+
+    def __init__(self, on="read"):
+        self.on, self.sent, self.closed = on, [], False
+
+    def write(self, data):
+        if self.on == "write":
+            raise OSError("write failed: device disconnected")
+        self.sent.append(data)
+
+    def read(self, n):
+        import serial
+        raise serial.SerialException("device reports readiness to read but returned no data")
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize("on", ["read", "write"])
+def test_a_camera_that_re_enumerates_at_its_soft_reset_is_reopened(monkeypatch, on):
+    """The N6's soft reset drops it off USB: the console is reopened once it is back, and its
+    next boot answers."""
+    gone = _Gone(on)
+    back = _Console(_signed(0), boot=1)
+    consoles = iter([gone, OSError("not ready"), back])
+
+    def open_console(port):
+        c = next(consoles)
+        if isinstance(c, Exception):
+            raise c
+        return c
+    looks = iter([Camera("/dev/ttyACM9", "SN1"), None, Camera("/dev/ttyACM9", "SN1"),
+                  Camera("/dev/ttyACM9", "SN1")])
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: next(looks))
+    monkeypatch.setattr(fl.time, "sleep", lambda s: None)
+    monkeypatch.setattr(fl, "_open_console", open_console)
+    (step,) = fl.provision_keys(board="OPENMV_N6")
+    assert step.label.startswith("keys present") and gone.closed and back.closed
+
+
+def test_a_camera_that_doesnt_come_back_after_dropping_off_fails_the_flash(monkeypatch):
+    class Unclosable(_Gone):
+        def close(self):
+            raise OSError("already gone")
+    looks = iter([Camera("/dev/ttyACM9", "SN1")])          # there once, then gone for good
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: next(looks, None))
+    monkeypatch.setattr(fl.time, "sleep", lambda s: None)
+    clock = (i / 10 for i in range(100_000))
+    monkeypatch.setattr(fl.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(fl, "_open_console", lambda port: Unclosable())
+    with pytest.raises(fl.FlashError, match="did not answer for its keys"):
+        fl.provision_keys(board="OPENMV_N6")
+
+
+def test_a_camera_that_keeps_dropping_off_fails_the_flash(monkeypatch, capsys):
+    """Each drop is reported and survived, a few times; a camera that never holds its port
+    fails the flash rather than looping."""
+    opened = []
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: Camera("/dev/ttyACM9", "SN1"))
+    monkeypatch.setattr(fl.time, "sleep", lambda s: None)
+    monkeypatch.setattr(fl, "_open_console", lambda port: opened.append(1) or _Gone())
+    with pytest.raises(fl.FlashError, match="did not answer for its keys"):
+        fl.provision_keys(board="OPENMV_N6")
+    assert len(opened) == 1 + fl._IDENTITY_RECONNECTS
+    assert capsys.readouterr().err.count("dropped off USB") == 1 + fl._IDENTITY_RECONNECTS
+
+
 # --- registering the keys with the server -----------------------------------------------------
 
 def test_the_keys_are_registered_under_the_camera_s_own_id(camera):

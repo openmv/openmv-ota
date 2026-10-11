@@ -534,11 +534,30 @@ _IDENTITY_SEND_S = 0.1    # how often the request is repeated until it is answer
 # Ctrl-C out of the app, Ctrl-D at the REPL reruns boot.py -- and that boot waits for us.
 _IDENTITY_RESET_S = 3
 _SOFT_RESET = (b"\r\x03", b"\r\x03", b"\r\x03", b"\x04")
+_IDENTITY_RECONNECTS = 3  # the camera dropping off USB mid-exchange, survived this many times
 
 
 def _open_console(port: str):
     import serial
     return serial.Serial(port, 115200, timeout=_IDENTITY_SEND_S)
+
+
+def _reconnect(con, raw, serial, until: float):
+    """The console again after the camera dropped off USB (a soft reset re-enumerates it on some
+    ports -- the N6 does), or None if it isn't back by ``until``."""
+    try:
+        con.close()
+    except OSError:
+        pass
+    while time.monotonic() < until:
+        cam = device.select(raw, serial)
+        if cam is not None:
+            try:
+                return _open_console(cam.port)
+            except OSError:                       # enumerated, not ready to open yet
+                pass
+        time.sleep(_IDENTITY_POLL_S)
+    return None
 
 
 def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = False,
@@ -584,21 +603,39 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
         time.sleep(_IDENTITY_POLL_S)
     answer, heard = None, ""
     con = _open_console(cam.port)
+    drops = 0
     try:
         opened = time.monotonic()
         deadline = opened + _IDENTITY_ANSWER_S
         reset = False
         while answer is None and time.monotonic() < deadline:
-            if not reset and time.monotonic() - opened >= _IDENTITY_RESET_S:
-                reset = True
-                for key in _SOFT_RESET:
-                    con.write(key)
-                    time.sleep(0.2)
-            con.write((request + "\r\n").encode())
-            heard += con.read(4096).decode("utf-8", "replace")
+            try:
+                if not reset and time.monotonic() - opened >= _IDENTITY_RESET_S:
+                    reset = True
+                    for key in _SOFT_RESET:
+                        con.write(key)
+                        time.sleep(0.2)
+                con.write((request + "\r\n").encode())
+                heard += con.read(4096).decode("utf-8", "replace")
+            except OSError as e:
+                # The port went away under us (pyserial's SerialException is an OSError): the
+                # camera re-enumerated -- the N6 does at a soft reset. Reopen it and start over:
+                # its next boot waits for us, and if the window has closed again, soft-reset it
+                # again. An answer it sent as the port went is lost; it is asked again.
+                drops += 1
+                print("the camera dropped off USB while its keys were asked for (%s); "
+                      "reopening" % e, file=sys.stderr)
+                con = _reconnect(con, raw, serial, time.monotonic() + _IDENTITY_WAIT_S) \
+                    if drops <= _IDENTITY_RECONNECTS else None
+                if con is None:
+                    break
+                opened = time.monotonic()
+                deadline, reset, heard = opened + _IDENTITY_ANSWER_S, False, ""
+                continue
             answer = re.search(r"SE-(ID|NONE|ERROR)([^\r\n]*)\r?\n", heard)
     finally:
-        con.close()
+        if con is not None:
+            con.close()
     if answer is None:
         from openmv_ota.build.device import boot
         raise FlashError("the camera did not answer for its keys while booting its factory image "
