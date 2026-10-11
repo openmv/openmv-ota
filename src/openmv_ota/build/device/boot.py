@@ -726,7 +726,11 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
                 pass  # hil-residual: same branch as the line above
         answer = factory_keys(trailer.key_id, se, challenge, device_id)
         if challenge is not None:
-            print(answer)  # hil-residual: answered during `flash factory`, before a HIL run's capture starts; the flash's own "keys made/present" report proves it
+            # ONE write, newline included, then a beat for USB to send it: print() writes the
+            # newline separately, and on the N6 that last write could still be queued when the app
+            # started and stopped servicing the port -- the desk got the whole line but its end.
+            sys.stdout.write(answer + "\r\n")  # hil-residual: answered during `flash factory`, before a HIL run's capture starts; the flash's own "keys made/present" report proves it
+            time.sleep_ms(100)  # hil-residual: same branch as the line above
         log.info("boot: keys %s" % answer)
     log.info("boot: ready, running app")
 

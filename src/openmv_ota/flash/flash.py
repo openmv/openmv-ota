@@ -535,11 +535,25 @@ _IDENTITY_SEND_S = 0.1    # how often the request is repeated until it is answer
 _IDENTITY_RESET_S = 3
 _SOFT_RESET = (b"\r\x03", b"\r\x03", b"\r\x03", b"\x04")
 _IDENTITY_RECONNECTS = 3  # the camera dropping off USB mid-exchange, survived this many times
+_IDENTITY_QUIET_READS = 5  # reads with nothing new: a line short of its newline is all there is
+
 
 
 def _open_console(port: str):
     import serial
-    return serial.Serial(port, 115200, timeout=_IDENTITY_SEND_S)
+    # write_timeout: a camera still booting can leave its port not taking input yet, and an
+    # unbounded write then blocks forever -- the flash hung there, the camera long since ready
+    return serial.Serial(port, 115200, timeout=_IDENTITY_SEND_S, write_timeout=1)
+
+
+def _write(con, data: bytes, serial_mod) -> None:
+    """Write to the camera's console, or skip it: a port not taking input -- still booting, or its
+    input full because the app doesn't read it, the camera having already answered -- is no
+    reason to stop LISTENING. A port that is gone still raises."""
+    try:
+        con.write(data)
+    except serial_mod.SerialTimeoutException:
+        pass
 
 
 def _reconnect(con, raw, serial, until: float):
@@ -577,6 +591,7 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
     import hashlib
     import os
 
+    import serial as serial_mod
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -603,7 +618,7 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
         time.sleep(_IDENTITY_POLL_S)
     answer, heard = None, ""
     con = _open_console(cam.port)
-    drops = 0
+    drops = quiet = 0
     try:
         opened = time.monotonic()
         deadline = opened + _IDENTITY_ANSWER_S
@@ -613,10 +628,12 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                 if not reset and time.monotonic() - opened >= _IDENTITY_RESET_S:
                     reset = True
                     for key in _SOFT_RESET:
-                        con.write(key)
+                        _write(con, key, serial_mod)
                         time.sleep(0.2)
-                con.write((request + "\r\n").encode())
-                heard += con.read(4096).decode("utf-8", "replace")
+                _write(con, (request + "\r\n").encode(), serial_mod)
+                got = con.read(4096).decode("utf-8", "replace")
+                heard += got
+                quiet = 0 if got else quiet + 1
             except OSError as e:
                 # The port went away under us (pyserial's SerialException is an OSError): the
                 # camera re-enumerated -- the N6 does at a soft reset. Reopen it and start over:
@@ -633,6 +650,11 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                 deadline, reset, heard = opened + _IDENTITY_ANSWER_S, False, ""
                 continue
             answer = re.search(r"SE-(ID|NONE|ERROR)([^\r\n]*)\r?\n", heard)
+            if answer is None and quiet >= _IDENTITY_QUIET_READS:
+                # A whole SE-ID line short of only its newline, and nothing more coming: an older
+                # boot.py that print()ed it, the newline lost as the app started (see boot.py)
+                answer = re.search(r"SE-(ID)( [0-9a-f]+ [0-9a-f]+ [0-9a-f]+ [01] [^\s]+)\s*$",
+                                   heard)
     finally:
         if con is not None:
             con.close()

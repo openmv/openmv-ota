@@ -137,7 +137,8 @@ def test_a_camera_that_never_comes_back_fails_the_flash(monkeypatch):
 def test_open_console_is_a_serial_port(monkeypatch):
     import serial
     seen = {}
-    monkeypatch.setattr(serial, "Serial", lambda port, baud, timeout: seen.update(p=port) or "S")
+    monkeypatch.setattr(serial, "Serial",
+                        lambda port, baud, timeout, write_timeout: seen.update(p=port) or "S")
     assert fl._open_console("/dev/ttyACM3") == "S" and seen["p"] == "/dev/ttyACM3"
 
 
@@ -238,6 +239,68 @@ def test_a_camera_that_doesnt_come_back_after_dropping_off_fails_the_flash(monke
     monkeypatch.setattr(fl, "_open_console", lambda port: Unclosable())
     with pytest.raises(fl.FlashError, match="did not answer for its keys"):
         fl.provision_keys(board="OPENMV_N6")
+
+
+def test_a_port_that_isn_t_taking_input_yet_is_asked_again(camera):
+    """A camera still booting can leave its port refusing writes for a moment: that is retried,
+    not taken for a dropped camera."""
+    import serial
+    con = camera(_signed(0))
+    real_write, stalls = con.write, [2]
+
+    def write(data):
+        if stalls[0]:
+            stalls[0] -= 1
+            raise serial.SerialTimeoutException("Write timeout")
+        real_write(data)
+    con.write = write
+    (step,) = fl.provision_keys(board="OPENMV_N6")
+    assert step.label.startswith("keys present") and not stalls[0]
+
+
+def test_an_answer_is_heard_even_while_the_port_refuses_writes(camera):
+    """The camera answered and its app doesn't read input: our repeated requests fill it, and
+    every write times out from then on. The answer waiting to be read is still read."""
+    import serial
+    con = camera(_signed(0), boot=1)
+    real_write, stuck = con.write, []
+
+    def write(data):
+        if con.sent:                                     # took the first request, then full
+            stuck.append(data)
+            raise serial.SerialTimeoutException("Write timeout")
+        real_write(data)
+    con.write = write
+    (step,) = fl.provision_keys(board="OPENMV_N6")
+    assert step.label.startswith("keys present") and stuck
+
+
+def test_an_answer_missing_only_its_newline_is_taken_once_the_port_goes_quiet(camera):
+    """An older boot.py print()ed the answer, and the N6 started its app before sending the
+    newline: the whole line, short of its end, and nothing more."""
+    def unterminated(digest):
+        return _signed(0)(digest).rstrip("\r\n")
+    con = camera(unterminated)
+    (step,) = fl.provision_keys(board="OPENMV_N6")
+    assert step.label.startswith("keys present")
+    assert len([d for d in con.sent if d.startswith(b"OMVKEYS")]) >= fl._IDENTITY_QUIET_READS
+
+
+def test_a_cut_off_answer_is_not_taken(camera, monkeypatch):
+    def cut(digest):
+        return _signed(0)(digest)[:120]
+    camera(cut)
+    clock = (i / 10 for i in range(100_000))
+    monkeypatch.setattr(fl.time, "monotonic", lambda: next(clock))
+    with pytest.raises(fl.FlashError, match="did not answer"):
+        fl.provision_keys(board="OPENMV_N6")
+
+
+def test_the_console_bounds_its_writes(monkeypatch):
+    seen = {}
+    monkeypatch.setattr("serial.Serial", lambda port, baud, **kw: seen.update(kw) or "S")
+    fl._open_console("/dev/ttyACM0")
+    assert seen["write_timeout"] == 1
 
 
 def test_a_camera_that_keeps_dropping_off_fails_the_flash(monkeypatch, capsys):
