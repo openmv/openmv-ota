@@ -661,7 +661,9 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                 opened = time.monotonic()
                 deadline, reset, heard = opened + _IDENTITY_ANSWER_S, False, ""
                 continue
-            answer = re.search(r"SE-(ID|NONE|ERROR)([^\r\n]*)\r?\n", heard)
+            # \r*: a port's stdout turns "\n" into "\r\n", and a line already ending "\r\n" into
+            # "\r\r\n" -- an answer is a line however many carriage returns end it
+            answer = re.search(r"SE-(ID|NONE|ERROR)([^\r\n]*)\r*\n", heard)
             if answer is None and time.monotonic() - last_rx >= _IDENTITY_QUIET_S:
                 answer = _UNTERMINATED.search(heard)
     finally:

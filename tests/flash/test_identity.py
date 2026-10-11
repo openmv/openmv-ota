@@ -275,6 +275,13 @@ def test_an_answer_is_heard_even_while_the_port_refuses_writes(camera):
     assert step.label.startswith("keys present") and stuck
 
 
+def test_an_answer_ending_in_extra_carriage_returns_is_a_line(camera):
+    """A stdout that turns "\n" into "\r\n" turns a line already ending "\r\n" into "\r\r\n"."""
+    camera(lambda digest: _signed(0)(digest).replace("\r\n", "\r\r\n") + "more output\r\n")
+    (step,) = fl.provision_keys(board="OPENMV2")
+    assert step.label.startswith("keys present")
+
+
 def test_an_answer_missing_only_its_newline_is_taken_once_the_port_goes_quiet(camera):
     """An older boot.py print()ed the answer, and the N6 started its app before sending the
     newline: the whole line, short of its end, and nothing more."""
