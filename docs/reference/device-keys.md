@@ -71,10 +71,11 @@ keys made: identity 041591b4aef12b0f98f456477bdb7c246b0d5c2262ec3db94febf4856b87
 
 On STM32 boards, a boot with no host holding the console open stops listening after under a
 second, so the app starts as soon as it always has. If the tool opens the console too late for
-that window, it soft-resets the camera (Ctrl-C, then Ctrl-D) with the console still open, and
-the next boot waits for it.
+that window, it resets the camera (Ctrl-C, then `machine.reset()`) with the console still open,
+and the next boot waits for it. A hard reset, because a watchdog the app armed keeps running
+through a soft one.
 
-Apart from that soft reset, nothing interrupts the app, so this works with an app that arms a
+Apart from that reset, nothing interrupts the app, so this works with an app that arms a
 watchdog as it starts. A camera that already has keys keeps them and reports `keys present`; a
 camera whose keys are damaged fails the flash. `flash firmware` and `flash romfs` don't write a
 factory image and don't provision.
