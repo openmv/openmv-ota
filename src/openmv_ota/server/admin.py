@@ -1088,14 +1088,15 @@ def put_desk_key(key_id: int, body: DeskKeyIn, request: Request,
                  principal: Principal = Depends(require_scope("manage"))):
     """Record one of the account's desk keys (`openmv-ota project keys desk push` sends them):
     the public half of a key a desk signs registration records with. A key's public half is fixed
-    once recorded (a different one under the same id is a 409), and revoking is one-way."""
+    once recorded (a different one under the same id is a 409), and revoking is one-way. A key that
+    isn't a P-256 point, or an expiry without a time zone, is a 400."""
     from openmv_ota.ota import registration as reg
     try:
         reg.check_public_key(body.pubkey)
         if datetime.fromisoformat(body.expires.replace("Z", "+00:00")).tzinfo is None:
             raise ValueError("no time zone")
     except (reg.RegistrationError, ValueError):
-        raise HTTPException(status_code=422, detail="not a P-256 public key and UTC expiry") from None
+        raise HTTPException(status_code=400, detail="not a P-256 public key and UTC expiry") from None
     ms = request.app.state.metastore
     try:
         ms.put_desk_key(principal.account_id, key_id, label=body.label,
@@ -1125,7 +1126,8 @@ def register_device(body: RegistrationIn, request: Request,
     keys -- unrevoked, unexpired now, and the record freshly issued -- so a token alone registers
     nothing. Registering binds the camera to the account. A camera registered or bound to another
     account is a 404. Registering again with new keys (after a bootloader reflash wiped them)
-    replaces the old ones and is audited as a re-key."""
+    replaces the old ones and is audited as a re-key. A record that doesn't verify is a 400
+    saying why."""
     from openmv_ota.ota import registration as reg
     ms = request.app.state.metastore
     record = body.record.encode("utf-8")
@@ -1140,7 +1142,7 @@ def register_device(body: RegistrationIn, request: Request,
         ms.append_audit(actor=principal.name, action="device.register_refused",
                         entity_type="device", entity_id="", data={"reason": str(e)},
                         account_id=principal.account_id)
-        raise HTTPException(status_code=422, detail=str(e)) from None
+        raise HTTPException(status_code=400, detail=str(e)) from None
     prev = ms.get_registration(got.device_id)
     bound = ms.device_account(got.device_id)
     if (prev is not None and prev["account_id"] != principal.account_id) or \

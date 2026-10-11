@@ -88,9 +88,9 @@ def test_an_account_records_its_desk_keys(tmp_path):
     assert _push(c, A, 1, pub2).status_code == 409                     # id's key is fixed
     assert _push(c, A, 1, pub, revoked=True).json()["revoked"]
     assert _push(c, A, 1, pub, revoked=False).json()["revoked"]        # revoking is one-way
-    assert _push(c, A, 2, "04abcd").status_code == 422
-    assert _push(c, A, 2, pub2, expires="2027-01-01T00:00:00").status_code == 422   # no zone
-    assert _push(c, A, 2, pub2, expires="soon").status_code == 422
+    assert _push(c, A, 2, "04abcd").status_code == 400
+    assert _push(c, A, 2, pub2, expires="2027-01-01T00:00:00").status_code == 400   # no zone
+    assert _push(c, A, 2, pub2, expires="soon").status_code == 400
     assert _push(c, DESK, 3, pub2).status_code == 403                  # a desk can't add keys
     actions = [e["action"] for e in c.get("/api/v1/admin/audit", headers=A).json()["events"]]
     assert "desk_key.put" in actions
@@ -135,10 +135,10 @@ def test_a_token_alone_registers_nothing(tmp_path):
     signer, pub = _desk()
     body, _ = _record(signer)
     post = lambda b, h=DESK: c.post("/api/v1/admin/registrations", headers=h, json=b)  # noqa: E731
-    assert post(body).status_code == 422                       # the account has no such desk key
+    assert post(body).status_code == 400                       # the account has no such desk key
     _push(c, A, 1, pub)
     forged = dict(body, signature="00" * 64)
-    assert post(forged).status_code == 422
+    assert post(forged).status_code == 400
     stale, _ = _record(signer, issued=datetime.now(timezone.utc) - timedelta(hours=3))
     assert "issued just now" in post(stale).json()["detail"]
     theirs, _ = _record(signer, account="acctB")
