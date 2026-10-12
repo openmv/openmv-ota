@@ -11,8 +11,11 @@ registering cameras; the cameras it registered stay registered.
 
     keys/desk_keys.json            public, committed: id, label, public key, created, expires,
                                    revoked, and (optionally) the key's HSM/KMS backend record
-    keys/private/desk-0001.pem     the private key, encrypted with the project passphrase
+    keys/private/desk-<id>.pem     the private key, encrypted with the project passphrase
                                    (absent when the key lives in an HSM or KMS)
+
+A key's id comes from the key itself (:func:`id_for`), not a counter: the server holds an
+ACCOUNT's desk keys by id, and one account can have several projects.
 
 A desk key never signs firmware: the image-signing keys stay away from a factory floor, where a
 leaked desk key costs fake registrations, not malicious firmware.
@@ -20,6 +23,7 @@ leaked desk key costs fake registrations, not malicious firmware.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -107,18 +111,33 @@ def _find(keys: list[DeskEntry], key_id: int) -> DeskEntry:
     raise ProjectError("no desk key %d in this project" % key_id)
 
 
+def id_for(pubkey: str) -> int:
+    """A desk key's id: the first 31 bits of its public key's SHA-256 (never 0).
+
+    The server keeps an account's desk keys by id, and every project in the account makes its own,
+    so ids counted within a project collided -- a second product's first key was refused as "desk
+    key 1 already has a different public key". One derived from the key is unique without asking
+    anyone, and 31 bits fit the server's integer column."""
+    return int.from_bytes(hashlib.sha256(bytes.fromhex(pubkey)).digest()[:4], "big") & 0x7FFFFFFF \
+        or 1
+
+
 def create(root: str | Path, label: str, passphrase: str, *, days: int = DEFAULT_DAYS,
            now: datetime | None = None) -> DeskEntry:
-    """A new desk key (the next id), its private half encrypted with the project passphrase."""
+    """A new desk key, its private half encrypted with the project passphrase."""
     if not label or not label.strip():
         raise ProjectError("a desk key needs a label (which desk it is)")
     keys = read(root)
     if any(k.label == label for k in keys if not k.revoked):
         raise ProjectError("desk %r already has a key; renew it, or revoke it first" % label)
     now = now or _now()
-    key = generate_private_key(_ALG)
-    entry = DeskEntry(key_id=max((k.key_id for k in keys), default=0) + 1, label=label,
-                      pubkey=public_point_hex(key.public_key()), created=_iso(now),
+    taken = {k.key_id for k in keys}
+    while True:                       # a clash with this project's own ids: 1 in 2^31 -- draw again
+        key = generate_private_key(_ALG)
+        pubkey = public_point_hex(key.public_key())
+        if id_for(pubkey) not in taken:
+            break
+    entry = DeskEntry(key_id=id_for(pubkey), label=label, pubkey=pubkey, created=_iso(now),
                       expires=_iso(now + timedelta(days=days)))
     private = Path(root) / "keys" / "private"
     private.mkdir(parents=True, exist_ok=True)
@@ -161,7 +180,7 @@ def current(root: str | Path, label: str | None = None, *,
         raise ProjectError("no usable desk key%s -- `openmv-ota project keys desk create` makes "
                            "one, `... renew` extends an expired one"
                            % ((" for %r" % label) if label else ""))
-    return max(usable, key=lambda k: k.key_id)
+    return sorted(usable, key=lambda k: k.created)[-1]   # stable: a tie goes to the later key
 
 
 def signer(root: str | Path, entry: DeskEntry, *, passphrase_provider=None):
