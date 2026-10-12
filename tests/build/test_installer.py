@@ -1993,3 +1993,44 @@ def test_the_lockbox_opens_with_the_frozen_key_code(monkeypatch):
     monkeypatch.setitem(sys.modules, "openmv_se", types.SimpleNamespace(trust=fake))
     assert inst("_lockbox_key")("ab", {"sealed": {}}) == b"k" * 32
     assert calls == [b"\xab"]
+
+
+# --- the WINC's recv blocks: each one runs under relax() ---------------------
+
+def test_recv_blocks_only_on_a_winc_transport():
+    class Winc:
+        WINC = object()
+
+    class Both(Winc):
+        WLAN = object()
+
+    class Plain:
+        pass
+    assert inst("_recv_blocks")(Winc) is True              # the H7 Plus shield: recv waits for data
+    assert inst("_recv_blocks")(Both) is False             # cyw43 boards: non-blocking works
+    assert inst("_recv_blocks")(Plain) is False            # LAN-only
+    assert inst("_recv_blocks")() is False                 # the host has no `network` module
+
+
+def test_relaxed_wraps_every_recv_in_a_bounded_relax():
+    seen = []
+
+    class Region:
+        def __enter__(self):
+            seen.append("enter")
+
+        def __exit__(self, *a):
+            seen.append("exit")
+            return False
+
+    class Wdt:
+        def relax(self, max_ms):
+            seen.append(max_ms)
+            return Region()
+
+    def readinto(mv):
+        seen.append("recv")
+        return 7
+    call = inst("_relaxed")(readinto, Wdt())
+    assert call(memoryview(bytearray(8))) == 7
+    assert seen == [inst("_SOCK_TIMEOUT") * 1000, "enter", "recv", "exit"]

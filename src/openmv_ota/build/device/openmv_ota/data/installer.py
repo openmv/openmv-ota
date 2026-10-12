@@ -1288,6 +1288,31 @@ def _connect(host, port, ca_pem, socket, ssl):  # pragma: no cover
         raise  # hil-residual: bare re-raise to the caller (pre-erase, /rom intact)
 
 
+def _recv_blocks(network=None):
+    """True on a transport whose ``recv`` BLOCKS even after ``setblocking(False)``: the WINC
+    (the H7 Plus's ATWINC1500 shield; ``network.WINC``, no ``network.WLAN``). It takes
+    non-blocking as a 0 timeout, which the WINC API reads as "wait forever", so each recv waits
+    for data and the progress feed between recvs never runs meanwhile -- usually a few ms, but
+    the H7 Plus `watchdog` leg bit its 100 ms WWDG right after `install: TLS up`. Its waits DO
+    service relax()'s timer (the check-in runs under relax() and never bites), so there each
+    recv runs under relax(). ``network`` is injectable for tests."""
+    if network is None:
+        try:
+            import network
+        except ImportError:
+            return False
+    return hasattr(network, "WINC") and not hasattr(network, "WLAN")
+
+
+def _relaxed(readinto, wdt):
+    """``readinto`` with each call under ``wdt.relax()`` -- see :func:`_recv_blocks`. Bounded by
+    the socket timeout, so a dead link still ends in a bite and a reboot, as everywhere else."""
+    def call(mv):
+        with wdt.relax(_SOCK_TIMEOUT * 1000):
+            return readinto(mv)
+    return call
+
+
 def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pragma: no cover
     """Connect, GET, follow redirects, and return ``(sock, body)`` on a 2xx -- all
     before the erase, so a bad URL / DNS / TLS / non-2xx status raises to the app
@@ -1297,7 +1322,9 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
         host, port, path = _parse_url(url)
         sock = _connect(host, port, ca_pem, socket, ssl)
         try:
-            sock.write(_request_bytes(host, port, path, start))  # blocking send of the small GET
+            # The small GET is one blocking send -- unsplittable, like the handshake: relax() it.
+            with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
+                sock.write(_request_bytes(host, port, path, start))
             # Go NON-BLOCKING for every read from here (headers AND body): the reader then feeds the
             # watchdog from the main thread between recvs (see _Reader._fill). This is what a slow FIRST
             # byte needs -- the server can be seconds slow to answer (a stored delta whose first fetch
@@ -1306,7 +1333,10 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
             # read). A main-thread non-blocking recv + sleep loop feeds it regardless. Bounded by
             # _SOCK_TIMEOUT (the reader's wait counter), so a dead server still fails cleanly.
             sock.setblocking(False)
-            reader = _Reader(sock.readinto, feed)   # one preallocated buffer per connection
+            readinto = sock.readinto
+            if openmv_wdt is not None and _recv_blocks():  # hil-residual: WINC-only (H7 Plus wifi)
+                readinto = _relaxed(readinto, openmv_wdt)  # hil-residual: WINC-only (H7 Plus wifi)
+            reader = _Reader(readinto, feed)        # one preallocated buffer per connection
             code, headers = _read_response(reader)
         except Exception:
             sock.close()
