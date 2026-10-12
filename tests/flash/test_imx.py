@@ -121,6 +121,14 @@ def test_provision_plan_writes_fcb_sbl_firmware_romfs_efuse(tmp_path):
     assert steps[-1].argv[-1] == "reset"
 
 
+def test_erase_timeout_scales_with_the_region():
+    # a small region keeps the IDE's 120 s; the RT1062's 8 MB romfs region took ~165 s on the bench
+    # (the SBL erases at ~50 KB/s), so it gets a third of that rate: 512 s
+    assert imx.erase_timeout_ms(0x2000) == imx.ERASE_TIMEOUT_MS == 120000
+    assert imx.erase_timeout_ms("0x800000") == imx.erase_timeout_ms(8 * 1024 * 1024) == 512000
+    assert imx.erase_timeout_ms("8388608") == 512000
+
+
 def test_blhost_timeout_only_on_erase(tmp_path):
     files = _files(tmp_path, sdphost_loader=10, firmware=5000)
     steps = _plan("firmware", files)

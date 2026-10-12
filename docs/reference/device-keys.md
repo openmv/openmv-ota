@@ -115,14 +115,15 @@ own key, so one can be revoked without touching the others:
 ```
 openmv-ota project keys desk create bench-1 .     # a new key for the desk "bench-1"
 openmv-ota project keys desk push .               # tell the server about it
-openmv-ota project keys desk list .
-openmv-ota project keys desk renew 1 .            # another 90 days
-openmv-ota project keys desk revoke 1 .           # stop trusting it, at once
+openmv-ota project keys desk list .               # each key's id
+openmv-ota project keys desk renew <id> .         # another 90 days
+openmv-ota project keys desk revoke <id> .        # stop trusting it, at once
 ```
 
 The public halves are in `keys/desk_keys.json`, the private halves in `keys/private/`, encrypted
 with the project passphrase (or in an HSM or KMS, like the signing keys). A desk key never signs
-firmware.
+firmware. Its id comes from the key itself, so every project in an account can make its own desk
+keys without their ids clashing on the server.
 
 Desk keys **expire** after 90 days unless renewed. An expired key stops registering cameras;
 every camera it registered stays registered. The server only takes a record from a desk key that

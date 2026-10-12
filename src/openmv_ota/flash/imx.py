@@ -24,7 +24,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-ERASE_TIMEOUT_MS = 120000        # the IDE allows 120s for an erase
+ERASE_TIMEOUT_MS = 120000        # the floor: the IDE allows 120s for an erase
+# ...scaled up for a big region. The resident SBL erases the RT1062's NOR at ~50 KB/s (measured:
+# 2.6 MB in 53 s), so the 8 MB romfs region takes ~165 s, and a flat 120 s ran out there: `No
+# response packet from target device`, with the firmware written and the romfs not. A third of
+# the measured rate leaves room for a slower chip.
+ERASE_MIN_BYTES_PER_S = 16 * 1024
 WAIT_TIMEOUT_S = 30              # wait for the flashloader to enumerate after the jump
 SDP_WAIT_TIMEOUT_S = 120         # wait for the ROM device (the user enters SBL recovery by hand)
 _SECTOR = 0x1000                 # FlexSPI NOR erase granularity; round erase lengths up to it
@@ -147,6 +152,12 @@ def _wait_argv(python3: str, usb: str, *, sdp: bool = False) -> list[str]:
     return [python3, "-c", _WAIT_SCRIPT, mod, cls, usb, "%g" % timeout]
 
 
+def erase_timeout_ms(length) -> int:
+    """blhost's timeout for erasing ``length`` bytes (an int, or a "0x..." / decimal string)."""
+    n = int(length, 0) if isinstance(length, str) else int(length)
+    return max(ERASE_TIMEOUT_MS, n * 1000 // ERASE_MIN_BYTES_PER_S)
+
+
 def _aligned(size: int) -> int:
     return (size + _SECTOR - 1) & ~(_SECTOR - 1)
 
@@ -155,7 +166,8 @@ def _write_region(blhost: str, usb: str, addr: str, file: Path) -> list[ImxStep]
     length = "0x%X" % _aligned(file.stat().st_size)
     return [
         ImxStep("erase %s (%s)" % (addr, length),
-                _blhost(blhost, usb, "flash-erase-region", addr, length, timeout=ERASE_TIMEOUT_MS)),
+                _blhost(blhost, usb, "flash-erase-region", addr, length,
+                        timeout=erase_timeout_ms(length))),
         ImxStep("write %s -> %s" % (file.name, addr),
                 _blhost(blhost, usb, "write-memory", addr, str(file))),
     ]
@@ -166,7 +178,7 @@ def _fcb(blhost: str, usb: str, bl: dict) -> list[ImxStep]:
     return [
         ImxStep("erase FCB %s" % bl["fcb_addr"],
                 _blhost(blhost, usb, "flash-erase-region", bl["fcb_addr"], bl["fcb_len"],
-                        timeout=ERASE_TIMEOUT_MS)),
+                        timeout=erase_timeout_ms(bl["fcb_len"]))),
         ImxStep("configure FCB",
                 _blhost(blhost, usb, "fill-memory", bl["cfg_addr"], "4", bl["cfg_fcb"], "word")),
         ImxStep("apply FCB config",
@@ -236,11 +248,13 @@ def plan(op: str, raw: dict, sdphost: str, blhost: str, python3: str,
         elif op == "erase":                              # wipe the user disk's first sector (its MBR)
             steps.append(ImxStep("erase disk %s (%s)" % (bl["disk_addr"], bl["disk_size"]),
                                  _blhost(blhost, usb, "flash-erase-region", bl["disk_addr"],
-                                         bl["disk_size"], timeout=ERASE_TIMEOUT_MS)))
+                                         bl["disk_size"],
+                                         timeout=erase_timeout_ms(bl["disk_size"]))))
         elif op == "erase_romfs":                        # wipe the whole OTA romfs region (both slots)
             steps.append(ImxStep("erase romfs %s (%s)" % (bl["romfs_addr"], bl["romfs_size"]),
                                  _blhost(blhost, usb, "flash-erase-region", bl["romfs_addr"],
-                                         bl["romfs_size"], timeout=ERASE_TIMEOUT_MS)))
+                                         bl["romfs_size"],
+                                         timeout=erase_timeout_ms(bl["romfs_size"]))))
 
     steps.append(ImxStep("reset", _blhost(blhost, usb, "reset")))
     return steps
