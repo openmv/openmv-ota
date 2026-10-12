@@ -37,6 +37,14 @@ openmv-swd-ids'.
   bootstrap: the CLI follows the chain from it after that.
 - **Secure-element demo apps** — on the shipped `openmv_se` drivers: sign a challenge, read
   the public key and any certificates.
+- **WINC firmware PRs to openmv** — the H7 and H7 Plus on the hosted cloud run WINC firmware
+  that isn't in openmv yet: branch `kwabena/winc_poll`, six commits, to send as small reviewable
+  PRs. The big one is async support -- `poll()` and non-blocking stream sockets, which asyncio
+  and the openmv_cloud SDK need -- restructured into steps; with it, a real non-blocking `recv`
+  (on master `setblocking(False)` is a 0 timeout, which the WINC API reads as "wait forever", and
+  `winc_async_request()` never checks its own timeout). The rest are small: SPI transfer errors,
+  DNS error codes, a reset clearing the connection state, ETIMEDOUT vs EAGAIN, and an unrelated
+  gen_linker fix. Once they land, drop the installer's WINC `relax()` around each recv.
 - **Pre-launch cleanup** — revoke the test OTA tokens used for board bring-up; log the
   client out on the HIL nodes (`~/cloudtest/xdg`, the AE3's `~/.config/openmv-ota`).
 
