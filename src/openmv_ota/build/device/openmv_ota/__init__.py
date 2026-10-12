@@ -1160,12 +1160,21 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
     """run()'s whole body, split out ONLY so run() can wrap it in one handler -- see there."""
     import asyncio
     import gc
-    boot = status()
+    # EVERYTHING SYNCHRONOUS HERE IS UNFED unless it runs under relax(): the app's feed loop only
+    # gets the CPU back when this task yields, and nothing below yields until the poll wait. The
+    # reads are short, but each one logs, and on the bench every DEBUG line is a blocking write
+    # to a 115200 UART -- measured 5.1 ms per line on the N6, whose 100 ms WWDG survives an 87 ms
+    # unyielded stretch and bites at 102 ms. The ~15 lines (plus the CA load) between the app's
+    # last feed and the check-in's relax() put the first check-in past the window on every LAN
+    # boot. So this prelude, and each cycle's status()/slots(), run under relax() too.
+    with _wdt_relax():
+        boot = status()
     if boot.get("trial") and self_test is not None and self_test():
         confirm()  # hil-residual: opt-in boot-time self_test confirm; bench apps confirm in their loop (confirm.promoted), not via self_test, so this call-site is unexercised
     here = __file__.rsplit("/", 1)[0]
-    ca = _resolve_ca(ca, here)
-    _tls_verify(ca)                       # refuse NOW, out of run(), on a board that must verify
+    with _wdt_relax():
+        ca = _resolve_ca(ca, here)
+        _tls_verify(ca)                   # refuse NOW, out of run(), on a board that must verify
     fails = 0                             # CONSECUTIVE failed cycles; drives the recover escalation
     misses = 0                            # the same streak, NOT reset by a recover: drives the backoff
     cap = poll_after_s or _POLL_DEFAULT_S  # the longest a failed check-in waits to retry
@@ -1181,9 +1190,9 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # the WINC1500 (see _checkin): asyncio's poller raises EIO on WINC sockets.
             # NOTE: a park HERE is not recoverable in software -- see openmv_wdt; only an armed
             # hardware watchdog gets the board back, which is what relax()'s budget now allows.
-            st = status()
-            slot_states = slots()
             with _wdt_relax():  # hil-residual: watchdog-off CM is a no-op on the bench's default runs; the ENABLED watchdog scenario exercises the ISR-feed
+                st = status()                     # inside, not before: see the prelude above
+                slot_states = slots()
                 body = _collect_body(identity(), st, slot_states)
                 resp = _checkin_relieved(lambda b=body: _checkin(server_url, b, ca),  # hil-residual: host-tested wrapper (_checkin_relieved); the check-in itself is witnessed by its own markers
                                          _relieve, gc.collect)
@@ -1633,23 +1642,28 @@ def confirm():  # pragma: no cover
     (which the floor never locks out, because that image is at or above it). Everything here
     is addressed by the RUNNING slot, so there is no way to confirm a trial we fell back from.
     Returns True iff it just confirmed; raises OSError if a write fails. Idempotent -- safe to
-    call every boot once healthy."""
+    call every boot once healthy.
+
+    Runs under ``relax()``: apps call it from their feed loop, and two verified flash writes
+    plus their log lines are unfed time on a short watchdog (measured: the N6's first trial
+    check-in after a confirm bit its 100 ms WWDG)."""
     import _ota_config
-    _use_cfg_stride(_ota_config)
-    slot, version, _r = _boot_result()
-    off = _status_offset(_ota_config, slot)
-    if not _should_confirm(slot, _read_at(0, off, 3 * MARKER_SIZE)):
-        return False  # hil-residual: bare const return (not confirmable this boot)
-    # Raise the floor by whatever this camera ORDERS by -- the mirror of
-    # boot.rollback_key. A PRODUCT_ID 0 camera can change product, so its floor is the
-    # account's publish counter; every other camera's is its own product's version.
-    _advance_rollback(_ota_config, slot,
-                      getattr(_ota_config, "last_publish_seq", 0)
-                      if _ota_config.PRODUCT_ID == 0 else version)
-    _write_verified(0, off + _CONFIRMED_OFF,
-                    CONFIRMED + b"\xff" * (_TRIED_OFF - MARKER_SIZE))  # pad to the stride
-    log.info("confirm: kept the running image (slot %s)" % slot)
-    return True  # hil-residual: bare const return (confirmed)
+    with _wdt_relax():
+        _use_cfg_stride(_ota_config)
+        slot, version, _r = _boot_result()
+        off = _status_offset(_ota_config, slot)
+        if not _should_confirm(slot, _read_at(0, off, 3 * MARKER_SIZE)):
+            return False  # hil-residual: bare const return (not confirmable this boot)
+        # Raise the floor by whatever this camera ORDERS by -- the mirror of
+        # boot.rollback_key. A PRODUCT_ID 0 camera can change product, so its floor is the
+        # account's publish counter; every other camera's is its own product's version.
+        _advance_rollback(_ota_config, slot,
+                          getattr(_ota_config, "last_publish_seq", 0)
+                          if _ota_config.PRODUCT_ID == 0 else version)
+        _write_verified(0, off + _CONFIRMED_OFF,
+                        CONFIRMED + b"\xff" * (_TRIED_OFF - MARKER_SIZE))  # pad to the stride
+        log.info("confirm: kept the running image (slot %s)" % slot)
+        return True  # hil-residual: bare const return (confirmed)
 
 
 # A resource handler is a ``(matches, apply)`` pair, both taking ``(entry, path)`` --

@@ -520,6 +520,7 @@ COVERAGE = {
     "wdt: feed": "run.wdt_feed",                          # watchdog fed each poll (no-op when off)
     "app: wdt STOP feeding": "wdt.stop",                  # bite test: the app deliberately stopped feeding
     "app: wdt BIT": "wdt.bit",                            # bite test: WWDG reset (reset_cause==3), then recovered
+    "app: woke from a watchdog reset": "app.wdt_reset",   # ANY app boot after a watchdog reset
     "run: recovering transport": "run.recover",           # run() escalated a failure streak to recover=
     "run: transport recovered": "run.recovered",          # ...and the hook returned (under an armed WDT)
     "run: poll wait": "run.poll_tail",                   # run() loop tail reached (post-checkin)
@@ -738,10 +739,12 @@ SCENARIOS = {
 }
 
 # The watchdog happy-path: the delta cycle with the deep-sleep-safe watchdog turned ON (prepare()
-# flips openmv_wdt ENABLED; the 'wdt' app arms it past network bring-up + tight-feeds it). Same
-# expect/forbid as delta -- an armed watchdog that outran its window would reset mid-cycle and never
-# reach promoted, so reaching it IS the proof that the device services the watchdog seamlessly
-# through a real OTA cycle. Runs on the OTA boards with a deep-sleep-safe WDT: N6 (WWDG, 100 ms) and
+# flips openmv_wdt ENABLED; the 'wdt' app arms it past network bring-up + tight-feeds it). Delta's
+# expect/forbid PLUS a forbidden watchdog reset. Reaching promoted is NOT proof on its own: a bite
+# after confirm() still ends promoted, and the N6 did exactly that -- its first check-in after a
+# confirm outran the 100 ms WWDG, and this leg passed. So any boot that woke from a watchdog reset
+# inside the scored window fails it, and promoted + no bite is the proof that the device services
+# the watchdog seamlessly through a real OTA cycle. Runs on the OTA boards with a deep-sleep-safe WDT: N6 (WWDG, 100 ms) and
 # RT1060 (WDOG) -- the RT leg additionally proves the BLOCK-DEVICE write path (readback/back_read) is
 # zero-alloc enough not to trip a GC pause past the window. openmv_wdt auto-selects the WDT per port.
 SCENARIOS["watchdog"] = dict(
@@ -753,6 +756,7 @@ SCENARIOS["watchdog"] = dict(
     # (the Alif AE3) nothing arms and the leg would pass having watched nothing. openmv_wdt logs
     # `wdt: armed <window>` the moment it has a real WDT, so require that marker too.
     expect=SCENARIOS["delta"]["expect"] + ["wdt.armed"],
+    forbid=SCENARIOS["delta"]["forbid"] + ["app.wdt_reset"],
 )
 
 # The watchdog NEGATIVE path: prove the WWDG actually BITES when feeding stops -- and recovers as a
@@ -766,7 +770,7 @@ SCENARIOS["watchdog"] = dict(
 SCENARIOS["watchdog_bite"] = dict(
     publish="none", app="wdt_bite", end="golden",
     desc="watchdog ENABLED: the WWDG bites when feeding stops (reset_cause=WDT), then recovers (single bite)",
-    expect=["log.configured", "boot.ready", "run.checkin", "wdt.stop", "wdt.bit"],
+    expect=["log.configured", "boot.ready", "run.checkin", "wdt.stop", "wdt.bit", "app.wdt_reset"],
     forbid=["install.start", "install.armed", "confirm.promoted"],
 )
 
@@ -783,7 +787,7 @@ SCENARIOS["watchdog_recover"] = dict(
     publish="none", app="wdt_recover", end="golden", by_marker=True,
     desc="watchdog ENABLED: run() rebuilds a dead network without the watchdog biting",
     expect=["boot.ready", "wdt.armed", "run.recover", "run.recovered"],
-    forbid=["install.start", "install.armed", "confirm.promoted"],
+    forbid=["install.start", "install.armed", "confirm.promoted", "app.wdt_reset"],
 )
 
 
@@ -1138,6 +1142,24 @@ class UartCapture:
     def points(self):
         return sorted({p for _, p in self.markers})
 
+    def wdt_reset_after_first_boot(self):
+        """True if a boot AFTER the scored window's first one woke from a watchdog reset.
+
+        The window opens with the harness's own hard reset, so its first boot's cause is ours, not
+        the device's -- and on the RT1060 it can even read as a watchdog reset. mimxrt's
+        reset_cause() decodes WDOG1's WRSR, which only a watchdog-generated reset rewrites
+        (IMXRT1060RM 57.8.1.4.2), so an SWD/nRST reset leaves a stale TOUT from any bite earlier in
+        the leg: seen as `reset_cause=3` on the first boot of a watchdog_recover window. Every later
+        boot comes from machine.reset() -- a WDOG software reset on mimxrt, which does rewrite WRSR
+        -- or from a real bite, so from the second boot on the marker means what it says."""
+        boots = 0
+        for _, p in self.markers:
+            if p == "log.configured":
+                boots += 1
+            elif p == "app.wdt_reset" and boots >= 2:
+                return True
+        return False
+
     def reset(self, t0):
         """Drop everything captured so far and restart the clock, WITHOUT closing the port.
 
@@ -1319,6 +1341,10 @@ def bench_main_py(board, net, app="confirm"):
         "try:\n"
         "    import machine as _m\n"
         "    _blog.info('app: booting %s reset_cause=%d' % (openmv_ota.status().get('version'), _m.reset_cause()))\n"
+        # A marker of its own for a watchdog reset (3 = machine.WDT_RESET), so a scenario can FORBID
+        # one: the `watchdog` leg used to pass straight through a bite that landed after confirm.
+        "    if _m.reset_cause() == 3:\n"
+        "        _blog.warning('app: woke from a watchdog reset')\n"
         "    asyncio.run(main())\n"
         # BaseException, not Exception: a KeyboardInterrupt is NOT an Exception, and every mpremote
         # the harness runs delivers one (Ctrl-C is how it takes the REPL). Caught only as Exception,
@@ -3347,6 +3373,10 @@ def main():
                 by_marker=spec.get("by_marker", False), after_reset=publish))
         time.sleep(2)                            # let the last UART lines land
         marks = set(cap.points()) if cap is not None else set()   # file legs run capture-less
+        if "app.wdt_reset" in marks and not cap.wdt_reset_after_first_boot():
+            marks.discard("app.wdt_reset")
+            log("note: the window's first boot reported a watchdog reset -- that boot is the "
+                "harness's own reset (a stale WRSR on mimxrt), so it is not scored")
         missing = sorted(expect - marks)
         forbidden = sorted(forbid & marks)
         trace["result"] = result
