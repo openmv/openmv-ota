@@ -1198,20 +1198,24 @@ def bench_main_py(board, net, app="confirm"):
         # (no active(), a key= connect): the same call the generated main.py makes, so the fleet
         # exercises it on every wifi board. It CONSTRUCTS the NIC on each call, which is what
         # clears a WINC wedge when run() calls this again as its recover hook.
-        bring_up = (
-            'wl = openmv_ota.wifi(%r, %r)\n'
-            '    while not wl.isconnected():\n'
-            '        await asyncio.sleep_ms(200)\n'
-            '    print("BENCH up", wl.ifconfig()[0])\n' % (CFG["wifi_ssid"], CFG["wifi_pass"])
-        )
+        nic = 'openmv_ota.wifi(%r, %r)' % (CFG["wifi_ssid"], CFG["wifi_pass"])
     else:
-        bring_up = (
-            'lan = network.LAN()\n'
-            '    lan.active(True)\n'
-            '    while not lan.isconnected():\n'
-            '        await asyncio.sleep_ms(200)\n'
-            '    print("BENCH up", lan.ifconfig()[0])\n'
-        )
+        nic = 'network.LAN()'
+    # BOUNDED, then join again: one failed association is never retried by the stack itself, and
+    # an unbounded wait hung the Nicla's trial boot for good (rollback + bad_version timed out at
+    # ~990 s, the app parked after `sync: nothing bundled`). Same shape as the generated main.py.
+    bring_up = (
+        'while True:\n'
+        '        nic = %s\n'
+        '        if hasattr(nic, "active"):\n'
+        '            nic.active(True)\n'
+        '        for _ in range(150):\n'
+        '            if nic.isconnected():\n'
+        '                print("BENCH up", nic.ifconfig()[0])\n'
+        '                return\n'
+        '            await asyncio.sleep_ms(200)\n'
+        '        _blog.warning("app: network not up after 30 s, joining again")\n' % nic
+    )
     # The trial policy is the app's job (run() never auto-confirms), so it's the knob the
     # scenarios turn. "confirm": promote the trial once operational (the normal deploy).
     # "no_confirm": a trial that never becomes healthy -- do NOT confirm, wait, then reset,

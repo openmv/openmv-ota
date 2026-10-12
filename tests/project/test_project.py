@@ -874,7 +874,7 @@ def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, mak
         assert gone not in main, gone
 
 
-def _run_ota_main(monkeypatch, cam_cls, trial=False):
+def _run_ota_main(monkeypatch, cam_cls, trial=False, joins=1):
     """Execute the template's own logic on CPython with stand-in device modules, using camera
     ``cam_cls``; returns (calls, posted, errors). Catches a NameError or a bad call that
     compile() cannot. The run ends when something raises SystemExit (the stub camera after a
@@ -895,8 +895,8 @@ def _run_ota_main(monkeypatch, cam_cls, trial=False):
         def connect(self, ssid, pw):
             calls.append(("connect", ssid, pw))
 
-        def isconnected(self):
-            return True
+        def isconnected(self):          # the `joins`-th join is the one that takes
+            return sum(1 for c in calls if c[0] == "connect") >= joins
 
     def wifi(ssid, pw):                 # openmv_ota.wifi(): build the interface, start joining
         nic = _Nic()
@@ -921,6 +921,9 @@ def _run_ota_main(monkeypatch, cam_cls, trial=False):
     class _Log:
         def info(self, *a):
             pass
+
+        def warning(self, fmt, *a):
+            calls.append(("warning", fmt % a))
 
         def error(self, fmt, *a):
             errors.append(fmt % a)
@@ -992,6 +995,16 @@ def test_the_ota_main_runs_against_stub_device_modules(monkeypatch):
     assert ("confirm",) in calls
     assert ("heap", {"used_pct": 30.0}) in posted
     assert errors == [] and ("parked",) not in calls
+
+
+def test_the_ota_main_joins_again_when_a_join_never_completes(monkeypatch):
+    # one failed association is never retried by the stack: an unbounded isconnected() wait hung a
+    # Nicla for good. The bring-up gives a join 30 s, then starts over.
+    calls, _posted, errors = _run_ota_main(monkeypatch, _Cam, joins=2)
+    assert [c for c in calls if c[0] == "connect"] == [("connect", "SSID", "PASSWORD")] * 2
+    assert ("warning", "network not up after 30 s, joining again") in calls
+    assert ("run", "https://ota.cloud.openmv.io", 300, "bring_up_network") in calls
+    assert errors == []
 
 
 def test_the_ota_main_falls_back_to_grayscale_on_a_mono_sensor(monkeypatch):

@@ -711,14 +711,17 @@ VERSION = openmv_ota.identity().get("app_version")
 
 
 async def bring_up_network():
-    if USE_LAN:
-        nic = network.LAN()
-        nic.active(True)
-    else:                             # WLAN, or WINC on the H7 Plus Wi-Fi shield
-        nic = openmv_ota.wifi(WIFI_SSID, WIFI_PASSWORD)
-    while not nic.isconnected():
-        await asyncio.sleep_ms(200)
-    return nic
+    while True:                       # a join that fails is never retried by itself: start over
+        if USE_LAN:
+            nic = network.LAN()
+            nic.active(True)
+        else:                         # WLAN, or WINC on the H7 Plus Wi-Fi shield
+            nic = openmv_ota.wifi(WIFI_SSID, WIFI_PASSWORD)
+        for _ in range(150):          # 30 s
+            if nic.isconnected():
+                return nic
+            await asyncio.sleep_ms(200)
+        log.warning("network not up after 30 s, joining again")
 
 
 async def heartbeat():
