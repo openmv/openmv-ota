@@ -110,7 +110,8 @@ def test_erase_romfs_dry_run(proj, monkeypatch, capsys):
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
     assert main(["flash", "erase", str(root), "-b", "OPENMV_RT1060", "--romfs", "--dry-run"]) == 0
     out = capsys.readouterr().out
-    assert "would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60800000 0x800000" in out
+    # 8 MB of NOR at the SBL's ~50 KB/s outlasts the 120 s floor: the timeout scales with the region
+    assert "would run: blhost -u 0x15A2,0x0073 -t 512000 -- flash-erase-region 0x60800000 0x800000" in out
     assert "would run: blhost -u 0x15A2,0x0073 -- reset" in out
 
 
