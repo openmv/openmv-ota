@@ -21,6 +21,7 @@ from .datalake import DatalakeError
 from .rollout import ramp_progress, soak_elapsed_s, stage_for_percent, validate_stages
 from . import webhooks as webhooks_mod
 from .schemas import (
+    DeviceReleased, UnclaimedList,
     Account,
     AccountActive,
     AccountCreated,
@@ -1058,13 +1059,15 @@ def bind_device(device_id: str, request: Request,
     """Operator override: (re)bind a device to the caller's account -- the authority for
     re-accounting a device or recovering one wrongly *learned* onto another account (which the
     signature already stops from installing anything). A device already *admin*-bound to a different
-    account is 404 (not yours; no existence leak), so one account can't steal another's binding via
-    the API. On a shared server, gate who may call this by proof of ownership (see
+    account, or registered to one, is 404 (not yours; no existence leak), so one account can't steal
+    another's camera via the API: the holder releases it first. On a shared server, gate who may call this by proof of ownership (see
     docs/compliance/residual-threats.md)."""
     ms = request.app.state.metastore
     cur = ms.device_account(device_id)
-    if cur is not None and cur["source"] == "admin" and cur["account_id"] != principal.account_id:
-        raise HTTPException(status_code=404)
+    claim = ms.get_registration(device_id)
+    if (cur is not None and cur["source"] == "admin" and cur["account_id"] != principal.account_id) \
+            or (claim is not None and claim["account_id"] != principal.account_id):
+        raise HTTPException(status_code=404)                # registered elsewhere: release it first
     ms.bind_device_account(device_id, principal.account_id, source="admin")
     ms.set_device_account(device_id, principal.account_id)   # sync the row so fleet views update now
     ms.append_audit(actor=principal.name, action="device.bind", entity_type="device",
@@ -1127,9 +1130,19 @@ def register_device(body: RegistrationIn, request: Request,
     nothing. Registering binds the camera to the account. A camera registered or bound to another
     account is a 404. Registering again with new keys (after a bootloader reflash wiped them)
     replaces the old ones and is audited as a re-key. A record that doesn't verify is a 400
-    saying why."""
+    saying why.
+
+    Registering is how a board is CLAIMED, so it is bounded like one: only a known board type,
+    a new camera only within the account's device limit (a 403 -- the camera takes a seat now,
+    before its first check-in), and a 429 past `registration_rate_per_min` for the account or
+    the address."""
     from openmv_ota.ota import registration as reg
+    from openmv_ota.romfs.boards import board_names
     ms = request.app.state.metastore
+    limiter = request.app.state.reg_ratelimit
+    ip = request.client.host if request.client else "-"
+    if not limiter.allow("acct:" + principal.account_id) or not limiter.allow(ip):
+        raise HTTPException(status_code=429, detail="too many registrations, try again shortly")
     record = body.record.encode("utf-8")
     keys = [reg.DeskKey(k["key_id"], k["pubkey"], k["expires"], k["revoked"])
             for k in ms.desk_keys(principal.account_id)]
@@ -1138,6 +1151,8 @@ def register_device(body: RegistrationIn, request: Request,
         reg.check_upload(got, keys, datetime.now(timezone.utc))
         if not got.device_id.startswith(got.board + ":"):
             raise reg.RegistrationError("the device id isn't the board's")
+        if got.board not in board_names():
+            raise reg.RegistrationError("unknown board %r" % got.board)
     except reg.RegistrationError as e:
         ms.append_audit(actor=principal.name, action="device.register_refused",
                         entity_type="device", entity_id="", data={"reason": str(e)},
@@ -1149,11 +1164,19 @@ def register_device(body: RegistrationIn, request: Request,
             (bound is not None and bound["source"] == "admin"
              and bound["account_id"] != principal.account_id):
         raise HTTPException(status_code=404)                # another account's camera
+    held = prev is not None or (ms.get_device(got.device_id) or {}).get("account_id") == \
+        principal.account_id
+    if not held and ms.over_device_limit(principal.account_id):
+        ms.append_audit(actor=principal.name, action="device.register_refused",
+                        entity_type="device", entity_id=got.device_id,
+                        data={"reason": "device_limit"}, account_id=principal.account_id)
+        raise HTTPException(status_code=403, detail="the account is at its device limit")
     ms.put_registration(got.device_id, principal.account_id, record=record,
                         signature=body.signature, identity=got.identity, exchange=got.exchange,
                         desk_key_id=got.desk, issued=got.issued, registered_by=principal.name)
     ms.bind_device_account(got.device_id, principal.account_id, source="admin")
     ms.set_device_account(got.device_id, principal.account_id)
+    ms.drop_unclaimed(got.device_id)
     rekeyed = prev is not None and prev["identity"] != got.identity
     fp = _fingerprint(got.identity)
     ms.append_audit(actor=principal.name,
@@ -1182,6 +1205,39 @@ def device_registration(device_id: str, request: Request,
             "record": row["record"].decode("utf-8"), "signature": row["signature"],
             "last_signed_at": row["last_signed_at"], "refused_checkins": row["refused_checkins"],
             "last_refused_at": row["last_refused_at"], "last_refusal": row["last_refusal"]}
+
+
+@admin.delete("/devices/{device_id}/registration", responses={200: {"model": DeviceReleased}})
+def release_device(device_id: str, request: Request,
+                   principal: Principal = Depends(require_scope("manage"))):
+    """Release a camera the account holds: its registration, its account binding and its fleet
+    row go, so another account can register (claim) it. Its past data stays with this account.
+    The server's root token can release any account's camera -- how a disputed board is settled;
+    whoever then has it in hand registers it again (`flash register` or `flash factory`)."""
+    ms = request.app.state.metastore
+    row = ms.get_registration(device_id)
+    if row is None or (_owner(principal) is not None and row["account_id"] != principal.account_id):
+        raise HTTPException(status_code=404)
+    ms.delete_registration(device_id)
+    ms.append_audit(actor=principal.name, action="device.released", entity_type="device",
+                    entity_id=device_id, data={"fingerprint": _fingerprint(row["identity"])},
+                    account_id=row["account_id"])
+    return {"device_id": device_id, "account_id": row["account_id"], "released": True}
+
+
+@admin.get("/unclaimed", responses={200: {"model": UnclaimedList}})
+def list_unclaimed(request: Request, limit: int = Query(50, ge=1, le=200),
+                   offset: int = Query(0, ge=0),
+                   principal: Principal = Depends(require_scope("observe"))):
+    """Boards checking in under the account that it hasn't claimed: a board type the registrar
+    never registers (an Arduino board) with no registration here. Served update offers only until
+    claimed -- connect it over USB and run `openmv-ota flash register`, logged in. Most recently
+    seen first; the server's root token sees every account's."""
+    ms = request.app.state.metastore
+    rows, total = ms.unclaimed(None if _owner(principal) is None else principal.account_id,
+                               limit, offset)
+    return {"devices": [r | {"product_id_str": "" if r["product_id"] is None
+                             else str(r["product_id"])} for r in rows], "total": total}
 
 
 @admin.delete("/devices/{device_id}", responses={200: {"model": DeviceForgotten}})

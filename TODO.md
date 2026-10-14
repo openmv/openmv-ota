@@ -18,25 +18,11 @@ Deferred to ship the Arduino board demo; the service is pre-launch, so data can 
 when these land. Website parts are in openmv-cloud's `TODO.md`; registrar parts in
 openmv-swd-ids'.
 
-- **Turn the unregistered-board switch off** — the pre-launch server switch that treats
-  Arduino board types (Nicla Vision, Giga, Portenta, ...) as registered for every account
-  must go off at launch, replaced by the claim flow below.
-- **Arduino board claiming** — proof of possession: `flash factory` (logged in) reads the
-  board's chip id over USB and registers it to the account; `client device claim <id>` for
-  boards flashed elsewhere. One account per board; release/transfer path; staff dispute
-  resolution (re-flash while logged in proves possession). Server treats a claimed board as
-  registered only when the check-in's account matches the claim.
-- **Claim abuse limits** — claims count against the plan's device limit; per-account and
-  per-IP rate limits; only known board types claimable; audit every claim/release.
-- **Turn the device-trust switches on** — at cutover, `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` on
-  the hosted server and `[ota].per_camera_encryption` in the projects that ship; delete both
-  switches once live and stable. The M4 (OPENMV2) builds without check-in signing (no room in
-  its flash), so with the switch on it gets update offers only.
-- **The hosted keykeeper's pin, built into the CLI** — a project publishing to the hosted
-  cloud should start from it without setting `[ota].keykeeper_pin` by hand. It is only a
-  bootstrap: the CLI follows the chain from it after that.
-- **Secure-element demo apps** — on the shipped `openmv_se` drivers: sign a challenge, read
-  the public key and any certificates.
+- **Device-trust cutover on the hosted server** — `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` on and
+  `OPENMV_OTA_SERVE_UNREGISTERED_BOARDS` off (openmv-cloud's `render.yaml`), and
+  `[ota].per_camera_encryption` in the projects that ship; delete both server switches once live
+  and stable. The M4 (OPENMV2) builds without check-in signing (no room in its flash), so with
+  the switch on it gets update offers only.
 - **WINC firmware PRs to openmv** — the H7 and H7 Plus on the hosted cloud run WINC firmware
   that isn't in openmv yet: branch `kwabena/winc_poll`, six commits, to send as small reviewable
   PRs. The big one is async support -- `poll()` and non-blocking stream sockets, which asyncio

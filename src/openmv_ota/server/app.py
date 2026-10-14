@@ -671,12 +671,19 @@ def _verify(state, req):
     registry normalizes and owns board identity. ``req`` is a CheckIn or Feedback
     (both carry ``board`` + ``device_id``).
 
-    With ``serve_unregistered_boards`` on (a pre-launch operator switch), a board TYPE the
-    registry never registers counts as registered, for every account and on every path that
-    asks here -- check-in (device row, enrollment, grants, device limit) and feedback alike."""
+    A board TYPE the registry never registers (the Arduino ones) is CLAIMED instead: it counts
+    as registered once a desk has registered its keys to the account the check-in reports
+    (`openmv-ota flash factory` or `flash register`, logged in), and only for that account.
+    With ``serve_unregistered_boards`` on (a pre-launch operator switch) every such board counts
+    as registered, for every account and on every path that asks here -- check-in (device row,
+    enrollment, grants, device limit) and feedback alike."""
     reg = state.verifier.verify(req.board or "", req.device_id)
-    if reg.unregistered_board_type and state.settings.serve_unregistered_boards:
-        return Registration(True)
+    if reg.unregistered_board_type:
+        if state.settings.serve_unregistered_boards:
+            return Registration(True)
+        claim = state.metastore.get_registration(_identity(req))
+        if claim is not None and claim["account_id"] == (req.account_id or ""):
+            return Registration(True, registrar_ref="claim")
     return reg
 
 
@@ -837,6 +844,12 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         # device-registry write, so a fake id can't grow the DB -- zero footprint,
         # at the cost of no fleet tracking for these boards.
         checkin.device_id = _identity(checkin)     # board-qualified from here down
+        # UNCLAIMED: listed for the account it reports, so its owner sees a board to claim -- in a
+        # table capped per account, and only for an account that exists, so a stream of made-up
+        # ids can't grow it.
+        if checkin.account_id and st.metastore.get_account(checkin.account_id) is not None:
+            st.metastore.note_unclaimed(checkin.device_id, checkin.account_id, checkin.board,
+                                        checkin.product_id)
         # Scoped by the CLAIMED account, as with no registrar above: there is no sticky binding
         # without a registry row. Left at the default '' it matched only self-host releases, so
         # on the multi-tenant hosted server no Arduino board was ever offered an update.
@@ -869,10 +882,12 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     elif required:
         return _offer_only(st, checkin, existing["cohort"] if existing else "__default__",
                            existing, account_id, nothing)
-    if existing is None and ms.over_device_limit(account_id):
+    if existing is None and ms.over_device_limit(account_id) and \
+            (ms.get_registration(checkin.device_id) or {}).get("account_id") != account_id:
         # A NEW device past the account's entitlement: not registered (zero footprint,
         # like an unregistered id), served nothing, and audited once so the overrun is
-        # visible to the operator. Every device already in the fleet is unaffected.
+        # visible to the operator. Every device already in the fleet is unaffected, and so is
+        # a camera registered to this account: it took its seat when it registered.
         if not ms.limit_refusal_seen(account_id, checkin.device_id):
             ms.append_audit(actor="checkin", action="device.refused", entity_type="device",
                             entity_id=checkin.device_id,
@@ -1088,6 +1103,7 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.admin_auth = admin_auth if admin_auth is not None else TokenAuth(metastore)
     app.state.secret = secret
     app.state.ratelimit = _rate_limiter(settings, metastore)
+    app.state.reg_ratelimit = RateLimiter(settings.registration_rate_per_min)
     from .advisor import OsvClient
     app.state.osv = osv if osv is not None else OsvClient()
     from .datalake import DatalakeAdmin

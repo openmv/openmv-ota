@@ -6,6 +6,7 @@
                (i.MX: through the resident bootloader; --provision for a blank board)
     bootloader flash the bootloader (board must be in system ROM DFU, entered by hand)
     erase      erase the onboard filesystem (the user disk)
+    register   register a connected camera's keys to your account (claim it), no flashing
     list       list connected boards and the state (running / bootloader / recovery) each is in
 
 One board at a time (the connected device); ``--dry-run`` prints the dfu-util commands
@@ -72,6 +73,21 @@ def register(flash_parser: argparse.ArgumentParser):
                       help="file holding the project passphrase (unlocks the desk key)")
     p_fa.set_defaults(func=cmd_factory, _command="flash factory")
 
+    p_rg = sub.add_parser("register", help="register a connected camera's keys to your account "
+                                           "(claim it) without flashing")
+    p_rg.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
+    p_rg.add_argument("-b", "--board", required=True, metavar="NAME",
+                      help="the board (the connected camera)")
+    p_rg.add_argument("--serial", metavar="SN",
+                      help="USB serial number of the camera (when several are attached)")
+    p_rg.add_argument("--desk", metavar="LABEL",
+                      help="the desk key to register with (default: the newest usable one)")
+    p_rg.add_argument("--server", help="server to register with (default: the project's)")
+    p_rg.add_argument("--token", help="a register-scope token (default: client config)")
+    p_rg.add_argument("--key-passphrase-file",
+                      help="file holding the project passphrase (unlocks the desk key)")
+    p_rg.set_defaults(func=cmd_register, _command="flash register", dry_run=False)
+
     p_bl = sub.add_parser("bootloader", help="flash the bootloader (board in system ROM DFU)")
     _add_common(p_bl)
     p_bl.set_defaults(func=cmd_bootloader, _command="flash bootloader")
@@ -118,6 +134,21 @@ def _report(args: argparse.Namespace, steps) -> int:
         else:                                              # an imx step
             print("%s (%s)" % (s.label, args.board))
     return 0
+
+
+def cmd_register(args: argparse.Namespace) -> int:
+    """Register (claim) a camera that is already flashed: the same key exchange `flash factory`
+    ends with, and the same desk-signed upload. The camera answers only while it boots its factory
+    image -- one that has installed an update must be flashed again with `flash factory`."""
+    try:
+        registrar = _Registrar(args)
+        registrar.check()
+        steps = flash_mod.provision_keys(board=args.board, serial=args.serial,
+                                         registrar=registrar)
+    except FlashError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return _report(args, steps)
 
 
 def cmd_firmware(args: argparse.Namespace) -> int:

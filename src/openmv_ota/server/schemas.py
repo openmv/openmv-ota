@@ -676,6 +676,29 @@ class DeviceNeighbors(BaseModel):
     total: int
 
 
+class DeviceReleased(BaseModel):
+    device_id: str
+    account_id: str
+    """The account that held it."""
+    released: bool = True
+
+
+class UnclaimedDevice(BaseModel):
+    device_id: str
+    account_id: str
+    board: str
+    product_id: int | None = None
+    product_id_str: str = ""
+    first_seen: str
+    last_seen: str
+
+
+class UnclaimedList(BaseModel):
+    devices: list[UnclaimedDevice]
+    total: int
+    """Every unclaimed board in scope, not just this page."""
+
+
 class DeviceForgotten(BaseModel):
     device_id: str
     forgotten: bool = True

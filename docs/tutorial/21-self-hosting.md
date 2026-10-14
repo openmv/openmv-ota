@@ -119,14 +119,18 @@ Unregistered and read-only-bypassed boards never receive a grant.
 
 **Board types the registry never registers**
 
-Some board types — today the Arduino boards — have no way to be claimed yet, and the
-registry says so for every one of them. The server serves those read-only: updates
-published under the account a board claims are offered, and nothing else happens (no
-device row, no feedback, no grants, no device-limit counting).
+Some board types — today the Arduino boards — are never in the registry. An account
+**claims** one by registering it from one of its desks (`flash factory`, or `flash register`
+for a camera that is already flashed; see [device keys](../reference/device-keys.md)). A
+claimed board checking in under the account that claimed it is a registered device. Until
+then the server serves it read-only: updates published under the account it names are
+offered, and nothing else happens (no device row, no feedback, no grants, no device-limit
+counting). The account sees it in its unclaimed list (`client device unclaimed`).
 
 | env var | what it does |
 |---|---|
-| `OPENMV_OTA_SERVE_UNREGISTERED_BOARDS` | a **pre-launch operator switch** (boolean: `1`/`true`/`yes`/`on` turns it on, `0`/`false`/`no`/`off` off; default off). On, such a board is treated as **registered for every account**: it gets a device row and is enrolled, its install feedback is recorded, it receives Live and ingest grants, and it counts toward its account's device limit like any other device. It takes the board's claimed id on trust, so turn it off once Arduino board claiming and signed check-ins ship. The server prints a note at startup while it is on |
+| `OPENMV_OTA_SERVE_UNREGISTERED_BOARDS` | a **pre-launch operator switch** (boolean: `1`/`true`/`yes`/`on` turns it on, `0`/`false`/`no`/`off` off; default off). On, such a board is treated as **registered for every account**: it gets a device row and is enrolled, its install feedback is recorded, it receives Live and ingest grants, and it counts toward its account's device limit like any other device. It takes the board's id and account on trust, so leave it off once your boards are claimed. The server prints a note at startup while it is on |
+| `OPENMV_OTA_REGISTRATION_RATE_PER_MIN` | registrations (claims) allowed per minute, per account and per address (default 30; 0 disables) |
 
 **Signed check-ins and per-camera encryption**
 

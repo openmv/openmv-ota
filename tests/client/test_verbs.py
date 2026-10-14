@@ -491,6 +491,21 @@ def test_bind_device(wired, tmp_path, capsys):
     assert store.device_account("d1")["source"] == "admin"
 
 
+def test_release_a_device_and_list_unclaimed(wired, tmp_path, capsys):
+    store, _ = wired
+    store.put_registration("OPENMV4:d1", "", record=b"r", signature="s", identity="04" + "ab" * 64,
+                           exchange="04", desk_key_id=1, issued="2026-01-01T00:00:00Z",
+                           registered_by="desk")
+    assert main(["client", "device", "release", "--device-id", "OPENMV4:d1"]) == 0
+    assert "device OPENMV4:d1 released" in capsys.readouterr().out
+    assert store.get_registration("OPENMV4:d1") is None
+    assert main(["client", "device", "release", "--device-id", "OPENMV4:d1"]) == 1
+    assert "404" in capsys.readouterr().err
+    store.note_unclaimed("ARDUINO_GIGA:g", "", "ARDUINO_GIGA", BID)
+    assert main(["client", "device", "unclaimed", "--limit", "5"]) == 0
+    assert "ARDUINO_GIGA:g" in capsys.readouterr().out
+
+
 def test_forget_device(wired, tmp_path, capsys, monkeypatch):
     """The install ended. The device leaves the fleet; what it installed stays."""
     store, _ = wired
