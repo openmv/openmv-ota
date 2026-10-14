@@ -603,8 +603,10 @@ def cmd_keykeeper_sync(args: argparse.Namespace) -> int:
 
     def run():
         cfg = load_config(Path(args.dir) / CONFIG_NAME)
-        chain = Api(client_config.resolve(args.server, args.token)).keykeeper_chain()
-        gens = keykeeper_pins.sync(args.dir, cfg.keykeeper_pin, chain)
+        api_cfg = client_config.resolve(args.server, args.token)
+        chain = Api(api_cfg).keykeeper_chain()
+        gens = keykeeper_pins.sync(args.dir, cfg.keykeeper_pin, chain,
+                                   server_url=api_cfg.server_url)
         print("Keykeeper chain verified: generations %d-%d; releases seal to the one in effect."
               % (gens[0].key_id, gens[-1].key_id))
         print("  Commit %s." % keykeeper_pins.path_for(args.dir).relative_to(args.dir))

@@ -110,8 +110,10 @@ flash opens nothing else:
 ```toml
 [ota]
 per_camera_encryption = true
-keykeeper_pin = "1:04..."     # from `openmv-ota keykeeper pin` on your keykeeper
 ```
+
+On the hosted server the keykeeper's pin is built in. A self-hosted server adds
+`keykeeper_pin = "1:04..."`, from `openmv-ota keykeeper pin` on its keykeeper.
 
 ```bash
 openmv-ota project keys keykeeper sync .    # fetch and verify keykeeper's keys; commit keys/keykeeper.json
