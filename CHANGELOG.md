@@ -82,6 +82,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`flash register` reaches a camera whose app never reads its console, and leaves it running.**
+  The key request piled up unread before the soft reset, and on the AE3 (TinyUSB) a full receive
+  buffer stopped the port taking input, so the reset never arrived. A running camera is now reset
+  first, and `flash factory` sends at most five requests before its fallback reset. And a soft
+  reset with the console held open skips `main.py`, so every camera `flash register` touched was
+  left at its REPL, never checking in again; a camera the tool soft-reset is now hard-reset once
+  it has answered.
 - **`flash factory` no longer crashes on a port udev hasn't handed over yet.** A camera back on
   USB after flashing can enumerate before its port is in the dialout group, and the first open
   of its console failed with a traceback (EACCES). It now retries for a few seconds, then fails

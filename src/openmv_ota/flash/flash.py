@@ -539,6 +539,15 @@ _IDENTITY_SEND_S = 0.1    # how often the request is repeated until it is answer
 # the reopen below catches that boot.)
 _IDENTITY_RESET_S = 3
 _SOFT_RESET = (b"\r\x03", b"\r\x03", b"\r\x03", b"\x04")
+# Requests sent BEFORE that reset are capped: an app that never reads its console leaves them
+# queued, and on a TinyUSB port (the AE3) a full receive buffer stops the port taking input at
+# all -- the reset's Ctrl-C then never arrives, and the camera can't be reached until it reboots.
+# Five requests fit the smallest buffer; after the reset they go out at the usual pace.
+_IDENTITY_PRE_RESET_SENDS = 5
+# After a soft reset the camera is left at its REPL: with the console held open (DTR) the firmware
+# skips main.py after the reboot, so the app never comes back -- the camera then sits idle, never
+# checking in. So once it has answered, a camera this tool soft-reset is restarted for real.
+_RESTART = (b"\r\x03", b"\r\x03", b"import machine; machine.reset()\r\n")
 _IDENTITY_RECONNECTS = 3  # the camera dropping off USB mid-exchange, survived this many times
 _IDENTITY_QUIET_S = 1.0  # nothing new this long: a line short of its newline is all there is
 # A whole SE-ID line short of only its newline: an older boot.py print()ed it and the N6 started
@@ -580,6 +589,17 @@ def _write(con, data: bytes, serial_mod) -> None:
         pass
 
 
+def _restart(con, serial_mod) -> None:
+    """Hard-reset a camera this tool soft-reset, so it boots into its app again (see _RESTART).
+    Never raises: the camera has answered, and a port that goes away mid-write is the reset."""
+    try:
+        for key in _RESTART:
+            _write(con, key, serial_mod)
+            time.sleep(0.2)
+    except OSError:
+        pass
+
+
 def _reconnect(con, raw, serial, until: float):
     """The console again after the camera dropped off USB (a reset re-enumerates it), or None if
     it isn't back by ``until``."""
@@ -599,7 +619,7 @@ def _reconnect(con, raw, serial, until: float):
 
 
 def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = False,
-                   registrar=None):
+                   registrar=None, running: bool = False):
     """The last step of ``flash factory`` on a board with keys. Booting the factory image just
     written, the camera makes its keys if it has none -- in boot.py, before the app runs -- and,
     for a short window, answers an ``OMVKEYS <challenge>`` line on its console with both public
@@ -611,7 +631,11 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
 
     ``registrar(board, device_id, identity_hex, exchange_hex)``, given, then registers the keys
     with the server (a desk-signed record; see ``flash.cli``) and returns its answer; a camera
-    that can't say which camera it is can't be registered, and fails the flash."""
+    that can't say which camera it is can't be registered, and fails the flash.
+
+    ``running``: the camera is already running its app (``flash register``), not booting the image
+    just written -- so it is soft-reset at once, before any request can queue up unread behind an
+    app that never reads its console."""
     import hashlib
     import os
 
@@ -647,14 +671,18 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
         opened = last_rx = time.monotonic()
         deadline = opened + _IDENTITY_ANSWER_S
         reset = False
+        sends = 0
+        reset_now = running                      # an app is running: interrupt it before asking
         while answer is None and time.monotonic() < deadline:
             try:
-                if not reset and time.monotonic() - opened >= _IDENTITY_RESET_S:
+                if not reset and (reset_now or time.monotonic() - opened >= _IDENTITY_RESET_S):
                     reset = True
                     for key in _SOFT_RESET:
                         _write(con, key, serial_mod)
                         time.sleep(0.2)
-                _write(con, (request + "\r\n").encode(), serial_mod)
+                if reset or sends < _IDENTITY_PRE_RESET_SENDS:
+                    _write(con, (request + "\r\n").encode(), serial_mod)
+                    sends += 1
                 got = con.read(4096).decode("utf-8", "replace")
                 heard += got
                 if got:
@@ -677,6 +705,7 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                     break
                 opened = time.monotonic()
                 deadline, reset, heard = opened + _IDENTITY_ANSWER_S, False, ""
+                sends, reset_now = 0, False      # back on USB: a boot is under way, ask it
                 continue
             # \r*: a port's stdout turns "\n" into "\r\n", and a line already ending "\r\n" into
             # "\r\r\n" -- an answer is a line however many carriage returns end it
@@ -685,6 +714,8 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                 answer = _UNTERMINATED.search(heard)
     finally:
         if con is not None:
+            if answer is not None and reset:
+                _restart(con, serial_mod)
             con.close()
     if answer is None:
         from openmv_ota.build.device import boot

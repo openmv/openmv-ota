@@ -165,6 +165,7 @@ def test_flash_register_claims_a_flashed_camera(proj, monkeypatch, capsys):
     monkeypatch.setattr(fl, "provision_keys", lambda **k: got.update(k) or [])
     assert main(["flash", "register", str(root), "-b", "OPENMV4", "--serial", "/dev/x"]) == 0
     assert got["checked"] and got["board"] == "OPENMV4" and got["serial"] == "/dev/x"
+    assert got["running"] is True                                # reset before asking
     assert isinstance(got["registrar"], _Desk) and ran == []      # nothing flashed
 
 
