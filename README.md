@@ -22,6 +22,11 @@ What a camera downloads is **encrypted**, under a key minted with the project an
 baked into your own firmware, so a published release is ciphertext to the update
 server, to the store it sits in, and to anyone who gets hold of it.
 
+Every camera also has keys of its own, in a secure element on the boards that have one.
+The desk that flashes a camera registers those keys to your account, which is how the
+camera is claimed: from then on it signs its check-ins, and a release can be encrypted for
+each camera alone.
+
 **Start with the [tutorial](https://github.com/openmv/openmv-ota/blob/main/docs/tutorial/00-introduction.md)** — the complete,
 navigable reference for every command and the update server's HTTP API, in the
 order you use them: install → project → build → flash → device runtime → update

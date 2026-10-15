@@ -67,6 +67,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **An account's device count is what its limit enforces.** `client account limit` reported the
+  fleet alone; it now counts the cameras registered to the account too, as the limit does.
+- **The webhook catalogue names the camera-identity events**: `device.registered`,
+  `device.rekeyed`, `device.register_refused`, `device.released`, `device.checkin_refused` and
+  `desk_key.put` (they already reached `*` and `device.*` subscribers).
 - **A half-programmed key word no longer crashes an H7 at boot.** A power cut while the OpenMV
   Cam H7, H7 Plus or Pure Thermal programs its keys can leave a flash word with an error its ECC
   can't correct, and reading it was a bus fault: the camera crashed every time it read its keys.

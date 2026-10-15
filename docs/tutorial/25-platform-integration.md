@@ -112,7 +112,7 @@ not derive it, so the project stays the one place a product is named. Declaring 
 idempotent and gives you a product that appears in `client product list` with no releases
 and no devices, ready to be named and to have cameras bound to it.
 
-## Stock hardware, claimed later
+## Stock hardware, assigned later
 
 This is the second decision that cannot be changed afterwards.
 
@@ -138,7 +138,7 @@ version, so it needs the publish counter that `platform` turns on. Setting one w
 other is always a mistake. And it is permanent — firmware is not replaced over the air, so
 the id a camera leaves the factory with is the id it has forever.
 
-Claiming one for a customer is then an ordinary device pin, to a release of a *different*
+Assigning one to a customer is then an ordinary device pin, to a release of a *different*
 product:
 
 ```bash
@@ -153,14 +153,14 @@ publish counter, for these cameras, not by the version — and takes it like any
 update: downloaded, verified, staged into the other slot, rolled back if it does not
 boot.
 
-**Claim, transfer and reset are the same primitive.** Moving a camera from one customer to
+**Assigning, transferring and resetting are the same primitive.** Moving a camera from one customer to
 another is a pin to the new customer's release. Taking it back is a pin to the current
 stock release. There is no separate verb, and no state the server has to keep in step.
 
 **A pin does not need the camera to have checked in.** It is an intent about a device id,
 not a field on a fleet row, so you can record it when the hardware ships — or the moment a
-customer scans a code — and it is waiting on that camera's very first check-in. The claim
-lands on first contact rather than on the poll after it, which is the difference between a
+customer scans a code — and it is waiting on that camera's very first check-in. The
+assignment lands on first contact rather than on the poll after it, which is the difference between a
 customer watching a spinner for one interval and for two. The only thing refused is an id
 already bound to another account, which is a 404 like everywhere else.
 
@@ -256,7 +256,7 @@ captures — clear it on first boot after a reset.
 
 ## Binding and unbinding hardware
 
-A camera that checks in unbound is claimed by the account it talks to first, which is
+A camera that checks in unbound is bound to the account it reports first, which is
 fine when you control the firmware it ships with and wrong when you do not. To decide it
 yourself:
 
@@ -265,9 +265,13 @@ openmv-ota client device bind --device-id OPENMV_N6:3c0021000c51333037343234
 ```
 
 An administrative bind wins over a learned one and works **before the camera has ever
-checked in**, so you can register hardware at the moment it leaves your building and the
-first check-in lands where you expect. Pins work the same way, so binding and claiming can
+checked in**, so you can assign hardware at the moment it leaves your building and the
+first check-in lands where you expect. Pins work the same way, so binding and assigning can
 both happen at the point of sale, and the camera arrives already knowing what it is.
+
+A camera registered to another account can't be bound by yours (a 404): its registration,
+made by the desk that flashed it, is the proof of whose camera it is. Its holder gives it
+up with `client device release`.
 
 When a unit is retired:
 
@@ -275,14 +279,15 @@ When a unit is retired:
 openmv-ota client device forget --device-id OPENMV_N6:3c0021000c51333037343234
 ```
 
-It leaves the fleet and stops counting against the account's device limit, and the
+It leaves the fleet, and the
 datalake erases everything it stored under the account — which is the erasure an end
 customer's data-subject request calls for, one call. `--keep-data` leaves the data to
 retention instead. Its install history stays — a deployment row records what happened on
 a day that has already passed, and rollout counters are built from those rows — and the
 removal is in the audit log, with what was erased. A camera that checks in again
-afterwards is a device the server has not seen before: it enrols from scratch and is not
-yours again until you bind it.
+afterwards is a device the server has not seen before: it enrols from scratch, under the
+account it reports. Forgetting doesn't touch its registration, which keeps its seat under
+the device limit; `client device release` frees both.
 
 ## Building and publishing
 
@@ -432,7 +437,7 @@ rotated, never recovered.
 
 Be aware of what this arrangement costs before choosing it: a release belongs to an
 account, so one project shipped to fifty customer accounts is fifty publishes of the same
-artifacts, and the claim-by-pin primitive above does not apply — a camera moving between
+artifacts, and the assign-by-pin primitive above does not apply — a camera moving between
 accounts is a rebind, not a pin, and it crosses a boundary the device itself enforces.
 
 ---

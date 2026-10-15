@@ -34,6 +34,11 @@ the URL, the subscription or the description, or switches the endpoint off and o
 | `device.fallback` | a camera boots its previous image after a failed update |
 | `install.failed` | a camera reports an install that failed |
 | `device.bind`, `device.forget`, `device.rename`, `device.pin` | operator actions on a camera |
+| `device.registered`, `device.rekeyed` | a camera's keys are registered to the account (it is claimed), or a registered camera's keys are replaced |
+| `device.register_refused` | a registration is refused; the event says why |
+| `device.released` | a camera is released: its registration, binding and fleet row go |
+| `device.checkin_refused` | a camera's check-in signature doesn't verify, once per new reason rather than every poll |
+| `desk_key.put` | a desk key is added, renewed or revoked |
 | `release.publish`, `release.rename` | a release is published, or relabelled |
 | `rollout.create`, `rollout.update`, `rollout.stop`, `rollout.superseded`, `rollout.rename` | a rollout's lifecycle |
 | `rollout.autopause` | a rollout paused itself at its failure limit |

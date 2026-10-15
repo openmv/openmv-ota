@@ -20,6 +20,7 @@ openmv-ota flash factory  ./my-product -b OPENMV4
 | `flash firmware` | the firmware image | `<board>-firmware.bin` |
 | `flash romfs` | the app romfs image | `<board>-romfs.img` |
 | `flash factory` | firmware **+** the factory image (the manufacturing program) | `<board>-firmware.bin`, `<board>-factory-romfs.img` |
+| `flash register` | nothing: registers the keys of a camera already flashed | — |
 | `flash erase` | the onboard filesystem — [next page](10-erase-and-bootloader.md) | — (no artifact) |
 | `flash bootloader` | the bootloader — [next page](10-erase-and-bootloader.md) | `<board>-bootloader.bin` |
 | `flash list` | *(query)* connected boards + the state each is in | — |
@@ -106,8 +107,51 @@ camera makes its keys if it has none while booting its new factory image,
 before the app runs, and for a moment answers a request on its console with
 both public keys and a signature over a fresh challenge. The tool verifies
 that signature and prints both keys; a camera whose keys fail the check fails
-the flash. Which boards keep keys where, and how, is in
-[device keys](../reference/device-keys.md).
+the flash.
+
+## Registering cameras
+
+A camera's keys mean something to the update server only once they are
+**registered**: tied, by a signature the server can check, to the account that
+owns the camera. Registering is how a camera is claimed. A registered camera signs
+its check-ins, can open releases encrypted for it alone, and is a device of your
+account and no other; an Arduino board is served update offers and nothing more
+until it is registered.
+
+`flash factory` registers the camera right after it checks its keys. The record
+is signed with a **desk key** — the key of wherever cameras are first flashed,
+kept with the project — and uploaded with your login, so set both up once:
+
+```
+openmv-ota client login
+openmv-ota project keys desk create bench-1 ./my-product
+openmv-ota project keys desk push ./my-product
+```
+
+Then every `flash factory` ends with the camera's keys and its registration (the
+keys are 130 hex digits each, cut short here):
+
+```
+$ openmv-ota flash factory ./my-product -b OPENMV4
+Flashed OPENMV4-firmware.bin -> alt 2 (OPENMV4)
+Flashed OPENMV4-factory-romfs.img -> alt 3 (OPENMV4)
+keys present: identity 0409db07199d217f..., exchange 04e50a0adc6c8289... (OPENMV4)
+registered OPENMV4:343630333436510C80010010 (key dce6b17942bcce38) (OPENMV4)
+```
+
+The `key` is the start of the identity key's fingerprint, the one the audit log
+records. A camera registered before with other keys — reflashed with
+`flash bootloader`, which erases them — says `replacing its old keys`.
+
+`flash register` registers a camera that is already flashed, without flashing it:
+one flashed with `--no-register`, or before its desk was set up. It runs the same
+exchange and prints the same two lines. The camera answers only while it boots its
+factory image, so one that has installed an update is flashed again with
+`flash factory` instead.
+
+```
+openmv-ota flash register ./my-product -b OPENMV4
+```
 
 ## Options
 
@@ -122,6 +166,11 @@ the flash. Which boards keep keys where, and how, is in
 | `--dfu-util PATH` | Use a specific `dfu-util` (default: the SDK's, else `PATH`). |
 | `--sdk-home DIR` | Find the SDK's flashing tools (`dfu-util`, `blhost`) here (default: the project's SDK — `[sdk].home` in `openmv-ota.local.toml`, else `~/openmv-sdk-<SDK_VERSION>`, as a build finds it). |
 | `--provision` | `factory` only, i.MX only: provision a blank board over the ROM serial download (SBL jumper). |
+| `--no-register` | `factory` only: don't register the camera's keys (a bench with no server). |
+| `--desk LABEL` | `factory`, `register`: the desk key to sign the registration with (default: the newest usable one). |
+| `--server URL` | `factory`, `register`: the server to register with (default: the project's). |
+| `--token TOKEN` | `factory`, `register`: a token with the `register` scope (default: your login). |
+| `--key-passphrase-file F` | `factory`, `register`: the project passphrase, which unlocks the desk key. |
 
 ## Listing connected boards
 
@@ -149,7 +198,7 @@ newest installed `~/openmv-sdk-*`.
 ## Typical use
 
 ```
-# Manufacturing — provision a fresh board (firmware + the factory image):
+# Manufacturing — provision a fresh board (firmware + the factory image), registered:
 openmv-ota build firmware       -b OPENMV4
 openmv-ota build factory-romfs  -b OPENMV4
 openmv-ota flash factory        -b OPENMV4
@@ -162,6 +211,11 @@ openmv-ota flash romfs  -b OPENMV4
 # See exactly what would run before committing to a flash:
 openmv-ota flash factory -b OPENMV4 --dry-run
 ```
+
+## See also
+
+- [Device keys](../reference/device-keys.md) — which boards keep keys where, the
+  registration record, desk keys, and what claiming is bounded by.
 
 ---
 

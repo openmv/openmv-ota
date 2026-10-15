@@ -27,3 +27,6 @@ will name the supported release lines.
   firmware-baked keys**; the update server is not trusted. Findings that break
   that boundary (signature bypass, anti-rollback bypass, installing unverified
   bytes) are the highest-value reports.
+- Camera identity is in scope too: a check-in passing as another registered
+  camera's, a camera registered or released by an account that doesn't hold it, or
+  a lockbox reaching a camera it wasn't made for.
