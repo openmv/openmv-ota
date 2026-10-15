@@ -121,6 +121,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   5 MB a camera a day. Eight cameras spent the default 50 MB/day datalake quota by 14:27 UTC,
   after which the datalake refused everything until midnight, heap graphs included. The heartbeat
   now logs once a minute.
+- **A camera whose network stack runs out of memory heals itself.** An H7 Plus whose WINC ran out
+  of buffers after a relay send stalled failed every check-in with `OSError(12)` -- at 7% heap
+  use -- and never recovered: the transport rebuild waited for five failed cycles, half an hour
+  at that pace, and nothing came after it. A check-in still out of memory after the optional
+  connections are closed now rebuilds the transport at once and, if the next one is too, reboots
+  (only a camera that has checked in since boot, so an app that starves itself can't loop). The
+  live relay waits a minute after an out-of-memory failure instead of five seconds.
 - **A camera turned away at the device limit raises `device.refused` again.** With signed check-ins
   required, the limit turns cameras away when they register, and that was audited as
   `device.register_refused` -- so the dashboard's "turned away" alert and the `device.refused`
