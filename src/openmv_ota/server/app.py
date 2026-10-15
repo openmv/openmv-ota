@@ -5,7 +5,8 @@ every collaborator is injectable (OpenMV's website supplies its own), defaulting
 settings-driven backends for self-hosters. The device endpoints:
 
 * ``POST /api/v1/check`` -- rate-limit (per IP) -> **registration verify** (unregistered leaves
-  zero footprint) -> device-registry upsert -> rollout decision -> a capability manifest URL.
+  zero footprint) -> **signature check** (unsigned gets offers only) -> device-registry upsert ->
+  rollout decision -> a capability manifest URL.
 * ``GET /d/{token}/{filename}`` -- the capability gateway: validate the token, then 302-redirect
   to a presigned artifact URL (s3) or stream it (local). One token guards the whole bundle.
 * ``GET /healthz``.
@@ -673,14 +674,9 @@ def _verify(state, req):
 
     A board TYPE the registry never registers (the Arduino ones) is CLAIMED instead: it counts
     as registered once a desk has registered its keys to the account the check-in reports
-    (`openmv-ota flash factory` or `flash register`, logged in), and only for that account.
-    With ``serve_unregistered_boards`` on (a pre-launch operator switch) every such board counts
-    as registered, for every account and on every path that asks here -- check-in (device row,
-    enrollment, grants, device limit) and feedback alike."""
+    (`openmv-ota flash factory` or `flash register`, logged in), and only for that account."""
     reg = state.verifier.verify(req.board or "", req.device_id)
     if reg.unregistered_board_type:
-        if state.settings.serve_unregistered_boards:
-            return Registration(True)
         claim = state.metastore.get_registration(_identity(req))
         if claim is not None and claim["account_id"] == (req.account_id or ""):
             return Registration(True, registrar_ref="claim")
@@ -779,7 +775,7 @@ def _offer_answer(st, rel, manifest_url, device_id: str):
 
 def _offer_only(st, checkin, cohort, existing, account_id, nothing):
     """An update offer and nothing else: no fleet row, no telemetry, no grants. What a check-in
-    gets that can't prove which camera sent it, once signed check-ins are required."""
+    gets that can't prove which camera sent it."""
     _, rel, _offered, manifest_url = _decide(st, checkin, cohort, existing, account_id)
     if manifest_url:
         return _offer_answer(st, rel, manifest_url, checkin.device_id) or nothing
@@ -805,10 +801,10 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     `POST /api/v1/admin/devices/{device_id}/account` for the operator override.
 
     **Signed check-ins.** A registered camera whose clock is set signs the body with its
-    identity key, in an `X-OMV-Signature: v=1;ts=<unix>;sig=<DER hex>` header. With the
-    server's `require_signed_checkins` on, only a signed check-in gets the full treatment; an
-    unsigned one gets update offers only, and one whose signature doesn't verify gets nothing.
-    Off, signatures are checked and noted but change nothing.
+    identity key, in an `X-OMV-Signature: v=1;ts=<unix>;sig=<DER hex>` header. Only a signed
+    check-in gets the full treatment (fleet row, telemetry, Live and ingest grants). An unsigned
+    one, or one signed at a stale time, gets update offers only; one whose signature doesn't
+    verify, or that comes from a camera with no registration, gets nothing.
 
     `poll_after_s` is the server pacing the fleet; respect it rather than polling on a
     fixed timer, so a large fleet does not arrive in step."""
@@ -866,7 +862,6 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     existing = ms.get_device(checkin.device_id)
     signed, refusal = _signature(ms, checkin.device_id, request.headers.get(checkin_sig.HEADER),
                                  raw)
-    required = st.settings.require_signed_checkins
     if signed == "signed":
         ms.note_signed_checkin(checkin.device_id)
     elif signed == "refused":
@@ -874,12 +869,11 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         # footprint), and audited when it is news, not on every poll of a camera that keeps failing.
         if ms.note_refused_checkin(checkin.device_id, refusal):
             ms.append_audit(actor="checkin", action="device.checkin_refused", entity_type="device",
-                            entity_id=checkin.device_id,
-                            data={"reason": refusal, "enforced": required},
+                            entity_id=checkin.device_id, data={"reason": refusal},
                             account_id=account_id, product_id=checkin.product_id)
-        if required and refusal != "stale":
+        if refusal != "stale":
             return nothing
-    if required and signed != "signed":
+    if signed != "signed":
         # Unsigned, or signed at a time too far from ours: a camera whose RTC drifted while it was
         # off (it trusts one that reads past its build until this answer's Date corrects it), or
         # a replay. A stale signature proves no more than none, so it gets what none gets.
@@ -1075,10 +1069,6 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     if not settings.swd_ids_verify_url:
         print("note: no registration server configured -- serving ALL devices READ-ONLY "
               "(offers work; no device registry, telemetry, or grants)", file=sys.stderr)
-    if settings.serve_unregistered_boards:
-        print("note: serve_unregistered_boards is ON -- board types the registry never registers "
-              "(Arduino) are tracked as registered devices for every account, claimed or not (a "
-              "pre-launch switch: leave it off once boards are claimed)", file=sys.stderr)
     if settings.test_offer_downgrades:      # loud: a real deployment must never boot with this on
         print("WARNING: test_offer_downgrades is ON -- the server will OFFER anti-rollback "
               "downgrades (a TEST-ONLY hook; devices still reject them). Never in production.",

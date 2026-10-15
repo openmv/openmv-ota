@@ -19,6 +19,7 @@ from openmv_ota.server.metastore import SqliteMetadataStore
 from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
+from tests.server import camera
 
 
 class _Verifier:
@@ -248,13 +249,14 @@ def test_the_device_path_raises_its_own_events(tmp_path, monkeypatch):
     the audit never recorded before -- now they are events a subscriber can act on."""
     c, store, rx, deliverer = _app(tmp_path, monkeypatch)
     c.post("/api/v1/admin/webhooks", headers=AUTH, json={"url": "https://hooks.example/", "events": ["device.*", "install.*"]})
-    store.bind_device_account("OPENMV_N6:aa", "a1", source="admin")   # the camera is the account's
+    camera.register(store, "OPENMV_N6:aa", "a1")                      # the camera is the account's
+    store.bind_device_account("OPENMV_N6:aa", "a1", source="admin")
     checkin = {"device_id": "aa", "product_id": 7, "board": "OPENMV_N6", "app_version": "1.0.0",
                "payload_version": 1, "slot": "a", "confirmed": True}
-    assert c.post("/api/v1/check", json=checkin).status_code == 200
-    assert c.post("/api/v1/check", json=checkin).status_code == 200            # no second enrolment
-    assert c.post("/api/v1/check", json={**checkin, "fallback_reason": "boot-loop"}).status_code == 200
-    assert c.post("/api/v1/check", json={**checkin, "fallback_reason": "boot-loop"}).status_code == 200  # same reason: once
+    assert camera.check(c, checkin).status_code == 200
+    assert camera.check(c, checkin).status_code == 200            # no second enrolment
+    assert camera.check(c, {**checkin, "fallback_reason": "boot-loop"}).status_code == 200
+    assert camera.check(c, {**checkin, "fallback_reason": "boot-loop"}).status_code == 200  # same reason: once
     assert c.post("/api/v1/feedback", json={"device_id": "aa", "product_id": 7, "board": "OPENMV_N6",
                                             "release_id": "rel_1", "status": "failed", "reason": "sha"}).json()["ok"]
     actions = [e["action"] for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]]

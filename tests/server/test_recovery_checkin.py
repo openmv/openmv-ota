@@ -59,14 +59,15 @@ def _post(c, board_id="ABC123"):
     return c.post("/api/v1/check", content=body, headers={"Content-Type": "application/json"})
 
 
-def test_a_recovering_device_is_offered_the_release_and_shows_as_recovering(tmp_path):
+def test_a_recovering_device_is_offered_the_release(tmp_path):
+    """Recovery never signs its check-in, so it gets what any unsigned check-in gets: update
+    offers, and no fleet row."""
     c, store = _client(tmp_path)
     r = _post(c)
     assert r.status_code == 200
     url = rec.offered(r.status_code, r.content)
     assert url and url.startswith("https://ota.test/d/")   # a manifest URL, not the server root
-    dev = store.get_device("OPENMV4:ABC123")                # board-qualified: BOARD was sent
-    assert dev["fallback_reason"] == "recovery" and dev["current_payload_version"] == 0
+    assert store.count_devices() == 0
 
 
 def test_nothing_on_offer_is_an_answer_recovery_waits_on(tmp_path):

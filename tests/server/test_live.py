@@ -18,6 +18,7 @@ from openmv_ota.server.metastore import SqliteMetadataStore
 from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
+from tests.server import camera
 
 RELAY = "https://live.cloud.openmv.io"
 SECRET = "live-test-secret"
@@ -125,7 +126,7 @@ def test_camera_grant_http_relay_becomes_ws():  # local/dev relays (wrangler dev
 
 def test_checkin_carries_live_grant_when_configured(tmp_path):
     app = _app(tmp_path, live_relay_url=RELAY, live_token_secret=SECRET)
-    r = TestClient(app).post("/api/v1/check", json=CHECKIN)
+    r = camera.check(TestClient(app), CHECKIN)
     assert r.status_code == 200
     g = r.json()["live"]
     url = g["streams"]["0"]["camera_url"]
@@ -135,19 +136,19 @@ def test_checkin_carries_live_grant_when_configured(tmp_path):
 
 def test_checkin_reported_streams_shape_the_grant(tmp_path):
     app = _app(tmp_path, live_relay_url=RELAY, live_token_secret=SECRET)
-    r = TestClient(app).post("/api/v1/check", json=dict(CHECKIN, streams=["front", "tele"]))
+    r = camera.check(TestClient(app), dict(CHECKIN, streams=["front", "tele"]))
     assert set(r.json()["live"]["streams"]) == {"front", "tele"}
 
 
 def test_checkin_without_live_config_omits_the_key(tmp_path):
-    r = TestClient(_app(tmp_path)).post("/api/v1/check", json=CHECKIN)
+    r = camera.check(TestClient(_app(tmp_path)), CHECKIN)
     assert r.status_code == 200
     assert "live" not in r.json()
 
 
 def test_unregistered_device_gets_no_live_grant(tmp_path):
     app = _app(tmp_path, registered=False, live_relay_url=RELAY, live_token_secret=SECRET)
-    r = TestClient(app).post("/api/v1/check", json=CHECKIN)
+    r = camera.check(TestClient(app), CHECKIN)
     assert r.status_code == 200
     assert "live" not in r.json()
 

@@ -115,7 +115,8 @@ serves:
 | `OPENMV_OTA_DATALAKE_ADMIN_TOKEN` | the datalake's operator token, for the one write the server makes there: erasing a forgotten device's data (`device forget`). Unset, forget leaves data to the datalake's retention |
 | `OPENMV_OTA_VIEWER_TOKEN_TTL` | lifetime of a dashboard's viewer grant, both its relay and datalake tokens (default 5 min; it leaves the server, so keep it short) |
 
-Unregistered and read-only-bypassed boards never receive a grant.
+Unregistered and read-only-bypassed boards never receive a grant, and neither does an
+unsigned check-in.
 
 **Board types the registry never registers**
 
@@ -129,14 +130,18 @@ counting). The account sees it in its unclaimed list (`client device unclaimed`)
 
 | env var | what it does |
 |---|---|
-| `OPENMV_OTA_SERVE_UNREGISTERED_BOARDS` | a **pre-launch operator switch** (boolean: `1`/`true`/`yes`/`on` turns it on, `0`/`false`/`no`/`off` off; default off). On, such a board is treated as **registered for every account**: it gets a device row and is enrolled, its install feedback is recorded, it receives Live and ingest grants, and it counts toward its account's device limit like any other device. It takes the board's id and account on trust, so leave it off once your boards are claimed. The server prints a note at startup while it is on |
 | `OPENMV_OTA_REGISTRATION_RATE_PER_MIN` | registrations (claims) allowed per minute, per account and per address (default 30; 0 disables) |
 
 **Signed check-ins and per-camera encryption**
 
+Only a check-in signed by the identity key in the camera's registration gets the full
+treatment: a device row, telemetry, Live and ingest grants. An unsigned one, or one signed at
+a stale time, gets update offers only; one whose signature doesn't verify, or that comes from
+a camera with no registration on this server, gets nothing. A desk registers a camera to the
+server it names (`flash factory`, or `flash register` for one already flashed).
+
 | env var | what it does |
 |---|---|
-| `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` | boolean, default off. Off, every check-in signature is checked and noted, and nothing else changes. On, only a check-in signed by the camera's registered key gets the full treatment; an unsigned one, or one signed at a stale time, gets update offers only, and one whose signature doesn't verify gets nothing |
 | `OPENMV_OTA_KEYKEEPER_URL`, `OPENMV_OTA_KEYKEEPER_TOKEN` | where keykeeper runs, on a private network, and the secret it expects. Needed only to offer releases encrypted for each camera; without it such a release is never offered |
 
 Keykeeper is a second, small process from the same package. It holds the only key that
@@ -270,7 +275,7 @@ The [deploy/](../../src/openmv_ota/server/deploy/) directory ships turnkey artif
 ## See also
 
 - [Device keys](../reference/device-keys.md) — registration, claiming, signed check-ins and
-  lockboxes, which the settings above switch on.
+  lockboxes.
 
 ---
 

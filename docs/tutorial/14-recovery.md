@@ -14,10 +14,11 @@ its own.
 
 The check-in reports the device's id plus the board, product, and account
 stamped into its firmware, with no installed version, so any release in an
-active rollout for that product is newer and is offered. It says
-`fallback_reason: recovery`, so a recovering device shows up as one in the
-fleet view. When the server has nothing for it, or refuses it, recovery logs
-that and asks again on its backoff.
+active rollout for that product is newer and is offered. The check-in goes
+unsigned, so the server answers it with update offers and nothing else: the
+device's fleet row stays as it was until the release it installs checks in.
+When the server has nothing for it, or refuses it, recovery logs that and asks
+again on its backoff.
 
 Because there is nothing below it to fall back to, its rules differ from the
 update path's:

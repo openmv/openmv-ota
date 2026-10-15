@@ -43,8 +43,9 @@ SHA-256(`omv-checkin-v1\n` + `ts` + `\n` + the exact body bytes), with `ts` the 
 time. The server checks it against the identity key in the camera's registration and takes
 it only within five minutes of its own clock, so a recorded check-in can't be replayed. A
 camera that has just booted cold has no clock yet and sends its first check-in unsigned; the
-answer's `Date` header sets the clock for the next one. What a signed, unsigned or refused
-check-in gets depends on whether the server requires signatures.
+answer's `Date` header sets the clock for the next one. Only a signed check-in gets the full
+treatment (a fleet row, telemetry, Live and ingest); an unsigned one, or one signed at a stale
+time, gets update offers only, and one whose signature doesn't verify gets nothing.
 
 The answer is `{"update": false, "poll_after_s": 3600}` in the common case. On an offer:
 
@@ -109,7 +110,7 @@ optionally a `reason`). Recorded only for registered devices; these reports are 
 ## See also
 
 - [Device keys](../reference/device-keys.md) — the camera's keys, its registration, what
-  a server requiring signed check-ins answers each kind of check-in, and the lockbox format.
+  the server answers each kind of check-in, and the lockbox format.
 
 ---
 

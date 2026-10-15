@@ -51,10 +51,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   takes `OPENMV_OTA_KEYKEEPER_URL` / `..._TOKEN` and serves the chain at
   `GET /api/v1/keykeeper/chain`.
 - **Signed check-ins.** A registered camera with a set clock signs each check-in with its
-  identity key (`X-OMV-Signature`). The server checks every signature; with
-  `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` on, an unsigned check-in (or one signed at a stale time: a
-  clock that drifted while the camera was off) gets update offers only and a bad signature gets
-  nothing. Off by default.
+  identity key (`X-OMV-Signature`). Only a signed check-in gets the full treatment (fleet row,
+  telemetry, Live and ingest); an unsigned one (or one signed at a stale time: a clock that
+  drifted while the camera was off) gets update offers only, and a bad signature, or one from a
+  camera with no registration, gets nothing. Recovery and the M4 check in unsigned.
 - **Claiming boards.** Registering a camera claims it: an Arduino board is a registered device
   once its account holds a registration for it, and until then is listed in the account's
   unclaimed boards (`client device unclaimed`). Registering is bounded by board type, the device
@@ -73,6 +73,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   key the chain announced.
 - **Secure element demos** in `examples/secure_element/`: read the keys and certificate, sign a
   challenge, verify it on the host.
+
+### Removed
+
+- **`OPENMV_OTA_SERVE_UNREGISTERED_BOARDS`.** The server no longer treats every Arduino board as
+  registered: one is a registered device only once claimed, by a registration to the account it
+  checks in under.
 
 ### Fixed
 

@@ -12,6 +12,7 @@ from openmv_ota.server.metastore import SqliteMetadataStore
 from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
+from tests.server import camera
 
 SECRET = "test-secret"
 
@@ -93,36 +94,38 @@ def test_check_requires_device_id_and_board(tmp_path):
 def test_unregistered_gets_nothing_and_writes_nothing(tmp_path):
     app, store, storage, v = _app(tmp_path, registered=False)
     _seed(store, percent=100)
-    r = TestClient(app).post("/api/v1/check", json=_checkin())
+    r = camera.check(TestClient(app), _checkin())
     assert r.json() == {"update": False, "poll_after_s": 3600}
     assert store.get_device("dev1") is None                  # zero footprint
     assert store.get_rollout("ro1")["attempted"] == 0
 
 
 def test_new_device_past_the_account_limit_is_refused_but_the_fleet_keeps_working(tmp_path):
-    """A device limit binds NEW registrations only: the (limit+1)th id is served nothing
-    and never written (zero footprint), audited once; devices already in keep checking
-    in. Lifting the limit lets the refused device in on its next check-in."""
+    """A device limit binds NEW devices only: the (limit+1)th id -- a camera registered, but not
+    to this account, so it holds no seat here -- is served nothing and never written (zero
+    footprint), audited once; devices already in keep checking in. Lifting the limit lets the
+    refused device in on its next check-in."""
     app, store, storage, v = _app(tmp_path)
     c = TestClient(app)
     store.add_account("acctL", "Limited")
-    c.post("/api/v1/check", json=_checkin("dev1", account_id="acctL"))   # learned binding
+    camera.check(c, _checkin("dev1", account_id="acctL"))   # learned binding
     store.set_device_limit("acctL", 1)
+    camera.register(store, "dev2", "acct_elsewhere")
     for _ in range(2):                                        # refused, and refused again
-        assert c.post("/api/v1/check", json=_checkin("dev2", account_id="acctL")).json()["update"] is False
+        assert camera.check(c, _checkin("dev2", account_id="acctL")).json()["update"] is False
     assert store.get_device("dev2") is None
     refusals = [e for e in store.read_audit(100, account_id="acctL") if e["action"] == "device.refused"]
     assert len(refusals) == 1 and refusals[0]["entity_id"] == "dev2"     # audited ONCE
-    assert c.post("/api/v1/check", json=_checkin("dev1", account_id="acctL")).status_code == 200
+    assert camera.check(c, _checkin("dev1", account_id="acctL")).status_code == 200
     assert store.get_device("dev1") is not None               # existing: unaffected
     store.set_device_limit("acctL", None)
-    c.post("/api/v1/check", json=_checkin("dev2", account_id="acctL"))
+    camera.check(c, _checkin("dev2", account_id="acctL"))
     assert store.get_device("dev2") is not None               # lifted -> registers
 
 
 def test_registered_no_rollout_writes_registry(tmp_path):
     app, store, storage, v = _app(tmp_path)
-    assert TestClient(app).post("/api/v1/check", json=_checkin()).json()["update"] is False
+    assert camera.check(TestClient(app), _checkin()).json()["update"] is False
     assert store.get_device("dev1") is not None
 
 
@@ -131,7 +134,7 @@ def test_firmware_board_sent_to_the_registry_verbatim(tmp_path):
     this server sends the check-in's canonical firmware name untouched -- no local
     translation table to drift."""
     app, store, storage, v = _app(tmp_path)
-    TestClient(app).post("/api/v1/check", json=_checkin(board="OPENMV_N6"))
+    camera.check(TestClient(app), _checkin(board="OPENMV_N6"))
     assert v.last_board == "OPENMV_N6"                       # verbatim, no translation
     # The registry is asked about the RAW unit id; the device is STORED under a
     # board-qualified one, because machine.unique_id() is only unique per board type.
@@ -152,7 +155,7 @@ def test_two_board_types_may_share_a_unit_id_and_stay_two_devices(tmp_path):
     c = TestClient(app)
     same_uid = "3c0021000c51"
     for board in ("OPENMV_N6", "OPENMV_RT1062"):
-        assert c.post("/api/v1/check", json=_checkin(dev=same_uid, board=board)).status_code == 200
+        assert camera.check(c, _checkin(dev=same_uid, board=board)).status_code == 200
 
     # two rows, not one, and each remembers which board it is
     assert store.get_device(same_uid) is None            # never the bare unit id
@@ -171,7 +174,7 @@ def test_a_device_that_reports_no_board_keeps_its_raw_id(tmp_path):
     (the registry is asked about a board), so it is served read-only and never stored --
     this pins that the fallback does not invent a key like ':abc'."""
     app, store, _storage, _v = _app(tmp_path, registered=False)
-    assert TestClient(app).post("/api/v1/check", json=_checkin(dev="abc")).status_code == 200
+    assert camera.check(TestClient(app), _checkin(dev="abc")).status_code == 200
     assert store.count_devices() == 0
 
 
@@ -260,9 +263,9 @@ def test_mid_trial_device_is_not_offered_an_update(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, storage=storage, percent=100)
     c = TestClient(app)
-    assert c.post("/api/v1/check", json=_checkin(slots=_TRIAL)).json()["update"] is False
+    assert camera.check(c, _checkin(slots=_TRIAL)).json()["update"] is False
     # ...and the moment it confirms, the same rollout reaches it
-    assert c.post("/api/v1/check", json=_checkin(slots=_SETTLED)).json()["update"] is True
+    assert camera.check(c, _checkin(slots=_SETTLED)).json()["update"] is True
 
 
 def test_mid_trial_device_is_not_offered_a_pin_either(tmp_path):
@@ -270,18 +273,18 @@ def test_mid_trial_device_is_not_offered_a_pin_either(tmp_path):
     _seed(store, storage=storage, percent=0)                 # rollout reaches nobody
     store.set_cohort_pin(BID, "__default__", "rel1")         # ...but a pin would
     c = TestClient(app)
-    assert c.post("/api/v1/check", json=_checkin(slots=_TRIAL)).json()["update"] is False
-    assert c.post("/api/v1/check", json=_checkin(slots=_SETTLED)).json()["release_id"] == "rel1"
+    assert camera.check(c, _checkin(slots=_TRIAL)).json()["update"] is False
+    assert camera.check(c, _checkin(slots=_SETTLED)).json()["release_id"] == "rel1"
 
 
 def test_fallback_version_is_recorded_and_survives_a_silent_checkin(tmp_path):
     app, store, storage, v = _app(tmp_path)
     c = TestClient(app)
-    c.post("/api/v1/check", json=_checkin(slots=_SETTLED))
+    camera.check(c, _checkin(slots=_SETTLED))
     assert store.get_device("dev1")["fallback_payload_version"] == 0x00FF0000
     # a later check-in that says nothing about slots keeps what we were last told, rather than
     # blanking the operator's view of the fleet
-    c.post("/api/v1/check", json=_checkin())
+    camera.check(c, _checkin())
     assert store.get_device("dev1")["fallback_payload_version"] == 0x00FF0000
 
 
@@ -292,9 +295,9 @@ def test_running_body_sha_is_recorded_and_survives_a_silent_checkin(tmp_path):
     c = TestClient(app)
     slots = [dict(_SETTLED[0], body_sha256="aa" * 32),
              dict(_SETTLED[1], body_sha256="bb" * 32)]
-    c.post("/api/v1/check", json=_checkin(slots=slots))
+    camera.check(c, _checkin(slots=slots))
     assert store.get_device("dev1")["body_sha256"] == "aa" * 32     # the RUNNING slot's
-    c.post("/api/v1/check", json=_checkin())
+    camera.check(c, _checkin())
     assert store.get_device("dev1")["body_sha256"] == "aa" * 32
 
 
@@ -302,7 +305,7 @@ def test_a_device_that_reports_no_slots_is_still_offered_updates(tmp_path):
     """The gate protects a fallback. A single-image device has none and must not be held back."""
     app, store, storage, v = _app(tmp_path)
     _seed(store, storage=storage, percent=100)
-    assert TestClient(app).post("/api/v1/check", json=_checkin()).json()["update"] is True
+    assert camera.check(TestClient(app), _checkin()).json()["update"] is True
 
 
 # --- version pins (override rollouts) -------------------------------------------------------
@@ -319,23 +322,23 @@ def test_device_pin_overrides_rollout(tmp_path):
     _seed(store, storage=storage, percent=100)               # rollout offers rel1
     _seed_rel2(store)
     c = TestClient(app)
-    assert c.post("/api/v1/check", json=_checkin()).json()["release_id"] == "rel1"
+    assert camera.check(c, _checkin()).json()["release_id"] == "rel1"
     store.set_device_pin("dev1", "rel2")                     # pin this device to a different release
-    assert c.post("/api/v1/check", json=_checkin()).json()["release_id"] == "rel2"
+    assert camera.check(c, _checkin()).json()["release_id"] == "rel2"
 
 
 def test_cohort_pin_offers_despite_zero_percent(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, storage=storage, percent=0)                 # 0% -> the rollout offers nobody
     store.set_cohort_pin(BID, "__default__", "rel1")
-    assert TestClient(app).post("/api/v1/check", json=_checkin()).json()["release_id"] == "rel1"
+    assert camera.check(TestClient(app), _checkin()).json()["release_id"] == "rel1"
 
 
 def test_pin_to_current_holds(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, storage=storage, percent=100)
     store.set_cohort_pin(BID, "__default__", "rel1")         # pin to a release the device already runs
-    r = TestClient(app).post("/api/v1/check", json=_checkin(pv=0x02000000))
+    r = camera.check(TestClient(app), _checkin(pv=0x02000000))
     assert r.json() == {"update": False, "poll_after_s": 3600}   # held, rollout bypassed
 
 
@@ -343,7 +346,7 @@ def test_pin_to_unknown_release_holds(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, storage=storage, percent=100)
     store.set_cohort_pin(BID, "__default__", "ghost")
-    assert TestClient(app).post("/api/v1/check", json=_checkin()).json() == {
+    assert camera.check(TestClient(app), _checkin()).json() == {
         "update": False, "poll_after_s": 3600}
 
 
@@ -397,7 +400,7 @@ def test_feedback_rate_limited(tmp_path):
 def test_offer_mints_capability_url_and_accounts(tmp_path):
     app, store, storage, v = _app(tmp_path, base_url="https://ota.test/")
     _seed(store, pv=0x02000000, percent=100)
-    body = TestClient(app).post("/api/v1/check", json=_checkin(pv=0x01000000)).json()
+    body = camera.check(TestClient(app), _checkin(pv=0x01000000)).json()
     assert body["update"] is True and body["release_id"] == "rel1"
     assert body["manifest_url"].startswith("https://ota.test/d/")
     assert body["manifest_url"].endswith("/manifest.bin")
@@ -417,9 +420,9 @@ def test_release_is_scoped_to_its_account(tmp_path):
     store.add_rollout(rollout_id="roA", release_id="relA", product_id=BID, cohort="__default__",
                       percent=100, account_id="acctA")
     c = TestClient(app)
-    assert c.post("/api/v1/check", json=_checkin(dev="a", account_id="acctA")).json()["update"] is True
-    assert c.post("/api/v1/check", json=_checkin(dev="b", account_id="acctB")).json()["update"] is False
-    assert c.post("/api/v1/check", json=_checkin(dev="c")).json()["update"] is False   # '' account
+    assert camera.check(c, _checkin(dev="a", account_id="acctA")).json()["update"] is True
+    assert camera.check(c, _checkin(dev="b", account_id="acctB")).json()["update"] is False
+    assert camera.check(c, _checkin(dev="c")).json()["update"] is False   # '' account
 
 
 def _seed_account_rollout(store, account="acctA"):
@@ -436,26 +439,26 @@ def test_account_binding_learn_sticky_and_golden_recovery(tmp_path):
     _seed_account_rollout(store, "acctA")
     c = TestClient(app)
     # LEARN: the first valid check-in binds the device to acctA and gets its release
-    assert c.post("/api/v1/check", json=_checkin(dev="d", account_id="acctA")).json()["update"] is True
+    assert camera.check(c, _checkin(dev="d", account_id="acctA")).json()["update"] is True
     assert store.device_account("d") == {"account_id": "acctA", "source": "learned"}
     # GOLDEN RECOVERY: a later fallback reporting '' still resolves to acctA (not stranded)
-    assert c.post("/api/v1/check", json=_checkin(dev="d", account_id="")).json()["update"] is True
+    assert camera.check(c, _checkin(dev="d", account_id="")).json()["update"] is True
     assert store.device_account("d")["account_id"] == "acctA"          # sticky: not downgraded
     # SPOOF: a check-in claiming another account can't move the binding either
-    c.post("/api/v1/check", json=_checkin(dev="d", account_id="acctEvil"))
+    camera.check(c, _checkin(dev="d", account_id="acctEvil"))
     assert store.device_account("d")["account_id"] == "acctA"
     assert store.get_device("d")["account_id"] == "acctA"             # the row reflects the binding
 
 
 def test_never_onboarded_device_stays_unbound(tmp_path):
     app, store, *_ = _app(tmp_path)
-    TestClient(app).post("/api/v1/check", json=_checkin(dev="d", account_id=""))
+    camera.check(TestClient(app), _checkin(dev="d", account_id=""))
     assert store.device_account("d") is None                          # only '' seen -> no binding
 
 
 def test_unregistered_device_never_binds(tmp_path):
     app, store, *_ = _app(tmp_path, registered=False)
-    TestClient(app).post("/api/v1/check", json=_checkin(dev="d", account_id="acctA"))
+    camera.check(TestClient(app), _checkin(dev="d", account_id="acctA"))
     assert store.device_account("d") is None                          # gate stands in front
 
 
@@ -463,27 +466,27 @@ def test_success_counted_when_device_runs_offered_release(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, pv=0x02000000, percent=100)
     c = TestClient(app)
-    c.post("/api/v1/check", json=_checkin(pv=0x01000000))     # offered -> attempted 1
+    camera.check(c, _checkin(pv=0x01000000))     # offered -> attempted 1
     assert store.get_rollout("ro1")["attempted"] == 1 and store.get_rollout("ro1")["updated"] == 0
-    c.post("/api/v1/check", json=_checkin(pv=0x02000000))     # now running it -> updated 1
+    camera.check(c, _checkin(pv=0x02000000))     # now running it -> updated 1
     assert store.get_rollout("ro1")["updated"] == 1
     # ...and the install lands in the install history the dashboards chart (the device
     # never POSTs /feedback itself; this used to read 0 after a day of real updates)
     assert store.installs_by_day(days=1)["installed"] == 1
-    c.post("/api/v1/check", json=_checkin(pv=0x02000000))     # a repeat check-in: still one
+    camera.check(c, _checkin(pv=0x02000000))     # a repeat check-in: still one
     assert store.installs_by_day(days=1)["installed"] == 1
 
 
 def test_not_in_staged_percent(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, pv=0x02000000, percent=0)
-    assert TestClient(app).post("/api/v1/check", json=_checkin(pv=1)).json()["update"] is False
+    assert camera.check(TestClient(app), _checkin(pv=1)).json()["update"] is False
 
 
 def test_anti_rollback_not_offered(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, pv=0x02000000, percent=100)
-    assert TestClient(app).post("/api/v1/check", json=_checkin(pv=0x02000000)).json()["update"] is False
+    assert camera.check(TestClient(app), _checkin(pv=0x02000000)).json()["update"] is False
 
 
 def test_test_offer_downgrades_offers_anti_rollback(tmp_path, capsys):
@@ -492,21 +495,21 @@ def test_test_offer_downgrades_offers_anti_rollback(tmp_path, capsys):
     app, store, storage, v = _app(tmp_path, downgrades=True)
     assert "test_offer_downgrades is ON" in capsys.readouterr().err
     _seed(store, pv=0x02000000, percent=100, storage=storage)
-    assert TestClient(app).post("/api/v1/check", json=_checkin(pv=0x02000000)).json()["update"] is True
+    assert camera.check(TestClient(app), _checkin(pv=0x02000000)).json()["update"] is True
 
 
 def test_rollout_pointing_at_missing_release(tmp_path):
     app, store, storage, v = _app(tmp_path)
     store.add_rollout(rollout_id="ro1", release_id="ghost", product_id=BID,
                       cohort="__default__", percent=100)
-    assert TestClient(app).post("/api/v1/check", json=_checkin(pv=1)).json()["update"] is False
+    assert camera.check(TestClient(app), _checkin(pv=1)).json()["update"] is False
 
 
 def test_rate_limited(tmp_path):
     app, store, storage, v = _app(tmp_path, rate=1)
     c = TestClient(app)
-    assert c.post("/api/v1/check", json=_checkin()).status_code == 200
-    r = c.post("/api/v1/check", json=_checkin())
+    assert camera.check(c, _checkin()).status_code == 200
+    r = camera.check(c, _checkin())
     assert r.status_code == 429
     # come back in minutes, at a random point, and say so in the body the device reads
     retry = int(r.headers["Retry-After"])
@@ -520,10 +523,10 @@ def test_autopause_on_fallback_threshold(tmp_path):
     store.update_rollout("ro1", failure_threshold=0.4)
     c = TestClient(app)
     for d in ("d1", "d2", "d3"):                              # offered to 3 -> attempted 3
-        c.post("/api/v1/check", json=_checkin(dev=d, pv=0x01000000))
+        camera.check(c, _checkin(dev=d, pv=0x01000000))
     assert store.get_rollout("ro1")["attempted"] == 3
     for d in ("d1", "d2"):                                    # 2 fall back -> 2/3 > 0.4 -> paused
-        c.post("/api/v1/check", json=_checkin(dev=d, pv=0x01000000, fallback_reason="crc"))
+        camera.check(c, _checkin(dev=d, pv=0x01000000, fallback_reason="crc"))
     ro = store.get_rollout("ro1")
     assert ro["failures"] == 2 and ro["state"] == "paused" and ro["pause_reason"] == "failure_limit"
     assert store.installs_by_day(days=1)["failed"] == 2       # and in the install history
@@ -768,10 +771,10 @@ def test_device_pin_crosses_products_within_the_account(tmp_path):
     c = TestClient(app)
     # the stock device has checked in at least once (that is what creates its fleet row --
     # a pin on a never-seen device is a no-op by design)
-    c.post("/api/v1/check", json=_checkin(product_id=STOCK, pv=1))
+    camera.check(c, _checkin(product_id=STOCK, pv=1))
     _rel(store, "cust_a_r1", CUST_A, pv=2)
     store.set_device_pin("dev1", "cust_a_r1")
-    r = c.post("/api/v1/check", json=_checkin(product_id=STOCK, pv=1)).json()
+    r = camera.check(c, _checkin(product_id=STOCK, pv=1)).json()
     assert r["update"] is True and r["release_id"] == "cust_a_r1"
 
 
@@ -784,30 +787,30 @@ def test_lifecycle_claim_update_reset_reclaim(tmp_path):
     c = TestClient(app)
 
     # the stock device checks in from unboxing (creates its fleet row)
-    c.post("/api/v1/check", json=_checkin(product_id=STOCK, pv=1))
+    camera.check(c, _checkin(product_id=STOCK, pv=1))
 
     # claim: stock device (counter=1) pinned to customer A's product (counter=2)
     _rel(store, "a1", CUST_A, pv=2)
     store.set_device_pin("dev1", "a1")
-    assert c.post("/api/v1/check", json=_checkin(product_id=STOCK, pv=1)).json()["release_id"] == "a1"
+    assert camera.check(c, _checkin(product_id=STOCK, pv=1)).json()["release_id"] == "a1"
 
     # installed; A ships an update through a normal rollout in THEIR product (counter=3)
     store.set_device_pin("dev1", None)
     _rel(store, "a2", CUST_A, pv=3)
     store.add_rollout(rollout_id="roA", release_id="a2", product_id=CUST_A, cohort="__default__",
                       percent=100)
-    assert c.post("/api/v1/check", json=_checkin(product_id=CUST_A, pv=2)).json()["release_id"] == "a2"
+    assert camera.check(c, _checkin(product_id=CUST_A, pv=2)).json()["release_id"] == "a2"
 
     # forward-reset: pin back to the CURRENT stock release (counter=4) -- de-association is OTA,
     # not a factory reflash; the floor keeps rising and nothing ever needs to go backwards
     _rel(store, "stock_now", STOCK, pv=4)
     store.set_device_pin("dev1", "stock_now")
-    assert c.post("/api/v1/check", json=_checkin(product_id=CUST_A, pv=3)).json()["release_id"] == "stock_now"
+    assert camera.check(c, _checkin(product_id=CUST_A, pv=3)).json()["release_id"] == "stock_now"
 
     # re-claim by customer B (counter=5): same primitive again
     _rel(store, "b1", CUST_B, pv=5)
     store.set_device_pin("dev1", "b1")
-    assert c.post("/api/v1/check", json=_checkin(product_id=STOCK, pv=4)).json()["release_id"] == "b1"
+    assert camera.check(c, _checkin(product_id=STOCK, pv=4)).json()["release_id"] == "b1"
 
 
 def test_transfer_to_a_numerically_older_stream_is_refused(tmp_path):
@@ -817,10 +820,10 @@ def test_transfer_to_a_numerically_older_stream_is_refused(tmp_path):
     to a customer whose stream happens to be numerically behind."""
     app, store, storage, v = _app(tmp_path)
     c = TestClient(app)
-    c.post("/api/v1/check", json=_checkin(product_id=CUST_A, pv=7))
+    camera.check(c, _checkin(product_id=CUST_A, pv=7))
     _rel(store, "b_old", CUST_B, pv=3)
     store.set_device_pin("dev1", "b_old")
-    r = c.post("/api/v1/check", json=_checkin(product_id=CUST_A, pv=7)).json()
+    r = camera.check(c, _checkin(product_id=CUST_A, pv=7)).json()
     assert r == {"update": False, "poll_after_s": 3600}
 
 
@@ -843,7 +846,7 @@ def test_check_jitters_the_poll_after_s(tmp_path):
     app, store, storage, v = _app(tmp_path)
     app.state.settings.poll_jitter = 0.25                          # turn jitter on for this app
     c = TestClient(app)
-    vals = {c.post("/api/v1/check", json=_checkin(product_id=BID, pv=4)).json()["poll_after_s"]
+    vals = {camera.check(c, _checkin(product_id=BID, pv=4)).json()["poll_after_s"]
             for _ in range(60)}
     assert len(vals) > 1                                           # not a constant any more
     lo, hi = int(3600 * 0.75), int(3600 * 1.25) + 1
@@ -869,7 +872,7 @@ def test_ramp_auto_raises_when_a_stage_soaks_and_reaches_enough(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed_ramp(store, [{"percent": 5, "min_soak": 0, "min_attempted": 2}, {"percent": 50}])
     store.bump_rollout("ro1", attempted=2)                    # this stage has reached 2 devices
-    TestClient(app).post("/api/v1/check", json=_checkin(pv=0x01000000))   # any check-in re-evaluates
+    camera.check(TestClient(app), _checkin(pv=0x01000000))   # any check-in re-evaluates
     ro = store.get_rollout("ro1")
     assert ro["percent"] == 50 and ro["stage_index"] == 1     # raised to stage 1
     assert ro["stage_attempted_base"] == ro["attempted"]      # the new stage's window starts here
@@ -881,7 +884,7 @@ def test_ramp_does_not_raise_before_its_gates(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed_ramp(store, [{"percent": 5, "min_soak": 99999, "min_attempted": 2}, {"percent": 50}])
     store.bump_rollout("ro1", attempted=5)                    # attempted met, but soak is not
-    TestClient(app).post("/api/v1/check", json=_checkin(pv=0x01000000))
+    camera.check(TestClient(app), _checkin(pv=0x01000000))
     ro = store.get_rollout("ro1")
     assert ro["percent"] == 5 and ro["stage_index"] == 0      # still stage 0
 
@@ -891,7 +894,7 @@ def test_ramp_auto_pauses_when_a_stage_exceeds_its_ceiling(tmp_path):
     _seed_ramp(store, [{"percent": 100, "min_soak": 99999, "min_attempted": 999,
                         "max_failure_rate": 0.1}, {"percent": 100}])
     store.bump_rollout("ro1", attempted=10, failures=2)       # 20% > 10% ceiling -> pause
-    TestClient(app).post("/api/v1/check", json=_checkin(pv=0x01000000))
+    camera.check(TestClient(app), _checkin(pv=0x01000000))
     ro = store.get_rollout("ro1")
     assert ro["state"] == "paused" and ro["pause_reason"] == "failure_limit"
     assert ro["stage_index"] == 0                             # paused, not raised
@@ -903,7 +906,7 @@ def test_ramp_auto_raise_never_lowers_a_hand_raised_percent(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed_ramp(store, [{"percent": 5, "min_soak": 0}, {"percent": 50}, {"percent": 100}])
     store.update_rollout("ro1", percent=70)                   # raised by hand past stage 1
-    TestClient(app).post("/api/v1/check", json=_checkin(pv=0x01000000))
+    camera.check(TestClient(app), _checkin(pv=0x01000000))
     ro = store.get_rollout("ro1")
     assert ro["stage_index"] == 1 and ro["percent"] == 70
 

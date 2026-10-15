@@ -17,6 +17,7 @@ from openmv_ota.server.metastore import SqliteMetadataStore
 from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
+from tests.server import camera
 
 DATALAKE = "https://data.cloud.openmv.io"
 SECRET = "shared-secret"
@@ -103,7 +104,7 @@ def test_product_grant_opens_a_products_reads_for_minutes():
 
 def test_checkin_carries_ingest_grant_when_configured(tmp_path):
     app = _app(tmp_path, datalake_url=DATALAKE, datalake_token_secret=SECRET)
-    r = TestClient(app).post("/api/v1/check", json=CHECKIN)
+    r = camera.check(TestClient(app), CHECKIN)
     assert r.status_code == 200
     g = r.json()["ingest"]
     # the ingest path and the token's subject both carry the board-qualified identity
@@ -113,13 +114,13 @@ def test_checkin_carries_ingest_grant_when_configured(tmp_path):
 
 
 def test_checkin_without_datalake_config_omits_ingest(tmp_path):
-    r = TestClient(_app(tmp_path)).post("/api/v1/check", json=CHECKIN)
+    r = camera.check(TestClient(_app(tmp_path)), CHECKIN)
     assert "ingest" not in r.json()
 
 
 def test_unregistered_device_gets_no_ingest_grant(tmp_path):
     app = _app(tmp_path, registered=False, datalake_url=DATALAKE, datalake_token_secret=SECRET)
-    r = TestClient(app).post("/api/v1/check", json=CHECKIN)
+    r = camera.check(TestClient(app), CHECKIN)
     assert "ingest" not in r.json()
 
 
