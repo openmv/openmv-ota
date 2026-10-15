@@ -19,8 +19,8 @@
 | (2)(a) No known exploitable vulns at making available | `build sbom` CycloneDX export + osv-scanner in CI (firmware, submodules, tools at exact pins) | Track and act on findings | ☐ |
 | (2)(b) Secure by default, incl. reset to original state | Signing always on (no plaintext-key mode), anti-rollback always on, `flash factory` restores original state | The product's own defaults (network, app, no default passwords) | ☐ |
 | (2)(c) Security updates, automatic by default, opt-out, postponement | Check-in loop installs updates automatically; app controls when it runs | Commit to a support period (Art. 13(8)); document update UX | ☐ |
-| (2)(d) Protection from unauthorised access + reporting | Scoped admin tokens, account scoping, registration gate, capability URLs, audit log | Access control in the product's own interfaces | ☐ |
-| (2)(e) Confidentiality of stored and transmitted data | Transit: TLS with verified trust store. At rest: image encryption is planned, not shipped | Encrypt at-rest data the app stores, if applicable | ☐ |
+| (2)(d) Protection from unauthorised access + reporting | Scoped admin tokens, account scoping, registration gate, capability URLs, audit log; per-camera keys, desk-signed registration and signed check-ins | Access control in the product's own interfaces | ☐ |
+| (2)(e) Confidentiality of stored and transmitted data | Transit: TLS with verified trust store. Published images encrypted (a board key, or per camera through lockboxes). Images installed on the camera are stored in the clear; protecting its flash (device lockdown) is planned, not shipped | Encrypt at-rest data the app stores, if applicable | ☐ |
 | (2)(f) Integrity of data, programs, config + corruption reporting | Signature + SHA-256 + CRC32 verified every boot; check-in reports slot state/fallback | Cover /flash, /sdcard | ☐ |
 | (2)(g) Data minimisation | Check-in carries device/build state only; nothing stored for unvalidated devices | The app's own data handling | ☐ |
 | (2)(h) Availability of essential functions, DoS resilience | A/B + trial rollback, firmware-resident recovery, watchdog modules, server rate limiting | — | ☐ |

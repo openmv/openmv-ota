@@ -52,7 +52,7 @@ def test_a_chain_that_doesn_t_extend_the_pin_is_refused(tmp_path, ring):
         kp.sync(root, "", other.chain(), NOW)
     with pytest.raises(ProjectError, match="no keykeeper pin"):
         kp.trusted_pin(tmp_path / "fresh", "")
-    with pytest.raises(ProjectError, match="client keykeeper sync"):
+    with pytest.raises(ProjectError, match="project keys keykeeper sync"):
         kp.sealing_generation(tmp_path / "fresh", NOW)
 
 

@@ -67,6 +67,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The keykeeper messages name the right command.** The errors a build gives when a project
+  encrypted for each camera hasn't synced keykeeper's keys said `client keykeeper sync`, which
+  doesn't exist; they now say `project keys keykeeper sync`.
 - **An account's device count is what its limit enforces.** `client account limit` reported the
   fleet alone; it now counts the cameras registered to the account too, as the limit does.
 - **The webhook catalogue names the camera-identity events**: `device.registered`,
