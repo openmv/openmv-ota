@@ -2,7 +2,7 @@
 
 Trust starts at ``[ota].keykeeper_pin`` (a generation, from ``openmv-ota keykeeper pin``) and
 moves forward only along the chain, each generation signed by the one before it
-(:mod:`openmv_ota.keykeeper.ring`). ``client keykeeper sync`` fetches the chain -- from the update
+(:mod:`openmv_ota.keykeeper.ring`). ``project keys keykeeper sync`` fetches the chain -- from the update
 server, which is fine: it can't forge a link -- verifies it from the newest generation this project
 already trusts, and keeps it here:
 
@@ -94,7 +94,7 @@ def sealing_generation(root, now: datetime | None = None) -> Generation:
     state = _read(root)
     if state is None:
         raise ProjectError("per-camera encryption needs keykeeper's keys: run `openmv-ota "
-                           "client keykeeper sync` first")
+                           "project keys keykeeper sync` first")
     try:
         gens = verify_chain(state["chain"], state["pin"])
         gen = current(gens, now)
@@ -102,5 +102,5 @@ def sealing_generation(root, now: datetime | None = None) -> Generation:
         raise ProjectError("%s: %s" % (path_for(root), e)) from None
     if gen is gens[-1]:
         raise ProjectError("keykeeper has rotated since this project last synced (no next "
-                           "generation is announced): run `openmv-ota client keykeeper sync`")
+                           "generation is announced): run `openmv-ota project keys keykeeper sync`")
     return gen

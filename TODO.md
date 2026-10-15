@@ -8,6 +8,12 @@ file's own history has the longer design notes behind each line.
   verified `firmware.bin` out of a **confirmed** slot into the firmware area at
   a fixed offset (no romfs parser in the bootloader), never downgrade; a power
   loss mid-copy retries, not bricks.
+- **WINC demo wedges after a relay stall** — the H7 Plus demo (2026-10-15, three hours after
+  an install, minutes after a relay redeploy) logged `live[console]: relay send stalled for 10 s;
+  reconnecting`, then every OTA cycle failed with `OSError(12)` (ENOMEM): no streaming, logging
+  or check-ins until a reset, and the watchdog never fired (the loop kept running). Suspect a
+  WINC socket leaked across relay reconnects. Reproduce on one bench H7 Plus by restarting the
+  relay under it.
 - **Device lockdown** — debug-port and boot protection (residual-threats:
   planned); until then bench/bus access is accepted. It is also what makes a camera's
   keys unreadable on the boards that keep them in flash unsealed (the M4, M7, H7, H7 Plus,

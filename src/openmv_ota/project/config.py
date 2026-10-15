@@ -61,7 +61,7 @@ class OtaConfig:
     # keykeeper on the update server, `keykeeper_pin` here, and registered cameras.
     per_camera_encryption: bool = False
     # The keykeeper generation this project trusts first ("<key_id>:<sign key>", from
-    # `openmv-ota keykeeper pin`). `client keykeeper sync` walks the chain forward from it.
+    # `openmv-ota keykeeper pin`). `project keys keykeeper sync` walks the chain forward from it.
     keykeeper_pin: str = ""
     overrides: dict[str, dict] = field(default_factory=dict)
 
