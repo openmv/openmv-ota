@@ -52,8 +52,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GET /api/v1/keykeeper/chain`.
 - **Signed check-ins.** A registered camera with a set clock signs each check-in with its
   identity key (`X-OMV-Signature`). The server checks every signature; with
-  `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` on, an unsigned check-in gets update offers only and a bad
-  signature gets nothing. Off by default.
+  `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` on, an unsigned check-in (or one signed at a stale time: a
+  clock that drifted while the camera was off) gets update offers only and a bad signature gets
+  nothing. Off by default.
+- **Claiming boards.** Registering a camera claims it: an Arduino board is a registered device
+  once its account holds a registration for it, and until then is listed in the account's
+  unclaimed boards (`client device unclaimed`). Registering is bounded by board type, the device
+  limit and a rate (`OPENMV_OTA_REGISTRATION_RATE_PER_MIN`). `client device release` gives a
+  camera up; `flash register` claims one that is already flashed.
+- **The hosted keykeeper's pin is built in**, so per-camera encryption on the hosted server needs
+  no `[ota].keykeeper_pin`.
+- **Secure element demos** in `examples/secure_element/`: read the keys and certificate, sign a
+  challenge, verify it on the host.
 
 ### Fixed
 

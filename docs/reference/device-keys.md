@@ -198,6 +198,9 @@ can't install a release encrypted for each camera.
 
 A camera that has just booted cold has no clock yet: its first check-in goes unsigned, and the
 server's reply (its `Date` header) sets the clock for the next one. Recovery never signs.
+A camera whose clock kept counting while it was off trusts it at boot; if it drifted more
+than five minutes, that first check-in is signed at a **stale** time, and the reply corrects
+the clock the same way.
 
 What the server does with a check-in depends on the `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` switch:
 
@@ -205,6 +208,7 @@ What the server does with a check-in depends on the `OPENMV_OTA_REQUIRE_SIGNED_C
 | --- | --- | --- |
 | Signed, verifies | served as usual; noted | served as usual; noted |
 | Unsigned | served as usual | update offers only: no fleet row, telemetry, Live or ingest |
+| Signed at a stale time | served as usual; counted | update offers only; counted |
 | Signature doesn't verify | served as usual; counted | nothing; counted |
 
 Offers stay open to unsigned check-ins because they are safe to anyone: an update is signed, and
