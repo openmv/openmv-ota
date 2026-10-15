@@ -30,9 +30,9 @@ CERT_DIR = os.path.expanduser("~/.cache/hil-bench")   # cert is STABLE per node 
 # The fake registrar: mirrors the real service's contract shape -- registered for
 # every real device (the gate itself is tested by the registry's own suite), and the
 # unregistered_board_type flag for the board types the registry structurally never
-# registers. The flag matters on the bench: the Arduino legs are scored with
-# server_record=False (read-only serving, no device rows), which is exactly what the
-# flag produces.
+# registers. The flag matters on the bench: with it the server treats an Arduino board as the
+# hosted one does, a registered device only once claimed (`flash factory` registers it to the
+# account it checks in under).
 _FAKE_REGISTRAR = (
     "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
     "from urllib.parse import parse_qs\n"
