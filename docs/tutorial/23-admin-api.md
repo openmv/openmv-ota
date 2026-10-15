@@ -25,6 +25,12 @@ account's log or `all=true` for every account's (`client audit --account-id`,
 `client audit --all`). An account credential sending either parameter reads its own
 log as it always did.
 
+The root also settles claims. `DELETE /devices/{device_id}/registration` releases a
+camera (`client device release`): an account credential can release only its own, while
+the root can release any account's, which is how a disputed camera is settled. And
+`GET /unclaimed` (`client device unclaimed`), an account's unclaimed boards, lists every
+account's for the root.
+
 ## The reference is the server itself
 
 The endpoint-by-endpoint reference deliberately does not live in this tutorial, where

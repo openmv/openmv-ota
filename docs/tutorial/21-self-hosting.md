@@ -121,7 +121,7 @@ Unregistered and read-only-bypassed boards never receive a grant.
 
 Some board types — today the Arduino boards — are never in the registry. An account
 **claims** one by registering it from one of its desks (`flash factory`, or `flash register`
-for a camera that is already flashed; see [device keys](../reference/device-keys.md)). A
+for a camera that is already flashed). A
 claimed board checking in under the account that claimed it is a registered device. Until
 then the server serves it read-only: updates published under the account it names are
 offered, and nothing else happens (no device row, no feedback, no grants, no device-limit
@@ -136,7 +136,7 @@ counting). The account sees it in its unclaimed list (`client device unclaimed`)
 
 | env var | what it does |
 |---|---|
-| `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` | boolean, default off. Off, every check-in signature is checked and noted, and nothing else changes. On, only a check-in signed by the camera's registered key gets the full treatment; an unsigned one, or one signed at a stale time, gets update offers only, and one whose signature doesn't verify gets nothing. See [device keys](../reference/device-keys.md) |
+| `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` | boolean, default off. Off, every check-in signature is checked and noted, and nothing else changes. On, only a check-in signed by the camera's registered key gets the full treatment; an unsigned one, or one signed at a stale time, gets update offers only, and one whose signature doesn't verify gets nothing |
 | `OPENMV_OTA_KEYKEEPER_URL`, `OPENMV_OTA_KEYKEEPER_TOKEN` | where keykeeper runs, on a private network, and the secret it expects. Needed only to offer releases encrypted for each camera; without it such a release is never offered |
 
 Keykeeper is a second, small process from the same package. It holds the only key that
@@ -210,6 +210,11 @@ The [deploy/](../../src/openmv_ota/server/deploy/) directory ships turnkey artif
   in the log instead of hanging.
 - **`docker-compose.yml`** — a full local stack (server + Postgres + MinIO) for
   evaluation: `SWD_IDS_VERIFY_URL=… SWD_IDS_VERIFY_TOKEN=… docker compose up --build`.
+
+## See also
+
+- [Device keys](../reference/device-keys.md) — registration, claiming, signed check-ins and
+  lockboxes, which the settings above switch on.
 
 ---
 

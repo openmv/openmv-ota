@@ -4,8 +4,9 @@
 
 ---
 
-What a camera actually speaks to the server: three endpoints, no credentials. Device
-calls are rate-limited per IP and gated by device registration, and downloads are
+What a camera actually speaks to the server: three endpoints, and no account credential
+— a camera proves which camera it is with a signature from its own key, never a token.
+Device calls are rate-limited per IP and gated by device registration, and downloads are
 authorized by expiring capability tokens — nothing here can be used to write anything.
 
 
@@ -31,6 +32,20 @@ the running body's **exact bytes** (`body_sha256`, the delta-base identity that
 `release bases --fleet` plans against). A single-image device sends no `slots`; every
 reader treats the empty list as *unknown*, never as "no fallback".
 
+A camera with keys signs its check-in, once its clock is set, in one header:
+
+```
+X-OMV-Signature: v=1;ts=1791720000;sig=3045...
+```
+
+`sig` is a DER ECDSA P-256 signature, by the camera's identity key, over
+SHA-256(`omv-checkin-v1\n` + `ts` + `\n` + the exact body bytes), with `ts` the camera's Unix
+time. The server checks it against the identity key in the camera's registration and takes
+it only within five minutes of its own clock, so a recorded check-in can't be replayed. A
+camera that has just booted cold has no clock yet and sends its first check-in unsigned; the
+answer's `Date` header sets the clock for the next one. What a signed, unsigned or refused
+check-in gets depends on whether the server requires signatures.
+
 The answer is `{"update": false, "poll_after_s": 3600}` in the common case. On an offer:
 
 ```json
@@ -41,6 +56,10 @@ The answer is `{"update": false, "poll_after_s": 3600}` in the common case. On a
   "poll_after_s": 3600
 }
 ```
+
+An offer of a release encrypted for each camera also carries `lockbox`: the release's key,
+wrapped for this camera's exchange key alone (145 bytes, hex). A camera that can't have one
+— not registered to the account — isn't offered that release.
 
 Deployments wired for OpenMV's live-viewing or data-ingest services add `live` / `ingest`
 grants to the same answer. Over the rate limit, the reply is `429` with a `Retry-After`
@@ -86,6 +105,11 @@ optionally a `reason`). Recorded only for registered devices; these reports are 
 `reported` counts in a rollout's status.
 
 **`GET /healthz`** — liveness: `{"ok": true}`.
+
+## See also
+
+- [Device keys](../reference/device-keys.md) — the camera's keys, its registration, what
+  a server requiring signed check-ins answers each kind of check-in, and the lockbox format.
 
 ---
 

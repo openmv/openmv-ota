@@ -148,11 +148,14 @@ account acct_7bd21c50e83a94f1 device limit: 10 (7 registered)
 $ openmv-ota client account limit --account-id acct_7bd21c50e83a94f1 --unlimited
 ```
 
-It is enforced for *new* devices at check-in: past the limit, an unknown device is
-not registered and is served nothing (zero footprint, exactly like an unregistered
-id), and a `device.refused` audit row records it once per device id. Devices already
-in the fleet are never affected — they keep checking in and updating. This is the
-hook a hosting layer uses to map a plan onto an account.
+The count is every camera the account holds, once each: its fleet, and the cameras
+registered to it that haven't checked in yet — a camera takes its seat when it registers.
+The limit is enforced for *new* cameras. Registering one past it is refused (a 403, and a
+`device.register_refused` audit row); a new device checking in past it is not registered
+and is served nothing (zero footprint, exactly like an unregistered id), and a
+`device.refused` audit row records it once per device id. Cameras the account already
+holds are never affected — they keep checking in and updating. This is the hook a hosting
+layer uses to map a plan onto an account.
 
 ## Tokens and scopes
 
@@ -234,9 +237,7 @@ Knowing a device id is not owning the device: a binding only controls visibility
 offers, never installs — the camera verifies every image against the keys baked into
 its own firmware, so another account's releases can't run on it. An admin-bound device
 can't be re-bound by another account (their attempt reads as not-found), and your admin
-bind always recovers a wrongly learned one. On the OpenMV-hosted service, who may bind
-a given device is additionally gated by proof of ownership; what this layer deliberately
-does *not* guarantee is listed in [residual threats](../compliance/residual-threats.md).
+bind always recovers a wrongly learned one.
 
 The other half of binding is ending it. When a unit is retired:
 
@@ -245,15 +246,69 @@ $ openmv-ota client device forget --device-id OPENMV_N6:30003d000851303436313832
 device OPENMV_N6:30003d000851303436313832 removed from the fleet
 ```
 
-It leaves the fleet and stops counting against the device limit, and everything it
+It leaves the fleet, and everything it
 stored in the datalake — telemetry, logs, frames — is erased with it, first: a datalake
 that cannot be reached answers 502 and leaves the device in place to retry, rather than
 forgetting it with its data orphaned. Pass `--keep-data` to leave the data to the
 datalake's retention instead. Its install history stays — a deployment row records what
 happened on a day that has already passed, and rollout counters are built from those
 rows — and the removal is in the audit log, with what was erased. A camera that checks in
-again afterwards is a device the server has not seen before: it enrols from scratch, and
-is not yours again until you bind it.
+again afterwards is a device the server has not seen before: it enrols from scratch, under
+the account it reports. Forgetting doesn't touch its registration: the camera is still
+registered to you, and the registration keeps its seat under the device limit.
+
+## Claiming a camera
+
+Ownership itself is proved by **registering** the camera: `flash factory` (or
+`flash register`) reads its keys over USB and uploads a record your desk key signed,
+so only someone with the camera in hand can register it, and only to their own
+account. A camera registered to another account can't be registered or bound by yours
+(not-found again). Registering is bounded like the claim it is: only a known board
+type, a camera new to the account only within its device limit, and a rate limit per
+account and per address.
+
+An Arduino board is a device of your account only once registered. Until then, one
+checking in under your account gets update offers and nothing else, and is listed so
+you can see what to claim:
+
+```
+$ openmv-ota client device unclaimed
+{
+  "devices": [
+    {
+      "device_id": "ARDUINO_GIGA:3332353730335119004D003A",
+      "account_id": "acct_7bd21c50e83a94f1",
+      "board": "ARDUINO_GIGA",
+      "product_id": 3816051655,
+      "first_seen": "2026-10-14T17:02:11.408213+00:00",
+      "last_seen": "2026-10-14T17:07:12.511349+00:00",
+      "product_id_str": "3816051655"
+    }
+  ],
+  "total": 1
+}
+```
+
+Most recently seen first, the account's latest 50; `--limit` and `--offset` page it.
+Connect the board and `flash register` it to claim it.
+
+To give a camera up — sold, returned, moving to another account — release it:
+
+```
+$ openmv-ota client device release --device-id OPENMV_N6:30003d000851303436313832
+device OPENMV_N6:30003d000851303436313832 released
+```
+
+Its registration, its binding and its fleet row go, and with them its seat under the
+device limit; the data it stored stays. Another account can then register it. The server's own root can release any account's camera,
+which is how a disputed one is settled: whoever has it in hand registers it again.
+
+## See also
+
+- [Device keys](../reference/device-keys.md) — the registration record, desk keys and
+  signed check-ins.
+- [Residual threats](../compliance/residual-threats.md) — what this layer deliberately
+  does *not* guarantee.
 
 ---
 

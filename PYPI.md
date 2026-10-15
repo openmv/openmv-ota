@@ -19,6 +19,9 @@ Requires Python 3.11 or newer. One install gives you every tool, as a single
 - **Signed, encrypted releases.** Every image is signed with your keys and
   encrypted for your cameras. A camera refuses anything unsigned, tampered with,
   or older than what it runs.
+- **Cameras that prove who they are.** Each camera has keys of its own (in a secure
+  element where the board has one), is registered to your account when it is flashed,
+  and signs its check-ins. A release can be encrypted for each camera alone.
 - **Safe installs.** Updates go to a spare slot and are confirmed only after the
   new version starts; a failed update falls back on its own.
 - **Small updates.** After the first release, cameras download only what changed.
@@ -43,11 +46,13 @@ With an [OpenMV Cloud](https://cloud.openmv.io) account, a camera on USB, and a
 checkout of the [OpenMV firmware](https://github.com/openmv/openmv):
 
 ```bash
+openmv-ota client login --server https://ota.cloud.openmv.io
 openmv-ota project new my-camera -f openmv -b OPENMV_AE3 --ota --install-sdk
+openmv-ota project keys desk create bench-1 my-camera
+openmv-ota project keys desk push my-camera
 openmv-ota build firmware my-camera -b OPENMV_AE3
 openmv-ota build factory-romfs my-camera -b OPENMV_AE3
 openmv-ota flash factory my-camera -b OPENMV_AE3
-openmv-ota client login --server https://ota.cloud.openmv.io
 openmv-ota client release publish my-camera -b OPENMV_AE3 -o my-camera/build/factory
 ```
 
