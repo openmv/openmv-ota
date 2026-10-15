@@ -544,6 +544,10 @@ _SOFT_RESET = (b"\r\x03", b"\r\x03", b"\r\x03", b"\x04")
 # all -- the reset's Ctrl-C then never arrives, and the camera can't be reached until it reboots.
 # Five requests fit the smallest buffer; after the reset they go out at the usual pace.
 _IDENTITY_PRE_RESET_SENDS = 5
+# After a soft reset the camera is left at its REPL: with the console held open (DTR) the firmware
+# skips main.py after the reboot, so the app never comes back -- the camera then sits idle, never
+# checking in. So once it has answered, a camera this tool soft-reset is restarted for real.
+_RESTART = (b"\r\x03", b"\r\x03", b"import machine; machine.reset()\r\n")
 _IDENTITY_RECONNECTS = 3  # the camera dropping off USB mid-exchange, survived this many times
 _IDENTITY_QUIET_S = 1.0  # nothing new this long: a line short of its newline is all there is
 # A whole SE-ID line short of only its newline: an older boot.py print()ed it and the N6 started
@@ -582,6 +586,17 @@ def _write(con, data: bytes, serial_mod) -> None:
     try:
         con.write(data)
     except serial_mod.SerialTimeoutException:
+        pass
+
+
+def _restart(con, serial_mod) -> None:
+    """Hard-reset a camera this tool soft-reset, so it boots into its app again (see _RESTART).
+    Never raises: the camera has answered, and a port that goes away mid-write is the reset."""
+    try:
+        for key in _RESTART:
+            _write(con, key, serial_mod)
+            time.sleep(0.2)
+    except OSError:
         pass
 
 
@@ -699,6 +714,8 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                 answer = _UNTERMINATED.search(heard)
     finally:
         if con is not None:
+            if answer is not None and reset:
+                _restart(con, serial_mod)
             con.close()
     if answer is None:
         from openmv_ota.build.device import boot

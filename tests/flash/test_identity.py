@@ -215,7 +215,7 @@ def test_a_missed_window_soft_resets_the_camera_with_the_console_held(camera, mo
     (step,) = fl.provision_keys(board="ARDUINO_GIGA")
     assert step.label.startswith("keys present")
     keys = [d for d in con.sent if not d.startswith(b"OMVKEYS")]
-    assert keys == list(fl._SOFT_RESET)                     # once, Ctrl-C x3 then Ctrl-D
+    assert keys == list(fl._SOFT_RESET) + list(fl._RESTART)  # once, then restarted into its app
 
 
 def test_a_missed_window_queues_only_a_few_requests_before_the_reset(camera, monkeypatch):
@@ -238,6 +238,30 @@ def test_a_running_camera_is_reset_before_it_is_asked(camera, monkeypatch):
     (step,) = fl.provision_keys(board="ARDUINO_GIGA", running=True)
     assert step.label.startswith("keys present")
     assert con.sent[:len(fl._SOFT_RESET)] == list(fl._SOFT_RESET)
+
+
+def test_a_camera_this_tool_soft_reset_is_restarted_after_it_answers(camera, monkeypatch):
+    """With the console held open the firmware skips main.py after a soft reset, so the camera
+    would sit at its REPL: once it has answered it is hard-reset into its app."""
+    con = camera(_signed(0))
+    con.__class__ = _MissedWindow
+    fl.provision_keys(board="ARDUINO_GIGA", running=True)
+    assert con.sent[-len(fl._RESTART):] == list(fl._RESTART) and con.closed
+
+
+def test_a_camera_that_answered_its_own_boot_is_not_restarted(camera):
+    con = camera(_signed(0))
+    fl.provision_keys(board="ARDUINO_GIGA")
+    assert not any(d in con.sent for d in fl._RESTART)
+
+
+def test_a_restart_into_a_vanishing_port_is_the_reset(monkeypatch):
+    class _Drops:
+        def write(self, data):
+            raise OSError(5, "gone")
+    monkeypatch.setattr(fl.time, "sleep", lambda s: None)
+    import serial
+    fl._restart(_Drops(), serial)                       # never raises
 
 
 class _Gone:
