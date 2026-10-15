@@ -877,9 +877,12 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
                             entity_id=checkin.device_id,
                             data={"reason": refusal, "enforced": required},
                             account_id=account_id, product_id=checkin.product_id)
-        if required:
+        if required and refusal != "stale":
             return nothing
-    elif required:
+    if required and signed != "signed":
+        # Unsigned, or signed at a time too far from ours: a camera whose RTC drifted while it was
+        # off (it trusts one that reads past its build until this answer's Date corrects it), or
+        # a replay. A stale signature proves no more than none, so it gets what none gets.
         return _offer_only(st, checkin, existing["cohort"] if existing else "__default__",
                            existing, account_id, nothing)
     if existing is None and ms.over_device_limit(account_id) and \

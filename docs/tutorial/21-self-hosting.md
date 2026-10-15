@@ -136,7 +136,7 @@ counting). The account sees it in its unclaimed list (`client device unclaimed`)
 
 | env var | what it does |
 |---|---|
-| `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` | boolean, default off. Off, every check-in signature is checked and noted, and nothing else changes. On, only a check-in signed by the camera's registered key gets the full treatment; an unsigned one gets update offers only, and one whose signature doesn't verify gets nothing. See [device keys](../reference/device-keys.md) |
+| `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` | boolean, default off. Off, every check-in signature is checked and noted, and nothing else changes. On, only a check-in signed by the camera's registered key gets the full treatment; an unsigned one, or one signed at a stale time, gets update offers only, and one whose signature doesn't verify gets nothing. See [device keys](../reference/device-keys.md) |
 | `OPENMV_OTA_KEYKEEPER_URL`, `OPENMV_OTA_KEYKEEPER_TOKEN` | where keykeeper runs, on a private network, and the secret it expects. Needed only to offer releases encrypted for each camera; without it such a release is never offered |
 
 Keykeeper is a second, small process from the same package. It holds the only key that

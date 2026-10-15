@@ -3,7 +3,8 @@
 A registered camera signs its check-in with the identity key its registration names. Off (the
 default), signatures are checked and noted -- the good ones on the camera's registration, the bad
 ones counted and audited -- and nothing else changes. On, only a signed check-in gets the full
-treatment; an unsigned one gets update offers and nothing else, and a bad signature gets nothing.
+treatment; an unsigned one -- or one signed at a stale time -- gets update offers and nothing
+else, and a bad signature gets nothing.
 """
 
 from __future__ import annotations
@@ -153,6 +154,19 @@ def test_on_a_bad_signature_gets_nothing(tmp_path):
     assert store.get_device(DEV) is None
     assert store.get_registration(DEV)["refused_checkins"] == 3
     assert _audit(store, "device.checkin_refused")[0]["data"]["enforced"] is True
+
+
+def test_on_a_stale_signature_gets_offers_only(tmp_path):
+    """A camera that rebooted with a drifted RTC signs its first check-in at the wrong time: it
+    is counted, and answered as an unsigned check-in is -- not turned away."""
+    c, store = _app(tmp_path, required=True)
+    key = ec.generate_private_key(ec.SECP256R1())
+    _register(store, key)
+    body = _body()
+    r = _check(c, body, _sign(key, body, ts=int(time.time()) - 3600))
+    assert r["update"] is True and "live" not in r and "ingest" not in r
+    assert store.get_device(DEV) is None
+    assert store.get_registration(DEV)["last_refusal"] == "stale"
 
 
 def test_a_signature_from_an_unregistered_camera_leaves_no_trace(tmp_path):
