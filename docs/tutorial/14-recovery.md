@@ -14,9 +14,11 @@ its own.
 
 The check-in reports the device's id plus the board, product, and account
 stamped into its firmware, with no installed version, so any release in an
-active rollout for that product is newer and is offered. The check-in goes
-unsigned, so the server answers it with update offers and nothing else: the
-device's fleet row stays as it was until the release it installs checks in.
+active rollout for that product is newer and is offered. Recovery signs the
+check-in with the camera's identity key once its clock is set — from NTP before
+the first one, or else from the first reply's `Date` — and a signed check-in puts
+the camera on the fleet view as recovering. An unsigned one still gets the update
+offer, so a camera with no clock yet is not held back.
 When the server has nothing for it, or refuses it, recovery logs that and asks
 again on its backoff.
 

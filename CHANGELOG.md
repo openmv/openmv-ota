@@ -121,6 +121,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   5 MB a camera a day. Eight cameras spent the default 50 MB/day datalake quota by 14:27 UTC,
   after which the datalake refused everything until midnight, heap graphs included. The heartbeat
   now logs once a minute.
+- **A camera in firmware recovery shows on the fleet view again.** Recovery's check-in went
+  unsigned, and with signed check-ins required that meant update offers and no fleet row. It now
+  signs with the camera's identity key once its clock is set (NTP first, else the reply's
+  `Date`), so a recovering camera reads as recovering; the first, unsigned, check-in still gets
+  the offer.
 - **A camera whose network stack runs out of memory heals itself.** An H7 Plus whose WINC ran out
   of buffers after a relay send stalled failed every check-in with `OSError(12)` -- at 7% heap
   use -- and never recovered: the transport rebuild waited for five failed cycles, half an hour

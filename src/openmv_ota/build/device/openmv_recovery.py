@@ -112,10 +112,14 @@ def should_rewrite_psk(cfg):
 _RESP_MAX = 8 * 1024      # the runtime's check-in reply cap (openmv_ota._RESP_MAX)
 
 
-def checkin_request(cfg, host, port, board_id, platform, uid):
+def checkin_request(cfg, host, port, board_id, platform, uid, sign=None):
     """The check-in POST, head and body, from the firmware's own constants. There is no image,
     so nothing is installed: payload version 0 (any release is newer), no slots, and
-    ``fallback_reason`` says why. It goes unsigned: the server answers it with offers only.
+    ``fallback_reason`` says why, which puts a recovering camera on the fleet view.
+
+    ``sign(body)`` gives the body's ``X-OMV-Signature`` value, or None. Only a signed check-in is
+    the camera itself to the server (a fleet row -- the recovery on the fleet view); an unsigned
+    one still gets the update offer, which is what recovery needs first.
 
     ``device_id`` is ``omv.board_id()`` or, on the Alif, whose ``board_id()`` is empty, the same
     id rebuilt from ``machine.unique_id()`` (see ``openmv_ota._board_id_fallback``). Anything else
@@ -130,10 +134,42 @@ def checkin_request(cfg, host, port, board_id, platform, uid):
                        "account_id": getattr(cfg, "ACCOUNT_ID", ""),
                        "board": getattr(cfg, "BOARD", None), "payload_version": 0,
                        "orders_by_seq": pid == 0, "fallback_reason": "recovery"}).encode()
+    sig = sign(body) if sign is not None else None
     if port != 443:
         host = "%s:%d" % (host, port)
     return ("POST /api/v1/check HTTP/1.0\r\nHost: %s\r\nContent-Type: application/json\r\n"
-            "Content-Length: %d\r\n\r\n" % (host, len(body))).encode() + body
+            "%sContent-Length: %d\r\n\r\n" % (host, "X-OMV-Signature: %s\r\n" % sig if sig else "",
+                                                len(body))).encode() + body
+
+
+_MONTHS = (b"jan", b"feb", b"mar", b"apr", b"may", b"jun",
+           b"jul", b"aug", b"sep", b"oct", b"nov", b"dec")
+
+
+def http_date(value):
+    """Unix seconds from an HTTP ``Date`` value (``Sun, 06 Nov 1994 08:49:37 GMT``), or None.
+    Recovery's own copy of the runtime's parser (``openmv_ota._parse_http_date``): with no image
+    there is no runtime, and the reply's Date is what sets a cold board's clock so its next
+    check-in can be signed. Days since 1970 by H. Hinnant's algorithm, as there."""
+    if isinstance(value, str):
+        value = value.encode()
+    parts = (value or b"").strip().split()
+    if len(parts) != 6 or parts[5].upper() != b"GMT":
+        return None
+    try:
+        d, y = int(parts[1]), int(parts[3])
+        m = _MONTHS.index(parts[2].lower()) + 1
+        hh, mm, ss = (int(x) for x in parts[4].split(b":"))
+    except ValueError:
+        return None
+    if not (1 <= d <= 31 and 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 60):
+        return None
+    y -= m <= 2
+    era = y // 400
+    yoe = y - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
+    days = era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
+    return days * 86400 + hh * 3600 + mm * 60 + ss
 
 
 def offered(code, raw):
@@ -317,6 +353,39 @@ def _has(cfg, kind):  # pragma: no cover  (device)  # hil-residual-fn: see _uid 
     return has_wifi(network)  # hil-residual: bare capability probe
 
 
+def _signer():  # pragma: no cover  (device)  # hil-residual-fn: see _uid -- no recovery scenario in the bench catalog; checked by hand on a board with both slots erased
+    """A function signing a check-in body with the camera's identity key, or None with no
+    trusted clock (or no keys). A cold board's clock is tried against NTP first -- recovery may
+    be slow, and a signed check-in is what puts a recovering camera on the fleet view; failing
+    that the reply's Date sets it (_set_clock) and the next attempt signs."""
+    try:
+        import openmv_rtc
+        if not openmv_rtc.trusted():
+            openmv_rtc.sync()
+        if not openmv_rtc.trusted():
+            log.info("recovery: no trusted clock yet; this check-in goes unsigned")
+            return None
+        from openmv_se import trust
+        ts = int(openmv_rtc.now())
+    except Exception:  # hil-residual: a firmware without the clock or key modules (the M4) sends unsigned
+        return None
+    log.info("recovery: signing the check-in")
+    return lambda body: trust.checkin_signature(body, ts)
+
+
+def _set_clock(value):  # pragma: no cover  (device)  # hil-residual-fn: see _signer
+    """Set the clock from the server's ``Date`` -- the check-in is TLS to a verified server, so
+    the time is authenticated. Never raises: the clock only lets the next check-in be signed."""
+    unix = http_date(value)
+    if unix is None:
+        return
+    try:
+        import openmv_rtc
+        openmv_rtc.server_time(unix)
+    except Exception:  # hil-residual: no clock module on this firmware
+        pass
+
+
 def _install(cfg):  # pragma: no cover  (device)  # hil-residual-fn: see _uid -- the request and the answer are host-tested; the connection is the installer's own _connect/_Reader, witnessed by every install scenario
     """Check in with the build-stamped server and install what it offers (which reboots).
     Returns when it offers nothing; raises when it refuses or cannot be reached."""
@@ -332,15 +401,17 @@ def _install(cfg):  # pragma: no cover  (device)  # hil-residual-fn: see _uid --
         bid = ""
     ca = getattr(cfg, "CA_PEM", b"")
     host, port, _ = inst._parse_url(cfg.SERVER_URL)
+    sign = _signer()
     sock = inst._connect(host, port, inst._tls_anchors(ca, cfg), socket, ssl)
     try:
-        sock.write(checkin_request(cfg, host, port, bid, sys.platform, _uid()))
+        sock.write(checkin_request(cfg, host, port, bid, sys.platform, _uid(), sign))
         sock.setblocking(False)                # the installer's reader polls (see _open)
         reader = inst._Reader(sock.readinto)
         code, headers = inst._read_response(reader)
         raw = inst._read_all(inst._make_body(reader, headers), _RESP_MAX)  # ram-ok: capped at _RESP_MAX
     finally:
         sock.close()
+    _set_clock(headers.get(b"date"))
     url = offered(code, raw)
     if not url:
         log.info("recovery: no update offered")
