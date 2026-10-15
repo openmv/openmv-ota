@@ -147,3 +147,28 @@ def test_ae3_factory_flashes_all_partitions(proj, capsys):
                  "--no-register"]) == 0
     assert [a[a.index("-a") + 1] for a in ran] == ["1", "2", "3", "6"]   # HP, HE, coproc + main romfs
     assert all("--reset" not in a for a in ran)          # --no-reset honored on every step
+
+
+def test_flash_register_claims_a_flashed_camera(proj, monkeypatch, capsys):
+    from openmv_ota.flash import cli as flash_cli
+    root, ran, _artifact = proj
+    got = {}
+
+    class _Desk:
+        def __init__(self, args):
+            got["project"] = args.project
+
+        def check(self):
+            got["checked"] = True
+
+    monkeypatch.setattr(flash_cli, "_Registrar", _Desk)
+    monkeypatch.setattr(fl, "provision_keys", lambda **k: got.update(k) or [])
+    assert main(["flash", "register", str(root), "-b", "OPENMV4", "--serial", "/dev/x"]) == 0
+    assert got["checked"] and got["board"] == "OPENMV4" and got["serial"] == "/dev/x"
+    assert isinstance(got["registrar"], _Desk) and ran == []      # nothing flashed
+
+
+def test_flash_register_needs_a_desk(proj, capsys):
+    root, ran, _artifact = proj
+    assert main(["flash", "register", str(root), "-b", "OPENMV4"]) != 0   # no project here
+    assert "can't register cameras from this desk" in capsys.readouterr().err and ran == []

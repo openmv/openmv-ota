@@ -303,7 +303,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_bases.set_defaults(func=cmd_bases, _command="client release bases")
 
 
-    p_dev = sub.add_parser("device", help="list / show / pin / bind devices")
+    p_dev = sub.add_parser("device", help="list / show / pin / bind / release devices")
     dsub = p_dev.add_subparsers(dest="_dev")
     p_dvl = dsub.add_parser("list", help="the per-device rows (JSON)")
     p_dvl.add_argument("--product-id", type=int, help="only this product")
@@ -371,6 +371,18 @@ def register(parser: argparse.ArgumentParser) -> None:
                           help="device to remove")
     _creds(p_forget)
     p_forget.set_defaults(func=cmd_device_forget, _command="client device forget")
+    p_rel = dsub.add_parser("release", help="release (unclaim) a camera so another account can "
+                                            "register it; its data stays")
+    p_rel.add_argument("--device-id", required=True, metavar="DEVICE_ID",
+                       help="camera to release (BOARD:ID)")
+    _creds(p_rel)
+    p_rel.set_defaults(func=cmd_device_release, _command="client device release")
+    p_unc = dsub.add_parser("unclaimed", help="boards checking in under your account that it "
+                                              "hasn't claimed")
+    p_unc.add_argument("--limit", type=int, default=50, help="page size (default 50)")
+    p_unc.add_argument("--offset", type=int, default=0, help="skip this many")
+    _creds(p_unc)
+    p_unc.set_defaults(func=cmd_device_unclaimed, _command="client device unclaimed")
     p_dvg = dsub.add_parser("grant", help="mint a short-lived viewer credential for one device "
                                           "(the relay watch token + the datalake token and URLs)")
     p_dvg.add_argument("--device-id", required=True, metavar="DEVICE_ID",
@@ -1025,6 +1037,20 @@ def cmd_device_forget(args: argparse.Namespace) -> int:
     except ClientError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
+
+
+def cmd_device_release(args: argparse.Namespace) -> int:
+    """Release a camera: another account can then register (claim) it."""
+    try:
+        res = _make_api(config.resolve(args.server, args.token)).release_device(args.device_id)
+        return _emit(args, res, "device %s released" % args.device_id)
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+
+
+def cmd_device_unclaimed(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.unclaimed(limit=args.limit, offset=args.offset))
 
 
 def cmd_product_create(args: argparse.Namespace) -> int:

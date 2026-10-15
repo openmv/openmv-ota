@@ -167,3 +167,23 @@ def test_every_list_sort_runs_on_postgres(pg):
         for key in pg.AUDIT_SORTS:
             assert pg.read_audit(account_id="acct", sort=key, direction=d)
     assert pg.get_release("rel_1")["download_size"] == 9              # v33 on Postgres too
+
+
+def test_unclaimed_boards_and_claims_on_postgres(pg):
+    pg.add_account("acct", "acct")
+    for dev in ("a", "b", "a"):                                        # a repeat refreshes
+        pg.note_unclaimed(dev, "acct", "ARDUINO_GIGA", 7)
+    rows, total = pg.unclaimed("acct", 50, 0)
+    assert total == 2 and {r["device_id"] for r in rows} == {"a", "b"}
+    assert pg.unclaimed(None, 1, 1)[1] == 2
+    pg.drop_unclaimed("a")
+    pg.upsert_device(device_id="OPENMV4:1", product_id=7, account_id="acct")
+    pg.put_registration("OPENMV4:1", "acct", record=b"r", signature="s", identity="04",
+                        exchange="04", desk_key_id=1, issued="2026-01-01T00:00:00Z",
+                        registered_by="d")
+    pg.put_registration("OPENMV4:2", "acct", record=b"r", signature="s", identity="04",
+                        exchange="04", desk_key_id=1, issued="2026-01-01T00:00:00Z",
+                        registered_by="d")
+    assert pg.claimed_count("acct") == 2                               # one seat per camera
+    assert pg.delete_registration("OPENMV4:1")["account_id"] == "acct"
+    assert pg.get_device("OPENMV4:1") is None and pg.claimed_count("acct") == 1

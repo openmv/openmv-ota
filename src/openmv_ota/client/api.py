@@ -292,6 +292,16 @@ class Api:
     def bind_device(self, device_id):
         return self._req("POST", "/api/v1/admin/devices/%s/account" % device_id)
 
+    def release_device(self, device_id):
+        """Release a camera the account holds (unclaim it): its registration, binding and fleet
+        row go, so another account can register it. Its data stays."""
+        return self._req("DELETE", "/api/v1/admin/devices/%s/registration" % device_id)
+
+    def unclaimed(self, limit: int = 50, offset: int = 0):
+        """Boards checking in under the account that it hasn't claimed, most recent first."""
+        return self._req("GET", "/api/v1/admin/unclaimed",
+                         params={"limit": limit, "offset": offset})
+
     def forget_device(self, device_id, keep_data: bool = False):
         """Remove a device from the fleet -- the install ended -- and, unless ``keep_data``,
         erase what it stored in the datalake. Its install history and the audit log stay;

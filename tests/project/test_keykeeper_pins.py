@@ -56,6 +56,17 @@ def test_a_chain_that_doesn_t_extend_the_pin_is_refused(tmp_path, ring):
         kp.sealing_generation(tmp_path / "fresh", NOW)
 
 
+def test_a_hosted_project_starts_from_the_built_in_pin(tmp_path, ring):
+    from openmv_ota.client.config import DEFAULT_SERVER_URL
+    assert kp.trusted_pin(tmp_path / "fresh", "", DEFAULT_SERVER_URL + "/") == \
+        kp.HOSTED_KEYKEEPER_PIN
+    assert kp.trusted_pin(tmp_path / "fresh", "1:ab", DEFAULT_SERVER_URL) == "1:ab"   # config wins
+    with pytest.raises(ProjectError, match="no keykeeper pin"):
+        kp.trusted_pin(tmp_path / "fresh", "", "https://ota.example")    # self-hosted: set one
+    with pytest.raises(ProjectError, match="doesn't verify from this project's pin"):
+        kp.sync(tmp_path / "proj", "", ring.chain(), NOW, server_url=DEFAULT_SERVER_URL)
+
+
 def test_a_damaged_file_says_so(tmp_path, ring):
     root = tmp_path / "proj"
     kp.sync(root, ring.genesis_pin(), ring.chain(), NOW)

@@ -62,13 +62,17 @@ class ServerSettings(BaseSettings):
     # it on a production deployment.
     test_offer_downgrades: bool = False
     # PRE-LAUNCH OPERATOR SWITCH. The registry flags some board types as structurally never
-    # registered (the Arduino boards: nothing to claim them with yet), and those are served
-    # read-only -- offers, but no device row, feedback, grants or device-limit counting. On, the
-    # server treats such a board as REGISTERED for every account: the full fleet treatment, so
-    # the hosted cloud can run them before claiming exists. It trusts the board's claimed id, so
-    # turn it OFF once Arduino board claiming and signed check-ins ship. A boolean: 1/true/yes/on
+    # registered (the Arduino boards), and those are CLAIMED instead: one counts as registered
+    # once a desk has registered its keys to the account it checks in under (`flash factory` or
+    # `flash register`, logged in); an unclaimed one is served read-only -- offers, but no device
+    # row, feedback, grants or device-limit counting -- and listed for its account to claim. On,
+    # the server treats every such board as REGISTERED for every account, claimed or not. It
+    # trusts the board's reported id, so leave it off in production. A boolean: 1/true/yes/on
     # (any case) is on, 0/false/no/off is off, anything else refuses to start.
     serve_unregistered_boards: bool = False
+    # Camera registrations (`POST /admin/registrations`) each account, and each address, may
+    # make per minute -- a desk registers one camera per flash, so this only stops a flood.
+    registration_rate_per_min: int = 30
     # THE SIGNED CHECK-IN SWITCH. A registered camera signs its check-ins with its identity key
     # once its clock is set (see ota/checkin_sig.py). Off, check-ins are served as before, and
     # every signature is still checked, noted on the camera's registration and refusals audited

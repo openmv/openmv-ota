@@ -508,7 +508,21 @@ _MIGRATIONS: list[list[str]] = [
         "CREATE INDEX IF NOT EXISTS device_registrations_account "
         "ON device_registrations (account_id)",
     ],
+    [   # v35 -- board claiming. unclaimed_devices: boards of a type the registrar never
+        # registers (the Arduino ones) that checked in under an account with no registration
+        # there -- what the account can claim, by registering the board at a desk. Capped per
+        # account (the stalest sighting goes), so ids a check-in reports can't grow it unbounded.
+        "CREATE TABLE IF NOT EXISTS unclaimed_devices ("
+        "device_id TEXT NOT NULL, account_id TEXT NOT NULL, board TEXT NOT NULL, "
+        "product_id BIGINT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, "
+        "PRIMARY KEY (device_id, account_id))",
+        "CREATE INDEX IF NOT EXISTS unclaimed_devices_account "
+        "ON unclaimed_devices (account_id, last_seen)",
+    ],
 ]
+
+# The most unclaimed boards remembered per account (see migration v35).
+UNCLAIMED_CAP = 50
 
 
 def _download_size(representations) -> int:
@@ -1705,6 +1719,48 @@ class SqlMetadataStore:
                      (_now_iso(), reason, device_id))
         return not prev["refused_checkins"] or prev["last_refusal"] != reason
 
+    def delete_registration(self, device_id: str) -> dict | None:
+        """Release a camera: drop its registration, the account binding registering made, and its
+        fleet row, so another account can register it. Its data stays where it is. Returns the
+        registration it dropped, or None."""
+        prev = self.get_registration(device_id)
+        if prev is not None:
+            self.execute("DELETE FROM device_registrations WHERE device_id = ?", (device_id,))
+            self.forget_device(device_id)
+        return prev
+
+    def note_unclaimed(self, device_id: str, account_id: str, board: str,
+                       product_id: int | None) -> None:
+        """An unregistered board of a claimable type checked in under ``account_id``: remember
+        it (last seen now), keeping the account's :data:`UNCLAIMED_CAP` most recent."""
+        now = _now_iso()
+        self.execute(
+            "INSERT INTO unclaimed_devices (device_id, account_id, board, product_id, first_seen, "
+            "last_seen) VALUES (?,?,?,?,?,?) ON CONFLICT (device_id, account_id) DO UPDATE SET "
+            "board = excluded.board, product_id = excluded.product_id, "
+            "last_seen = excluded.last_seen",
+            (device_id, account_id, board, product_id, now, now))
+        self.execute(
+            "DELETE FROM unclaimed_devices WHERE account_id = ? AND device_id NOT IN ("
+            "SELECT device_id FROM unclaimed_devices WHERE account_id = ? "
+            "ORDER BY last_seen DESC, device_id LIMIT ?)", (account_id, account_id, UNCLAIMED_CAP))
+
+    def drop_unclaimed(self, device_id: str) -> None:
+        """A board was claimed (registered): it is no longer unclaimed anywhere."""
+        self.execute("DELETE FROM unclaimed_devices WHERE device_id = ?", (device_id,))
+
+    def unclaimed(self, account_id: str | None, limit: int, offset: int) -> tuple[list, int]:
+        """``(page, total)`` of unclaimed boards, most recently seen first: one account's, or
+        every account's for ``None``."""
+        where, params = ("WHERE account_id = ?", (account_id,)) if account_id is not None \
+            else ("", ())
+        total = self.query_one("SELECT COUNT(*) AS n FROM unclaimed_devices " + where,
+                               params)["n"]
+        rows = self.query_all("SELECT * FROM unclaimed_devices " + where +
+                              " ORDER BY last_seen DESC, device_id LIMIT ? OFFSET ?",
+                              params + (limit, offset))
+        return [_d(r) for r in rows], total
+
     def registrations_for(self, device_ids) -> dict:
         """``{device_id: registration}`` for a page of devices, in one query."""
         ids = list(device_ids)
@@ -2011,11 +2067,19 @@ class SqlMetadataStore:
             "SELECT 1 AS x FROM audit WHERE account_id = ? AND action = 'device.refused' "
             "AND entity_id = ? LIMIT 1", (account_id, device_id)) is not None
 
+    def claimed_count(self, account_id: str) -> int:
+        """The devices an account holds against its limit: its fleet, and the cameras registered
+        to it that haven't checked in yet -- a claim takes a seat before the first check-in."""
+        return self.query_one(
+            "SELECT COUNT(*) AS n FROM (SELECT device_id FROM devices WHERE account_id = ? UNION "
+            "SELECT device_id FROM device_registrations WHERE account_id = ?) held",
+            (account_id, account_id))["n"]
+
     def over_device_limit(self, account_id: str) -> bool:
         """Whether registering ONE MORE device would exceed the account's limit."""
         acct = self.get_account(account_id) if account_id else None
         limit = (acct or {}).get("device_limit")
-        return limit is not None and self.device_count(account_id) >= limit
+        return limit is not None and self.claimed_count(account_id) >= limit
 
     def set_account_active(self, account_id: str, active: bool) -> None:
         self.execute("UPDATE accounts SET active = ? WHERE account_id = ?",

@@ -143,6 +143,41 @@ can't be registered by another.
 `GET /api/v1/admin/devices/{device_id}/registration` returns a camera's record, its identity
 key's fingerprint (the SHA-256 of the key), and how its signed check-ins are going.
 
+### Claiming
+
+Registering a camera is how an account claims it, so the server bounds it:
+
+- only a known board type;
+- a camera new to the account only while the account is under its device limit (a 403
+  otherwise). The camera takes its seat when it registers, before its first check-in;
+- a rate per account and per address (a 429 past it).
+
+A camera that is already flashed registers without flashing again:
+
+```
+openmv-ota flash register . -b OPENMV_N6     # same --desk, --server, --token as flash factory
+```
+
+It runs the key exchange `flash factory` ends with, so the camera must still be booting its
+factory image. One that has installed an update is flashed again with `flash factory`.
+
+Arduino boards are never in the board registry. One checking in under an account that hasn't
+claimed it gets update offers and nothing else, and shows in the account's unclaimed list:
+
+```
+openmv-ota client device unclaimed
+```
+
+An account gives up a camera with:
+
+```
+openmv-ota client device release --device-id OPENMV_N6:0036...
+```
+
+Its registration, its account binding and its fleet row go; its data stays. Another account can
+then register it. The server's root token can release any account's camera, which is how a
+disputed board is settled: whoever has it in hand then registers it.
+
 ## Signed check-ins
 
 A registered camera signs every check-in with its identity key, once its clock is set. The
