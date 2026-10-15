@@ -15,6 +15,7 @@ from openmv_ota.server.metastore import SqliteMetadataStore
 from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
+from tests.server import camera
 
 BID = 7
 ACCT = "acct_example"                 # a placeholder, not a real account
@@ -56,8 +57,9 @@ def _app(tmp_path, *, keykeeper=None, sealed=True, registered=True, registrar=Tr
     store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID, cohort="__default__",
                       percent=100, account_id=ACCT)
     if registered:
-        store.put_registration(DEV, ACCT, record=b'{"r":1}', signature="5e", identity="04",
-                               exchange="04", desk_key_id=1, issued="2026-10-10T12:00:00Z",
+        point = camera.point(camera.key_for(DEV))
+        store.put_registration(DEV, ACCT, record=b'{"r":1}', signature="5e", identity=point,
+                               exchange=point, desk_key_id=1, issued="2026-10-10T12:00:00Z",
                                registered_by="desk")
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))
     storage.put("m/rel1", b"MANI", "application/octet-stream")
@@ -75,10 +77,11 @@ def _sub(tmp_path, name):
     return path
 
 
-def _check(c):
-    return c.post("/api/v1/check", json={"device_id": "dev1", "product_id": BID,
-                                         "payload_version": 0x01000000, "board": "OPENMV_N6",
-                                         "account_id": ACCT}).json()
+def _check(c, *, signed=True):
+    """A check-in from the camera, signed by its identity key unless ``signed`` is False."""
+    body = json.dumps({"device_id": "dev1", "product_id": BID, "payload_version": 0x01000000,
+                       "board": "OPENMV_N6", "account_id": ACCT}).encode()
+    return camera.post(c, body, camera.sign(camera.key_for(DEV), body) if signed else None).json()
 
 
 def test_the_offer_carries_the_camera_s_lockbox(tmp_path):
@@ -91,8 +94,7 @@ def test_the_offer_carries_the_camera_s_lockbox(tmp_path):
 
 
 def test_no_lockbox_no_offer(tmp_path):
-    for kw in ({"keykeeper": None}, {"keykeeper": _Keykeeper(box=None)},
-               {"keykeeper": _Keykeeper(), "registered": False}):
+    for kw in ({"keykeeper": None}, {"keykeeper": _Keykeeper(box=None)}):
         c, store = _app(_sub(tmp_path, str(len(list(tmp_path.iterdir())))), **kw)
         r = _check(c)
         assert r["update"] is False, kw
@@ -100,6 +102,15 @@ def test_no_lockbox_no_offer(tmp_path):
         row = store.get_device(DEV)
         assert row is not None and row["last_offered_release_id"] is None
         assert store.get_rollout("ro1")["attempted"] == 0
+
+
+def test_a_camera_with_no_registration_gets_no_offer(tmp_path):
+    """It has no keys on record: none to wrap the release's key for, and none to check a
+    signature against, so its check-in gets offers only -- and no offer it could open."""
+    kk = _Keykeeper()
+    c, store = _app(tmp_path, keykeeper=kk, registered=False)
+    assert _check(c, signed=False) == {"update": False, "poll_after_s": 3600}
+    assert kk.asked == [] and store.get_device(DEV) is None
 
 
 def test_a_release_not_encrypted_for_each_camera_is_offered_as_before(tmp_path):

@@ -193,8 +193,8 @@ it against the identity key in the camera's registration, and takes it only with
 of its own clock, so a recorded check-in can't be replayed later.
 
 The M4 (OPENMV2) has no room in its firmware for this, or for opening lockboxes: it checks in
-unsigned, so a server requiring signed check-ins answers it with update offers only, and it
-can't install a release encrypted for each camera.
+unsigned, so the server answers it with update offers only, and it can't install a release
+encrypted for each camera.
 
 A camera that has just booted cold has no clock yet: its first check-in goes unsigned, and the
 server's reply (its `Date` header) sets the clock for the next one. Recovery never signs.
@@ -202,23 +202,20 @@ A camera whose clock kept counting while it was off trusts it at boot; if it dri
 than five minutes, that first check-in is signed at a **stale** time, and the reply corrects
 the clock the same way.
 
-What the server does with a check-in depends on the `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` switch:
+What the server does with a check-in:
 
-| Check-in | Switch off (default) | Switch on |
-| --- | --- | --- |
-| Signed, verifies | served as usual; noted | served as usual; noted |
-| Unsigned | served as usual | update offers only: no fleet row, telemetry, Live or ingest |
-| Signed at a stale time | served as usual; counted | update offers only; counted |
-| Signature doesn't verify | served as usual; counted | nothing; counted |
+| Check-in | What it gets |
+| --- | --- |
+| Signed, verifies | the full treatment: fleet row, telemetry, Live and ingest; noted |
+| Unsigned | update offers only: no fleet row, telemetry, Live or ingest |
+| Signed at a stale time | update offers only; counted |
+| Signature doesn't verify | nothing; counted |
 
 Offers stay open to unsigned check-ins because they are safe to anyone: an update is signed, and
 installs only on the camera it was built for. A refusal is counted on the camera's registration
 with its reason (`bad signature`, `stale`, `malformed`, `unknown version`), and the audit log
 records `device.checkin_refused` when the reason changes, not on every poll. A signature from a
-camera with no registration leaves no trace.
-
-With the switch off, the server checks every signature anyway, so a fleet can be watched going
-green before anything depends on it.
+camera with no registration gets nothing and leaves no trace.
 
 ## Lockboxes
 

@@ -61,28 +61,9 @@ class ServerSettings(BaseSettings):
     # default; when on, create_app() logs a loud warning and `server check` flags it. Never set
     # it on a production deployment.
     test_offer_downgrades: bool = False
-    # PRE-LAUNCH OPERATOR SWITCH. The registry flags some board types as structurally never
-    # registered (the Arduino boards), and those are CLAIMED instead: one counts as registered
-    # once a desk has registered its keys to the account it checks in under (`flash factory` or
-    # `flash register`, logged in); an unclaimed one is served read-only -- offers, but no device
-    # row, feedback, grants or device-limit counting -- and listed for its account to claim. On,
-    # the server treats every such board as REGISTERED for every account, claimed or not. It
-    # trusts the board's reported id, so leave it off in production. A boolean: 1/true/yes/on
-    # (any case) is on, 0/false/no/off is off, anything else refuses to start.
-    serve_unregistered_boards: bool = False
     # Camera registrations (`POST /admin/registrations`) each account, and each address, may
     # make per minute -- a desk registers one camera per flash, so this only stops a flood.
     registration_rate_per_min: int = 30
-    # THE SIGNED CHECK-IN SWITCH. A registered camera signs its check-ins with its identity key
-    # once its clock is set (see ota/checkin_sig.py). Off, check-ins are served as before, and
-    # every signature is still checked, noted on the camera's registration and refusals audited
-    # -- so the fleet can be watched going green before anything depends on it. On, only a
-    # check-in signed by the camera's registered key gets the full treatment (fleet row,
-    # telemetry, Live and ingest grants); an unsigned one (a cold boot's first, before its
-    # clock is set; a camera never registered) gets update offers only; a signature that
-    # doesn't verify is refused. Offers stay open because they are safe to anyone: what is
-    # downloaded is signed, and installs only on the camera it was built for.
-    require_signed_checkins: bool = False
     # KEYKEEPER: the private service that wraps a release's content key for one registered camera
     # (see keykeeper.py). Needed only to offer releases encrypted for each camera; without it,
     # such a release is never offered. A URL on a private network and the shared secret.

@@ -9,6 +9,7 @@ the server's root token any account's, which is how a disputed board is settled.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
@@ -24,6 +25,7 @@ from openmv_ota.server.metastore import SqliteMetadataStore
 from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
+from tests.server import camera
 
 ALG = algorithm_for(ES256)
 BID = 7
@@ -42,7 +44,7 @@ class _Registry:
         return Registration(True)
 
 
-def _server(tmp_path, *, rate=30, serve_unregistered=False):
+def _server(tmp_path, *, rate=30):
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))
     store.migrate()
     store.set_meta("capability_secret", "x")
@@ -53,8 +55,9 @@ def _server(tmp_path, *, rate=30, serve_unregistered=False):
     store.add_token(hash_token("tokR"), "root", ["publish", "accounts.all"])
     settings = ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
                               swd_ids_verify_token="t", poll_jitter=0,
-                              registration_rate_per_min=rate,
-                              serve_unregistered_boards=serve_unregistered)
+                              live_relay_url="https://live.test", live_token_secret="s3cret",
+                              datalake_url="https://data.test", datalake_token_secret="dl",
+                              registration_rate_per_min=rate)
     app = create_app(settings, metastore=store,
                      storage=LocalArtifactStorage(str(tmp_path / "blobs")), verifier=_Registry())
     return TestClient(app), store
@@ -69,9 +72,24 @@ def _desk(c, headers, key_id=1):
     return LocalSigner(key, key_id, ES256, ALG)
 
 
-def _register(c, headers, signer, *, account="acctA", device=GIGA, board="ARDUINO_GIGA"):
+def _publish(store):
+    """A release of acctA's product, rolled out to all of it, so a check-in has an offer."""
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=3, representations=[{"format": "full", "url": "x.img.gz",
+                                                      "size": 3}],
+                      manifest_key="m/rel1", image_key="i/rel1", account_id="acctA")
+    store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID, cohort="__default__",
+                      percent=100, account_id="acctA")
+
+
+def _register(c, headers, signer, *, account="acctA", device=GIGA, board="ARDUINO_GIGA",
+              key=None):
+    """Register ``device`` from a desk, naming ``key`` (by default the identity key
+    :func:`_check` signs with) as its identity key."""
+    key = key if key is not None else camera.key_for(device)
     record = reg.build(account=account, device_id=device, board=board,
-                       identity=public_point_hex(generate_private_key(ALG).public_key()),
+                       identity=public_point_hex(key.public_key()),
                        exchange=public_point_hex(generate_private_key(ALG).public_key()),
                        desk=signer.key_id, issued=datetime.now(timezone.utc))
     return c.post("/api/v1/admin/registrations", headers=headers,
@@ -79,9 +97,17 @@ def _register(c, headers, signer, *, account="acctA", device=GIGA, board="ARDUIN
 
 
 def _check(c, dev="dev1", board="ARDUINO_GIGA", account="acctA"):
-    return c.post("/api/v1/check", json={"device_id": dev, "product_id": BID,
-                                         "payload_version": 0x01000000, "board": board,
-                                         "account_id": account, "streams": ["0"]})
+    """A check-in signed by the camera's identity key, as a camera with keys sends it; the
+    server takes the signature only once the camera is registered."""
+    body = json.dumps({"device_id": dev, "product_id": BID, "payload_version": 0x01000000,
+                       "board": board, "account_id": account, "streams": ["0"]}).encode()
+    return camera.post(c, body, camera.sign(camera.key_for("%s:%s" % (board, dev)), body))
+
+
+def _feedback(c):
+    return c.post("/api/v1/feedback", json={
+        "device_id": "dev1", "product_id": BID, "board": "ARDUINO_GIGA", "release_id": "rel1",
+        "status": "installed", "account_id": "acctA"}).json()
 
 
 def _actions(c, headers):
@@ -118,11 +144,31 @@ def test_a_claimed_board_is_a_registered_device_of_its_account_only(tmp_path):
     assert c.get("/api/v1/admin/unclaimed", headers=B).json()["total"] == 1
 
 
-def test_the_pre_launch_switch_still_serves_every_arduino_board(tmp_path):
-    c, store = _server(tmp_path, serve_unregistered=True)
-    _check(c)
-    assert store.get_device(GIGA)["account_id"] == "acctA"
-    assert c.get("/api/v1/admin/unclaimed", headers=A).json()["total"] == 0
+def test_an_unclaimed_board_gets_offers_and_nothing_else(tmp_path):
+    c, store = _server(tmp_path)
+    _publish(store)
+    r = _check(c).json()
+    assert r["update"] is True                               # offers still work (account-scoped)
+    assert "live" not in r and "ingest" not in r             # no grants
+    assert store.get_device(GIGA) is None                    # no fleet row
+    assert store.get_rollout("ro1")["attempted"] == 0        # no rollout accounting
+    assert _feedback(c) == {"ok": False}                     # its feedback isn't recorded
+    assert store.deployment_counts("rel1") == {"installed": 0, "failed": 0}
+
+
+def test_a_claimed_board_gets_what_any_registered_camera_gets(tmp_path):
+    c, store = _server(tmp_path)
+    _publish(store)
+    assert _register(c, A, _desk(c, A)).status_code == 200
+    r = _check(c).json()
+    assert r["update"] is True
+    assert "live" in r and "ingest" in r                     # Live + datalake grants
+    row = store.get_device(GIGA)
+    assert row["account_id"] == "acctA" and row["board"] == "ARDUINO_GIGA"
+    assert store.get_rollout("ro1")["attempted"] == 1        # rollout accounting
+    assert "device.enrolled" in _actions(c, A)
+    assert _feedback(c) == {"ok": True}
+    assert store.deployment_counts("rel1") == {"installed": 1, "failed": 0}
 
 
 def test_a_registered_camera_keeps_its_seat_at_check_in(tmp_path):
@@ -132,7 +178,8 @@ def test_a_registered_camera_keeps_its_seat_at_check_in(tmp_path):
     assert store.claimed_count("acctA") == 1 and store.over_device_limit("acctA")
     _check(c)
     assert store.get_device(GIGA)["account_id"] == "acctA"     # not refused at its first check-in
-    _check(c, dev="dev2", board="OPENMV4")                      # but a second camera is
+    camera.register(store, "OPENMV4:dev2", "acctB")             # registered, but not to acctA
+    _check(c, dev="dev2", board="OPENMV4")                      # so a second camera is
     assert store.get_device("OPENMV4:dev2") is None
     assert "device.refused" in _actions(c, A)
 
@@ -142,7 +189,7 @@ def test_registering_a_new_camera_past_the_limit_is_refused(tmp_path):
     signer = _desk(c, A)
     store.set_device_limit("acctA", 1)
     assert _register(c, A, signer).status_code == 200
-    assert _register(c, A, signer).status_code == 200          # the same camera, re-keyed
+    assert _register(c, A, signer, key=generate_private_key(ALG)).status_code == 200   # re-keyed
     r = _register(c, A, signer, device="ARDUINO_GIGA:dev2")
     assert r.status_code == 403 and "device limit" in r.json()["detail"]
     assert store.get_registration("ARDUINO_GIGA:dev2") is None
