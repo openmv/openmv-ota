@@ -218,6 +218,28 @@ def test_a_missed_window_soft_resets_the_camera_with_the_console_held(camera, mo
     assert keys == list(fl._SOFT_RESET)                     # once, Ctrl-C x3 then Ctrl-D
 
 
+def test_a_missed_window_queues_only_a_few_requests_before_the_reset(camera, monkeypatch):
+    """An app that never reads its console leaves requests queued; on a TinyUSB port a full buffer
+    stops the port taking input, Ctrl-C included. So only a few go out before the reset."""
+    con = camera(_signed(0))
+    con.__class__ = _MissedWindow
+    clock = (i / 10 for i in range(100_000))
+    monkeypatch.setattr(fl.time, "monotonic", lambda: next(clock))
+    fl.provision_keys(board="ARDUINO_GIGA")
+    first_reset = con.sent.index(fl._SOFT_RESET[0])
+    before = [d for d in con.sent[:first_reset] if d.startswith(b"OMVKEYS")]
+    assert len(before) == fl._IDENTITY_PRE_RESET_SENDS
+
+
+def test_a_running_camera_is_reset_before_it_is_asked(camera, monkeypatch):
+    """`flash register`: the camera is running its app, so the reset goes first."""
+    con = camera(_signed(0))
+    con.__class__ = _MissedWindow
+    (step,) = fl.provision_keys(board="ARDUINO_GIGA", running=True)
+    assert step.label.startswith("keys present")
+    assert con.sent[:len(fl._SOFT_RESET)] == list(fl._SOFT_RESET)
+
+
 class _Gone:
     """A console whose camera re-enumerated (a soft reset drops the N6 off USB)."""
 

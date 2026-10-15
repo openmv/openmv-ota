@@ -144,7 +144,7 @@ def cmd_register(args: argparse.Namespace) -> int:
         registrar = _Registrar(args)
         registrar.check()
         steps = flash_mod.provision_keys(board=args.board, serial=args.serial,
-                                         registrar=registrar)
+                                         registrar=registrar, running=True)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
