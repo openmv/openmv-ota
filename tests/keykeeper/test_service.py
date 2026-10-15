@@ -1,13 +1,17 @@
 """Keykeeper's service: a lockbox only for a camera the SEAL's desk keys registered to the SEAL's
-account -- whatever else the asking server says -- and every request audited."""
+account -- whatever else the asking server says -- and every request audited. Its backup goes
+only to the backup job's own token, and never with a plaintext key in it."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
@@ -157,3 +161,61 @@ def test_a_running_keykeeper_keeps_the_next_generation_announced(kk, monkeypatch
     r = c.post("/v1/lockbox", headers=AUTH,
                json={"sealed": sealed, "record": record, "signature": sig})
     assert r.json()["seal_key_id"] == 2
+
+
+BACKUP_TOKEN = "kk-backup-secret"
+BACKUP_AUTH = {"Authorization": "Bearer " + BACKUP_TOKEN}
+
+
+@pytest.fixture
+def kkb(kk):
+    keeper, _, clock = kk
+    keeper = ks.Keykeeper(keeper.ring, TOKEN, keeper.audit_path, period_days=30, clock=clock,
+                          backup_token=BACKUP_TOKEN)
+    return keeper, TestClient(ks.create_app(keeper))
+
+
+def test_the_backup_route_exists_only_with_a_backup_token(kk):
+    keeper, c, _ = kk
+    assert c.get("/v1/backup").status_code == 404
+    assert c.get("/v1/backup", headers=AUTH).status_code == 404
+    assert c.get("/v1/backup", headers={"Authorization": "Bearer "}).status_code == 404
+    assert not keeper.backup_authorized("Bearer ")              # an empty secret opens nothing
+
+
+def test_the_backup_token_fetches_the_backup_and_nothing_else(kkb):
+    keeper, c = kkb
+    r = c.get("/v1/backup", headers=BACKUP_AUTH)
+    assert r.status_code == 200 and r.headers["content-type"] == "application/gzip"
+    assert r.content == keeper.ring.backup()
+    assert r.headers["x-keykeeper-backup-sha256"] == hashlib.sha256(r.content).hexdigest()
+    assert r.headers["cache-control"] == "no-store"
+    event = _audit(keeper)[-1]
+    assert event["action"] == "backup" and event["ok"] and event["bytes"] == len(r.content)
+    assert event["sha256"] == r.headers["x-keykeeper-backup-sha256"]
+    assert c.get("/v1/backup").status_code == 401
+    assert c.get("/v1/backup", headers=AUTH).status_code == 401           # the server's token
+    assert c.get("/v1/chain", headers=BACKUP_AUTH).status_code == 401
+    assert c.post("/v1/lockbox", headers=BACKUP_AUTH, json={}).status_code == 401
+    assert c.get("/v1/chain", headers=AUTH).status_code == 200
+
+
+def test_a_plaintext_key_on_disk_stops_the_backup(kkb, caplog):
+    keeper, c = kkb
+    seal = keeper.ring.root / "private" / "kk-0001-seal.pem"
+    seal.write_bytes(keeper.ring.seal_key(1).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption()))
+    with caplog.at_level(logging.ERROR, logger="openmv_ota.keykeeper"):
+        r = c.get("/v1/backup", headers=BACKUP_AUTH)
+    assert r.status_code == 500 and "kk-0001-seal.pem is not an encrypted key" in r.text
+    assert "BEGIN PRIVATE KEY" not in r.text
+    assert "refused a backup" in caplog.text
+    event = _audit(keeper)[-1]
+    assert event["action"] == "backup" and not event["ok"] and "not an encrypted" in event["reason"]
+
+
+def test_the_backup_token_can_t_be_the_server_s(kk, tmp_path):
+    keeper, _, _ = kk
+    with pytest.raises(kr.KeykeeperError, match="must not be the server's token"):
+        ks.Keykeeper(keeper.ring, TOKEN, tmp_path / "a.jsonl", backup_token=TOKEN)

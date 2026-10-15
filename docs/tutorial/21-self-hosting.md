@@ -148,6 +148,7 @@ service on your platform.
 export OPENMV_KEYKEEPER_DIR=/var/lib/keykeeper        # its keys and audit log
 export OPENMV_KEYKEEPER_PASSPHRASE=...                # encrypts its private keys at rest
 export OPENMV_KEYKEEPER_TOKEN=...                     # the same as OPENMV_OTA_KEYKEEPER_TOKEN
+export OPENMV_KEYKEEPER_BACKUP_TOKEN=...              # optional: lets a backup job fetch its keys
 openmv-ota keykeeper init                             # once: prints the pin publishers start from
 openmv-ota keykeeper serve --host 10.0.0.5 --port 8090
 ```
@@ -160,8 +161,63 @@ It rotates its own keys on a schedule (`OPENMV_KEYKEEPER_PERIOD_DAYS`, default 3
 always announcing the next generation ahead of time, and signs each new generation with
 the one before it, so publishers follow rotations without being told. `openmv-ota
 keykeeper rotate --now` rotates at once. Every lockbox request is appended to
-`audit.jsonl` in its directory. Back the directory up: without its keys, no camera can
-open a release sealed to them.
+`audit.jsonl` in its directory.
+
+**Backing up keykeeper.** Without its keys, no camera can open a release sealed to them,
+so keep a copy somewhere else. With `OPENMV_KEYKEEPER_BACKUP_TOKEN` set, keykeeper serves
+`GET /v1/backup`: a tar.gz of `chain.json` and `private/*.pem` exactly as they are on its
+disk, the keys still encrypted with the passphrase, and the archive's SHA-256 in the
+`X-Keykeeper-Backup-SHA256` header. The same keys always give the same bytes. The audit
+log is not in it.
+
+The backup token is a second secret, for your backup job alone, and each token opens only
+its own routes:
+
+| token | `/v1/chain`, `/v1/lockbox` | `/v1/backup` |
+|---|---|---|
+| `OPENMV_KEYKEEPER_TOKEN` (the update server) | yes | no (401) |
+| `OPENMV_KEYKEEPER_BACKUP_TOKEN` (the backup job) | no (401) | yes |
+
+With no backup token set, `/v1/backup` answers 404, and keykeeper refuses to start with
+the two set to the same value. Before it answers, keykeeper checks its keys the way a
+restore will: a private key on disk that is not encrypted, a chain that doesn't verify, or
+a key that doesn't open with the passphrase is a 500 saying which, logged and audited,
+never an archive. A plaintext key never leaves the box.
+
+```bash
+curl -fsS -H "Authorization: Bearer $OPENMV_KEYKEEPER_BACKUP_TOKEN" \
+    -o keykeeper.tar.gz http://10.0.0.5:8090/v1/backup
+tar -tzf keykeeper.tar.gz
+```
+
+```
+chain.json
+private/kk-0001-seal.pem
+private/kk-0001-sign.pem
+private/kk-0002-seal.pem
+private/kk-0002-sign.pem
+```
+
+The archive opens nothing without the passphrase, so store the two apart: the archive
+with your other backups, the passphrase offline.
+
+**Restoring keykeeper.** `openmv-ota keykeeper restore <archive>` puts a backup back into
+`OPENMV_KEYKEEPER_DIR` (or `--dir`), with the passphrase from `OPENMV_KEYKEEPER_PASSPHRASE`
+(or `--passphrase-file`). It writes only into an empty directory (a freshly formatted
+disk's `lost+found` aside), never over keys, and nothing at all until the whole archive
+checks out: it opens, its chain verifies from its own first generation, and every key
+opens with the passphrase and is the key the chain announced.
+
+```console
+$ openmv-ota keykeeper restore keykeeper.tar.gz
+Keykeeper keys restored into keykeeper: generations 1 to 2, every key opened and checked against the chain.
+It verifies from this pin; publishers must already hold it:
+  1:049161b893ed57328456d95340c70b8c8f743675e10c36c3891652fdbdf30c6d949257a772da383b7d7ee6076074366d7b556d3bb1ed22ba8c5bdfdfce450ae4f6
+```
+
+Compare that pin with the `keykeeper_pin` your projects hold. Restore before keykeeper
+first starts on the new disk: `serve --init` against an empty directory makes new keys,
+which no publisher's pin follows.
 
 One more setting exists — `OPENMV_OTA_TEST_OFFER_DOWNGRADES` — and it is **test-only**:
 it makes the server willing to *offer* a release at or below a device's current version,
