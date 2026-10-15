@@ -62,6 +62,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   camera up; `flash register` claims one that is already flashed.
 - **The hosted keykeeper's pin is built in**, so per-camera encryption on the hosted server needs
   no `[ota].keykeeper_pin`.
+- **Keykeeper backups.** With `OPENMV_KEYKEEPER_BACKUP_TOKEN` set, keykeeper serves
+  `GET /v1/backup`: `chain.json` and `private/*.pem` as a tar.gz, exactly as they are on its disk
+  (the keys still encrypted with the passphrase), the same bytes for the same keys, its SHA-256 in
+  `X-Keykeeper-Backup-SHA256`. The backup token opens that route alone, and the update server's
+  token doesn't open it; unset, the route answers 404. Keykeeper checks its keys first and answers
+  500 with the reason rather than serve a plaintext key or a ring that wouldn't restore.
+  `openmv-ota keykeeper restore <archive>` puts a backup back into an empty directory, once its
+  chain verifies from its own first generation and every key opens with the passphrase and is the
+  key the chain announced.
 - **Secure element demos** in `examples/secure_element/`: read the keys and certificate, sign a
   challenge, verify it on the host.
 

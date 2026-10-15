@@ -6,11 +6,13 @@
     chain     print the chain of public keys, as JSON
     pin       print the pin a publisher starts from (the first generation)
     rotate    an emergency rotation: a new generation in effect now
+    restore   put a backup (``GET /v1/backup``) back into an empty directory, once it verifies
 
 Everything is read from the environment, so the same command runs on a laptop and in a
 container: ``OPENMV_KEYKEEPER_DIR`` (default ``./keykeeper``), ``OPENMV_KEYKEEPER_PASSPHRASE``
 (or ``--passphrase-file``) for the private keys, ``OPENMV_KEYKEEPER_TOKEN`` -- the secret the
-update server sends -- for ``serve``, and ``OPENMV_KEYKEEPER_PERIOD_DAYS`` (default 365).
+update server sends -- for ``serve``, ``OPENMV_KEYKEEPER_BACKUP_TOKEN`` -- the backup job's own
+secret, optional -- for ``serve``, and ``OPENMV_KEYKEEPER_PERIOD_DAYS`` (default 365).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from pathlib import Path
 DIR_VAR = "OPENMV_KEYKEEPER_DIR"
 PASSPHRASE_VAR = "OPENMV_KEYKEEPER_PASSPHRASE"  # noqa: S105 - an env var name, not a secret
 TOKEN_VAR = "OPENMV_KEYKEEPER_TOKEN"  # noqa: S105 - an env var name, not a secret
+BACKUP_TOKEN_VAR = "OPENMV_KEYKEEPER_BACKUP_TOKEN"  # noqa: S105 - an env var name, not a secret
 PERIOD_VAR = "OPENMV_KEYKEEPER_PERIOD_DAYS"
 
 
@@ -34,7 +37,8 @@ def register(parser: argparse.ArgumentParser) -> None:
                              ("serve", cmd_serve, "run the private service"),
                              ("chain", cmd_chain, "print the chain of public keys (JSON)"),
                              ("pin", cmd_pin, "print the pin a publisher starts from"),
-                             ("rotate", cmd_rotate, "emergency rotation: new keys in effect now")):
+                             ("rotate", cmd_rotate, "emergency rotation: new keys in effect now"),
+                             ("restore", cmd_restore, "put a backup back into an empty directory")):
         p = sub.add_parser(name, help=text)
         p.add_argument("--dir", help="where the keys live (default $%s or ./keykeeper)" % DIR_VAR)
         p.add_argument("--passphrase-file", help="file holding the keys' passphrase "
@@ -49,6 +53,8 @@ def register(parser: argparse.ArgumentParser) -> None:
         if name == "rotate":
             p.add_argument("--now", action="store_true", required=True,
                            help="required: rotation happens on its own schedule otherwise")
+        if name == "restore":
+            p.add_argument("archive", help="a backup, as GET /v1/backup serves it (.tar.gz)")
         p.set_defaults(func=func, _command="keykeeper %s" % name)
 
 
@@ -123,6 +129,24 @@ def cmd_rotate(args) -> int:
     return 0
 
 
+def cmd_restore(args) -> int:
+    from .ring import KeykeeperError
+    ring = _ring(args)
+    try:
+        archive = Path(args.archive).read_bytes()
+    except OSError as e:
+        return _fail("can't read %s: %s" % (args.archive, e.strerror))
+    try:
+        gens = ring.restore(archive)
+    except KeykeeperError as e:
+        return _fail(e)
+    print("Keykeeper keys restored into %s: generations %d to %d, every key opened and checked "
+          "against the chain." % (ring.root, gens[0].key_id, gens[-1].key_id))
+    print("It verifies from this pin; publishers must already hold it:")
+    print("  %s" % gens[0].pin())
+    return 0
+
+
 def _serve(app, host, port):  # pragma: no cover  (blocks; seam monkeypatched)
     import uvicorn
     uvicorn.run(app, host=host, port=port)
@@ -140,7 +164,7 @@ def cmd_serve(args) -> int:
             print("Keykeeper keys made; publishers start from this pin: %s" % gens[0].pin(),
                   flush=True)
         keeper = Keykeeper(ring, os.environ.get(TOKEN_VAR, ""), ring.root / "audit.jsonl",
-                           _period())
+                           _period(), backup_token=os.environ.get(BACKUP_TOKEN_VAR, ""))
     except KeykeeperError as e:
         return _fail(e)
     _serve(create_app(keeper), args.host, args.port)

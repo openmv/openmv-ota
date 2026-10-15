@@ -25,17 +25,26 @@ generations' seal keys are kept, so a release sealed before a rotation still ins
 
 A leaked keykeeper key is the one thing the chain can't fix: whoever holds the newest sign key
 can extend it. That reset is out of band -- new pins with a CLI release.
+
+A lost one is the thing a backup fixes: :meth:`Ring.backup` packs ``chain.json`` and
+``private/*.pem`` exactly as they are on disk, so still encrypted, and :meth:`Ring.restore` puts
+them back into an empty directory once the chain verifies and every key opens.
 """
 
 from __future__ import annotations
 
+import gzip
+import io
 import json
+import re
+import tarfile
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from openmv_ota.ota.errors import OtaError
@@ -44,6 +53,10 @@ from openmv_ota.ota.keys import load_private_key_pem, private_key_pem, public_po
 VERSION = 1
 DEFAULT_PERIOD_DAYS = 365
 _FIELDS = ("v", "key_id", "seal", "sign", "not_before")
+CHAIN_NAME = "chain.json"
+_KEY_NAME = re.compile(r"private/kk-([0-9a-f]{4,})-(seal|sign)\.pem")
+_PEM_LABEL = re.compile(rb"-----BEGIN ([A-Z0-9 ]+)-----")
+_FRESH_DISK = {"lost+found"}                     # what a newly formatted disk already holds
 
 
 class KeykeeperError(OtaError):
@@ -105,6 +118,41 @@ def _parse(record: str) -> Generation:
     _point(gen.sign)
     _utc(gen.not_before)
     return gen
+
+
+def _chain_of(text: bytes | str, where: str) -> list[dict]:
+    """A ``chain.json``'s chain: a non-empty list, or raise naming ``where`` it came from."""
+    try:
+        chain = json.loads(text)["chain"]
+        if not isinstance(chain, list) or not chain:
+            raise ValueError
+        return chain
+    except (ValueError, KeyError, TypeError):
+        raise KeykeeperError("%s is damaged" % where) from None
+
+
+def genesis_pin(chain: list[dict]) -> str:
+    """The pin of a chain's first generation -- the one it verifies from."""
+    try:
+        record = chain[0]["record"]
+    except (IndexError, KeyError, TypeError):
+        raise KeykeeperError("the keykeeper chain is malformed") from None
+    return _parse(record).pin()
+
+
+def pem_is_encrypted(data: bytes) -> bool:
+    """True only for what :class:`Ring` writes: one PEM block of encrypted PKCS#8, which won't
+    open without a passphrase. A plaintext key -- or junk, or a plaintext key relabelled
+    ``ENCRYPTED`` -- is False."""
+    if _PEM_LABEL.findall(data) != [b"ENCRYPTED PRIVATE KEY"]:
+        return False
+    try:
+        serialization.load_pem_private_key(data, password=None)
+    except TypeError:                   # "no password given, but the key is encrypted": good
+        return True
+    except ValueError:                  # the label says encrypted; what's under it isn't
+        pass
+    return False
 
 
 def verify_chain(chain: list[dict], pin: str) -> list[Generation]:
@@ -172,21 +220,15 @@ class Ring:
         if not self.chain_path.exists():
             raise KeykeeperError("no keykeeper keys in %s -- `openmv-ota keykeeper init` makes "
                                  "them" % self.root)
-        try:
-            chain = json.loads(self.chain_path.read_text(encoding="utf-8"))["chain"]
-            if not isinstance(chain, list) or not chain:
-                raise ValueError
-            return chain
-        except (ValueError, KeyError, TypeError):
-            raise KeykeeperError("%s is damaged" % self.chain_path) from None
+        return _chain_of(self.chain_path.read_bytes(), str(self.chain_path))
 
     def generations(self) -> list[Generation]:
         """Every generation, verified from the first (which this ring holds the keys for)."""
         chain = self.chain()
-        return verify_chain(chain, _parse(chain[0]["record"]).pin())
+        return verify_chain(chain, genesis_pin(chain))
 
     def genesis_pin(self) -> str:
-        return _parse(self.chain()[0]["record"]).pin()
+        return genesis_pin(self.chain())
 
     def _private(self, key_id: int, role: str):
         path = self.root / "private" / ("kk-%04x-%s.pem" % (key_id, role))
@@ -258,3 +300,110 @@ class Ring:
         self._write(chain)
         self.extend(now, period_days)
         return gen
+
+    # -- backup ------------------------------------------------------------------------------
+
+    def backup(self) -> bytes:
+        """The ring as a tar.gz to keep somewhere else: ``chain.json`` and ``private/*.pem``,
+        byte for byte as they are on disk -- the keys still encrypted with the passphrase, so
+        the archive alone opens nothing. The same ring always gives the same bytes.
+
+        Checked first, as :meth:`restore` will check it: refuses if any private key on disk is
+        NOT encrypted (a plaintext key never leaves the box), if the chain doesn't verify, or
+        if a key doesn't open with the passphrase or isn't the key the chain says."""
+        self.chain()                                            # no keys here: says so
+        files = {CHAIN_NAME: self.chain_path.read_bytes()}
+        for pem in sorted((self.root / "private").glob("*.pem")):
+            files["private/" + pem.name] = pem.read_bytes()
+        check_backup(files, self.passphrase)
+        return _tar_gz(files)
+
+    def restore(self, archive: bytes) -> list[Generation]:
+        """Put a :meth:`backup` back, into an empty directory only (a fresh disk's
+        ``lost+found`` aside) -- never over keys, which may be newer than the archive. Nothing
+        is written until the whole archive checks out: it opens, its chain verifies from its
+        own first generation, and every key opens with this ring's passphrase and is the key
+        the chain says."""
+        if self.root.exists() and any(p.name not in _FRESH_DISK for p in self.root.iterdir()):
+            raise KeykeeperError("%s isn't empty: a backup is restored only into an empty "
+                                 "directory" % self.root)
+        files = read_backup(archive)
+        check_backup(files, self.passphrase)
+        (self.root / "private").mkdir(parents=True, exist_ok=True)
+        for name in sorted(files):
+            if name != CHAIN_NAME:
+                (self.root / name).write_bytes(files[name])
+                (self.root / name).chmod(0o600)
+        tmp = self.chain_path.with_suffix(".tmp")              # last: chain.json is "keys here"
+        tmp.write_bytes(files[CHAIN_NAME])
+        tmp.replace(self.chain_path)
+        return self.generations()
+
+
+def _tar_gz(files: dict[str, bytes]) -> bytes:
+    """``files`` as a tar.gz that depends on nothing but them: sorted, no times, no owners."""
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        for name in sorted(files):
+            info = tarfile.TarInfo(name)
+            info.size, info.mode, info.mtime = len(files[name]), 0o600, 0
+            tar.addfile(info, io.BytesIO(files[name]))
+    out = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=out, mtime=0) as gz:
+        gz.write(raw.getvalue())
+    return out.getvalue()
+
+
+def read_backup(archive: bytes) -> dict[str, bytes]:
+    """A backup archive's files, ``{name: bytes}``. Raises if it doesn't open as a tar.gz, or
+    holds anything but plain files, or a name twice. What's IN them is :func:`check_backup`'s."""
+    files: dict[str, bytes] = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            for member in tar:
+                if not member.isfile():
+                    raise KeykeeperError("%s isn't a plain file: this isn't a keykeeper backup"
+                                         % member.name)
+                if member.name in files:
+                    raise KeykeeperError("%s is in the backup twice" % member.name)
+                files[member.name] = tar.extractfile(member).read()
+    except (tarfile.TarError, OSError, EOFError, zlib.error) as e:
+        raise KeykeeperError("the backup doesn't open as a tar.gz (%s)" % e) from None
+    return files
+
+
+def check_backup(files: dict[str, bytes], passphrase: str) -> list[Generation]:
+    """What a restore needs to be true of a backup's files, or raise saying what isn't: only
+    ``chain.json`` and ``private/kk-*-{seal,sign}.pem``; every key encrypted; the chain verifying
+    from its own first generation; and every key opening with ``passphrase``, each generation's
+    two being the ones the chain announced. Returns the generations."""
+    for name, data in sorted(files.items()):
+        if name == CHAIN_NAME:
+            continue
+        if not _KEY_NAME.fullmatch(name):
+            raise KeykeeperError("%s doesn't belong in a keykeeper backup" % name)
+        if not pem_is_encrypted(data):
+            raise KeykeeperError("%s is not an encrypted key: a plaintext key is never backed "
+                                 "up or restored" % name)
+    if CHAIN_NAME not in files:
+        raise KeykeeperError("the backup has no %s" % CHAIN_NAME)
+    chain = _chain_of(files[CHAIN_NAME], "the backup's " + CHAIN_NAME)
+    gens = verify_chain(chain, genesis_pin(chain))
+    publics = {}
+    for name, data in files.items():
+        if name != CHAIN_NAME:
+            try:
+                publics[name] = public_point_hex(load_private_key_pem(data, passphrase)
+                                                 .public_key())
+            except OtaError:
+                raise KeykeeperError("%s doesn't open with this passphrase" % name) from None
+    for gen in gens:
+        for role in ("seal", "sign"):
+            name = "private/kk-%04x-%s.pem" % (gen.key_id, role)
+            if name not in publics:
+                raise KeykeeperError("the backup has no %s key for generation %d"
+                                     % (role, gen.key_id))
+            if publics[name] != getattr(gen, role):
+                raise KeykeeperError("%s isn't the %s key the chain announced for generation %d"
+                                     % (name, role, gen.key_id))
+    return gens

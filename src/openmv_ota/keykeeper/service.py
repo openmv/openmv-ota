@@ -20,10 +20,18 @@ by them from their pin, so serving it needs no trust.
 
 Keykeeper extends its own chain on a schedule (:meth:`Ring.extend`): a running keykeeper always
 has the next generation announced.
+
+Its keys are backed up through ``GET /v1/backup``: the ring as a tar.gz (:meth:`Ring.backup`),
+the private keys in it still encrypted with the passphrase. It answers a SECOND secret, the
+backup token, and only that one: the backup job can fetch the encrypted keys but can't ask for a
+lockbox, and the update server can ask for lockboxes but can't fetch the keys. With no backup
+token the route doesn't exist.
 """
 
+import hashlib
 import hmac
 import json
+import logging
 import threading
 import time
 from datetime import datetime, timezone
@@ -36,6 +44,9 @@ from .ring import DEFAULT_PERIOD_DAYS, KeykeeperError, Ring
 
 _EXTEND_EVERY_S = 3600
 SEALED_VERSION = 1
+BACKUP_SHA256_HEADER = "X-Keykeeper-Backup-SHA256"
+
+log = logging.getLogger("openmv_ota.keykeeper")
 
 
 def _now() -> datetime:
@@ -69,16 +80,29 @@ def lockbox_for(contents: dict, record: bytes, signature: str) -> tuple[bytes, r
     return lb.make_lockbox(content_key, got.exchange), got
 
 
+def _same(a: str, b: str) -> bool:
+    return hmac.compare_digest(a.encode(), b.encode())
+
+
+def _bearer(header: str | None, token: str) -> bool:
+    scheme, _, given = (header or "").partition(" ")
+    return scheme.lower() == "bearer" and _same(given, token)
+
+
 class Keykeeper:
     """The service's state: the ring, its open seal keys, the audit log, the schedule."""
 
     def __init__(self, ring: Ring, token: str, audit_path: str | Path,
-                 period_days: int = DEFAULT_PERIOD_DAYS, clock=_now):
+                 period_days: int = DEFAULT_PERIOD_DAYS, clock=_now, backup_token: str = ""):
         if not token:
             raise KeykeeperError("keykeeper needs a shared secret: a server must prove it is the "
                                  "one allowed to ask")
+        if backup_token and _same(backup_token, token):
+            raise KeykeeperError("the backup token must not be the server's token: each one "
+                                 "opens only its own door")
         self.ring = ring
         self.token = token
+        self.backup_token = backup_token
         self.audit_path = Path(audit_path)
         self.period_days = period_days
         self.clock = clock
@@ -98,9 +122,12 @@ class Keykeeper:
             self.extend()
 
     def authorized(self, header: str | None) -> bool:
-        scheme, _, given = (header or "").partition(" ")
-        return scheme.lower() == "bearer" and hmac.compare_digest(given.encode(),
-                                                                  self.token.encode())
+        """The update server's secret: lockboxes and the chain."""
+        return _bearer(header, self.token)
+
+    def backup_authorized(self, header: str | None) -> bool:
+        """The backup job's secret: the backup, and nothing else."""
+        return bool(self.backup_token) and _bearer(header, self.backup_token)
 
     def seal_key(self, key_id: int):
         with self._lock:
@@ -115,6 +142,20 @@ class Keykeeper:
             self.audit_path.parent.mkdir(parents=True, exist_ok=True)
             with self.audit_path.open("a", encoding="utf-8") as f:
                 f.write(line)
+
+    def backup(self) -> tuple[bytes, str]:
+        """The ring's backup and its SHA-256 (hex), or raise with the reason -- above all, a
+        private key on disk that isn't encrypted (audited and logged either way)."""
+        try:
+            with self._lock:                     # never mid-extend: a chain and its keys agree
+                archive = self.ring.backup()
+        except KeykeeperError as e:
+            log.error("keykeeper: refused a backup: %s", e)
+            self.audit(action="backup", ok=False, reason=str(e))
+            raise
+        digest = hashlib.sha256(archive).hexdigest()
+        self.audit(action="backup", ok=True, sha256=digest, bytes=len(archive))
+        return archive, digest
 
     def lockbox(self, body: dict) -> dict:
         """One request's answer, or raise with the reason (audited either way)."""
@@ -143,7 +184,7 @@ class Keykeeper:
 
 def create_app(keeper: Keykeeper):
     """The ASGI app (needs the [server] extra, like the update server)."""
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Request, Response
 
     app = FastAPI(title="openmv-ota keykeeper", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -160,6 +201,20 @@ def create_app(keeper: Keykeeper):
         _auth(request)
         keeper.maybe_extend()
         return {"chain": keeper.ring.chain()}
+
+    @app.get("/v1/backup")
+    def backup(request: Request):
+        if not keeper.backup_token:              # no backup token, no route
+            raise HTTPException(status_code=404, detail="Not Found")
+        if not keeper.backup_authorized(request.headers.get("authorization")):
+            raise HTTPException(status_code=401, detail="unauthorized")
+        try:
+            archive, digest = keeper.backup()
+        except KeykeeperError as e:
+            raise HTTPException(status_code=500, detail="no backup: %s" % e) from None
+        return Response(archive, media_type="application/gzip", headers={
+            BACKUP_SHA256_HEADER: digest, "Cache-Control": "no-store",
+            "Content-Disposition": 'attachment; filename="keykeeper.tar.gz"'})
 
     @app.post("/v1/lockbox")
     async def lockbox(request: Request):

@@ -1,4 +1,4 @@
-"""``openmv-ota keykeeper ...``: init, chain, pin, rotate and serve, configured from the
+"""``openmv-ota keykeeper ...``: init, chain, pin, rotate, serve and restore, configured from the
 environment the way a container runs it."""
 
 from __future__ import annotations
@@ -78,3 +78,40 @@ def test_serve_init_makes_the_keys_once(tmp_path, monkeypatch, capsys):
     assert main(["keykeeper", "serve", "--init"]) == 0               # keys kept, not replaced
     assert "keys made" not in capsys.readouterr().out
     assert main(["keykeeper", "pin"]) == 0 and capsys.readouterr().out.strip() == pin
+
+
+def test_serve_hands_the_backup_token_to_the_backup_route(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    _env(monkeypatch, tmp_path)
+    main(["keykeeper", "init"])
+    apps = []
+    monkeypatch.setattr(kc, "_serve", lambda app, host, port: apps.append(app))
+    assert main(["keykeeper", "serve"]) == 0
+    assert TestClient(apps[-1]).get("/v1/backup").status_code == 404     # no backup token
+    monkeypatch.setenv(kc.BACKUP_TOKEN_VAR, "bk")
+    assert main(["keykeeper", "serve"]) == 0
+    r = TestClient(apps[-1]).get("/v1/backup", headers={"Authorization": "Bearer bk"})
+    assert r.status_code == 200 and kr.read_backup(r.content)
+
+
+def test_restore_puts_a_backup_into_an_empty_directory(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    main(["keykeeper", "init"])
+    pin = capsys.readouterr().out.strip().splitlines()[-1].strip()
+    archive = tmp_path / "kk.tar.gz"
+    archive.write_bytes(kr.Ring(tmp_path / "kk", "pass").backup())
+    monkeypatch.setenv(kc.DIR_VAR, str(tmp_path / "fresh"))
+    assert main(["keykeeper", "restore", str(archive)]) == 0
+    out = capsys.readouterr().out
+    assert "generations 1 to 2" in out and out.strip().splitlines()[-1].strip() == pin
+    assert main(["keykeeper", "pin"]) == 0 and capsys.readouterr().out.strip() == pin
+    assert main(["keykeeper", "restore", str(archive)]) == 1
+    assert "isn't empty" in capsys.readouterr().err
+    assert main(["keykeeper", "restore", str(tmp_path / "missing.tar.gz")]) == 1
+    assert "can't read" in capsys.readouterr().err
+    monkeypatch.setenv(kc.PASSPHRASE_VAR, "")
+    try:
+        main(["keykeeper", "restore", str(archive)])
+        raise AssertionError("restore without a passphrase")
+    except SystemExit as e:
+        assert "OPENMV_KEYKEEPER_PASSPHRASE" in str(e)
