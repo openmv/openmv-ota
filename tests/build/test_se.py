@@ -1055,6 +1055,10 @@ def test_soft_a_power_cut_at_any_point_never_silently_changes_the_keys(area, cut
         se, made = soft.SecureElement.provision()
         slot = TOP if untouched else TOP - 256
         assert made and area.writes[-1][0] == slot + 224 and se.public_key()
+    elif check == area.writes[-1][1]:
+        # cut short of only bytes that were 0xff in the check anyway (a 1-in-256 last byte): the
+        # record is whole, so it opens, as the keys it was written with
+        assert soft.SecureElement().public_key()
     else:
         # cut inside the check itself: indistinguishable from damage -- loud, never new keys
         writes = len(area.writes)
