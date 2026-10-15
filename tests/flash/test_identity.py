@@ -142,6 +142,38 @@ def test_open_console_is_a_serial_port(monkeypatch):
     assert fl._open_console("/dev/ttyACM3") == "S" and seen["p"] == "/dev/ttyACM3"
 
 
+def test_a_port_udev_hasnt_handed_over_yet_is_opened_on_a_retry(camera, monkeypatch):
+    """Back on USB before udev gives its port the dialout group: the first opens are EACCES."""
+    con = camera(_signed())
+    tries = iter([OSError(13, "Permission denied"), OSError(13, "Permission denied"), con])
+
+    def open_console(port):
+        got = next(tries)
+        if isinstance(got, OSError):
+            raise got
+        return got
+    monkeypatch.setattr(fl, "_open_console", open_console)
+    (step,) = fl.provision_keys(board="ARDUINO_GIGA")
+    assert "keys made" in step.label and con.closed
+
+
+def test_a_port_that_never_opens_fails_the_flash_saying_why(camera, monkeypatch):
+    camera(_signed())
+    clock = iter(range(0, 1000, 2))
+    monkeypatch.setattr(fl.time, "monotonic", lambda: next(clock))
+
+    def denied(port):
+        raise OSError(13, "Permission denied")
+    monkeypatch.setattr(fl, "_open_console", denied)
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: Camera("/dev/ttyACM9", "SN1"))
+    with pytest.raises(fl.FlashError, match="dialout group"):
+        fl.provision_keys(board="ARDUINO_GIGA")
+    monkeypatch.setattr(fl, "_open_console", lambda port: (_ for _ in ()).throw(OSError(16, "Busy")))
+    with pytest.raises(fl.FlashError, match="Busy") as e:
+        fl.provision_keys(board="ARDUINO_GIGA")
+    assert "dialout" not in str(e.value)
+
+
 def test_flash_factory_ends_by_provisioning_and_firmware_romfs_do_not(monkeypatch, tmp_path,
                                                                      capsys):
     calls = []
