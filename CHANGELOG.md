@@ -67,6 +67,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`flash factory` no longer crashes on a port udev hasn't handed over yet.** A camera back on
+  USB after flashing can enumerate before its port is in the dialout group, and the first open
+  of its console failed with a traceback (EACCES). It now retries for a few seconds, then fails
+  saying why.
 - **The keykeeper messages name the right command.** The errors a build gives when a project
   encrypted for each camera hasn't synced keykeeper's keys said `client keykeeper sync`, which
   doesn't exist; they now say `project keys keykeeper sync`.

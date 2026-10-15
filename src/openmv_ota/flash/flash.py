@@ -527,6 +527,7 @@ class IdentityStep:
 
 _IDENTITY_WAIT_S = 60     # the camera back on USB, running the firmware just flashed
 _IDENTITY_POLL_S = 0.1    # fast: the camera listens for the request only briefly at boot
+_CONSOLE_OPEN_S = 5       # a port just back on USB, until udev lets this user open it
 _IDENTITY_ANSWER_S = 15   # from the port appearing to the camera's answer
 _IDENTITY_SEND_S = 0.1    # how often the request is repeated until it is answered
 # No answer this long after opening the console: the camera's boot closed its window before the
@@ -551,6 +552,22 @@ def _open_console(port: str):
     # write_timeout: a camera still booting can leave its port not taking input yet, and an
     # unbounded write then blocks forever -- the flash hung there, the camera long since ready
     return serial.Serial(port, 115200, timeout=_IDENTITY_SEND_S, write_timeout=1)
+
+
+def _open_ready(port: str):
+    """The camera's console as soon as it opens. A camera just back on USB enumerates before udev
+    gives its port the group that may open it, so the first opens can fail (EACCES) for a moment;
+    one that still won't open after ``_CONSOLE_OPEN_S`` fails the flash, saying why."""
+    until = time.monotonic() + _CONSOLE_OPEN_S
+    while True:
+        try:
+            return _open_console(port)
+        except OSError as e:                      # pyserial's SerialException is an OSError
+            if time.monotonic() >= until:
+                hint = " (is this user in the dialout group?)" if "ermission" in str(e) else ""
+                raise FlashError("can't open the camera's console %s: %s%s" % (port, e, hint)) \
+                    from None
+            time.sleep(_IDENTITY_POLL_S)
 
 
 def _write(con, data: bytes, serial_mod) -> None:
@@ -624,7 +641,7 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                              "not checked")
         time.sleep(_IDENTITY_POLL_S)
     answer, heard = None, ""
-    con = _open_console(cam.port)
+    con = _open_ready(cam.port)
     drops = 0
     try:
         opened = last_rx = time.monotonic()
