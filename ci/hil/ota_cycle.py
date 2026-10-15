@@ -179,11 +179,10 @@ BOARDS = {
     # isolated the failure to the WINC -- since fixed (merged WINC branches + the install no longer
     # bites), so the H7 Plus is back in the watchdog leg too.
     "ARDUINO_NICLA_VISION": {
-        # The update server NEVER writes a device record for these: they sit in its
-        # registry's unregistered-board-type answer (it never registers Arduino
-        # boards), so OTA is served read-only -- zero-footprint by
-        # design. run_cycle therefore cannot use the server record to decide when the
-        # scenario is done, and scores the UART markers instead.
+        # The registry never registers Arduino boards, so the update server tracks one only
+        # once it is CLAIMED: registered to the account it checks in under, which `flash
+        # factory` does on the bench (see _desk_ready). The leg is scored on the UART markers,
+        # not the server record.
         "server_record": False,                # Arduino Nicla Vision (STM32H747, QSPI ROMFS dual-slot)
         "cov_uart": 4,                       # UART4 on the SDA/SCL header (J2-1=PB9 TX, J2-2=PB8 RX),
                                              # NOT the P4/P5 pads (those are SWCLK/NRST on the Nicla).
@@ -203,11 +202,10 @@ BOARDS = {
         # succeeds -- normal for this part, and the place to look if SWD ever seems flaky here.
     },
     "ARDUINO_PORTENTA_H7": {
-        # The update server NEVER writes a device record for these: they sit in its
-        # registry's unregistered-board-type answer (it never registers Arduino
-        # boards), so OTA is served read-only -- zero-footprint by
-        # design. run_cycle therefore cannot use the server record to decide when the
-        # scenario is done, and scores the UART markers instead.
+        # The registry never registers Arduino boards, so the update server tracks one only
+        # once it is CLAIMED: registered to the account it checks in under, which `flash
+        # factory` does on the bench (see _desk_ready). The leg is scored on the UART markers,
+        # not the server record.
         "server_record": False,                 # Arduino Portenta H7 (STM32H747, QSPI ROMFS dual-slot)
         "cov_uart": 1,                       # UART1 (TX=pin_A9 / RX=pin_A10) -- VERIFIED end-to-end on
                                              # the bench: board writes land byte-perfect on the node's
@@ -222,7 +220,7 @@ BOARDS = {
     },
     "ARDUINO_GIGA": {
         # Arduino Giga R1 WiFi: the Portenta's STM32H747 + CYW4343 + MCUboot + QSPI ROMFS geometry
-        # (boards.json), so it takes the Portenta's shape. Not registered server-side either.
+        # (boards.json), so it takes the Portenta's shape: claimed the same way, scored the same way.
         "server_record": False,
         "cov_uart": 2,                       # UART2 = the header the Giga silkscreens TX1/RX1 (D18/D19,
                                              # TX=PD5, RX=PD6) -> the node's CP2102. Found by writing a

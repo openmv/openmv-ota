@@ -115,7 +115,7 @@ _RESP_MAX = 8 * 1024      # the runtime's check-in reply cap (openmv_ota._RESP_M
 def checkin_request(cfg, host, port, board_id, platform, uid):
     """The check-in POST, head and body, from the firmware's own constants. There is no image,
     so nothing is installed: payload version 0 (any release is newer), no slots, and
-    ``fallback_reason`` says why, which puts a recovering device on the fleet view.
+    ``fallback_reason`` says why. It goes unsigned: the server answers it with offers only.
 
     ``device_id`` is ``omv.board_id()`` or, on the Alif, whose ``board_id()`` is empty, the same
     id rebuilt from ``machine.unique_id()`` (see ``openmv_ota._board_id_fallback``). Anything else
