@@ -18,11 +18,12 @@ Deferred to ship the Arduino board demo; the service is pre-launch, so data can 
 when these land. Website parts are in openmv-cloud's `TODO.md`; registrar parts in
 openmv-swd-ids'.
 
-- **Device-trust cutover on the hosted server** — `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` on and
-  `OPENMV_OTA_SERVE_UNREGISTERED_BOARDS` off (openmv-cloud's `render.yaml`), and
-  `[ota].per_camera_encryption` in the projects that ship; delete both server switches once live
-  and stable. The M4 (OPENMV2) builds without check-in signing (no room in its flash), so with
-  the switch on it gets update offers only.
+- **Delete the device-trust switches** — the hosted server requires signed check-ins and no
+  longer serves unclaimed Arduino boards as registered (switched 2026-10-15), and the demo
+  projects use `[ota].per_camera_encryption`. Once that is stable, delete
+  `OPENMV_OTA_REQUIRE_SIGNED_CHECKINS` and `OPENMV_OTA_SERVE_UNREGISTERED_BOARDS` (their on/off
+  paths and tests) and `render.yaml`'s two entries. The M4 (OPENMV2) builds without check-in
+  signing (no room in its flash), so it gets update offers only.
 - **WINC firmware PRs to openmv** — the H7 and H7 Plus on the hosted cloud run WINC firmware
   that isn't in openmv yet: branch `kwabena/winc_poll`, six commits, to send as small reviewable
   PRs. The big one is async support -- `poll()` and non-blocking stream sockets, which asyncio
