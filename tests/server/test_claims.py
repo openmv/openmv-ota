@@ -193,7 +193,8 @@ def test_registering_a_new_camera_past_the_limit_is_refused(tmp_path):
     r = _register(c, A, signer, device="ARDUINO_GIGA:dev2")
     assert r.status_code == 403 and "device limit" in r.json()["detail"]
     assert store.get_registration("ARDUINO_GIGA:dev2") is None
-    assert "device.register_refused" in _actions(c, A)
+    assert "device.refused" in _actions(c, A)                  # what the dashboard counts
+    assert "device.register_refused" not in _actions(c, A)
     store.upsert_device(device_id="OPENMV4:fleet", product_id=BID, account_id="acctA")
     store.set_device_limit("acctA", 2)                          # a fleet camera registering
     assert _register(c, A, signer, device="OPENMV4:fleet", board="OPENMV4").status_code == 200

@@ -1169,9 +1169,13 @@ def register_device(body: RegistrationIn, request: Request,
     held = prev is not None or (ms.get_device(got.device_id) or {}).get("account_id") == \
         principal.account_id
     if not held and ms.over_device_limit(principal.account_id):
-        ms.append_audit(actor=principal.name, action="device.register_refused",
+        # The same event a new camera checking in past the limit used to raise: with signed
+        # check-ins required, registering is where the limit turns a camera away, and the
+        # dashboard's alert and the device.refused webhook count it from here.
+        ms.append_audit(actor=principal.name, action="device.refused",
                         entity_type="device", entity_id=got.device_id,
-                        data={"reason": "device_limit"}, account_id=principal.account_id)
+                        data={"reason": "device_limit", "at": "registration"},
+                        account_id=principal.account_id)
         raise HTTPException(status_code=403, detail="the account is at its device limit")
     ms.put_registration(got.device_id, principal.account_id, record=record,
                         signature=body.signature, identity=got.identity, exchange=got.exchange,
