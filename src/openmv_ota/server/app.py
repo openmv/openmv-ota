@@ -708,7 +708,7 @@ def keykeeper_chain(request: Request):
     """The chain of keykeeper's public keys, for publishers sealing releases encrypted for each
     camera. Public, and no reason to trust this server for it: each generation is signed by the
     one before, and a publisher verifies the chain from the generation it pinned
-    (``openmv-ota client keykeeper sync``). 404 when this server has no keykeeper; 503 when it
+    (``openmv-ota project keys keykeeper sync``). 404 when this server has no keykeeper; 503 when it
     can't be reached."""
     kk = request.app.state.keykeeper
     if kk is None:
@@ -1077,8 +1077,8 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
               "(offers work; no device registry, telemetry, or grants)", file=sys.stderr)
     if settings.serve_unregistered_boards:
         print("note: serve_unregistered_boards is ON -- board types the registry never registers "
-              "(Arduino) are tracked as registered devices for every account (a pre-launch switch: "
-              "turn it off once board claiming ships)", file=sys.stderr)
+              "(Arduino) are tracked as registered devices for every account, claimed or not (a "
+              "pre-launch switch: leave it off once boards are claimed)", file=sys.stderr)
     if settings.test_offer_downgrades:      # loud: a real deployment must never boot with this on
         print("WARNING: test_offer_downgrades is ON -- the server will OFFER anti-rollback "
               "downgrades (a TEST-ONLY hook; devices still reject them). Never in production.",

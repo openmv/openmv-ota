@@ -238,7 +238,8 @@ def test_event_matching_and_the_catalogue():
     assert not m(["rollout.*"], "device.forget") and not m(["rollout.stop"], "rollout.create")
     assert not m(["rollout"], "rollout.stop")
     assert wh.MAX_ATTEMPTS == len(wh.BACKOFF_S) + 1 and all(a < b for a, b in itertools.pairwise(wh.BACKOFF_S))
-    for name in ("device.enrolled", "install.failed", "device.fallback", "advisory.found", "webhook.ping"):
+    for name in ("device.enrolled", "install.failed", "device.fallback", "advisory.found", "webhook.ping",
+                 "device.registered", "device.released", "device.checkin_refused", "desk_key.put"):
         assert name in wh.EVENTS
 
 

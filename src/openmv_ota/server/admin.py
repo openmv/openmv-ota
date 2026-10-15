@@ -344,8 +344,9 @@ class AccountLimit(BaseModel):
 @admin.put("/accounts/{account_id}/limit", responses={200: {"model": AccountLimited}})
 def set_account_limit(account_id: str, body: AccountLimit, request: Request,
                       principal: Principal = Depends(require_scope("accounts"))):
-    """The account's device entitlement (operator-only): how many devices may register.
-    Enforced for NEW devices at check-in; devices already registered are never dropped.
+    """The account's device entitlement (operator-only): how many devices it may hold -- its
+    fleet and the cameras registered to it, each counted once (``devices``). Enforced when a NEW
+    camera registers (403) and when a new device checks in; none it holds is ever dropped.
     ``null`` lifts the limit."""
     ms = request.app.state.metastore
     _owned_account(ms, account_id, principal)
@@ -356,7 +357,7 @@ def set_account_limit(account_id: str, body: AccountLimit, request: Request,
                     entity_id=account_id, data={"device_limit": body.device_limit},
                     account_id=principal.account_id)
     return {"account_id": account_id, "device_limit": body.device_limit,
-            "devices": ms.device_count(account_id)}
+            "devices": ms.claimed_count(account_id)}
 
 
 @admin.post("/accounts/{account_id}/deactivate", responses={200: {"model": AccountActive}})
@@ -1058,9 +1059,10 @@ def bind_device(device_id: str, request: Request,
                 principal: Principal = Depends(require_scope("manage"))):
     """Operator override: (re)bind a device to the caller's account -- the authority for
     re-accounting a device or recovering one wrongly *learned* onto another account (which the
-    signature already stops from installing anything). A device already *admin*-bound to a different
-    account, or registered to one, is 404 (not yours; no existence leak), so one account can't steal
-    another's camera via the API: the holder releases it first. On a shared server, gate who may call this by proof of ownership (see
+    signature already stops from installing anything). A device already *admin*-bound to a
+    different account, or registered to one, is 404 (not yours; no existence leak), so one account
+    can't take another's camera via the API: its holder releases it first. Registration is the
+    proof of ownership; a camera never registered is bound on the caller's word (see
     docs/compliance/residual-threats.md)."""
     ms = request.app.state.metastore
     cur = ms.device_account(device_id)
