@@ -981,6 +981,27 @@ def _is_enomem(e):
     return isinstance(e, OSError) and bool(e.args) and e.args[0] in _ENOMEM
 
 
+_EXHAUSTED_REBUILDS = 3     # transport rebuilds for an exhausted stack before the next one reboots
+
+
+def _exhausted_step(streak, can_recover, ever_ok, rebuilds=0):
+    """What a check-in still out of memory after every optional connection was closed calls for
+    -- the network stack itself is exhausted, not the heap the app shares (measured: an H7 Plus
+    whose WINC ran out of buffers after a relay send stalled failed every check-in with
+    OSError(12) at 7% heap use, for as long as it ran). ``streak`` such cycles in a row: the
+    first rebuilds the transport at once rather than after ``recover_after`` failures; a second
+    reboots, but only a device that has checked in since it booted -- one that never could is
+    starved by its own app, and rebooting it would only loop. A rebuild that doesn't HOLD counts
+    too: the H7 Plus's stalls came back every few minutes, each rebuild clearing them for a
+    while, so after ``_EXHAUSTED_REBUILDS`` this boot (``rebuilds``) the next one reboots instead.
+    Returns "recover", "reboot" or None (retry after the usual backoff)."""
+    if streak == 1 and can_recover and (rebuilds < _EXHAUSTED_REBUILDS or not ever_ok):
+        return "recover"
+    if streak >= 1 and ever_ok and (streak >= 2 or rebuilds >= _EXHAUSTED_REBUILDS):
+        return "reboot"
+    return None
+
+
 def _checkin_relieved(attempt, relieve, collect):
     """Run ``attempt()`` (the check-in); on out-of-memory, ``relieve(level)`` the optional
     features -- level 0 (idle connections), then 1 (all of them) -- ``collect()`` and retry AT
@@ -1176,6 +1197,9 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
         ca = _resolve_ca(ca, here)
         _tls_verify(ca)                   # refuse NOW, out of run(), on a board that must verify
     fails = 0                             # CONSECUTIVE failed cycles; drives the recover escalation
+    starved = 0                           # CONSECUTIVE cycles out of memory after relief (_exhausted_step)
+    rebuilds = 0                          # transport rebuilds for an exhausted stack, this boot
+    ever_ok = False                       # a check-in got through since boot
     misses = 0                            # the same streak, NOT reset by a recover: drives the backoff
     cap = poll_after_s or _POLL_DEFAULT_S  # the longest a failed check-in waits to retry
     while True:
@@ -1208,7 +1232,12 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # -- a recover is not proof the link is back -- and only a check-in that gets through
             # resets it, so a long outage settles at one try per poll, as before.
             wait = _backoff(misses, cap, _rand())  # hil-residual: pure arithmetic, host-tested (_backoff); its effect is the spacing between `run: cycle failed` lines
-            if recover is not None and fails >= recover_after:  # hil-residual: the taken branch is witnessed by `run: recovering transport`; the not-taken branch by its ABSENCE after fewer than recover_after failures
+            starved = starved + 1 if _is_enomem(e) else 0  # hil-residual: an exhausted network stack has no bench scenario (it needs a peer that vanishes mid-send); the decision it feeds is host-tested (_exhausted_step)
+            step = _exhausted_step(starved, recover is not None, ever_ok, rebuilds)  # hil-residual: host-tested decision; reached on every failed cycle, its taken arms only on an exhausted stack (see above)
+            rebuilds += step == "recover"  # hil-residual: bookkeeping for _exhausted_step (host-tested); counts only exhausted-stack rebuilds
+            if step == "reboot":  # hil-residual: fault-injection only (an exhausted stack after a rebuild); the witness is the CALLEE's first line
+                await _reboot_exhausted()  # hil-residual: terminal reset, witnessed by its own `run: network stack out of memory` line
+            elif step == "recover" or (recover is not None and fails >= recover_after):  # hil-residual: the taken branch is witnessed by `run: recovering transport`; the not-taken branch by its ABSENCE after fewer than recover_after failures
                 fails = 0                 # one escalation per streak, not one per cycle after it  # hil-residual: witnessed by there being ONE `run: recovering transport` per streak of failures, not one per poll after the threshold
                 await _recover(recover)  # hil-residual: the witness for this call is emitted by the CALLEE's first line (`run: recovering transport`); the audit cannot see across the call boundary, and a marker here would duplicate it
         else:
@@ -1221,6 +1250,8 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
             # on the bench: bad_sig / bad_key / bad_version each drove a spurious recover.)
             _remember_network()  # hil-residual: a no-op after the first check-in; the save is witnessed by its own `wifi: saved` line
             fails = 0  # hil-residual: the streak RESET is witnessed by absence -- a healthy board polls for a whole run and never emits `run: recovering transport`; a marker here would fire every poll and drown the log
+            starved = 0  # hil-residual: the exhaustion streak reset, witnessed the same way (a healthy board never logs `run: network stack out of memory`)
+            ever_ok = True  # hil-residual: bookkeeping for _exhausted_step (host-tested); a check-in got through, so later exhaustion is a wedge, not a starved app
             misses = 0  # hil-residual: the backoff reset, witnessed the same way -- a healthy board's check-ins are a poll apart, never 10 s
             try:
                 log.debug("checkin: response received")
@@ -1315,6 +1346,19 @@ async def _flush_all(budget_ms):  # pragma: no cover  (device: asyncio)
             await asyncio.wait_for_ms(flush(budget_ms), budget_ms + 1000)  # hil-residual: bounded await of the hook (see above)
         except Exception:  # hil-residual: a slow or broken hook must never block the reset
             pass  # hil-residual: bare pass
+
+
+_EXHAUSTED_FLUSH_MS = 3000  # the log can't get out over an exhausted stack anyway: try briefly
+
+
+async def _reboot_exhausted():  # pragma: no cover  (device: reset)
+    """The network stack stayed out of memory after a rebuild: reboot, the one thing that frees
+    a wedged module's buffers along with the heap. Says why first (see _exhausted_step)."""
+    log.warning("run: network stack out of memory after a rebuild; rebooting")  # hil-residual: field diagnostic -- an exhausted stack has no bench scenario
+    await _flush_all(_EXHAUSTED_FLUSH_MS)  # hil-residual: bounded flush, as for the fresh-heap reboot
+    quiet_all()  # hil-residual: host-tested (quiet_all); the camera surviving the reset is the witness
+    import machine  # hil-residual: device module, imported where it is used
+    machine.reset()  # hil-residual: terminal reset (no post-reset witness)
 
 
 async def _reboot_for_install():  # pragma: no cover  (device: reset)

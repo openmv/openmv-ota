@@ -82,6 +82,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A camera whose network stack runs out of memory heals itself.** An H7 Plus whose WINC ran out
+  of buffers after a relay send stalled failed every check-in with `OSError(12)` -- at 7% heap
+  use -- and never recovered: the transport rebuild waited for five failed cycles, half an hour
+  at that pace, and nothing came after it. A check-in still out of memory after the optional
+  connections are closed now rebuilds the transport at once and, if the next one is too, reboots
+  (only a camera that has checked in since boot, so an app that starves itself can't loop). The
+  live relay waits a minute after an out-of-memory failure instead of five seconds.
+- **`flash register` reaches a camera whose app never reads its console.** The key request piled
+  up unread before the soft reset, and on the AE3 (TinyUSB) a full receive buffer stopped the port
+  taking input, so the reset never arrived. A running camera is now reset first; `flash factory`
+  sends at most five requests before its fallback reset.
 - **`flash factory` no longer crashes on a port udev hasn't handed over yet.** A camera back on
   USB after flashing can enumerate before its port is in the dialout group, and the first open
   of its console failed with a traceback (EACCES). It now retries for a few seconds, then fails

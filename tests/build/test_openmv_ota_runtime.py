@@ -591,6 +591,31 @@ def test_is_enomem():
     assert not rt._is_enomem(ValueError("x"))
 
 
+def test_an_exhausted_stack_is_rebuilt_at_once_then_rebooted():
+    """Out of memory even after relief: rebuild the transport now, and reboot if that didn't
+    help -- the H7 Plus WINC wedge (every check-in OSError(12) at 7% heap) never cleared alone."""
+    assert rt._exhausted_step(1, can_recover=True, ever_ok=True) == "recover"
+    assert rt._exhausted_step(2, can_recover=True, ever_ok=True) == "reboot"
+    assert rt._exhausted_step(5, can_recover=True, ever_ok=True) == "reboot"
+    assert rt._exhausted_step(0, can_recover=True, ever_ok=True) is None    # not exhausted
+
+
+def test_a_rebuild_that_does_not_hold_ends_in_a_reboot():
+    """The stalls came back every few minutes, each rebuild clearing them for a while: after
+    _EXHAUSTED_REBUILDS of them this boot, the next exhausted cycle reboots instead."""
+    n = rt._EXHAUSTED_REBUILDS
+    assert rt._exhausted_step(1, can_recover=True, ever_ok=True, rebuilds=n - 1) == "recover"
+    assert rt._exhausted_step(1, can_recover=True, ever_ok=True, rebuilds=n) == "reboot"
+    assert rt._exhausted_step(1, can_recover=True, ever_ok=False, rebuilds=n) == "recover"
+
+
+def test_a_device_that_never_checked_in_is_not_rebooted_for_memory():
+    """Starved from boot by its own app: a reboot would only loop, so it keeps retrying."""
+    assert rt._exhausted_step(2, can_recover=True, ever_ok=False) is None
+    assert rt._exhausted_step(1, can_recover=False, ever_ok=True) is None   # no hook: wait a cycle
+    assert rt._exhausted_step(2, can_recover=False, ever_ok=True) == "reboot"
+
+
 def test_checkin_relieved_passes_a_good_checkin_straight_through():
     assert rt._checkin_relieved(_script({"ok": 1}), lambda lv: pytest.fail("no relief"),
                                 lambda: pytest.fail("no gc")) == {"ok": 1}

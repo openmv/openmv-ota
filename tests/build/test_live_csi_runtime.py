@@ -461,6 +461,15 @@ def test_relay_reconnects_warn_once_per_outage():
     assert not any(rt._loud_reconnect(n) for n in range(2, 50))
 
 
+def test_an_out_of_memory_relay_failure_backs_off_longer():
+    """On the WINC, ENOMEM means the module is out of buffers: a handshake every few seconds
+    keeps it there, so the relay waits a minute instead."""
+    for e in (OSError(12), OSError(-12), MemoryError()):
+        assert rt._relay_backoff(e) == rt._EXHAUSTED_BACKOFF_S
+    for e in (OSError(104), OSError("relay send stalled for 10 s"), OSError(), ValueError()):
+        assert rt._relay_backoff(e) == rt._RECONNECT_BACKOFF_S
+
+
 class _Sock:
     def __init__(self):
         self.closed = False
