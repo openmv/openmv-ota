@@ -8,6 +8,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`client device watch`: the Live view from a terminal.** Saves a camera's frames
+  (`--out DIR`, or `--latest FILE` kept current), or with `--console` prints its console as it
+  runs, each line once across reconnects. It mints its own viewer grant and renews it on every
+  reconnect, sends a real User-Agent (Cloudflare blocks library defaults), and is bounded by
+  default: one frame, or `--frames`/`--seconds`, and it gives up after `--idle` seconds (60) with
+  nothing from the camera. `--json` streams one object per event. `websockets` joins the base
+  install for it.
+- **Every page's reads on the CLI.** `client dashboard` (every count the overview shows, in one
+  read), `client device registration` (a claimed camera's keys, desk and signed check-ins),
+  `client device neighbors`, and `client account delete` for the server's root (a deactivated
+  account only), so nothing the website shows needs a browser.
+- **Times read like times.** Every option that takes a moment (`data series --since/--until`,
+  `device list --seen-since/--not-seen-since`, and the new `data logs --until`, which opens the
+  console at a moment in the past) also takes `30m`/`2h`/`1d`/`1w` ago or an ISO date in UTC.
 - **Device keys on every OpenMV Cam and Arduino camera board.** Each camera holds two P-256 private keys that
   never leave it: an identity key (signs) and an exchange key (ECDH only), behind one interface,
   `openmv_ota.se`. Where they live is board data, and the firmware carries only that board's

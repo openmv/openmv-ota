@@ -153,29 +153,67 @@ $ openmv-ota client data topics --device-id OPENMV_N6:30003d000851303436313832
 
 A topic with no `fields` is text: read it as a log. `client data logs` pages the newest
 boot session, newest records last, and `next_before_seq` is the cursor for the page
-before it:
+before it. A record's `text` is one or more lines as the camera printed them, and `ts`
+is the time the batch they came in was stamped:
 
 ```
-$ openmv-ota client data logs --device-id OPENMV_N6:30003d000851303436313832 --topic console --limit 3
+$ openmv-ota client data logs --device-id OPENMV_N6:30003d000851303436313832 --topic console --limit 2
 {
-  "sid": "3f9a1c",
+  "sid": "2020620294afcac6",
   "records": [
-    { "sid": "3f9a1c", "seq": 3118, "ts": 1789339501.2, "line": "wifi: rssi -58" },
-    { "sid": "3f9a1c", "seq": 3119, "ts": 1789339511.2, "line": "app: detections=3" },
-    { "sid": "3f9a1c", "seq": 3120, "ts": 1789339520.0, "line": "app: frame pipeline ok" }
+    {
+      "text": "[2026-10-15 14:27:12] INFO app: app version 1.3.1, count 21958\n",
+      "ts": 1792074434,
+      "seq": 21969,
+      "sid": "2020620294afcac6"
+    },
+    {
+      "text": "[2026-10-15 14:27:13] INFO app: app version 1.3.1, count 21959\n",
+      "ts": 1792074434,
+      "seq": 21970,
+      "sid": "2020620294afcac6"
+    }
   ],
-  "next_before_seq": 3118
+  "next_before_seq": 21969,
+  "prev_sid": null
 }
-$ openmv-ota client data logs --device-id OPENMV_N6:30003d000851303436313832 --topic console --before-seq 3118 --limit 3
+$ openmv-ota client data logs --device-id OPENMV_N6:30003d000851303436313832 --topic console --before-seq 21969 --limit 2
+```
+
+`--until` opens the console at a moment in the past instead, in whatever boot session was
+running then; page on from there with that page's `sid` and `--before-seq`:
+
+```
+$ openmv-ota client data logs --device-id OPENMV_N6:30003d000851303436313832 --until 2026-10-15T09:00 --limit 2
+{
+  "sid": "2020620294afcac6",
+  "records": [
+    {
+      "text": "[2026-10-15 08:59:51] INFO app: app version 1.3.1, count 2968\n",
+      "ts": 1792054792,
+      "seq": 2968,
+      "sid": "2020620294afcac6"
+    },
+    {
+      "text": "[2026-10-15 08:59:52] INFO app: app version 1.3.1, count 2969\n",
+      "ts": 1792054792,
+      "seq": 2969,
+      "sid": "2020620294afcac6"
+    }
+  ],
+  "next_before_seq": 2968,
+  "prev_sid": null
+}
 ```
 
 A numeric field comes back downsampled, so a week of samples is at most `--buckets`
 points, each with the bucket's `min`, `avg`, `max` and sample count `n`. The window
-defaults to the topic's whole span; `--since` / `--until` are epoch seconds:
+defaults to the topic's whole span; `--since` / `--until` take epoch seconds, a time ago
+(`30m`, `2h`, `1d`, `1w`) or an ISO date or time in UTC:
 
 ```
 $ openmv-ota client data series --device-id OPENMV_N6:30003d000851303436313832 --topic telemetry --field temp_c \
-      --since $(date -d '-1 day' +%s) --until $(date +%s) --buckets 4
+      --since 1d --buckets 4
 {
   "field": "temp_c", "since": 1789253120.0, "until": 1789339520.0, "truncated": false,
   "buckets": [
@@ -188,6 +226,33 @@ $ openmv-ota client data series --device-id OPENMV_N6:30003d000851303436313832 -
 Nested fields address by dotted path (`--field imu.ax`). `truncated: true` means the scan
 hit the server's object cap for one request: narrow the window rather than trust a
 partial chart.
+
+
+## Watching live
+
+`client device watch` is the device page's Live view from a terminal. By default it takes
+one frame, a snapshot, and `--out` saves it as `<stream>-000001.jpg`; `--latest FILE`
+instead keeps one file replaced with the newest frame, for a script that wants the
+current picture. `--frames N` stops after N frames and `--seconds S` records for that
+long:
+
+```
+$ openmv-ota client device watch --device-id OPENMV_N6:30003d000851303436313832 --out frames
+$ openmv-ota client device watch --device-id OPENMV_N6:30003d000851303436313832 --seconds 30 --latest now.jpg
+```
+
+`--console` prints the camera's console as it runs, each line once, until Ctrl-C or
+`--seconds`. Only the text goes to stdout, so it pipes like any log:
+
+```
+$ openmv-ota client device watch --device-id OPENMV_N6:30003d000851303436313832 --console | grep -i error
+```
+
+While a watch is connected the camera counts it as a viewer and uploads frames, as it
+does for an open dashboard tab. So a video watch stops by itself: after its frames, its
+seconds, or `--idle` seconds (default 60) with nothing from the camera, which is the
+error a camera that is off or not streaming gives. The relay's state (the camera online
+or offline, a reconnect) goes to stderr; `--json` makes stdout one JSON object per event.
 
 
 ## A whole product at once

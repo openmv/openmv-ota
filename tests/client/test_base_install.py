@@ -46,6 +46,12 @@ def test_httpx_is_a_base_dependency_not_a_server_extra():
     assert not any(d.startswith("httpx") for d in meta["optional-dependencies"]["server"])
 
 
+def test_websockets_is_a_base_dependency():
+    """`client device watch` runs on a plain `pip install openmv-ota`, like every client verb."""
+    meta = tomllib.loads((_ROOT / "pyproject.toml").read_text())["project"]
+    assert any(d.startswith("websockets") for d in meta["dependencies"])
+
+
 def test_the_publish_path_imports_nothing_from_the_server_extra():
     out = subprocess.run([sys.executable, "-c", _PROBE % (_SERVER_ONLY,)], capture_output=True,
                          text=True, env={"PYTHONPATH": str(_ROOT / "src"), "PATH": "/usr/bin:/bin"},

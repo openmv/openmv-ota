@@ -5,9 +5,10 @@
     rollout create|raise|pause|resume|stop|status|list|rename
     cohort  list|assign|rename|delete|pin
     advisories list|scan
-    device  list|show|pin|bind
+    device  list|show|pin|bind|grant|watch
+    data    topics|logs|series   device data from the datalake
     account / token          tenant + credential management
-    fleet / audit            the account-wide reads
+    fleet / dashboard / audit  the account-wide reads
 
 One verb per entity; every action lives under its entity.
 
@@ -47,6 +48,40 @@ def _creds(p: argparse.ArgumentParser) -> None:
     # place for this -- the flag lands on the whole remote surface and nowhere else.
     p.add_argument("--json", action="store_true",
                    help="print the server's response as JSON instead of a summary")
+
+
+_AGO = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
+
+
+def _when(text: str) -> float:
+    """A moment for a --since/--until-style option, as epoch seconds. A number already is one;
+    ``30m``/``2h``/``1d``/``1w`` is that long ago; anything else is an ISO 8601 date or time,
+    UTC unless it names a zone."""
+    import datetime as dt
+    import time
+
+    t = text.strip()
+    try:
+        return float(t)
+    except ValueError:
+        pass
+    if len(t) > 1 and t[-1] in _AGO:
+        try:
+            return time.time() - float(t[:-1]) * _AGO[t[-1]]
+        except ValueError:
+            pass
+    try:
+        d = dt.datetime.fromisoformat(t)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "%r is not a time: give epoch seconds, 30m/2h/1d/1w ago, or an ISO date "
+            "(2026-10-15 or 2026-10-15T03:00)" % text) from None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=dt.timezone.utc)
+    return d.timestamp()
+
+
+_WHEN = "epoch seconds, 30m/2h/1d/1w ago, or an ISO date (UTC)"
 
 
 def _emit(args: argparse.Namespace, payload, *lines: str) -> int:
@@ -314,10 +349,10 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_dvl.add_argument("--version", dest="running_version", help="only devices running this version")
     p_dvl.add_argument("--fell-back", action="store_true", help="only devices whose last boot rejected a slot")
     p_dvl.add_argument("--unconfirmed", action="store_true", help="only devices mid-trial (install unconfirmed)")
-    p_dvl.add_argument("--not-seen-since", type=float, metavar="EPOCH",
-                       help="only devices with no check-in since this epoch second")
-    p_dvl.add_argument("--seen-since", type=float, metavar="EPOCH",
-                       help="only devices that HAVE checked in since this epoch second")
+    p_dvl.add_argument("--not-seen-since", type=_when, metavar="WHEN",
+                       help="only devices with no check-in since WHEN: %s" % _WHEN)
+    p_dvl.add_argument("--seen-since", type=_when, metavar="WHEN",
+                       help="only devices that HAVE checked in since WHEN: %s" % _WHEN)
     p_dvl.add_argument("--behind", action="store_true",
                        help="only devices with a newer release published for their product")
     p_dvl.add_argument("--up-to-date", action="store_true",
@@ -389,6 +424,36 @@ def register(parser: argparse.ArgumentParser) -> None:
                        help="the device to read")
     _creds(p_dvg)
     p_dvg.set_defaults(func=cmd_device_grant, _command="client device grant")
+    p_dvr = dsub.add_parser("registration", help="a claimed camera's registration: identity key, "
+                                                 "desk, last signed check-in, refused check-ins")
+    p_dvr.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="the device")
+    _creds(p_dvr)
+    p_dvr.set_defaults(func=cmd_device_registration, _command="client device registration")
+    p_dvn = dsub.add_parser("neighbors", help="the devices before and after this one in its "
+                                              "product, with its position")
+    p_dvn.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="the device")
+    _creds(p_dvn)
+    p_dvn.set_defaults(func=cmd_device_neighbors, _command="client device neighbors")
+    p_dvw = dsub.add_parser("watch", help="the dashboard's Live view: save a device's frames, or "
+                                          "(--console) print its console as it runs")
+    p_dvw.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="the device to watch")
+    p_dvw.add_argument("--stream", help="the video stream (default: the device's first)")
+    p_dvw.add_argument("--console", action="store_true",
+                       help="the console instead of video: each line as the camera prints it, "
+                            "until Ctrl-C or --seconds")
+    p_dvw.add_argument("--out", type=Path, metavar="DIR",
+                       help="save every frame here, as <stream>-000001.jpg, ...")
+    p_dvw.add_argument("--latest", type=Path, metavar="FILE",
+                       help="keep FILE replaced with the newest frame")
+    p_dvw.add_argument("--frames", type=int, metavar="N",
+                       help="stop after N frames (default 1, a snapshot; no limit with --seconds; "
+                            "0 = no limit)")
+    p_dvw.add_argument("--seconds", type=float, metavar="S", help="stop after S seconds")
+    p_dvw.add_argument("--idle", type=float, metavar="S",
+                       help="give up after S seconds with nothing from the camera (default 60 for "
+                            "video, never for --console; 0 = never)")
+    _creds(p_dvw)
+    p_dvw.set_defaults(func=cmd_device_watch, _command="client device watch")
 
     p_data = sub.add_parser("data", help="read device data from the datalake: one device, "
                                          "or a whole product's devices together (JSON)")
@@ -407,6 +472,9 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_dal.add_argument("--sid", help="a boot session id (default: the newest)")
     p_dal.add_argument("--before-seq", type=int, help="page back: records with seq below this")
     p_dal.add_argument("--limit", type=int, default=200, help="records per page (default 200)")
+    p_dal.add_argument("--until", type=_when, metavar="WHEN",
+                       help="the page ending at this moment, in whatever session that was: %s"
+                            % _WHEN)
     _creds(p_dal)
     p_dal.set_defaults(func=cmd_data_logs, _command="client data logs")
     p_das = dasub.add_parser("series", help="a numeric field downsampled into time buckets "
@@ -417,8 +485,10 @@ def register(parser: argparse.ArgumentParser) -> None:
                      help="every device of this product together")
     p_das.add_argument("--topic", required=True, help="the topic, e.g. telemetry")
     p_das.add_argument("--field", required=True, help="the field under data, dotted for nested (imu.ax)")
-    p_das.add_argument("--since", type=float, help="window start, epoch seconds (default: the data's span)")
-    p_das.add_argument("--until", type=float, help="window end, epoch seconds (default: the data's span)")
+    p_das.add_argument("--since", type=_when, metavar="WHEN",
+                       help="window start: %s (default: the data's span)" % _WHEN)
+    p_das.add_argument("--until", type=_when, metavar="WHEN",
+                       help="window end: %s (default: the data's span)" % _WHEN)
     p_das.add_argument("--buckets", type=int, default=200, help="time buckets across the window (default 200)")
     _creds(p_das)
     p_das.set_defaults(func=cmd_data_series, _command="client data series")
@@ -515,6 +585,12 @@ def register(parser: argparse.ArgumentParser) -> None:
                        help="account to deactivate (revokes all of its tokens)")
     _creds(p_acd)
     p_acd.set_defaults(func=cmd_account, _command="client account deactivate", action="deactivate")
+    p_acx = acsub.add_parser("delete", help="hard-delete a DEACTIVATED account and everything it "
+                                            "owned (server root only)")
+    p_acx.add_argument("--account-id", required=True, metavar="ACCOUNT_ID",
+                       help="the account (deactivate it first; an active one is refused)")
+    _creds(p_acx)
+    p_acx.set_defaults(func=cmd_account, _command="client account delete", action="delete")
     p_aca = acsub.add_parser("activate", help="re-enable an account (issue fresh tokens after)")
     p_aca.add_argument("--account-id", required=True, metavar="ACCOUNT_ID",
                        help="account to re-enable (issue fresh tokens afterwards)")
@@ -568,6 +644,12 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_advs.add_argument("--release-id", metavar="RELEASE_ID", help="only this release")
     _creds(p_advs)
     p_advs.set_defaults(func=cmd_advisories, _command="client advisories scan", action="scan")
+
+    p_db = sub.add_parser("dashboard", help="every count the dashboard shows, in one read (JSON)")
+    p_db.add_argument("--quiet-hours", type=float, metavar="H",
+                      help="hours without a check-in before a device counts as quiet (default 2)")
+    _creds(p_db)
+    p_db.set_defaults(func=cmd_dashboard, _command="client dashboard")
 
     p_fl = sub.add_parser("fleet", help="the fleet summary (JSON)")
     p_fl.add_argument("--product-id", type=int, help="only this product")
@@ -1135,6 +1217,11 @@ def cmd_account(args: argparse.Namespace) -> int:
             res = api.deactivate_account(args.account_id)
             return _emit(args, res, "account %s deactivated (%d token(s) revoked)"
                          % (args.account_id, res["tokens_revoked"]))
+        elif args.action == "delete":
+            res = api.delete_account(args.account_id)
+            return _emit(args, res, "account %s deleted (%d row(s), %d/%d artifact(s) removed)"
+                         % (args.account_id, sum(res["rows"].values()),
+                            res["artifacts_removed"], res["artifacts"]))
         elif args.action == "activate":
             res = api.activate_account(args.account_id)
             return _emit(args, res, "account %s activated" % args.account_id)
@@ -1201,13 +1288,109 @@ def cmd_device_grant(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.viewer_grant(args.device_id))
 
 
+def cmd_device_registration(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.device_registration(args.device_id))
+
+
+def cmd_device_neighbors(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.device_neighbors(args.device_id))
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.dashboard(args.quiet_hours))
+
+
+def cmd_device_watch(args: argparse.Namespace) -> int:
+    """Watch one stream (see client/watch.py). Video frames go to --out/--latest, a line each
+    on stdout; the console's text goes to stdout as-is, so it pipes like a log. The relay's
+    state (online, offline, reconnecting) and the closing summary go to stderr. --json makes
+    stdout one JSON object per event instead (frame data is never printed)."""
+    from openmv_ota import __version__
+
+    from . import watch
+
+    if args.console and (args.out or args.latest or args.frames is not None):
+        print("error: --out, --latest and --frames are for video, not --console", file=sys.stderr)
+        return 2
+    frames = args.frames if args.frames is not None else (0 if args.seconds else 1)
+    idle = args.idle if args.idle is not None else (0 if args.console else 60)
+    if args.out:
+        args.out.mkdir(parents=True, exist_ok=True)
+    counts = {"frames": 0, "batches": 0}
+
+    def say(line):
+        print(line, file=sys.stderr, flush=True)
+
+    def event(kind, info):
+        saved = []
+        if kind == "frame":
+            counts["frames"] = info["n"]
+            if args.out:
+                path = args.out / ("%s-%06d.jpg" % (info["stream"], info["n"]))
+                path.write_bytes(info["data"])
+                saved.append(str(path))
+            if args.latest:
+                tmp = args.latest.with_name(args.latest.name + ".tmp")
+                tmp.write_bytes(info["data"])
+                os.replace(tmp, args.latest)          # a reader never sees half a frame
+                saved.append(str(args.latest))
+        elif kind == "console":
+            counts["batches"] += 1
+        if args.json:
+            out = {k: v for k, v in info.items() if k != "data"}
+            if kind == "frame":
+                out.update(bytes=len(info["data"]), saved=saved)
+            print(json.dumps(dict(out, event=kind)), flush=True)
+        elif kind == "frame":
+            print("frame %d  %.1f KiB%s" % (info["n"], len(info["data"]) / 1024,
+                                            ("  -> " + ", ".join(saved)) if saved else ""),
+                  flush=True)
+        elif kind == "console":
+            sys.stdout.write(info["text"])
+            sys.stdout.flush()
+        elif kind == "hello":
+            say("camera %s (%s viewer%s)%s" % (
+                "online" if info["online"] else "offline", info["viewers"],
+                "" if info["viewers"] == 1 else "s", "" if info["online"] else "; waiting for it"))
+        elif kind == "offline":
+            say("camera went offline; waiting")
+        else:
+            say("relay connection lost; reconnecting in %g s" % info["after_s"])
+
+    try:
+        api = _make_api(config.resolve(args.server, args.token))
+        agent = "openmv-ota/%s" % __version__
+        done = watch.watch(lambda: api.viewer_grant(args.device_id),
+                           lambda url, token: watch.connect(url, token, agent), event,
+                           stream=args.stream, console=args.console, frames=frames,
+                           seconds=args.seconds, idle=idle)
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    except KeyboardInterrupt:
+        done = dict(counts, seconds=None)
+    if args.json:
+        print(json.dumps(dict(done, event="done")), flush=True)
+    elif args.console:
+        say("%d console batch(es)" % done["batches"])
+    else:
+        say("%d frame(s)%s" % (done["frames"], "" if done["seconds"] is None
+                                else " in %.1f s" % done["seconds"]))
+    return 0
+
+
 def cmd_data_topics(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.data_topics(args.device_id, product_id=args.product_id))
 
 
 def cmd_data_logs(args: argparse.Namespace) -> int:
+    if args.until is not None and args.sid:
+        print("error: --until picks its own session; page on from it with --sid/--before-seq",
+              file=sys.stderr)
+        return 2
     return _read(args, lambda api: api.data_logs(args.device_id, args.topic, sid=args.sid,
-                                                 before_seq=args.before_seq, limit=args.limit))
+                                                 before_seq=args.before_seq, limit=args.limit,
+                                                 until=args.until))
 
 
 def cmd_data_series(args: argparse.Namespace) -> int:

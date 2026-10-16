@@ -132,10 +132,11 @@ account acct_7bd21c50e83a94f1 deactivated (3 token(s) revoked)
 $ openmv-ota client account activate --account-id acct_7bd21c50e83a94f1
 account acct_7bd21c50e83a94f1 activated
 ```
-Deactivation is the only off-switch the API has: a fielded fleet keeps being served
-through a lapse or a mistake. Removing an account for good is a self-host operator's
-act on the server's own shell, `openmv-ota server account delete`, and it takes a
-deactivated account only ([Self-hosting](21-self-hosting.md)).
+Deactivation is the off-switch: a fielded fleet keeps being served through a lapse or
+a mistake. Removing an account for good, with everything it owned, takes the server's
+own root token, `openmv-ota client account delete --account-id ...`, or the server's
+shell, `openmv-ota server account delete` ([Self-hosting](21-self-hosting.md)). Either
+way it takes a deactivated account only; an active one is refused.
 
 
 ### Device limits
@@ -302,6 +303,32 @@ device OPENMV_N6:30003d000851303436313832 released
 Its registration, its binding and its fleet row go, and with them its seat under the
 device limit; the data it stored stays. Another account can then register it. The server's own root can release any account's camera,
 which is how a disputed one is settled: whoever has it in hand registers it again.
+
+`client device registration` shows what a claim recorded: the camera's two public keys
+(`identity` signs its check-ins, `exchange` opens its per-camera lockboxes), the desk key
+that signed the record and when, and how its check-ins have gone since. `last_signed_at`
+is the last check-in its identity key signed; `refused_checkins` counts the ones whose
+signature did not verify, with the latest reason:
+
+```
+$ openmv-ota client device registration --device-id OPENMV_N6:30003d000851303436313832
+{
+  "device_id": "OPENMV_N6:30003d000851303436313832",
+  "fingerprint": "1e7630ad693f05cffec185454989657a674ce2edae2c8e9238c567f791084f19",
+  "identity": "04409b7164de5d56...9e196fa14025c7d",
+  "exchange": "04bdc32ecf0e941d...b87f138a5c8d6",
+  "desk_key_id": 1,
+  "issued": "2026-10-15T20:55:27Z",
+  "registered_at": "2026-10-15T20:55:27.325378+00:00",
+  "registered_by": "test",
+  "record": "{\"account\":\"acct_7bd21c50e83a94f1\",\"board\":\"OPENMV_N6\",\"desk\":1,...}",
+  "signature": "547fe5d379527c14...a3820149cc04c51",
+  "last_signed_at": "2026-10-15T23:35:01.259132+00:00",
+  "refused_checkins": 0,
+  "last_refused_at": null,
+  "last_refusal": null
+}
+```
 
 ## See also
 

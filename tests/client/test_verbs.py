@@ -1514,3 +1514,78 @@ def test_webhook_verbs(wired, tmp_path, capsys, monkeypatch):
     assert "deleted" in capsys.readouterr().out
     assert main(["client", "webhook", "show", "--webhook-id", wid]) == 1
     assert "404" in capsys.readouterr().err
+
+
+def test_dashboard_registration_and_neighbors(wired, capsys):
+    store, _ = wired
+    store.upsert_device(device_id="d1", product_id=BID)
+    store.upsert_device(device_id="d2", product_id=BID)
+    assert main(["client", "dashboard", "--quiet-hours", "24"]) == 0
+    dash = json.loads(capsys.readouterr().out)
+    assert dash["devices"] == 2 and dash["quiet_hours"] == 24
+    assert main(["client", "device", "neighbors", "--device-id", "d1"]) == 0
+    near = json.loads(capsys.readouterr().out)
+    assert near["position"] == 1 and near["total"] == 2 and near["next"]["device_id"] == "d2"
+    store.put_registration("d1", "", record=b"{}", signature="00", identity="04ab",
+                           exchange="04cd", desk_key_id=1, issued="2026-10-10T12:00:00Z",
+                           registered_by="desk")
+    assert main(["client", "device", "registration", "--device-id", "d1"]) == 0
+    assert json.loads(capsys.readouterr().out)["identity"] == "04ab"
+    assert main(["client", "device", "registration", "--device-id", "d2"]) == 1
+    assert "404" in capsys.readouterr().err
+
+
+def test_data_logs_until_jumps_back_in_time(wired, monkeypatch, capsys):
+    from openmv_ota.client import api as api_mod
+    grant = {"token": "relay", "streams": {}, "expires_in_s": 60,
+             "datalake": {"token": "lake-tok", "topics_url": "https://lake/api/v1/topics/d1",
+                          "logs_url": "https://lake/api/v1/logs/d1",
+                          "series_url": "https://lake/api/v1/series/d1", "expires_in_s": 300}}
+    seen = []
+    monkeypatch.setattr(api_mod.Api, "viewer_grant", lambda self, d: grant)
+    monkeypatch.setattr(api_mod.Api, "_lake_get",
+                        lambda self, url, token, params=None: seen.append(params) or {})
+    assert main(["client", "data", "logs", "--device-id", "d1",
+                 "--until", "2026-10-15T03:00Z"]) == 0
+    assert seen[-1] == {"limit": 200, "until": 1792033200.0}
+    assert main(["client", "data", "logs", "--device-id", "d1", "--until", "1h",
+                 "--sid", "s1"]) == 2
+    assert "--until picks its own session" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("text, want", [
+    ("1792033200", 1792033200.0),
+    ("1792033200.5", 1792033200.5),
+    ("2026-10-15", 1792022400.0),
+    ("2026-10-15T03:00", 1792033200.0),
+    ("2026-10-15T05:00+02:00", 1792033200.0),
+])
+def test_when_reads_epochs_and_iso_dates(text, want):
+    assert client_cli._when(text) == want
+
+
+@pytest.mark.parametrize("text, ago", [("30s", 30), ("30m", 1800), ("2h", 7200), ("1d", 86400),
+                                       ("1w", 604800), ("1.5h", 5400)])
+def test_when_reads_how_long_ago(monkeypatch, text, ago):
+    import time
+    monkeypatch.setattr(time, "time", lambda: 1_000_000.0)
+    assert client_cli._when(text) == 1_000_000.0 - ago
+
+
+@pytest.mark.parametrize("text", ["yesterday", "xh", "h", "2026-13-01"])
+def test_when_says_what_it_takes(text):
+    import argparse
+    with pytest.raises(argparse.ArgumentTypeError, match="30m/2h/1d/1w ago"):
+        client_cli._when(text)
+
+
+def test_account_delete_takes_only_a_deactivated_account(tmp_path, monkeypatch, capsys):
+    store = _wire_super_admin(tmp_path, monkeypatch, scopes=("accounts.all",))
+    store.add_account(created_by="ci", account_id="acctD", name="D")
+    assert main(["client", "account", "delete", "--account-id", "acctD"]) == 1
+    assert "409" in capsys.readouterr().err
+    assert main(["client", "account", "deactivate", "--account-id", "acctD"]) == 0
+    capsys.readouterr()
+    assert main(["client", "account", "delete", "--account-id", "acctD"]) == 0
+    assert capsys.readouterr().out.startswith("account acctD deleted (")
+    assert store.get_account("acctD") is None

@@ -118,9 +118,11 @@ on its own. The name comes from the newest release's manifest unless
 `client device list` is the same picture one camera at a time: everything the device
 reported at its last check-in, plus what the server decided about it. Its filters
 include the ones a dashboard's attention list is made of — `--fell-back` (the last
-boot rejected a slot), `--unconfirmed` (mid-trial), `--not-seen-since EPOCH` (no
-check-in since then) and its exact complement `--seen-since EPOCH` (checked in since
-then, which is how you count a day's live fleet in one read). `--behind` and
+boot rejected a slot), `--unconfirmed` (mid-trial), `--not-seen-since WHEN` (no
+check-in since then) and its exact complement `--seen-since WHEN` (checked in since
+then, which is how you count a day's live fleet in one read). A `WHEN` is epoch seconds,
+a time ago (`30m`, `2h`, `1d`, `1w`) or an ISO date or time in UTC (`2026-10-15`,
+`2026-10-15T03:00`), here and on every other option that takes a moment. `--behind` and
 `--up-to-date` are the two halves of the adoption above, each device measured against
 its own product's newest release, so the fleet summary's numbers are lists you can
 open:
@@ -175,6 +177,37 @@ credential that can find a camera without knowing whose it is, is the server's o
 ([The admin API](23-admin-api.md)): `client device lookup --q 3d0008` searches every
 account by a fragment of the id or the display name, and each row names its
 `account_id`.
+
+## Every count at once
+
+`client dashboard` is every number an overview page shows, in one read: the size and
+adoption of the fleet, how many devices checked in within `--quiet-hours` (default 2) and
+how many have gone quiet, fell back or are mid-trial, the products, the active rollouts
+and those paused for failures, active advisories, and `refused`, the devices the plan's
+device limit turned away:
+
+```
+$ openmv-ota client dashboard --quiet-hours 24
+{
+  "devices": 8,
+  "up_to_date": 7,
+  "measured": 7,
+  "checked_in": 8,
+  "quiet": 0,
+  "fell_back": 1,
+  "unconfirmed": 1,
+  "products": 11,
+  "rollouts_active": 10,
+  "rollouts_paused_failure": 5,
+  "advisories": 14,
+  "refused": 0,
+  "quiet_hours": 24.0
+}
+```
+
+Each number is the count the matching list answers, so one that looks wrong is a
+`device list` away: `fell_back` is `--fell-back`, `quiet` is `--not-seen-since 24h`
+with the same window.
 
 ## The publish history
 

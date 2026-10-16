@@ -348,6 +348,11 @@ class Api:
     def deactivate_account(self, account_id):
         return self._req("POST", "/api/v1/admin/accounts/%s/deactivate" % account_id)
 
+    def delete_account(self, account_id):
+        """Hard-delete a DEACTIVATED account and everything it owned (server root only; an
+        active account is refused with 409)."""
+        return self._req("DELETE", "/api/v1/admin/accounts/%s" % account_id)
+
     def activate_account(self, account_id):
         return self._req("POST", "/api/v1/admin/accounts/%s/activate" % account_id)
 
@@ -484,15 +489,18 @@ class Api:
         return self._lake_get(lake["topics_url"], lake["token"])
 
     def data_logs(self, device_id: str, topic: str = "console", sid=None, before_seq=None,
-                  limit: int = 200):
+                  limit: int = 200, until=None):
         """A page of a text topic's records, newest session by default; ``before_seq`` pages
-        back within the session (``next_before_seq`` in the answer)."""
+        back within the session (``next_before_seq`` in the answer). ``until`` (epoch seconds,
+        without ``sid``) jumps back in time: the page ends at what had arrived by then."""
         lake = self._lake(device_id)
         params = {"limit": limit}
         if sid is not None:
             params["sid"] = sid
         if before_seq is not None:
             params["before_seq"] = before_seq
+        if until is not None:
+            params["until"] = until
         return self._lake_get("%s/%s" % (lake["logs_url"], topic), lake["token"], params)
 
     def data_series(self, device_id=None, topic: str = "", field: str = "", since=None,
@@ -507,6 +515,23 @@ class Api:
         if until is not None:
             params["until"] = until
         return self._lake_get("%s/%s" % (lake["series_url"], topic), lake["token"], params)
+
+    def dashboard(self, quiet_hours=None):
+        """Every count an overview page shows, in one read: fleet size and adoption, quiet,
+        fell-back and mid-trial devices, active and failure-paused rollouts, advisories, and
+        devices the plan's limit refused. ``quiet_hours`` (server default 2) sets "quiet"."""
+        params = {} if quiet_hours is None else {"quiet_hours": quiet_hours}
+        return self._req("GET", "/api/v1/admin/dashboard", params=params)
+
+    def device_registration(self, device_id: str):
+        """A claimed camera's registration: its identity key, the desk that registered it, its
+        last signed check-in and the check-ins refused since."""
+        return self._req("GET", "/api/v1/admin/devices/%s/registration" % device_id)
+
+    def device_neighbors(self, device_id: str):
+        """The devices before and after this one in its product's device order, with its
+        position and the product's device count."""
+        return self._req("GET", "/api/v1/admin/devices/%s/neighbors" % device_id)
 
     def device(self, device_id: str):
         """One device. The detail read behind a UI's device page -- `devices()` can only page a
