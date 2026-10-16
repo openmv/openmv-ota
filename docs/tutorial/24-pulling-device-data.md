@@ -206,6 +206,22 @@ $ openmv-ota client data logs --device-id OPENMV_N6:30003d000851303436313832 --u
 }
 ```
 
+`client data export` is the console as a file: every record between two moments, oldest
+first across reboots, as the CSV the device page's download writes (`--format ndjson` for
+the records themselves). `--since` defaults to a day before `--until`, which defaults to
+now; past `--limit` (default 5000) it keeps the newest and says so on stderr:
+
+```
+$ openmv-ota client data export --device-id OPENMV_N6:30003d000851303436313832 --since 2026-10-15T14:27:10 --until 2026-10-15T14:30 --limit 3
+note: the window held more than 3 records; these are its newest (narrow --since/--until, or raise --limit)
+time_utc,session,seq,line
+2026-10-15 14:27:14,2020620294afcac6,21968,"INFO app: app version 1.3.1, count 21957"
+2026-10-15 14:27:14,2020620294afcac6,21969,"INFO app: app version 1.3.1, count 21958"
+2026-10-15 14:27:14,2020620294afcac6,21970,"INFO app: app version 1.3.1, count 21959"
+```
+
+`--out console.csv` writes the file instead of stdout.
+
 A numeric field comes back downsampled, so a week of samples is at most `--buckets`
 points, each with the bucket's `min`, `avg`, `max` and sample count `n`. The window
 defaults to the topic's whole span; `--since` / `--until` take epoch seconds, a time ago
