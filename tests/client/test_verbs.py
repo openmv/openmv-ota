@@ -1612,7 +1612,8 @@ def _lake(monkeypatch, answer, datalake=True):
 
 _WINDOW = {"since": 0.0, "until": 9.0, "truncated": False, "records": [
     {"sid": "aa", "seq": 7, "ts": 1792054792, "text": "[2026-10-15 08:59:51] INFO app: up\n"},
-    {"sid": "bb", "seq": 0, "text": "boot\nsecond line\n"}]}
+    {"sid": "bb", "seq": 0, "text": "boot\nsecond line\n"},
+    {"sid": "bb", "seq": 2, "text": "=HYPERLINK(\"x\")\n"}]}           # the camera's own text
 
 
 def test_data_export_writes_the_console_as_csv(wired, monkeypatch, capsys):
@@ -1626,7 +1627,8 @@ def test_data_export_writes_the_console_as_csv(wired, monkeypatch, capsys):
     rows = list(csv.reader(io.StringIO(capsys.readouterr().out)))
     assert rows == [["time_utc", "session", "seq", "line"],
                     ["2026-10-15 08:59:52", "aa", "7", "INFO app: up"],
-                    ["", "bb", "0", "boot\nsecond line"]]
+                    ["", "bb", "0", "boot\nsecond line"],
+                    ["", "bb", "2", "'=HYPERLINK(\"x\")"]]           # shown as text, never run
 
 
 def test_data_export_ndjson_to_a_file_says_when_the_window_overflowed(wired, monkeypatch,
@@ -1635,9 +1637,9 @@ def test_data_export_ndjson_to_a_file_says_when_the_window_overflowed(wired, mon
     out = tmp_path / "console.ndjson"
     assert main(["client", "data", "export", "--device-id", "d1", "--topic", "events",
                  "--format", "ndjson", "--limit", "2", "--out", str(out)]) == 0
-    assert [json.loads(x)["seq"] for x in out.read_text().splitlines()] == [7, 0]
+    assert [json.loads(x)["seq"] for x in out.read_text().splitlines()] == [7, 0, 2]
     err = capsys.readouterr().err
-    assert "2 record(s) -> %s" % out in err and "held more than 2 records" in err
+    assert "3 record(s) -> %s" % out in err and "held more than 2 records" in err
 
 
 def test_data_export_json_and_no_datalake(wired, monkeypatch, capsys):

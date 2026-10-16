@@ -1458,6 +1458,16 @@ def cmd_data_logs(args: argparse.Namespace) -> int:
                                                  until=args.until))
 
 
+# A cell opening like one of these is a formula to a spreadsheet: "=HYPERLINK(...)" in a camera's
+# console line would run in whoever opens the export. Such a cell gets a leading apostrophe,
+# which the spreadsheet shows as text (OWASP's CSV-injection advice); numbers pass untouched.
+_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _cells(row: list) -> list:
+    return ["'" + c if isinstance(c, str) and c.startswith(_FORMULA_LEAD) else c for c in row]
+
+
 def _utc(ts) -> str:
     """A CSV's time column: UTC, to the second."""
     import datetime as dt
@@ -1487,7 +1497,7 @@ def cmd_data_series(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     w = csv.writer(sys.stdout)
-    w.writerow(["time_utc"] + ["%s_%s" % (f, k) for f in fields for k in ("avg", "min", "max", "n")])
+    w.writerow(_cells(["time_utc"] + ["%s_%s" % (f, k) for f in fields for k in ("avg", "min", "max", "n")]))
     for t in sorted(rows):
         line = [_utc(t)]
         for f in fields:
@@ -1524,8 +1534,9 @@ def cmd_data_export(args: argparse.Namespace) -> int:
             w.writerow(["time_utc", "session", "seq", "line"])
             for r in win["records"]:
                 ts = r.get("ts")
-                w.writerow([_utc(ts) if isinstance(ts, (int, float)) else "", r.get("sid") or "",
-                            r.get("seq"), _STAMP.sub("", str(r.get("text") or "").rstrip("\n"), count=1)])
+                w.writerow(_cells([_utc(ts) if isinstance(ts, (int, float)) else "",
+                                   r.get("sid") or "", r.get("seq"),
+                                   _STAMP.sub("", str(r.get("text") or "").rstrip("\n"), count=1)]))
     finally:
         if args.out:
             out.close()

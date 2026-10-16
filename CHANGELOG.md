@@ -31,7 +31,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The device page's downloads on the CLI.** `client data export` writes a text topic over a
   time window (default: the last day), oldest first across reboots, as the same CSV the console's
   download gives (or `--format ndjson`), from the datalake's new window read. `client data series
-  --format csv` writes a chart as rows, several fields side by side.
+  --format csv` writes a chart as rows, several fields side by side. A cell that opens like a
+  formula is written as text: a camera's console line must never run in a spreadsheet.
 - **`client data usage`: the datalake's meter for your account.** Bytes stored, today's uploads
   against the daily quota, the uploads it refused today, and the retention window, from the new
   `GET /api/v1/admin/data/usage` (`observe`). Past the quota the datalake refuses everything until
