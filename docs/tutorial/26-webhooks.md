@@ -30,7 +30,7 @@ the URL, the subscription or the description, or switches the endpoint off and o
 | Event | Fires when |
 |---|---|
 | `device.enrolled` | a camera checks in for the first time under the account |
-| `device.refused` | a new camera is turned away at the account's device limit |
+| `device.refused` | a new camera is turned away at the account's device limit (when it registers, or checks in) |
 | `device.fallback` | a camera boots its previous image after a failed update |
 | `install.failed` | a camera reports an install that failed |
 | `device.bind`, `device.forget`, `device.rename`, `device.pin` | operator actions on a camera |

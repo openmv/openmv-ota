@@ -150,10 +150,10 @@ $ openmv-ota client account limit --account-id acct_7bd21c50e83a94f1 --unlimited
 
 The count is every camera the account holds, once each: its fleet, and the cameras
 registered to it that haven't checked in yet — a camera takes its seat when it registers.
-The limit is enforced for *new* cameras. Registering one past it is refused (a 403, and a
-`device.register_refused` audit row); a new device checking in past it is not registered
-and is served nothing (zero footprint, exactly like an unregistered id), and a
-`device.refused` audit row records it once per device id. Cameras the account already
+The limit is enforced for *new* cameras, where they are claimed: registering one past it is
+refused (a 403), and a `device.refused` audit row records it. A camera with no registration in
+the account that checks in under it while the account is at its limit is turned away the same
+way, recorded once per device id. Cameras the account already
 holds are never affected — they keep checking in and updating. This is the hook a hosting
 layer uses to map a plan onto an account.
 

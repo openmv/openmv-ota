@@ -82,6 +82,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A camera turned away at the device limit raises `device.refused` again.** With signed check-ins
+  required, the limit turns cameras away when they register, and that was audited as
+  `device.register_refused` -- so the dashboard's "turned away" alert and the `device.refused`
+  webhook stopped seeing them. A registration refused at the limit is now `device.refused`
+  (`"at": "registration"`); `device.register_refused` is for records that don't verify.
 - **`flash register` reaches a camera whose app never reads its console, and leaves it running.**
   The key request piled up unread before the soft reset, and on the AE3 (TinyUSB) a full receive
   buffer stopped the port taking input, so the reset never arrived. A running camera is now reset
