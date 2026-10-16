@@ -100,6 +100,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A new project's app no longer spends its account's data quota by mid-afternoon.** The
+  generated `main.py` logged a heartbeat line every second, and every log line uploads: about
+  5 MB a camera a day. Eight cameras spent the default 50 MB/day datalake quota by 14:27 UTC,
+  after which the datalake refused everything until midnight, heap graphs included. The heartbeat
+  now logs once a minute.
 - **A camera turned away at the device limit raises `device.refused` again.** With signed check-ins
   required, the limit turns cameras away when they register, and that was audited as
   `device.register_refused` -- so the dashboard's "turned away" alert and the `device.refused`

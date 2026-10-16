@@ -729,7 +729,7 @@ async def heartbeat():
     while True:
         log.info("app version %s, count %d", VERSION, count)
         count += 1
-        await asyncio.sleep(1)
+        await asyncio.sleep(60)       # every log line uploads: once a second was 5 MB a day
 
 
 async def heap_graph():

@@ -858,6 +858,9 @@ def test_ota_project_scaffolds_the_cloud_wired_main(tmp_path, make_firmware, mak
     assert "used, free = gc.mem_alloc(), gc.mem_free()" in main
     assert "asyncio.create_task(heap_graph())" in main and "await asyncio.sleep(5)" in main
     assert 'log.info("app version %s, count %d", VERSION, count)' in main
+    # once a minute, not a second: every line uploads, and at 1 s eight cameras spent a 50 MB/day
+    # datalake quota by mid-afternoon -- everything after it, heap graph too, was refused
+    assert "await asyncio.sleep(60)" in main and "await asyncio.sleep(1)\n" not in main
     assert 'VERSION = openmv_ota.identity().get("app_version")' in main
     # the app confirms the OTA trial explicitly once it is operational (run() does not
     # auto-confirm), so a bad update rolls back instead of sticking.
