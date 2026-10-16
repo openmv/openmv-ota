@@ -10,7 +10,9 @@ The device hands off to **firmware-resident recovery**: a frozen flow that
 brings up the network, **checks in with your server** the way a running app
 does, and installs the release it is offered, then reboots into its trial. It
 lives in the firmware, where no update can erase it, and reserves no flash of
-its own.
+its own. The OpenMV Cam M4 has no network, so its firmware carries no recovery:
+a camera that loses both images halts at boot, and you flash it again over USB
+([Erase and the bootloader](10-erase-and-bootloader.md)).
 
 The check-in reports the device's id plus the board, product, and account
 stamped into its firmware, with no installed version, so any release in an
@@ -67,7 +69,7 @@ holding the root(s) your server chains to — a few KB. `project new --ota`
 scaffolds one for you: `certs/root.pem`, the roots of the hosted OpenMV Cloud.
 Self-hosting? Replace that file with your server's root (or pass `--ca` at
 `new`). `build firmware` refuses those boards with `[ota].ca` unset, rather
-than ship a recovery with no trust anchors. The OpenMV Cam M4, M7, and H7 are
+than ship a recovery with no trust anchors. The OpenMV Cam M7 and H7 are
 the exception: with `[ota].ca` unset their firmware carries no anchors and
 recovery connects unverified, as described in
 [OTA projects](04-ota-projects.md); the image it installs is still signature-checked.

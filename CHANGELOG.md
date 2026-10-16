@@ -85,7 +85,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   identity key (`X-OMV-Signature`). Only a signed check-in gets the full treatment (fleet row,
   telemetry, Live and ingest); an unsigned one (or one signed at a stale time: a clock that
   drifted while the camera was off) gets update offers only, and a bad signature, or one from a
-  camera with no registration, gets nothing. Recovery and the M4 check in unsigned.
+  camera with no registration, gets nothing. Recovery signs once its clock is set.
 - **Claiming boards.** Registering a camera claims it: an Arduino board is a registered device
   once its account holds a registration for it, and until then is listed in the account's
   unclaimed boards (`client device unclaimed`). Registering is bounded by board type, the device
@@ -123,9 +123,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now logs once a minute.
 - **A camera in firmware recovery shows on the fleet view again.** Recovery's check-in went
   unsigned, and with signed check-ins required that meant update offers and no fleet row. It now
-  signs with the camera's identity key once its clock is set (NTP first, else the reply's
-  `Date`), so a recovering camera reads as recovering; the first, unsigned, check-in still gets
-  the offer.
+  signs with the camera's identity key once its clock is set (NTP first, else the reply's `Date`),
+  so a recovering camera reads as recovering; the first, unsigned, check-in still gets the offer.
+  The OpenMV Cam M4, which has no network, no longer carries recovery in its firmware at all: it
+  could never run there, and signing pushed the M4's firmware over its flash.
 - **A camera whose network stack runs out of memory heals itself.** An H7 Plus whose WINC ran out
   of buffers after a relay send stalled failed every check-in with `OSError(12)` -- at 7% heap
   use -- and never recovered: the transport rebuild waited for five failed cycles, half an hour
