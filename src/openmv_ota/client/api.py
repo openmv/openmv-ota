@@ -503,6 +503,11 @@ class Api:
             params["until"] = until
         return self._lake_get("%s/%s" % (lake["logs_url"], topic), lake["token"], params)
 
+    def data_usage(self):
+        """The account's datalake reading: stored bytes, today's uploads against the daily
+        quota, the uploads it refused today, and the retention window."""
+        return self._req("GET", "/api/v1/admin/data/usage")
+
     def data_window(self, device_id: str, topic: str = "console", since=None, until=None,
                     limit: int = 5000):
         """A text topic's records between two moments, oldest first, across reboots, in one read

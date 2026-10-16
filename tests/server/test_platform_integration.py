@@ -395,6 +395,14 @@ class _FakeLake:
             raise DatalakeError("HTTP 503")
         return {"deleted": 3, "bytes": 4096}
 
+    def account_usage(self, account):
+        from openmv_ota.server.datalake import DatalakeError
+        self.calls.append(("usage", account))
+        if self.fail:
+            raise DatalakeError("HTTP 503")
+        return {"stored_bytes": 10, "ingested_today": 52428900, "quota_bytes_per_day": 52428800,
+                "rejected_today": 3021, "retention_days": 30}
+
 
 def test_forgetting_a_device_erases_its_data_first(tmp_path):
     """Forget is the erasure a retired camera (or a data-subject request) calls for: the
@@ -458,3 +466,54 @@ def test_the_datalake_admin_client_speaks_to_the_purge_route(tmp_path):
         lake.purge_device("a1", "explode")
     assert not DatalakeAdmin(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
                                             swd_ids_verify_token="t")).configured
+
+
+def test_an_account_reads_its_own_data_usage(tmp_path):
+    """Past the daily quota the datalake refuses every upload until midnight UTC, and this read
+    is where a tenant sees it -- its OWN account only, the server's root filed as "default"."""
+    lake = _FakeLake()
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    store.set_meta("capability_secret", "x")
+    store.add_token(hash_token("acct"), "ci", ["observe"], account_id="a1")
+    store.add_token(hash_token("root"), "root", ["observe"])
+    app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
+                                    swd_ids_verify_token="t"),
+                     metastore=store, storage=LocalArtifactStorage(str(tmp_path / "blobs")),
+                     verifier=_Verifier(), datalake=lake)
+    c = TestClient(app)
+    r = c.get("/api/v1/admin/data/usage", headers={"Authorization": "Bearer acct"})
+    assert r.status_code == 200 and r.json()["rejected_today"] == 3021
+    assert c.get("/api/v1/admin/data/usage", headers={"Authorization": "Bearer root"}).status_code == 200
+    assert lake.calls == [("usage", "a1"), ("usage", "default")]
+    lake.fail = True
+    r = c.get("/api/v1/admin/data/usage", headers={"Authorization": "Bearer acct"})
+    assert r.status_code == 502 and "HTTP 503" in r.json()["detail"]
+    app.state.datalake = _FakeLake(configured=False)
+    assert c.get("/api/v1/admin/data/usage", headers={"Authorization": "Bearer acct"}).status_code == 404
+
+
+def test_the_datalake_admin_client_reads_an_account_s_usage():
+    """Usage and limits in one reading; a limit the account doesn't override is the default."""
+    import httpx
+    from openmv_ota.server.datalake import DatalakeAdmin, DatalakeError
+    limits = {"account": "a1", "bytes_per_day": None, "retention_days": 90,
+              "defaults": {"bytes_per_day": 52428800, "retention_days": 30}}
+
+    def handler(request):
+        if request.url.path.endswith("/usage"):
+            if "down" in request.url.path:
+                return httpx.Response(503)
+            return httpx.Response(200, json={"account": "a1", "bytes": 7, "rejected_today": 2,
+                                             "ingested_today": 99})
+        return httpx.Response(200, json=limits)
+    lake = DatalakeAdmin(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
+                                        swd_ids_verify_token="t", datalake_url="https://lake.test",
+                                        datalake_admin_token="lake-admin"),
+                         http=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert lake.account_usage("a1") == {"stored_bytes": 7, "ingested_today": 99,
+                                        "quota_bytes_per_day": 52428800, "rejected_today": 2,
+                                        "retention_days": 90}
+    import pytest
+    with pytest.raises(DatalakeError, match="HTTP 503"):
+        lake.account_usage("down")

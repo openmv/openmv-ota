@@ -319,6 +319,18 @@ class ProductFleet(BaseModel):
     nothing is (with no newest release, a device is outside adoption, not behind it)."""
 
 
+class DataUsage(BaseModel):
+    """The account's datalake reading. ``ingested_today`` is what the daily quota measures
+    (UTC day; refused batches count too); once it passes ``quota_bytes_per_day`` the datalake
+    refuses every upload until midnight UTC, each one counted in ``rejected_today``. A quota
+    of 0 means unlimited."""
+    stored_bytes: int
+    ingested_today: int
+    quota_bytes_per_day: int | None
+    rejected_today: int
+    retention_days: int | None
+
+
 class DashboardCounts(BaseModel):
     """Every count an overview page shows, from one read. Device counts are the account's (or
     a product-scoped token's products'); ``quiet_hours`` is the line that ``checked_in`` and

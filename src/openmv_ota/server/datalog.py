@@ -26,6 +26,11 @@ from .live import mint_token
 _DEFAULT_ACCOUNT = "default"
 
 
+def account_key(account_id: str) -> str:
+    """The account as the datalake files it: the server's own (empty) account is "default"."""
+    return account_id or _DEFAULT_ACCOUNT
+
+
 def ingest_grant(settings, account_id: str, device_id: str, product_id) -> dict | None:
     """The ``ingest`` object for a check-in response, or None when the datalake
     is not configured (no URL / no secret) -- the response omits the key."""

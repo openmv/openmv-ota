@@ -21,6 +21,7 @@ from .datalake import DatalakeError
 from .rollout import ramp_progress, soak_elapsed_s, stage_for_percent, validate_stages
 from . import webhooks as webhooks_mod
 from .schemas import (
+    DataUsage,
     DeviceReleased, UnclaimedList,
     Account,
     AccountActive,
@@ -1345,6 +1346,23 @@ def fleet(request: Request, product_id: int | None = None, cohort: str | None = 
             (decode_app_version(k) if k else "unknown"): n
             for k, n in prod["by_fallback"].items()}
     return summary
+
+
+@admin.get("/data/usage", responses={200: {"model": DataUsage},
+                                    404: {"description": "this server has no datalake"},
+                                    502: {"description": "the datalake did not answer"}})
+def data_usage(request: Request, principal: Principal = Depends(require_scope("observe"))):
+    """The account's device data as the datalake meters it: what it stores, what it uploaded
+    today against its daily quota, the uploads that quota refused today, and how long data is
+    kept. The read that says why a console or a chart went quiet mid-day: past the quota, the
+    datalake refuses everything until midnight UTC, and only this count records it."""
+    lake = request.app.state.datalake
+    if not lake.configured:
+        raise HTTPException(status_code=404, detail="this server has no datalake")
+    try:
+        return lake.account_usage(datalog_mod.account_key(principal.account_id))
+    except DatalakeError as e:
+        raise HTTPException(status_code=502, detail="the datalake did not answer: %s" % e) from None
 
 
 @admin.get("/dashboard", responses={200: {"model": DashboardCounts}})

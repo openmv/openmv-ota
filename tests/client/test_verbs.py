@@ -1675,3 +1675,23 @@ def test_data_series_several_fields_need_csv_and_errors_surface(wired, monkeypat
     assert main(["client", "data", "series", "--device-id", "d1", "--topic", "t",
                  "--field", "a", "--format", "csv"]) == 1
     assert "no datalake configured" in capsys.readouterr().err
+
+
+def test_data_usage_reads_the_account_s_meter(tmp_path, monkeypatch, capsys):
+    class Lake:
+        configured = True
+
+        def account_usage(self, account):
+            return {"stored_bytes": 1, "ingested_today": 2, "quota_bytes_per_day": 3,
+                    "rejected_today": 4, "retention_days": 5}
+    app, _store = _server(tmp_path)
+    app.state.datalake = Lake()
+    tc = TestClient(app)
+    monkeypatch.setattr(client_cli, "_make_api", lambda cfg: Api(cfg, client=tc))
+    monkeypatch.setenv("OPENMV_OTA_SERVER", "https://ota.test")
+    monkeypatch.setenv("OPENMV_OTA_TOKEN", "tok")
+    assert main(["client", "data", "usage"]) == 0
+    assert json.loads(capsys.readouterr().out)["rejected_today"] == 4
+    app.state.datalake.configured = False
+    assert main(["client", "data", "usage"]) == 1
+    assert "404" in capsys.readouterr().err

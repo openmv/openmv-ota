@@ -139,7 +139,7 @@ def test_openapi_declares_the_bearer_scheme_and_every_route_that_needs_it(tmp_pa
     assert open_ops == {("GET", "/healthz"), ("POST", "/api/v1/check"),
                         ("POST", "/api/v1/feedback"), ("GET", "/d/{token}/{filename}"),
                         ("GET", "/api/v1/keykeeper/chain")}
-    assert len(guarded) == 72                                 # + release, unclaimed
+    assert len(guarded) == 73                                 # + release, unclaimed, data usage
     assert "`observe`" in guarded[("get", "/api/v1/admin/devices")]
     assert "`publish`" in guarded[("post", "/api/v1/admin/releases")]
     assert "`accounts`" in guarded[("post", "/api/v1/admin/accounts")]

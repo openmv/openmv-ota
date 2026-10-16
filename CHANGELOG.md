@@ -23,6 +23,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   time window (default: the last day), oldest first across reboots, as the same CSV the console's
   download gives (or `--format ndjson`), from the datalake's new window read. `client data series
   --format csv` writes a chart as rows, several fields side by side.
+- **`client data usage`: the datalake's meter for your account.** Bytes stored, today's uploads
+  against the daily quota, the uploads it refused today, and the retention window, from the new
+  `GET /api/v1/admin/data/usage` (`observe`). Past the quota the datalake refuses everything until
+  midnight UTC, and until now nothing a customer could read said so.
 - **Times read like times.** Every option that takes a moment (`data series --since/--until`,
   `device list --seen-since/--not-seen-since`, and the new `data logs --until`, which opens the
   console at a moment in the past) also takes `30m`/`2h`/`1d`/`1w` ago or an ISO date in UTC.

@@ -303,6 +303,21 @@ Strings do not aggregate, so a product's `fields` carries numbers and bools only
 `client product grant --product-id ...` prints the grant itself.
 
 
+## How much you've used
+
+The datalake meters each account by the UTC day. Once the day's uploads pass its quota it
+refuses every batch until midnight UTC, the console and the charts alike, so a camera
+that went quiet mid-afternoon on every page may simply be over it. `client data usage`
+is the meter: `stored_bytes`, `ingested_today` against `quota_bytes_per_day` (refused
+batches count too), `rejected_today` (the uploads refused today) and `retention_days`:
+
+```
+$ openmv-ota client data usage
+```
+
+Every log line a camera prints is uploaded, so the console is usually the biggest spender:
+a line a second is about 5 MB a camera a day.
+
 ## Without the CLI
 
 Two calls. First the grant, with any admin token that has `observe` — it is scoped to

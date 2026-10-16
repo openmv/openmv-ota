@@ -497,6 +497,10 @@ def register(parser: argparse.ArgumentParser) -> None:
                        help="json (default), or csv: one row per bucket, avg/min/max/n per field")
     _creds(p_das)
     p_das.set_defaults(func=cmd_data_series, _command="client data series")
+    p_dau = dasub.add_parser("usage", help="the account's data as the datalake meters it: stored, "
+                                           "today's uploads against the daily quota, refusals")
+    _creds(p_dau)
+    p_dau.set_defaults(func=cmd_data_usage, _command="client data usage")
     p_dax = dasub.add_parser("export", help="a text topic's records between two moments, oldest "
                                             "first across reboots: the console as a file")
     p_dax.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="the device to read")
@@ -1398,6 +1402,10 @@ def cmd_device_watch(args: argparse.Namespace) -> int:
         say("%d frame(s)%s" % (done["frames"], "" if done["seconds"] is None
                                 else " in %.1f s" % done["seconds"]))
     return 0
+
+
+def cmd_data_usage(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.data_usage())
 
 
 def cmd_data_topics(args: argparse.Namespace) -> int:
