@@ -36,6 +36,12 @@ the passphrase is not already in the environment.
 `--fleet` warns at fetch time about any group of devices no base can cover (a version
 never published through the server, a republish that split the bytes) — those take the
 full image, never nothing.
+
+After publishing, `client release coverage --release-id ...` checks the result: the
+release's `adoption` (devices running it, of the product's), its `uncovered_bases` (fleet
+bases below it that no delta of it was built from, each with its device count, which will
+download the full image) and the cohorts pinned to it. Only bases below the release are
+listed: a device already past it never takes it.
 The server can answer because it **retains every published image**: lose the build
 directory, re-clone the repo, hand the release to a colleague — the bases are still
 there. (`release bases --last N` fetches the N most recent releases instead, when you

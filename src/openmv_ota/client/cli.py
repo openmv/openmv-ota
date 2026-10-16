@@ -145,6 +145,11 @@ def register(parser: argparse.ArgumentParser) -> None:
                        help="the release to read")
     _creds(p_rsh)
     p_rsh.set_defaults(func=cmd_release_show, _command="client release show")
+    p_rcv = rlsub.add_parser("coverage", help="where a release stands in its product's fleet: "
+                                              "adoption, bases no delta covers, pinned cohorts (JSON)")
+    p_rcv.add_argument("--release-id", required=True, metavar="RELEASE_ID", help="the release")
+    _creds(p_rcv)
+    p_rcv.set_defaults(func=cmd_release_coverage, _command="client release coverage")
     p_rsb = rlsub.add_parser("sbom", help="download a release's SBOM (CycloneDX JSON)")
     p_rsb.add_argument("--release-id", required=True, metavar="RELEASE_ID",
                        help="the release whose SBOM to fetch")
@@ -187,6 +192,10 @@ def register(parser: argparse.ArgumentParser) -> None:
                            "min_attempted devices, and max_failure_rate 0-1. The rollout starts at "
                            "the first stage and raises itself through them as each soaks and holds. "
                            "e.g. --stage 1:86400:50 --stage 10:86400:200 --stage 100")
+    p_rc.add_argument("--ramp", choices=("cautious", "quick"),
+                      help="a named ramp instead of --stage: cautious (5, 25, 50, 100%%, a day "
+                           "each) or quick (10, 50, 100%%, an hour each); `client rollout presets` "
+                           "prints their stages")
     p_rc.add_argument("--failure-threshold", type=float, default=0.05,
                       help="fallback rate among offered devices that auto-pauses it (default 0.05)")
     p_rc.add_argument("--name", default="",
@@ -218,6 +227,19 @@ def register(parser: argparse.ArgumentParser) -> None:
                       help="the rollout to read (ids come from `client rollout list`)")
     _creds(p_rs)
     p_rs.set_defaults(func=cmd_rollout, _command="client rollout status", action="status")
+    p_rp = rsub.add_parser("presets", help="the named ramps `rollout create --ramp` takes, "
+                                           "with their stages (JSON)")
+    _creds(p_rp)
+    p_rp.set_defaults(func=cmd_rollout, _command="client rollout presets", action="presets")
+    p_rd = rsub.add_parser("devices", help="the rollout's audience, each device with where it "
+                                           "stands against the release (JSON)")
+    p_rd.add_argument("--rollout-id", required=True, metavar="ROLLOUT_ID", help="the rollout")
+    p_rd.add_argument("--state", choices=("failed", "updated", "ahead", "offered", "unoffered"),
+                      help="only devices in this state")
+    p_rd.add_argument("--q", help="name-or-id substring, case-insensitive")
+    _list_flags(p_rd, "seen, device, product, version, cohort, first_seen")
+    _creds(p_rd)
+    p_rd.set_defaults(func=cmd_rollout, _command="client rollout devices", action="devices")
     p_rol = rsub.add_parser("list", help="every rollout, newest first (JSON)")
     p_rol.add_argument("--product-id", type=int, help="only this product")
     p_rol.add_argument("--state", choices=("active", "paused", "stopped"),
@@ -1038,15 +1060,25 @@ def cmd_rollout(args: argparse.Namespace) -> int:
         api = _make_api(config.resolve(args.server, args.token))
         if args.action == "create":
             stages = [_parse_stage(s) for s in args.stage] if args.stage else None
-            if stages is None and args.percent is None:
-                raise ClientError("rollout create needs --percent, or one or more --stage")
+            if args.ramp and stages is not None:
+                raise ClientError("rollout create takes --ramp or --stage, not both")
+            if stages is None and args.percent is None and not args.ramp:
+                raise ClientError("rollout create needs --percent, --ramp, or one or more --stage")
             ro = api.create_rollout(args.release_id, args.cohort, args.percent,
                                     failure_threshold=args.failure_threshold,
-                                    display_name=args.name, stages=stages)
+                                    display_name=args.name, stages=stages, ramp=args.ramp)
             return _emit(args, ro, "rollout %s  %s%%  cohort=%s"
                          % (ro["rollout_id"], ro["percent"], ro["cohort"]))
         if args.action == "status":
             print(json.dumps(api.rollout_status(args.rollout_id), indent=2))
+            return 0
+        if args.action == "presets":
+            print(json.dumps(api.ramp_presets(), indent=2))
+            return 0
+        if args.action == "devices":
+            print(json.dumps(api.rollout_devices(args.rollout_id, state=args.state, q=args.q,
+                                                 limit=args.limit, offset=args.offset,
+                                                 sort=args.sort, direction=args.dir), indent=2))
             return 0
         if args.action == "raise":
             ro = api.patch_rollout(args.rollout_id, percent=args.percent)
@@ -1298,6 +1330,10 @@ def _read(args, call) -> int:
 
 def cmd_release_show(args: argparse.Namespace) -> int:
     return _read(args, lambda api: api.release(args.release_id))
+
+
+def cmd_release_coverage(args: argparse.Namespace) -> int:
+    return _read(args, lambda api: api.release_coverage(args.release_id))
 
 
 def cmd_device_show(args: argparse.Namespace) -> int:

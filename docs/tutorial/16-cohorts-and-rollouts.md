@@ -170,6 +170,11 @@ That starts at 1%, holds a day and at least 50 devices, then 10% under the same 
 500 devices, then 100% — each `--stage` is `PERCENT[:SOAK[:ATTEMPTED[:MAXFAIL]]]`. A
 manual rollout (no stages) behaves exactly as before.
 
+Two ramps have names, so you need not spell them out: `--ramp cautious` (5, 25, 50, then
+100%, soaking a day at each) and `--ramp quick` (10, 50, then 100%, an hour at each).
+`client rollout presets` prints their stages exactly; a dashboard's create form offers the
+same two, from the same definitions.
+
 You can still act on a ramp by hand. `raise N` jumps ahead to the furthest stage N
 reaches, and that stage's soak and failure window start over; a raise that stays inside
 the current stage only widens it. `resume` also starts the current stage's window over, so
@@ -254,6 +259,24 @@ they answer "what is live on `beta` right now" versus its history.
 membership is a hash, not a list) — and `rates` reads each counter against it, so
 "how far through this stage is the fleet, and how is it going" is one glance:
 everyone staged was offered it, 90% already run it, nobody fell back. Time to raise.
+`on_release` counts the audience running this release or newer — progress that cannot
+pass 100%, since a device already past the release is done as far as this rollout goes —
+and a rollout paused as `superseded` names the one that took its cohort in
+`superseded_by`.
+
+`rollout devices` is the audience one camera at a time, each with where it stands against
+the release (`rollout_state`, by payload version): `failed` (its last boot fell back),
+`updated`, `ahead` (it runs something newer, so it never takes this one), `offered`
+(staged by the percent and told so) or `unoffered` (outside the current offer). `states`
+counts each across the whole audience, so "why hasn't this camera updated?" and "how many
+are still waiting" are one read:
+
+```
+openmv-ota client rollout devices --rollout-id ro_1c3f88ba90d2e644 --state unoffered --sort device
+```
+
+`--q` finds one camera by name or id, and the list contract's `--limit`/`--offset`/`--sort`
+apply.
 
 ## Pins
 

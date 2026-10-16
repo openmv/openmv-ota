@@ -187,3 +187,25 @@ def test_unclaimed_boards_and_claims_on_postgres(pg):
     assert pg.claimed_count("acct") == 2                               # one seat per camera
     assert pg.delete_registration("OPENMV4:1")["account_id"] == "acct"
     assert pg.get_device("OPENMV4:1") is None and pg.claimed_count("acct") == 1
+
+
+def test_rollout_device_states_and_successor_on_postgres(pg):
+    """The state CASE carries parameters in the SELECT, the GROUP BY and the WHERE at once --
+    each placeholder must land in order on Postgres as it does on SQLite."""
+    pg.add_release(release_id="rel_1", product_id=7, product="p", version="1.0.0",
+                   payload_version=10, min_platform_version=0, image_sha256="ab", image_size=1,
+                   representations=[{"format": "full", "size": 9}], manifest_key="m",
+                   image_key="i", account_id="acct")
+    pg.add_rollout(rollout_id="ro_1", release_id="rel_1", product_id=7, cohort="__default__",
+                   percent=10, account_id="acct")
+    pg.add_rollout(rollout_id="ro_2", release_id="rel_1", product_id=7, cohort="__default__",
+                   percent=10, account_id="acct", display_name="next")
+    pg.upsert_device(device_id="d1", product_id=7, current_payload_version=10, account_id="acct")
+    pg.upsert_device(device_id="d2", product_id=7, current_payload_version=9, account_id="acct",
+                     last_offered_release_id="rel_1")
+    ro = pg.get_rollout("ro_1")
+    rows, total, states = pg.rollout_devices(ro, 10, sort="device", state="offered", q="d")
+    assert [r["device_id"] for r in rows] == ["d2"] and total == 1
+    assert states == {"failed": 0, "updated": 1, "ahead": 0, "offered": 1, "unoffered": 0}
+    assert pg.rollout_successor(ro)["rollout_id"] == "ro_2"
+    assert pg.rollout_successor(pg.get_rollout("ro_2")) is None

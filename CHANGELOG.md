@@ -8,6 +8,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The rollout and release pages' answers, from the API.** `GET /rollouts/{id}/devices`
+  (`client rollout devices`): the audience, each camera with where it stands against the release
+  by payload version (`failed`, `updated`, `ahead`, `offered`, `unoffered`) and every state's
+  count; `rollout status` adds `on_release` (on the release or newer) and `superseded_by`, and
+  the `rollout.superseded` audit event records `by`. `GET /releases/{id}/coverage`
+  (`client release coverage`): adoption, the fleet bases below the release no delta of it covers,
+  and the cohorts pinned to it. Named ramps: `rollout create --ramp cautious|quick` (`ramp` in
+  `POST /rollouts`), listed by `GET /ramp-presets` (`client rollout presets`). The website
+  computed all of these itself.
 - **`client device watch`: the Live view from a terminal.** Saves a camera's frames
   (`--out DIR`, or `--latest FILE` kept current), or with `--console` prints its console as it
   runs, each line once across reconnects. It mints its own viewer grant and renews it on every
@@ -104,6 +113,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A refused rollout no longer stops the live one.** Creating a rollout paused the cohort's
+  active rollout as superseded before checking the new one's stages, so a malformed ramp left the
+  cohort with nothing offering and answered 400. Every refusal now comes first.
 - **A new project's app no longer spends its account's data quota by mid-afternoon.** The
   generated `main.py` logged a heartbeat line every second, and every log line uploads: about
   5 MB a camera a day. Eight cameras spent the default 50 MB/day datalake quota by 14:27 UTC,

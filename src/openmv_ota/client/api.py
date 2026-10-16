@@ -129,8 +129,10 @@ class Api:
 
     def create_rollout(self, release_id: str, cohort: str, percent: float,
                        failure_threshold: float | None = None, display_name: str = "",
-                       stages: list | None = None):
+                       stages: list | None = None, ramp: str | None = None):
         body = {"release_id": release_id, "cohort": cohort, "percent": percent}
+        if ramp is not None:                            # a named preset (GET /ramp-presets)
+            body["ramp"] = ramp
         if failure_threshold is not None:
             body["failure_threshold"] = failure_threshold
         if display_name:
@@ -138,6 +140,10 @@ class Api:
         if stages is not None:                          # a declared ramp; the server picks the
             body["stages"] = stages                     # starting percent from stage 0
         return self._req("POST", "/api/v1/admin/rollouts", json=body)
+
+    def ramp_presets(self):
+        """The named ramps a rollout can start from (``create_rollout(ramp=...)``)."""
+        return self._req("GET", "/api/v1/admin/ramp-presets")
 
     def patch_rollout(self, rollout_id: str, **body):
         return self._req("PATCH", "/api/v1/admin/rollouts/%s" % rollout_id, json=body)
@@ -222,6 +228,18 @@ class Api:
 
     def rollout_status(self, rollout_id: str):
         return self._req("GET", "/api/v1/admin/rollouts/%s/status" % rollout_id)
+
+    def rollout_devices(self, rollout_id: str, state=None, q=None, limit=None, offset=None,
+                        sort=None, direction=None):
+        """The rollout's audience, each device with its ``rollout_state`` against the release
+        (failed / updated / ahead / offered / unoffered), and every state's count."""
+        params = {}
+        if state is not None:
+            params["state"] = state
+        if q:
+            params["q"] = q
+        return self._req("GET", "/api/v1/admin/rollouts/%s/devices" % rollout_id,
+                         params=self._page(params, limit, offset, sort, direction))
 
     def set_account_limit(self, account_id, device_limit):
         """Operator: the account's device entitlement (None = unlimited)."""
@@ -555,6 +573,11 @@ class Api:
         """One device. The detail read behind a UI's device page -- `devices()` can only page a
         list, which is a lot of requests to answer "show me this one"."""
         return self._req("GET", "/api/v1/admin/devices/%s" % device_id)
+
+    def release_coverage(self, release_id: str):
+        """Where a release stands in its product's fleet: adoption, the fleet bases below it no
+        delta covers, and the cohorts pinned to it."""
+        return self._req("GET", "/api/v1/admin/releases/%s/coverage" % release_id)
 
     def release(self, release_id: str):
         """One release, same reasoning as `device()`."""

@@ -18,7 +18,8 @@ from . import datalog as datalog_mod
 from . import live as live_mod
 from .auth import Principal, hash_token, require_scope
 from .datalake import DatalakeError
-from .rollout import ramp_progress, soak_elapsed_s, stage_for_percent, validate_stages
+from .rollout import (RAMP_PRESETS, ramp_progress, soak_elapsed_s, stage_for_percent,
+                      validate_stages)
 from . import webhooks as webhooks_mod
 from .schemas import (
     DataUsage,
@@ -57,12 +58,12 @@ from .schemas import (
     FleetSummary,
     InstallDays,
     Release,
-    ReleaseList,
+    RampPresets, ReleaseCoverage, ReleaseList,
     Rollout,
     RolloutCreated,
     RolloutList,
     RolloutState,
-    RolloutStatus,
+    RolloutDeviceList, RolloutStatus,
     TokenIssued,
     TokenList,
     TokenRevoked,
@@ -139,6 +140,8 @@ class RolloutCreate(BaseModel):
     # (see rollout.validate_stages). Given stages, the rollout starts at stage 0's percent and
     # `percent` above is ignored. Omit for a manual rollout raised by PATCH.
     stages: list[dict] | None = None
+    # ...or a named ramp instead (GET /ramp-presets lists them); not both.
+    ramp: str | None = None
 
 
 class RolloutPatch(BaseModel):
@@ -612,19 +615,19 @@ def create_rollout(body: RolloutCreate, request: Request,
     rel = _owned(ms.get_release(body.release_id), principal)   # 404 if missing or another account's
     product_id = rel["product_id"]
     account_id = principal.account_id                      # the rollout inherits the caller's account
-    prior = ms.active_rollout(product_id, body.cohort, account_id=account_id)   # one active per (account, product, cohort)
-    if prior is not None:
-        ms.update_rollout(prior["rollout_id"], state="paused", pause_reason="superseded")
-        ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
-                        entity_id=prior["rollout_id"], account_id=account_id,
-                        product_id=product_id)
     display_name = _label(body.display_name)
     # A declared ramp overrides the starting percent with its first stage's; a bad ramp is a 400,
-    # not a 500 (validate_stages raises ValueError with the offending stage).
+    # not a 500 (validate_stages raises ValueError with the offending stage). All of this BEFORE
+    # the active rollout is superseded: a refused request must leave it running.
+    if body.ramp is not None and body.stages is not None:
+        raise HTTPException(status_code=400, detail="give ramp or stages, not both")
+    if body.ramp is not None and body.ramp not in RAMP_PRESETS:
+        raise HTTPException(status_code=400, detail="ramp is one of " + ", ".join(RAMP_PRESETS))
+    declared = RAMP_PRESETS[body.ramp] if body.ramp is not None else body.stages
     stages = None
-    if body.stages is not None:
+    if declared is not None:
         try:
-            stages = validate_stages(body.stages)
+            stages = validate_stages(declared)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
     if stages:
@@ -632,8 +635,14 @@ def create_rollout(body: RolloutCreate, request: Request,
     elif body.percent is not None:
         start_percent = body.percent
     else:
-        raise HTTPException(status_code=400, detail="provide percent or stages")
+        raise HTTPException(status_code=400, detail="provide percent, stages or ramp")
+    prior = ms.active_rollout(product_id, body.cohort, account_id=account_id)   # one active per (account, product, cohort)
     rid = new_id("ro")
+    if prior is not None:
+        ms.update_rollout(prior["rollout_id"], state="paused", pause_reason="superseded")
+        ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
+                        entity_id=prior["rollout_id"], data={"by": rid}, account_id=account_id,
+                        product_id=product_id)
     ms.add_rollout(rollout_id=rid, release_id=body.release_id, product_id=product_id,
                    cohort=body.cohort, percent=start_percent,
                    failure_threshold=body.failure_threshold, account_id=account_id,
@@ -646,6 +655,13 @@ def create_rollout(body: RolloutCreate, request: Request,
     return {"rollout_id": rid, "product_id": product_id, "product_id_str": str(product_id),
             "cohort": body.cohort, "percent": start_percent, "state": "active",
             "display_name": display_name, "stages": stages or []}
+
+
+@admin.get("/ramp-presets", responses={200: {"model": RampPresets}})
+def ramp_presets(principal: Principal = Depends(require_scope("observe"))):
+    """The named ramps `POST /rollouts` takes as `ramp` instead of `stages`: each preset's
+    stages exactly as a rollout started from it declares them."""
+    return {"presets": {name: validate_stages(stages) for name, stages in RAMP_PRESETS.items()}}
 
 
 @admin.patch("/rollouts/{rollout_id}", responses={200: {"model": Rollout}})
@@ -794,6 +810,9 @@ def rollout_status(rollout_id: str, request: Request,
     ro = _ramp_view(_owned(ms.get_rollout(rollout_id), principal))
     cohort_devices = ms.cohort_device_count(ro["product_id"], ro["cohort"],
                                             ro.get("account_id", ""))
+    rel = ms.get_release(ro["release_id"])
+    behind = ms.count_devices(ro["product_id"], ro.get("account_id", ""), cohort=ro["cohort"],
+                              older_than_pv=rel["payload_version"]) if rel else cohort_devices
     # The current target: percent of the audience. An ESTIMATE -- membership is a hash,
     # not a list, so the true staged count varies around it (and shifts as the cohort does).
     staged = round(cohort_devices * ro["percent"] / 100)
@@ -806,7 +825,37 @@ def rollout_status(rollout_id: str, request: Request,
             # target each metric is; null until anything is staged
             "rates": rates,
             # explicit device reports (POST /feedback) for this rollout's release
-            "reported": ms.deployment_counts(ro["release_id"])}
+            "reported": ms.deployment_counts(ro["release_id"]),
+            # on this release or newer: progress that cannot pass 100%
+            "on_release": max(0, cohort_devices - behind),
+            "superseded_by": (ms.rollout_successor(ro)
+                              if ro.get("pause_reason") == "superseded" else None)}
+
+
+@admin.get("/rollouts/{rollout_id}/devices", responses={200: {"model": RolloutDeviceList}})
+def rollout_devices(rollout_id: str, request: Request,
+                    state: str | None = Query(None, description="only devices in this state: "
+                                                                "failed, updated, ahead, offered "
+                                                                "or unoffered"),
+                    q: str | None = Query(None, description="name-or-id substring, case-insensitive"),
+                    limit: int = Query(100, ge=1, le=_MAX_PAGE), offset: int = 0,
+                    sort: str | None = _sort_q("seen, device, product, version, cohort, first_seen"),
+                    dir: str = _DIR_Q,
+                    principal: Principal = Depends(require_scope("observe"))):
+    """The rollout's audience -- the devices of its product and cohort -- each with where it
+    stands against the rollout's release (`rollout_state`, by payload version): `failed`
+    (fell back), `updated`, `ahead` (runs something newer, so it never takes this one),
+    `offered` or `unoffered`. `states` counts each across the whole audience; `q` and `state`
+    narrow the rows. The read behind "why hasn't this camera updated?"."""
+    ms = request.app.state.metastore
+    if state is not None and state not in ms.ROLLOUT_STATES:
+        raise HTTPException(status_code=400, detail="state is one of " + ", ".join(ms.ROLLOUT_STATES))
+    ro = _owned(ms.get_rollout(rollout_id), principal)
+    rel = ms.get_release(ro["release_id"])
+    rows, total, states = ms.rollout_devices(ro, rel["payload_version"], limit=limit,
+                                             offset=offset, sort=sort, direction=dir, q=q,
+                                             state=state)
+    return {"devices": _with_fallback_version(rows), "total": total, "states": states}
 
 
 @admin.get("/cohorts", responses={200: {"model": CohortList}})
@@ -1450,6 +1499,31 @@ def fleet_bases(request: Request, product_id: int | None = None,
     for r in rows:
         r["version"] = decode_app_version(r["payload_version"])
     return {"bases": rows}
+
+
+@admin.get("/releases/{release_id}/coverage", responses={200: {"model": ReleaseCoverage}})
+def release_coverage(release_id: str, request: Request,
+                     principal: Principal = Depends(require_scope("observe"))):
+    """Where a release stands in its product's fleet, in one read: its `adoption` (devices
+    running it, of the product's), the fleet `uncovered_bases` -- bases below it that no
+    delta of it was built from, so a device on one downloads the full image (the case for
+    building another delta) -- and the `pinned_cohorts`."""
+    from openmv_ota.ota.version import decode_app_version
+
+    ms = request.app.state.metastore
+    rel = _owned(ms.get_release(release_id), principal)
+    account, pid, pv = rel.get("account_id", ""), rel["product_id"], rel["payload_version"]
+    covered = {(r.get("base_payload_version"), r.get("base_body_sha256"))
+               for r in rel.get("representations") or [] if r.get("base_payload_version")}
+    uncovered = [dict(b, version=decode_app_version(b["payload_version"]))
+                 for b in ms.fleet_bases(pid, account_id=account)
+                 if b["payload_version"] < pv
+                 and (b["payload_version"], b["body_sha256"]) not in covered]
+    return {"release_id": release_id,
+            "adoption": {"on": ms.count_on_payload(account, pid, pv),
+                         "total": ms.count_devices(pid, account)},
+            "uncovered_bases": uncovered,
+            "pinned_cohorts": ms.release_pinned_cohorts(rel)}
 
 
 @admin.get("/releases", responses={200: {"model": ReleaseList}})

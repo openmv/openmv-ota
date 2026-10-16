@@ -1030,6 +1030,19 @@ class SqlMetadataStore:
              body_sha256, int(publish_seq or 0), 1 if orders_by_seq else 0, now, now,
              ",".join(streams) if streams else None))
 
+    def count_on_payload(self, account_id: str, product_id: int, payload_version: int) -> int:
+        """Devices of the account's product running exactly this payload version."""
+        return self.query_one("SELECT COUNT(*) AS n FROM devices WHERE account_id = ? "
+                              "AND product_id = ? AND current_payload_version = ?",
+                              (account_id, product_id, payload_version))["n"]
+
+    def release_pinned_cohorts(self, release: dict) -> list[str]:
+        """The cohorts of the release's account and product pinned to it, by name."""
+        return [r["cohort"] for r in self.query_all(
+            "SELECT cohort FROM cohort_pins WHERE account_id = ? AND product_id = ? "
+            "AND release_id = ? ORDER BY cohort",
+            (release.get("account_id", ""), release["product_id"], release["release_id"]))]
+
     def fleet_bases(self, product_id=None, account_id="", products=None) -> list[dict]:
         """The distinct (payload_version, body_sha256) bases the fleet is RUNNING, with device
         counts -- the answer to "which delta bases must this release cover?". Grouped by exact
@@ -1196,6 +1209,57 @@ class SqlMetadataStore:
         for r in out:
             r["pinned_release_id"] = pins.get(r["device_id"])
         return out
+
+    # Where a device stands against ONE rollout's release, the first that holds: it fell back
+    # (its last boot rejected a slot), it runs the release, it runs something newer (it never
+    # takes this one -- anti-rollback -- so it waits on nothing), it was offered it (staged by the
+    # percent and told so), or it sits outside the current offer. By payload version, which is
+    # what orders releases; a version string does not.
+    ROLLOUT_STATES = ("failed", "updated", "ahead", "offered", "unoffered")
+    _ROLLOUT_STATE = ("CASE WHEN fallback_reason IS NOT NULL THEN 'failed' "
+                      "WHEN current_payload_version = ? THEN 'updated' "
+                      "WHEN current_payload_version > ? THEN 'ahead' "
+                      "WHEN last_offered_release_id = ? THEN 'offered' "
+                      "ELSE 'unoffered' END")
+
+    def rollout_devices(self, rollout: dict, release_pv: int, limit: int = 100, offset: int = 0,
+                        sort=None, direction=None, q=None, state=None) -> tuple:
+        """``(rows, total, states)`` for a rollout's audience -- the devices of its (account,
+        product, cohort) -- each row with its ``rollout_state``. ``states`` counts every state
+        across the WHOLE audience; ``q`` (name-or-id) and ``state`` narrow the rows and
+        ``total`` only."""
+        case = (release_pv, release_pv, rollout["release_id"])
+        where, params = self._devices_where(rollout.get("account_id", ""), rollout["product_id"],
+                                            rollout["cohort"], None, None)
+        states = dict.fromkeys(self.ROLLOUT_STATES, 0)
+        for r in self.query_all("SELECT " + self._ROLLOUT_STATE + " AS s, COUNT(*) AS n "
+                                "FROM devices " + where + " GROUP BY 1", (*case, *params)):
+            states[r["s"]] = r["n"]
+        where, params = self._devices_where(rollout.get("account_id", ""), rollout["product_id"],
+                                            rollout["cohort"], q, None)
+        if state is not None:
+            where, params = _and(where, self._ROLLOUT_STATE + " = ?"), (*params, *case, state)
+        total = self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
+        rows = self.query_all("SELECT *, " + self._ROLLOUT_STATE + " AS rollout_state FROM devices "
+                              + where
+                              + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
+                              + " LIMIT ? OFFSET ?", (*case, *params, limit, offset))
+        out = [_d(r) for r in rows]
+        pins = self.device_pins_for(r["device_id"] for r in out)
+        for r in out:
+            r["pinned_release_id"] = pins.get(r["device_id"])
+        return out, total, states
+
+    def rollout_successor(self, rollout: dict) -> dict | None:
+        """The rollout created next for the same (account, product, cohort) -- for a rollout
+        paused as ``superseded``, the one that took its cohort -- or None."""
+        row = self.query_one(
+            "SELECT rollout_id, display_name FROM rollouts WHERE account_id = ? AND product_id = ? "
+            "AND cohort = ? AND (created_at > ? OR (created_at = ? AND rollout_id > ?)) "
+            "ORDER BY created_at, rollout_id LIMIT 1",
+            (rollout.get("account_id", ""), rollout["product_id"], rollout["cohort"],
+             rollout["created_at"], rollout["created_at"], rollout["rollout_id"]))
+        return dict(row) if row else None
 
     def device_neighbors(self, device_id: str, account_id: str) -> dict:
         """The devices either side of ``device_id`` in its product, in the product's device

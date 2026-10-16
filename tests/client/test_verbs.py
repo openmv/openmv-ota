@@ -1695,3 +1695,53 @@ def test_data_usage_reads_the_account_s_meter(tmp_path, monkeypatch, capsys):
     app.state.datalake.configured = False
     assert main(["client", "data", "usage"]) == 1
     assert "404" in capsys.readouterr().err
+
+
+def test_rollout_devices_lists_the_audience_with_each_state(wired, capsys):
+    store, _ = wired
+    store.add_release(release_id="r1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=10, representations=[{"format": "full", "url": "x", "size": 9}],
+                      manifest_key="m", image_key="i")
+    store.add_rollout(rollout_id="ro_a", release_id="r1", product_id=BID, cohort="beta", percent=10)
+    store.upsert_device(device_id="cam-1", product_id=BID, cohort="beta",
+                        current_payload_version=0x02000000)
+    store.upsert_device(device_id="cam-2", product_id=BID, cohort="beta",
+                        last_offered_release_id="r1")
+    assert main(["client", "rollout", "devices", "--rollout-id", "ro_a", "--state", "offered",
+                 "--sort", "device", "--limit", "5"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [(d["device_id"], d["rollout_state"]) for d in out["devices"]] == [("cam-2", "offered")]
+    assert out["states"]["updated"] == 1 and out["total"] == 1
+    assert main(["client", "rollout", "devices", "--rollout-id", "ro_a", "--q", "cam-1"]) == 0
+    assert json.loads(capsys.readouterr().out)["devices"][0]["rollout_state"] == "updated"
+    assert main(["client", "rollout", "devices", "--rollout-id", "ro_nope"]) == 1
+    assert "404" in capsys.readouterr().err
+
+
+def test_release_coverage_reads_one_release_s_standing(wired, capsys):
+    store, _ = wired
+    store.add_release(release_id="r1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=10, representations=[{"format": "full", "url": "x", "size": 9}],
+                      manifest_key="m", image_key="i")
+    store.upsert_device(device_id="cam-1", product_id=BID, current_payload_version=0x01000000,
+                        body_sha256="aa" * 32)
+    assert main(["client", "release", "coverage", "--release-id", "r1"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["adoption"] == {"on": 0, "total": 1} and out["uncovered_bases"][0]["version"] == "1.0.0"
+
+
+def test_rollout_create_takes_a_named_ramp(wired, capsys):
+    store, _ = wired
+    store.add_release(release_id="r1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=10, representations=[{"format": "full", "url": "x", "size": 9}],
+                      manifest_key="m", image_key="i")
+    assert main(["client", "rollout", "presets"]) == 0
+    assert set(json.loads(capsys.readouterr().out)["presets"]) == {"cautious", "quick"}
+    assert main(["client", "rollout", "create", "--release-id", "r1", "--ramp", "quick"]) == 0
+    assert "10.0%" in capsys.readouterr().out
+    assert main(["client", "rollout", "create", "--release-id", "r1", "--ramp", "quick",
+                 "--stage", "5"]) == 2
+    assert "--ramp or --stage, not both" in capsys.readouterr().err

@@ -1406,7 +1406,7 @@ def test_create_rollout_needs_percent_or_stages(tmp_path):
     _seed_release(store)
     r = TestClient(app).post("/api/v1/admin/rollouts", headers=AUTH,
                              json={"release_id": "rel1"})            # neither percent nor stages
-    assert r.status_code == 400 and "percent or stages" in r.json()["detail"]
+    assert r.status_code == 400 and "percent, stages or ramp" in r.json()["detail"]
 
 
 def test_rollout_status_reports_ramp_progress(tmp_path):
@@ -1619,3 +1619,114 @@ def test_iso_at_clamps_to_what_a_timestamp_holds():
     assert _iso_at(float("nan")) == _iso_at(0) == "1970-01-01T00:00:00+00:00"
     assert _iso_at(-1e300) == _iso_at(0)
     assert _iso_at(1e300).startswith("9999-12-31T23:59:59")
+
+
+def _audience(store):
+    """A rollout's audience in every state: rel1 is payload 0x02000000 in __default__."""
+    pv = 0x02000000
+    for did, kw in (("d-failed", {"current_payload_version": pv - 1, "fallback_reason": "crc"}),
+                    ("d-updated", {"current_payload_version": pv, "current_version": "2.0.0"}),
+                    ("d-ahead", {"current_payload_version": pv + 1}),
+                    ("d-offered", {"current_payload_version": pv - 1,
+                                   "last_offered_release_id": "rel1"}),
+                    ("d-waiting", {"current_payload_version": pv - 1}),
+                    ("d-never", {})):
+        store.upsert_device(device_id=did, product_id=BID, **kw)
+    store.upsert_device(device_id="d-beta", product_id=BID, cohort="beta")   # not the audience
+
+
+def test_rollout_devices_says_where_each_camera_stands(tmp_path):
+    """Each audience device against the release, by payload version, with every state's count
+    over the whole audience; q and state narrow the rows, never the counts."""
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    _audience(store)
+    c = TestClient(app)
+    rid = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                 json={"release_id": "rel1", "percent": 50}).json()["rollout_id"]
+    url = "/api/v1/admin/rollouts/%s/devices" % rid
+    b = c.get(url, headers=AUTH, params={"sort": "device"}).json()
+    assert {d["device_id"]: d["rollout_state"] for d in b["devices"]} == {
+        "d-failed": "failed", "d-updated": "updated", "d-ahead": "ahead",
+        "d-offered": "offered", "d-waiting": "unoffered", "d-never": "unoffered"}
+    assert b["total"] == 6 and b["states"] == {"failed": 1, "updated": 1, "ahead": 1,
+                                               "offered": 1, "unoffered": 2}
+    only = c.get(url, headers=AUTH, params={"state": "unoffered", "q": "WAIT"}).json()
+    assert [d["device_id"] for d in only["devices"]] == ["d-waiting"] and only["total"] == 1
+    assert only["states"] == b["states"]
+    page = c.get(url, headers=AUTH, params={"sort": "device", "limit": 2, "offset": 2}).json()
+    assert [d["device_id"] for d in page["devices"]] == ["d-never", "d-offered"]
+    assert c.get(url, headers=AUTH, params={"state": "lost"}).status_code == 400
+    assert c.get("/api/v1/admin/rollouts/ro_nope/devices", headers=AUTH).status_code == 404
+    # the status read's progress: on this release or past it
+    st = c.get("/api/v1/admin/rollouts/%s/status" % rid, headers=AUTH).json()
+    assert st["on_release"] == 2 and st["cohort_devices"] == 6 and st["superseded_by"] is None
+
+
+def test_a_superseded_rollout_names_the_one_that_took_its_cohort(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    _seed_release(store, rid="rel2", pv=0x02010000)
+    c = TestClient(app)
+    first = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                   json={"release_id": "rel1", "percent": 5}).json()["rollout_id"]
+    second = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                    json={"release_id": "rel2", "percent": 5, "display_name": "Fix"}).json()["rollout_id"]
+    st = c.get("/api/v1/admin/rollouts/%s/status" % first, headers=AUTH).json()
+    assert st["pause_reason"] == "superseded"
+    assert st["superseded_by"] == {"rollout_id": second, "display_name": "Fix"}
+    assert c.get("/api/v1/admin/rollouts/%s/status" % second, headers=AUTH).json()["superseded_by"] is None
+    ev = [e for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
+          if e["action"] == "rollout.superseded"]
+    assert ev[0]["entity_id"] == first and ev[0]["data"] == {"by": second}
+
+
+def test_release_coverage_answers_the_release_page_in_one_read(tmp_path):
+    """Adoption by payload version, the bases below the release that no delta of it was built
+    from (exact bytes; bases at or above it never take it), and the cohorts pinned to it."""
+    app, store = _app(tmp_path)
+    pv = 0x02000000
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=pv, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=10, manifest_key="m", image_key="i",
+                      representations=[{"format": "full", "url": "x.img.gz", "size": 9},
+                                       {"format": "delta", "url": "d.gz", "size": 3,
+                                        "base_payload_version": 0x01000000,
+                                        "base_body_sha256": "aa" * 32}])
+    for did, cur, sha in (("on-1", pv, "cc" * 32), ("on-2", pv, "cc" * 32),
+                          ("covered", 0x01000000, "aa" * 32),
+                          ("republished", 0x01000000, "bb" * 32),   # same version, other bytes
+                          ("older", 0x00090000, "dd" * 32),
+                          ("newer", pv + 1, "ee" * 32)):
+        store.upsert_device(device_id=did, product_id=BID, current_payload_version=cur,
+                            body_sha256=sha)
+    store.set_cohort_pin(BID, "beta", "rel1")
+    c = TestClient(app)
+    b = c.get("/api/v1/admin/releases/rel1/coverage", headers=AUTH).json()
+    assert b["release_id"] == "rel1" and b["adoption"] == {"on": 2, "total": 6}
+    assert sorted((x["version"], x["body_sha256"][:2], x["devices"]) for x in b["uncovered_bases"]) == [
+        ("0.9.0", "dd", 1), ("1.0.0", "bb", 1)]
+    assert b["pinned_cohorts"] == ["beta"]
+    assert c.get("/api/v1/admin/releases/nope/coverage", headers=AUTH).status_code == 404
+
+
+def test_a_named_ramp_starts_a_rollout_and_a_refused_one_leaves_the_live_one_alone(tmp_path):
+    """`ramp` names a preset (GET /ramp-presets lists them). Every refusal comes BEFORE the
+    active rollout is superseded: a malformed ramp used to pause the live rollout and then 400."""
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    c = TestClient(app)
+    presets = c.get("/api/v1/admin/ramp-presets", headers=AUTH).json()["presets"]
+    assert [s["percent"] for s in presets["cautious"]] == [5, 25, 50, 100]
+    assert presets["quick"][0] == {"percent": 10, "min_soak": 3600, "min_attempted": 0}
+    live = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                  json={"release_id": "rel1", "percent": 20}).json()["rollout_id"]
+    for bad in ({"ramp": "reckless"}, {"ramp": "quick", "stages": [{"percent": 1}]},
+                {"stages": [{"percent": 50}, {"percent": 10}]}, {}):
+        r = c.post("/api/v1/admin/rollouts", headers=AUTH, json=dict(bad, release_id="rel1"))
+        assert r.status_code == 400, bad
+        assert store.get_rollout(live)["state"] == "active", bad
+    ro = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                json={"release_id": "rel1", "ramp": "cautious"}).json()
+    assert ro["percent"] == 5 and [s["percent"] for s in ro["stages"]] == [5, 25, 50, 100]
+    assert store.get_rollout(live)["pause_reason"] == "superseded"

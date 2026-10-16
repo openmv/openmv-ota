@@ -166,6 +166,26 @@ class FleetBases(BaseModel):
     bases: list[FleetBase] = []
 
 
+class RampPresets(BaseModel):
+    presets: dict[str, list[dict]]
+    """Each named ramp's stages (``percent``, ``min_soak`` seconds, ``min_attempted``), as a
+    rollout created with ``ramp: <name>`` declares them."""
+
+
+class ReleaseCoverage(BaseModel):
+    """Where a release stands in its product's fleet."""
+    release_id: str
+    adoption: dict[str, int]
+    """``on``: the product's devices running this release (by payload version); ``total``:
+    the product's devices."""
+    uncovered_bases: list[FleetBase] = []
+    """Fleet bases BELOW this release that no delta of it was built from (exact bytes): a
+    device on one downloads the full image. Bases at or above it never take it
+    (anti-rollback), so they are not listed."""
+    pinned_cohorts: list[str] = []
+    """Cohorts pinned to this release."""
+
+
 class InstallDay(BaseModel):
     """One UTC day of the install series. Every day in the window is present, zero
     included, so a caller draws the series without inventing the gaps."""
@@ -285,6 +305,22 @@ class RolloutList(BaseModel):
 class DeviceList(BaseModel):
     devices: list[Device]
     total: int
+
+
+class RolloutDevice(Device):
+    rollout_state: str
+    """Where the device stands against the rollout's release, the first that holds: ``failed``
+    (its last boot rejected a slot), ``updated`` (runs the release), ``ahead`` (runs something
+    newer, so it never takes this one), ``offered`` (staged by the percent and told so) or
+    ``unoffered`` (outside the current offer). By payload version."""
+
+
+class RolloutDeviceList(BaseModel):
+    devices: list[RolloutDevice]
+    total: int
+    """Rows matching ``q`` and ``state`` (the page's denominator)."""
+    states: dict[str, int]
+    """Every state's count across the whole audience, ``q`` and ``state`` aside."""
 
 
 class CohortList(BaseModel):
@@ -457,6 +493,12 @@ class RolloutStatus(BaseModel):
     ``updated`` / ``failures``); null until anything is staged."""
     reported: dict[str, int]
     """Explicit device reports (``POST /feedback``) for this rollout's release."""
+    on_release: int = 0
+    """Audience devices on this release OR NEWER -- progress that cannot pass 100%, since a
+    device already past the release is done as far as this rollout goes."""
+    superseded_by: dict | None = None
+    """For a rollout paused as ``superseded``: the one that took its cohort (``rollout_id``,
+    ``display_name``). Null otherwise."""
     stages: list[dict] = []
     """The declared ramp (``percent``, ``min_soak`` seconds, ``min_attempted``, optional
     ``max_failure_rate`` per stage); empty for a manual rollout."""

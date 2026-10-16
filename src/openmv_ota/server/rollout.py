@@ -112,6 +112,17 @@ def should_autopause(failures: int, attempted: int, threshold: float) -> bool:
 # is judged on ITS OWN window -- the attempts and failures since it began -- not the rollout's
 # lifetime totals, so an early rocky stage does not poison a later healthy one, nor the reverse.
 
+# Named ramps to start a rollout from instead of spelling out its stages -- the ones a
+# dashboard's create form offers, so every client means the same thing by "cautious".
+# A preset is a starting point: send `stages` instead to change one.
+RAMP_PRESETS = {
+    "cautious": [{"percent": 5, "min_soak": 86400}, {"percent": 25, "min_soak": 86400},
+                 {"percent": 50, "min_soak": 86400}, {"percent": 100}],
+    "quick": [{"percent": 10, "min_soak": 3600}, {"percent": 50, "min_soak": 3600},
+              {"percent": 100}],
+}
+
+
 def validate_stages(stages):
     """Normalize + check a declared ramp; return the cleaned list or raise ValueError. Percents are
     monotonic non-decreasing (a ramp only ever raises the offered share)."""
