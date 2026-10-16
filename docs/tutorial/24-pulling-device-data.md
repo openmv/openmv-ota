@@ -227,6 +227,19 @@ Nested fields address by dotted path (`--field imu.ax`). `truncated: true` means
 hit the server's object cap for one request: narrow the window rather than trust a
 partial chart.
 
+`--format csv` writes the chart as a spreadsheet does, one row per bucket, and takes
+several fields side by side (`--field temp_c,fps`):
+
+```
+$ openmv-ota client data series --device-id ARDUINO_PORTENTA_H7:34323437303351060033001F --topic heap --field used_pct \
+      --since 2026-10-15T10:00 --until 2026-10-15T14:00 --buckets 4 --format csv
+time_utc,used_pct_avg,used_pct_min,used_pct_max,used_pct_n
+2026-10-15 10:00:00,9.348184357541902,7.7,11.3,716
+2026-10-15 11:00:00,9.358077994428973,7.5,10.4,718
+2026-10-15 12:00:00,9.348463687150838,8.2,11.1,716
+2026-10-15 13:00:00,9.357122905027932,8.2,11.7,716
+```
+
 
 ## Watching live
 

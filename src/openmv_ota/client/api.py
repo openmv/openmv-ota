@@ -503,6 +503,19 @@ class Api:
             params["until"] = until
         return self._lake_get("%s/%s" % (lake["logs_url"], topic), lake["token"], params)
 
+    def data_window(self, device_id: str, topic: str = "console", since=None, until=None,
+                    limit: int = 5000):
+        """A text topic's records between two moments, oldest first, across reboots, in one read
+        (the datalake defaults ``until`` to now and ``since`` to a day before it); ``truncated``
+        when the window held more than ``limit``, which keeps the newest."""
+        lake = self._lake(device_id)
+        params = {"limit": limit}
+        if since is not None:
+            params["since"] = since
+        if until is not None:
+            params["until"] = until
+        return self._lake_get("%s/%s/window" % (lake["logs_url"], topic), lake["token"], params)
+
     def data_series(self, device_id=None, topic: str = "", field: str = "", since=None,
                     until=None, buckets: int = 200, product_id=None):
         """A numeric field downsampled into time buckets (min/avg/max/n each), over the

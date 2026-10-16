@@ -1589,3 +1589,89 @@ def test_account_delete_takes_only_a_deactivated_account(tmp_path, monkeypatch, 
     assert main(["client", "account", "delete", "--account-id", "acctD"]) == 0
     assert capsys.readouterr().out.startswith("account acctD deleted (")
     assert store.get_account("acctD") is None
+
+
+def _lake(monkeypatch, answer, datalake=True):
+    """The datalake behind a device/product grant, answered by ``answer(url, params)``."""
+    from openmv_ota.client import api as api_mod
+    grant = {"token": "relay", "streams": {}, "expires_in_s": 60}
+    if datalake:
+        grant["datalake"] = {"token": "lake-tok", "topics_url": "https://lake/api/v1/topics/d1",
+                             "logs_url": "https://lake/api/v1/logs/d1",
+                             "series_url": "https://lake/api/v1/series/d1", "expires_in_s": 300}
+    seen = []
+    monkeypatch.setattr(api_mod.Api, "viewer_grant", lambda self, d: grant)
+    monkeypatch.setattr(api_mod.Api, "product_grant", lambda self, p: grant)
+
+    def get(self, url, token, params=None):
+        seen.append((url, params))
+        return answer(url, params)
+    monkeypatch.setattr(api_mod.Api, "_lake_get", get)
+    return seen
+
+
+_WINDOW = {"since": 0.0, "until": 9.0, "truncated": False, "records": [
+    {"sid": "aa", "seq": 7, "ts": 1792054792, "text": "[2026-10-15 08:59:51] INFO app: up\n"},
+    {"sid": "bb", "seq": 0, "text": "boot\nsecond line\n"}]}
+
+
+def test_data_export_writes_the_console_as_csv(wired, monkeypatch, capsys):
+    seen = _lake(monkeypatch, lambda url, params: _WINDOW)
+    assert main(["client", "data", "export", "--device-id", "d1", "--since", "2026-10-15",
+                 "--until", "2026-10-15T09:00"]) == 0
+    assert seen == [("https://lake/api/v1/logs/d1/console/window",
+                     {"limit": 5000, "since": 1792022400.0, "until": 1792054800.0})]
+    import csv
+    import io
+    rows = list(csv.reader(io.StringIO(capsys.readouterr().out)))
+    assert rows == [["time_utc", "session", "seq", "line"],
+                    ["2026-10-15 08:59:52", "aa", "7", "INFO app: up"],
+                    ["", "bb", "0", "boot\nsecond line"]]
+
+
+def test_data_export_ndjson_to_a_file_says_when_the_window_overflowed(wired, monkeypatch,
+                                                                      tmp_path, capsys):
+    _lake(monkeypatch, lambda url, params: dict(_WINDOW, truncated=True))
+    out = tmp_path / "console.ndjson"
+    assert main(["client", "data", "export", "--device-id", "d1", "--topic", "events",
+                 "--format", "ndjson", "--limit", "2", "--out", str(out)]) == 0
+    assert [json.loads(x)["seq"] for x in out.read_text().splitlines()] == [7, 0]
+    err = capsys.readouterr().err
+    assert "2 record(s) -> %s" % out in err and "held more than 2 records" in err
+
+
+def test_data_export_json_and_no_datalake(wired, monkeypatch, capsys):
+    _lake(monkeypatch, lambda url, params: _WINDOW)
+    assert main(["client", "data", "export", "--device-id", "d1", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == _WINDOW
+    _lake(monkeypatch, lambda url, params: _WINDOW, datalake=False)
+    assert main(["client", "data", "export", "--device-id", "d1"]) == 1
+    assert "no datalake configured" in capsys.readouterr().err
+
+
+def test_data_series_csv_puts_fields_side_by_side(wired, monkeypatch, capsys):
+    answers = {"temp_c": [{"t": 1792054800.0, "n": 3, "min": 30.0, "max": 32.0, "avg": 31.0},
+                          {"t": 1792058400.0, "n": 1, "min": 33.0, "max": 33.0, "avg": 33.0}],
+               "fps": [{"t": 1792054800.0, "n": 3, "min": 25.0, "max": 27.0, "avg": 26.0}]}
+    seen = _lake(monkeypatch, lambda url, params: {"buckets": answers[params["field"]]})
+    assert main(["client", "data", "series", "--product-id", "7", "--topic", "telemetry",
+                 "--field", "temp_c,fps", "--format", "csv", "--buckets", "2"]) == 0
+    import csv
+    import io
+    rows = list(csv.reader(io.StringIO(capsys.readouterr().out)))
+    assert rows == [
+        ["time_utc", "temp_c_avg", "temp_c_min", "temp_c_max", "temp_c_n",
+         "fps_avg", "fps_min", "fps_max", "fps_n"],
+        ["2026-10-15 09:00:00", "31.0", "30.0", "32.0", "3", "26.0", "25.0", "27.0", "3"],
+        ["2026-10-15 10:00:00", "33.0", "33.0", "33.0", "1", "", "", "", ""]]
+    assert [p["field"] for _, p in seen] == ["temp_c", "fps"]
+
+
+def test_data_series_several_fields_need_csv_and_errors_surface(wired, monkeypatch, capsys):
+    _lake(monkeypatch, lambda url, params: {"buckets": []}, datalake=False)
+    assert main(["client", "data", "series", "--device-id", "d1", "--topic", "t",
+                 "--field", "a,b"]) == 2
+    assert "several fields need --format csv" in capsys.readouterr().err
+    assert main(["client", "data", "series", "--device-id", "d1", "--topic", "t",
+                 "--field", "a", "--format", "csv"]) == 1
+    assert "no datalake configured" in capsys.readouterr().err

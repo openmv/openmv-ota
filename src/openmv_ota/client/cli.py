@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -484,14 +485,34 @@ def register(parser: argparse.ArgumentParser) -> None:
     gds.add_argument("--product-id", type=int, metavar="PRODUCT_ID",
                      help="every device of this product together")
     p_das.add_argument("--topic", required=True, help="the topic, e.g. telemetry")
-    p_das.add_argument("--field", required=True, help="the field under data, dotted for nested (imu.ax)")
+    p_das.add_argument("--field", required=True,
+                       help="the field under data, dotted for nested (imu.ax); with --format csv, "
+                            "several, comma-separated, side by side")
     p_das.add_argument("--since", type=_when, metavar="WHEN",
                        help="window start: %s (default: the data's span)" % _WHEN)
     p_das.add_argument("--until", type=_when, metavar="WHEN",
                        help="window end: %s (default: the data's span)" % _WHEN)
     p_das.add_argument("--buckets", type=int, default=200, help="time buckets across the window (default 200)")
+    p_das.add_argument("--format", choices=("json", "csv"), default="json",
+                       help="json (default), or csv: one row per bucket, avg/min/max/n per field")
     _creds(p_das)
     p_das.set_defaults(func=cmd_data_series, _command="client data series")
+    p_dax = dasub.add_parser("export", help="a text topic's records between two moments, oldest "
+                                            "first across reboots: the console as a file")
+    p_dax.add_argument("--device-id", required=True, metavar="DEVICE_ID", help="the device to read")
+    p_dax.add_argument("--topic", default="console", help="the topic (default: console)")
+    p_dax.add_argument("--since", type=_when, metavar="WHEN",
+                       help="window start: %s (default: a day before --until)" % _WHEN)
+    p_dax.add_argument("--until", type=_when, metavar="WHEN",
+                       help="window end: %s (default: now)" % _WHEN)
+    p_dax.add_argument("--limit", type=int, default=5000,
+                       help="at most this many records, the newest when the window holds more "
+                            "(default 5000; the datalake allows up to 20000)")
+    p_dax.add_argument("--format", choices=("csv", "ndjson"), default="csv",
+                       help="csv (default: time_utc, session, seq, line) or ndjson (the records)")
+    p_dax.add_argument("--out", type=Path, metavar="FILE", help="write here instead of stdout")
+    _creds(p_dax)
+    p_dax.set_defaults(func=cmd_data_export, _command="client data export")
 
     p_wh = sub.add_parser("webhook", help="endpoints that receive the account's events as they happen")
     whsub = p_wh.add_subparsers(dest="_wh")
@@ -1393,11 +1414,83 @@ def cmd_data_logs(args: argparse.Namespace) -> int:
                                                  until=args.until))
 
 
+def _utc(ts) -> str:
+    """A CSV's time column: UTC, to the second."""
+    import datetime as dt
+    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def cmd_data_series(args: argparse.Namespace) -> int:
-    return _read(args, lambda api: api.data_series(args.device_id, args.topic, args.field,
-                                                   since=args.since, until=args.until,
-                                                   buckets=args.buckets,
-                                                   product_id=args.product_id))
+    fields = [f for f in args.field.split(",") if f]
+    if args.format == "json":
+        if len(fields) != 1:
+            print("error: several fields need --format csv", file=sys.stderr)
+            return 2
+        return _read(args, lambda api: api.data_series(args.device_id, args.topic, fields[0],
+                                                       since=args.since, until=args.until,
+                                                       buckets=args.buckets,
+                                                       product_id=args.product_id))
+    import csv
+    try:
+        api = _make_api(config.resolve(args.server, args.token))
+        rows: dict = {}
+        for name in fields:
+            got = api.data_series(args.device_id, args.topic, name, since=args.since,
+                                  until=args.until, buckets=args.buckets, product_id=args.product_id)
+            for b in got["buckets"]:
+                rows.setdefault(b["t"], {})[name] = b
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    w = csv.writer(sys.stdout)
+    w.writerow(["time_utc"] + ["%s_%s" % (f, k) for f in fields for k in ("avg", "min", "max", "n")])
+    for t in sorted(rows):
+        line = [_utc(t)]
+        for f in fields:
+            b = rows[t].get(f)
+            line += [b["avg"], b["min"], b["max"], b["n"]] if b else ["", "", "", ""]
+        w.writerow(line)
+    return 0
+
+
+_STAMP = re.compile(r"^\[[^\]]*\]\s*")   # a console line's own leading [time]
+
+
+def cmd_data_export(args: argparse.Namespace) -> int:
+    """A text topic over a time window, oldest first across reboots: CSV as the device page's
+    download writes it (the line without its own leading [time] stamp, which time_utc carries),
+    or the records as JSON lines. A window that held more than --limit says so on stderr."""
+    import csv
+    try:
+        win = _make_api(config.resolve(args.server, args.token)).data_window(
+            args.device_id, args.topic, since=args.since, until=args.until, limit=args.limit)
+    except ClientError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    if args.json:
+        print(json.dumps(win, indent=2))
+        return 0
+    out = args.out.open("w", newline="", encoding="utf-8") if args.out else sys.stdout
+    try:
+        if args.format == "ndjson":
+            for r in win["records"]:
+                out.write(json.dumps(r) + "\n")
+        else:
+            w = csv.writer(out)
+            w.writerow(["time_utc", "session", "seq", "line"])
+            for r in win["records"]:
+                ts = r.get("ts")
+                w.writerow([_utc(ts) if isinstance(ts, (int, float)) else "", r.get("sid") or "",
+                            r.get("seq"), _STAMP.sub("", str(r.get("text") or "").rstrip("\n"), count=1)])
+    finally:
+        if args.out:
+            out.close()
+    if args.out:
+        print("%d record(s) -> %s" % (len(win["records"]), args.out), file=sys.stderr)
+    if win.get("truncated"):
+        print("note: the window held more than %d records; these are its newest (narrow "
+              "--since/--until, or raise --limit)" % args.limit, file=sys.stderr)
+    return 0
 
 
 def cmd_device_rename(args: argparse.Namespace) -> int:
