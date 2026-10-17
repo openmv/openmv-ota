@@ -507,7 +507,8 @@ def test_recover_power_cycles_a_wedged_chip_with_a_deep_sleep(monkeypatch):
     se, did, log = _recover_board(monkeypatch)
     se.recover(log)
     assert did["probed"] == 1 and did["slept"] == 2000
-    assert did["logged"] == ["se: no answer -- cutting its power with a 2 s deep sleep"]
+    assert did["logged"] == ["se: no answer after reset cause 2 -- cutting its power with a 2 s "
+                             "deep sleep"]
 
 
 def test_recover_leaves_a_working_chip_and_other_boards_alone(monkeypatch):
@@ -522,13 +523,12 @@ def test_recover_leaves_a_working_chip_and_other_boards_alone(monkeypatch):
     assert se.recover(log) is None                                 # no keys at all
 
 
-def test_recover_sleeps_once_never_on_the_boot_its_sleep_started(monkeypatch):
-    se, did, log = _recover_board(monkeypatch, cause=4)            # this boot IS the power cycle
+def test_recover_leaves_a_deep_sleep_wake_alone(monkeypatch):
+    """A boot a deep sleep started -- recover()'s own, or the application's -- cut the chip's
+    power on the way: it is not asked, and nothing sleeps again (once per wedge, no loop)."""
+    se, did, log = _recover_board(monkeypatch, cause=4)
     se.recover(log)
-    assert did["slept"] is None and did["logged"] == ["se: no answer, and a deep sleep did not help"]
-    se, did, _ = _recover_board(monkeypatch, cause=4)
-    se.recover()                                                   # no log: still no loop
-    assert did["slept"] is None
+    assert did["probed"] == 0 and did["slept"] is None and not did["logged"]
 
 
 def test_recover_never_sleeps_on_firmware_that_cannot_tell_a_deep_sleep_wake(monkeypatch):

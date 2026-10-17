@@ -58,30 +58,35 @@ def recover(log=None):
     boot.py calls it before anything needs the keys, and before a trial boot spends one of its
     attempts, so the extra boot costs the trial nothing.
 
-    Returns when the chip answers or the board has no such recovery. Otherwise the camera deep
-    sleeps for 2 s and boots again -- once: if the chip still does not answer on the boot that
-    deep sleep started, this returns and the camera carries on without its keys (opening them
-    then says why). It also returns without sleeping on firmware that cannot tell a deep-sleep
-    wake from a reset (no ``machine.DEEPSLEEP_RESET``, or a ``reset_cause()`` of 0), where
-    sleeping could repeat forever."""
+    Returns when the chip answers or the board has no such recovery, and without even asking
+    the chip on a boot a deep sleep started (``machine.DEEPSLEEP_RESET``): its power was just
+    cut, so it cannot still be wedged -- the camera's own deep sleeps cost nothing here, and the
+    recovery happens once. Otherwise the camera deep sleeps for 2 s and boots again; that boot
+    then reads ``DEEPSLEEP_RESET`` from ``machine.reset_cause()``, so the warning logged before
+    the sleep names the reset that wedged the chip. It never sleeps on firmware that cannot tell
+    a deep-sleep wake from a reset (no ``machine.DEEPSLEEP_RESET``, or a ``reset_cause()`` of
+    0), where sleeping could repeat forever: the camera carries on, and opening its keys says
+    why."""
     try:
         board, wiring = _wiring()
     except ImportError:
         return
     if getattr(board, "RECOVER", None) != "deepsleep":
         return
-    if board.SecureElement.answers(wiring[0], wiring[1]):
-        return
     import machine
     woke = getattr(machine, "DEEPSLEEP_RESET", None)
     cause = machine.reset_cause()
-    if woke is None or not cause or cause == woke:
+    if woke is not None and cause == woke:
+        return
+    if board.SecureElement.answers(wiring[0], wiring[1]):
+        return
+    if woke is None or not cause:
         if log is not None:
-            log.warning("se: no answer, and %s" % ("a deep sleep did not help" if cause == woke
-                                                   else "this firmware cannot recover it"))
+            log.warning("se: no answer, and this firmware cannot recover it")
         return
     if log is not None:
-        log.warning("se: no answer -- cutting its power with a 2 s deep sleep")
+        log.warning("se: no answer after reset cause %d -- cutting its power with a 2 s deep "
+                    "sleep" % cause)
     import time
     time.sleep(0.02)                              # let the log line out of the UART first
     machine.deepsleep(2000)                       # whole seconds: < 1000 sets no wake alarm

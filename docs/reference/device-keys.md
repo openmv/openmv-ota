@@ -63,9 +63,11 @@ power is cut. Each board handles it without anyone at the camera:
   When boot finds the chip not answering, the camera deep sleeps for 2 seconds and boots again.
   It does this before an update's trial boot is counted, so the extra boot costs the trial
   nothing, and only once: if the chip still does not answer, the camera runs without its keys
-  and `se.open()` raises `OSError`. The deep sleep needs firmware whose
-  `machine.reset_cause()` reports `machine.DEEPSLEEP_RESET` (MicroPython #19619); on older
-  firmware the camera skips it.
+  and `se.open()` raises `OSError`. A boot that a deep sleep started (the application's own
+  included) is never checked: the sleep has just cut the chip's power. After a recovery,
+  `machine.reset_cause()` reports `machine.DEEPSLEEP_RESET`; the warning logged before the sleep
+  names the reset that wedged the chip. The deep sleep needs firmware whose `reset_cause()`
+  reports `DEEPSLEEP_RESET` (MicroPython #19619); on older firmware the camera skips it.
 - **Arduino Giga R1 (ATECC608):** the chip's own watchdog sends it back to sleep within 1.3
   seconds, and the camera waits that out once when the chip does not wake.
 
