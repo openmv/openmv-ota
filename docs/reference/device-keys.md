@@ -197,7 +197,8 @@ unsigned, so the server answers it with update offers only, and it can't install
 encrypted for each camera.
 
 A camera that has just booted cold has no clock yet: its first check-in goes unsigned, and the
-server's reply (its `Date` header) sets the clock for the next one. Recovery never signs.
+server's reply (its `Date` header) sets the clock for the next one. Recovery does the same: it
+signs once its clock is set, trying NTP before its first check-in.
 A camera whose clock kept counting while it was off trusts it at boot; if it drifted more
 than five minutes, that first check-in is signed at a **stale** time, and the reply corrects
 the clock the same way.

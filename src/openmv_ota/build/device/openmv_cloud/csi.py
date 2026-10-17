@@ -123,6 +123,7 @@ except ImportError:               # host, or a build without the frozen logger
 _DEFAULT_FPS = 5                  # upload cap while watched; ~1-2 Mbit/s at VGA
 _DEFAULT_STREAM = "0"
 _RECONNECT_BACKOFF_S = 5
+_EXHAUSTED_BACKOFF_S = 60  # after an out-of-memory failure: let the network stack free its buffers
 _CLOSE_REPLACED = 1012            # relay: a newer camera socket took the room
 
 
@@ -855,6 +856,18 @@ async def _drain(writer):  # pragma: no cover  (device: asyncio streams)
         raise OSError("relay send stalled for %d s" % (_SEND_STALL_MS // 1000))
 
 
+def _relay_backoff(e):
+    """How long to wait before the next relay connect after failing with ``e``. Out of memory
+    (``OSError(ENOMEM)`` or a MemoryError) waits longer: on the WINC1500 it means the module is
+    out of buffers, and a fresh TLS handshake every few seconds keeps it that way -- while the
+    check-in, which needs the same buffers, is what gets the device out (see openmv_ota's
+    _exhausted_step)."""
+    if isinstance(e, MemoryError) or (isinstance(e, OSError) and bool(e.args)
+                                       and e.args[0] in (12, -12)):
+        return _EXHAUSTED_BACKOFF_S
+    return _RECONNECT_BACKOFF_S
+
+
 def _loud_reconnect(streak):
     """Whether the ``streak``-th consecutive relay failure is worth a WARNING (the first of a
     streak) or only DEBUG (the rest). The OTA logger's warnings now reach the cloud console
@@ -875,6 +888,7 @@ async def _relay_task(stream):  # pragma: no cover
     streak = 0                                   # consecutive failures since the last connect
     reader = writer = None
     while True:
+        pause = _RECONNECT_BACKOFF_S
         entry = _stream_grant(stream.name)
         if not entry:
             await asyncio.sleep(_RECONNECT_BACKOFF_S)
@@ -889,11 +903,12 @@ async def _relay_task(stream):  # pragma: no cover
             streak += 1
             say = log.warning if _loud_reconnect(streak) else log.debug
             say("live[%s]: %s; reconnecting" % (stream.name, repr(e)))
+            pause = _relay_backoff(e)
         stream._writer = None
         reader = writer = None                   # drop the dead connection's objects...
         stream._session.streaming = False        # a dead socket streams to no one
         gc.collect()                             # ...and reclaim them before the next handshake
-        await asyncio.sleep(_RECONNECT_BACKOFF_S)
+        await asyncio.sleep(pause)
 
 
 async def _pump(stream, reader, writer):  # pragma: no cover

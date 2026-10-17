@@ -56,6 +56,11 @@ _FROZEN_DEVICE_MODULES = ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py",
                           # installer -- which normally ships in the romfs and is exec'd into
                           # RAM, but cannot be when the romfs is the thing that is gone.
                           "openmv_netcfg.py", "openmv_recovery.py")
+# ...of which these two are network-only: recovery brings up a network and checks in. A board
+# with none (`ota_runtime_drops_network`, the OpenMV Cam M4) can never run them, and they cost
+# the flash it doesn't have -- the M4 overflowed FLASH_TEXT by 560 bytes once recovery learned
+# to sign. Built without them, boot.py halts visibly on a lost image instead.
+_NETWORK_ONLY_MODULES = ("openmv_netcfg.py", "openmv_recovery.py")
 _VERIFY_C = _DEVICE_DIR / "ecdsa_verify.c"
 _KEY_PACKAGE = _DEVICE_DIR / "openmv_se"      # the camera's keys, frozen per board
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
@@ -275,7 +280,10 @@ def _write_wrapper_manifest(p, repo: Path, name: str,
                'freeze("%s", "_ota_config.py")\n' % mods.as_posix()]
     # Editable device modules (logger + watchdog) frozen so boot.py / the installer / the
     # app share them; prefer the project's copy, fall back to the bundled default.
+    networked = not get_board(name).ota_runtime_drops_network
     for mod in _FROZEN_DEVICE_MODULES:
+        if mod in _NETWORK_ONLY_MODULES and not networked:
+            continue
         src = p.root / "device" / mod
         shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, mods / mod)
         freezes.append('freeze("%s", "%s")\n' % (mods.as_posix(), mod))

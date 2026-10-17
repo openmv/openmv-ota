@@ -292,3 +292,29 @@ def test_the_firmware_stamps_the_board_recovery_reports(make_project, monkeypatc
     ns = {}
     exec((r.build_dir / "_ota_config.py").read_text(), ns)  # noqa: S102 (generated code)
     assert ns["BOARD"] == "OPENMV_N6"
+
+
+def test_a_signed_recovery_check_in_carries_the_signature_of_its_exact_body():
+    seen = []
+
+    def sign(body):
+        seen.append(body)
+        return "v=1;ts=5;sig=ab"
+    lines, body = _split(rec.checkin_request(_Cfg, "h", 443, "X", "stm32", UID, sign))
+    assert "X-OMV-Signature: v=1;ts=5;sig=ab" in lines and seen == [body]
+
+
+def test_a_recovery_check_in_without_a_signature_has_no_header():
+    for sign in (None, lambda body: None):
+        lines, _ = _split(rec.checkin_request(_Cfg, "h", 443, "X", "stm32", UID, sign))
+        assert not any(line.startswith("X-OMV-Signature") for line in lines)
+
+
+def test_recovery_reads_the_servers_date():
+    assert rec.http_date(b"Sun, 06 Nov 1994 08:49:37 GMT") == 784111777
+    assert rec.http_date("Thu, 15 Oct 2026 20:41:00 GMT") == 1792096860
+    assert rec.http_date(b"Thu, 29 Feb 2024 00:00:00 GMT") == 1709164800      # a leap day
+    for bad in (None, b"", b"yesterday", b"Thu, 15 Oct 2026 20:41:00 PST",
+                b"Thu, 15 Xyz 2026 20:41:00 GMT", b"Thu, 32 Oct 2026 20:41:00 GMT",
+                b"Thu, 15 Oct 2026 24:00:00 GMT", b"Thu, 1x Oct 2026 20:41:00 GMT"):
+        assert rec.http_date(bad) is None, bad

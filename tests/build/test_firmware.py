@@ -219,6 +219,21 @@ def test_build_firmware_alif_per_core(make_project, monkeypatch):
     assert sorted(o.name for o in r.outputs) == ["OPENMV_AE3-firmware-M55_HE.bin", "OPENMV_AE3-firmware-M55_HP.bin"]
 
 
+def test_a_board_without_a_network_freezes_no_network_recovery(make_project, monkeypatch):
+    """The M4 has no network, so recovery (bring a network up, check in) can never run on it;
+    freezing it there overflowed its FLASH_TEXT. The installer stays: the runtime installs
+    with the frozen copy on a classic board."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    root, repo, _app = make_project(boards=("OPENMV2",), ota=True)
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+    manifest = (r.build_dir / "manifest.py").read_text()
+    for mod in ("openmv_netcfg.py", "openmv_recovery.py"):
+        assert mod not in manifest and not (r.build_dir / mod).exists()
+    for mod in ("openmv_installer.py", "openmv_log.py", "openmv_rtc.py", "boot.py"):
+        assert mod in manifest
+
+
 def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)
