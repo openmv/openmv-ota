@@ -97,6 +97,10 @@ reference, so they can't drift from the code:
   the two-stage corrupt-firmware reflash; its docstring is the recovery manual.
 - **`hil/provision.sh`** — the runner-owned tooling bootstrap; its header
   comment covers what it brings, against the node baseline below.
+- **`hil/patches/micropython/`** — upstream MicroPython fixes the bench builds
+  with before OpenMV's fork has them, one patch file per upstream commit.
+  `provision.sh` applies each to the firmware's `lib/micropython` and skips one
+  that is already there; delete a patch once the fork has synced it.
 - **`hil/run_matrix.sh`** — several scenarios back-to-back on a node, one trace
   each.
 

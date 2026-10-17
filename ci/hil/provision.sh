@@ -95,6 +95,23 @@ if [ ! -f "$PROJ/openmv-ota.lock.json" ] \
   # superproject's clean never enters and a single -f refuses to remove -- and `git status` then
   # reports ` M lib/micropython` forever, so `build firmware` refuses the "dirty" tree.
   git -C "$FW" submodule foreach -q --recursive 'git clean -qffdx'
+  # Upstream micropython fixes the bench needs before openmv's fork syncs them: each is the
+  # upstream commit as a patch file under ci/hil/patches/micropython/, not a fetch by SHA (a
+  # merged PR branch gets garbage-collected and the fetch dies with "bad object"). Applied into
+  # lib/micropython and committed in the superproject BEFORE `project new` locks the tree, so the
+  # lock captures it and the checkout stays clean. A patch whose change is already there (it
+  # reverse-applies) is skipped, so each one goes quiet once the fork syncs -- delete it then.
+  IDENT=(-c user.name=openmv-ota -c user.email=build@openmv.io)
+  for p in "$CHECKOUT"/ci/hil/patches/micropython/*.patch; do
+    [ -e "$p" ] || continue
+    if git -C "$FW/lib/micropython" apply --check -R "$p" 2>/dev/null; then
+      log "micropython already has $(basename "$p")"
+      continue
+    fi
+    log "carry $(basename "$p") into lib/micropython"
+    git -C "$FW/lib/micropython" "${IDENT[@]}" am -q "$p"
+    git -C "$FW" "${IDENT[@]}" commit -q lib/micropython -m "carry $(basename "$p" .patch)"
+  done
   # `project new` below carries micropython#19348 (ranged romfs erase) into lib/micropython for
   # a v5.0 OTA firmware -- the tool guarantees it, so this script (and any real user) needs no
   # custom step; the lock captures the patched, committed-clean tree.
