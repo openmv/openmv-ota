@@ -114,6 +114,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A reset in the middle of a secure-element exchange no longer strands a camera's keys.** The
+  interrupted SE050 refused every request until its power was cut, so the camera could not sign
+  a check-in until someone power-cycled it. The OpenMV Cam RT1062 now cuts the chip's power
+  itself: boot finds the chip not answering, deep sleeps for 2 seconds and boots again, once,
+  before an update's trial boot is counted (it needs firmware with MicroPython #19619's
+  `machine.DEEPSLEEP_RESET`). The Arduino Giga's ATECC608 waits out the chip's own 1.3 s
+  watchdog when it does not wake. The Portenta H7 and Nicla Vision already power-cycle their
+  SE050 through its enable pin.
+
 - **A refused rollout no longer stops the live one.** Creating a rollout paused the cohort's
   active rollout as superseded before checking the new one's stages, so a malformed ramp left the
   cohort with nothing offering and answered 400. Every refusal now comes first.

@@ -44,6 +44,7 @@ _KX_SLOT = 3                      # the exchange key's slot
 _REC = 8                          # the record that the keys were made (a clear slot Arduino leaves)
 _MAGIC = b"OMVK\x01"
 _WAIT_MS = 1500                   # a command's slowest case (GenKey/Sign at a divided clock)
+_WATCHDOG_MS = 1500               # the chip's own watchdog, 1.3 s with ChipMode 0 (_CONFIG), and margin
 
 # Configuration bytes 16-127 as Arduino writes them (ECCX08_DEFAULT_TLS_CONFIG). Bytes 0-15 are
 # the chip's own; bytes 68-71 here (config 84-87: UserExtra, Selector and the two lock bytes) are
@@ -185,13 +186,24 @@ class SecureElement:
                 pass
 
     def _wake(self):
-        try:
-            self._i2c.writeto(0x00, b"\x00")               # SDA low long enough: a wake pulse
-        except OSError:
-            pass                                          # nobody answers address 0: expected
-        time.sleep_us(1500)
-        if self._i2c.readfrom(self._addr, 4) != _WAKE:
-            raise OSError("atecc608: no wake")
+        # A reset in the middle of an exchange leaves the chip awake, mid-command, deaf to the
+        # wake; its watchdog sends it back to sleep within 1.3 s, and then the wake works. So a
+        # wake that fails waits that out once. No power cycle: the chip has no enable pin and,
+        # on the Giga, shares the board's 3.3 V with the MCU, so nothing could cut it anyway.
+        for retry in (False, True):
+            if retry:
+                time.sleep_ms(_WATCHDOG_MS)
+            try:
+                self._i2c.writeto(0x00, b"\x00")           # SDA low long enough: a wake pulse
+            except OSError:
+                pass                                      # nobody answers address 0: expected
+            time.sleep_us(1500)
+            try:
+                if self._i2c.readfrom(self._addr, 4) == _WAKE:
+                    return
+            except OSError:
+                pass                                      # still deaf: wait out its watchdog
+        raise OSError("atecc608: no wake")
 
     def _cmd(self, op, p1, p2, data=b""):
         p = self._pkt

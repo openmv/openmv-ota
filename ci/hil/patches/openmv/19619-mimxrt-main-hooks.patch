@@ -1,0 +1,35 @@
+From c7b4935df3fc142a4883f956a2ccc7c53e7560d4 Mon Sep 17 00:00:00 2001
+From: "Kwabena W. Agyeman" <kwagyeman@live.com>
+Date: Sat, 17 Oct 2026 15:20:24 -0700
+Subject: [PATCH] ports/mimxrt: Call machine_init() and
+ machine_set_soft_reset().
+
+MicroPython's mimxrt port now works out machine.reset_cause() once at
+boot in machine_init(), and records a soft reset in
+machine_set_soft_reset() (micropython#19619). Its main.c calls both;
+OpenMV's main.c replaces that one, so call them here too. Without
+them reset_cause() returns 0.
+---
+ ports/mimxrt/main.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/ports/mimxrt/main.c b/ports/mimxrt/main.c
+index 464a160b8..4c8c14485 100644
+--- a/ports/mimxrt/main.c
++++ b/ports/mimxrt/main.c
+@@ -87,6 +87,7 @@ int main(void) {
+     ticks_init();
+     led_init();
+     pendsv_init();
++    machine_init();
+ 
+ soft_reset:
+     led_init();
+@@ -233,6 +234,7 @@ soft_reset:
+     machine_encoder_deinit_all();
+     #endif
+     imlib_deinit();
++    machine_set_soft_reset();
+     gc_sweep_all();
+     mp_deinit();
+     first_soft_reset = false;
