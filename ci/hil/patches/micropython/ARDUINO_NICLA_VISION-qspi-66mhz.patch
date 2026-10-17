@@ -1,0 +1,41 @@
+From 7711b03c28b91329f87919f2fcd91f019fa7e6a6 Mon Sep 17 00:00:00 2001
+From: "Kwabena W. Agyeman" <kwagyeman@openmv.io>
+Date: Fri, 16 Oct 2026 18:21:01 -0700
+Subject: [PATCH] stm32/boards/ARDUINO_NICLA_VISION: Lower the QSPI clock to
+ 66MHz.
+
+At 100MHz the QSPI flash on the Nicla Vision isn't reliable under
+sustained erase and program.  In a loop of 4KiB erases and writes on the
+ROMFS partition the controller wedges within a few passes: a status
+register read (RDSR) starts, BUSY stays set and TCF never comes, so
+qspi_read_cmd() spins forever inside mp_spiflash_wait_sr() with no IRQ
+involved (setting CR.ABORT un-wedges it).  Some writes also read back
+wrong.  The other boards that run QSPI at 100MHz (GIGA, Portenta H7)
+don't do this; the Nicla runs the MCU from a 1.8V rail.
+
+Divide the 200MHz kernel clock by 3 instead of 2.
+
+Tested on a Nicla Vision with the same build and only the prescaler
+changed, each pass erasing and writing 242 4KiB blocks with a
+memory-mapped readback: at 100MHz it wedged or failed a readback within
+7 passes in every run; at 66MHz 160 of 160 passes were clean, and at
+50MHz 40 of 40.
+
+Signed-off-by: Kwabena W. Agyeman <kwagyeman@openmv.io>
+---
+ ports/stm32/boards/ARDUINO_NICLA_VISION/mpconfigboard.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ports/stm32/boards/ARDUINO_NICLA_VISION/mpconfigboard.h b/ports/stm32/boards/ARDUINO_NICLA_VISION/mpconfigboard.h
+index 399fa20..65526f1 100644
+--- a/ports/stm32/boards/ARDUINO_NICLA_VISION/mpconfigboard.h
++++ b/ports/stm32/boards/ARDUINO_NICLA_VISION/mpconfigboard.h
+@@ -135,7 +135,7 @@ void NICLAV_board_osc_enable(int enable);
+ 
+ #if !MICROPY_HW_ENABLE_INTERNAL_FLASH_STORAGE
+ // QSPI flash for storage
+-#define MICROPY_HW_QSPI_PRESCALER           (2) // 100MHz
++#define MICROPY_HW_QSPI_PRESCALER           (3) // 66MHz (100MHz is unreliable on this board)
+ #define MICROPY_HW_QSPIFLASH_SIZE_BITS_LOG2 (27)
+ // Reserve 4MiB for romfs and 1MiB for WiFi/BT firmware.
+ #define MICROPY_HW_SPIFLASH_SIZE_BITS       (88 * 1024 * 1024)
