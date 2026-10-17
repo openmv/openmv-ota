@@ -51,6 +51,24 @@ uses the camera's keys too. The firmware carries only the module for the board's
 keys (one chip driver, or `soft`), about 3.5 KB. `openmv_ota.se` is that module under the name
 applications use; on a board with no keys, `se.open()` returns None.
 
+### When a reset interrupts the chip
+
+A camera that resets in the middle of an exchange with its secure element (a watchdog, or a
+reset button pressed while it signs a check-in) can leave the chip refusing to answer until its
+power is cut. Each board handles it without anyone at the camera:
+
+- **Portenta H7 and Nicla Vision (SE050):** the chip has an enable pin, and the camera cuts its
+  power every time it opens the keys.
+- **OpenMV Cam RT1062 (SE050):** the chip has no enable pin, but a deep sleep cuts its power.
+  When boot finds the chip not answering, the camera deep sleeps for 2 seconds and boots again.
+  It does this before an update's trial boot is counted, so the extra boot costs the trial
+  nothing, and only once: if the chip still does not answer, the camera runs without its keys
+  and `se.open()` raises `OSError`. The deep sleep needs firmware whose
+  `machine.reset_cause()` reports `machine.DEEPSLEEP_RESET` (MicroPython #19619); on older
+  firmware the camera skips it.
+- **Arduino Giga R1 (ATECC608):** the chip's own watchdog sends it back to sleep within 1.3
+  seconds, and the camera waits that out once when the chip does not wake.
+
 ## Provisioning
 
 Keys are made once, at a desk, by `se.provision()`, and the only place that calls it on the

@@ -88,7 +88,9 @@ class BoardConfig:
                                          # where the board's own keys live: a chip,
                                          # {"chip": "se050"/"atecc608", "bus": machine.I2C
                                          # id, "addr": 7-bit address, "enable": Pin name or
-                                         # None, "freq": Hz}, or the board's key area,
+                                         # None, "freq": Hz, "recover": "deepsleep" where a
+                                         # deep sleep cuts the chip's power and there is no
+                                         # enable pin}, or the board's key area,
                                          # {"chip": "soft", "key_area": address,
                                          # "bootloader_max": bytes the bootloader may use}.
                                          # The romfs build ships only that one module and
@@ -139,8 +141,14 @@ def _secure_element(board: str, se: dict[str, Any] | None) -> dict[str, Any] | N
                          % board)
     if enable is not None and not isinstance(enable, str):
         raise ValueError("boards.json: %s secure_element enable must be a Pin name" % board)
+    # How the camera power-cycles a chip a reset left wedged, where it has no enable pin to do
+    # it with (see openmv_se.recover): "deepsleep" on a board whose deep sleep cuts its power.
+    recover = se.get("recover")
+    if recover not in (None, "deepsleep") or (recover and enable):
+        raise ValueError("boards.json: %s secure_element recover must be \"deepsleep\", and only "
+                         "on a chip with no enable pin" % board)
     return {"chip": chip, "bus": bus, "addr": addr, "enable": enable,
-            "freq": int(se.get("freq", 400000)), "trust": trust}
+            "freq": int(se.get("freq", 400000)), "recover": recover, "trust": trust}
 
 
 def _load_raw() -> dict[str, Any]:

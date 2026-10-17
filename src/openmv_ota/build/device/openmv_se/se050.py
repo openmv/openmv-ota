@@ -17,6 +17,8 @@ SE050 keeps waiting to send the rest; a session started over it fails, and retry
 clocking SCL) leaves the chip NACKing its address until power is cut -- on a board with no
 enable pin, a power cycle by hand. So every session first DRAINS: it reads single bytes until
 the chip NACKs, then starts afresh (measured on an RT1062: 4 bytes pending, then a clean start).
+When even that fails, a board whose deep sleep cuts the chip's power has boot do it instead (see
+:func:`openmv_ota.se.recover`); :meth:`SecureElement.answers` is how it tells.
 
 RAM BUDGET: this module runs inside your application, so its memory is your memory. Two
 buffers, a frame and an answer, are allocated once; a certificate read allocates the
@@ -83,7 +85,17 @@ class SecureElement:
         se = cls(i2c, addr, enable, _make=True)
         return se, se._made
 
-    def __init__(self, i2c, addr=_ADDR, enable=None, _make=False):
+    @classmethod
+    def answers(cls, i2c, addr=_ADDR):
+        """True if the chip starts a fresh session -- False if a reset left it wedged (see the
+        module docstring). Reads no key and changes nothing."""
+        try:
+            cls(i2c, addr, _probe=True)
+        except OSError:
+            return False
+        return True
+
+    def __init__(self, i2c, addr=_ADDR, enable=None, _make=False, _probe=False):
         self._i2c = i2c
         self._addr = addr
         self._frame = bytearray(3 + _IFS + 2)
@@ -96,6 +108,8 @@ class SecureElement:
             enable(1)
             time.sleep_ms(10)
         self._start()
+        if _probe:
+            return
         self._made = False
         if not self._exists(_KX):
             if not _make:

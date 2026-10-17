@@ -388,6 +388,26 @@ def test_an_enable_pin_powers_the_chip_up_first(chip, clock):
     assert levels == [0, 1] and clock.now >= 20
 
 
+class _Wedged:
+    """A chip a reset left wedged: it NACKs its address, reads and writes alike, until its
+    power is cut."""
+
+    def writeto(self, addr, buf):
+        raise OSError(19)
+
+    def readfrom_into(self, addr, buf):
+        raise OSError(19)
+
+    def readfrom(self, addr, n):
+        raise OSError(19)
+
+
+def test_answers_tells_a_working_chip_from_a_wedged_one(chip):
+    assert se050.SecureElement.answers(chip)
+    assert chip.rx[0] == (0xCF, b"") and len(chip.rx) == 2   # soft reset + select, nothing read
+    assert not se050.SecureElement.answers(_Wedged())
+
+
 def test_a_certificate_bigger_than_the_cap_is_refused(chip, monkeypatch):
     se = _open(chip)
     monkeypatch.setattr(se050, "_CERT_MAX", 100)
@@ -446,6 +466,85 @@ def test_open_builds_the_board_s_chip_from_its_wiring(monkeypatch):
         assert (made["enable"].n if enable else made["enable"]) == enable
 
 
+# --- recover(): a wedged chip's power cut by a deep sleep, once ---------------------------------
+
+def _recover_board(monkeypatch, *, recover="deepsleep", answers=False, cause=2,
+                   deepsleep_reset=4):
+    """Wire a fake board and machine for openmv_se.recover(); the record of what it did."""
+    from openmv_ota.build.device import openmv_se as se
+    did = {"probed": 0, "slept": None, "logged": []}
+
+    class FakeChip:
+        @classmethod
+        def answers(cls, i2c, addr):
+            did["probed"] += 1
+            assert i2c == ("I2C", 2, 400000) and addr == 0x48
+            return answers
+
+    def deepsleep(ms):
+        did["slept"] = ms
+
+    machine = types.ModuleType("machine")
+    machine.I2C = lambda bus, freq: ("I2C", bus, freq)
+    machine.Pin = object                          # imported with I2C; unused (no enable pin)
+    machine.reset_cause = lambda: cause
+    machine.deepsleep = deepsleep
+    if deepsleep_reset is not None:
+        machine.DEEPSLEEP_RESET = deepsleep_reset
+    monkeypatch.setitem(sys.modules, "machine", machine)
+    board = types.ModuleType("openmv_ota.build.device.openmv_se.board")
+    board.SecureElement, board.BUS, board.ADDR = FakeChip, 2, 0x48
+    board.ENABLE, board.FREQ = None, 400000
+    if recover is not None:
+        board.RECOVER = recover
+    monkeypatch.setitem(sys.modules, "openmv_ota.build.device.openmv_se.board", board)
+    monkeypatch.setattr(se, "board", board, raising=False)
+    log = types.SimpleNamespace(warning=did["logged"].append)
+    return se, did, log
+
+
+def test_recover_power_cycles_a_wedged_chip_with_a_deep_sleep(monkeypatch):
+    se, did, log = _recover_board(monkeypatch)
+    se.recover(log)
+    assert did["probed"] == 1 and did["slept"] == 2000
+    assert did["logged"] == ["se: no answer -- cutting its power with a 2 s deep sleep"]
+
+
+def test_recover_leaves_a_working_chip_and_other_boards_alone(monkeypatch):
+    se, did, log = _recover_board(monkeypatch, answers=True)
+    se.recover(log)
+    assert did["probed"] == 1 and did["slept"] is None and not did["logged"]
+    se, did, log = _recover_board(monkeypatch, recover=None)       # an enable pin, or soft keys
+    se.recover(log)
+    assert did["probed"] == 0 and did["slept"] is None
+    monkeypatch.delitem(sys.modules, "openmv_ota.build.device.openmv_se.board")
+    monkeypatch.delattr(se, "board")
+    assert se.recover(log) is None                                 # no keys at all
+
+
+def test_recover_sleeps_once_never_on_the_boot_its_sleep_started(monkeypatch):
+    se, did, log = _recover_board(monkeypatch, cause=4)            # this boot IS the power cycle
+    se.recover(log)
+    assert did["slept"] is None and did["logged"] == ["se: no answer, and a deep sleep did not help"]
+    se, did, _ = _recover_board(monkeypatch, cause=4)
+    se.recover()                                                   # no log: still no loop
+    assert did["slept"] is None
+
+
+def test_recover_never_sleeps_on_firmware_that_cannot_tell_a_deep_sleep_wake(monkeypatch):
+    """Without micropython#19619 (no DEEPSLEEP_RESET), or with it but no machine_init() call in
+    the port's main.c (reset_cause() stays 0), a wake looks like any boot: sleeping could repeat
+    for ever, so it does not."""
+    for kw in ({"deepsleep_reset": None}, {"cause": 0}):
+        se, did, log = _recover_board(monkeypatch, **kw)
+        se.recover(log)
+        assert did["slept"] is None
+        assert did["logged"] == ["se: no answer, and this firmware cannot recover it"]
+    se, did, _ = _recover_board(monkeypatch, cause=0)
+    se.recover()
+    assert did["slept"] is None
+
+
 # --- the board table and the pack ------------------------------------------------------------
 
 def test_board_table_secure_element_entries_are_checked():
@@ -453,7 +552,19 @@ def test_board_table_secure_element_entries_are_checked():
     se = boards_mod._secure_element
     assert se("X", None) is None
     assert se("X", {"chip": "se050", "bus": 2, "addr": 0x48}) == {
-        "chip": "se050", "bus": 2, "addr": 0x48, "enable": None, "freq": 400000, "trust": True}
+        "chip": "se050", "bus": 2, "addr": 0x48, "enable": None, "freq": 400000,
+        "recover": None, "trust": True}
+    assert se("X", {"chip": "se050", "bus": 2, "addr": 0x48,
+                    "recover": "deepsleep"})["recover"] == "deepsleep"
+    for bad in ({"recover": "reset"}, {"recover": "deepsleep", "enable": "SE05X_EN"}):
+        with pytest.raises(ValueError, match="recover must be"):
+            se("X", {"chip": "se050", "bus": 2, "addr": 0x48, **bad})
+    # only the RT1062 power-cycles its SE050 by deep sleep: the Portenta and Nicla have its
+    # enable pin, the Giga's ATECC608 sits on the MCU's own 3.3 V
+    assert {n: boards_mod.get_board(n).secure_element.get("recover")
+            for n in ("OPENMV_RT1060", "ARDUINO_PORTENTA_H7", "ARDUINO_NICLA_VISION",
+                      "ARDUINO_GIGA")} == {"OPENMV_RT1060": "deepsleep", "ARDUINO_PORTENTA_H7": None,
+                                           "ARDUINO_NICLA_VISION": None, "ARDUINO_GIGA": None}
     assert se("X", {"chip": "se050", "bus": 1, "addr": 0x48, "enable": "SE05X_EN",
                     "freq": 100000})["enable"] == "SE05X_EN"
     with pytest.raises(ValueError, match="chip 'tpm'"):
@@ -501,7 +612,7 @@ def test_the_firmware_freezes_only_the_board_s_chip_and_its_wiring(tmp_path):
                       "openmv_se/board.py"]
     board = (rt / "board.py").read_text(encoding="utf-8")
     assert "from .se050 import SecureElement" in board
-    assert "BUS = 2\nADDR = 0x48\nENABLE = None\nFREQ = 400000\n" in board
+    assert "BUS = 2\nADDR = 0x48\nENABLE = None\nFREQ = 400000\nRECOVER = 'deepsleep'\n" in board
     compile(board, "board.py", "exec")
 
     mods, _ = stage_for("OPENMV4")                       # its own keys: soft, no wiring
@@ -624,6 +735,7 @@ class Ecc:
         self.rx = []
         self.status = 0
         self.no_wake = False
+        self.deaf = 0                             # wakes it ignores: still mid-command
         self.corrupt = False
 
     def writeto(self, addr, buf):
@@ -691,6 +803,9 @@ class Ecc:
 
     def readfrom(self, addr, n):
         assert addr == 0x60
+        if self.deaf and n == 4:                 # the wake's answer: NACKed while still busy
+            self.deaf -= 1
+            raise OSError(19)
         if self.busy and n == 1:                 # executing: the poll for an answer NACKs
             self.busy -= 1
             raise OSError(19)
@@ -830,6 +945,20 @@ def test_atecc_bad_sizes_and_chip_errors(clock_us):
         se.random(1)
     chip.corrupt = False
     chip.no_wake = True
+    with pytest.raises(OSError, match="no wake"):
+        se.random(1)
+
+
+def test_atecc_wake_waits_out_the_chip_s_watchdog_once(clock_us):
+    """A reset mid-command leaves the chip deaf to the wake until its watchdog sends it back to
+    sleep (1.3 s): the wake waits that out once, then gives up."""
+    chip = Ecc()
+    se = atecc608.SecureElement(chip)
+    chip.deaf = 1
+    t = clock_us.now
+    assert se.random(1) == bytes(range(1))
+    assert clock_us.now - t >= atecc608._WATCHDOG_MS
+    chip.deaf = 2
     with pytest.raises(OSError, match="no wake"):
         se.random(1)
 
