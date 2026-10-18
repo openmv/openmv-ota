@@ -34,7 +34,8 @@ openmv-swd-ids'.
   `winc_async_request()` never checks its own timeout). The rest are small: SPI transfer errors,
   DNS error codes, a reset clearing the connection state, ETIMEDOUT vs EAGAIN, and an unrelated
   gen_linker fix. Also to fix there: once the module's send buffer is full, `poll()` still reports
-  the socket writable while `send()` returns EAGAIN, so asyncio spins through every stall. Once they land, drop the installer's WINC `relax()` around each recv.
+  the socket writable while `send()` returns EAGAIN, so asyncio spins through every stall. Once
+  they land, drop the installer's WINC `relax()` around each recv.
 - **Pre-launch cleanup** — revoke the test OTA tokens used for board bring-up; log the
   client out on the HIL nodes (`~/cloudtest/xdg`, the AE3's `~/.config/openmv-ota`).
 
