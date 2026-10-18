@@ -658,6 +658,19 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     except OSError:
         log.debug("boot: no prior mount")   # mp_init didn't auto-mount /rom (blank/invalid romfs)
 
+    # A secure element a reset left wedged (one interrupted mid-exchange keeps refusing until its
+    # power is cut) gets that HERE, before the slot pick below spends a trial attempt: on a board
+    # whose deep sleep cuts the chip's power, openmv_se.recover sleeps 2 s and the camera boots
+    # again, at no cost to the trial. Everywhere else it just returns.
+    try:
+        import openmv_se                      # frozen: the keys don't depend on the romfs
+        openmv_se.recover(log)
+        log.debug("boot: se checked")
+    except ImportError:  # hil-residual: a firmware without openmv_se (a board with no keys, e.g. the Nano RP2040 Connect)
+        pass  # hil-residual: nothing to recover on a board with no keys
+    except Exception as e:  # hil-residual: recover() failing outright (an I2C bus fault); boot carries on
+        log.warning("boot: se recovery failed: %r" % (e,))  # hil-residual: inject-only, as the line above
+
     _set_stride(getattr(cfg, "CONTROL_STRIDE", 16))
     try:
         slot, trailer, reject_reason = OtaBoot(

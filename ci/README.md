@@ -98,9 +98,13 @@ reference, so they can't drift from the code:
 - **`hil/provision.sh`** — the runner-owned tooling bootstrap; its header
   comment covers what it brings, against the node baseline below.
 - **`hil/patches/micropython/`** — upstream MicroPython fixes the bench builds
-  with before OpenMV's fork has them, one patch file per upstream commit.
+  with before OpenMV's fork has them, one patch file per upstream fix (a PR's
+  commits squashed into one, rebased onto the fork where it differs).
   `provision.sh` applies each to the firmware's `lib/micropython` and skips one
   that is already there; delete a patch once the fork has synced it.
+- **`hil/patches/openmv/`** — the OpenMV side such a fix needs before OpenMV
+  has it, e.g. a call in OpenMV's own `main.c`; applied to the firmware repo
+  the same way.
 - **`hil/run_matrix.sh`** — several scenarios back-to-back on a node, one trace
   each.
 
