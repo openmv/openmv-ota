@@ -8,12 +8,14 @@ file's own history has the longer design notes behind each line.
   verified `firmware.bin` out of a **confirmed** slot into the firmware area at
   a fixed offset (no romfs parser in the bootloader), never downgrade; a power
   loss mid-copy retries, not bricks.
-- **WINC demo wedges after a relay stall** — the H7 Plus demo (2026-10-15, three hours after
-  an install, minutes after a relay redeploy) logged `live[console]: relay send stalled for 10 s;
-  reconnecting`, then every OTA cycle failed with `OSError(12)` (ENOMEM): no streaming, logging
-  or check-ins until a reset, and the watchdog never fired (the loop kept running). Suspect a
-  WINC socket leaked across relay reconnects. Reproduce on one bench H7 Plus by restarting the
-  relay under it.
+- **WINC demo wedges after a relay stall** — the H7 Plus demo (2026-10-15, minutes after a relay
+  redeploy) logged `live[console]: relay send stalled for 10 s; reconnecting`, then every OTA cycle
+  failed with `OSError(12)`: the WINC module itself out of memory (`M2M_ERR_MEM_ALLOC` on DNS), not
+  the heap. Two sockets left open with unread data are enough to starve it, but no path that leaves
+  one open has turned up: a stalling, refusing or dropping relay and a hosted relay redeploy all
+  recovered on the bench. The camera now rebuilds its network stack, then reboots, instead of
+  sitting dead. Left: find what held sockets open in the field (a bench H7 Plus is soaking on the
+  hosted cloud).
 - **Device lockdown** — debug-port and boot protection (residual-threats:
   planned); until then bench/bus access is accepted. It is also what makes a camera's
   keys unreadable on the boards that keep them in flash unsealed (the M4, M7, H7, H7 Plus,
@@ -31,7 +33,8 @@ openmv-swd-ids'.
   (on master `setblocking(False)` is a 0 timeout, which the WINC API reads as "wait forever", and
   `winc_async_request()` never checks its own timeout). The rest are small: SPI transfer errors,
   DNS error codes, a reset clearing the connection state, ETIMEDOUT vs EAGAIN, and an unrelated
-  gen_linker fix. Once they land, drop the installer's WINC `relax()` around each recv.
+  gen_linker fix. Also to fix there: once the module's send buffer is full, `poll()` still reports
+  the socket writable while `send()` returns EAGAIN, so asyncio spins through every stall. Once they land, drop the installer's WINC `relax()` around each recv.
 - **Pre-launch cleanup** — revoke the test OTA tokens used for board bring-up; log the
   client out on the HIL nodes (`~/cloudtest/xdg`, the AE3's `~/.config/openmv-ota`).
 
