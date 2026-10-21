@@ -533,6 +533,7 @@ def test_ota_image_carries_the_firmware_as_a_component(make_project):
     blob = image[c.offset:c.offset + c.size]
     assert hashlib.sha256(blob).digest() == c.sha256
     assert C.decompress(blob, c.installed_size) == FAKE_FIRMWARE
+    assert hashlib.sha256(FAKE_FIRMWARE).digest() == c.installed_sha256
     assert len(image) == c.offset + c.size                       # the blob ends the image
     assert "main.py" in {p for p, _e in read_image(image).walk()}  # the filesystem still reads
     assert verify_image(image, trailer_bytes, read_root_keys(ProjectPaths(root).root_keys))[0]

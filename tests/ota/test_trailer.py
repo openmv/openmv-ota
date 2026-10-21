@@ -24,7 +24,7 @@ from tests import trust
 
 _CERT = trust.certificate(trust.ROOT_PRIV)            # any well-formed certificate will do
 _COMP = Component(dest=0x70090000, offset=4096, size=1000, installed_size=2000,
-                  sha256=bytes(range(32)))
+                  sha256=bytes(range(32)), installed_sha256=bytes(range(32, 64)))
 
 
 def _trailer(**over) -> Trailer:
@@ -75,7 +75,7 @@ def test_round_trip():
 
 
 def test_round_trip_with_components_and_stub_fields():
-    t = _trailer(components=[_COMP, Component(0x70200000, 8192, 10, 20, b"\xaa" * 32)],
+    t = _trailer(components=[_COMP, Component(0x70200000, 8192, 10, 20, b"\xaa" * 32, b"\xbb" * 32)],
                  min_stub=3, uart_en=1, uart_id=4, baud=115200, wdt_en=1, wdt_id=1,
                  wdt_timeout_ms=8000, publish_seq=9)
     parsed = parse_trailer(pack_trailer(t))
@@ -93,7 +93,7 @@ def test_derived_fields_come_from_the_certificate():
 def test_layout_sizes_and_offsets():
     """The byte layout the boot stub is built against -- permanent once a stub ships."""
     assert HEADER_SIZE == 96 and HEADER_SIZE % 16 == 0
-    assert trailer_mod.COMPONENT_SIZE == 48 and trailer_mod.CERT_SIZE == 160
+    assert trailer_mod.COMPONENT_SIZE == 80 and trailer_mod.CERT_SIZE == 160
     out = pack_trailer(_trailer(components=[_COMP], min_stub=5, uart_en=1, uart_id=2, wdt_en=1,
                                 wdt_id=3, baud=921600, wdt_timeout_ms=4000, product_id=0x11,
                                 publish_seq=0x22))
@@ -105,8 +105,8 @@ def test_layout_sizes_and_offsets():
     assert struct.unpack_from("<QQQ", out, 40) == (0x11, 0x22, 0)
     assert out[64:96] == bytes(range(32))                       # body_sha256
     assert struct.unpack_from(trailer_mod.COMPONENT_STRUCT, out, 96) == (
-        0x70090000, 4096, 1000, 2000, bytes(range(32)))
-    assert out[96 + 48:96 + 48 + 160] == _CERT
+        0x70090000, 4096, 1000, 2000, bytes(range(32)), bytes(range(32, 64)))
+    assert out[96 + 80:96 + 80 + 160] == _CERT
 
 
 # --- signed region ----------------------------------------------------------
@@ -167,7 +167,9 @@ def test_pack_bad_body_sha_length():
 
 def test_pack_bad_component_sha_length():
     with pytest.raises(OtaError, match="component sha256 must be 32 bytes"):
-        pack_trailer(_trailer(components=[Component(1, 2, 3, 4, b"\x00" * 5)]))
+        pack_trailer(_trailer(components=[Component(1, 2, 3, 4, b"\x00" * 5, b"\x00" * 32)]))
+    with pytest.raises(OtaError, match="component installed_sha256 must be 32 bytes"):
+        pack_trailer(_trailer(components=[Component(1, 2, 3, 4, b"\x00" * 32, b"\x00" * 31)]))
 
 
 def test_pack_too_many_components():

@@ -42,9 +42,10 @@ def test_decompress_round_trips_and_checks_the_size():
 def test_append_aligns_each_blob_and_describes_it():
     body = b"R" * 1001                       # not a multiple of 16
     b1, b2 = C.compress(_FW), C.compress(_FW[:100])
-    image, comps = C.append(body, [(0x70090000, len(_FW), b1), (0x70300000, 100, b2)])
+    image, comps = C.append(body, [(0x70090000, _FW), (0x70300000, _FW[:100])])
     assert image[:1001] == body and image[1001:1008] == b"\xff" * 7
-    assert comps[0] == Component(0x70090000, 1008, len(b1), len(_FW), hashlib.sha256(b1).digest())
+    assert comps[0] == Component(0x70090000, 1008, len(b1), len(_FW), hashlib.sha256(b1).digest(),
+                                 hashlib.sha256(_FW).digest())
     assert comps[1].offset % 16 == 0 and comps[1].offset >= 1008 + len(b1)
     assert image[comps[1].offset:comps[1].offset + len(b2)] == b2
     assert comps[1].dest == 0x70300000 and comps[1].installed_size == 100
@@ -56,10 +57,17 @@ def test_append_with_no_blobs_is_the_body():
 
 
 def test_check_accepts_the_image_it_came_from_and_names_what_is_wrong():
-    image, comps = C.append(b"R" * 64, [(1, len(_FW), C.compress(_FW))])
+    image, comps = C.append(b"R" * 64, [(1, _FW)])
     assert C.check(image, comps) is None
     assert C.check(image, []) is None
     assert "runs past the" in C.check(image[:-1], comps)
     tampered = bytearray(image)
     tampered[comps[0].offset + 3] ^= 0x01
     assert C.check(bytes(tampered), comps) == "component at +%d hash mismatch" % comps[0].offset
+    # a trailer whose compressed hash is right but whose installed claims are wrong: the blob
+    # decompresses to something else (size, then hash) -- what the stub would find too
+    import dataclasses
+    short = [dataclasses.replace(comps[0], installed_size=len(_FW) - 1)]
+    assert "decompresses to %d bytes, trailer says %d" % (len(_FW), len(_FW) - 1) in C.check(image, short)
+    wrong = [dataclasses.replace(comps[0], installed_sha256=b"\x00" * 32)]
+    assert C.check(image, wrong) == "component at +%d installed hash mismatch" % comps[0].offset

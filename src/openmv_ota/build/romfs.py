@@ -228,8 +228,7 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
         raise BuildError("%s firmware is %d bytes but the boot stub's window holds %d (%d over)"
                          % (t.name, len(firmware), stub.firmware_max,
                             len(firmware) - stub.firmware_max), exit_code=1)
-    blob = components.compress(firmware)
-    return components.append(body, [(stub.firmware_dest, len(firmware), blob)])
+    return components.append(body, [(stub.firmware_dest, firmware)])
 
 
 def _signer_epoch(signer: _OtaSigner) -> int:

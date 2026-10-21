@@ -11,32 +11,34 @@ from openmv_ota.ota.errors import OtaError
 
 
 def _rec(**over):
-    f = dict(stub_version=3, slot=1, reason=R.REASON_TRIAL, hashes=[b"\x11" * 32, b"\x22" * 32])
+    f = dict(stub_version=3, slot=1, reason=R.REASON_TRIAL,
+             components=[(0x70090000, 1000, b"\x11" * 32), (0x70200000, 2000, b"\x22" * 32)])
     f.update(over)
     return R.InstallRecord(**f)
 
 
 def test_round_trip_and_layout():
     out = R.pack(_rec())
-    assert len(out) == 32 + 2 * 32 + 4 and R.FIXED_SIZE == 32
+    assert len(out) == 32 + 2 * 40 + 4 and R.FIXED_SIZE == 32 and R.ENTRY_SIZE == 40
     assert out[:4] == b"OMVI"
     assert struct.unpack_from("<IIIII", out, 4) == (1, 3, 1, 2, R.REASON_TRIAL)
-    assert out[32:64] == b"\x11" * 32
+    assert struct.unpack_from("<II", out, 32) == (0x70090000, 1000)
+    assert out[40:72] == b"\x11" * 32
     r = R.parse(out)
     assert r == _rec() and r.slot_name == "B"
     assert R.parse(out + b"\xff" * 100) == r          # the rest of the erased sector
 
 
 def test_a_record_with_no_components_round_trips():
-    r = _rec(hashes=[], reason=R.REASON_NORMAL, slot=0)
+    r = _rec(components=[], reason=R.REASON_NORMAL, slot=0)
     assert R.parse(R.pack(r)) == r and r.slot_name == "A"
 
 
 @pytest.mark.parametrize(("over", "msg"), [
     ({"slot": 2}, "slot must be 0 or 1"),
     ({"reason": 9}, "unknown install record reason"),
-    ({"hashes": [b"\x00" * 32] * 17}, "over the 16 limit"),
-    ({"hashes": [b"\x00" * 31]}, "hash must be 32 bytes"),
+    ({"components": [(1, 2, b"\x00" * 32)] * 17}, "over the 16 limit"),
+    ({"components": [(1, 2, b"\x00" * 31)]}, "hash must be 32 bytes"),
 ])
 def test_pack_rejects(over, msg):
     with pytest.raises(OtaError, match=msg):

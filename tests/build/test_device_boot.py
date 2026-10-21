@@ -683,23 +683,23 @@ def test_a_slot_whose_attempt_region_is_full_is_not_bootable():
 
 # --- the boot stub's install record ------------------------------------------------------
 
-def _record(slot, hashes, *, stub_version=7, reason=1, raw=None):
+def _record(slot, components, *, stub_version=7, reason=1, raw=None):
     from openmv_ota.ota import install_record as R
-    out = raw if raw is not None else R.pack(R.InstallRecord(stub_version, slot, reason, hashes))
+    out = raw if raw is not None else R.pack(R.InstallRecord(stub_version, slot, reason, components))
     return out + b"\xff" * (4096 - len(out))              # the rest of the record sector
 
 
 def test_parse_record_mirrors_the_host_and_ignores_anything_else():
     from openmv_ota.ota import install_record as R
-    good = _record(1, [b"\x11" * 32])
-    assert B.parse_record(good) == (7, 1, 1, [b"\x11" * 32])
+    good = _record(1, [(0x70090000, 200, b"\x11" * 32)])
+    assert B.parse_record(good) == (7, 1, 1, [(0x70090000, 200, b"\x11" * 32)])
     assert B.parse_record(None) is None and B.parse_record(b"\xff" * 4096) is None   # erased
     assert B.parse_record(b"\xff" * 10) is None
     assert B.parse_record(b"OMVX" + good[4:]) is None                           # magic
     assert B.parse_record(good[:4] + b"\x02\x00\x00\x00" + good[8:]) is None   # version
     assert B.parse_record(good[:16] + b"\x40\x00\x00\x00" + good[20:]) is None  # comp_count
     assert B.parse_record(good[:12] + b"\x05\x00\x00\x00" + good[16:]) is None  # slot
-    assert B.parse_record(good[:32 + 32 + 2]) is None                            # truncated
+    assert B.parse_record(good[:32 + 40 + 2]) is None                            # truncated
     bad = bytearray(good)
     bad[40] ^= 0x01                                                             # a hash byte
     assert B.parse_record(bytes(bad)) is None                                   # crc
@@ -708,7 +708,9 @@ def test_parse_record_mirrors_the_host_and_ignores_anything_else():
 
 def _comp(fill):
     from openmv_ota.ota.trailer import Component
-    return Component(0x70090000, 4096, 100, 200, bytes([fill]) * 32)
+    # the record names components by installed hash; the blob hash differs on purpose so a
+    # match on the wrong field cannot pass
+    return Component(0x70090000, 4096, 100, 200, bytes([fill ^ 0xFF]) * 32, bytes([fill]) * 32)
 
 
 def test_the_stub_record_picks_the_slot_and_burns_no_attempt():
@@ -721,7 +723,8 @@ def test_the_stub_record_picks_the_slot_and_burns_no_attempt():
     dev = _Dev(_partition(_front(priv, 0x100, a, sa, components=[_comp(0xAA)]),
                           _back(priv, 0x100, bdy_b, sb, components=[_comp(0xBB)])))
     ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
-                   BLOCK, PRODUCT_ID, trust.ROOTS, record=_record(1, [bytes([0xBB]) * 32]))
+                   BLOCK, PRODUCT_ID, trust.ROOTS,
+                   record=_record(1, [(0x70090000, 200, bytes([0xBB]) * 32)]))
     slot, t, reason = ob.run()
     assert slot == "B" and dev.mounted == [bdy_b] and reason is None
     assert dev.writes == [] and ob.stub == (7, 1)             # no attempt burned by boot.py
@@ -740,9 +743,9 @@ def test_without_a_usable_record_the_slot_choice_runs_as_usual(record):
     sb = _counter(bytearray(_status(True, False, False)), 1)
     back = _back(priv, 0x100, bdy_b, sb, components=[_comp(0xBB)])
     if record == "stale":
-        record = _record(1, [bytes([0xCC]) * 32])
+        record = _record(1, [(0x70090000, 200, bytes([0xCC]) * 32)])
     elif record == "rejected":
-        record = _record(1, [bytes([0xBB]) * 32])
+        record = _record(1, [(0x70090000, 200, bytes([0xBB]) * 32)])
         back = _back(priv, 0x100, bdy_b, sb, components=[_comp(0xBB)], product_id=0x999)
     dev = _Dev(_partition(_front(priv, 0x100, a, sa, components=[_comp(0xAA)]), back))
     ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,

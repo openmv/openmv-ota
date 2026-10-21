@@ -62,7 +62,7 @@ def _with_component():
     priv = keys.generate_private_key(trust.SPEC)
     body = b"ROMFS-BODY" * 40
     fw = bytes(range(256)) * 20
-    image, comps = C.append(body, [(0x70090000, len(fw), C.compress(fw))])
+    image, comps = C.append(body, [(0x70090000, fw)])
     return image, trust.trailer(priv, body, components=comps), comps
 
 

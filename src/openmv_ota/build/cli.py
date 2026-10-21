@@ -360,7 +360,8 @@ def _trailer_summary(t) -> dict:
         "body_size": t.body_size,
         "body_sha256": t.body_sha256.hex(),
         "components": [{"dest": "0x%08x" % c.dest, "offset": c.offset, "size": c.size,
-                        "installed_size": c.installed_size, "sha256": c.sha256.hex()}
+                        "installed_size": c.installed_size, "sha256": c.sha256.hex(),
+                        "installed_sha256": c.installed_sha256.hex()}
                        for c in t.components],
         "stub": {"uart": (t.uart_id, t.baud) if t.uart_en else None,
                  "watchdog": (t.wdt_id, t.wdt_timeout_ms) if t.wdt_en else None},
@@ -398,8 +399,10 @@ def _print_trailer(s: dict) -> None:
              s["certificate"]["root_id"], s["certificate"]["epoch"]))
     print("  body:           %d bytes, sha256 %s" % (s["body_size"], s["body_sha256"]))
     for c in s["components"]:
-        print("  component:      %d bytes at +%d -> %s (%d bytes installed), sha256 %s"
-              % (c["size"], c["offset"], c["dest"], c["installed_size"], c["sha256"]))
+        print("  component:      %d bytes at +%d -> %s (%d bytes installed)"
+              % (c["size"], c["offset"], c["dest"], c["installed_size"]))
+        print("                  sha256 %s" % c["sha256"])
+        print("                  installed sha256 %s" % c["installed_sha256"])
     if s["min_stub"]:
         print("  min_stub:       %d" % s["min_stub"])
     fw, tc = s["meta"].get("firmware", {}), s["meta"].get("toolchain", {})
