@@ -6,6 +6,8 @@ import pytest
 
 NOW = "2026-01-01T00:00:00Z"
 
+FAKE_FIRMWARE = (bytes(range(256)) * 64 + b"\x00" * 4096 + b"OpenMV firmware " * 256)
+
 DEFAULT_APP = {
     "main.py": "print(1)\n",
     "lib/util.py": "U = 1\n",
@@ -48,6 +50,14 @@ def make_project(tmp_path, make_firmware, make_sdk):
             proj.sync_project(root, firmware=repo, sdk_home_override=home,
                               install_sdk=False, allow_dirty=True, now=NOW)
 
+        if ota:
+            # A board with a boot stub builds images that carry its firmware: what `build
+            # firmware` would have left in build/. Patterned, so it compresses like code does.
+            from openmv_ota.romfs.boards import get_board
+            for b in boards:
+                if get_board(b).stub is not None:
+                    (root / "build").mkdir(exist_ok=True)
+                    (root / "build" / ("%s-firmware.bin" % b)).write_bytes(FAKE_FIRMWARE)
         app = tmp_path / "appsrc"
         app.mkdir()
         files = dict(DEFAULT_APP if app_files is None else app_files)

@@ -33,6 +33,7 @@ def verify_image(body: bytes, trailer_bytes: bytes, roots) -> tuple[bool, str]:
     them: the root over the trailer's certificate, then the certified key over the trailer.
     Returns ``(ok, reason)``."""
     from . import certificate as certificate_mod
+    from . import components
     from .keys import public_key_from_hex
     from .trailer import parse_trailer, signed_region
 
@@ -48,12 +49,16 @@ def verify_image(body: bytes, trailer_bytes: bytes, roots) -> tuple[bool, str]:
     pub = public_key_from_hex(cert.pubkey.hex(), alg)
     if not verify_region(pub, signed_region(trailer_bytes), t.signature, alg):
         return False, "signature does not verify against key 0x%08x" % cert.key_id
-    if len(body) != t.body_size:
+    if len(body) < t.body_size:
         return False, "body is %d bytes, trailer says %d" % (len(body), t.body_size)
-    if hashlib.sha256(body).digest() != t.body_sha256:
+    if hashlib.sha256(body[:t.body_size]).digest() != t.body_sha256:
         return False, "body hash mismatch (tampered, or wrong body for this trailer)"
-    return True, "signed by key 0x%08x (%s, root %d, epoch %d), body sha256 OK" % (
-        cert.key_id, alg.name, cert.root_id, cert.epoch)
+    reason = components.check(body, t.components)     # the blobs past the filesystem
+    if reason is not None:
+        return False, reason
+    return True, "signed by key 0x%08x (%s, root %d, epoch %d), body sha256 OK%s" % (
+        cert.key_id, alg.name, cert.root_id, cert.epoch,
+        ", %d component(s) OK" % len(t.components) if t.components else "")
 
 
 def verify_manifest(manifest_bytes: bytes, trusted: list) -> tuple[bool, str]:

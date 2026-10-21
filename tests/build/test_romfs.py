@@ -11,6 +11,9 @@ from openmv_ota.build.errors import BuildError
 from openmv_ota.ota import geometry
 from openmv_ota.romfs.builder import read_image
 
+import hashlib
+from pathlib import Path
+
 import pytest
 
 
@@ -372,7 +375,7 @@ def test_ota_build_signs_and_verifies(make_project):
     t = parse_trailer(trailer_bytes)
     assert t.payload_version == encode_app_version("1.2.3")
     assert t.product_id == 999
-    assert t.body_sha256 == hashlib.sha256(body).digest()
+    assert t.body_sha256 == hashlib.sha256(body[:t.body_size]).digest()   # the filesystem only
     assert t.meta["vendor"] == "Acme" and t.meta["app_version"] == "1.2.3"
     assert t.meta["firmware"]["version"] == "5.0.0"
 
@@ -397,7 +400,7 @@ def test_ota_trailer_carries_the_signing_keys_certificate(make_project):
                               compile_py=False, convert_models=False)[0]
     body, trailer_bytes = _read_bundle(r)
     t = parse_trailer(trailer_bytes)
-    assert t.body_size == r.size and t.components == []       # no firmware packed yet
+    assert t.body_size == r.size and len(t.components) == 1   # the firmware rides along
     roots = read_root_keys(ProjectPaths(root).root_keys)
     cert = cert_mod.verify(t.certificate, root_keys_map(roots))
     signer = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
@@ -507,6 +510,48 @@ def test_ota_build_refuses_revoked_signing_key(make_project):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
 
 
+def test_ota_image_carries_the_firmware_as_a_component(make_project):
+    """On a board with a boot stub the slot image is the filesystem plus the firmware the
+    stub installs: LZMA'd, placed after the body, named by one trailer component whose hash
+    is over the compressed bytes. body_sha256 still covers only the filesystem."""
+    from openmv_ota.ota import components as C
+    from openmv_ota.ota import parse_trailer, read_root_keys
+    from openmv_ota.ota.verify import verify_image
+    from openmv_ota.project.project import ProjectPaths
+    from tests.build.conftest import FAKE_FIRMWARE
+
+    root, repo, app = _build_ota(make_project)
+    r = build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)[0]
+    image, trailer_bytes = _read_bundle(r)
+    t = parse_trailer(trailer_bytes)
+    assert t.body_size == r.size and len(image) > t.body_size
+    assert hashlib.sha256(image[:t.body_size]).digest() == t.body_sha256
+    [c] = t.components
+    assert c.dest == 0x70090000 and c.offset % 16 == 0 and c.offset >= t.body_size
+    assert c.installed_size == len(FAKE_FIRMWARE) and c.size < len(FAKE_FIRMWARE)
+    blob = image[c.offset:c.offset + c.size]
+    assert hashlib.sha256(blob).digest() == c.sha256
+    assert C.decompress(blob, c.installed_size) == FAKE_FIRMWARE
+    assert len(image) == c.offset + c.size                       # the blob ends the image
+    assert "main.py" in {p for p, _e in read_image(image).walk()}  # the filesystem still reads
+    assert verify_image(image, trailer_bytes, read_root_keys(ProjectPaths(root).root_keys))[0]
+
+
+def test_ota_build_needs_the_firmware_built_first(make_project):
+    root, repo, app = _build_ota(make_project)
+    (Path(root) / "build" / "OPENMV_N6-firmware.bin").unlink()
+    with pytest.raises(BuildError, match="run `openmv-ota build firmware` first"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+def test_ota_build_refuses_a_firmware_the_stub_cannot_install(make_project):
+    root, repo, app = _build_ota(make_project)
+    (Path(root) / "build" / "OPENMV_N6-firmware.bin").write_bytes(b"\x00" * (0x36F000 + 1))
+    with pytest.raises(BuildError, match="boot stub's window holds 3600384 \\(1 over\\)"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
 def test_ota_build_refuses_a_key_without_a_certificate(make_project):
     """A camera trusts a signing key only through its root-signed certificate, so a key that
     has none (an entry edited by hand, or an old set) cannot sign an installable image."""
@@ -551,6 +596,10 @@ def test_factory_build_composes_dual_slot(make_project):
     # both slots carry the same body, factory-signed
     assert parse_trailer(img[slot - block:]).product_id == 7           # slot A trailer
     assert parse_trailer(img[2 * slot - block:]).product_id == 7       # slot B trailer
+    # ...and the firmware the boot stub installs, in both slots at the same place
+    [c] = parse_trailer(img[slot - block:]).components
+    assert c.dest == 0x70090000 and c.size > 0
+    assert img[c.offset:c.offset + c.size] == img[slot + c.offset:slot + c.offset + c.size]
 
     a = img[slot - 2 * block: slot - block]                           # slot A status sector
     b = img[2 * slot - 2 * block: 2 * slot - block]                   # slot B status sector

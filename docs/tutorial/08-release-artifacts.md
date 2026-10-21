@@ -43,6 +43,11 @@ context comes from the project:
 - **Signed with the current OTA key.** The signer is `[ota].signing_key_id` from
   `openmv-ota.toml`; the trailer carries that key's root-signed certificate, which
   is how the device comes to trust it.
+- **Carries the firmware.** On a board with a boot stub (the N6 first), the image is
+  the filesystem followed by the firmware `build firmware` left in `build/`,
+  LZMA-compressed and listed in the trailer as a component the stub installs
+  ([the trailer format](../reference/trailer.md#components)). Build the firmware
+  before the image; a release is what a camera runs, platform and app together.
 - **Identity + provenance stamped in.** `product_id` / `board_name` come from the
   `[targets.<BOARD>]` tables, versions and commits from the lock — exactly the
   `system.json` fields, and the trailer's metadata carries a **verbatim copy of

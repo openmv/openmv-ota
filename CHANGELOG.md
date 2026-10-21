@@ -19,6 +19,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `build verify` takes `--root-keys`; `inspect` prints the certificate and components.
   A clean break: v3 images and firmware do not interoperate with v4. Certified keys are
   P-256 only.
+- **OTA images carry the firmware.** On a board with a boot-stub layout in the board table
+  (the N6 first: firmware at `0x70090000`, 3516 KiB), `build romfs` and `build factory-romfs`
+  append the firmware `build firmware` produced -- raw LZMA1, 256 KiB dictionary -- after the
+  filesystem and list it as a trailer component; `build firmware` relinks the firmware at the
+  stub's destination through the board overlay. `build verify` checks every component's
+  bytes, and `partition.slots()` returns the whole body region of a slot.
 
 ### Added
 

@@ -171,13 +171,14 @@ def _build_system_info(p, t, app_version, vendor: str, dev: bool = False) -> dic
     }
 
 
-def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict) -> bytes:
-    """Build + sign the complete trailer for ``body`` and return its packed bytes (the
-    signed region, the signature, the crc32). Every field is final and calculated, so the
-    trailer is a self-contained, verifiable artifact. The device writes these bytes to the
-    slot's last erase block; the 0xFF that fills the rest of that block comes from the erase,
-    not from this file. Components (the firmware the slot carries for the boot stub) are
-    added by the firmware-packing step; a plain app image lists none."""
+def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict,
+                   components=()) -> bytes:
+    """Build + sign the complete trailer for ``body`` (the filesystem image) and its
+    ``components`` (see :func:`_pack_firmware`), returning the packed bytes (the signed
+    region, the signature, the crc32). Every field is final and calculated, so the trailer
+    is a self-contained, verifiable artifact. The device writes these bytes to the slot's
+    last erase block; the 0xFF that fills the rest of that block comes from the erase, not
+    from this file."""
     from openmv_ota.ota import Trailer, pack_trailer, signed_region
 
     trailer = Trailer(
@@ -188,9 +189,47 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict) -> byt
         payload_version=signer.payload_version,
         body_sha256=hashlib.sha256(body).digest(),
         certificate=signer.certificate,
+        components=list(components),
     )
     trailer.signature = signer.backend.sign(signed_region(trailer))
     return pack_trailer(trailer)
+
+
+def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
+    """The slot image for ``body``: on a board with a boot stub, the filesystem image followed
+    by the firmware it carries, LZMA-compressed, as a component the stub installs; elsewhere
+    ``body`` unchanged and no components. The firmware is the one ``build firmware`` wrote to
+    ``out_dir`` -- the image is what a camera runs, platform and app together, so a release
+    without its firmware is not a release. Refuses a firmware that would not fit the stub's
+    install window, before anything is signed."""
+    from openmv_ota.ota import components
+    from openmv_ota.romfs.boards import get_board
+
+    stub = get_board(t.name).stub
+    if stub is None:
+        return body, []
+    fw_name = "%s-firmware.bin" % _target_name(t)
+    # Where `build firmware` leaves it: the same output dir as this build, else the project's
+    # build/ (a romfs build sent elsewhere with --output still packs the project's firmware).
+    places = [out_dir / fw_name]
+    if (p.root / "build") != out_dir:
+        places.append(p.root / "build" / fw_name)
+    for fw_path in places:
+        try:
+            firmware = fw_path.read_bytes()
+            break
+        except OSError:
+            continue
+    else:
+        raise BuildError("%s not found: a %s image carries the firmware its boot stub installs"
+                         " -- run `openmv-ota build firmware` first"
+                         % (" or ".join(str(x) for x in places), t.name), exit_code=1)
+    if len(firmware) > stub.firmware_max:
+        raise BuildError("%s firmware is %d bytes but the boot stub's window holds %d (%d over)"
+                         % (t.name, len(firmware), stub.firmware_max,
+                            len(firmware) - stub.firmware_max), exit_code=1)
+    blob = components.compress(firmware)
+    return components.append(body, [(stub.firmware_dest, len(firmware), blob)])
 
 
 def _capacity(project, target) -> tuple[int, str]:
@@ -529,18 +568,20 @@ def _build_one(p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, ve
                                          dev=bool(ota_signer and ota_signer.backend.is_dev_key))
     try:
         capacity, bound = _capacity(p, t)
-        if len(body) > capacity and not allow_oversize:
+        # The slot image: the filesystem, plus the firmware on a board with a boot stub.
+        image, comps = _pack_firmware(p, t, out_dir, body) if ota_signer is not None else (body, [])
+        if len(image) > capacity and not allow_oversize:
             raise BuildError(
                 "%s image is %d bytes but the %s holds %d (%d over); pass --allow-oversize"
-                % (t.name, len(body), bound, capacity, len(body) - capacity), exit_code=1)
+                % (t.name, len(image), bound, capacity, len(image) - capacity), exit_code=1)
 
         name = _target_name(t)
         if ota_signer is not None:
             from openmv_ota.ota import bundle
             _check_product_id(p, t, system_info)
-            trailer_bytes = _build_trailer(ota_signer, p, body, system_info)
-            out_path = out_dir / (name + "-romfs.zip")  # body + trailer, one file
-            bundle.write_bundle(out_path, body, trailer_bytes)
+            trailer_bytes = _build_trailer(ota_signer, p, body, system_info, comps)
+            out_path = out_dir / (name + "-romfs.zip")  # image + trailer, one file
+            bundle.write_bundle(out_path, image, trailer_bytes)
         else:
             out_path = out_dir / (name + "-romfs.img")  # just the ROMFS body
             out_path.write_bytes(body)
@@ -711,32 +752,33 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         overhead = geometry.slot_overhead(t.erase_size)
         slots = provision_slots(t.partition_size, t.erase_size, p.config.single_image)
         smallest = min(size for size, _counter in slots) - overhead
-        if len(body) > smallest:   # the smaller slot bounds it
+        image, comps = _pack_firmware(p, t, out_dir, body)  # the slot carries the firmware
+        if len(image) > smallest:   # the smaller slot bounds it
             raise BuildError(
                 "%s image is %d bytes but a slot holds %d (%d over)"
-                % (t.name, len(body), smallest, len(body) - smallest), exit_code=1)
+                % (t.name, len(image), smallest, len(image) - smallest), exit_code=1)
         _check_product_id(p, t, system_info)
         # Both slots ship CONFIRMED: they have nothing to prove, having never been trialed.
         # There is no golden shape and no golden slot -- the difference between the two is one
         # number, the install counter, and after the first update they are just two images with
         # two counters. That is the whole point of dropping the factory special case: the device
         # runs one code path from provisioning onward.
-        image = b""
+        factory = b""
         for size, counter in slots:
-            pad = size - overhead - len(body)
+            pad = size - overhead - len(image)
             # the status sector ships CONFIRMED + the counter + the anti-rollback floor
             # seeded at what the factory image orders by (the device can never be
             # downgraded below it; confirm() raises it as updates are kept)
-            image += _compose_slot(
-                body, pad,
+            factory += _compose_slot(
+                image, pad,
                 status.build_status_sector(block, pending=False, tried=False, confirmed=True,
                                            counter=counter, stride=t.control_stride,
                                            floor_key=_rollback_key(system_info, signer)),
-                _build_trailer(signer, p, body, system_info), block, size)
+                _build_trailer(signer, p, body, system_info, comps), block, size)
 
         name = _target_name(t)
         out_path = out_dir / (name + "-factory-romfs.img")
-        out_path.write_bytes(image)
+        out_path.write_bytes(factory)
 
         # THE PUBLISHABLE FORM OF THE FACTORY BYTES -- build/factory/<board>-ota.img.gz +
         # a manifest signed with the same factory key. A factory-fresh fleet's first delta
@@ -753,9 +795,9 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         pub_dir = out_dir / "factory"
         pub_dir.mkdir(parents=True, exist_ok=True)
         size0, _counter0 = slots[0]
-        pad0 = size0 - overhead - len(body)
-        trailer0 = _build_trailer(signer, p, body, system_info)
-        dl = _compose_slot(body, pad0, b"\xff" * block, trailer0, block, size0)
+        pad0 = size0 - overhead - len(image)
+        trailer0 = _build_trailer(signer, p, body, system_info, comps)
+        dl = _compose_slot(image, pad0, b"\xff" * block, trailer0, block, size0)
         single = size0 == t.partition_size
         gz = _gzip_small(dl, SINGLE_WBITS) if single else _gzip.compress(dl, mtime=0)
         img_path = pub_dir / (name + "-ota.img.gz")

@@ -25,7 +25,10 @@ For a **non-OTA** project the output is the ROMFS body,
 partition as a plain `<board>-coprocessor-romfs.img`, and an OTA build nests that
 image inside the main one for
 [`openmv_ota.sync()`](04-ota-projects.md#multi-core-boards-a-coprocessor-partition)
-to apply on-device.
+to apply on-device. On a board with a boot stub (the N6) an OTA image also carries
+the firmware its stub installs, taken from `build/<board>-firmware.bin`, so run
+[`build firmware`](07-factory-and-firmware.md) first; `build romfs` refuses to sign
+without it.
 
 Every image carries the generated, read-only
 [`/rom/system.json`](02-projects.md#systemjson-generated-read-only) — identity and

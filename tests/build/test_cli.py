@@ -149,8 +149,11 @@ def _make_image_files(tmp_path):
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
     body = b"BODY" * 100
-    from openmv_ota.ota import Component, write_root_keys
+    from openmv_ota.ota import components as C
+    from openmv_ota.ota import write_root_keys
     from tests import trust
+    fw = b"FW" * 1000                                    # a 2000-byte "firmware" component
+    image, comps = C.append(body, [(0x70090000, len(fw), C.compress(fw))])
     t = Trailer(
         body_size=len(body),
         meta={"product": "p", "board": "OPENMV_N6", "board_name": "P", "app_version": "1.2.3",
@@ -158,11 +161,10 @@ def _make_image_files(tmp_path):
               "toolchain": {"mpy_cross": "1.28.0", "vela": None, "stedgeai": None, "sdk": "1.6.0"}},
         product_id=7, payload_version=encode_app_version("1.2.3"), publish_seq=4242,
         body_sha256=hashlib.sha256(body).digest(), certificate=trust.certificate(priv),
-        components=[Component(0x70090000, 4096, 1000, 2000, b"\x11" * 32)], min_stub=2,
-        uart_en=1, uart_id=4, baud=115200)
+        components=comps, min_stub=2, uart_en=1, uart_id=4, baud=115200)
     t.signature = sign_region(priv, signed_region(t), spec)
     romfs = tmp_path / "x.romfs"
-    romfs.write_bytes(body)
+    romfs.write_bytes(image)                              # the slot image: body + the blob
     trailer = tmp_path / "x.trailer"
     trailer.write_bytes(pack_trailer(t))
     keys = tmp_path / "trusted_keys.json"
@@ -178,7 +180,10 @@ def test_build_inspect(tmp_path, capsys):
     assert "app_version" in out and "1.2.3" in out and "ES256" in out and "provenance" in out
     assert "publish_seq:    4242" in out            # the counter a platform's cameras order by
     assert "ota certificate from root 0, epoch 0" in out
-    assert "component:      1000 bytes at +4096 -> 0x70090000 (2000 bytes installed)" in out
+    from openmv_ota.ota import parse_trailer
+    [c] = parse_trailer(trailer.read_bytes()).components
+    assert "component:      %d bytes at +%d -> 0x70090000 (2000 bytes installed)" % (
+        c.size, c.offset) in out
     assert "min_stub:       2" in out
 
 
@@ -368,9 +373,12 @@ def test_slots_single_trailer(tmp_path):
     from openmv_ota.ota import partition
     romfs, trailer, _keys = _make_image_files(tmp_path)
     body, tb = romfs.read_bytes(), trailer.read_bytes()
-    img = body + b"\xff" * (4096 - len(body)) + tb   # body in block 0, trailer at 4096
+    # a real slot: the body region (body + 0xFF) in the first two blocks, then the blank
+    # status sector, then the trailer block
+    region = body + b"\xff" * (8192 - len(body))
+    img = region + b"\xff" * 4096 + tb + b"\xff" * (4096 - len(tb))
     sl = partition.slots(img)
-    assert len(sl) == 1 and sl[0][0] == "image" and sl[0][1] == body
+    assert len(sl) == 1 and sl[0][0] == "image" and sl[0][1] == region
 
 
 # --- a plain, unsigned romfs is handled gracefully (no trailer) --------------

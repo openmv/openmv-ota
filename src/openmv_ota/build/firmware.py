@@ -323,12 +323,17 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
     of ``imlib_config.h``. ``build romfs`` refuses an app that calls a dropped method
     (:func:`openmv_ota.build.romfs._refuse_dropped_calls`), so the mismatch is a build
     error and not a NameError in the field."""
-    drops = get_board(name).ota_firmware_drops
-    if not drops:
+    board = get_board(name)
+    drops, stub = board.ota_firmware_drops, board.stub
+    if not drops and stub is None:
         return None
     src = repo / "boards" / name
     overlay = tmp / "board"
     shutil.copytree(src, overlay)
+    if stub is not None:
+        _relink_for_stub(overlay, name, stub)
+    if not drops:
+        return overlay
     cfg = overlay / "imlib_config.h"
     try:
         text = cfg.read_text(encoding="utf-8")
@@ -346,6 +351,50 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
                              "firmware disagree" % (name, define), exit_code=2)
     cfg.write_text(text, encoding="utf-8")
     return overlay
+
+
+def _relink_for_stub(overlay: Path, name: str, stub) -> None:
+    """Move the firmware up to the boot stub's destination in the overlaid board config.
+
+    On a board with a boot stub the stub takes the start of the firmware area and the
+    firmware runs from ``stub.firmware_dest``, with ``stub.firmware_max`` bytes to grow into.
+    The firmware is position-dependent, so it has to be linked there: ``OMV_FLASH_TXT_ORIGIN``
+    / ``OMV_FLASH_TXT_LENGTH`` in ``board_config.h`` place its text, and ``OMV_FIRM_ADDR`` in
+    ``board_config.mk`` sets its vector-table base. The three must agree with the board table
+    or the stub would jump into the wrong place, so a config that does not spell them the
+    way this expects is a build error, not a guess."""
+    h = overlay / "board_config.h"
+    try:
+        text = h.read_text(encoding="utf-8")
+    except OSError:
+        raise BuildError("boards/%s/board_config.h not found in the firmware checkout; the "
+                         "OTA firmware build relinks it for the boot stub" % name,
+                         exit_code=2) from None
+    text, n_origin = re.subn(r"(?m)^([ \t]*#define[ \t]+OMV_FLASH_TXT_ORIGIN[ \t]+)\S+",
+                             r"\g<1>0x%08X" % stub.firmware_dest, text)
+    length = ("%dK" % (stub.firmware_max // 1024) if stub.firmware_max % 1024 == 0
+              else "0x%X" % stub.firmware_max)
+    text, n_length = re.subn(r"(?m)^([ \t]*#define[ \t]+OMV_FLASH_TXT_LENGTH[ \t]+)\S+",
+                             r"\g<1>%s" % length, text)
+    if n_origin != 1 or n_length != 1:
+        raise BuildError("boards/%s/board_config.h does not define OMV_FLASH_TXT_ORIGIN and "
+                         "OMV_FLASH_TXT_LENGTH once each, which the boot stub's relink expects "
+                         "-- the board table and the firmware disagree" % name, exit_code=2)
+    h.write_text(text, encoding="utf-8")
+    mk = overlay / "board_config.mk"
+    try:
+        text = mk.read_text(encoding="utf-8")
+    except OSError:
+        raise BuildError("boards/%s/board_config.mk not found in the firmware checkout; the "
+                         "OTA firmware build relinks it for the boot stub" % name,
+                         exit_code=2) from None
+    text, n_addr = re.subn(r"(?m)^(OMV_FIRM_ADDR[ \t]*[:?]?=[ \t]*)\S+",
+                           r"\g<1>0x%08X" % stub.firmware_dest, text)
+    if n_addr != 1:
+        raise BuildError("boards/%s/board_config.mk does not set OMV_FIRM_ADDR once, which the "
+                         "boot stub's relink expects -- the board table and the firmware "
+                         "disagree" % name, exit_code=2)
+    mk.write_text(text, encoding="utf-8")
 
 
 def _recovery_ca(p, t) -> bytes:
