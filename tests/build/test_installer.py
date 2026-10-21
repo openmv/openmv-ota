@@ -79,6 +79,9 @@ def test_rollback_floor_of_mirrors_boot_and_host():
             == rollback.floor_of(wide) == 1 << 40)
     assert inst("_rollback_floor_of")(b"\xff" * 4096) == 0        # blank -> no floor
     assert inst("_rollback_floor_of")(b"\xff" * 4) == 0           # shorter than one entry
+    from openmv_ota.ota import status
+    assert (inst("_FLOOR_OFF"), inst("_EPOCH_OFF")) == (status.FLOOR_OFFSET, status.EPOCH_OFFSET)
+    assert (boot_test.B._FLOOR_OFF, boot_test.B._EPOCH_OFF) == (inst("_FLOOR_OFF"), inst("_EPOCH_OFF"))
 
 
 def test_slot_table_mirrors_boot():
@@ -727,12 +730,12 @@ def _noop():
 
 
 def _run_install(image, front_size, block, feed=_noop, progress=None, expect_sha=None,
-                 repr_marker=None, counter=None, floor=0):
+                 repr_marker=None, counter=None, floor=0, epoch=0):
     flash = _FakeFlash(front_size)
     flash.erase(front_size)                 # the caller erases before _install_stream now
     inst("_install_stream")(_SourceOf(image), flash.write,
                             flash.readback, front_size, block, feed, progress, expect_sha,
-                            repr_marker, None, None, counter, floor)
+                            repr_marker, None, None, counter, floor, 0, epoch)
     return flash
 
 
@@ -821,13 +824,51 @@ def test_install_stream_stamps_the_counter_and_carries_the_floor():
     assert flash.mem[so + status.COUNTER_OFFSET:
                      so + status.COUNTER_OFFSET + status.COUNTER_SIZE] == \
         status.encode_counter(12)
-    fo = status.floor_offset()
-    assert rollback.floor_of(flash.mem[so + fo:so + block]) == 0x01020000
+    fo, eo = status.floor_offset(), status.epoch_offset()
+    assert rollback.floor_of(flash.mem[so + fo:so + eo]) == 0x01020000
+    assert flash.mem[so + eo:so + eo + 16] == b"\xff" * 16              # epoch 0: nothing to carry
     # ...and the floor is carried FIRST -- before a single image byte -- so it is never
     # absent from flash for longer than the blank-verify pass (the single-image blackout fix)
     assert flash.writes[0][0] == so + fo
     # PENDING is the LAST write of the whole install -- nothing is bootable before it.
     assert flash.writes[-1][0] == so
+
+
+def test_install_stream_carries_the_epoch_floor_into_its_own_region():
+    from openmv_ota.ota import rollback, status
+
+    block, front = 4096, 5 * 4096
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    flash = _run_install(bytes(image), front, block, counter=3, floor=0x01000000, epoch=4)
+    so, fo, eo = front - 2 * block, status.floor_offset(), status.epoch_offset()
+    assert rollback.floor_of(flash.mem[so + fo:so + eo]) == 0x01000000
+    assert rollback.floor_of(flash.mem[so + eo:so + block]) == 4
+    assert [w[0] for w in flash.writes[:2]] == [so + fo, so + eo]   # both carried before the image
+
+
+def test_install_stream_rejects_a_carried_epoch_that_does_not_read_back():
+    """The carried epoch entry is verified like the floor's: a readback that disagrees
+    aborts the install before any image byte is written."""
+    import pytest
+    from openmv_ota.ota import status
+
+    block, front = 4096, 5 * 4096
+    eo = front - 2 * block + status.epoch_offset()
+
+    class _Lying(_FakeFlash):
+        def readback(self, off, n):
+            data = super().readback(off, n)
+            return b"\x00" * n if off == eo else data
+
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    flash = _Lying(front)
+    flash.erase(front)
+    with pytest.raises(OSError, match="carried epoch verify failed"):
+        inst("_install_stream")(_SourceOf(bytes(image)), flash.write, flash.readback, front,
+                                block, _noop, None, None, None, None, None, 3, 0x01000000, 0, 4)
+    assert [w[0] for w in flash.writes][-1] == eo       # nothing after the failed epoch carry
 
 
 def test_install_stream_without_a_floor_leaves_the_floor_region_blank():

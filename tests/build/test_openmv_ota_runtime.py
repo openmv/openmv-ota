@@ -35,6 +35,7 @@ def test_markers_and_offsets_pinned_to_host():
 def test_rollback_mirror_matches_host():
     from openmv_ota.ota import rollback as host
     assert rt._ROLLBACK_ENTRY == host.ENTRY_SIZE
+    assert (rt._FLOOR_OFF, rt._EPOCH_OFF) == (host_status.FLOOR_OFFSET, host_status.EPOCH_OFFSET)
     assert rt._rollback_entry(0x01020000) == host.encode_entry(0x01020000)
     sector = bytearray(b"\xff" * 4096)
     sector[0:host.ENTRY_SIZE] = host.encode_entry(0x01000000)

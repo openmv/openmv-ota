@@ -58,6 +58,7 @@ def test_boot_mirror_stride_32():
         assert B._markers(sec) == (True, False, True)
         assert B.install_counter(sec) == 3
         assert B.attempt_offset(sec) == 160        # first attempt unit, stride-spaced
+        assert (B._FLOOR_OFF, B._EPOCH_OFF) == (status.floor_offset(32), status.epoch_offset(32))
         rb = bytearray(b"\xff" * 4096)
         rb[32:40] = rollback.encode_entry(4)
         assert B._rollback_floor_of(rb) == 4
@@ -78,6 +79,7 @@ def test_runtime_mirror_stride_32():
         rb[0:8] = rollback.encode_entry(2)
         assert R._rollback_floor_of(rb) == 2
         assert R._rollback_append_offset(rb) == 32
+        assert (R._FLOOR_OFF, R._EPOCH_OFF) == (status.floor_offset(32), status.epoch_offset(32))
         # a cfg with no stride falls back to the default layout
         R._use_cfg_stride(types.SimpleNamespace())
         assert R._markers(status.build_status_sector(
@@ -91,6 +93,7 @@ def test_installer_mirror_stride_32():
     try:
         inst._set_stride(32)
         assert inst._REPR_OFF == 96 and inst._COUNTER_OFF == 128
+        assert (inst._FLOOR_OFF, inst._EPOCH_OFF) == (status.floor_offset(32), status.epoch_offset(32))
         assert inst._pad(b"x" * 16) == b"x" * 16 + b"\xff" * 16   # marker fills its word
         assert inst._pad(b"y" * 32) == b"y" * 32                  # already whole words
         rb = bytearray(b"\xff" * 128)

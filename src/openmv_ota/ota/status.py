@@ -99,9 +99,37 @@ def floor_offset(stride: int = DEFAULT_STRIDE) -> int:
     """Where the anti-rollback floor's entries start inside the status sector: the tail
     beyond the attempt region. The floor lives here rather than in a sector of its own --
     same writers (the installer's carry-forward, ``confirm()``'s raise), same 1->0
-    programming, and a sector cycle only ever holds one or two entries, so the status
-    sector's tail is more room than the floor can use."""
+    programming, and a sector cycle only ever holds one or two entries, so
+    :data:`FLOOR_ENTRIES` of them is more room than the floor can use."""
     return attempts_offset(stride) + ATTEMPTS_MAX * attempt_unit(stride)
+
+
+# Entries each floor region holds. The anti-rollback floor's region ends where the
+# certificate-epoch floor's begins; both are appended to and read the same way. 64 at
+# the default stride; where a wider stride leaves less than two such regions in the
+# smallest status sector (4 KiB), the two share what is left equally.
+FLOOR_ENTRIES = 64
+MIN_SECTOR = 4096
+
+
+def floor_entries(stride: int = DEFAULT_STRIDE) -> int:
+    """Entries per floor region at ``stride``: :data:`FLOOR_ENTRIES`, capped so that two
+    regions fit the tail of a :data:`MIN_SECTOR`-byte status sector (29 at stride 32)."""
+    unit = max(16, stride)
+    return min(FLOOR_ENTRIES, (MIN_SECTOR - floor_offset(stride)) // (2 * unit))
+
+
+def epoch_offset(stride: int = DEFAULT_STRIDE) -> int:
+    """Where the certificate-epoch floor's entries start: right after the anti-rollback
+    floor's :func:`floor_entries`. The same 16-byte ``key || ~key`` entries, raised by
+    ``confirm()`` to the running image's certificate epoch and carried forward by the
+    installer; ``boot.py`` refuses a certificate below the highest across the slots -- a
+    retired signing key."""
+    return floor_offset(stride) + floor_entries(stride) * max(16, stride)
+
+
+FLOOR_OFFSET = floor_offset()
+EPOCH_OFFSET = epoch_offset()
 
 
 def _marker(label: bytes) -> bytes:
@@ -134,7 +162,7 @@ def encode_counter(value: int) -> bytes:
 
 def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bool,
                         counter: int | None = None, stride: int = DEFAULT_STRIDE,
-                        floor_key: int | None = None) -> bytes:
+                        floor_key: int | None = None, epoch: int | None = None) -> bytes:
     """A ``block``-sized status sector with the requested markers set (rest ``0xFF``).
 
     Under v2 both slots are real, updatable images and share one shape: an installed slot is
@@ -145,7 +173,8 @@ def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bo
     anti-rollback floor region (``floor_offset``) with one entry — what the factory image
     ships, and what the installer carries forward into every slot it writes. It is the
     number this camera ORDERS by (``boot.rollback_key``): the image's ``payload_version``
-    normally, its ``publish_seq`` on a ``PRODUCT_ID = 0`` build."""
+    normally, its ``publish_seq`` on a ``PRODUCT_ID = 0`` build. ``epoch`` seeds the
+    certificate-epoch floor (``epoch_offset``) the same way, with the signing key's epoch."""
     from openmv_ota.ota import rollback
     sector = bytearray(b"\xff" * block)
     if pending:
@@ -163,5 +192,9 @@ def build_status_sector(block: int, *, pending: bool, tried: bool, confirmed: bo
     if floor_key is not None:
         off = floor_offset(stride)
         entry = rollback.encode_entry(floor_key)
+        sector[off:off + len(entry)] = entry
+    if epoch is not None:
+        off = epoch_offset(stride)
+        entry = rollback.encode_entry(epoch)
         sector[off:off + len(entry)] = entry
     return bytes(sector)

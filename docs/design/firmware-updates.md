@@ -201,7 +201,7 @@ Today (per slot, 4 KiB, 16-byte stride; `src/openmv_ota/build/device/boot.py`):
 | 0 | `pending` (exists) | the installer | trial requested: boot this slot next, installing its components first |
 | 32 | `confirmed` (exists) | `boot.py`/app on confirm | known good |
 | attempt region | `attempt` (exists) | the **stub** (boards with a stub) | one per trial boot; `max_attempts` from the firmware build, default 3 |
-| floor region | epoch entries (new): `u32 epoch ‖ u32 ~epoch ‖ 8 pad` | `boot.py` on confirm | the certificate epoch floor |
+| floor region | epoch entries (new): the rollback floor's own `u64 key ‖ u64 ~key` entries, in a second region right after the first's 64 | `boot.py` on confirm; the installer carries it; the factory image seeds it | the certificate epoch floor |
 
 `boot.py` on a stub board never burns an attempt itself; it reads the install
 record to learn the running slot.

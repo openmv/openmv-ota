@@ -100,6 +100,8 @@ def test_constants_match_host():
     assert (B._RECORD_MAGIC, B._RECORD_VERSION, B._RECORD_STRUCT, B._RECORD_FIXED) == (
         R.MAGIC, R.VERSION, R.FIXED_STRUCT, R.FIXED_SIZE)
     assert (B._RECORD_BLOCK, B._REASON_TRIAL) == (R.BLOCK, R.REASON_TRIAL)
+    assert (B._FLOOR_OFF, B._EPOCH_OFF, B._FLOOR_ENTRIES) == (
+        host_status.FLOOR_OFFSET, host_status.EPOCH_OFFSET, host_status.FLOOR_ENTRIES)
     assert (B.PENDING, B.TRIED, B.CONFIRMED) == (
         host_status.PENDING, host_status.TRIED, host_status.CONFIRMED)
     assert (B._PENDING_OFF, B._TRIED_OFF, B._CONFIRMED_OFF) == (
@@ -627,6 +629,40 @@ def test_the_rollback_floor_is_the_max_across_slots():
     ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker,
                    PARTITION_SIZE, FRONT_SIZE, BLOCK, PRODUCT_ID, {})
     assert ob._rollback_floor() == 11
+
+
+def test_the_epoch_floor_is_the_max_across_slots_and_stays_out_of_the_rollback_floor():
+    part = bytearray(b"\xff" * PARTITION_SIZE)
+    fo, eo = B._FLOOR_OFF, B._EPOCH_OFF
+    part[FRONT_SIZE - 2 * BLOCK + eo:FRONT_SIZE - 2 * BLOCK + eo + 16] = \
+        host_rollback.encode_entry(2)
+    part[PARTITION_SIZE - 2 * BLOCK + eo:PARTITION_SIZE - 2 * BLOCK + eo + 16] = \
+        host_rollback.encode_entry(5)
+    part[PARTITION_SIZE - 2 * BLOCK + fo:PARTITION_SIZE - 2 * BLOCK + fo + 16] = \
+        host_rollback.encode_entry(7)
+    dev = _Dev(part)
+    ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker,
+                   PARTITION_SIZE, FRONT_SIZE, BLOCK, PRODUCT_ID, {})
+    assert ob._epoch_floor() == 5
+    assert ob._rollback_floor() == 7              # the epoch entries are not versions
+
+
+def test_a_slot_signed_under_a_retired_epoch_is_rejected_at_boot():
+    """confirm() raised the epoch floor to 2 when a release certified at epoch 2 was kept; a
+    slot whose certificate says epoch 1 is signed by a key retired since, however new it is."""
+    priv, _pub = _key()
+    a, bdy_b = b"aaa" * 40, b"bbb" * 40
+    sa = _counter(bytearray(_status(True, True, True)), 1)
+    eo = B._EPOCH_OFF
+    sa[eo:eo + 16] = host_rollback.encode_entry(2)                 # A was confirmed at epoch 2
+    sb = _counter(bytearray(_status(True, False, False)), 2)       # B: newer, pending, epoch 1
+    dev = _Dev(_partition(_front(priv, 0x100, a, sa, epoch=2), _back(priv, 0x100, bdy_b, sb, epoch=1)))
+    slot, _t, reason = dev.boot(trust.ROOTS)
+    assert slot == "A" and "B:epoch" in reason
+    # ...while a slot at (or above) the floor is fine
+    sb2 = _counter(bytearray(_status(True, False, False)), 2)
+    dev = _Dev(_partition(_front(priv, 0x100, a, sa, epoch=2), _back(priv, 0x100, bdy_b, sb2, epoch=2)))
+    assert dev.boot(trust.ROOTS)[0] == "B"
 
 
 def test_a_slot_whose_attempt_region_is_full_is_not_bootable():

@@ -54,3 +54,27 @@ def test_build_status_sector_leaves_repr_unwritten():
     # repr is install-time provenance only -- a factory status sector never sets it
     s = status.build_status_sector(4096, pending=True, tried=True, confirmed=True)
     assert s[status.REPR_OFFSET:status.REPR_OFFSET + 16] == FF16
+
+
+def test_the_two_floor_regions_sit_in_the_tail_and_do_not_overlap():
+    """The anti-rollback floor gets FLOOR_ENTRIES entries past the attempt region; the
+    certificate-epoch floor starts right after it. Both are read as "the highest valid
+    entry", so each must only ever see its own entries."""
+    from openmv_ota.ota import rollback
+    fo, eo = status.floor_offset(), status.epoch_offset()
+    assert fo == status.FLOOR_OFFSET == 80 + 64 * 16
+    assert eo == status.EPOCH_OFFSET == fo + status.FLOOR_ENTRIES * 16
+    assert status.floor_entries() == status.FLOOR_ENTRIES == 64
+    # stride 32: the attempt region ends at 2208, leaving room for 29 entries per floor
+    assert status.floor_entries(32) == 29
+    assert status.epoch_offset(32) == status.floor_offset(32) + 29 * 32 == 3136
+    assert status.epoch_offset(32) + 29 * 32 <= status.MIN_SECTOR    # both regions fit
+    assert eo + 16 <= 4096                                   # room for entries in a 4 KiB sector
+    sector = status.build_status_sector(4096, pending=False, tried=False, confirmed=True,
+                                        floor_key=0x01020000, epoch=3)
+    assert sector[fo:fo + 16] == rollback.encode_entry(0x01020000)
+    assert sector[eo:eo + 16] == rollback.encode_entry(3)
+    assert rollback.floor_of(sector[fo:eo]) == 0x01020000       # each region reads its own
+    assert rollback.floor_of(sector[eo:]) == 3
+    plain = status.build_status_sector(4096, pending=False, tried=False, confirmed=True)
+    assert plain[eo:eo + 16] == b"\xff" * 16                     # no epoch seeded: blank

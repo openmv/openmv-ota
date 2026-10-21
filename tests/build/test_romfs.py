@@ -611,6 +611,10 @@ def test_factory_build_composes_dual_slot(make_project):
     co, cn = status.COUNTER_OFFSET, status.COUNTER_SIZE
     assert a[co:co + cn] == status.encode_counter(2)
     assert b[co:co + cn] == status.encode_counter(1)
+    # both slots seed the certificate-epoch floor with the factory key's epoch (0 at birth)
+    from openmv_ota.ota import rollback
+    eo = status.EPOCH_OFFSET
+    assert a[eo:eo + 16] == b[eo:eo + 16] == rollback.encode_entry(0)
 
     # THE PUBLISHABLE PAIR: build/factory/ holds the same bytes in release form -- the
     # gzipped download image + a manifest signed with the FACTORY key -- so `client

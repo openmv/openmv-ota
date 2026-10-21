@@ -139,13 +139,19 @@ _BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
 _ROLLBACK_ENTRY = 16                    # u64 key || u64 ~key (one flash write unit)
 _ROLLBACK_STRIDE = 16                   # entry spacing; stride-sized on ECC-word flash
 _MASK64 = 0xFFFFFFFFFFFFFFFF
+_FLOOR_ENTRIES = 64                     # entries per floor region (openmv_ota.ota.status);
+_MIN_SECTOR = 4096                      # ...fewer where two regions would not fit this
 _FLOOR_OFF = 80 + 64 * 16               # attempts end; _set_stride re-derives
+# The certificate-epoch floor: the same entries, right after the anti-rollback floor's
+# region. confirm() raises it to the running image's certificate epoch; a certificate below
+# the highest epoch across the slots is a retired signing key (evaluate_slot: "epoch").
+_EPOCH_OFF = _FLOOR_OFF + 64 * 16
 
 
 def _set_stride(stride):
     """Re-derive the module geometry for ``stride`` (no-op at the default 16)."""
     global _TRIED_OFF, _CONFIRMED_OFF, _COUNTER_OFF, _ATTEMPT_UNIT, _ATTEMPTS_OFF
-    global _BLANK_ATTEMPT, _ROLLBACK_STRIDE, _FLOOR_OFF
+    global _BLANK_ATTEMPT, _ROLLBACK_STRIDE, _FLOOR_OFF, _EPOCH_OFF
     _TRIED_OFF = stride
     _CONFIRMED_OFF = 2 * stride
     _COUNTER_OFF = 4 * stride
@@ -154,6 +160,8 @@ def _set_stride(stride):
     _BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
     _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
     _FLOOR_OFF = _ATTEMPTS_OFF + 64 * _ATTEMPT_UNIT
+    entries = min(_FLOOR_ENTRIES, (_MIN_SECTOR - _FLOOR_OFF) // (2 * _ROLLBACK_STRIDE))
+    _EPOCH_OFF = _FLOOR_OFF + entries * _ROLLBACK_STRIDE
 
 
 def _rollback_floor_of(sector):
@@ -495,10 +503,18 @@ class OtaBoot:
         as long as an install carries the current floor into the slot it writes -- which is the
         installer's job (step 4), and the reason the floor is read from every slot here rather
         than from a designated one."""
+        return self._floor(_FLOOR_OFF, _EPOCH_OFF)
+
+    def _epoch_floor(self):
+        """The certificate-epoch floor: the highest epoch any slot has recorded as confirmed.
+        Kept the way the anti-rollback floor is, for the same reasons."""
+        return self._floor(_EPOCH_OFF, self.block)
+
+    def _floor(self, start, end):
         floor = 0
         for _name, offset, size in self._slots():
             status = self.read(offset + size - 2 * self.block, self.block)
-            logged = _rollback_floor_of(status[_FLOOR_OFF:])
+            logged = _rollback_floor_of(status[start:end])
             if logged > floor:
                 floor = logged
         return floor
@@ -519,13 +535,14 @@ class OtaBoot:
         to the firmware-resident recovery flow, which re-downloads until a working image exists.
         """
         floor = self._rollback_floor()
+        epoch_floor = self._epoch_floor()
         candidates, rejects = [], []
         for name, offset, size in self._slots():
             body, status, trailer = self._read_slot(offset, size)
             try:
                 t, consume = evaluate_slot(
                     body, status, trailer, floor, self.product_id, self.root_keys,
-                    self.verify, self.max_attempts)
+                    self.verify, self.max_attempts, epoch_floor)
             except OtaReject as e:
                 rejects.append("%s:%s" % (name, e))
                 continue
@@ -586,6 +603,8 @@ last_slot = None              # 'A' or 'B'
 last_payload_version = 0      # the mounted image's payload_version
 last_publish_seq = 0          # ...and its publish_seq; confirm() raises the floor to
                               # whichever of the two this camera orders by
+last_epoch = 0                # the mounted image's certificate epoch; confirm() raises the
+                              # epoch floor to it
 last_failure_reason = None    # why the OTHER slot was rejected, if this one is a fallback
 
 
@@ -783,14 +802,16 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         log.warning("boot: rejected %s -> mounted %s (payload %d)"
                     % (reject_reason, slot, trailer.payload_version))
 
-    global last_slot, last_payload_version, last_publish_seq, last_failure_reason
+    global last_slot, last_payload_version, last_publish_seq, last_failure_reason, last_epoch
     last_slot, last_payload_version, last_publish_seq, last_failure_reason = (
         slot, trailer.payload_version, trailer.publish_seq, reject_reason)
+    last_epoch = trailer.epoch
     # Mirror onto _ota_config, the module the app's openmv_ota lib reads (both import it,
     # and modules are cached, so this persists in-VM without re-running boot.py).
     cfg.last_slot = slot
     cfg.last_payload_version = trailer.payload_version
     cfg.last_publish_seq = trailer.publish_seq
+    cfg.last_epoch = trailer.epoch
     cfg.last_failure_reason = reject_reason
     cfg.last_stub = ob.stub                        # (stub_version, reason), or None
 
