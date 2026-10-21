@@ -46,6 +46,28 @@ LIVE_FRAMESIZES = {"QQVGA": (160, 120), "QVGA": (320, 240), "VGA": (640, 480)}
 
 
 @dataclass(frozen=True)
+class StubLayout:
+    """Where this board's boot stub installs the firmware: the first component's destination
+    and the bytes available there (the stub's install window, less its own record sector).
+    A board with a layout builds OTA images that carry the firmware; one without does not."""
+
+    firmware_dest: int
+    firmware_max: int
+
+
+def _stub(name: str, raw) -> StubLayout | None:
+    if raw is None:
+        return None
+    try:
+        dest, size = int(str(raw["firmware_dest"]), 0), int(str(raw["firmware_max"]), 0)
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError("boards.json: %s has a bad stub layout: %s" % (name, e)) from None
+    if dest <= 0 or size <= 0:
+        raise ValueError("boards.json: %s has a bad stub layout: dest/max must be positive" % name)
+    return StubLayout(dest, size)
+
+
+@dataclass(frozen=True)
 class BoardConfig:
     name: str
     display_name: str
@@ -78,6 +100,8 @@ class BoardConfig:
                                          # to fit this board's flash, `{define: image
                                          # method}` -- the build refuses an app that
                                          # calls the method (see build/firmware.py)
+    stub: StubLayout | None = None       # the boot stub's firmware destination + window;
+                                         # set on boards whose OTA images carry firmware
     cloud: str | None = None             # what this board does on the hosted OpenMV Cloud:
                                          # one of CLOUD_LEVELS, or None (not offered there).
                                          # One place for the website's board picker and the
@@ -204,6 +228,7 @@ def load_boards() -> dict[str, BoardConfig]:
             tls_verify=bool(b.get("tls_verify", True)),
             ota_runtime_drops_network=bool(b.get("ota_runtime_drops_network", False)),
             ota_firmware_drops=dict(b.get("ota_firmware_drops", {})),
+            stub=_stub(name, b.get("stub")),
             cloud=_cloud_level(name, b.get("cloud")),
             live_framesize=_live_framesize(name, b.get("cloud"), b.get("live_framesize")),
             secure_element=_secure_element(name, b.get("secure_element")),

@@ -50,10 +50,32 @@ def test_verify_bad_signature():
     assert not ok and "signature does not verify" in reason
 
 
-def test_verify_body_size_mismatch():
+def test_verify_body_shorter_than_the_trailer_says():
     body, trailer, _priv = _signed()
-    ok, reason = verify_image(body + b"x", trailer, trust.ROOTS)
+    ok, reason = verify_image(body[:-1], trailer, trust.ROOTS)
     assert not ok and "body is" in reason
+
+
+def _with_component():
+    """An image whose slot carries a firmware component after the filesystem."""
+    from openmv_ota.ota import components as C
+    priv = keys.generate_private_key(trust.SPEC)
+    body = b"ROMFS-BODY" * 40
+    fw = bytes(range(256)) * 20
+    image, comps = C.append(body, [(0x70090000, len(fw), C.compress(fw))])
+    return image, trust.trailer(priv, body, components=comps), comps
+
+
+def test_verify_checks_the_components_past_the_filesystem():
+    image, trailer, comps = _with_component()
+    ok, reason = verify_image(image, trailer, trust.ROOTS)
+    assert ok and "1 component(s) OK" in reason
+    tampered = bytearray(image)
+    tampered[comps[0].offset] ^= 0x80
+    ok, reason = verify_image(bytes(tampered), trailer, trust.ROOTS)
+    assert not ok and "hash mismatch" in reason and "component" in reason
+    ok, reason = verify_image(image[:comps[0].offset + 4], trailer, trust.ROOTS)
+    assert not ok and "runs past" in reason
 
 
 def test_verify_body_hash_mismatch():

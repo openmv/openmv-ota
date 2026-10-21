@@ -286,6 +286,7 @@
     "OPENMV_N6": {
       "secure_element": {"chip": "soft", "key_area": 1879568384, "bootloader_max": 258048},
       "recovery_ca_bundle": true,
+      "stub": {"firmware_dest": "0x70090000", "firmware_max": "0x36F000"},
       "display_name": "OpenMV N6 (STM32N657)",
       "cloud": "full",
       "live_framesize": "QVGA",
