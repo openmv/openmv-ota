@@ -1,0 +1,152 @@
+"""``build stub``: the boot stub's keys header and build driver (openmv_ota.build.stub)."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from openmv_ota.build import stub as stub_mod
+from openmv_ota.build.errors import BuildError
+from openmv_ota.cli import main
+
+
+def _fake_make(monkeypatch, *, produce=True):
+    """Stand in for make: record the args, read the generated keys header while it still
+    exists, and drop a stub.bin in BUILD."""
+    calls: list[dict] = []
+
+    def fake(args):
+        kv = dict(a.split("=", 1) for a in args if "=" in a)
+        kv["args"] = list(args)
+        kv["header"] = (Path(kv["KEYS_DIR"]) / stub_mod.KEYS_HEADER).read_text()
+        calls.append(kv)
+        if produce:
+            Path(kv["BUILD"]).mkdir(parents=True)
+            (Path(kv["BUILD"]) / "stub.bin").write_bytes(b"STUB" * 100)
+
+    monkeypatch.setattr(stub_mod, "_run_make", fake)
+    return calls
+
+
+def test_build_stub_generates_the_keys_header_and_copies_the_binary(make_project, monkeypatch):
+    from openmv_ota.ota.keys import read_root_keys
+    from openmv_ota.project.config import derive_product_id
+    from openmv_ota.project.project import ProjectPaths
+
+    calls = _fake_make(monkeypatch)
+    root, repo, _app = make_project(ota=True)
+    [r] = stub_mod.build_stub(root, firmware=repo, jobs=2)
+    assert r.board == "OPENMV_N6" and r.output == root / "build" / "OPENMV_N6-stub.bin"
+    assert r.size == 400 and r.output.read_bytes() == b"STUB" * 100
+
+    [c] = calls
+    assert c["BOARD"] == "OPENMV_N6" and c["OMV_DIR"] == str(repo.resolve()) and "-j2" in c["args"]
+    assert c["args"][:2] == ["-C", str(stub_mod.STUB_DIR)]
+    h = c["header"]
+    roots = read_root_keys(ProjectPaths(root).root_keys)
+    assert "#define STUB_PRODUCT_ID %dULL" % derive_product_id("proj", "OPENMV_N6") in h \
+        or "#define STUB_PRODUCT_ID " in h
+    assert "#define STUB_MAX_ATTEMPTS 3" in h
+    assert "#define STUB_ROOT_KEY_COUNT %d" % len(roots) in h
+    for k in roots:                                   # X || Y of each root, in root_id order
+        point = bytes.fromhex(k.pubkey)[1:]
+        assert "0x%02x, 0x%02x" % (point[0], point[1]) in h
+    assert h.count("{ 0x") == len(roots)
+
+
+def test_build_stub_honours_output_and_board_filters(make_project, monkeypatch):
+    _fake_make(monkeypatch)
+    root, repo, _app = make_project(ota=True)
+    out = root / "elsewhere"
+    [r] = stub_mod.build_stub(root, firmware=repo, output=out, boards=["OPENMV_N6"])
+    assert r.output.parent == out
+
+
+def test_build_stub_rejects_a_non_ota_project(make_project, monkeypatch):
+    _fake_make(monkeypatch)
+    root, repo, _app = make_project()
+    with pytest.raises(BuildError, match="not an OTA project"):
+        stub_mod.build_stub(root, firmware=repo)
+
+
+def test_build_stub_rejects_unknown_boards_and_non_projects(make_project, monkeypatch, tmp_path):
+    _fake_make(monkeypatch)
+    root, repo, _app = make_project(ota=True)
+    with pytest.raises(BuildError, match="no matching boards"):
+        stub_mod.build_stub(root, firmware=repo, boards=["NOPE"])
+    with pytest.raises(BuildError):                         # not a project at all
+        stub_mod.build_stub(tmp_path / "nope", firmware=repo)
+
+
+def test_build_stub_needs_a_stub_layout_and_root_keys(make_project, monkeypatch):
+    from openmv_ota.project.project import ProjectPaths
+
+    _fake_make(monkeypatch)
+    root, repo, _app = make_project(boards=("OPENMV_N6", "OPENMV_AE3"), ota=True)
+    with pytest.raises(BuildError, match="OPENMV_AE3 has no boot-stub layout"):
+        stub_mod.build_stub(root, firmware=repo, boards=["OPENMV_AE3"])
+    ProjectPaths(root).root_keys.unlink()
+    with pytest.raises(BuildError, match="root_keys"):
+        stub_mod.build_stub(root, firmware=repo, boards=["OPENMV_N6"])
+
+
+def test_build_stub_fails_when_make_leaves_no_binary(make_project, monkeypatch):
+    _fake_make(monkeypatch, produce=False)
+    root, repo, _app = make_project(ota=True)
+    with pytest.raises(BuildError, match="produced no stub.bin"):
+        stub_mod.build_stub(root, firmware=repo)
+
+
+def test_stub_keys_header_checks_the_roots():
+    from openmv_ota.ota.keys import RootKey
+
+    good = "04" + "11" * 64
+    with pytest.raises(BuildError, match="numbered 0..n-1"):
+        stub_mod.stub_keys_header([RootKey(root_id=1, alg=-7, pubkey=good)], 1, 3)
+    with pytest.raises(BuildError, match="numbered 0..n-1"):
+        stub_mod.stub_keys_header([], 1, 3)
+    with pytest.raises(BuildError, match="not an uncompressed P-256 point"):
+        stub_mod.stub_keys_header([RootKey(root_id=0, alg=-7, pubkey="02" + "11" * 32)], 1, 3)
+    h = stub_mod.stub_keys_header([RootKey(root_id=0, alg=-7, pubkey=good)], 5, 2)
+    assert "#define STUB_PRODUCT_ID 5ULL" in h and "#define STUB_MAX_ATTEMPTS 2" in h
+    assert h.count("0x11") == 64
+
+
+def test_run_make_errors_become_build_errors(monkeypatch):
+    def missing(*_a, **_k):
+        raise FileNotFoundError("make")
+    monkeypatch.setattr(subprocess, "run", missing)
+    with pytest.raises(BuildError, match="make not found") as e:
+        stub_mod._run_make(["-C", "x"])
+    assert e.value.exit_code == 2
+
+    def failing(*_a, **_k):
+        raise subprocess.CalledProcessError(3, ["make"])
+    monkeypatch.setattr(subprocess, "run", failing)
+    with pytest.raises(BuildError, match="stub build failed") as e:
+        stub_mod._run_make(["-C", "x"])
+    assert e.value.exit_code == 3
+
+    seen = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, check: seen.append((cmd, check)))
+    stub_mod._run_make(["-C", "x"])
+    assert seen == [([stub_mod.MAKE, "-C", "x"], True)]
+
+
+def test_build_stub_cli(make_project, monkeypatch, capsys):
+    _fake_make(monkeypatch)
+    root, repo, _app = make_project(ota=True)
+    assert main(["build", "stub", str(root), "-f", str(repo), "-b", "OPENMV_N6", "-j", "1"]) == 0
+    assert "Built OPENMV_N6-stub.bin  (400 bytes)" in capsys.readouterr().out
+    rc = main(["build", "stub", str(root), "-f", str(repo), "-b", "NOPE"])
+    assert rc != 0 and "no matching boards" in capsys.readouterr().err
+
+
+def test_the_stub_sources_ship_as_package_data():
+    """The C tree must be inside the package (pyproject package-data) or an installed
+    tool cannot build it."""
+    assert (stub_mod.STUB_DIR / "Makefile").is_file()
+    assert (stub_mod.STUB_DIR / "boards" / "OPENMV_N6" / "stub_config.h").is_file()
+    assert (stub_mod.STUB_DIR / "common" / "stub.h").is_file()

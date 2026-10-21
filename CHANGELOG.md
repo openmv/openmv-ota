@@ -42,6 +42,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   slot it writes, the factory image seeds it, and `boot.py` rejects a slot whose certificate is
   below the highest epoch across the slots (`epoch`): a retired signing key stays refused once
   a release that retired it has been kept.
+- **The boot stub, and `build stub`.** `src/openmv_ota/build/device/stub/` is the C loader
+  that sits at the firmware address on a stub board (the N6 first): its own Makefile and
+  linker script per board, built against the HAL/CMSIS in the project's firmware checkout,
+  with the LZMA decoder (LZMA SDK), P-256 (p256-m) and SHA-256 vendored beside it. It verifies
+  both slots (root key -> certificate -> image signature -> component hashes), picks a slot
+  the way `boot.py` would, installs the components into the firmware area when the install
+  record does not already vouch for them, writes the record and jumps; the trailer's UART
+  and watchdog fields pick its debug output and the watchdog it arms. `build stub` bakes the
+  project's root keys, product id and attempt budget into it and emits `<board>-stub.bin`.
 
 ### Added
 
