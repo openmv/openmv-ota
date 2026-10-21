@@ -13,7 +13,6 @@ from hypothesis import strategies as st
 
 from openmv_ota.ota import keys, sign
 from openmv_ota.ota import manifest as host_manifest
-from openmv_ota.ota import trailer as host_trailer
 from openmv_ota.ota.algorithms import ES256, ES384, ES512, algorithm_for
 from openmv_ota.ota.keys import TrustedKey
 
@@ -53,8 +52,14 @@ def keypair(alg=ES256):
 
 
 def trusted(alg=ES256, key_id=KEY_ID):
-    """The host verifier's trusted set holding just ``keypair(alg)``."""
+    """The host MANIFEST verifier's trusted set holding just ``keypair(alg)``."""
     return [TrustedKey(key_id=key_id, alg=alg, role="ota", pubkey=keypair(alg)[1].hex())]
+
+
+def roots():
+    """The root set a trailer's certificate must chain to (``tests.trust``'s root)."""
+    from tests import trust
+    return trust.ROOTS
 
 
 def device_verify(alg, pubkey_bytes, sig, msg):
@@ -70,18 +75,15 @@ def device_verify(alg, pubkey_bytes, sig, msg):
 
 # --- artifacts --------------------------------------------------------------------------------
 
-def signed_trailer(body: bytes, alg=ES256, key_id=KEY_ID, **fields) -> bytes:
-    """A genuine trailer for ``body``, signed with ``keypair(alg)``."""
+def signed_trailer(body: bytes, alg=ES256, **fields) -> bytes:
+    """A genuine v4 trailer for ``body``, signed with ``keypair(alg)`` under a certificate
+    from ``tests.trust``'s root. Certified keys are P-256, so ``alg`` is ES256."""
+    from tests import trust
     priv, _pub = keypair(alg)
-    spec = algorithm_for(alg)
-    kw = dict(body_size=len(body), pad_size=0, meta={"product": "P", "account_id": "a"},
-              product_id=0x1234, min_platform_version=0, payload_version=1 << 24,
-              publish_seq=7, key_id=key_id, sig_alg=alg,
-              body_sha256=hashlib.sha256(body).digest())
+    kw = dict(meta={"product": "P", "account_id": "a"}, product_id=0x1234,
+              payload_version=1 << 24, publish_seq=7)
     kw.update(fields)
-    t = host_trailer.Trailer(**kw)
-    t.signature = sign.sign_region(priv, host_trailer.signed_region(t), spec)
-    return host_trailer.pack_trailer(t)
+    return trust.trailer(priv, body, **kw)
 
 
 def manifest_body(image: bytes = b"\xa5" * 64, **extra) -> dict:

@@ -385,7 +385,8 @@ def test_create_ota_project(tmp_path, make_firmware, make_sdk):
     assert sorted(k.role for k in keys) == ["factory", "factory", "ota", "ota", "ota"]
     pems = sorted(p.name for p in paths.private_keys_dir.glob("*.pem"))
     assert pems == ["factory-0001.pem", "factory-0002.pem",
-                    "ota-0100.pem", "ota-0101.pem", "ota-0102.pem"]
+                    "ota-0100.pem", "ota-0101.pem", "ota-0102.pem",
+                    "root-0.pem", "root-1.pem"]            # the roots, minted with the set
     assert "keys/private/" in paths.gitignore.read_text()
 
 

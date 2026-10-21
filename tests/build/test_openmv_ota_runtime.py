@@ -292,10 +292,9 @@ def test_trailer_body_sha_offset_matches_the_host_trailer():
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
     body = b"R" * 32
-    t = Trailer(body_size=len(body), pad_size=0, meta={}, product_id=7,
-                min_platform_version=0, payload_version=0x01020000,
-                key_id=0x0100, sig_alg=ES256,
-                body_sha256=hashlib.sha256(body).digest())
+    from tests import trust
+    t = Trailer(body_size=len(body), meta={}, product_id=7, payload_version=0x01020000,
+                body_sha256=hashlib.sha256(body).digest(), certificate=trust.certificate(priv))
     t.signature = sign_region(priv, signed_region(t), spec)
     trailer = pack_trailer(t)
     assert rt._trailer_body_sha(trailer) == hashlib.sha256(body).hexdigest()
@@ -317,13 +316,14 @@ def test_trailer_version_offset_is_pinned_to_the_host_trailer():
     would report a plausible-looking wrong version for the fallback slot."""
     import hashlib
 
-    from openmv_ota.ota import ES256, Trailer, signed_region
+    from openmv_ota.ota import Trailer, signed_region
     from openmv_ota.ota.version import encode_app_version
 
     pv = encode_app_version("3.4.5")
-    t = Trailer(body_size=8, pad_size=0, meta={}, product_id=7, min_platform_version=0,
-                payload_version=pv, key_id=1, sig_alg=ES256,
-                body_sha256=hashlib.sha256(b"x").digest())
+    from tests import trust
+    t = Trailer(body_size=8, meta={}, product_id=7, payload_version=pv,
+                body_sha256=hashlib.sha256(b"x").digest(),
+                certificate=trust.certificate(trust.ROOT_PRIV))
     assert rt._trailer_version(signed_region(t)) == pv
     assert rt._trailer_version(b"XXXX" + b"\x00" * 40) == 0     # bad magic -> 0
     assert rt._trailer_version(b"\xff" * 4) == 0                # too short -> 0

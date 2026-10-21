@@ -1137,9 +1137,9 @@ def test_trailer_version_mirrors_trailer():
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
     body = b"B" * 48
-    t = Trailer(body_size=len(body), pad_size=0, meta={}, product_id=7, min_platform_version=0,
-                payload_version=pv, key_id=0x0100, sig_alg=ES256,
-                body_sha256=hashlib.sha256(body).digest())
+    from tests import trust
+    t = Trailer(body_size=len(body), meta={}, product_id=7, payload_version=pv,
+                body_sha256=hashlib.sha256(body).digest(), certificate=trust.certificate(priv))
     t.signature = sign_region(priv, signed_region(t), spec)
     trailer = pack_trailer(t)
     assert inst("_trailer_version")(trailer) == pv            # reads payload_version

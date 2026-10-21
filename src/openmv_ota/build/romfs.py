@@ -38,6 +38,9 @@ class _OtaSigner:
     publish_seq: int = 0
     """The account's publish counter for this build. 0 unless the project opts in --
     only a platform building for PRODUCT_ID 0 cameras needs one."""
+    certificate: bytes = b""
+    """The signing key's packed certificate (keys/trusted_keys.json ``cert``): what the trailer
+    carries so a camera that embeds only the roots trusts this key."""
 
 
 def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
@@ -95,8 +98,13 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
         raise BuildError(
             "refusing to sign a production image with a dev signing key (0x%04x); use a real "
             "encrypted key, or pass --allow-dev-key for a throwaway build" % key_id, exit_code=1)
+    if not backend.certificate:
+        raise BuildError("key 0x%04x has no certificate in keys/trusted_keys.json; a camera "
+                         "trusts a signing key only through its root-signed certificate"
+                         % key_id, exit_code=1)
     return _OtaSigner(app_version, payload_version,
-                      str(settings.get("vendor", "")), key_id, entry.alg, alg, backend)
+                      str(settings.get("vendor", "")), key_id, entry.alg, alg, backend,
+                      certificate=backend.certificate)
 
 
 def _warn_product_id_collisions(config) -> None:
@@ -163,26 +171,23 @@ def _build_system_info(p, t, app_version, vendor: str, dev: bool = False) -> dic
     }
 
 
-def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict, pad_size: int) -> bytes:
-    """Build + sign the complete trailer for ``body`` and return its packed bytes
-    (``header || meta || signature || crc32``). Every field is final and calculated —
-    notably ``pad_size`` (the 0xFF gap to this slot's status sector, signed) and the
-    crc32 — so the trailer is a self-contained, verifiable artifact. The device writes
-    these bytes to the slot's last erase block; the 0xFF that fills the rest of that
-    block comes from the erase, not from this file."""
+def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict) -> bytes:
+    """Build + sign the complete trailer for ``body`` and return its packed bytes (the
+    signed region, the signature, the crc32). Every field is final and calculated, so the
+    trailer is a self-contained, verifiable artifact. The device writes these bytes to the
+    slot's last erase block; the 0xFF that fills the rest of that block comes from the erase,
+    not from this file. Components (the firmware the slot carries for the boot stub) are
+    added by the firmware-packing step; a plain app image lists none."""
     from openmv_ota.ota import Trailer, pack_trailer, signed_region
 
     trailer = Trailer(
         body_size=len(body),
-        pad_size=pad_size,
         meta=system_info,
         product_id=int(system_info["product_id"]),
         publish_seq=signer.publish_seq,
-        min_platform_version=int(p.lock.firmware.get("version_code", 0)),
         payload_version=signer.payload_version,
-        key_id=signer.key_id,
-        sig_alg=signer.sig_alg,
         body_sha256=hashlib.sha256(body).digest(),
+        certificate=signer.certificate,
     )
     trailer.signature = signer.backend.sign(signed_region(trailer))
     return pack_trailer(trailer)
@@ -533,8 +538,7 @@ def _build_one(p, t, app_dir, out_dir, ctx, mpy_cmd, ota_signer, app_version, ve
         if ota_signer is not None:
             from openmv_ota.ota import bundle
             _check_product_id(p, t, system_info)
-            pad_size = max(0, capacity - len(body))  # 0xFF gap to the FRONT status sector
-            trailer_bytes = _build_trailer(ota_signer, p, body, system_info, pad_size)
+            trailer_bytes = _build_trailer(ota_signer, p, body, system_info)
             out_path = out_dir / (name + "-romfs.zip")  # body + trailer, one file
             bundle.write_bundle(out_path, body, trailer_bytes)
         else:
@@ -728,7 +732,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
                 status.build_status_sector(block, pending=False, tried=False, confirmed=True,
                                            counter=counter, stride=t.control_stride,
                                            floor_key=_rollback_key(system_info, signer)),
-                _build_trailer(signer, p, body, system_info, pad), block, size)
+                _build_trailer(signer, p, body, system_info), block, size)
 
         name = _target_name(t)
         out_path = out_dir / (name + "-factory-romfs.img")
@@ -750,7 +754,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         pub_dir.mkdir(parents=True, exist_ok=True)
         size0, _counter0 = slots[0]
         pad0 = size0 - overhead - len(body)
-        trailer0 = _build_trailer(signer, p, body, system_info, pad0)
+        trailer0 = _build_trailer(signer, p, body, system_info)
         dl = _compose_slot(body, pad0, b"\xff" * block, trailer0, block, size0)
         single = size0 == t.partition_size
         gz = _gzip_small(dl, SINGLE_WBITS) if single else _gzip.compress(dl, mtime=0)
@@ -1037,7 +1041,7 @@ def _manifest_body(p, tr, image: bytes, reps: list[dict]) -> dict:
         # The installer vets from HERE -- before it has ever seen a trailer -- so the number
         # a PRODUCT_ID 0 camera orders by has to be in both.
         "publish_seq": tr.publish_seq,
-        "min_platform_version": tr.min_platform_version,
+        "min_platform_version": 0,   # a v4 slot carries its own firmware; nothing to require
         "size": len(image),
         "sha256": hashlib.sha256(image).hexdigest(),
         "representations": reps,

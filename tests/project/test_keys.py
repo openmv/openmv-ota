@@ -163,6 +163,14 @@ def test_provision_backend_rekeys(tmp_path, make_firmware, make_sdk):
     assert len(fake.calls) == 3
 
 
+def test_provision_backend_needs_the_root_key(tmp_path, make_firmware, make_sdk):
+    """The root certifies the new keys; without its PEM there is nothing to certify with."""
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=2, factory_keys=1)
+    (proj.ProjectPaths(root).private_keys_dir / "root-0.pem").unlink()
+    with pytest.raises(ProjectError, match="no root-0.pem in keys/private"):
+        keys_mod.provision_backend(root, _FakeProvisioner(), n_factory=1, n_ota=1)
+
+
 def test_keys_backend_show_and_configure_cli(tmp_path, make_firmware, make_sdk, capsys):
     from openmv_ota.cli import main
     from openmv_ota.project.backends import read_backends

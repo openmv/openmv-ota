@@ -589,10 +589,13 @@ _MANIFEST_HEADER_SIZE = struct.calcsize(_MANIFEST_HEADER_STRUCT)   # 24
 _MANIFEST_MAX = 8192
 # COSE alg id -> raw R||S signature length (mirror of openmv_ota.ota.algorithms / boot.py).
 _ALG_SIG_SIZE = {-7: 64, -35: 96, -36: 132}
-# Image trailer header (mirror of openmv_ota.ota.trailer) -- only payload_version is read.
+# Image trailer header (mirror of openmv_ota.ota.trailer v4) -- only payload_version and
+# body_sha256 are read here.
 _TRAILER_MAGIC = b"OMVR"
-# header v3: product_id, publish_seq and reserved0 are the three 64-bit fields at 24/32/40
-_TRAILER_HEADER_STRUCT = "<4sIIIIIQQQIIIi32s"
+# framing | versions | stub resources | identity (three u64 at 40/48/56) | body_sha256 at 64
+_TRAILER_HEADER_STRUCT = "<4sIIIIIIBBBBIIQQQ32s"
+_TRAILER_PAYLOAD_VERSION = 6                      # field index of payload_version
+_TRAILER_BODY_SHA = 16                            # field index of body_sha256 (the last field)
 
 
 def _manifest_parse(data):
@@ -684,7 +687,7 @@ def _trailer_version(trailer):
     fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
     if fields[0] != _TRAILER_MAGIC:
         return 0
-    return fields[10]                             # payload_version (11th header field)
+    return fields[_TRAILER_PAYLOAD_VERSION]
 
 
 def _trailer_body_sha(trailer):
@@ -697,7 +700,7 @@ def _trailer_body_sha(trailer):
     fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
     if fields[0] != _TRAILER_MAGIC:
         return ""
-    return binascii.hexlify(fields[13]).decode()  # body_sha256 (last header field)
+    return binascii.hexlify(fields[_TRAILER_BODY_SHA]).decode()
 
 
 # --- pure: A/B slot arithmetic (mirror of boot.py; pinned by a test) ---------

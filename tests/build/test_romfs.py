@@ -378,26 +378,32 @@ def test_ota_build_signs_and_verifies(make_project):
 
     # The signature verifies against the project's committed trusted public key.
     entry = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
-                 if k.key_id == t.key_id)
+                 if k.pubkey == t.cert.pubkey.hex())
     alg = algorithm_for(entry.alg)
     pub = public_key_from_hex(entry.pubkey, alg)
     assert verify_region(pub, signed_region(trailer_bytes), t.signature, alg) is True
 
 
-def test_ota_trailer_pad_size_is_correct_and_signed(make_project):
-    # pad_size is computed from the slot geometry and lands in the signed region:
-    # body_size + pad_size == the status-sector offset (front_size - 2 blocks).
-    from openmv_ota.ota import geometry, parse_trailer
-    from openmv_ota.project import load_project
+def test_ota_trailer_carries_the_signing_keys_certificate(make_project):
+    """The camera embeds only the roots: the trailer must bring the certificate that chains
+    the signing key to one of them, and the whole thing must verify against keys/root_keys.json."""
+    from openmv_ota.ota import certificate as cert_mod
+    from openmv_ota.ota import parse_trailer, read_root_keys, read_trusted_keys, root_keys_map
+    from openmv_ota.ota.verify import verify_image
+    from openmv_ota.project.project import ProjectPaths
 
     root, repo, app = _build_ota(make_project)
-    target = load_project(root, firmware=repo).board("OPENMV_N6")
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
-    t = parse_trailer(_read_bundle(r)[1])
-    overhead = geometry.slot_overhead(target.erase_size)
-    assert t.body_size == r.size
-    assert t.body_size + t.pad_size == target.front_size - overhead
+    body, trailer_bytes = _read_bundle(r)
+    t = parse_trailer(trailer_bytes)
+    assert t.body_size == r.size and t.components == []       # no firmware packed yet
+    roots = read_root_keys(ProjectPaths(root).root_keys)
+    cert = cert_mod.verify(t.certificate, root_keys_map(roots))
+    signer = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
+                  if k.role == "ota")
+    assert cert.pubkey.hex() == signer.pubkey and cert.kind == cert_mod.KIND_OTA
+    assert verify_image(body, trailer_bytes, roots)[0]
 
 
 def test_ota_trailer_meta_mirrors_system_json(make_project):
@@ -431,7 +437,7 @@ def test_ota_build_stamps_a_64_bit_product_id(make_project):
     t = parse_trailer(_read_bundle(r)[1])
     assert t.payload_version == encode_app_version("2.5.0")
     assert t.product_id.bit_length() > 32          # a real 64-bit id, not the old crc32
-    assert (HEADER_SIZE, HEADER_VERSION) == (96, 3)
+    assert (HEADER_SIZE, HEADER_VERSION) == (96, 4)
 
 
 def test_product_id_zero_is_refused_unless_the_project_means_it(make_project, capsys):
@@ -498,6 +504,21 @@ def test_ota_build_refuses_revoked_signing_key(make_project):
     root, repo, app = _build_ota(make_project)
     keys_mod.revoke_key(root, 0x0100)  # revoke the current signing key
     with pytest.raises(BuildError, match="is revoked"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+def test_ota_build_refuses_a_key_without_a_certificate(make_project):
+    """A camera trusts a signing key only through its root-signed certificate, so a key that
+    has none (an entry edited by hand, or an old set) cannot sign an installable image."""
+    from openmv_ota.ota import read_trusted_keys, write_trusted_keys
+    from openmv_ota.project import ProjectPaths
+    root, repo, app = _build_ota(make_project)
+    tk = ProjectPaths(root).trusted_keys
+    keys = read_trusted_keys(tk)
+    for k in keys:
+        k.cert = ""
+    write_trusted_keys(tk, keys)
+    with pytest.raises(BuildError, match="has no certificate"):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
 
 
@@ -603,7 +624,7 @@ def test_factory_signed_by_factory_key(make_project):
     sector = r.output.read_bytes()[2 * target.front_size - block:]  # slot B trailer
     t = parse_trailer(sector)
     entry = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
-                 if k.key_id == t.key_id)
+                 if k.pubkey == t.cert.pubkey.hex())
     assert entry.role == "factory"
     alg = algorithm_for(entry.alg)
     pub = public_key_from_hex(entry.pubkey, alg)
