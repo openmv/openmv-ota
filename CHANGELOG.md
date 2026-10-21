@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Trailer v4 and signing-key certificates.** A camera now embeds only two **root** public
+  keys (`keys/root_keys.json`, `ROOT_KEYS` in the firmware); every signing key reaches it as a
+  160-byte certificate in the image trailer, signed by a root (`openmv_ota.ota.certificate`:
+  kind, root id, epoch, P-256 key). `boot.py` verifies the certificate, then the image. The
+  trailer header is a new 96-byte layout with a **component table** (blobs the boot stub
+  installs to flash addresses, each with its own hash) and the stub's UART/watchdog settings;
+  `pad_size`, `min_platform_version`, `key_id` and `sig_alg` are gone from it, the latter two
+  now coming from the certificate. `new --ota` mints the roots and certifies every key;
+  `build verify` takes `--root-keys`; `inspect` prints the certificate and components.
+  A clean break: v3 images and firmware do not interoperate with v4. Certified keys are
+  P-256 only.
+
 ### Added
 
 - **The rollout and release pages' answers, from the API.** `GET /rollouts/{id}/devices`

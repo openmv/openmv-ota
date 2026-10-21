@@ -270,7 +270,8 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     # the real boot.py (not a placeholder) + the generated config + device modules are present
     assert "OtaBoot" in (r.build_dir / "boot.py").read_text()
     cfg = (r.build_dir / "_ota_config.py").read_text()
-    assert "TRUSTED_KEYS" in cfg and "PARTITION_SIZE" in cfg and "PRODUCT_ID" in cfg
+    assert "TRUSTED_KEYS" in cfg and "ROOT_KEYS" in cfg and "PARTITION_SIZE" in cfg
+    assert "PRODUCT_ID" in cfg
     assert "ENABLED" in (r.build_dir / "openmv_log.py").read_text()   # the project's copy
     assert "def relax(" in (r.build_dir / "openmv_wdt.py").read_text()
 
@@ -300,6 +301,8 @@ def test_ota_config_values(make_project, monkeypatch):
     assert isinstance(keys, dict) and len(keys) == 3   # 2 ota + 1 factory provisioned
     for kid, pub in keys.items():
         assert isinstance(kid, int) and isinstance(pub, bytes) and pub[0] == 0x04
+    roots = ns["ROOT_KEYS"]                           # what boot.py chains a trailer's cert to
+    assert set(roots) == {0, 1} and all(len(p) == 65 and p[0] == 0x04 for p in roots.values())
 
 
 def test_ota_config_carries_the_payload_keys_and_the_romfs_does_not(make_project, monkeypatch):

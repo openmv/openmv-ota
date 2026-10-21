@@ -949,10 +949,11 @@ def _build_release_with_trailer(project, pv=0x02000000):
     build.mkdir(parents=True, exist_ok=True)
     body_bytes = b"\xA5" * 64
     body_sha = hashlib.sha256(body_bytes).digest()
+    from tests import trust
     packed = pack_trailer(Trailer(
-        body_size=len(body_bytes), pad_size=0, meta={}, product_id=BID,
-        min_platform_version=0, payload_version=pv,
-        key_id=0x0100, sig_alg=ES256, body_sha256=body_sha, signature=b"\x00" * 64))
+        body_size=len(body_bytes), meta={}, product_id=BID, payload_version=pv,
+        body_sha256=body_sha, certificate=trust.certificate(trust.ROOT_PRIV),
+        signature=b"\x00" * 64))
     # the trailer FRONT-ANCHORS the final 4 KiB control block (parse_trailer reads the
     # header first), exactly as _compose_slot lays a real slot out
     img = (body_bytes + b"\xff" * (8192 - len(body_bytes) - 4096)

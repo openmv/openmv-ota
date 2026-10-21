@@ -158,11 +158,11 @@ _SLOT_READ = _COUNTER_OFF + _COUNTER_LEN         # markers + repr + counter
 # decision -- the sha lets the fleet see which exact BYTES each slot holds (the operator's
 # answer to "which delta bases must this release cover?").
 _TRAILER_MAGIC = b"OMVR"
-_TRAILER_VERSION_OFF = 52                        # payload_version (pinned by a test)
-# Header version 3 put three 64-bit fields together at 24/32/40 -- product_id, the
-# account's publish_seq and the reserved word -- so everything from min_platform_version
-# on sits sixteen bytes later than it did, and the header is 96 rather than 80.
-_TRAILER_SHA_OFF = 64                            # body_sha256, 32 raw bytes (pinned by a test)
+# Header version 4: framing (magic, version, body_size, comp_count, meta_size), then the
+# versions (min_stub, payload_version), the stub's resources, the three 64-bit identity
+# fields at 40/48/56, and body_sha256 at 64 (openmv_ota.ota.trailer; pinned by a test).
+_TRAILER_VERSION_OFF = 24                        # payload_version
+_TRAILER_SHA_OFF = 64                            # body_sha256, 32 raw bytes
 _TRAILER_READ = _TRAILER_SHA_OFF + 32
 
 

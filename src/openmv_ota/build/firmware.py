@@ -414,7 +414,7 @@ def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
     the trusted public keys (revoked keys are dropped, so the device stops trusting
     them after this firmware update)."""
     from openmv_ota.ota import geometry
-    from openmv_ota.ota.keys import read_trusted_keys
+    from openmv_ota.ota.keys import read_root_keys, read_trusted_keys
     from openmv_ota.project.config import derive_product_id
     from openmv_ota.project.project import ProjectPaths
 
@@ -427,6 +427,11 @@ def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
         "    0x%x: %r,\n" % (k.key_id, bytes.fromhex(k.pubkey))
         for k in read_trusted_keys(ProjectPaths(p.root).trusted_keys) if not k.revoked
     )
+    # THE TRAILER'S TRUST: the roots. boot.py verifies a slot's certificate against these and
+    # the slot's signature against the certified key, so a new signing key needs no firmware
+    # change. TRUSTED_KEYS below stays for the manifest, which still names its key by id.
+    roots = "".join("    %d: %r,\n" % (r.root_id, bytes.fromhex(r.pubkey))
+                    for r in read_root_keys(ProjectPaths(p.root).root_keys))
     # The PAYLOAD keys, which are SECRET -- unlike the trusted set above, which is
     # public and committed. They are here, in the firmware, and deliberately not in
     # the romfs: the romfs is the thing being downloaded, so a key inside it would
@@ -476,6 +481,7 @@ def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
         + "CLOUD = %r\nLIVE_FRAMESIZE = %r\n" % _cloud_stamp(name)
         + "PLATFORM_VERSION = %d\n" % int(p.lock.firmware.get("version_code", 0))
         + "BUILD_TIME = %d\n" % _build_time(p)
+        + "ROOT_KEYS = {\n%s}\n" % roots
         + "TRUSTED_KEYS = {\n%s}\n" % keys
         + "PAYLOAD_KEYS = {\n%s}\n" % payload
     )

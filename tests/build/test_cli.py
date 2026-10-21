@@ -149,14 +149,17 @@ def _make_image_files(tmp_path):
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
     body = b"BODY" * 100
+    from openmv_ota.ota import Component, write_root_keys
+    from tests import trust
     t = Trailer(
-        body_size=len(body), pad_size=16,
+        body_size=len(body),
         meta={"product": "p", "board": "OPENMV_N6", "board_name": "P", "app_version": "1.2.3",
               "firmware": {"version": "5.0.0", "commit": "abc123def456"}, "micropython": "1.28.0",
               "toolchain": {"mpy_cross": "1.28.0", "vela": None, "stedgeai": None, "sdk": "1.6.0"}},
-        product_id=7, min_platform_version=(5 << 24), payload_version=encode_app_version("1.2.3"),
-        publish_seq=4242, key_id=0x0100, sig_alg=ES256,
-        body_sha256=hashlib.sha256(body).digest())
+        product_id=7, payload_version=encode_app_version("1.2.3"), publish_seq=4242,
+        body_sha256=hashlib.sha256(body).digest(), certificate=trust.certificate(priv),
+        components=[Component(0x70090000, 4096, 1000, 2000, b"\x11" * 32)], min_stub=2,
+        uart_en=1, uart_id=4, baud=115200)
     t.signature = sign_region(priv, signed_region(t), spec)
     romfs = tmp_path / "x.romfs"
     romfs.write_bytes(body)
@@ -164,6 +167,7 @@ def _make_image_files(tmp_path):
     trailer.write_bytes(pack_trailer(t))
     keys = tmp_path / "trusted_keys.json"
     write_trusted_keys(keys, [TrustedKey(0x0100, ES256, "ota", public_point_hex(priv.public_key()))])
+    write_root_keys(tmp_path / "root_keys.json", trust.root_keys())   # beside it, as in a project
     return romfs, trailer, keys
 
 
@@ -173,6 +177,9 @@ def test_build_inspect(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "app_version" in out and "1.2.3" in out and "ES256" in out and "provenance" in out
     assert "publish_seq:    4242" in out            # the counter a platform's cameras order by
+    assert "ota certificate from root 0, epoch 0" in out
+    assert "component:      1000 bytes at +4096 -> 0x70090000 (2000 bytes installed)" in out
+    assert "min_stub:       2" in out
 
 
 def test_build_inspect_json(tmp_path, capsys):
@@ -182,6 +189,9 @@ def test_build_inspect_json(tmp_path, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["product_id"] == 7 and data["sig_alg"] == "ES256" and data["app_version"] == "1.2.3"
     assert data["publish_seq"] == 4242
+    assert data["certificate"] == {"kind": "ota", "root_id": 0, "epoch": 0}
+    assert data["components"][0]["dest"] == "0x70090000" and data["stub"]["uart"] == [4, 115200]
+    assert data["stub"]["watchdog"] is None and data["min_stub"] == 2
 
 
 def test_build_inspect_bad_trailer(tmp_path, capsys):
@@ -196,30 +206,33 @@ def test_build_inspect_missing_file(tmp_path, capsys):
     assert "error:" in capsys.readouterr().err
 
 
+def _roots_arg(keys):
+    return ["--root-keys", str(keys.with_name("root_keys.json"))]
+
+
 def test_build_verify_ok(tmp_path, capsys):
     romfs, trailer, keys = _make_image_files(tmp_path)
-    assert main(["build", "verify", str(romfs), str(trailer), "--trusted-keys", str(keys)]) == 0
+    assert main(["build", "verify", str(romfs), str(trailer), *_roots_arg(keys)]) == 0
     assert "verified" in capsys.readouterr().out
 
 
 def test_build_verify_fail(tmp_path, capsys):
     romfs, trailer, keys = _make_image_files(tmp_path)
     romfs.write_bytes(b"TAMPERED-BODY")  # body no longer matches the trailer
-    assert main(["build", "verify", str(romfs), str(trailer), "--trusted-keys", str(keys)]) == 1
+    assert main(["build", "verify", str(romfs), str(trailer), *_roots_arg(keys)]) == 1
     assert "FAILED" in capsys.readouterr().err
 
 
 def test_build_verify_missing_keys(tmp_path, capsys):
     romfs, trailer, _keys = _make_image_files(tmp_path)
     rc = main(["build", "verify", str(romfs), str(trailer),
-               "--trusted-keys", str(tmp_path / "nope.json")])
+               "--root-keys", str(tmp_path / "nope.json")])
     assert rc == 2 and "error:" in capsys.readouterr().err
 
 
 def test_build_verify_missing_romfs(tmp_path, capsys):
     _romfs, trailer, keys = _make_image_files(tmp_path)
-    rc = main(["build", "verify", str(tmp_path / "nope.romfs"), str(trailer),
-               "--trusted-keys", str(keys)])
+    rc = main(["build", "verify", str(tmp_path / "nope.romfs"), str(trailer), *_roots_arg(keys)])
     assert rc == 2 and "error:" in capsys.readouterr().err
 
 
@@ -249,13 +262,13 @@ def test_build_inspect_bad_bundle(tmp_path, capsys):
 
 def test_build_verify_bundle(tmp_path, capsys):
     z, keys = _make_bundle(tmp_path)
-    assert main(["build", "verify", str(z), "--trusted-keys", str(keys)]) == 0
+    assert main(["build", "verify", str(z), *_roots_arg(keys)]) == 0
     assert "verified" in capsys.readouterr().out
 
 
 def test_build_verify_single_arg_not_a_bundle(tmp_path, capsys):
     romfs, _trailer, keys = _make_image_files(tmp_path)  # a loose body, not a zip
-    rc = main(["build", "verify", str(romfs), "--trusted-keys", str(keys)])
+    rc = main(["build", "verify", str(romfs), *_roots_arg(keys)])
     assert rc == 2 and "not a .zip bundle" in capsys.readouterr().err
 
 
@@ -322,7 +335,7 @@ def test_build_inspect_factory_json(make_project, capsys):
 
 def test_build_verify_factory_ok(make_project, capsys):
     img, keys = _build_factory_image(make_project, capsys)
-    assert main(["build", "verify", str(img), "--trusted-keys", str(keys)]) == 0
+    assert main(["build", "verify", str(img), *_roots_arg(keys)]) == 0
     out = capsys.readouterr().out
     assert "A: verified" in out and "B: verified" in out
 
@@ -332,7 +345,7 @@ def test_build_verify_factory_corrupted_slot(make_project, capsys):
     data = bytearray(img.read_bytes())
     data[0] ^= 0xFF             # corrupt the FRONT slot's body (BACK stays intact)
     img.write_bytes(data)
-    assert main(["build", "verify", str(img), "--trusted-keys", str(keys)]) == 1
+    assert main(["build", "verify", str(img), *_roots_arg(keys)]) == 1
     cap = capsys.readouterr()
     assert "A: verification FAILED" in cap.err and "B: verified" in cap.out
 
@@ -380,9 +393,9 @@ def test_build_inspect_unsigned_romfs(tmp_path, capsys):
 
 
 def test_build_verify_unsigned_romfs(tmp_path, capsys):
-    _r, _t, keys = _make_image_files(tmp_path)   # a valid trusted_keys.json
+    _r, _t, keys = _make_image_files(tmp_path)   # a valid root_keys.json beside it
     img = _plain_romfs(tmp_path)
-    assert main(["build", "verify", str(img), "--trusted-keys", str(keys)]) == 2
+    assert main(["build", "verify", str(img), *_roots_arg(keys)]) == 2
     assert "unsigned ROMFS image" in capsys.readouterr().err
 
 
@@ -467,6 +480,13 @@ def test_verify_manifest_ok(tmp_path, capsys):
     rc = main(["build", "verify", str(tmp_path / "m.bin"),
                "--trusted-keys", str(tmp_path / "trusted_keys.json")])
     assert rc == 0 and "verified" in capsys.readouterr().out
+
+
+def test_verify_manifest_missing_trusted_keys(tmp_path, capsys):
+    _write_manifest_and_keys(tmp_path)
+    rc = main(["build", "verify", str(tmp_path / "m.bin"),
+               "--trusted-keys", str(tmp_path / "nope.json")])
+    assert rc == 2 and "no trusted_keys.json" in capsys.readouterr().err
 
 
 def test_verify_manifest_untrusted(tmp_path, capsys):

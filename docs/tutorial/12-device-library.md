@@ -94,7 +94,7 @@ hand it (how that's obtained is out of scope here). It:
    install opens the manifest file instead: no connection, and `ca` is ignored.
 2. **Fetches + verifies the manifest** (into RAM): checks its ECDSA signature against the
    same frozen trusted keys as an image trailer, then applies the device-relative checks
-   — `product_id` cross-flash guard, `min_platform_version`, and the **anti-rollback floor**
+   — `product_id` cross-flash guard and the **anti-rollback floor**
    (the highest version any slot has recorded — or, on a `product_id = 0` camera, the
    highest publish counter) — exactly mirroring what `boot.py` enforces on the image, just
    *earlier*. Any failure here raises with `/rom` intact.

@@ -89,6 +89,10 @@ class ProjectPaths:
         return self.root / "keys" / "trusted_keys.json"
 
     @property
+    def root_keys(self) -> Path:
+        return self.root / "keys" / "root_keys.json"
+
+    @property
     def private_keys_dir(self) -> Path:
         return self.root / "keys" / "private"
 
@@ -520,7 +524,7 @@ OTA_KEYS_WARN_FLOOR = 4
 def _shared_key_source(keys_from) -> ProjectPaths:
     """The project ``--keys-from`` names, or a refusal that says what was looked for."""
     src = ProjectPaths(Path(keys_from).expanduser().resolve())
-    if not src.trusted_keys.exists():
+    if not src.trusted_keys.exists() or not src.root_keys.exists():
         raise ProjectError("no key set at %s (looked for %s)"
                            % (src.root, src.trusted_keys.name), exit_code=1)
     return src
@@ -557,6 +561,7 @@ def _adopt_keys(paths: ProjectPaths, source: Path, boards: list[str],
 
     paths.trusted_keys.parent.mkdir(parents=True, exist_ok=True)
     paths.trusted_keys.write_bytes(src.trusted_keys.read_bytes())
+    paths.root_keys.write_bytes(src.root_keys.read_bytes())    # the same roots: one fleet
     paths.private_keys_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
     for pem in sorted(src.private_keys_dir.glob("*.pem")):
@@ -614,16 +619,21 @@ def _provision_keys(sig_alg: int, factory_keys: int, ota_keys: int, passphrase: 
 
 
 def _write_keys(paths: ProjectPaths, provisioned) -> None:
-    """Write the committed public set + the gitignored private PEMs."""
-    from openmv_ota.ota.keys import write_trusted_keys
+    """Write the committed public sets (roots + certified signing keys) and the gitignored
+    private PEMs. The root PEMs land beside the others; keeping them offline is the
+    operator's job (``project keys backup`` archives them with the rest)."""
+    from openmv_ota.ota.keys import root_pem_name, write_root_keys, write_trusted_keys
 
     paths.trusted_keys.parent.mkdir(parents=True, exist_ok=True)
     write_trusted_keys(paths.trusted_keys, provisioned.trusted)
+    write_root_keys(paths.root_keys, provisioned.roots)
     paths.private_keys_dir.mkdir(parents=True, exist_ok=True)
     role_by_id = {k.key_id: k.role for k in provisioned.trusted}
     for key_id, pem in provisioned.private_pems.items():
         pem_path = paths.private_keys_dir / ("%s-%04x.pem" % (role_by_id[key_id], key_id))
         pem_path.write_bytes(pem)
+    for root_id, pem in provisioned.root_pems.items():
+        (paths.private_keys_dir / root_pem_name(root_id)).write_bytes(pem)
 
 
 KEY_BACKUP_NAME = "keys-backup.bin"
