@@ -449,6 +449,13 @@ def _tls_verify_stamp(p, t) -> bool:
     return bool((p.config.ca or "").strip()) or t.tls_verify
 
 
+def _stub_record_addr(name: str) -> int | None:
+    """Where this board's boot stub keeps its install record: the sector after the firmware's
+    install window (``docs/design/firmware-updates.md``), or None on a board without a stub."""
+    stub = get_board(name).stub
+    return stub.firmware_dest + stub.firmware_max if stub is not None else None
+
+
 def _cloud_stamp(name: str) -> tuple[str | None, str | None]:
     """``(_ota_config.CLOUD, _ota_config.LIVE_FRAMESIZE)`` for board ``name``: its boards.json
     cloud level and Live frame-size cap (None where it has none)."""
@@ -515,6 +522,9 @@ def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
         # more than one. It stays small and configurable because retries only help a failure
         # that self-resets: a HANG now hangs N times instead of once. 1 reproduces v1 exactly.
         + "MAX_ATTEMPTS = %d\n" % p.config.max_attempts
+        # THE BOOT STUB'S INSTALL RECORD, on a board that has a stub: the last 4 KiB of the
+        # firmware area (just past the install window). boot.py mounts the slot it names.
+        + "STUB_RECORD_ADDR = %r\n" % _stub_record_addr(name)
         # RECOVERY CONFIG -- in the FIRMWARE, deliberately, not the romfs. A device whose image is
         # gone still needs both of these to reach the server, which is exactly when recovery runs;
         # keeping them in the app is what made recovery impossible in v1. CA_PEM is empty only

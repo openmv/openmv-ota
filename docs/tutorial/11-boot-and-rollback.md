@@ -28,7 +28,10 @@ every boot `boot.py` runs after the board's stock `_boot.py` and, **for each slo
    (`product_id`), and **anti-rollback** (the ordering key vs the **rollback floor**).
 3. Applies the **trial rules**.
 
-Then it mounts the surviving slot with the **highest install counter** at `/rom`. It
+Then it mounts the surviving slot with the **highest install counter** at `/rom`. On a
+board with a boot stub the stub has already chosen: it installed one slot's firmware and
+left an install record saying which, so `boot.py` mounts that slot (the running firmware
+is that slot's) and burns no attempt -- the stub did, before it installed. It
 records the outcome in module globals (`last_slot`, `last_payload_version`,
 `last_failure_reason`) for the app to read, since the boot path can't print.
 
