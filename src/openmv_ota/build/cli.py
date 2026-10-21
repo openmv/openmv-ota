@@ -86,6 +86,17 @@ def register(build_parser: argparse.ArgumentParser):
                       help="keep the generated wrapper manifest dir (OTA builds) for inspection")
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
 
+    p_stub = sub.add_parser("stub", help="build the boot stub per board (OTA projects; boards "
+                                         "with a stub layout)")
+    p_stub.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
+    p_stub.add_argument("-o", "--output", help="output dir (default: <project>/build)")
+    p_stub.add_argument("-b", "--board", action="append", metavar="NAME",
+                        help="only build this board (repeatable; default: all boards)")
+    p_stub.add_argument("-j", "--jobs", type=int, metavar="N",
+                        help="parallel make jobs (default: CPU count)")
+    p_stub.add_argument("-f", "--firmware", help="firmware checkout override")
+    p_stub.set_defaults(func=cmd_stub, _command="build stub")
+
     p_otr = sub.add_parser("ota-romfs",
                            help="build the cloud-published OTA set from app source: image + "
                                 "signed manifest (+ optional delta)")
@@ -329,6 +340,21 @@ def cmd_firmware(args: argparse.Namespace) -> int:
         print("Built %s  (%s)" % (", ".join(o.name for o in r.outputs), kind))
         if r.build_dir is not None:
             print("  wrapper dir kept: %s" % r.build_dir)
+    return 0
+
+
+def cmd_stub(args: argparse.Namespace) -> int:
+    from . import stub as stub_mod
+
+    try:
+        results = stub_mod.build_stub(args.project, output=args.output, boards=args.board,
+                                      firmware=args.firmware, jobs=args.jobs)
+    except BuildError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+
+    for r in results:
+        print("Built %s  (%d bytes)" % (r.output.name, r.size))
     return 0
 
 
