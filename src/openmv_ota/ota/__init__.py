@@ -56,6 +56,9 @@ _LAZY = {
     "write_trusted_keys": "keys",
     "ProvisionedKeys": "keys",
     "provision_key_set": "keys",
+    "Certificate": "certificate",
+    "KIND_OTA": "certificate",
+    "KIND_FACTORY": "certificate",
 }
 
 
@@ -96,4 +99,7 @@ __all__ = [
     "write_trusted_keys",
     "ProvisionedKeys",
     "provision_key_set",
+    "Certificate",
+    "KIND_OTA",
+    "KIND_FACTORY",
 ]
