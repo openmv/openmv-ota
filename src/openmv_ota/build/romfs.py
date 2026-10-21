@@ -232,6 +232,13 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
     return components.append(body, [(stub.firmware_dest, len(firmware), blob)])
 
 
+def _signer_epoch(signer: _OtaSigner) -> int:
+    """The signing key's certificate epoch: what a factory image seeds the camera's epoch floor
+    with, so a camera never accepts a key retired before it was even provisioned."""
+    from openmv_ota.ota import certificate as certificate_mod
+    return certificate_mod.parse(signer.certificate).epoch
+
+
 def _capacity(project, target) -> tuple[int, str]:
     """The usable image budget for a target and the name of what bounds it. A *main*
     OTA partition gets a slot less its four control sectors -- half the partition under
@@ -773,7 +780,8 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
                 image, pad,
                 status.build_status_sector(block, pending=False, tried=False, confirmed=True,
                                            counter=counter, stride=t.control_stride,
-                                           floor_key=_rollback_key(system_info, signer)),
+                                           floor_key=_rollback_key(system_info, signer),
+                                           epoch=_signer_epoch(signer)),
                 _build_trailer(signer, p, body, system_info, comps), block, size)
 
         name = _target_name(t)

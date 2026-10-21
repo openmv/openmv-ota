@@ -113,7 +113,7 @@ def _set_stride(stride):
     like the H7-classic's internal romfs, where each record owns one one-shot flash
     word). Mirrors boot._set_stride; record contents never change."""
     global _TRIED_OFF, _CONFIRMED_OFF, _REPR_OFF, _STATUS_READ, _COUNTER_OFF
-    global _SLOT_READ, _ROLLBACK_STRIDE, _FLOOR_OFF
+    global _SLOT_READ, _ROLLBACK_STRIDE, _FLOOR_OFF, _EPOCH_OFF
     _TRIED_OFF = stride
     _CONFIRMED_OFF = 2 * stride
     _REPR_OFF = 3 * stride
@@ -122,6 +122,8 @@ def _set_stride(stride):
     _SLOT_READ = _COUNTER_OFF + _COUNTER_LEN
     _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
     _FLOOR_OFF = 5 * stride + 64 * max(16, stride)   # the floor region: past the attempt region
+    entries = min(64, (4096 - _FLOOR_OFF) // (2 * _ROLLBACK_STRIDE))  # two regions must fit
+    _EPOCH_OFF = _FLOOR_OFF + entries * _ROLLBACK_STRIDE  # the epoch floor's: right after it
 
 
 def _use_cfg_stride(cfg):
@@ -205,6 +207,7 @@ _ROLLBACK_ENTRY = 16                              # u64 key || u64 ~key
 _ROLLBACK_STRIDE = 16
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _FLOOR_OFF = 80 + 64 * 16                         # floor entries: the status sector's tail
+_EPOCH_OFF = _FLOOR_OFF + 64 * 16                 # certificate-epoch floor entries, after them
 
 
 def _rollback_entry(key):
@@ -1651,11 +1654,11 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
 # --- NETWORK RUNTIME: end ----------------------------------------------------
 
 
-def _advance_rollback(cfg, slot, key):  # pragma: no cover (device)
-    """Raise the anti-rollback floor to ``key`` by appending it to the RUNNING slot's
-    rollback sector (a 1->0 program, no erase). A no-op if the floor already covers
-    ``version`` or the log is full (the floor then stays frozen at its max -- still
-    protective).
+def _advance_rollback(cfg, slot, key, start=None, end=None):  # pragma: no cover (device)
+    """Raise a floor to ``key`` by appending it to the RUNNING slot's floor region (a 1->0
+    program, no erase): the anti-rollback floor's region by default, or ``start..end`` within
+    the status sector (the epoch floor's). A no-op if the floor already covers ``key`` or the
+    region is full (the floor then stays frozen at its max -- still protective).
 
     Under A/B every slot is erased in turn, so the floor is written into the slot being
     confirmed and boot.py reads the max across slots; the installer carries the floor forward
@@ -1667,14 +1670,15 @@ def _advance_rollback(cfg, slot, key):  # pragma: no cover (device)
     soff, size = _slot_bounds(cfg, slot)
     off = soff + size - 2 * cfg.CONTROL_BLOCK            # this slot's status sector (absolute)
     sector = uctypes.bytearray_at(base + off, cfg.CONTROL_BLOCK)
-    region = sector[_FLOOR_OFF:]
+    start = _FLOOR_OFF if start is None else start
+    region = sector[start:_EPOCH_OFF if end is None else end]
     if _rollback_floor_of(region) >= key:
         return  # hil-residual: bare early return (nothing to advance)
     pos = _rollback_append_offset(region)
     if pos is None:
         return  # hil-residual: bare early return (floor already current)
     pad = _ROLLBACK_STRIDE - _ROLLBACK_ENTRY
-    _write_verified(0, off + _FLOOR_OFF + pos, _rollback_entry(key) + b"\xff" * pad)
+    _write_verified(0, off + start + pos, _rollback_entry(key) + b"\xff" * pad)
     log.debug("confirm: floor advanced")             # HIL path witness (the confirm write path)
 
 
@@ -1704,6 +1708,10 @@ def confirm():  # pragma: no cover
         _advance_rollback(_ota_config, slot,
                           getattr(_ota_config, "last_publish_seq", 0)
                           if _ota_config.PRODUCT_ID == 0 else version)
+        # ...and the certificate-epoch floor to the running image's signing key epoch, so a
+        # key retired by this release stays refused once the release is kept.
+        _advance_rollback(_ota_config, slot, getattr(_ota_config, "last_epoch", 0),
+                          _EPOCH_OFF, _ota_config.CONTROL_BLOCK)
         _write_verified(0, off + _CONFIRMED_OFF,
                         CONFIRMED + b"\xff" * (_TRIED_OFF - MARKER_SIZE))  # pad to the stride
         log.info("confirm: kept the running image (slot %s)" % slot)

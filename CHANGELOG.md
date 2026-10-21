@@ -31,6 +31,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   installed components' hashes) and mounts the slot it names without burning an attempt --
   the stub did, before it installed. A record that is missing, erased, torn, or names other
   components than the slot's trailer lists is ignored and the slot choice runs as before.
+- **The certificate-epoch floor.** The status sector's tail now holds two floor regions:
+  the anti-rollback floor's entries (64; 29 on a stride-32 board, so both regions fit a 4 KiB
+  sector), then the certificate-epoch floor's. `confirm()` raises
+  the epoch floor to the running image's signing-key epoch, the installer carries it into every
+  slot it writes, the factory image seeds it, and `boot.py` rejects a slot whose certificate is
+  below the highest epoch across the slots (`epoch`): a retired signing key stays refused once
+  a release that retired it has been kept.
 
 ### Added
 
