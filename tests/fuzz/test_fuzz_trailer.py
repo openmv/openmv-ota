@@ -85,7 +85,8 @@ def test_crc_valid_trailers_parse_or_raise_and_the_two_parsers_agree(data):
               "sig_alg", "body_sha256", "signature", "uart_en", "uart_id", "wdt_en", "wdt_id",
               "baud", "wdt_timeout_ms"):
         assert getattr(host, f) == getattr(dev, f), f
-    assert [(c.dest, c.offset, c.size, c.installed_size, c.sha256) for c in host.components] \
+    assert [(c.dest, c.offset, c.size, c.installed_size, c.sha256, c.installed_sha256)
+            for c in host.components] \
         == [tuple(c) for c in dev.components]
     assert host.cert.pubkey == dev.pubkey and host.cert.epoch == dev.epoch
     assert dev.signed_region == T.signed_region(data)
@@ -94,7 +95,9 @@ def test_crc_valid_trailers_parse_or_raise_and_the_two_parsers_agree(data):
 _u32 = st.integers(0, (1 << 32) - 1)
 _components = st.lists(st.builds(T.Component, dest=_u32, offset=_u32, size=_u32,
                                  installed_size=_u32,
-                                 sha256=st.binary(min_size=32, max_size=32)), max_size=3)
+                                 sha256=st.binary(min_size=32, max_size=32),
+                                 installed_sha256=st.binary(min_size=32, max_size=32)),
+                      max_size=3)
 
 
 @given(st.builds(

@@ -157,7 +157,7 @@ word, digest. Every field is naturally aligned; the u64s sit together.
 The signature's algorithm and length come from the certificate (`alg`), which the
 verifier reads first; the v3 `sig_alg`/`sig_size` fields are gone.
 
-Component entry, 48 bytes. Every blob is raw LZMA1 (fixed lc/lp/pb, 256 KB
+Component entry, 80 bytes. Every blob is raw LZMA1 (fixed lc/lp/pb, 256 KB
 dictionary); a different codec would be a `header_version` bump.
 
 | Offset | Field | Meaning |
@@ -167,6 +167,7 @@ dictionary); a different codec would be a `header_version` bump.
 | 8 | `size:u32` | compressed size |
 | 12 | `installed_size:u32` | decompressed size; `dest..dest+installed_size` must lie inside the stub's install window |
 | 16 | `sha256:32s` | hash of the compressed blob bytes |
+| 48 | `installed_sha256:32s` | hash of the decompressed bytes; the stub checks the decoder's output against it and names it in the install record |
 
 Certificate, 160 bytes:
 
@@ -209,7 +210,7 @@ record to learn the running slot.
 ## Install record
 
 Last 4 KiB of the firmware area, written after all components are installed.
-32-byte fixed part, then one hash per component, then the CRC:
+32-byte fixed part, then one entry per component, then the CRC:
 
 | Offset | Field | Meaning |
 |---|---|---|
@@ -220,13 +221,17 @@ Last 4 KiB of the firmware area, written after all components are installed.
 | 16 | `comp_count:u32` | number of hashes that follow |
 | 20 | `reason:u32` | why this boot: 0 normal, 1 trial, 2 reverted (the other slot failed its trial), 3 reinstalled (the firmware area was corrupt) |
 | 24 | `reserved:u64` | 0 |
-| 32 | `comp_sha256[comp_count]:32s each` | the installed components' compressed-blob hashes, in trailer order |
-| 32 + 32·n | `crc32:u32` | over everything before it |
+| 32 | `entries[comp_count]`, 40 bytes each: `dest:u32`, `installed_size:u32`, `installed_sha256:32s` | the installed components, in trailer order: where, how much, and what the installed bytes hash to |
+| 32 + 40·n | `crc32:u32` | over everything before it |
 
-- Boot path: if the chosen slot's component hashes equal the record's and the
-  destinations hash to what was installed (one SHA-256 over ~2 MB, tens of ms),
-  jump. Otherwise install.
+- Boot path: if the chosen slot's components' installed hashes equal the record's
+  and the destinations hash to them (one SHA-256 over ~2 MB, tens of ms), jump.
+  Otherwise install.
 - A power cut mid-install leaves no record → install again (idempotent).
+- No slot verifies at all (the IDE wrote a plain ROMFS over the slots): the stub
+  boots what the record vouches for, or, with no record either, whatever sits at the
+  firmware address if it looks like a vector table — what the plain bootloader does
+  today. Recovery is over USB either way.
 - `boot.py` reads `slot` to know which slot to mount, and `reason` (0 normal,
   1 trial, 2 reverted — the other slot failed its trial, 3 reinstalled — the
   firmware area was corrupt) instead of a RAM handoff. The record is derived from

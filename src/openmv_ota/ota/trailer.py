@@ -71,8 +71,8 @@ HEADER_SIZE = struct.calcsize(HEADER_STRUCT)            # 96
 _COMP_COUNT_OFFSET = struct.calcsize("<4sII")           # magic, version, body_size => 12
 _META_SIZE_OFFSET = struct.calcsize("<4sIII")           # ... comp_count => 16
 
-COMPONENT_STRUCT = "<IIII32s"                           # dest offset size installed_size sha256
-COMPONENT_SIZE = struct.calcsize(COMPONENT_STRUCT)      # 48
+COMPONENT_STRUCT = "<IIII32s32s"                 # dest offset size installed_size sha256 installed_sha256
+COMPONENT_SIZE = struct.calcsize(COMPONENT_STRUCT)      # 80
 # The most components a trailer may list. The device reads comp_count before it has
 # verified anything, so it has to be a bound, not a budget: 16 is far past any board
 # (the AE3 needs 2) and keeps the framing arithmetic inside one 4 KiB block.
@@ -85,13 +85,16 @@ CERT_SIZE = certificate_mod.SIZE
 class Component:
     """One blob the boot stub installs: ``size`` compressed bytes at ``offset`` in the slot,
     decompressed to ``installed_size`` bytes at flash address ``dest``. ``sha256`` is over
-    the compressed bytes -- the ones the stub verifies and then decompresses."""
+    the compressed bytes -- the ones the stub verifies and then decompresses;
+    ``installed_sha256`` over the decompressed bytes -- what the stub checks the decoder's
+    output against, and what its install record then names."""
 
     dest: int
     offset: int
     size: int
     installed_size: int
     sha256: bytes
+    installed_sha256: bytes
 
 
 @dataclass
@@ -150,7 +153,11 @@ def _serialize_meta(meta: dict) -> bytes:
 def _pack_component(c: Component) -> bytes:
     if len(c.sha256) != 32:
         raise OtaError("component sha256 must be 32 bytes, got %d" % len(c.sha256))
-    return struct.pack(COMPONENT_STRUCT, c.dest, c.offset, c.size, c.installed_size, c.sha256)
+    if len(c.installed_sha256) != 32:
+        raise OtaError("component installed_sha256 must be 32 bytes, got %d"
+                       % len(c.installed_sha256))
+    return struct.pack(COMPONENT_STRUCT, c.dest, c.offset, c.size, c.installed_size, c.sha256,
+                       c.installed_sha256)
 
 
 def _build_signed_region(t: Trailer) -> tuple[bytes, AlgSpec]:
@@ -274,7 +281,7 @@ def parse_trailer(data: bytes) -> Trailer:
         for i in range(comp_count)
     ]
     for c in components:
-        c.sha256 = bytes(c.sha256)
+        c.sha256, c.installed_sha256 = bytes(c.sha256), bytes(c.installed_sha256)
     meta_bytes = data[cert_off + CERT_SIZE : meta_end]
     signature = data[meta_end:body_end]
     try:

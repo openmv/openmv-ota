@@ -26,7 +26,7 @@ to the same 4 KiB: growing the metadata can never reshape the layout. Laid out
 little-endian:
 
 ```
-[ header (96) ][ components (n × 48) ][ certificate (160) ][ json_meta (meta_size) ][ signature ][ crc32 (4) ]
+[ header (96) ][ components (n × 80) ][ certificate (160) ][ json_meta (meta_size) ][ signature ][ crc32 (4) ]
 └──────────────────────────── signed region ────────────────────────────┘
 └──────────────── crc32 region: everything before the crc ─────────────────────────┘
 ```
@@ -76,9 +76,9 @@ The struct is `<4sIIIIIIBBBBIIQQQ32s`.
 A component is a blob the boot stub decompresses to a flash address before the
 firmware runs — the firmware itself, a second core's firmware, a radio blob. The
 blobs sit in the slot after the ROMFS body; `body_sha256` does not cover them, each
-carries its own hash, so `boot.py` hashes only the filesystem and the stub hashes
+carries its own hashes, so `boot.py` hashes only the filesystem and the stub hashes
 only what it installs. An image built without firmware packing lists none. Each
-entry is 48 bytes, `<IIII32s`:
+entry is 80 bytes, `<IIII32s32s`:
 
 | Offset | Field | Type | Meaning |
 |---|---|---|---|
@@ -87,6 +87,7 @@ entry is 48 bytes, `<IIII32s`:
 | 8 | `size` | `uint32` | The blob's compressed size. |
 | 12 | `installed_size` | `uint32` | Its decompressed size; `dest..dest+installed_size` must fit the install window. |
 | 16 | `sha256` | `32s` | SHA-256 of the compressed blob — the bytes the stub verifies and then decompresses. |
+| 48 | `installed_sha256` | `32s` | SHA-256 of the decompressed bytes — what the stub checks the decoder's output against before it trusts the install, and what its install record names. |
 
 Every blob is a raw LZMA1 stream with a 256 KiB dictionary; a different codec
 would be a `header_version` bump.

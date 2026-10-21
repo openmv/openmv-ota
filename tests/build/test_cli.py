@@ -153,7 +153,7 @@ def _make_image_files(tmp_path):
     from openmv_ota.ota import write_root_keys
     from tests import trust
     fw = b"FW" * 1000                                    # a 2000-byte "firmware" component
-    image, comps = C.append(body, [(0x70090000, len(fw), C.compress(fw))])
+    image, comps = C.append(body, [(0x70090000, fw)])
     t = Trailer(
         body_size=len(body),
         meta={"product": "p", "board": "OPENMV_N6", "board_name": "P", "app_version": "1.2.3",

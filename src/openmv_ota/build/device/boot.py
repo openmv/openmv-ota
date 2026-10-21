@@ -59,8 +59,8 @@ MAGIC = b"OMVR"                         # ROMFS application image
 HEADER_VERSION = 4
 _HEADER_STRUCT = "<4sIIIIIIBBBBIIQQQ32s"
 _HEADER_SIZE = struct.calcsize(_HEADER_STRUCT)   # 96
-_COMP_STRUCT = "<IIII32s"                         # dest offset size installed_size sha256
-_COMP_SIZE = struct.calcsize(_COMP_STRUCT)       # 48
+_COMP_STRUCT = "<IIII32s32s"              # dest offset size installed_size sha256 installed_sha256
+_COMP_SIZE = struct.calcsize(_COMP_STRUCT)       # 80
 _MAX_COMPONENTS = 16                             # a bound on an unverified count, not a budget
 _CRC_SIZE = 4
 # COSE alg id -> raw R||S signature length (mirror of openmv_ota.ota.algorithms).
@@ -86,6 +86,8 @@ _RECORD_MAGIC = b"OMVI"
 _RECORD_VERSION = 1
 _RECORD_STRUCT = "<4sIIIIIQ"
 _RECORD_FIXED = struct.calcsize(_RECORD_STRUCT)   # 32
+_RECORD_ENTRY_STRUCT = "<II32s"                   # dest installed_size installed_sha256
+_RECORD_ENTRY = struct.calcsize(_RECORD_ENTRY_STRUCT)   # 40
 _RECORD_BLOCK = 4096
 _REASON_TRIAL = 1
 
@@ -247,7 +249,7 @@ def parse_trailer(data):
     t.wdt_en, t.wdt_id, t.wdt_timeout_ms = wdt_en, wdt_id, wdt_timeout_ms
     t.body_sha256 = bytes(body_sha256)
     t.components = [struct.unpack_from(_COMP_STRUCT, data, _HEADER_SIZE + i * _COMP_SIZE)
-                    for i in range(comp_count)]        # (dest, offset, size, installed_size, sha)
+                    for i in range(comp_count)]        # (dest, offset, size, installed_size, sha, installed_sha)
     t.kind, t.root_id, t.epoch, t.sig_alg = kind, root_id, epoch, alg
     t.pubkey = bytes(pubkey)
     t.cert_region = bytes(data[cert_off:cert_off + _CERT_SIGNED])
@@ -258,8 +260,9 @@ def parse_trailer(data):
 
 
 def parse_record(data):
-    """``(stub_version, slot, reason, hashes)`` from the stub's install record, or None when
-    the block holds no complete, CRC-valid record of a known version. Pure."""
+    """``(stub_version, slot, reason, components)`` from the stub's install record --
+    components as ``(dest, installed_size, installed_sha256)`` -- or None when the block
+    holds no complete, CRC-valid record of a known version. Pure."""
     if data is None or len(data) < _RECORD_FIXED:
         return None
     magic, version, stub_version, slot, comp_count, reason, _r = struct.unpack_from(
@@ -267,14 +270,16 @@ def parse_record(data):
     if magic != _RECORD_MAGIC or version != _RECORD_VERSION or comp_count > _MAX_COMPONENTS \
             or slot not in (0, 1):
         return None
-    end = _RECORD_FIXED + comp_count * 32
+    end = _RECORD_FIXED + comp_count * _RECORD_ENTRY
     if end + _CRC_SIZE > len(data):
         return None
     if (binascii.crc32(bytes(data[:end])) & 0xFFFFFFFF) != struct.unpack_from("<I", data, end)[0]:
         return None
-    hashes = [bytes(data[_RECORD_FIXED + i * 32:_RECORD_FIXED + (i + 1) * 32])
-              for i in range(comp_count)]
-    return stub_version, slot, reason, hashes
+    components = []
+    for i in range(comp_count):
+        dest, size, h = struct.unpack_from(_RECORD_ENTRY_STRUCT, data, _RECORD_FIXED + i * _RECORD_ENTRY)
+        components.append((dest, size, bytes(h)))
+    return stub_version, slot, reason, components
 
 
 def _sha256(data):
@@ -554,14 +559,14 @@ class OtaBoot:
         # the firmware now running IS that slot's. Mount that slot -- mounting the other would run
         # an app on a firmware it was not built with -- and burn nothing: the stub burned the
         # attempt before it installed. Only a record naming exactly the components the slot's
-        # trailer lists counts; anything else (no stub, an erased sector, a stale record) falls
-        # through to the choice below.
+        # trailer lists (destination, installed size and hash) counts; anything else (no
+        # stub, an erased sector, a stale record) falls through to the choice below.
         if self.record is not None:
-            stub_version, slot, reason, hashes = self.record
+            stub_version, slot, reason, components = self.record
             name = ("A", "B")[slot]
             if name in self._pending:
                 t = self._pending[name][4]
-                if hashes == [c[4] for c in t.components]:
+                if components == [(c[0], c[3], c[5]) for c in t.components]:
                     self._pending[name] = self._pending[name][:5] + (False,)
                     self.stub = (stub_version, reason)
                     return self._mount(name, rejects)
