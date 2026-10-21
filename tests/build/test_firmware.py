@@ -303,6 +303,7 @@ def test_ota_config_values(make_project, monkeypatch):
         assert isinstance(kid, int) and isinstance(pub, bytes) and pub[0] == 0x04
     roots = ns["ROOT_KEYS"]                           # what boot.py chains a trailer's cert to
     assert set(roots) == {0, 1} and all(len(p) == 65 and p[0] == 0x04 for p in roots.values())
+    assert ns["STUB_RECORD_ADDR"] == 0x703FF000       # the N6 stub's install record sector
 
 
 def test_ota_config_carries_the_payload_keys_and_the_romfs_does_not(make_project, monkeypatch):

@@ -25,6 +25,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   filesystem and list it as a trailer component; `build firmware` relinks the firmware at the
   stub's destination through the board overlay. `build verify` checks every component's
   bytes, and `partition.slots()` returns the whole body region of a slot.
+- **`boot.py` follows the boot stub's install record.** On a board with a stub the firmware
+  stamps `STUB_RECORD_ADDR` (the sector after the install window); `boot.py` reads the record
+  the stub wrote there (`openmv_ota.ota.install_record`: stub version, slot, reason, the
+  installed components' hashes) and mounts the slot it names without burning an attempt --
+  the stub did, before it installed. A record that is missing, erased, torn, or names other
+  components than the slot's trailer lists is ignored and the slot choice runs as before.
 
 ### Added
 

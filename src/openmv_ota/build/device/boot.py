@@ -78,6 +78,17 @@ _CERT_SIGNED = 96                                # the root signs bytes 0..95
 _KIND_OTA = 0
 _KIND_FACTORY = 1
 
+# --- The boot stub's install record (mirror of openmv_ota.ota.install_record) ---
+# The last 4 KiB of the firmware area on a board with a stub: which slot's components the
+# stub installed, and why it booted. boot.py mounts THAT slot and burns no attempt (the stub
+# did). An erased or torn record simply means "no stub": the slot choice below runs as usual.
+_RECORD_MAGIC = b"OMVI"
+_RECORD_VERSION = 1
+_RECORD_STRUCT = "<4sIIIIIQ"
+_RECORD_FIXED = struct.calcsize(_RECORD_STRUCT)   # 32
+_RECORD_BLOCK = 4096
+_REASON_TRIAL = 1
+
 # --- Status markers (mirror of openmv_ota.ota.status) -----------------------
 
 MARKER_SIZE = 16
@@ -236,6 +247,26 @@ def parse_trailer(data):
     t.signed_region = bytes(data[:meta_end])
     t.signature = bytes(data[meta_end:body_end])
     return t
+
+
+def parse_record(data):
+    """``(stub_version, slot, reason, hashes)`` from the stub's install record, or None when
+    the block holds no complete, CRC-valid record of a known version. Pure."""
+    if data is None or len(data) < _RECORD_FIXED:
+        return None
+    magic, version, stub_version, slot, comp_count, reason, _r = struct.unpack_from(
+        _RECORD_STRUCT, data, 0)
+    if magic != _RECORD_MAGIC or version != _RECORD_VERSION or comp_count > _MAX_COMPONENTS \
+            or slot not in (0, 1):
+        return None
+    end = _RECORD_FIXED + comp_count * 32
+    if end + _CRC_SIZE > len(data):
+        return None
+    if (binascii.crc32(bytes(data[:end])) & 0xFFFFFFFF) != struct.unpack_from("<I", data, end)[0]:
+        return None
+    hashes = [bytes(data[_RECORD_FIXED + i * 32:_RECORD_FIXED + (i + 1) * 32])
+              for i in range(comp_count)]
+    return stub_version, slot, reason, hashes
 
 
 def _sha256(data):
@@ -423,7 +454,7 @@ class OtaBoot:
 
     def __init__(self, read, verify, mount, write_marker, partition_size,
                  front_size, block, product_id, root_keys,
-                 max_attempts=DEFAULT_MAX_ATTEMPTS):
+                 max_attempts=DEFAULT_MAX_ATTEMPTS, record=None):
         self.read = read
         self.verify = verify
         self.mount = mount
@@ -434,6 +465,8 @@ class OtaBoot:
         self.product_id = product_id
         self.root_keys = root_keys
         self.max_attempts = max_attempts
+        self.record = parse_record(record)   # the stub's install record block, if any
+        self.stub = None                     # (stub_version, reason) when the record was followed
         self._pending = {}
 
     def _slots(self):
@@ -500,6 +533,21 @@ class OtaBoot:
             candidates.append((name, install_counter(status), bool(confirmed)))
             self._pending[name] = (offset, size, body, status, t, consume)
 
+        # A boot stub chose first: it installed one slot's components into the firmware area and
+        # the firmware now running IS that slot's. Mount that slot -- mounting the other would run
+        # an app on a firmware it was not built with -- and burn nothing: the stub burned the
+        # attempt before it installed. Only a record naming exactly the components the slot's
+        # trailer lists counts; anything else (no stub, an erased sector, a stale record) falls
+        # through to the choice below.
+        if self.record is not None:
+            stub_version, slot, reason, hashes = self.record
+            name = ("A", "B")[slot]
+            if name in self._pending:
+                t = self._pending[name][4]
+                if hashes == [c[4] for c in t.components]:
+                    self._pending[name] = self._pending[name][:5] + (False,)
+                    self.stub = (stub_version, reason)
+                    return self._mount(name, rejects)
         # Try the newest, and if it cannot be ARMED fall through to the next-newest rather than
         # abandoning the boot. Failing to record an attempt is a reason to distrust that slot, not
         # a reason to strand a device that has another valid image sitting right there.
@@ -703,11 +751,14 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         log.warning("boot: se recovery failed: %r" % (e,))  # hil-residual: inject-only, as the line above
 
     _set_stride(getattr(cfg, "CONTROL_STRIDE", 16))
+    record_addr = getattr(cfg, "STUB_RECORD_ADDR", None)
+    record = uctypes.bytearray_at(record_addr, _RECORD_BLOCK) if record_addr else None  # hil-residual: boards with a boot stub only
     try:
-        slot, trailer, reject_reason = OtaBoot(
+        ob = OtaBoot(
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
             cfg.CONTROL_BLOCK, cfg.PRODUCT_ID, cfg.ROOT_KEYS,
-            getattr(cfg, "MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)).run()
+            getattr(cfg, "MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS), record)
+        slot, trailer, reject_reason = ob.run()
     except OtaReject as e:
         log.error("boot: no bootable slot: %s" % e)
         # NOT the end of the road under v2. There is no factory image to retreat to, so hand
@@ -721,6 +772,8 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
             raise e from None  # hil-residual: bare re-raise; boot.no_slot above is the witness
         openmv_recovery.run(cfg)  # hil-residual: recovery never returns (installs + reboots, or retries forever)
         raise  # hil-residual: unreachable unless recovery declined (no SERVER_URL stamped)
+    if ob.stub is not None:  # hil-residual: boards with a boot stub only
+        log.info("boot: stub %d installed %s, reason %d" % (ob.stub[0], slot, ob.stub[1]))  # hil-residual: same
     if reject_reason is None:
         log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
     else:
@@ -739,6 +792,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     cfg.last_payload_version = trailer.payload_version
     cfg.last_publish_seq = trailer.publish_seq
     cfg.last_failure_reason = reject_reason
+    cfg.last_stub = ob.stub                        # (stub_version, reason), or None
 
     os.chdir("/rom")
     sys.path.append("/rom")
