@@ -205,6 +205,9 @@ def register(project_parser: argparse.ArgumentParser):
                        help="OTA keys to mint (default: 4 — external keys are often billable)")
     p_kbp.add_argument("--factory-keys", type=int, default=1, metavar="N",
                        help="factory keys to mint (default: 1)")
+    p_kbp.add_argument("--key-passphrase-file", metavar="FILE",
+                       help="file holding the project passphrase (unlocks the root key that "
+                            "certifies the new keys)")
     p_kbp.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_kbp.set_defaults(func=cmd_keys_backend_provision, _command="project keys backend provision")
 
@@ -306,7 +309,8 @@ def cmd_keys_backend_provision(args: argparse.Namespace) -> int:
         record = {"backend": args.backend, **_parse_settings(args.settings)}
         provisioner = signer.build_provisioner(record)
         signing = keys_mod.provision_backend(
-            Path(args.dir), provisioner, n_factory=args.factory_keys, n_ota=args.ota_keys)
+            Path(args.dir), provisioner, n_factory=args.factory_keys, n_ota=args.ota_keys,
+            key_passphrase_file=args.key_passphrase_file)
     except (ProjectError, OtaError) as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

@@ -135,6 +135,47 @@ def test_provision_key_set():
     assert all(k.alg == ES256 for k in prov.trusted)
     assert prov.signing_key_id == OTA_KEY_ID_BASE
     assert set(prov.private_pems) == {k.key_id for k in prov.trusted}
+    # two roots, and every key certified by root 0 with its role as the certificate's kind
+    from openmv_ota.ota import certificate as cert_mod
+    from openmv_ota.ota.keys import root_keys_map
+    assert [r.root_id for r in prov.roots] == [0, 1] and set(prov.root_pems) == {0, 1}
+    for k in prov.trusted:
+        c = cert_mod.verify(bytes.fromhex(k.cert), root_keys_map(prov.roots))
+        assert c.root_id == 0 and c.epoch == 0 and c.pubkey.hex() == k.pubkey
+        assert c.kind == (cert_mod.KIND_FACTORY if k.role == "factory" else cert_mod.KIND_OTA)
+
+
+def test_provision_key_set_is_p256_only():
+    from openmv_ota.ota import ES384
+    with pytest.raises(OtaError, match="P-256 keys only"):
+        provision_key_set(algorithm_for(ES384), n_factory=1, n_ota=1, passphrase="pw")
+
+
+def test_trusted_key_cert_round_trips_and_defaults_empty():
+    k = TrustedKey(key_id=0x10, alg=ES256, role="ota", pubkey="04abcd", cert="aa" * 160)
+    assert TrustedKey.from_dict(k.to_dict()) == k
+    assert TrustedKey.from_dict({"key_id": 1, "alg": ES256, "role": "ota", "pubkey": "04"}).cert == ""
+
+
+def test_root_keys_file_round_trip(tmp_path):
+    from openmv_ota.ota.keys import RootKey, read_root_keys, root_keys_map, write_root_keys
+    path = tmp_path / "root_keys.json"
+    roots = [RootKey(0, ES256, "04" + "aa" * 64), RootKey(1, ES256, "04" + "bb" * 64)]
+    write_root_keys(path, roots)
+    assert read_root_keys(path) == roots
+    assert root_keys_map(roots) == {0: bytes.fromhex(roots[0].pubkey), 1: bytes.fromhex(roots[1].pubkey)}
+    with pytest.raises(OtaError, match="no root_keys.json"):
+        read_root_keys(tmp_path / "absent.json")
+    path.write_text("{not json")
+    with pytest.raises(OtaError, match="not valid JSON"):
+        read_root_keys(path)
+
+
+def test_certify_refuses_an_unknown_role():
+    from openmv_ota.ota.keys import certify, generate_private_key
+    root = generate_private_key(algorithm_for(ES256))
+    with pytest.raises(OtaError, match="no certificate kind for a 'desk' key"):
+        certify(root, 0, [TrustedKey(1, ES256, "desk", "04" + "00" * 64)])
 
 
 def test_provisioned_private_keys_match_public_set():

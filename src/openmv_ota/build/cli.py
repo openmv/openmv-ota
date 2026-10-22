@@ -86,6 +86,17 @@ def register(build_parser: argparse.ArgumentParser):
                       help="keep the generated wrapper manifest dir (OTA builds) for inspection")
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
 
+    p_stub = sub.add_parser("stub", help="build the boot stub per board (OTA projects; boards "
+                                         "with a stub layout)")
+    p_stub.add_argument("project", nargs="?", default=".", help="project directory (default: .)")
+    p_stub.add_argument("-o", "--output", help="output dir (default: <project>/build)")
+    p_stub.add_argument("-b", "--board", action="append", metavar="NAME",
+                        help="only build this board (repeatable; default: all boards)")
+    p_stub.add_argument("-j", "--jobs", type=int, metavar="N",
+                        help="parallel make jobs (default: CPU count)")
+    p_stub.add_argument("-f", "--firmware", help="firmware checkout override")
+    p_stub.set_defaults(func=cmd_stub, _command="build stub")
+
     p_otr = sub.add_parser("ota-romfs",
                            help="build the cloud-published OTA set from app source: image + "
                                 "signed manifest (+ optional delta)")
@@ -141,6 +152,9 @@ def register(build_parser: argparse.ArgumentParser):
     p_ver.add_argument("trailer", nargs="?", help="trailer.bin (omit when image is a .zip)")
     p_ver.add_argument("--trusted-keys", default="keys/trusted_keys.json",
                        help="trusted_keys.json (default: keys/trusted_keys.json)")
+    p_ver.add_argument("--root-keys", default="keys/root_keys.json",
+                       help="root_keys.json, the roots an image's certificate must chain to "
+                            "(default: keys/root_keys.json)")
     p_ver.add_argument("--base", help="base image the delta applies to (delta verify)")
     p_ver.add_argument("--target", help="expected new image, to confirm a delta reconstructs it")
     p_ver.set_defaults(func=cmd_verify, _command="build verify")
@@ -329,12 +343,28 @@ def cmd_firmware(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_stub(args: argparse.Namespace) -> int:
+    from . import stub as stub_mod
+
+    try:
+        results = stub_mod.build_stub(args.project, output=args.output, boards=args.board,
+                                      firmware=args.firmware, jobs=args.jobs)
+    except BuildError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+
+    for r in results:
+        print("Built %s  (%d bytes)" % (r.output.name, r.size))
+    return 0
+
+
 def _trailer_summary(t) -> dict:
     """A flat, JSON-friendly view of a parsed trailer (versions decoded to semver)."""
-    from openmv_ota.ota import algorithm_for
+    from openmv_ota.ota import KIND_FACTORY, algorithm_for
     from openmv_ota.ota.version import decode_app_version
 
     meta = t.meta if isinstance(t.meta, dict) else {}
+    cert = t.cert
     return {
         "kind": "ROMFS app",
         "header_version": t.header_version,
@@ -345,16 +375,22 @@ def _trailer_summary(t) -> dict:
         "vendor": meta.get("vendor"),
         "app_version": meta.get("app_version"),
         "payload_version": decode_app_version(t.payload_version),
-        "min_platform_version": decode_app_version(t.min_platform_version)
-        if t.min_platform_version else "none",
+        "min_stub": t.min_stub,
         # the account's publish counter -- what a product_id 0 camera orders by; 0 on
         # every build from a project that is not in platform mode
         "publish_seq": t.publish_seq,
-        "key_id": "0x%04x" % t.key_id,
+        "key_id": "0x%08x" % t.key_id,
         "sig_alg": algorithm_for(t.sig_alg).name,
+        "certificate": {"kind": "factory" if cert.kind == KIND_FACTORY else "ota",
+                        "root_id": cert.root_id, "epoch": cert.epoch},
         "body_size": t.body_size,
-        "pad_size": t.pad_size,
         "body_sha256": t.body_sha256.hex(),
+        "components": [{"dest": "0x%08x" % c.dest, "offset": c.offset, "size": c.size,
+                        "installed_size": c.installed_size, "sha256": c.sha256.hex(),
+                        "installed_sha256": c.installed_sha256.hex()}
+                       for c in t.components],
+        "stub": {"uart": (t.uart_id, t.baud) if t.uart_en else None,
+                 "watchdog": (t.wdt_id, t.wdt_timeout_ms) if t.wdt_en else None},
         "signature_size": len(t.signature),
         "meta": meta,
     }
@@ -382,13 +418,19 @@ def _print_trailer(s: dict) -> None:
     print("  board:          %s  (id %d)" % (s["board"], s["product_id"]))
     print("  board_name:     %s" % s["board_name"])
     print("  app_version:    %s  (payload_version %s)" % (s["app_version"], s["payload_version"]))
-    print("  min_platform:   %s" % s["min_platform_version"])
     if s["publish_seq"]:
         print("  publish_seq:    %d" % s["publish_seq"])
-    print("  signed by:      key %s  (%s, %d-byte sig)"
-          % (s["key_id"], s["sig_alg"], s["signature_size"]))
+    print("  signed by:      key %s  (%s, %d-byte sig; %s certificate from root %d, epoch %d)"
+          % (s["key_id"], s["sig_alg"], s["signature_size"], s["certificate"]["kind"],
+             s["certificate"]["root_id"], s["certificate"]["epoch"]))
     print("  body:           %d bytes, sha256 %s" % (s["body_size"], s["body_sha256"]))
-    print("  pad_size:       %d" % s["pad_size"])
+    for c in s["components"]:
+        print("  component:      %d bytes at +%d -> %s (%d bytes installed)"
+              % (c["size"], c["offset"], c["dest"], c["installed_size"]))
+        print("                  sha256 %s" % c["sha256"])
+        print("                  installed sha256 %s" % c["installed_sha256"])
+    if s["min_stub"]:
+        print("  min_stub:       %d" % s["min_stub"])
     fw, tc = s["meta"].get("firmware", {}), s["meta"].get("toolchain", {})
     print("  provenance:     firmware %s (%s), micropython %s"
           % (fw.get("version"), (fw.get("commit") or "")[:12], s["meta"].get("micropython")))
@@ -541,7 +583,7 @@ def _verify_delta(raw: bytes, args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    from openmv_ota.ota import bundle, partition, read_trusted_keys
+    from openmv_ota.ota import bundle, partition, read_root_keys, read_trusted_keys
     from openmv_ota.ota.errors import OtaError
     from openmv_ota.ota.verify import verify_image, verify_manifest
 
@@ -549,18 +591,23 @@ def cmd_verify(args: argparse.Namespace) -> int:
     kind, raw = _load_artifact(image)
     if kind == "delta":
         return _verify_delta(raw, args)
-    try:
-        trusted = read_trusted_keys(Path(args.trusted_keys))
-    except OtaError as e:
-        print("error: %s" % e, file=sys.stderr)
-        return 2
     if kind == "manifest":
+        try:
+            trusted = read_trusted_keys(Path(args.trusted_keys))
+        except OtaError as e:
+            print("error: %s" % e, file=sys.stderr)
+            return 2
         ok, reason = verify_manifest(raw, trusted)
         if ok:
             print("verified: %s" % reason)
             return 0
         print("verification FAILED: %s" % reason, file=sys.stderr)
         return 1
+    try:
+        roots = read_root_keys(Path(args.root_keys))
+    except OtaError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
     try:
         if args.trailer is not None:                       # loose body + trailer
             pairs = [("image", image.read_bytes(), Path(args.trailer).read_bytes())]
@@ -586,7 +633,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     all_ok = True
     for label, body, trailer in pairs:
         tag = ("%s: " % label) if len(pairs) > 1 else ""
-        ok, reason = verify_image(body, trailer, trusted)
+        ok, reason = verify_image(body, trailer, roots)
         if ok:
             print("%sverified: %s" % (tag, reason))
         else:

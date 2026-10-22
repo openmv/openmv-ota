@@ -1,0 +1,119 @@
+"""The boot stub's install record -- what it wrote to flash, and why it booted.
+
+The stub keeps one record in the last 4 KiB of the firmware area it installs into, written
+after every component has been decompressed and verified. On a normal boot the stub reads
+it back: if the chosen slot's components' installed hashes match the record's, and the
+firmware area hashes to them, it jumps without installing anything. A power cut
+mid-install leaves no record, so the next boot installs again -- the record is the
+"install finished" marker as much as the handoff.
+
+It is also how ``boot.py`` learns which slot the stub chose and why, instead of a RAM
+handoff: the record names the slot whose components are installed, and ``boot.py`` mounts
+that slot's filesystem rather than choosing one itself. The record is derived from bytes
+the stub has verified, so it carries no signature; a record that does not parse, or
+names components that are not the chosen slot's, is simply ignored.
+
+Layout (little-endian): a 32-byte fixed part, one 40-byte entry per component, a CRC::
+
+    magic(4s)=OMVI record_version stub_version slot comp_count reason reserved(u64)
+    (dest installed_size installed_sha256)[comp_count] crc32
+
+An entry names where the component was installed and what the installed bytes hash to, so
+the stub can check the firmware area on every boot -- and still boot what is installed when
+no slot verifies at all (a camera whose slots were wiped).
+
+``reason`` is why the stub INSTALLED (the record is written once, at install time, and
+never rewritten -- its block is erased only by the next install): 0 a confirmed slot's
+components were put in place, 1 a trial (the stub burned the slot's attempt), 2 a revert
+(the other slot failed its trial), 3 a reinstall (the firmware area did not hold what the
+record said). Per-boot facts -- is this boot a trial, did the other slot just fail -- come
+from the slots' status sectors, which ``boot.py`` reads itself. ``slot``: 0 = A, 1 = B.
+"""
+
+from __future__ import annotations
+
+import binascii
+import struct
+from dataclasses import dataclass, field
+
+from .errors import OtaError
+from .trailer import MAX_COMPONENTS
+
+MAGIC = b"OMVI"
+VERSION = 1
+FIXED_STRUCT = "<4sIIIIIQ"
+FIXED_SIZE = struct.calcsize(FIXED_STRUCT)     # 32
+ENTRY_STRUCT = "<II32s"                        # dest installed_size installed_sha256
+ENTRY_SIZE = struct.calcsize(ENTRY_STRUCT)     # 40
+HASH_SIZE = 32
+CRC_SIZE = 4
+BLOCK = 4096                                   # the record's sector
+
+REASON_NORMAL = 0
+REASON_TRIAL = 1
+REASON_REVERTED = 2
+REASON_REINSTALLED = 3
+REASONS = {REASON_NORMAL: "normal", REASON_TRIAL: "trial", REASON_REVERTED: "reverted",
+           REASON_REINSTALLED: "reinstalled"}
+SLOTS = ("A", "B")
+
+
+@dataclass
+class InstallRecord:
+    stub_version: int
+    slot: int                    # 0 = A, 1 = B
+    reason: int
+    components: list = field(default_factory=list)   # (dest, installed_size, installed_sha256)
+    record_version: int = VERSION
+
+    @property
+    def slot_name(self) -> str:
+        return SLOTS[self.slot]
+
+
+def pack(r: InstallRecord) -> bytes:
+    if r.slot not in (0, 1):
+        raise OtaError("install record slot must be 0 or 1, got %d" % r.slot)
+    if r.reason not in REASONS:
+        raise OtaError("unknown install record reason %d" % r.reason)
+    if len(r.components) > MAX_COMPONENTS:
+        raise OtaError("%d components, over the %d limit" % (len(r.components), MAX_COMPONENTS))
+    for _dest, _size, h in r.components:
+        if len(h) != HASH_SIZE:
+            raise OtaError("component hash must be %d bytes, got %d" % (HASH_SIZE, len(h)))
+    body = struct.pack(FIXED_STRUCT, MAGIC, r.record_version, r.stub_version, r.slot,
+                       len(r.components), r.reason, 0)
+    body += b"".join(struct.pack(ENTRY_STRUCT, dest, size, bytes(h))
+                     for dest, size, h in r.components)
+    return body + struct.pack("<I", binascii.crc32(body) & 0xFFFFFFFF)
+
+
+def parse(data) -> InstallRecord:
+    """Decode a record block. Raises ``OtaError`` for anything that is not a complete, CRC-valid
+    record of a known version -- which is what an erased sector, a torn write, or a record a
+    newer stub wrote all look like to a reader that should then ignore it."""
+    if len(data) < FIXED_SIZE:
+        raise OtaError("install record too small")
+    magic, version, stub_version, slot, comp_count, reason, _reserved = struct.unpack_from(
+        FIXED_STRUCT, data, 0)
+    if magic != MAGIC:
+        raise OtaError("bad install record magic %r" % (magic,))
+    if version != VERSION:
+        raise OtaError("unsupported install record version %d" % version)
+    if comp_count > MAX_COMPONENTS:
+        raise OtaError("install record lists %d components, over the %d limit"
+                       % (comp_count, MAX_COMPONENTS))
+    end = FIXED_SIZE + comp_count * ENTRY_SIZE
+    if end + CRC_SIZE > len(data):
+        raise OtaError("install record truncated")
+    if (binascii.crc32(bytes(data[:end])) & 0xFFFFFFFF) != struct.unpack_from("<I", data, end)[0]:
+        raise OtaError("install record crc32 mismatch")
+    if slot not in (0, 1):
+        raise OtaError("install record names slot %d" % slot)
+    if reason not in REASONS:
+        raise OtaError("unknown install record reason %d" % reason)
+    components = []
+    for i in range(comp_count):
+        dest, size, h = struct.unpack_from(ENTRY_STRUCT, data, FIXED_SIZE + i * ENTRY_SIZE)
+        components.append((dest, size, bytes(h)))
+    return InstallRecord(stub_version, slot, reason, components, version)

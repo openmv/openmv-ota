@@ -95,6 +95,17 @@ WDT_ID = None
 # sleep (the IWDG keeps counting through it) AND must feed reliably enough that a starve is impossible.
 # Non-stm32 ports are unaffected -- their WDT(0) is the deep-sleep-safe WDOG / alif WDT, not an IWDG.
 ALLOW_STM32_IWDG = False
+# THE BOOT STUB'S WATCHDOG (boards with a boot stub, e.g. the N6). Set STUB_TIMEOUT_MS to a non-zero
+# value and the signed release tells the stub to arm this watchdog before it jumps to the firmware, so
+# the whole boot and the app are covered -- on trial boots and normal ones alike. It is a SECOND
+# watchdog, not the WWDG above: the WWDG cannot span a boot (its 167 ms window and reset-on-boot make
+# it a feed-every-few-ms discipline), while the IWDG keeps running once started. Ids follow
+# machine.WDT: 0 is the IWDG on stm32. The caveats on the IWDG above apply in full: it survives
+# machine.reset() and cannot be stopped, so a device that deep-sleeps must leave this 0, and
+# ``feed()`` must run before STUB_TIMEOUT_MS elapses from the moment the stub jumps -- including the
+# time boot.py and your setup take. machine.WDT(0, timeout) over it only changes the timeout.
+STUB_WDT_ID = 0
+STUB_TIMEOUT_MS = 0
 # ARM THE WATCHDOG FOR AN OTA INSTALL, even when ENABLED is False. During an install WE own the
 # device -- the app has stopped, /rom is being erased, and a park anywhere in that window leaves a
 # board that cannot boot and cannot be recovered remotely. A park is only escapable by a HARDWARE

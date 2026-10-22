@@ -90,18 +90,28 @@ def set_backend(root: Path, key_id: int, record: dict) -> None:
     write_backends(root, records)
 
 
-def provision_backend(root: Path, provisioner, *, n_factory: int, n_ota: int) -> int:
+def provision_backend(root: Path, provisioner, *, n_factory: int, n_ota: int,
+                      key_passphrase_file=None) -> int:
     """Generate a fresh key set **inside** an external backend and replace ``trusted_keys.json`` +
-    ``backends.json`` with it (no private PEM ever touches disk). Keeps the current signing
-    algorithm. Re-keys the fleet -- devices trust the new set only after a firmware update. Returns
-    the new signing key id."""
+    ``backends.json`` with it (no signing key's private PEM ever touches disk). Keeps the current
+    signing algorithm and the project's roots: the new keys are certified by root 0, so devices
+    that embed the roots trust them with no firmware change. Returns the new signing key id."""
+    from openmv_ota.ota.keys import load_private_key_pem, root_pem_name
     from openmv_ota.ota.signer import provision_external_key_set
 
+    from . import passphrase as passphrase_mod
     from .backends import write_backends
     _config, existing, paths = _load(root)
     alg = algorithm_for(existing[0].alg)
+    phrase, _ = passphrase_mod.resolve_passphrase(root, passphrase_file=key_passphrase_file)
+    try:
+        root_priv = load_private_key_pem(
+            (paths.private_keys_dir / root_pem_name(0)).read_bytes(), phrase)
+    except OSError:
+        raise ProjectError("no %s in keys/private: the root key signs the new keys' "
+                           "certificates, and nothing can take its place" % root_pem_name(0)) from None
     trusted, records, signing_key_id = provision_external_key_set(
-        alg, n_factory, n_ota, provisioner)
+        alg, n_factory, n_ota, provisioner, root_priv)
     write_trusted_keys(paths.trusted_keys, trusted)
     write_backends(root, records)
     config_mod.set_signing_key_id(paths.config, signing_key_id)
@@ -114,7 +124,8 @@ def key_status(root: Path) -> KeyStatus:
     ota_ids, idx = _ota_index(trusted, config.signing_key_id)
     by_id = {k.key_id: k for k in trusted}
     signer = by_id[config.signing_key_id]
-    present = (len(list(paths.private_keys_dir.glob("*.pem")))
+    present = (len([p for p in paths.private_keys_dir.glob("*.pem")
+                    if not p.name.startswith("root-")])      # roots are not signing keys
                if paths.private_keys_dir.exists() else 0)
     return KeyStatus(
         alg_name=algorithm_for(signer.alg).name,

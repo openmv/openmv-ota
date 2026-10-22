@@ -20,17 +20,18 @@ An OTA partition holds **two slots of equal size, A and B**. Neither is special:
 real, signed, updatable images, and the one that boots is simply the newest valid one. On
 every boot `boot.py` runs after the board's stock `_boot.py` and, **for each slot**:
 
-1. Reads the slot's signed [trailer](../reference/trailer.md) and **verifies the ECDSA signature**
-   (via the on-device mbedtls shim) *before trusting any header field*.
+1. Reads the slot's signed [trailer](../reference/trailer.md) and **verifies two ECDSA
+   signatures** (via the on-device mbedtls shim) *before trusting any header field*: a
+   baked-in root's over the signing key's certificate, then the signing key's over the
+   trailer.
 2. Checks the authenticated header: **integrity** (body SHA-256), **cross-flash guard**
-   (`product_id`), **compatibility** (`min_platform_version`), and **anti-rollback**
-   (the ordering key vs the **rollback floor**). `min_platform_version` is the
-   image's firmware floor — stamped automatically from the firmware the image was
-   built against, so an app compiled for newer firmware (a newer bytecode ABI,
-   newer frozen modules) is never mounted by an older one.
+   (`product_id`), and **anti-rollback** (the ordering key vs the **rollback floor**).
 3. Applies the **trial rules**.
 
-Then it mounts the surviving slot with the **highest install counter** at `/rom`. It
+Then it mounts the surviving slot with the **highest install counter** at `/rom`. On a
+board with a boot stub the stub has already chosen: it installed one slot's firmware and
+left an install record saying which, so `boot.py` mounts that slot (the running firmware
+is that slot's) and burns no attempt -- the stub did, before it installed. It
 records the outcome in module globals (`last_slot`, `last_payload_version`,
 `last_failure_reason`) for the app to read, since the boot path can't print.
 

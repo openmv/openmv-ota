@@ -31,6 +31,7 @@ from openmv_ota.build.device import openmv_ota as rt
 from openmv_ota.ota import ES256, Trailer, algorithm_for, pack_trailer, signed_region, status
 from openmv_ota.ota.keys import generate_private_key, public_point_hex
 from openmv_ota.ota.sign import sign_region
+from tests import trust
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -106,11 +107,12 @@ def _image(version, *, body_tag=b"APP", product_id=PRODUCT_ID, corrupt=False):
     body = body_tag + b"." + version.encode() + b"\x00" * 64
     cap = SLOT - 2 * BLOCK
     pad = cap - len(body)
-    t = Trailer(body_size=len(body), pad_size=pad, meta={"v": version}, product_id=product_id,
-                min_platform_version=0, payload_version=_pv(version),
-                key_id=_KEY_ID, sig_alg=ES256, body_sha256=hashlib.sha256(body).digest())
+    t = Trailer(body_size=len(body), meta={"v": version}, product_id=product_id,
+                payload_version=_pv(version), body_sha256=hashlib.sha256(body).digest(),
+                certificate=trust.certificate(_KEY))
     t.signature = sign_region(_KEY, signed_region(t), _SPEC)
     trailer = pack_trailer(t)
+    del pad                                     # v4 has no pad field; the slot is laid out below
     img = bytearray(b"\xff" * SLOT)
     img[0:len(body)] = body
     img[SLOT - BLOCK:SLOT - BLOCK + len(trailer)] = trailer
@@ -160,7 +162,8 @@ class Device:
             FRONT_SIZE = 0 if dev.single else SLOT
             CONTROL_BLOCK = BLOCK
             PRODUCT_ID = 0
-            TRUSTED_KEYS = TRUSTED
+            TRUSTED_KEYS = TRUSTED                # the manifest path still names its key by id
+            ROOT_KEYS = trust.ROOTS               # the trailer path chains to a root
             PLATFORM_VERSION = 0
             MAX_ATTEMPTS = dev.max_attempts
             last_slot = dev.slot
@@ -193,7 +196,7 @@ class Device:
         # (a PRODUCT_ID 0 camera orders by publish_seq -- see test_publish_seq.py).
         ob = B.OtaBoot(self.flash.read, _verify, mount, self.flash.write,
                        len(self.flash.mem), 0 if self.single else SLOT, BLOCK,
-                       PRODUCT_ID, TRUSTED, 0, self.max_attempts)
+                       PRODUCT_ID, trust.ROOTS, self.max_attempts)
         slot, trailer, reason = ob.run()
         self.slot, self.version, self.reject_reason = slot, trailer.payload_version, reason
         assert mounted["body"].startswith(b"APP.")
@@ -362,7 +365,7 @@ def test_the_fallback_survives_every_confirm():
         floor = max(INST._rollback_floor_of(
                         dev.flash.read(o + SLOT - 2 * BLOCK, BLOCK)[INST._FLOOR_OFF:])
                     for o in (0, SLOT))
-        t, _consume = B.evaluate_slot(body, status, trailer, floor, 0, TRUSTED, 0, _verify, 3)
+        t, _consume = B.evaluate_slot(body, status, trailer, floor, 0, trust.ROOTS, _verify, 3)
         assert t.payload_version < floor      # it IS below the floor...
         # ...and is still bootable, which is the whole point
 

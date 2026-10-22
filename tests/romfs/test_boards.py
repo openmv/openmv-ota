@@ -38,6 +38,23 @@ def test_internal_flash_boards_have_large_erase():
     assert boards_mod.get_board("OPENMV3").partition().erase_size == 262144
 
 
+def test_stub_layout_is_parsed_where_a_board_has_one():
+    from openmv_ota.romfs import boards as B
+    n6 = B.get_board("OPENMV_N6").stub
+    assert n6 is not None
+    # the N6's FIRMWARE partition is 0x80000..0x400000 of the XIP flash at 0x70000000: the stub
+    # takes its first 64 KiB, the install record its last 4 KiB, the firmware the rest
+    assert (n6.origin, n6.firmware_dest, n6.firmware_max) == (
+        0x70080000, 0x70090000, 0x703FF000 - 0x70090000)
+    assert n6.stub_max == 0x10000                              # one 64 KiB erase block
+    assert B.get_board("OPENMV_AE3").stub is None             # not yet
+    assert B._stub("X", None) is None
+    with pytest.raises(ValueError, match="bad stub layout"):
+        B._stub("X", {"firmware_dest": "0x10"})
+    with pytest.raises(ValueError, match="origin < firmware_dest"):
+        B._stub("X", {"origin": "0x20", "firmware_dest": "0x10", "firmware_max": 4})
+
+
 def test_partition_bad_index():
     b = boards_mod.get_board("OPENMV_N6")
     with pytest.raises(LookupError):

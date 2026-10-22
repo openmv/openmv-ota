@@ -1,0 +1,34 @@
+From 2b4458c118f01403d63ce8202945835ddaf6ac6f Mon Sep 17 00:00:00 2001
+From: kwagyeman <5694981+kwagyeman@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 10:38:34 -0700
+Subject: [PATCH] tools/gen_linker: Take the board directory from
+ OMV_BOARD_CONFIG_DIR.
+
+The Makefile lets a build point OMV_BOARD_CONFIG_DIR at an overlaid board
+directory (board_config.mk and the compile flags follow it), but the linker
+script generator always read boards/<TARGET>/board_config.h, so an overlay
+that moves OMV_FLASH_TXT_ORIGIN produced a firmware linked at the stock
+address while OMV_VTOR_BASE pointed at the new one. Read the exported
+OMV_BOARD_CONFIG_DIR when it is set.
+---
+ tools/gen_linker.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/tools/gen_linker.py b/tools/gen_linker.py
+index 8e2ae821a..4f3c3f03d 100644
+--- a/tools/gen_linker.py
++++ b/tools/gen_linker.py
+@@ -184,7 +184,9 @@ def main():
+     if cpp_flags and cpp_flags[0] == "--":
+         cpp_flags = cpp_flags[1:]
+ 
+-    board_dir = f"boards/{args.board}"
++    # The build may point OMV_BOARD_CONFIG_DIR at an overlaid board directory (the
++    # Makefile exports it); the linker script must come from the same config.
++    board_dir = os.environ.get("OMV_BOARD_CONFIG_DIR", "").rstrip("/") or f"boards/{args.board}"
+     cpp_flags += ["-DLINKER_SCRIPT", f"-Icommon", f"-I{board_dir}"]
+ 
+     # 1. Parse board_config.h for define names (CPP resolves conditionals).
+-- 
+2.43.0
+

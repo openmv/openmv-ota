@@ -127,14 +127,17 @@ my-product/
 │   ├── openmv_log.py               # the OTA debug logger
 │   └── openmv_wdt.py               # the watchdog helper
 └── keys/
-    ├── trusted_keys.json    # committed: the public key set baked into firmware
-    └── private/             # GITIGNORED: the private signing keys (PKCS#8 PEM)
+    ├── root_keys.json       # committed: the two roots baked into firmware
+    ├── trusted_keys.json    # committed: the signing keys, each with its certificate
+    └── private/             # GITIGNORED: the private keys (PKCS#8 PEM)
+        ├── root-0.pem, root-1.pem      # the roots -- keep these OFFLINE
         ├── factory-0001.pem … factory-0008.pem
         └── ota-0100.pem     … ota-011f.pem
 ```
 
 The generated `.gitignore` already excludes `keys/private/` (and `keys/*.pem`,
-`keys/*.key`). **Commit `keys/trusted_keys.json`; never commit `keys/private/`** —
+`keys/*.key`). **Commit `keys/root_keys.json` and `keys/trusted_keys.json`; never commit
+`keys/private/`** —
 only the signing machine holds the private keys, and there is no recovery if they
 leak (an attacker could sign images your devices would trust) or are lost (you can
 rotate to another provisioned key, but a key never provisioned can't be added).

@@ -270,7 +270,8 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     # the real boot.py (not a placeholder) + the generated config + device modules are present
     assert "OtaBoot" in (r.build_dir / "boot.py").read_text()
     cfg = (r.build_dir / "_ota_config.py").read_text()
-    assert "TRUSTED_KEYS" in cfg and "PARTITION_SIZE" in cfg and "PRODUCT_ID" in cfg
+    assert "TRUSTED_KEYS" in cfg and "ROOT_KEYS" in cfg and "PARTITION_SIZE" in cfg
+    assert "PRODUCT_ID" in cfg
     assert "ENABLED" in (r.build_dir / "openmv_log.py").read_text()   # the project's copy
     assert "def relax(" in (r.build_dir / "openmv_wdt.py").read_text()
 
@@ -300,6 +301,9 @@ def test_ota_config_values(make_project, monkeypatch):
     assert isinstance(keys, dict) and len(keys) == 3   # 2 ota + 1 factory provisioned
     for kid, pub in keys.items():
         assert isinstance(kid, int) and isinstance(pub, bytes) and pub[0] == 0x04
+    roots = ns["ROOT_KEYS"]                           # what boot.py chains a trailer's cert to
+    assert set(roots) == {0, 1} and all(len(p) == 65 and p[0] == 0x04 for p in roots.values())
+    assert ns["STUB_RECORD_ADDR"] == 0x703FF000       # the N6 stub's install record sector
 
 
 def test_ota_config_carries_the_payload_keys_and_the_romfs_does_not(make_project, monkeypatch):
@@ -799,9 +803,62 @@ def test_a_board_that_drops_nothing_builds_from_its_own_board_dir(make_project, 
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)
     monkeypatch.setattr(fw, "_ensure_mpy_cross", lambda repo: None)
-    root, repo, _app = make_project(ota=True)                   # OPENMV_N6
-    fw.build_firmware(root, firmware=repo, boards=["OPENMV_N6"])
+    # the AE3: no imlib drops, and no boot-stub layout (yet) to relink for
+    root, repo, _app = make_project(boards=("OPENMV_AE3",), ota=True)
+    fw.build_firmware(root, firmware=repo, boards=["OPENMV_AE3"])
     assert not any(a.startswith("OMV_BOARD_CONFIG_DIR=") for a in fake.calls[-1])
+
+
+def test_n6_ota_build_relinks_the_firmware_for_the_boot_stub(make_project, monkeypatch):
+    """The stub takes the first 64 KiB of the N6's firmware area, so an OTA firmware is linked
+    at 0x70090000 with 3516K to grow into: the overlaid board config carries the new origin,
+    length and vector-table base; the firmware tree is never touched."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    monkeypatch.setattr(fw, "_ensure_mpy_cross", lambda repo: None)
+    root, repo, _app = make_project(ota=True)
+    src_h = Path(repo) / "boards" / "OPENMV_N6" / "board_config.h"
+    before = src_h.read_text()
+    seen = {}
+
+    def spy(repo_, args):
+        if "clean" in args:
+            return fake(repo_, args)
+        overlay = Path(next(a.split("=", 1)[1] for a in args if a.startswith("OMV_BOARD_CONFIG_DIR=")))
+        seen["h"] = (overlay / "board_config.h").read_text()
+        seen["mk"] = (overlay / "board_config.mk").read_text()
+        return fake(repo_, args)
+    monkeypatch.setattr(fw, "_run_make", spy)
+
+    fw.build_firmware(root, firmware=repo, keep_build_dir=False)
+    assert "#define OMV_FLASH_TXT_ORIGIN                0x70090000\n" in seen["h"]
+    assert "#define OMV_FLASH_TXT_LENGTH                3516K\n" in seen["h"]
+    assert "#define OMV_ROMFS_PART0_ORIGIN 0x70800000" in seen["h"]       # untouched neighbours
+    assert "OMV_FIRM_ADDR=0x70090000\n" in seen["mk"] and "OMV_FIRM_BASE=0x70000000" in seen["mk"]
+    assert src_h.read_text() == before
+
+
+def test_relink_refuses_a_board_config_that_disagrees_with_the_table(tmp_path):
+    from openmv_ota.romfs.boards import StubLayout
+    overlay = tmp_path / "board"
+    overlay.mkdir()
+    stub = StubLayout(0x70080000, 0x70090000, 0x36F000)
+    with pytest.raises(BuildError, match="board_config.h not found"):
+        fw._relink_for_stub(overlay, "OPENMV_N6", stub)
+    (overlay / "board_config.h").write_text("#define OMV_FLASH_TXT_ORIGIN 0x70080000\n")
+    with pytest.raises(BuildError, match="OMV_FLASH_TXT_ORIGIN and OMV_FLASH_TXT_LENGTH once each"):
+        fw._relink_for_stub(overlay, "OPENMV_N6", stub)
+    (overlay / "board_config.h").write_text(
+        "#define OMV_FLASH_TXT_ORIGIN 0x70080000\n#define OMV_FLASH_TXT_LENGTH 3584K\n")
+    with pytest.raises(BuildError, match="board_config.mk not found"):
+        fw._relink_for_stub(overlay, "OPENMV_N6", stub)
+    (overlay / "board_config.mk").write_text("PORT=stm32\n")
+    with pytest.raises(BuildError, match="does not set OMV_FIRM_ADDR once"):
+        fw._relink_for_stub(overlay, "OPENMV_N6", stub)
+    (overlay / "board_config.mk").write_text("PORT=stm32\nOMV_FIRM_ADDR ?= 0x70080000\n")
+    fw._relink_for_stub(overlay, "OPENMV_N6", StubLayout(0x70080000, 0x70090000, 0x36F001))  # not a whole K
+    assert "OMV_FLASH_TXT_LENGTH 0x36F001" in (overlay / "board_config.h").read_text()
+    assert "OMV_FIRM_ADDR ?= 0x70090000" in (overlay / "board_config.mk").read_text()
 
 
 def test_board_overlay_refuses_a_firmware_that_disagrees_with_the_table(tmp_path):
@@ -814,7 +871,7 @@ def test_board_overlay_refuses_a_firmware_that_disagrees_with_the_table(tmp_path
     (bd / "imlib_config.h").write_text("#define IMLIB_ENABLE_BARCODES\n")   # no datamatrices
     with pytest.raises(BuildError, match="does not define IMLIB_ENABLE_DATAMATRICES"):
         fw._board_overlay(repo, "OPENMV4", tmp_path / "t2")
-    assert fw._board_overlay(repo, "OPENMV_N6", tmp_path / "t3") is None
+    assert fw._board_overlay(repo, "OPENMV_AE3", tmp_path / "t3") is None   # drops nothing, no stub
 
 
 def test_speed_options_with_no_port_config_file(tmp_path):
@@ -873,3 +930,31 @@ def test_a_bootloader_that_reaches_the_key_area_fails_the_build(make_project, mo
     with pytest.raises(BuildError, match="must stay within 126976.*0x0801F000"):
         fw.build_firmware(root, firmware=repo, boards=["OPENMV4"])
     assert not (Path(repo) / "modules" / "key_store.c").exists()     # tree restored all the same
+
+
+def test_a_stub_boards_ota_firmware_build_also_builds_the_stub(make_project, monkeypatch):
+    """The OTA firmware is linked to run behind the stub, so neither is flashable alone:
+    `build firmware` emits <board>-stub.bin beside <board>-firmware.bin on a stub board."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    root, repo, _app = make_project(ota=True)                      # OPENMV_N6: has a stub layout
+    [r] = fw.build_firmware(root, firmware=repo)
+    names = sorted(o.name for o in r.outputs)
+    assert "OPENMV_N6-stub.bin" in names and "OPENMV_N6-firmware.bin" in names
+    assert (root / "build" / "OPENMV_N6-stub.bin").read_bytes() == b"STUB" * 64
+
+
+def test_a_non_ota_firmware_build_has_no_stub(make_project, monkeypatch):
+    """No root keys to bake in, and stock firmware runs at the stock address."""
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project()
+    [r] = fw.build_firmware(root, firmware=repo)
+    assert not any(o.name.endswith("-stub.bin") for o in r.outputs)
+
+
+def test_an_ota_board_without_a_stub_layout_builds_no_stub(make_project, monkeypatch):
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware_M55_HP.bin",
+                                                     "bin/firmware_M55_HE.bin"]))
+    root, repo, _app = make_project(ota=True, boards=("OPENMV_AE3",))
+    [r] = fw.build_firmware(root, firmware=repo)
+    assert not any(o.name.endswith("-stub.bin") for o in r.outputs)

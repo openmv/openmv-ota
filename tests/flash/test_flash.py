@@ -558,3 +558,25 @@ def test_imx_sbl_entry_execs_machine_bootloader(monkeypatch):
     reset_cmd = [a for a in launched if "connect" in a][0]
     assert "exec" in reset_cmd and "machine.bootloader()" in " ".join(reset_cmd)
     assert reset_cmd[-2:] != ["bootloader"], "must not use the bootloader subcommand"
+
+
+def test_flash_firmware_on_a_stub_board_writes_the_composed_image(project):
+    """The N6's FIRMWARE partition starts with the boot stub; the firmware is linked to run
+    behind it. One DFU download carries both: stub, 0xFF to the firmware's destination, firmware."""
+    root, ran, recorded, artifact = project
+    artifact("OPENMV_N6-firmware.bin", b"F" * 32)
+    with pytest.raises(FlashError, match="OPENMV_N6-stub.bin -- `build firmware` produces it"):
+        fl.flash_firmware(str(root), board="OPENMV_N6")
+    artifact("OPENMV_N6-stub.bin", b"S" * 16)
+    steps = fl.flash_firmware(str(root), board="OPENMV_N6")
+    combined = root / "build/OPENMV_N6-firmware-with-stub.bin"
+    assert [s.file for s in steps] == [combined] and [s.alt for s in steps] == [1]
+    data = combined.read_bytes()
+    assert data[:16] == b"S" * 16 and data[0x10000:] == b"F" * 32 and len(data) == 0x10000 + 32
+    assert ran[-1][-2:] == ["-D", str(combined)]
+    assert recorded[-1]["files"] == [{"file": "OPENMV_N6-firmware-with-stub.bin", "alt": 1}]
+    # the factory program carries it the same way
+    artifact("OPENMV_N6-factory-romfs.img")
+    steps = fl.flash_factory(str(root), board="OPENMV_N6")
+    assert [s.file.name for s in steps] == ["OPENMV_N6-firmware-with-stub.bin",
+                                           "OPENMV_N6-factory-romfs.img"]

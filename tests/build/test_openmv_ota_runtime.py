@@ -35,6 +35,7 @@ def test_markers_and_offsets_pinned_to_host():
 def test_rollback_mirror_matches_host():
     from openmv_ota.ota import rollback as host
     assert rt._ROLLBACK_ENTRY == host.ENTRY_SIZE
+    assert (rt._FLOOR_OFF, rt._EPOCH_OFF) == (host_status.FLOOR_OFFSET, host_status.EPOCH_OFFSET)
     assert rt._rollback_entry(0x01020000) == host.encode_entry(0x01020000)
     sector = bytearray(b"\xff" * 4096)
     sector[0:host.ENTRY_SIZE] = host.encode_entry(0x01000000)
@@ -226,7 +227,17 @@ def test_checkin_body_maps_identity_and_status():
         "slot": "A", "representation": "full",
         "fallback_reason": None, "confirmed": True, "slots": reported,
         "cloud_level": "full",          # host: no _ota_config, so the firmware default
+        "stub": None,
     }
+    st["stub"] = {"version": 1, "reason": 1}
+    assert rt._checkin_body(info, st, reported)["stub"] == {"version": 1, "reason": 1}
+
+
+def test_stub_state_reads_the_record_boot_py_followed():
+    import types
+    assert rt._stub_state(types.SimpleNamespace()) is None                 # no stub board
+    assert rt._stub_state(types.SimpleNamespace(last_stub=None)) is None   # no record followed
+    assert rt._stub_state(types.SimpleNamespace(last_stub=(3, 2))) == {"version": 3, "reason": 2}
 
 
 def test_checkin_body_defaults_for_missing_fields():
@@ -292,10 +303,9 @@ def test_trailer_body_sha_offset_matches_the_host_trailer():
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
     body = b"R" * 32
-    t = Trailer(body_size=len(body), pad_size=0, meta={}, product_id=7,
-                min_platform_version=0, payload_version=0x01020000,
-                key_id=0x0100, sig_alg=ES256,
-                body_sha256=hashlib.sha256(body).digest())
+    from tests import trust
+    t = Trailer(body_size=len(body), meta={}, product_id=7, payload_version=0x01020000,
+                body_sha256=hashlib.sha256(body).digest(), certificate=trust.certificate(priv))
     t.signature = sign_region(priv, signed_region(t), spec)
     trailer = pack_trailer(t)
     assert rt._trailer_body_sha(trailer) == hashlib.sha256(body).hexdigest()
@@ -317,13 +327,14 @@ def test_trailer_version_offset_is_pinned_to_the_host_trailer():
     would report a plausible-looking wrong version for the fallback slot."""
     import hashlib
 
-    from openmv_ota.ota import ES256, Trailer, signed_region
+    from openmv_ota.ota import Trailer, signed_region
     from openmv_ota.ota.version import encode_app_version
 
     pv = encode_app_version("3.4.5")
-    t = Trailer(body_size=8, pad_size=0, meta={}, product_id=7, min_platform_version=0,
-                payload_version=pv, key_id=1, sig_alg=ES256,
-                body_sha256=hashlib.sha256(b"x").digest())
+    from tests import trust
+    t = Trailer(body_size=8, meta={}, product_id=7, payload_version=pv,
+                body_sha256=hashlib.sha256(b"x").digest(),
+                certificate=trust.certificate(trust.ROOT_PRIV))
     assert rt._trailer_version(signed_region(t)) == pv
     assert rt._trailer_version(b"XXXX" + b"\x00" * 40) == 0     # bad magic -> 0
     assert rt._trailer_version(b"\xff" * 4) == 0                # too short -> 0
