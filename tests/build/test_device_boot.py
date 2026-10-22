@@ -310,6 +310,12 @@ def _counter(status, value):
     return status
 
 
+def _floor(status, key):
+    """Seed one anti-rollback floor entry in a status sector."""
+    status[B._FLOOR_OFF:B._FLOOR_OFF + 16] = host_rollback.encode_entry(key)
+    return status
+
+
 def test_run_boots_the_newest_confirmed_slot():
     priv, pub = _key()
     a, bdy_b = b"aaa" * 40, b"bbb" * 40
@@ -728,6 +734,34 @@ def test_the_stub_record_picks_the_slot_and_burns_no_attempt():
     slot, t, reason = ob.run()
     assert slot == "B" and dev.mounted == [bdy_b] and reason is None
     assert dev.writes == [] and ob.stub == (7, 1)             # no attempt burned by boot.py
+
+
+@pytest.mark.parametrize("mark", ["trial-failed", "status", "rollback"])
+def test_the_stub_record_overrides_this_firmwares_mark_policy(mark):
+    """The stub installed B and burned B's attempt under ITS budget. This firmware was built
+    with a smaller one (or sees B as blank, or below its floor): mounting A's app over B's
+    firmware would be the one thing the record exists to prevent, so B is mounted anyway. Only
+    a verification failure (signature, identity) refuses a record."""
+    priv, _pub = _key()
+    a, bdy_b = b"aaa" * 40, b"bbb" * 40
+    sa = _counter(bytearray(_status(True, True, True)), 9)
+    if mark == "trial-failed":
+        sb = _spend_attempts(_counter(bytearray(_status(True, False, False)), 1), B.DEFAULT_MAX_ATTEMPTS)
+    elif mark == "status":
+        sb = _counter(bytearray(_status(False, False, False)), 1)     # never marked at all
+    else:
+        sb = _counter(bytearray(_status(True, False, False)), 1)
+        sa = _floor(sa, 0x7FFFFFFF)                                   # A's floor is above B
+    dev = _Dev(_partition(_front(priv, 0x100, a, sa, components=[_comp(0xAA)]),
+                          _back(priv, 0x100, bdy_b, sb, components=[_comp(0xBB)])))
+    ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
+                   BLOCK, PRODUCT_ID, trust.ROOTS,
+                   record=_record(1, [(0x70090000, 200, bytes([0xBB]) * 32)]))
+    slot, _t, reason = ob.run()
+    assert slot == "B" and dev.mounted == [bdy_b] and reason is None   # B's own reject dropped
+    assert dev.writes == [] and ob.stub == (7, 1)
+    assert B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
+                     BLOCK, PRODUCT_ID, trust.ROOTS).run()[0] == "A"    # no record: policy rules
 
 
 @pytest.mark.parametrize("record", [

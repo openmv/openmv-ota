@@ -457,6 +457,12 @@ def evaluate_slot(body, status, trailer_bytes, rollback_floor,
     raise OtaReject("status")
 
 
+# evaluate_slot rejections that are this firmware's mark POLICY (not a verification failure):
+# the slot's bytes are authentic and for this board, only its status sector says it should not
+# be tried. On a stub board the stub applied its own policy before installing (see OtaBoot.run).
+_POLICY_REJECTS = ("rollback", "trial-failed", "status")
+
+
 class OtaBoot:
     """Wires the pure logic to a device's flash I/O and build-time constants.
 
@@ -541,7 +547,7 @@ class OtaBoot:
         """
         floor = self._rollback_floor()
         epoch_floor = self._epoch_floor()
-        candidates, rejects = [], []
+        candidates, rejects, policy = [], [], {}
         for name, offset, size in self._slots():
             body, status, trailer = self._read_slot(offset, size)
             try:
@@ -550,6 +556,10 @@ class OtaBoot:
                     self.verify, self.max_attempts, epoch_floor)
             except OtaReject as e:
                 rejects.append("%s:%s" % (name, e))
+                if str(e) in _POLICY_REJECTS:
+                    # Verified, but this firmware's mark policy says no. Kept for the record
+                    # path below: a stub that installed this slot already applied ITS policy.
+                    policy[name] = (offset, size, body, status, parse_trailer(trailer), False)
                 continue
             _p, _tr, confirmed = _markers(status)
             candidates.append((name, install_counter(status), bool(confirmed)))
@@ -560,15 +570,22 @@ class OtaBoot:
         # an app on a firmware it was not built with -- and burn nothing: the stub burned the
         # attempt before it installed. Only a record naming exactly the components the slot's
         # trailer lists (destination, installed size and hash) counts; anything else (no
-        # stub, an erased sector, a stale record) falls through to the choice below.
+        # stub, an erased sector, a stale record, a slot that fails a signature or identity
+        # check) falls through to the choice below. The slot's MARK policy is the stub's call,
+        # not this firmware's: its attempt budget, the floors it read, "pending or confirmed"
+        # all live in the stub that burned the attempt and installed, and the two binaries are
+        # updated independently (seen: a firmware built with max_attempts 3 refusing the slot a
+        # stub with 20 had just installed -- and mounting the OTHER slot's app over it).
         if self.record is not None:
             stub_version, slot, reason, components = self.record
             name = ("A", "B")[slot]
-            if name in self._pending:
-                t = self._pending[name][4]
+            chosen = self._pending.get(name) or policy.get(name)
+            if chosen is not None:
+                t = chosen[4]
                 if components == [(c[0], c[3], c[5]) for c in t.components]:
-                    self._pending[name] = self._pending[name][:5] + (False,)
+                    self._pending[name] = chosen[:5] + (False,)
                     self.stub = (stub_version, reason)
+                    rejects = [r for r in rejects if not r.startswith(name + ":")]
                     return self._mount(name, rejects)
         # Try the newest, and if it cannot be ARMED fall through to the next-newest rather than
         # abandoning the boot. Failing to record an attempt is a reason to distrust that slot, not
