@@ -234,7 +234,14 @@ Last 4 KiB of the firmware area, written after all components are installed.
   today. Recovery is over USB either way.
 - `boot.py` reads `slot` to know which slot to mount, and `reason` for why the
   install happened, instead of a RAM handoff. The record is derived from
-  verified bytes and needs no signature.
+  verified bytes and needs no signature. A record is followed whenever the slot
+  it names passes `boot.py`'s verification (signature, certificate, board, body
+  hash) **even if `boot.py`'s own mark policy would refuse it** (attempt budget,
+  floors, pending/confirmed): that policy is the stub's call — it burned the
+  attempt and installed — and the stub and the firmware carry independently
+  updated copies of those constants. Measured on the bench: a firmware built with
+  `max_attempts = 3` refused the slot a stub built with 20 had just installed and
+  mounted the *other* slot's app over its firmware.
 - Versions: the stub identifies components by hash only and never reads a
   firmware version. The running firmware knows its own version as today
   (`omv.version_string()`, `os.uname()`) and reports it in the check-in; the

@@ -55,6 +55,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   revert + reinstall after a failed trial, and 14 resets at random points mid-install without
   a brick. The trailer's UART and watchdog fields are filled from the project's `openmv_log`
   (`ENABLED`, `UART`, `BAUD`) and `openmv_wdt` (new `STUB_WDT_ID`, `STUB_TIMEOUT_MS`).
+- **`boot.py` follows a stub record past its own mark policy.** A record naming a slot that
+  verifies (signature, certificate, board, body hash) is followed even when this firmware's
+  attempt budget, floors or pending/confirmed marks would refuse the slot: the stub applied
+  its policy when it installed, and mounting the other slot's app over the installed firmware
+  is the one outcome the record exists to prevent.
 
 ### Added
 
