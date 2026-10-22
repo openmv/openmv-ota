@@ -466,8 +466,20 @@ def status():  # pragma: no cover
     s["publish_seq"] = int(getattr(_ota_config, "last_publish_seq", 0) or 0)
     s["orders_by_seq"] = _ota_config.PRODUCT_ID == 0
     s["representation"] = _representation_of(sector)
+    s["stub"] = _stub_state(_ota_config)
     log.debug("status: read")                         # HIL path witness (runs every boot/checkin)
     return s  # hil-residual: bare return of the status dict
+
+
+def _stub_state(cfg):
+    """The boot stub that chose this boot, from the install record boot.py read
+    (``cfg.last_stub = (stub_version, reason)``): ``{"version", "reason"}``, or None on a board
+    without a stub or when no record was followed. The fleet carries mixed stub versions
+    forever, so the server needs this to know which releases (``min_stub``) a camera can take."""
+    last = getattr(cfg, "last_stub", None)
+    if not last:
+        return None
+    return {"version": int(last[0]), "reason": int(last[1])}
 
 
 def _slot_names(cfg):
@@ -928,6 +940,10 @@ def _checkin_body(info, st, slot_states=None):
         # What the SDK on this camera will do (its firmware's level). The server knows the
         # board's level from its name; this says what the firmware was actually built with.
         "cloud_level": cloud_level(),
+        # The boot stub that installed and chose the running firmware (stub boards): its version
+        # bounds the releases this camera can take (`min_stub`), and `reason` says why it
+        # installed. None where no stub chose (no stub, or no record followed).
+        "stub": st.get("stub"),
     }
 
 

@@ -61,6 +61,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `<board>-firmware-with-stub.bin` -- to the FIRMWARE partition, since the firmware is linked to
   run behind the stub and neither is flashable alone. The board table's stub layout gains
   `origin`, the stub's own address.
+- **The check-in names the boot stub.** `openmv_ota.status()` and the check-in body carry
+  `stub: {version, reason}` from the install record `boot.py` followed (None without a stub),
+  so the server can see which stubs the fleet runs before a release raises `min_stub`.
 - **`boot.py` follows a stub record past its own mark policy.** A record naming a slot that
   verifies (signature, certificate, board, body hash) is followed even when this firmware's
   attempt budget, floors or pending/confirmed marks would refuse the slot: the stub applied

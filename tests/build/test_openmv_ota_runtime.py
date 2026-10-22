@@ -227,7 +227,17 @@ def test_checkin_body_maps_identity_and_status():
         "slot": "A", "representation": "full",
         "fallback_reason": None, "confirmed": True, "slots": reported,
         "cloud_level": "full",          # host: no _ota_config, so the firmware default
+        "stub": None,
     }
+    st["stub"] = {"version": 1, "reason": 1}
+    assert rt._checkin_body(info, st, reported)["stub"] == {"version": 1, "reason": 1}
+
+
+def test_stub_state_reads_the_record_boot_py_followed():
+    import types
+    assert rt._stub_state(types.SimpleNamespace()) is None                 # no stub board
+    assert rt._stub_state(types.SimpleNamespace(last_stub=None)) is None   # no record followed
+    assert rt._stub_state(types.SimpleNamespace(last_stub=(3, 2))) == {"version": 3, "reason": 2}
 
 
 def test_checkin_body_defaults_for_missing_fields():
