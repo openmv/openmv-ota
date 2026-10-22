@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -190,9 +191,59 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict,
         body_sha256=hashlib.sha256(body).digest(),
         certificate=signer.certificate,
         components=list(components),
+        **stub_settings(p.root),
     )
     trailer.signature = signer.backend.sign(signed_region(trailer))
     return pack_trailer(trailer)
+
+
+_SETTING = r"(?m)^%s\s*=\s*([A-Za-z0-9_]+)"
+
+
+def _module_setting(path: Path, name: str):
+    """A top-level ``NAME = <literal>`` in a device module, as int/bool/None, or None when the
+    module or the line is missing. Read as text, never executed: these are the user's modules."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(_SETTING % re.escape(name), text)
+    if m is None:
+        return None
+    value = m.group(1)
+    if value in ("True", "False"):
+        return value == "True"
+    try:
+        return int(value, 0)
+    except ValueError:
+        return None
+
+
+def stub_settings(root: Path) -> dict:
+    """The boot stub's resources, from the project's device modules -- the one place a
+    project configures them. ``openmv_log`` (``ENABLED``, ``UART``, ``BAUD``) picks the stub's
+    debug UART; ``openmv_wdt`` (``STUB_WDT_ID``, ``STUB_TIMEOUT_MS``) the watchdog it arms
+    before jumping. Ids are the firmware's ``machine.UART``/``machine.WDT`` numbering. Anything
+    unset or disabled leaves the trailer's field 0, which the stub reads as "none"."""
+    device = Path(root) / "device"
+    log = device / "openmv_log.py"
+    wdt = device / "openmv_wdt.py"
+    uart = _module_setting(log, "UART")
+    baud = _module_setting(log, "BAUD")
+    uart_on = _module_setting(log, "ENABLED") is True and isinstance(uart, int) and \
+        not isinstance(uart, bool) and isinstance(baud, int) and baud > 0
+    wdt_id = _module_setting(wdt, "STUB_WDT_ID")
+    timeout = _module_setting(wdt, "STUB_TIMEOUT_MS")
+    wdt_on = isinstance(wdt_id, int) and not isinstance(wdt_id, bool) and \
+        isinstance(timeout, int) and timeout > 0
+    return {
+        "uart_en": 1 if uart_on else 0,
+        "uart_id": uart if uart_on else 0,
+        "baud": baud if uart_on else 0,
+        "wdt_en": 1 if wdt_on else 0,
+        "wdt_id": wdt_id if wdt_on else 0,
+        "wdt_timeout_ms": timeout if wdt_on else 0,
+    }
 
 
 def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:

@@ -1797,3 +1797,47 @@ def test_per_camera_firmware_carries_no_payload_key(make_project, tmp_path):
     from openmv_ota.project.project import load_project
     p = load_project(root, firmware=_repo)
     assert fw._payload_keys(p, ["OPENMV_N6"], None) == {}
+
+
+# --- the trailer's stub fields come from the project's device modules -----------------
+
+def test_stub_settings_read_the_device_modules_as_text(tmp_path):
+    from openmv_ota.build.romfs import stub_settings
+    dev = tmp_path / "device"
+    dev.mkdir()
+    off = dict(uart_en=0, uart_id=0, baud=0, wdt_en=0, wdt_id=0, wdt_timeout_ms=0)
+    assert stub_settings(tmp_path) == off                               # no modules at all
+    (dev / "openmv_log.py").write_text("ENABLED = False\nUART = 3\nBAUD = 115200\n")
+    (dev / "openmv_wdt.py").write_text("STUB_WDT_ID = 0\nSTUB_TIMEOUT_MS = 0\n")
+    assert stub_settings(tmp_path) == off                               # present but off
+    (dev / "openmv_log.py").write_text("ENABLED = True\nUART = None\nBAUD = 115200\n")
+    assert stub_settings(tmp_path)["uart_en"] == 0                      # the USB REPL is not a UART
+    (dev / "openmv_log.py").write_text("ENABLED = True\nUART = 3\nBAUD = 921600\nx = 1\n")
+    (dev / "openmv_wdt.py").write_text("STUB_WDT_ID = 0\nSTUB_TIMEOUT_MS = 8000\n")
+    assert stub_settings(tmp_path) == dict(uart_en=1, uart_id=3, baud=921600,
+                                           wdt_en=1, wdt_id=0, wdt_timeout_ms=8000)
+    (dev / "openmv_log.py").write_text("ENABLED = True\nUART = machine_id\nBAUD = 0x1C200\n")
+    assert stub_settings(tmp_path)["uart_en"] == 0                      # not a literal: off
+    (dev / "openmv_log.py").write_text("ENABLED = True\nBAUD = 115200\n")
+    assert stub_settings(tmp_path)["uart_en"] == 0                      # UART line missing: off
+    (dev / "openmv_wdt.py").write_text("STUB_WDT_ID = True\nSTUB_TIMEOUT_MS = 8000\n")
+    assert stub_settings(tmp_path)["wdt_en"] == 0                       # a bool is not an id
+
+
+def test_ota_trailer_carries_the_stub_uart_and_watchdog(make_project):
+    from openmv_ota.build.romfs import build_romfs
+    from openmv_ota.ota import parse_trailer
+    from openmv_ota.project import ProjectPaths
+
+    root, repo, app = _build_ota(make_project)
+    dev = ProjectPaths(root).root / "device"
+    log = dev / "openmv_log.py"
+    log.write_text(log.read_text().replace("ENABLED = False", "ENABLED = True", 1)
+                   .replace("UART = None", "UART = 3", 1))
+    wdt = dev / "openmv_wdt.py"
+    wdt.write_text(wdt.read_text().replace("STUB_TIMEOUT_MS = 0", "STUB_TIMEOUT_MS = 8000", 1))
+    r = build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)[0]
+    _body, trailer_bytes = _read_bundle(r)
+    t = parse_trailer(trailer_bytes)
+    assert (t.uart_en, t.uart_id, t.baud) == (1, 3, 115200)
+    assert (t.wdt_en, t.wdt_id, t.wdt_timeout_ms) == (1, 0, 8000)

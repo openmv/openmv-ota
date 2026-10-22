@@ -53,7 +53,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   project's root keys, product id and attempt budget into it and emits `<board>-stub.bin`.
   Bench-verified on the N6: trial install (~4 s for a 2.2 MB firmware), confirm, fast path,
   revert + reinstall after a failed trial, and 14 resets at random points mid-install without
-  a brick.
+  a brick. The trailer's UART and watchdog fields are filled from the project's `openmv_log`
+  (`ENABLED`, `UART`, `BAUD`) and `openmv_wdt` (new `STUB_WDT_ID`, `STUB_TIMEOUT_MS`).
 
 ### Added
 
