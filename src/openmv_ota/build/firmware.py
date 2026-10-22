@@ -190,6 +190,8 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
         _run_make(repo, build_args)
         outputs = _collect_outputs(repo, name, out_dir)
         outputs += _copy_wifi_blobs(repo, name, out_dir)
+        from . import stub as stub_mod                  # a stub board's firmware ships with its stub
+        outputs += stub_mod.build_for_firmware(p, name, out_dir, jobs)
         return FirmwareResult(name, outputs, ota=ota,
                               build_dir=tmp if (ota and keep_build_dir) else None)
     finally:

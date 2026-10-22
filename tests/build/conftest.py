@@ -79,3 +79,22 @@ def _fresh_cloud_level_caches():
     _lib._lvl, csi._cap = None, 0
     yield
     _lib._lvl, csi._cap = None, 0
+
+
+@pytest.fixture(autouse=True)
+def _fake_stub_make(request, monkeypatch):
+    """`build firmware` on a stub board also builds the boot stub (C, via make). No test here
+    has a cross toolchain: stand in for the stub's make with one that drops a stub.bin. The
+    tests about the stub build itself (test_stub.py) install their own fakes, or test the
+    real `_run_make` against a stubbed subprocess, so they are left alone."""
+    from pathlib import Path
+
+    from openmv_ota.build import stub as stub_mod
+    if request.node.path.name == "test_stub.py":
+        return
+
+    def fake(args):
+        kv = dict(a.split("=", 1) for a in args if "=" in a)
+        Path(kv["BUILD"]).mkdir(parents=True, exist_ok=True)
+        (Path(kv["BUILD"]) / "stub.bin").write_bytes(b"STUB" * 64)
+    monkeypatch.setattr(stub_mod, "_run_make", fake)

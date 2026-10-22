@@ -76,6 +76,7 @@ def test_no_device_is_a_clear_error_not_a_hang(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: "DFU")
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "OPENMV_N6-firmware.bin").write_bytes(b"x")
+    (tmp_path / "build" / "OPENMV_N6-stub.bin").write_bytes(b"s")        # the N6 has a boot stub
     with pytest.raises(FlashError, match=r"no DFU device \(37c5:9206\) appeared.*--in-bootloader"):
         fl.flash_firmware(str(tmp_path), board="OPENMV_N6", enter_bootloader=False)
 
@@ -159,6 +160,7 @@ def test_dfu_flash_resets_then_waits_then_writes(tmp_path, monkeypatch):
     order = []
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "OPENMV_N6-firmware.bin").write_bytes(b"x")
+    (tmp_path / "build" / "OPENMV_N6-stub.bin").write_bytes(b"s")        # the N6 has a boot stub
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: "DFU")
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
     monkeypatch.setattr(fl.device, "_comports",

@@ -55,6 +55,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   revert + reinstall after a failed trial, and 14 resets at random points mid-install without
   a brick. The trailer's UART and watchdog fields are filled from the project's `openmv_log`
   (`ENABLED`, `UART`, `BAUD`) and `openmv_wdt` (new `STUB_WDT_ID`, `STUB_TIMEOUT_MS`).
+- **Provisioning a stub board.** `build firmware` on a board with a stub layout also builds the
+  stub (`<board>-stub.bin`, beside `<board>-firmware.bin`); `flash firmware` and `flash factory`
+  write the two as one image -- `stub || 0xFF || firmware`, composed into
+  `<board>-firmware-with-stub.bin` -- to the FIRMWARE partition, since the firmware is linked to
+  run behind the stub and neither is flashable alone. The board table's stub layout gains
+  `origin`, the stub's own address.
 - **`boot.py` follows a stub record past its own mark policy.** A record naming a slot that
   verifies (signature, certificate, board, body hash) is followed even when this firmware's
   attempt budget, floors or pending/confirmed marks would refuse the slot: the stub applied

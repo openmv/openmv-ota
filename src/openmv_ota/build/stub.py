@@ -26,6 +26,7 @@ from .firmware import MAKE, _select_boards
 
 STUB_DIR = Path(__file__).resolve().parent / "device" / "stub"
 KEYS_HEADER = "stub_keys.h"
+COMBINED_SUFFIX = "firmware-with-stub.bin"   # <board>-firmware-with-stub.bin: what DFU writes
 
 
 @dataclass
@@ -68,6 +69,42 @@ def build_stub(
     out_dir = Path(output) if output else project / "build"
     out_dir.mkdir(parents=True, exist_ok=True)
     return [_build_one(p, name, roots, out_dir, jobs) for name in names]
+
+
+def build_for_firmware(p, name: str, out_dir: Path, jobs) -> list[Path]:
+    """The stub a ``build firmware`` of a stub board also produces (the firmware is linked for
+    it, so one is not flashable without the other): ``[<out_dir>/<board>-stub.bin]``, or ``[]``
+    on a board with no stub layout or in a non-OTA project (no root keys to bake in)."""
+    from openmv_ota.ota.keys import read_root_keys
+    if not p.config.ota or get_board(name).stub is None:
+        return []
+    roots = read_root_keys(ProjectPaths(p.root).root_keys)
+    return [_build_one(p, name, roots, out_dir, jobs).output]
+
+
+def compose_image(stub: bytes, firmware: bytes, layout) -> bytes:
+    """``stub || 0xFF pad || firmware`` as one image for the FIRMWARE partition: the stub at
+    the partition start (where the bootloader jumps), the firmware at its destination."""
+    if len(stub) > layout.stub_max:
+        raise BuildError("stub is %d bytes but its sector holds %d" % (len(stub), layout.stub_max))
+    return stub + b"\xff" * (layout.stub_max - len(stub)) + firmware
+
+
+def combined_image(board: str, out_dir: Path) -> Path | None:
+    """For a stub board: write ``<board>-firmware-with-stub.bin`` from the build's stub and
+    firmware and return its path -- what ``flash firmware``/``flash factory`` download to the
+    FIRMWARE partition. None for a board without a stub layout. A missing stub or firmware is
+    an error naming the file (``build firmware`` makes both)."""
+    layout = get_board(board).stub
+    if layout is None:
+        return None
+    stub, fw = out_dir / ("%s-stub.bin" % board), out_dir / ("%s-firmware.bin" % board)
+    for f in (stub, fw):
+        if not f.is_file():
+            raise BuildError("missing %s -- `build firmware` produces it" % f)
+    out = out_dir / ("%s-%s" % (board, COMBINED_SUFFIX))
+    out.write_bytes(compose_image(stub.read_bytes(), fw.read_bytes(), layout))
+    return out
 
 
 def stub_keys_header(roots, product_id: int, max_attempts: int) -> str:

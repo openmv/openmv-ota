@@ -47,24 +47,34 @@ LIVE_FRAMESIZES = {"QQVGA": (160, 120), "QVGA": (320, 240), "VGA": (640, 480)}
 
 @dataclass(frozen=True)
 class StubLayout:
-    """Where this board's boot stub installs the firmware: the first component's destination
-    and the bytes available there (the stub's install window, less its own record sector).
-    A board with a layout builds OTA images that carry the firmware; one without does not."""
+    """Where this board's boot stub lives and installs the firmware: ``origin`` is the address
+    the bootloader jumps to (the stub's own sector, the start of the FIRMWARE partition), the
+    firmware's first component goes to ``firmware_dest`` with ``firmware_max`` bytes to grow
+    into (the install window, less the stub's record sector). A board with a layout builds OTA
+    images that carry the firmware; one without does not."""
 
+    origin: int
     firmware_dest: int
     firmware_max: int
+
+    @property
+    def stub_max(self) -> int:
+        """Bytes the stub binary may take: its sector(s), up to the firmware's destination."""
+        return self.firmware_dest - self.origin
 
 
 def _stub(name: str, raw) -> StubLayout | None:
     if raw is None:
         return None
     try:
+        origin = int(str(raw["origin"]), 0)
         dest, size = int(str(raw["firmware_dest"]), 0), int(str(raw["firmware_max"]), 0)
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError("boards.json: %s has a bad stub layout: %s" % (name, e)) from None
-    if dest <= 0 or size <= 0:
-        raise ValueError("boards.json: %s has a bad stub layout: dest/max must be positive" % name)
-    return StubLayout(dest, size)
+    if origin <= 0 or size <= 0 or dest <= origin:
+        raise ValueError("boards.json: %s has a bad stub layout: origin < firmware_dest and "
+                         "firmware_max > 0 required" % name)
+    return StubLayout(origin, dest, size)
 
 
 @dataclass(frozen=True)

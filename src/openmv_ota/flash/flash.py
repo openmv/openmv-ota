@@ -146,6 +146,8 @@ def _dfu_steps(cfg: FlashConfig, board: str, spec: list[tuple[str, str]], tool: 
     for artifact, suffix in spec:
         alt = cfg.alt_of(artifact)                   # the clearest error (unsupported) first
         f = out_dir / ("%s-%s" % (board, cfg.filename(artifact, suffix)))
+        if artifact == "firmware":
+            f = _firmware_image(board, out_dir) or f
         if not f.exists():
             raise FlashError("missing artifact %s -- build it first" % f)
         resolved.append((artifact, f, alt))
@@ -440,6 +442,18 @@ def _arduino_flash(project: str, op: str, board: str, cfg: FlashConfig, action: 
 
 # --- public verbs ---------------------------------------------------------------------------
 
+def _firmware_image(board: str, out_dir: Path) -> Path | None:
+    """On a board with a boot stub, what goes into the FIRMWARE partition instead of the bare
+    firmware: the composed ``stub || pad || firmware`` image (the firmware is linked to run
+    behind the stub, so neither is flashable alone), written here from the build's two
+    artifacts. None on any other board."""
+    from openmv_ota.build import stub as stub_mod
+    from openmv_ota.build.errors import BuildError
+    try:
+        return stub_mod.combined_image(board, out_dir)
+    except BuildError as e:
+        raise FlashError(str(e)) from None
+
 def flash_firmware(project: str = ".", *, board: str, output: str | None = None,
                    dfu_util: str | None = None, sdk_home: Path | None = None,
                    reset: bool = True, enter_bootloader: bool = True, serial: str | None = None,
@@ -453,7 +467,7 @@ def flash_firmware(project: str = ".", *, board: str, output: str | None = None,
         return _arduino_flash(project, "firmware", board, cfg, "flash-firmware", output=output,
                               dfu_util=dfu_util, sdk_home=sdk_home, serial=serial,
                               enter_bootloader=enter_bootloader, dry_run=dry_run)
-    spec = [("firmware", "firmware.bin")]
+    spec = [("firmware", "firmware.bin")]     # a stub board's composed image, see _dfu_steps
     if cfg.has("coprocessor"):                   # AE3: the HE core ships with the firmware
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
     return _dfu_flash(project, board, cfg, spec, "flash-firmware", output=output,
@@ -509,7 +523,7 @@ def flash_factory(project: str = ".", *, board: str, output: str | None = None,
         return _arduino_flash(project, "factory", board, cfg, "flash-factory", output=output,
                               dfu_util=dfu_util, sdk_home=sdk_home, serial=serial,
                               enter_bootloader=enter_bootloader, dry_run=dry_run)
-    spec = [("firmware", "firmware.bin")]
+    spec = [("firmware", "firmware.bin")]     # a stub board's composed image, see _dfu_steps
     if cfg.has("coprocessor"):                   # AE3: HE core + its romfs, with the main image
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
         spec.append(("coprocessor_romfs", "coprocessor-romfs.img"))
