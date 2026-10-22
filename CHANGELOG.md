@@ -51,6 +51,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   record does not already vouch for them, writes the record and jumps; the trailer's UART
   and watchdog fields pick its debug output and the watchdog it arms. `build stub` bakes the
   project's root keys, product id and attempt budget into it and emits `<board>-stub.bin`.
+  Bench-verified on the N6: trial install (~4 s for a 2.2 MB firmware), confirm, fast path,
+  revert + reinstall after a failed trial, and 14 resets at random points mid-install without
+  a brick.
 
 ### Added
 

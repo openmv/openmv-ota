@@ -219,7 +219,7 @@ Last 4 KiB of the firmware area, written after all components are installed.
 | 8 | `stub_version:u32` | the stub that wrote this record; the firmware reports it in the check-in, and the tool compares `min_stub` against the fleet's oldest |
 | 12 | `slot:u32` | which slot's components are installed (0 = A, 1 = B) |
 | 16 | `comp_count:u32` | number of hashes that follow |
-| 20 | `reason:u32` | why this boot: 0 normal, 1 trial, 2 reverted (the other slot failed its trial), 3 reinstalled (the firmware area was corrupt) |
+| 20 | `reason:u32` | why the stub installed: 0 normal, 1 trial, 2 reverted (the other slot failed its trial), 3 reinstalled (the firmware area was corrupt). Written once per install -- a later boot that takes the fast path leaves it; per-boot facts come from the status sectors |
 | 24 | `reserved:u64` | 0 |
 | 32 | `entries[comp_count]`, 40 bytes each: `dest:u32`, `installed_size:u32`, `installed_sha256:32s` | the installed components, in trailer order: where, how much, and what the installed bytes hash to |
 | 32 + 40·n | `crc32:u32` | over everything before it |
@@ -232,9 +232,8 @@ Last 4 KiB of the firmware area, written after all components are installed.
   boots what the record vouches for, or, with no record either, whatever sits at the
   firmware address if it looks like a vector table — what the plain bootloader does
   today. Recovery is over USB either way.
-- `boot.py` reads `slot` to know which slot to mount, and `reason` (0 normal,
-  1 trial, 2 reverted — the other slot failed its trial, 3 reinstalled — the
-  firmware area was corrupt) instead of a RAM handoff. The record is derived from
+- `boot.py` reads `slot` to know which slot to mount, and `reason` for why the
+  install happened, instead of a RAM handoff. The record is derived from
   verified bytes and needs no signature.
 - Versions: the stub identifies components by hash only and never reads a
   firmware version. The running firmware knows its own version as today

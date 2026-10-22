@@ -286,8 +286,10 @@ int install_slot(const slot_t *s, uint32_t reason) {
         }
     }
     ret = write_record(s, reason);
+    log_kv("record written", ret == 0);
 done:
     if (port_flash_prog_end() != 0) {
+        log_line("memory map restore failed");
         return -1;
     }
     return ret;
