@@ -285,6 +285,11 @@ External flash, XIP at 0x70000000. Partitions fixed by our bootloader
 The stub reuses the bootloader's XSPI flash driver (16-byte write unit on the
 octal-DTR part; memory-mapped reads only outside programming).
 
+Provisioning over USB: `build firmware` emits the stub beside the firmware, and
+`flash firmware` / `flash factory` download `stub ‖ 0xFF ‖ firmware` as one image
+to the FIRMWARE partition (`<board>-firmware-with-stub.bin`) — the firmware is linked
+to run behind the stub, so neither is flashable alone.
+
 ### Others (filled in as each is done)
 
 - **AE3:** two components (HP → MRAM `HP` partition, HE → MRAM `HE`); install

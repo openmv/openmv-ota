@@ -150,3 +150,29 @@ def test_the_stub_sources_ship_as_package_data():
     assert (stub_mod.STUB_DIR / "Makefile").is_file()
     assert (stub_mod.STUB_DIR / "boards" / "OPENMV_N6" / "stub_config.h").is_file()
     assert (stub_mod.STUB_DIR / "common" / "stub.h").is_file()
+
+
+def test_compose_image_pads_the_stub_to_the_firmwares_destination():
+    from openmv_ota.romfs.boards import StubLayout
+
+    layout = StubLayout(0x70080000, 0x70090000, 0x36F000)
+    img = stub_mod.compose_image(b"S" * 100, b"F" * 1000, layout)
+    assert len(img) == 0x10000 + 1000
+    assert img[:100] == b"S" * 100 and img[100:0x10000] == b"\xff" * (0x10000 - 100)
+    assert img[0x10000:] == b"F" * 1000
+    with pytest.raises(BuildError, match="stub is 65537 bytes but its sector holds 65536"):
+        stub_mod.compose_image(b"S" * 65537, b"F", layout)
+
+
+def test_combined_image_is_written_for_stub_boards_only(tmp_path):
+    assert stub_mod.combined_image("OPENMV_AE3", tmp_path) is None     # no stub layout
+    with pytest.raises(BuildError, match="OPENMV_N6-stub.bin -- `build firmware` produces it"):
+        stub_mod.combined_image("OPENMV_N6", tmp_path)
+    (tmp_path / "OPENMV_N6-stub.bin").write_bytes(b"S" * 10)
+    with pytest.raises(BuildError, match="OPENMV_N6-firmware.bin"):
+        stub_mod.combined_image("OPENMV_N6", tmp_path)
+    (tmp_path / "OPENMV_N6-firmware.bin").write_bytes(b"F" * 20)
+    out = stub_mod.combined_image("OPENMV_N6", tmp_path)
+    assert out == tmp_path / "OPENMV_N6-firmware-with-stub.bin"
+    data = out.read_bytes()
+    assert data[:10] == b"S" * 10 and data[0x10000:] == b"F" * 20 and len(data) == 0x10000 + 20
