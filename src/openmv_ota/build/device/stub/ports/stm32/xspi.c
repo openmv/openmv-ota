@@ -35,6 +35,7 @@
 #include STM32_HAL_H
 #include "stub_config.h"
 #include "port_stm32.h"
+#include "stub.h"
 
 #if OMV_BOOT_XSPI_FLASH_SIZE
 
@@ -139,8 +140,9 @@ int xspi_flash_init(void) {
     }
 
     // Initialize the XSPI
+    log_kv("xspi kclk", xspi_kclk);
     if (HAL_XSPI_Init(&xspi) != HAL_OK) {
-        return -1;
+        return -2;
     }
 
     // Hardware reset the flash
@@ -153,15 +155,16 @@ int xspi_flash_init(void) {
 
     // Reset the XSPI
     if (xspi_flash_reset() != 0) {
-        return -1;
+        return -3;
     }
 
     // Read flash ID.
     uint8_t buf[3] = {0};
     xspi_flash_read_id(buf);
+    log_kv("xspi id", (buf[0] << 16) | (buf[1] << 8) | buf[2]);
 
     if (buf[0] != 0xc2 || buf[1] != 0x80 || buf[2] != 0x39) {
-        return -1;
+        return -4;
     }
 
     return 0;
@@ -590,6 +593,86 @@ int __attribute__((optimize("O0"))) xspi_flash_memory_test() {
     return 0;
 }
 #endif
+
+// Leave memory-mapped mode without re-initialising anything: abort the controller's
+// memory-mapped transfer and put the flash back into 1-line SPI mode with the octal-DTR
+// command sequence it currently understands (WREN 06F9h, then WRCR2 728Dh addr 0 = 00h),
+// exactly as the firmware's driver does. Re-initialising the controller and pulsing the
+// flash's reset after a memory map the stub itself set up left the part answering 00 to
+// RDID on the bench; this path never needs the reset.
+static int xspi_cmd_888_dtr(uint16_t instruction, bool has_addr, uint32_t addr,
+                            const uint8_t *data, uint32_t len) {
+    XSPI_RegularCmdTypeDef command = {
+        .OperationType = HAL_XSPI_OPTYPE_COMMON_CFG,
+        .Instruction = instruction,
+        .InstructionMode = HAL_XSPI_INSTRUCTION_8_LINES,
+        .InstructionWidth = HAL_XSPI_INSTRUCTION_16_BITS,
+        .InstructionDTRMode = HAL_XSPI_INSTRUCTION_DTR_ENABLE,
+        .Address = addr,
+        .AddressMode = has_addr ? HAL_XSPI_ADDRESS_8_LINES : HAL_XSPI_ADDRESS_NONE,
+        .AddressWidth = HAL_XSPI_ADDRESS_32_BITS,
+        .AddressDTRMode = HAL_XSPI_ADDRESS_DTR_ENABLE,
+        .AlternateBytesMode = HAL_XSPI_ALT_BYTES_NONE,
+        .DataMode = len ? HAL_XSPI_DATA_8_LINES : HAL_XSPI_DATA_NONE,
+        .DataLength = len,
+        .DataDTRMode = HAL_XSPI_DATA_DTR_ENABLE,
+        .DummyCycles = 0,
+        .DQSMode = HAL_XSPI_DQS_DISABLE,
+        .IOSelect = HAL_XSPI_SELECT_IO_7_0,
+    };
+    if (HAL_XSPI_Command(&xspi, &command, XSPI_COMMAND_TIMEOUT) != HAL_OK) {
+        return -1;
+    }
+    if (len && HAL_XSPI_Transmit(&xspi, (uint8_t *) data, XSPI_COMMAND_TIMEOUT) != HAL_OK) {
+        return -1;
+    }
+    return 0;
+}
+
+int spi_flash_memory_unmap(void) {
+    static const uint8_t spi_mode[2] = { 0x00, 0x00 };
+    if (xspi.Instance == NULL) {
+        return -1;
+    }
+    // Abort any memory-mapped transfer in flight and drop back to indirect mode, by
+    // register (HAL_XSPI_Abort pulls in the DMA HAL). The HAL handle must agree.
+    XSPI_TypeDef *x = xspi.Instance;
+    if (x->SR & XSPI_SR_BUSY) {
+        x->CR |= XSPI_CR_ABORT;
+        uint32_t start = HAL_GetTick();
+        while (!(x->SR & XSPI_SR_TCF)) {
+            if ((HAL_GetTick() - start) > XSPI_COMMAND_TIMEOUT) {
+                return -1;
+            }
+        }
+        x->FCR = XSPI_FCR_CTCF;
+        while (x->SR & XSPI_SR_BUSY) {
+            if ((HAL_GetTick() - start) > XSPI_COMMAND_TIMEOUT) {
+                return -1;
+            }
+        }
+    }
+    x->CR &= ~XSPI_CR_FMODE_Msk;                    // indirect write mode
+    xspi.State = HAL_XSPI_STATE_READY;
+    if (xspi_cmd_888_dtr(0x06F9, false, 0, NULL, 0) != 0) {           // WREN
+        return -1;
+    }
+    if (xspi_cmd_888_dtr(0x728D, true, 0x00000000, spi_mode, 2) != 0) {   // CR2[0] = SPI
+        return -1;
+    }
+    // The part is in SPI mode again; confirm with a 1-line RDID.
+    uint8_t buf[3] = {0};
+    xspi_flash_read_id(buf);
+    log_kv("xspi unmap id", (buf[0] << 16) | (buf[1] << 8) | buf[2]);
+    if (buf[0] != 0xc2 || buf[1] != 0x80 || buf[2] != 0x39) {
+        return -1;
+    }
+    return 0;
+}
+
+bool spi_flash_initialized(void) {
+    return xspi.Instance != NULL;
+}
 
 int spi_flash_deinit(void) {
     if (xspi.Instance != NULL) {

@@ -18,6 +18,7 @@ void port_jump(uint32_t addr) __attribute__((noreturn));
 uint32_t port_ticks_ms(void);
 void port_led(bool on);
 void port_led_blink(uint32_t interval_ms);
+void port_cache_clean(const void *p, uint32_t n);   // write back dirty cache lines
 
 int port_flash_read(uint32_t addr, uint8_t *buf, uint32_t size);
 int port_flash_prog_begin(void);

@@ -29,7 +29,7 @@ else
 CFLAGS := -O2 -DNDEBUG -MMD
 endif
 
-CFLAGS += -Icommon \
+CFLAGS += $(EXTRA_CFLAGS) -Icommon \
           -I$(PORT_DIR) \
           -Iboards/$(BOARD) \
           -I$(KEYS_DIR) \

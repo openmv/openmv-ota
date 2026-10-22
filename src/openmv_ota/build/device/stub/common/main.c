@@ -69,6 +69,7 @@ static bool vectors_plausible(void) {
 
 int main(void) {
     port_init();
+    log_str("\r\n--- stub boot ---\r\n");          // the RAM ring sees this; the UART is not open yet
 
     for (uint32_t i = 0; i < 2; i++) {
         if (!read_slot(&slots[i], i)) {
@@ -141,20 +142,25 @@ int main(void) {
                 log_line("attempt mark failed");
                 continue;
             }
+            log_kv("attempt burned, used", s->attempts_used);
             reason = REASON_TRIAL;
         } else if (other_failed_trial[s->index]) {
             reason = REASON_REVERTED;
         }
 
         bool recorded = record_matches(&record, s);
+        log_kv("record matches", recorded);
         if (recorded && record_area_ok(&record)) {
-            // Nothing to do: the firmware area holds this slot's components. Keep the
-            // reason the install was made for unless this boot changed it.
-            jump(s->trial ? REASON_TRIAL : (reason == REASON_REVERTED ? reason : record.hdr.reason));
+            // Nothing to do: the firmware area holds this slot's components. The record
+            // keeps the reason it was INSTALLED for; this boot's reason is only logged.
+            log_line("firmware area verified");
+            jump(reason);
         }
         if (recorded) {
+            log_line("firmware area does not match the record");
             reason = REASON_REINSTALLED;    // the record is right but the bytes are not
         }
+        log_kv("installing slot", s->index);
         if (install_slot(s, reason) == 0) {
             jump(reason);
         }

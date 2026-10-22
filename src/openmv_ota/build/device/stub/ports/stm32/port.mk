@@ -52,8 +52,6 @@ SRC_C += $(addprefix $(HAL_DIR)/src/, \
          stm32$(HAL_SERIES)xx_hal_rcc.c \
          stm32$(HAL_SERIES)xx_hal_rcc_ex.c \
          stm32$(HAL_SERIES)xx_hal_xspi.c \
-         stm32$(HAL_SERIES)xx_hal_uart.c \
-         stm32$(HAL_SERIES)xx_hal_uart_ex.c \
          stm32$(HAL_SERIES)xx_hal_iwdg.c \
          stm32$(HAL_SERIES)xx_ll_rcc.c \
          )

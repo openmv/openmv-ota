@@ -22,9 +22,12 @@ An entry names where the component was installed and what the installed bytes ha
 the stub can check the firmware area on every boot -- and still boot what is installed when
 no slot verifies at all (a camera whose slots were wiped).
 
-``reason``: 0 a normal boot, 1 a trial boot (the stub burned the slot's attempt), 2 the
-stub reverted (the other slot failed its trial), 3 the stub reinstalled (the firmware area
-was corrupt). ``slot``: 0 = A, 1 = B.
+``reason`` is why the stub INSTALLED (the record is written once, at install time, and
+never rewritten -- its block is erased only by the next install): 0 a confirmed slot's
+components were put in place, 1 a trial (the stub burned the slot's attempt), 2 a revert
+(the other slot failed its trial), 3 a reinstall (the firmware area did not hold what the
+record said). Per-boot facts -- is this boot a trial, did the other slot just fail -- come
+from the slots' status sectors, which ``boot.py`` reads itself. ``slot``: 0 = A, 1 = B.
 """
 
 from __future__ import annotations

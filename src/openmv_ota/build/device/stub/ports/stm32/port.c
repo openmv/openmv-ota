@@ -15,8 +15,6 @@
 uint32_t SystemCoreClock = HSI_VALUE;
 
 static bool prog_mode = false;
-static UART_HandleTypeDef huart;
-static bool uart_open = false;
 
 void SystemCoreClockUpdate(void) {
     SystemCoreClock = HAL_RCC_GetCpuClockFreq();
@@ -69,8 +67,16 @@ int port_init(void) {
     port_led(false);
 
     SCB_EnableICache();
+    #ifndef STUB_DCACHE_OFF
     SCB_EnableDCache();
+    #endif
     return 0;
+}
+
+void port_cache_clean(const void *p, uint32_t n) {
+    if (SCB->CCR & SCB_CCR_DC_Msk) {
+        SCB_CleanDCache_by_Addr((void *) ((uintptr_t) p & ~31U), n + ((uintptr_t) p & 31U));
+    }
 }
 
 uint32_t port_ticks_ms(void) {
@@ -118,10 +124,19 @@ int port_flash_prog_begin(void) {
     if (prog_mode) {
         return 0;
     }
-    // Out of the memory map and back to a known flash state: the driver resets the
-    // controller and hardware-resets the part (octal DTR -> 1-line SPI).
-    spi_flash_deinit();
-    if (xspi_flash_init() != 0) {
+    int ret;
+    if (!spi_flash_initialized()) {
+        // First time: out of the bootloader's memory map and into a known flash state --
+        // the driver resets the controller and hardware-resets the part (-> 1-line SPI).
+        spi_flash_deinit();
+        ret = xspi_flash_init();
+        log_kv("xspi init", ret);
+    } else {
+        // Our own memory map: leave it the way the firmware's driver does, in place.
+        ret = spi_flash_memory_unmap();
+        log_kv("xspi unmap", ret);
+    }
+    if (ret != 0) {
         return -1;
     }
     prog_mode = true;
@@ -156,32 +171,47 @@ int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
 }
 
 // ---- Debug UART (TX only, polled) --------------------------------------------
+//
+// Registers, not HAL_UART_Init: that waits on TEACK with a ~9 hour timeout, and on the
+// N6 TEACK did not rise for a kernel clock the bootloader never set up. The stub must
+// never park on its debug output, so every wait here is bounded by the tick.
 
-static void uart_clock(USART_TypeDef *uart) {
+static USART_TypeDef *uart_inst = NULL;
+
+// Bus clock on; the kernel clock stays whatever is selected (reset: the APB clock), and
+// the baud is computed from THAT clock, as the HAL reads it back from the RCC.
+#define UART_CLOCK(inst, name, periph) \
+    if (uart == inst) { \
+        __HAL_RCC_##name##_CLK_ENABLE(); \
+        return HAL_RCCEx_GetPeriphCLKFreq(periph); \
+    }
+
+static uint32_t uart_bus_clock(USART_TypeDef *uart) {
     #ifdef USART1
-    if (uart == USART1) { __HAL_RCC_USART1_CLK_ENABLE(); }
+    UART_CLOCK(USART1, USART1, RCC_PERIPHCLK_USART1)
     #endif
     #ifdef USART2
-    if (uart == USART2) { __HAL_RCC_USART2_CLK_ENABLE(); }
+    UART_CLOCK(USART2, USART2, RCC_PERIPHCLK_USART2)
     #endif
     #ifdef USART3
-    if (uart == USART3) { __HAL_RCC_USART3_CLK_ENABLE(); }
+    UART_CLOCK(USART3, USART3, RCC_PERIPHCLK_USART3)
     #endif
     #ifdef UART4
-    if (uart == UART4) { __HAL_RCC_UART4_CLK_ENABLE(); }
+    UART_CLOCK(UART4, UART4, RCC_PERIPHCLK_UART4)
     #endif
     #ifdef UART5
-    if (uart == UART5) { __HAL_RCC_UART5_CLK_ENABLE(); }
+    UART_CLOCK(UART5, UART5, RCC_PERIPHCLK_UART5)
     #endif
     #ifdef USART6
-    if (uart == USART6) { __HAL_RCC_USART6_CLK_ENABLE(); }
+    UART_CLOCK(USART6, USART6, RCC_PERIPHCLK_USART6)
     #endif
     #ifdef UART7
-    if (uart == UART7) { __HAL_RCC_UART7_CLK_ENABLE(); }
+    UART_CLOCK(UART7, UART7, RCC_PERIPHCLK_UART7)
     #endif
     #ifdef UART8
-    if (uart == UART8) { __HAL_RCC_UART8_CLK_ENABLE(); }
+    UART_CLOCK(UART8, UART8, RCC_PERIPHCLK_UART8)
     #endif
+    return 0;
 }
 
 int port_uart_init(uint32_t id, uint32_t baud) {
@@ -194,6 +224,12 @@ int port_uart_init(uint32_t id, uint32_t baud) {
     if (u == NULL || baud == 0) {
         return -1;
     }
+    // The kernel clock stays at its reset selection (the APB clock), which is what the
+    // firmware's machine.UART runs from too.
+    uint32_t clk = uart_bus_clock(u->uart);
+    if (clk == 0 || clk / baud < 16 || clk / baud > 0xFFFF) {
+        return -1;
+    }
     gpio_clock(u->gpio);
     GPIO_InitTypeDef cfg = {
         .Pin = u->pin,
@@ -203,28 +239,29 @@ int port_uart_init(uint32_t id, uint32_t baud) {
         .Alternate = u->alt,
     };
     HAL_GPIO_Init(u->gpio, &cfg);
-    uart_clock(u->uart);
 
-    memset(&huart, 0, sizeof(huart));
-    huart.Instance = u->uart;
-    huart.Init.BaudRate = baud;
-    huart.Init.WordLength = UART_WORDLENGTH_8B;
-    huart.Init.StopBits = UART_STOPBITS_1;
-    huart.Init.Parity = UART_PARITY_NONE;
-    huart.Init.Mode = UART_MODE_TX;
-    huart.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart.Init.OverSampling = UART_OVERSAMPLING_16;
-    if (HAL_UART_Init(&huart) != HAL_OK) {
-        return -1;
-    }
-    uart_open = true;
+    USART_TypeDef *uart = u->uart;
+    uart->CR1 = 0;
+    uart->CR2 = 0;
+    uart->CR3 = 0;
+    uart->PRESC = 0;
+    uart->BRR = (clk + baud / 2) / baud;        // 8N1, oversampling 16
+    uart->CR1 = USART_CR1_TE | USART_CR1_UE;
+    uart_inst = uart;
     return 0;
 }
 
 void port_uart_putc(char c) {
-    if (uart_open) {
-        HAL_UART_Transmit(&huart, (const uint8_t *) &c, 1, 10);
+    if (uart_inst == NULL) {
+        return;
     }
+    uint32_t start = HAL_GetTick();
+    while (!(uart_inst->ISR & USART_ISR_TXE_TXFNF)) {
+        if ((HAL_GetTick() - start) > 5) {
+            return;                             // drop the byte; the RAM ring still has it
+        }
+    }
+    uart_inst->TDR = (uint8_t) c;
 }
 
 // ---- Watchdog ----------------------------------------------------------------

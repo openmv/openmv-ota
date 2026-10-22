@@ -31,6 +31,8 @@ void port_delay_ms(uint32_t ms);
 int xspi_flash_init(void);
 int spi_flash_memory_map(bool dtr);
 int spi_flash_deinit(void);
+int spi_flash_memory_unmap(void);
+bool spi_flash_initialized(void);
 int spi_flash_read(uint32_t addr, uint8_t *buf, uint32_t size);
 int spi_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size);
 int spi_flash_erase_block(uint32_t addr);
