@@ -36,6 +36,11 @@ openmv-swd-ids'.
   gen_linker fix. Also to fix there: once the module's send buffer is full, `poll()` still reports
   the socket writable while `send()` returns EAGAIN, so asyncio spins through every stall. Once
   they land, drop the installer's WINC `relax()` around each recv.
+- **gen_linker PR to openmv** (send with the WINC batch, week of 2026-10-26 or the next) — branch
+  `kwabena/gen_linker_board_dir` (2b4458c11, off master, in the shared openmv repo): three lines so
+  `tools/gen_linker.py` reads `OMV_BOARD_CONFIG_DIR` like the rest of the build. Without it the OTA
+  firmware overlay that relinks for the boot stub produced `.text` at the stock origin with
+  `VTOR` at the stub's -- a brick. The OTA tool's N6 stub build needs it in the pegged firmware.
 - **Pre-launch cleanup** — revoke the test OTA tokens used for board bring-up; log the
   client out on the HIL nodes (`~/cloudtest/xdg`, the AE3's `~/.config/openmv-ota`).
 
