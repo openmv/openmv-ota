@@ -61,6 +61,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `<board>-firmware-with-stub.bin` -- to the FIRMWARE partition, since the firmware is linked to
   run behind the stub and neither is flashable alone. The board table's stub layout gains
   `origin`, the stub's own address.
+- **OpenMV Cam H7 OTA firmware drops two more methods.** The v4 `boot.py` (certificates,
+  the install record, the epoch floor) and the embedded root keys grew the H7's OTA firmware
+  past its 1664 KB code region by 2 KB; the board overlay now also turns off
+  `find_displacement()` and `find_lbp()` (the smallest self-contained features), and
+  `build romfs` refuses an app that calls them, as for `find_barcodes()`/`find_datamatrices()`.
 - **The check-in names the boot stub.** `openmv_ota.status()` and the check-in body carry
   `stub: {version, reason}` from the install record `boot.py` followed (None without a stub),
   so the server can see which stubs the fleet runs before a release raises `min_stub`.

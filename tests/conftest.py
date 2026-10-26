@@ -135,7 +135,8 @@ def make_firmware(tmp_path):
                 (d / "imlib_config.h").write_text(
                     "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
                     "#define IMLIB_ENABLE_QRCODES\n#define IMLIB_ENABLE_DATAMATRICES\n"
-                    "#define IMLIB_ENABLE_BARCODES\n#endif\n")
+                    "#define IMLIB_ENABLE_BARCODES\n#define IMLIB_ENABLE_FIND_DISPLACEMENT\n"
+                    "#define IMLIB_ENABLE_FIND_LBP\n#endif\n")
         if with_mpy_cross:
             mc = repo / "lib" / "micropython" / "mpy-cross" / "build"
             mc.mkdir(parents=True)

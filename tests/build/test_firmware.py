@@ -792,6 +792,8 @@ def test_h7_ota_build_overlays_the_board_dir_with_the_drops_off(make_project, mo
     assert "#define IMLIB_ENABLE_QRCODES" in seen["cfg"]   # untouched neighbours
     assert "// #define IMLIB_ENABLE_BARCODES" in seen["cfg"]
     assert "// #define IMLIB_ENABLE_DATAMATRICES" in seen["cfg"]
+    assert "// #define IMLIB_ENABLE_FIND_DISPLACEMENT" in seen["cfg"]
+    assert "// #define IMLIB_ENABLE_FIND_LBP" in seen["cfg"]
     assert not any(line.lstrip().startswith("#define IMLIB_ENABLE_BARCODES")
                    for line in seen["cfg"].splitlines())
     assert "board_config.mk" in seen["files"]              # the whole board dir, not one file
@@ -868,7 +870,9 @@ def test_board_overlay_refuses_a_firmware_that_disagrees_with_the_table(tmp_path
     (bd / "board_config.mk").write_text("PORT=stm32\n")
     with pytest.raises(BuildError, match="imlib_config.h not found"):
         fw._board_overlay(repo, "OPENMV4", tmp_path / "t1")
-    (bd / "imlib_config.h").write_text("#define IMLIB_ENABLE_BARCODES\n")   # no datamatrices
+    (bd / "imlib_config.h").write_text(                                       # no datamatrices
+        "#define IMLIB_ENABLE_BARCODES\n#define IMLIB_ENABLE_FIND_DISPLACEMENT\n"
+        "#define IMLIB_ENABLE_FIND_LBP\n")
     with pytest.raises(BuildError, match="does not define IMLIB_ENABLE_DATAMATRICES"):
         fw._board_overlay(repo, "OPENMV4", tmp_path / "t2")
     assert fw._board_overlay(repo, "OPENMV_AE3", tmp_path / "t3") is None   # drops nothing, no stub
