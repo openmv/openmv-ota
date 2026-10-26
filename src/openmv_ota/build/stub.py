@@ -148,14 +148,20 @@ def _build_one(p, name: str, roots, out_dir: Path, jobs) -> StubResult:
             stub_keys_header(roots, _product_id(p, name), p.config.max_attempts),
             encoding="utf-8")
         build = tmp / "build"
-        _run_make([
+        args = [
             "-C", str(STUB_DIR),
             "OMV_DIR=%s" % p.firmware_path,
             "BOARD=%s" % name,
             "KEYS_DIR=%s" % tmp,
             "BUILD=%s" % build,
             "-j%d" % (jobs or os.cpu_count() or 1),
-        ])
+        ]
+        # The firmware's own Makefile puts the SDK toolchain on its PATH; the stub's does
+        # not, so name it -- the project's SDK is the toolchain the firmware was built with.
+        cross = _cross_compile(p.sdk_home)
+        if cross is not None:
+            args.append("CROSS_COMPILE=%s" % cross)
+        _run_make(args)
         built = build / "stub.bin"
         if not built.is_file():
             raise BuildError("stub build produced no stub.bin for %s" % name)
@@ -164,6 +170,12 @@ def _build_one(p, name: str, roots, out_dir: Path, jobs) -> StubResult:
         return StubResult(name, out, out.stat().st_size)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _cross_compile(sdk_home: Path) -> str | None:
+    """The SDK's ``arm-none-eabi-`` prefix when its gcc is installed, else None (PATH)."""
+    gcc = Path(sdk_home) / "gcc" / "bin" / "arm-none-eabi-gcc"
+    return str(gcc)[:-len("gcc")] if gcc.is_file() else None
 
 
 def _run_make(args: list[str]) -> None:

@@ -56,6 +56,23 @@ def test_build_stub_generates_the_keys_header_and_copies_the_binary(make_project
     assert h.count("{ 0x") == len(roots)
 
 
+def test_build_stub_names_the_sdk_toolchain_when_installed(make_project, monkeypatch):
+    """The stub's Makefile has no SDK path of its own (the firmware's Makefile exports one),
+    so the build passes the project SDK's arm-none-eabi- prefix when that gcc exists."""
+    from openmv_ota.project.project import load_project
+
+    calls = _fake_make(monkeypatch)
+    root, repo, _app = make_project(ota=True)
+    sdk = load_project(root, firmware=repo).sdk_home
+    [c] = (stub_mod.build_stub(root, firmware=repo), calls)[1]
+    assert not any(a.startswith("CROSS_COMPILE=") for a in c["args"])   # no gcc in the SDK dir
+    gcc = sdk / "gcc" / "bin" / "arm-none-eabi-gcc"
+    gcc.parent.mkdir(parents=True, exist_ok=True)
+    gcc.write_text("#!/bin/sh\n")
+    stub_mod.build_stub(root, firmware=repo)
+    assert "CROSS_COMPILE=%s" % (str(gcc)[:-3]) in calls[-1]["args"]
+
+
 def test_build_stub_honours_output_and_board_filters(make_project, monkeypatch):
     _fake_make(monkeypatch)
     root, repo, _app = make_project(ota=True)
