@@ -235,7 +235,9 @@ do_full() {  # board  work
   expect_success "unzip bundle -> romfs.img + trailer.bin" "$PY" -m zipfile -e "$zip" "$ud"
   expect_success "build verify (loose body + trailer)" \
     $OTA build verify "$ud/romfs.img" "$ud/trailer.bin" --root-keys "$roots"
-  printf 'X' >> "$ud/romfs.img"   # append one byte: body no longer matches the trailer
+  # Wreck the first 32 bytes of the filesystem: inside the signed body. (A byte APPENDED
+  # past the last component is padding under trailer v4 and verifies clean.)
+  dd if=/dev/zero of="$ud/romfs.img" bs=1 seek=0 count=32 conv=notrunc 2>/dev/null
   expect_verify_reject "build verify REJECTS a corrupted body (exit 1)" \
     $OTA build verify "$ud/romfs.img" "$ud/trailer.bin" --root-keys "$roots"
 
