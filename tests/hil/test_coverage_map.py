@@ -137,3 +137,25 @@ def test_coproc_is_in_the_ae3_regression_unless_opted_out(monkeypatch):
     monkeypatch.setattr(ota_cycle, "COPROC_ENABLED", True)
     reenabled = ota_cycle.regression_scenarios(ae3, primary)
     assert "coproc" in reenabled and "coproc_skip" in reenabled
+
+
+def test_trial_mark_is_the_stubs_record_on_a_stub_board(monkeypatch):
+    """A boot-stub board never shows boot.py's attempt marks (the stub burned the attempt before
+    the firmware ran); its proof is the install-record line. A plain board keeps both marks."""
+    expect, _ = ota_cycle.scenario_markers("OPENMV_N6", "delta")
+    assert "boot.stub" in expect
+    assert not expect & {"boot.marked", "boot.marked_verify"}
+    expect, _ = ota_cycle.scenario_markers("OPENMV_RT1060", "delta")
+    assert {"boot.marked", "boot.marked_verify"} <= expect
+    assert "boot.stub" not in expect
+    # the watchdog scenario inherits delta's expect list, placeholder included
+    assert "boot.stub" in ota_cycle.scenario_markers("OPENMV_N6", "watchdog")[0]
+
+
+def test_trial_mark_falls_back_to_the_plain_marks_without_the_package(monkeypatch):
+    import openmv_ota.romfs.boards as boards
+
+    def boom(name):
+        raise KeyError(name)
+    monkeypatch.setattr(boards, "get_board", boom)
+    assert ota_cycle._trial_mark("OPENMV_N6") == {"boot.marked", "boot.marked_verify"}

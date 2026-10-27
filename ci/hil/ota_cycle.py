@@ -495,6 +495,7 @@ COVERAGE = {
     "boot: marked slot block-device": "boot.marked",          # trial slot marked TRIED (pre-run)
     "boot: marked slot XIP": "boot.marked",
     "boot: slot marker verified": "boot.marked_verify",       # marker read back + verified
+    "boot: stub ": "boot.stub",                               # a boot-stub board: the stub chose + installed the slot
     "boot: slot read": "boot.read",                           # the XIP slot-read closure ran
     "boot: slot mounting": "boot.mount_call",                 # the mount closure ran (vfs.mount)
     "boot: no prior mount": "boot.no_prior_mount",            # mp_init didn't auto-mount /rom (blank romfs)
@@ -574,7 +575,7 @@ SCENARIOS = {
                    "install.delta",
                    "install.writing", "write.ready", "write.erased", "write.wrote",
                    "write.readback", "write.backread", "write.complete", "install.committed",
-                   "install.armed", "install.reboot", "boot.marked", "boot.marked_verify",
+                   "install.armed", "install.reboot", "{trial_mark}",
                    "verify.write", "confirm.floor", "confirm.promoted", "boot.mount_call",
                    "boot.read"],
         "forbid": ["install.full", "install.fallback", "install.reject", "boot.fallback"],
@@ -790,8 +791,29 @@ SCENARIOS["watchdog_recover"] = dict(
 )
 
 
+def _has_stub(board):
+    """True when the PACKAGE's boards.json gives this board a boot-stub layout (read from the
+    package, like the flash config, so the harness never carries a second copy)."""
+    try:
+        from openmv_ota.romfs.boards import get_board
+        return get_board(board).stub is not None
+    except Exception:                        # not installed, or an unknown board
+        return False
+
+
+def _trial_mark(board):
+    """The markers that prove the trial slot was MARKED before its app ran. On a plain board
+    boot.py burns the attempt itself (boot.marked + the read-back). On a boot-stub board the
+    STUB burned it before the firmware even started -- boot.py only reads the install record
+    and says so (boot.stub) -- so the boot.py marks never appear and must not be expected."""
+    if _has_stub(board):
+        return {"boot.stub"}
+    return {"boot.marked", "boot.marked_verify"}
+
+
 def scenario_markers(board, key):
-    """(expect, forbid) marker sets for a scenario, with {cov_write} and {sync_idle} resolved per board.
+    """(expect, forbid) marker sets for a scenario, with {cov_write}, {sync_idle} and {trial_mark}
+    resolved per board.
 
     {sync_idle} is what the app's boot-time sync() does when there is nothing to write: a board
     with a coprocessor finds its partition already matching the bundle (the golden flash wrote it)
@@ -809,6 +831,8 @@ def scenario_markers(board, key):
         for n in names:
             if n == "{cov_write}":
                 out.add(BOARDS[board]["cov_write"])
+            elif n == "{trial_mark}":
+                out.update(_trial_mark(board))
             elif n == "{sync_idle}":
                 out.add("sync.skip" if "coproc_boot" in BOARDS[board] else "sync.none")
             elif n == "boot.read" and not xip:
