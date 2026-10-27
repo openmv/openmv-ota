@@ -150,11 +150,9 @@ def register(build_parser: argparse.ArgumentParser):
     p_ver.add_argument("image", help="a romfs.zip bundle, factory/partition .img, the "
                                      "romfs.img body, a -manifest.bin, or a .delta.gz")
     p_ver.add_argument("trailer", nargs="?", help="trailer.bin (omit when image is a .zip)")
-    p_ver.add_argument("--trusted-keys", default="keys/trusted_keys.json",
-                       help="trusted_keys.json (default: keys/trusted_keys.json)")
     p_ver.add_argument("--root-keys", default="keys/root_keys.json",
-                       help="root_keys.json, the roots an image's certificate must chain to "
-                            "(default: keys/root_keys.json)")
+                       help="root_keys.json, the roots an image's or manifest's certificate "
+                            "must chain to (default: keys/root_keys.json)")
     p_ver.add_argument("--base", help="base image the delta applies to (delta verify)")
     p_ver.add_argument("--target", help="expected new image, to confirm a delta reconstructs it")
     p_ver.set_defaults(func=cmd_verify, _command="build verify")
@@ -469,11 +467,17 @@ def _inspect_manifest(raw: bytes, as_json: bool) -> int:
     except OtaError as e:
         print("error: not a valid manifest: %s" % e, file=sys.stderr)
         return 2
+    from openmv_ota.ota import certificate as certificate_mod
     b = m.body
+    cert = certificate_mod.parse(m.certificate)            # shape-checked by the parse above
     if as_json:
-        print(json.dumps({"key_id": m.key_id, "sig_alg": m.sig_alg, "body": b}, indent=2))
+        print(json.dumps({"key_id": m.key_id, "sig_alg": m.sig_alg,
+                          "certificate": {"kind": cert.kind, "root_id": cert.root_id,
+                                          "epoch": cert.epoch},
+                          "body": b}, indent=2))
         return 0
-    print("manifest  (signed by key 0x%04x, alg %d)" % (m.key_id, m.sig_alg))
+    print("manifest  (signed by key 0x%08x, alg %d; certificate root %d, epoch %d)"
+          % (m.key_id, m.sig_alg, cert.root_id, cert.epoch))
     print("  product_id %s  version %s  (payload_version %s)"
           % (b.get("product_id"), b.get("version"), b.get("payload_version")))
     print("  image %s bytes  sha256 %s" % (b.get("size"), b.get("sha256")))
@@ -583,7 +587,7 @@ def _verify_delta(raw: bytes, args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    from openmv_ota.ota import bundle, partition, read_root_keys, read_trusted_keys
+    from openmv_ota.ota import bundle, partition, read_root_keys
     from openmv_ota.ota.errors import OtaError
     from openmv_ota.ota.verify import verify_image, verify_manifest
 
@@ -591,23 +595,18 @@ def cmd_verify(args: argparse.Namespace) -> int:
     kind, raw = _load_artifact(image)
     if kind == "delta":
         return _verify_delta(raw, args)
-    if kind == "manifest":
-        try:
-            trusted = read_trusted_keys(Path(args.trusted_keys))
-        except OtaError as e:
-            print("error: %s" % e, file=sys.stderr)
-            return 2
-        ok, reason = verify_manifest(raw, trusted)
-        if ok:
-            print("verified: %s" % reason)
-            return 0
-        print("verification FAILED: %s" % reason, file=sys.stderr)
-        return 1
     try:
         roots = read_root_keys(Path(args.root_keys))
     except OtaError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
+    if kind == "manifest":                       # same roots as an image: one trust chain
+        ok, reason = verify_manifest(raw, roots)
+        if ok:
+            print("verified: %s" % reason)
+            return 0
+        print("verification FAILED: %s" % reason, file=sys.stderr)
+        return 1
     try:
         if args.trailer is not None:                       # loose body + trailer
             pairs = [("image", image.read_bytes(), Path(args.trailer).read_bytes())]

@@ -169,7 +169,10 @@ blocks, or deny the download.
 [`build ota-romfs`](08-release-artifacts.md#build-ota-romfs) produces beside the
 image and any deltas: it names the image's size/sha256 and the available
 **representations**, and binds `product_id`/`payload_version`/
-`min_platform_version`/`min_stub` under the same ECDSA key as the image. (`min_stub`
+`min_platform_version`/`min_stub` under the same ECDSA key as the image, and carries
+that key's root-signed certificate as the image's trailer does — so the camera
+verifies both against the roots baked into its firmware and keeps no key table.
+(`min_stub`
 is the oldest boot stub that can install the image; a camera whose stub is older
 refuses the manifest with reason `stub` before downloading anything, and the server
 does not offer it such a release in the first place.) Host the artifacts

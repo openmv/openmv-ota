@@ -65,10 +65,9 @@ code that depends on them.
     the root public key (plus a backup root). Every signing key arrives as a
     certificate in the trailer, signed by the root. Revocation = an epoch number
     the stub refuses to go below. Replaces the 32+8 pre-provisioned key pool.
-    *Interim (trailer v4 landed, pool not yet removed):* the update **manifest** still
-    names its signing key by id, so the firmware keeps a `TRUSTED_KEYS` table for the
-    manifest path beside `ROOT_KEYS`; the installer moves to the certificate in the
-    `boot.py`/installer step, and the pool shrinks then.
+    *Done:* the update **manifest** (header v2) carries the signing key's certificate
+    too, the installer verifies it against `ROOT_KEYS` the way `boot.py` verifies a
+    trailer's, and the firmware embeds no key table at all.
 11. **Watchdog and debug UART chosen by the project, used by the stub.** The
     signed header carries the UART (id, baud) and the watchdog (id, timeout) to
     use. The build fills them from the project's device modules — `openmv_log`

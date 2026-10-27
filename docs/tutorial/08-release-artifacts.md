@@ -273,9 +273,8 @@ signing key's **certificate chains to one of the project's roots**, the
 success, 1 on a verification failure (with the reason), 2 on a bad argument. For
 a factory image every slot is verified and any failing slot fails the command
 (a two-slot image prints `A:` / `B:` prefixes). The roots come from `--root-keys`
-(default `keys/root_keys.json`) and, for a manifest, the trusted keys from
-`--trusted-keys` (default `keys/trusted_keys.json`), so running from a project
-root just works.
+(default `keys/root_keys.json`); a manifest chains to the same roots through the
+certificate it carries, so running from a project root just works.
 
 It deliberately does **not** check the device-relative fields — `product_id`
 against a device, `payload_version` against the installed image — those need a

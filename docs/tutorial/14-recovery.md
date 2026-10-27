@@ -35,7 +35,7 @@ update path's:
   it is running — so it uses only frozen modules and constants stamped into the
   firmware.
 - **It trusts nothing it downloads.** The image goes through the same signature,
-  identity, and anti-rollback checks as any other install — the trusted keys and
+  identity, and anti-rollback checks as any other install — the root keys and
   the floor are exactly the ones an ordinary update faces.
 
 ## What the firmware carries

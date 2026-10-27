@@ -27,6 +27,7 @@ from openmv_ota.ota import payload  # noqa: E402
 from openmv_ota.ota.algorithms import ES256  # noqa: E402
 from openmv_ota.ota.manifest import Manifest, pack_manifest  # noqa: E402
 from openmv_ota.project import payload_keys as pk  # noqa: E402
+from tests import trust  # noqa: E402
 
 BOARD = "OPENMV4P"
 PASS = "bench-passphrase"
@@ -58,7 +59,8 @@ def _release(tmp_path):
             "representations": [{"format": "full", "url": artifact.name,
                                  "size": len(ciphertext), "enc": enc}]}
     manifest = tmp_path / "manifest.bin"
-    manifest.write_bytes(pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256,
+    cert = trust.certificate(trust.keys.generate_private_key(trust.SPEC))
+    manifest.write_bytes(pack_manifest(Manifest(body=body, certificate=cert, sig_alg=ES256,
                                                 signature=b"\x00" * 64)))
     return project, artifact, manifest, keys, enc, image
 

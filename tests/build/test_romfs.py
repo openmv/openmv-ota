@@ -638,7 +638,10 @@ def test_factory_build_composes_dual_slot(make_project):
     assert (tr_dl.body_sha256, tr_dl.payload_version, tr_dl.product_id) == \
         (tr_a.body_sha256, tr_a.payload_version, tr_a.product_id)
     m = parse_manifest((pub / "OPENMV_N6-manifest.bin").read_bytes())
-    assert m.key_id == FACTORY_KEY_ID_BASE
+    from openmv_ota.ota import certificate as C
+    cert = C.parse(m.certificate)
+    assert cert.kind == C.KIND_FACTORY                        # signed by the factory key...
+    assert m.key_id == cert.key_id and m.key_id != FACTORY_KEY_ID_BASE   # ...whose id derives from it
     assert m.body["product_id"] == 7
     assert m.body["sha256"] == _hashlib.sha256(dl).hexdigest()
     assert m.body["size"] == len(dl)
@@ -923,7 +926,7 @@ def test_build_manifest_roundtrip(make_project):
     import hashlib
 
     from openmv_ota.ota import parse_trailer
-    from openmv_ota.ota.keys import read_trusted_keys
+    from openmv_ota.ota.keys import read_root_keys
     from openmv_ota.ota.manifest import parse_manifest, select_representation
     from openmv_ota.ota.verify import verify_manifest
     from openmv_ota.project.project import ProjectPaths
@@ -933,8 +936,8 @@ def test_build_manifest_roundtrip(make_project):
     assert len(results) == 1 and results[0].output.name == "OPENMV_N6-manifest.bin"
 
     raw = results[0].output.read_bytes()
-    trusted = read_trusted_keys(ProjectPaths(root).trusted_keys)
-    ok, _reason = verify_manifest(raw, trusted)            # signed by the project OTA key
+    roots = read_root_keys(ProjectPaths(root).root_keys)
+    ok, _reason = verify_manifest(raw, roots)              # signed by the project OTA key, certified by its root
     assert ok
 
     img = root / "build" / "OPENMV_N6-ota.img.gz"

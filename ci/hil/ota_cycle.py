@@ -2769,19 +2769,22 @@ def publish_update(board, version, variant="delta"):
 def tamper_manifest_bytes(data, which):
     """Corrupt ONE field of a manifest.bin (in place), then re-seal the trailing crc32, so the
     device reaches the specific reject gate we mean to test. A naive mid-stream flip lands in the
-    header (key_id -> "untrusted key") or body (-> "crc mismatch") depending on manifest size,
-    rejecting BEFORE the boundary under test is ever reached.
-      which="manifest"     -> flip a SIGNATURE byte: parse + key lookup pass, verify() fails.
-      which="manifest_key" -> flip a KEY_ID byte: parse passes, the key lookup misses.
+    header or body (-> "crc mismatch") depending on manifest size, rejecting BEFORE the boundary
+    under test is ever reached.
+      which="manifest"     -> flip a SIGNATURE byte: parse + certificate pass, verify() fails.
+      which="manifest_key" -> flip a byte of the certificate's PUBLIC KEY (not its first byte,
+                              which the parse wants at 0x04): the root's signature over the
+                              certificate no longer verifies -> "untrusted key".
     Shared by the server-store tamper (_tamper) and the file-transport legs, which tamper the
     local artifact before staging it on the SD card. Returns the flipped offset."""
     import struct
     import binascii
-    hdr = "<4sIIIIi"                                 # magic, hver, body_size, sig_size, key, alg
-    hsize = struct.calcsize(hdr)                     # 24; key_id field at offset 16
-    _, _, body_size, sig_size, _, _ = struct.unpack_from(hdr, data, 0)
-    body_end = hsize + body_size + sig_size          # crc covers data[:body_end]
-    off = 16 if which == "manifest_key" else hsize + body_size   # key_id vs signature region
+    hdr = "<4sIIIIi"                                 # magic, hver, body_size, sig_size, cert, alg
+    hsize = struct.calcsize(hdr)                     # 24; the certificate follows, then the body
+    _, _, body_size, sig_size, cert_size, _ = struct.unpack_from(hdr, data, 0)
+    body_end = hsize + cert_size + body_size + sig_size   # crc covers data[:body_end]
+    pubkey_off = hsize + 24 + 1                      # certificate: magic,ver,kind,root,epoch,alg = 24
+    off = pubkey_off if which == "manifest_key" else hsize + cert_size + body_size
     data[off] ^= 0xFF                                # break exactly that field, nothing else
     crc = binascii.crc32(bytes(data[:body_end])) & 0xFFFFFFFF
     struct.pack_into("<I", data, body_end, crc)      # re-seal so parse (+ key, for sig) pass
@@ -2882,8 +2885,8 @@ def _tamper(board, which):
         # specific reject gate we mean to test. A naive mid-stream flip lands in the header
         # (key_id -> "untrusted key") or body (-> "crc mismatch") depending on manifest size,
         # rejecting BEFORE the target check runs -- the boundary we mean to test is never hit.
-        #   which="manifest"     -> flip a SIGNATURE byte: parse + key pass, verify() fails (682).
-        #   which="manifest_key" -> flip a KEY_ID byte: parse passes, key lookup misses (680).
+        #   which="manifest"     -> flip a SIGNATURE byte: parse + certificate pass, verify() fails.
+        #   which="manifest_key" -> flip a certificate PUBKEY byte: the root check misses.
         target = "%s/manifests/%s/manifest.bin" % (root, rel)
         with open(target, "r+b") as f:
             data = bytearray(f.read())

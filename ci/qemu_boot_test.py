@@ -318,7 +318,7 @@ def _runtime_partition(part: int, front: int) -> bytes:
     (src / "system.json").write_text('{"board": "qemu", "app_version": "1.2.3"}')
     (src / "_ota_config.py").write_text(
         "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nCONTROL_BLOCK=%d\n"
-        "PRODUCT_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\nROOT_KEYS={}\n" % (part, front, BLOCK))
+        "PRODUCT_ID=0\nPLATFORM_VERSION=0\nROOT_KEYS={}\n" % (part, front, BLOCK))
     body = build_image(str(src))
     shutil.rmtree(src, ignore_errors=True)
     img = bytearray(b"\xff" * part)
@@ -398,7 +398,7 @@ def _installer_partition(fw: Path, part: int, front: int) -> bytes:
     (src / "logging.py").write_text(logging_lib.read_text())
     (src / "_ota_config.py").write_text(
         "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nCONTROL_BLOCK=%d\n"
-        "PRODUCT_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\nROOT_KEYS={}\n" % (part, front, BLOCK))
+        "PRODUCT_ID=0\nPLATFORM_VERSION=0\nROOT_KEYS={}\n" % (part, front, BLOCK))
     body = build_image(str(src))
     shutil.rmtree(src, ignore_errors=True)
     img = bytearray(b"\xff" * part)

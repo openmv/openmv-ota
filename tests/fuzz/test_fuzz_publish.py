@@ -93,7 +93,7 @@ _delta = st.sampled_from([_gz(D.make_delta(b"\x00" * 256, _IMG)), _gz(D.MAGIC + 
 
 @given(bodies(), _image, st.none() | _delta)
 def test_publish_answers_deliberately_to_any_manifest(body, image, delta):
-    m = pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256,
+    m = pack_manifest(Manifest(body=body, certificate=F.certificate(), sig_alg=ES256,
                                signature=bytes(64)))
     files = [("manifest", ("manifest.bin", m, "application/octet-stream")),
              ("image", ("img.gz", image, "application/gzip"))]

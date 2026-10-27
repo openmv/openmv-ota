@@ -61,12 +61,15 @@ def verify_image(body: bytes, trailer_bytes: bytes, roots) -> tuple[bool, str]:
         ", %d component(s) OK" % len(t.components) if t.components else "")
 
 
-def verify_manifest(manifest_bytes: bytes, trusted: list) -> tuple[bool, str]:
-    """Verify a signed update manifest's authenticity (signature over its signed region
-    against a trusted, non-revoked key) -- the mirror of what the device does pre-flight.
-    Like :func:`verify_image` this checks only authenticity; the device-relative fields
-    (board/version/platform) are :func:`openmv_ota.ota.manifest.update_reject_reason`'s
-    job. Returns ``(ok, reason)``."""
+def verify_manifest(manifest_bytes: bytes, roots) -> tuple[bool, str]:
+    """Verify a signed update manifest's authenticity -- the mirror of what the device does
+    pre-flight, and the same two signatures :func:`verify_image` checks: a root in ``roots``
+    (a ``RootKey`` list or ``{root_id: pubkey bytes}``) over the manifest's certificate, then
+    the certified key over the signed region. Only authenticity: the device-relative fields
+    (board/version/platform/stub) are :func:`openmv_ota.ota.manifest.update_reject_reason`'s
+    job, and a retired certificate (epoch) is the camera's floor to judge. Returns
+    ``(ok, reason)``."""
+    from . import certificate as certificate_mod
     from .keys import public_key_from_hex
     from .manifest import parse_manifest, signed_region
 
@@ -74,18 +77,16 @@ def verify_manifest(manifest_bytes: bytes, trusted: list) -> tuple[bool, str]:
         m = parse_manifest(manifest_bytes)
     except OtaError as e:
         return False, "invalid manifest: %s" % e
-
-    entry = next((k for k in trusted if k.key_id == m.key_id), None)
-    if entry is None:
-        return False, "signed by unknown key 0x%04x (not in the trusted set)" % m.key_id
-    if entry.revoked:
-        return False, "signed by a revoked key 0x%04x" % m.key_id
-    if entry.alg != m.sig_alg:
-        return False, "algorithm mismatch: manifest is %d, key 0x%04x is %d" % (
-            m.sig_alg, m.key_id, entry.alg)
-
+    try:
+        cert = certificate_mod.verify(m.certificate, _roots_map(roots))
+    except OtaError as e:
+        return False, "untrusted certificate: %s" % e
+    if cert.alg != m.sig_alg:
+        return False, "algorithm mismatch: manifest is %d, certified key 0x%08x is %d" % (
+            m.sig_alg, cert.key_id, cert.alg)
     alg = algorithm_for(m.sig_alg)
-    pub = public_key_from_hex(entry.pubkey, alg)
+    pub = public_key_from_hex(cert.pubkey.hex(), alg)
     if not verify_region(pub, signed_region(manifest_bytes), m.signature, alg):
-        return False, "signature does not verify against key 0x%04x" % m.key_id
-    return True, "signed by key 0x%04x (%s)" % (m.key_id, alg.name)
+        return False, "signature does not verify against key 0x%08x" % cert.key_id
+    return True, "signed by key 0x%08x (%s, root %d, epoch %d)" % (
+        cert.key_id, alg.name, cert.root_id, cert.epoch)

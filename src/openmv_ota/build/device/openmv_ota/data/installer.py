@@ -580,14 +580,25 @@ def _read_manifest_file(path):
 
 # --- pure: signed manifest (kept in sync with openmv_ota.ota.manifest) ------------
 # The installer parses + selects from the manifest here (pre-erase, /rom intact); run()
-# verifies the signature with the frozen ecdsa_verify C module + cfg.TRUSTED_KEYS, exactly
-# as boot.py verifies an image trailer.
+# verifies the manifest's CERTIFICATE against cfg.ROOT_KEYS and then its signature with the
+# frozen ecdsa_verify C module, exactly as boot.py verifies an image trailer -- the camera
+# embeds only the roots, and every signing key reaches it as a root-signed certificate.
 
 _MANIFEST_MAGIC = b"OMVM"
-_MANIFEST_HEADER_VERSION = 1
+_MANIFEST_HEADER_VERSION = 2
 _MANIFEST_SCHEMA = 1
-_MANIFEST_HEADER_STRUCT = "<4sIIIIi"          # magic, hver, body_size, sig_size, key_id, alg
+_MANIFEST_HEADER_STRUCT = "<4sIIIIi"          # magic, hver, body_size, sig_size, cert_size, alg
 _MANIFEST_HEADER_SIZE = struct.calcsize(_MANIFEST_HEADER_STRUCT)   # 24
+# The certificate between header and body (mirror of openmv_ota.ota.certificate / boot.py):
+# magic, version, kind, root_id, epoch, alg, pubkey(65) + pad(7, "7s": MicroPython's struct
+# has no pad code), root signature(64). The root signs the first 96 bytes.
+_MANIFEST_CERT_STRUCT = "<4sIIIIi65s7s64s"
+_MANIFEST_CERT_SIZE = struct.calcsize(_MANIFEST_CERT_STRUCT)       # 160
+_MANIFEST_CERT_SIGNED = 96
+_MANIFEST_BODY_OFFSET = _MANIFEST_HEADER_SIZE + _MANIFEST_CERT_SIZE  # 184
+_CERT_MAGIC = b"OMVC"
+_CERT_VERSION = 1
+_ES256 = -7
 _MANIFEST_MAX = 8192
 # COSE alg id -> raw R||S signature length (mirror of openmv_ota.ota.algorithms / boot.py).
 _ALG_SIG_SIZE = {-7: 64, -35: 96, -36: 132}
@@ -602,12 +613,15 @@ _TRAILER_BODY_SHA = 16                            # field index of body_sha256 (
 
 def _manifest_parse(data):
     """Structurally parse + CRC-check a manifest, returning a dict with the signed
-    ``body``, the ``key_id``/``sig_alg`` (to pick the key), the ``signature``, and the
-    exact ``region`` the signature covers. Raises ValueError on any malformation -- the
-    signature itself is checked by the caller against the trusted keys."""
+    ``body``, the ``sig_alg``, the ``signature``, the exact ``region`` the signature
+    covers, and ``cert`` -- the signing key's certificate as boot.py reads a trailer's:
+    ``root_id``, ``epoch``, ``kind``, ``pubkey``, the ``region`` the root signed and the
+    root's ``signature``. Raises ValueError on any malformation. No crypto here: the
+    caller checks the certificate against the roots and the signature against the
+    certified key."""
     if len(data) < _MANIFEST_HEADER_SIZE:
         raise ValueError("manifest too small")
-    magic, hver, body_size, sig_size, key_id, sig_alg = struct.unpack_from(
+    magic, hver, body_size, sig_size, cert_size, sig_alg = struct.unpack_from(
         _MANIFEST_HEADER_STRUCT, data, 0)
     if magic != _MANIFEST_MAGIC:
         raise ValueError("bad manifest magic")
@@ -616,21 +630,33 @@ def _manifest_parse(data):
     expect_sig = _ALG_SIG_SIZE.get(sig_alg)
     if expect_sig is None or sig_size != expect_sig:
         raise ValueError("bad manifest alg/sig_size")
-    body_end = _MANIFEST_HEADER_SIZE + body_size + sig_size
+    if cert_size != _MANIFEST_CERT_SIZE:
+        raise ValueError("bad manifest cert_size")
+    body_end = _MANIFEST_BODY_OFFSET + body_size + sig_size
     if body_end + 4 > len(data):
         raise ValueError("manifest truncated")
     crc = struct.unpack_from("<I", data, body_end)[0]
     if (binascii.crc32(data[:body_end]) & 0xFFFFFFFF) != crc:
         raise ValueError("manifest crc mismatch")
-    region = bytes(data[:_MANIFEST_HEADER_SIZE + body_size])
-    body = json.loads(data[_MANIFEST_HEADER_SIZE:_MANIFEST_HEADER_SIZE + body_size])
+    (cmagic, cversion, kind, root_id, epoch, calg, pubkey, _pad,
+     cert_sig) = struct.unpack_from(_MANIFEST_CERT_STRUCT, data, _MANIFEST_HEADER_SIZE)
+    # P-256 only, like the trailer's: the 65-byte key and 64-byte root signature are sized for it.
+    if cmagic != _CERT_MAGIC or cversion != _CERT_VERSION or calg != _ES256 \
+            or kind not in (0, 1) or pubkey[0] != 0x04:
+        raise ValueError("bad manifest certificate")
+    region = bytes(data[:_MANIFEST_BODY_OFFSET + body_size])
+    body = json.loads(data[_MANIFEST_BODY_OFFSET:_MANIFEST_BODY_OFFSET + body_size])
     if not isinstance(body, dict):
         # Vetting reads it with body.get(...): a list or a number would surface as an
         # AttributeError out of install() instead of the documented rejection.
         raise ValueError("manifest body is not an object")
-    signature = bytes(data[_MANIFEST_HEADER_SIZE + body_size:body_end])
-    return {"body": body, "key_id": key_id, "sig_alg": sig_alg,
-            "signature": signature, "region": region}
+    signature = bytes(data[_MANIFEST_BODY_OFFSET + body_size:body_end])
+    cert = {"root_id": root_id, "epoch": epoch, "kind": kind, "pubkey": bytes(pubkey),
+            "region": bytes(data[_MANIFEST_HEADER_SIZE:
+                                 _MANIFEST_HEADER_SIZE + _MANIFEST_CERT_SIGNED]),
+            "signature": bytes(cert_sig)}
+    return {"body": body, "sig_alg": sig_alg, "signature": signature, "region": region,
+            "cert": cert}
 
 
 def _update_reject(body, product_id, platform_version, rollback_floor, account_id="",
@@ -1654,11 +1680,19 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
     the callers' leaf reads are progress-fed. No-op unless a watchdog is armed."""
     with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
         m = _manifest_parse(raw)                          # structure + crc (raises on bad)
-        pubkey = cfg.TRUSTED_KEYS.get(m["key_id"])
-        if pubkey is None:
+        # Two signatures, in boot.py's order: a root this firmware embeds over the manifest's
+        # certificate, then the certified key over the signed region. A certificate older
+        # than the epoch this camera has confirmed is a retired key. All three are one
+        # outcome to the app and the fleet: the key is not one this camera trusts.
+        c = m["cert"]
+        root = cfg.ROOT_KEYS.get(c["root_id"])
+        if root is None or not verify(_ES256, root, c["signature"], c["region"]):
             log.warning("install: reject untrusted key")
             raise OSError("manifest signed by an untrusted key")
-        if not verify(m["sig_alg"], pubkey, m["signature"], m["region"]):
+        if c["epoch"] < getattr(cfg, "last_epoch", 0):
+            log.warning("install: reject untrusted key")
+            raise OSError("manifest signed by a retired key")
+        if not verify(m["sig_alg"], c["pubkey"], m["signature"], m["region"]):
             log.warning("install: reject bad signature")
             raise OSError("manifest signature does not verify")
 

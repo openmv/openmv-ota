@@ -1031,32 +1031,60 @@ def test_install_stream_sha_mismatch_raises():
 
 # --- signed manifest: parse/select/reject/floor mirror the host codec --------
 
-def _host_manifest(body=None, alg=None, key_id=0x0100):
+def _host_manifest(body=None, alg=None, epoch=0):
+    """A manifest signed by a fresh key, its certificate from ``tests.trust``'s root."""
     from openmv_ota.ota import ES256, algorithm_for
     from openmv_ota.ota.keys import generate_private_key
     from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
     from openmv_ota.ota.sign import sign_region
+    from tests import trust
     spec = algorithm_for(alg or ES256)
     priv = generate_private_key(spec)
     if body is None:
         body = {"schema": 1, "product_id": 7, "payload_version": 33685760,
                 "min_platform_version": 0, "sha256": "ab" * 32,
                 "representations": [{"format": "full", "url": "https://x/f.gz", "size": 9}]}
-    m = Manifest(body=body, key_id=key_id, sig_alg=spec.cose_id)
+    m = Manifest(body=body, certificate=trust.certificate(priv, epoch=epoch), sig_alg=spec.cose_id)
     m.signature = sign_region(priv, signed_region(m), spec)
     return pack_manifest(m)
 
 
+def _resealed(raw):
+    import binascii
+    import struct
+    raw = bytes(raw)
+    return raw[:-4] + struct.pack("<I", binascii.crc32(raw[:-4]) & 0xFFFFFFFF)
+
+
 def test_manifest_parse_mirrors_host():
+    from openmv_ota.ota import certificate as C
     from openmv_ota.ota.manifest import parse_manifest, signed_region
-    raw = _host_manifest(key_id=0x0123)
+    raw = _host_manifest(epoch=5)
     got = inst("_manifest_parse")(raw)
     host = parse_manifest(raw)
+    cert = C.parse(host.certificate)
     assert got["body"] == host.body
-    assert got["key_id"] == host.key_id == 0x0123
     assert got["sig_alg"] == host.sig_alg
     assert got["signature"] == host.signature
     assert got["region"] == signed_region(raw)            # the bytes the signature covers
+    assert (got["cert"]["root_id"], got["cert"]["epoch"], got["cert"]["kind"]) == (0, 5, C.KIND_OTA)
+    assert got["cert"]["pubkey"] == cert.pubkey
+    assert got["cert"]["region"] == C.signed_region(host.certificate)   # what the root signed
+    assert got["cert"]["signature"] == cert.signature
+
+
+def test_manifest_parse_rejects_a_bad_certificate():
+    import struct
+    good = _host_manifest()
+    bad = bytearray(good)
+    struct.pack_into("<I", bad, 16, 159)                         # cert_size
+    with pytest.raises(ValueError, match="cert_size"):
+        inst("_manifest_parse")(_resealed(bad))
+    for off in (24, 28, 32, 44, 48):                              # magic, version, kind, alg, pubkey[0]
+        bad = bytearray(good)
+        bad[off] ^= 0xFF
+        with pytest.raises(ValueError, match="certificate"):
+            inst("_manifest_parse")(_resealed(bad))
 
 
 def test_manifest_parse_rejections():
@@ -1070,7 +1098,7 @@ def test_manifest_parse_rejections():
     with pytest.raises(ValueError, match="magic"):
         inst("_manifest_parse")(bytes(bad))
     bad = bytearray(good)
-    struct.pack_into("<I", bad, 4, 2)                            # header_version
+    struct.pack_into("<I", bad, 4, 1)                            # header_version (v1 named a key id)
     with pytest.raises(ValueError, match="header_version"):
         inst("_manifest_parse")(bytes(bad))
     bad = bytearray(good)
@@ -1094,16 +1122,18 @@ def test_manifest_body_that_is_not_an_object_is_a_value_error(body):
     from openmv_ota.ota.keys import generate_private_key, public_point_hex
     from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
     from openmv_ota.ota.sign import sign_region
+    from tests import trust
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
-    m = Manifest(body=body, key_id=0x0100, sig_alg=ES256)
+    m = Manifest(body=body, certificate=trust.certificate(priv), sig_alg=ES256)
     m.signature = sign_region(priv, signed_region(m), spec)
     raw = pack_manifest(m)
     with pytest.raises(ValueError, match="not an object"):
         inst("_manifest_parse")(raw)
+    del public_point_hex                                   # the roots are the only keys a camera has
 
     class Cfg:
-        TRUSTED_KEYS = {0x0100: bytes.fromhex(public_point_hex(priv.public_key()))}
+        ROOT_KEYS = trust.ROOTS
         PRODUCT_ID = 0
         PLATFORM_VERSION = 0
     with pytest.raises(ValueError, match="not an object"):
@@ -1235,10 +1265,39 @@ def test_read_manifest_file(tmp_path):
         inst("_read_manifest_file")(str(tmp_path / "absent.bin"))
 
 
-def _vet_cfg(product_id=7, keys=None):
+def _vet_cfg(product_id=7, roots=None, last_epoch=0):
     import types
-    keys = {0x0100: b"\x04pub"} if keys is None else keys
-    return types.SimpleNamespace(TRUSTED_KEYS=keys, PRODUCT_ID=product_id, PLATFORM_VERSION=0)
+    from tests import trust
+    return types.SimpleNamespace(ROOT_KEYS=trust.ROOTS if roots is None else roots,
+                                 PRODUCT_ID=product_id, PLATFORM_VERSION=0, last_epoch=last_epoch)
+
+
+def test_vet_manifest_trusts_only_a_root_signed_certificate():
+    """The camera embeds roots, not keys: an unknown root, a certificate the root did not sign, a
+    retired certificate (older than the epoch this camera confirmed) and a bad signature are the
+    four refusals, in boot.py's order, and the first three read as one to the app: untrusted key."""
+    from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.keys import generate_private_key
+    from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
+    from openmv_ota.ota.sign import sign_region
+    from tests import trust
+    vet = inst("_vet_manifest")
+    verify = trust.verify                                   # real ECDSA, host-side
+    good = _host_manifest(body=_sd_body(), epoch=2)
+    assert vet("/sd/m.bin", good, _vet_cfg(), verify, 0, 0, True) is not None
+    with pytest.raises(OSError, match="untrusted key"):                 # no such root
+        vet("/sd/m.bin", good, _vet_cfg(roots={1: trust.ROOT_PUB}), verify, 0, 0, True)
+    with pytest.raises(OSError, match="untrusted key"):                 # root bytes differ
+        rogue = trust.pub_bytes(generate_private_key(trust.SPEC))
+        vet("/sd/m.bin", good, _vet_cfg(roots={0: rogue}), verify, 0, 0, True)
+    with pytest.raises(OSError, match="retired key"):                   # epoch below the floor
+        vet("/sd/m.bin", good, _vet_cfg(last_epoch=3), verify, 0, 0, True)
+    spec = algorithm_for(ES256)
+    signer, other = generate_private_key(spec), generate_private_key(spec)
+    m = Manifest(body=_sd_body(), certificate=trust.certificate(other), sig_alg=ES256)
+    m.signature = sign_region(signer, signed_region(m), spec)           # a key the cert is not for
+    with pytest.raises(OSError, match="does not verify"):
+        vet("/sd/m.bin", pack_manifest(m), _vet_cfg(), verify, 0, 0, True)
 
 
 def _sd_body(rep_url="img.gz", fmt="full", base=None):
@@ -1305,9 +1364,10 @@ def test_vet_manifest_rejections():
     raw = _host_manifest(body=_sd_body())
     ok = lambda *a: True                                              # noqa: E731
     with pytest.raises(OSError, match="untrusted key"):
-        inst("_vet_manifest")("/sd/m.bin", raw, _vet_cfg(keys={}), ok, 0, 0, True)
-    with pytest.raises(OSError, match="does not verify"):
-        inst("_vet_manifest")("/sd/m.bin", raw, _vet_cfg(), lambda *a: False, 0, 0, True)
+        inst("_vet_manifest")("/sd/m.bin", raw, _vet_cfg(roots={}), ok, 0, 0, True)
+    cert_ok_only = lambda alg, pub, sig, msg: len(msg) == 96   # noqa: E731  the root's 96 signed bytes pass
+    with pytest.raises(OSError, match="does not verify"):      # ...the manifest signature does not
+        inst("_vet_manifest")("/sd/m.bin", raw, _vet_cfg(), cert_ok_only, 0, 0, True)
     with pytest.raises(OSError, match="rejected \\(board\\)"):
         inst("_vet_manifest")("/sd/m.bin", raw, _vet_cfg(product_id=9), ok, 0, 0, True)
     with pytest.raises(OSError, match="rejected \\(rollback\\)"):  # the floor holds on-disk too

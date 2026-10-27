@@ -162,8 +162,7 @@ class Device:
             FRONT_SIZE = 0 if dev.single else SLOT
             CONTROL_BLOCK = BLOCK
             PRODUCT_ID = 0
-            TRUSTED_KEYS = TRUSTED                # the manifest path still names its key by id
-            ROOT_KEYS = trust.ROOTS               # the trailer path chains to a root
+            ROOT_KEYS = trust.ROOTS               # trailer AND manifest chain to a root
             PLATFORM_VERSION = 0
             MAX_ATTEMPTS = dev.max_attempts
             last_slot = dev.slot

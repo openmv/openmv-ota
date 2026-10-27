@@ -48,7 +48,7 @@ _ASSET = b"".join(hashlib.sha256(bytes([i & 0xFF, (i >> 8) & 0xFF])).digest()
 
 def test_publish_and_consume_end_to_end(make_project):
     from openmv_ota.ota import partition
-    from openmv_ota.ota.keys import read_trusted_keys
+    from openmv_ota.ota.keys import read_root_keys
     from openmv_ota.ota.manifest import parse_manifest
     from openmv_ota.ota.trailer import parse_trailer
     from openmv_ota.ota.verify import verify_manifest
@@ -84,7 +84,7 @@ def test_publish_and_consume_end_to_end(make_project):
 
     # --- host contract: the manifest is genuine and consistent with the image ---
     manifest_bytes = r.manifest.read_bytes()
-    ok, _reason = verify_manifest(manifest_bytes, read_trusted_keys(ProjectPaths(root).trusted_keys))
+    ok, _reason = verify_manifest(manifest_bytes, read_root_keys(ProjectPaths(root).root_keys))
     assert ok
     body = parse_manifest(manifest_bytes).body
     assert body["sha256"] == hashlib.sha256(new_img).hexdigest()

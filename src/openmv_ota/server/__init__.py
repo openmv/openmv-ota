@@ -3,7 +3,7 @@
 Design (see the plan):
 * **The server never signs and never holds a private key.** Releases are signed *locally* by
   ``build ota-romfs``; the server stores + distributes the already-signed bytes and runs policy.
-  The device verifies signatures itself against firmware-baked ``TRUSTED_KEYS``.
+  The device verifies signatures itself against the root keys baked into its firmware.
 * **Registration gates everything.** Every device is validated against the central OpenMV
   registration registry (openmv-swd-ids); an unregistered ``(board, id)`` gets ``{update:false}``
   and leaves *zero footprint* -- no row, no telemetry, no artifact -- so an attacker looping the

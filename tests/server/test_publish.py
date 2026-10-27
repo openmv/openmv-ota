@@ -18,8 +18,10 @@ from openmv_ota.server.metastore import SqliteMetadataStore
 from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
+from tests import trust
 
 BID = 7
+_CERT = trust.certificate(trust.keys.generate_private_key(trust.SPEC))   # the server never verifies
 AUTH = {"Authorization": "Bearer tok"}
 
 
@@ -55,7 +57,7 @@ def _body(image, *, pv=0x02000000, size=None, with_delta=False):
 
 
 def _manifest(body):
-    return pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256, signature=b"\x00" * 64))
+    return pack_manifest(Manifest(body=body, certificate=_CERT, sig_alg=ES256, signature=b"\x00" * 64))
 
 
 DELTA_NAME = "x-ota.delta.gz"          # must equal the rep url the manifest declares
@@ -177,7 +179,7 @@ def test_an_upload_larger_than_the_limit_is_refused_not_read(tmp_path):
     storage = LocalArtifactStorage(str(tmp_path / "blobs"))
     app = create_app(ServerSettings(base_url="https://ota.test", swd_ids_verify_url="u",
                                     swd_ids_verify_token="t",
-                                    max_image_bytes=2048, max_manifest_bytes=512),
+                                    max_image_bytes=2048, max_manifest_bytes=1024),
                      metastore=store, storage=storage, verifier=_Verifier())
     img = b"\xA5" * 64
     big = b"\x00" * 4096

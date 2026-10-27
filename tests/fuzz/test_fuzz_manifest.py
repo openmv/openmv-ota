@@ -20,7 +20,7 @@ _GOOD = F.signed_manifest(F.manifest_body())
 
 
 class _Cfg:
-    TRUSTED_KEYS = {F.KEY_ID: F.keypair()[1]}
+    ROOT_KEYS = F.roots()
     PRODUCT_ID = 0x1234
     PLATFORM_VERSION = 5 << 24
     ACCOUNT_ID = ""
@@ -55,14 +55,15 @@ def framed_manifests(draw, body_values=F.json_values):
     alg = draw(st.sampled_from((-7, -35, -36)) | st.integers(-(1 << 31), (1 << 31) - 1))
     sig = {-7: 64, -35: 96, -36: 132}.get(alg, 64)
     body = draw(st.binary(max_size=64) | body_values.map(lambda v: json.dumps(v).encode()))
+    cert = draw(st.just(F.certificate()) | st.binary(min_size=M.CERT_SIZE, max_size=M.CERT_SIZE))
     header = struct.pack(
         M.HEADER_STRUCT,
         draw(st.just(M.MAGIC) | st.binary(min_size=4, max_size=4)),
         draw(st.just(M.HEADER_VERSION) | st.integers(0, 3)),
         draw(st.just(len(body)) | st.integers(0, (1 << 32) - 1)),
         draw(st.just(sig) | st.integers(0, 200)),
-        draw(st.integers(0, (1 << 32) - 1)), alg)
-    out = header + body + draw(st.binary(min_size=sig, max_size=sig))
+        draw(st.just(M.CERT_SIZE) | st.integers(0, 200)), alg)
+    out = header + cert + body + draw(st.binary(min_size=sig, max_size=sig))
     return F.with_crc(out) + draw(st.binary(max_size=16))
 
 
@@ -79,8 +80,8 @@ def test_crc_valid_manifests_parse_or_raise_and_the_two_parsers_agree(data):
     assert (host is None) == (dev is None)
     if host is not None:
         assert host.body == dev["body"]
-        assert (host.key_id, host.sig_alg, host.signature) == (
-            dev["key_id"], dev["sig_alg"], dev["signature"])
+        assert (host.sig_alg, host.signature) == (dev["sig_alg"], dev["signature"])
+        assert host.certificate == dev["cert"]["region"] + dev["cert"]["signature"]
         assert M.signed_region(data) == dev["region"]
     # Unsigned (a zero key never verifies), so vetting must refuse it -- cleanly.
     assert _vet(data) is None
@@ -93,9 +94,9 @@ def test_the_host_parser_hands_back_an_object_or_raises(data):
 
 
 @given(st.dictionaries(st.text(max_size=8), F.json_values, max_size=6),
-       st.sampled_from(F.ALGS), st.integers(0, (1 << 32) - 1))
-def test_pack_then_parse_round_trips(body, alg, key_id):
-    m = M.Manifest(body=body, key_id=key_id, sig_alg=alg,
+       st.sampled_from(F.ALGS))
+def test_pack_then_parse_round_trips(body, alg):
+    m = M.Manifest(body=body, certificate=F.certificate(), sig_alg=alg,
                    signature=bytes(M.algorithm_for(alg).sig_size))
     back = M.parse_manifest(M.pack_manifest(m))
     assert back == m
@@ -103,7 +104,7 @@ def test_pack_then_parse_round_trips(body, alg, key_id):
 
 @given(F.mutated(_GOOD))
 def test_no_edit_to_a_genuine_manifest_is_accepted_unless_inert(bad):
-    ok, _reason = verify_manifest(bad, F.trusted())
+    ok, _reason = verify_manifest(bad, F.roots())
     if ok:
         assert bad[:len(_GOOD)] == _GOOD
     if _vet(bad) is not None:
@@ -111,7 +112,7 @@ def test_no_edit_to_a_genuine_manifest_is_accepted_unless_inert(bad):
 
 
 def test_the_genuine_manifest_is_accepted():
-    assert verify_manifest(_GOOD, F.trusted())[0]
+    assert verify_manifest(_GOOD, F.roots())[0]
     assert _vet(_GOOD) is not None
 
 

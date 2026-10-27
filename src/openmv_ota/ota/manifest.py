@@ -17,10 +17,16 @@ Layout mirrors :mod:`openmv_ota.ota.trailer` (little-endian)::
 
 The **signed region** is exactly ``header || json_body`` — the signer signs those
 bytes and the verifier hashes the identical stored bytes, so there is no
-JSON-canonicalisation pitfall. ``key_id``/``sig_alg`` sit in the fixed header so a
-verifier can select the key and algorithm before trusting anything; everything the
-device acts on (product_id, payload_version, representations, the result digest) lives
-in the signed JSON body.
+JSON-canonicalisation pitfall. The fixed header names the algorithm and is followed by
+the signing key's **certificate** (``openmv_ota.ota.certificate``, root-signed), so a
+verifier that embeds only the roots can establish the key before trusting anything --
+the same chain the image trailer carries, so a camera needs no key table for either.
+Everything the device acts on (product_id, payload_version, representations, the
+result digest) lives in the signed JSON body.
+
+    header (24) | certificate (160) | json_body | signature | crc32
+
+The signed region is header + certificate + body.
 
 The JSON body schema (``schema`` == ``SCHEMA``)::
 
@@ -54,17 +60,20 @@ import json
 import struct
 from dataclasses import dataclass
 
-from .algorithms import algorithm_for
+from . import certificate as certificate_mod
+from .algorithms import ES256, algorithm_for
 from .errors import OtaError
 
 MAGIC = b"OMVM"            # OTA update manifest (cf. OMVR image / OMVF firmware)
-HEADER_VERSION = 1
+HEADER_VERSION = 2         # v2: the signing key's certificate follows the header (v1 named a key id)
 SCHEMA = 1
 DELTA_FORMAT = "ocdl"      # representation["format"] for an openmv_ota.ota.delta patch
 
-# magic, header_version, body_size, sig_size, key_id, sig_alg (the lone signed "i").
+# magic, header_version, body_size, sig_size, cert_size, sig_alg (the lone signed "i").
 HEADER_STRUCT = "<4sIIIIi"
 HEADER_SIZE = struct.calcsize(HEADER_STRUCT)            # 24
+CERT_SIZE = certificate_mod.SIZE                        # 160: one packed certificate
+BODY_OFFSET = HEADER_SIZE + CERT_SIZE                   # 184: where the JSON body starts
 _BODY_SIZE_OFFSET = struct.calcsize("<4sI")             # magic, header_version => 8
 CRC_SIZE = 4
 # Generous cap: a manifest is a little JSON + one signature, never near this.
@@ -73,13 +82,29 @@ MANIFEST_SZ = 8192
 
 @dataclass
 class Manifest:
-    """A decoded manifest: the signed JSON ``body`` plus the trust header fields."""
+    """A decoded manifest: the signed JSON ``body``, the signing key's packed
+    ``certificate`` (root-signed; see :mod:`openmv_ota.ota.certificate`) and the
+    signature fields."""
 
     body: dict
-    key_id: int
-    sig_alg: int
+    certificate: bytes
+    sig_alg: int = ES256
     signature: bytes = b""
     header_version: int = HEADER_VERSION
+
+    @property
+    def key_id(self) -> int:
+        """The signing key's id, derived from the certified key (``certificate.key_id_of``)."""
+        return certificate_mod.parse(self.certificate).key_id
+
+
+def _check_certificate(cert: bytes) -> None:
+    if len(cert) != CERT_SIZE:
+        raise OtaError("manifest certificate must be %d bytes, got %d" % (CERT_SIZE, len(cert)))
+    try:
+        certificate_mod.parse(cert)
+    except OtaError as e:
+        raise OtaError("manifest certificate: %s" % e) from None
 
 
 def _serialize_body(body: dict) -> bytes:
@@ -91,30 +116,31 @@ def _serialize_body(body: dict) -> bytes:
 
 
 def signed_region(data) -> bytes:
-    """The exact bytes signed/verified: ``header || json_body``.
+    """The exact bytes signed/verified: ``header || certificate || json_body``.
 
     Given a :class:`Manifest`, build that region (sig_size from the algorithm, no
     signature yet) — the signer's input. Given raw manifest bytes, slice
-    ``[0 : HEADER_SIZE + body_size]`` using the bounds-checked ``body_size``."""
+    ``[0 : BODY_OFFSET + body_size]`` using the bounds-checked ``body_size``."""
     if isinstance(data, Manifest):
         spec = algorithm_for(data.sig_alg)
+        _check_certificate(data.certificate)
         body_bytes = _serialize_body(data.body)
         header = struct.pack(
             HEADER_STRUCT, MAGIC, data.header_version, len(body_bytes), spec.sig_size,
-            data.key_id, data.sig_alg)
-        return header + body_bytes
+            CERT_SIZE, data.sig_alg)
+        return header + bytes(data.certificate) + body_bytes
     if len(data) < HEADER_SIZE:
         raise OtaError("manifest too small: %d < %d header bytes" % (len(data), HEADER_SIZE))
     body_size = struct.unpack_from("<I", data, _BODY_SIZE_OFFSET)[0]
-    end = HEADER_SIZE + body_size
+    end = BODY_OFFSET + body_size
     if end > len(data):
         raise OtaError("signed region [0:%d] exceeds %d bytes" % (end, len(data)))
     return bytes(data[:end])
 
 
 def pack_manifest(m: Manifest) -> bytes:
-    """Serialise a complete manifest: ``header || json_body || signature || crc32``.
-    The signature must already be set and match the algorithm's size."""
+    """Serialise a complete manifest: ``header || certificate || json_body || signature ||
+    crc32``. The signature must already be set and match the algorithm's size."""
     region = signed_region(m)
     spec = algorithm_for(m.sig_alg)
     if len(m.signature) != spec.sig_size:
@@ -132,10 +158,12 @@ def pack_manifest(m: Manifest) -> bytes:
 def parse_manifest(data: bytes) -> Manifest:
     """Decode and validate a manifest. Raises ``OtaError`` on any malformation — bad
     magic, unknown ``header_version``, an unsupported algorithm, a ``sig_size`` that
-    disagrees with the algorithm, truncation, a bad CRC, or non-JSON body."""
+    disagrees with the algorithm, a certificate of the wrong size or shape, truncation, a
+    bad CRC, or non-JSON body. The certificate is checked for SHAPE only here; its root
+    signature is :func:`openmv_ota.ota.verify.verify_manifest`'s job."""
     if len(data) < HEADER_SIZE:
         raise OtaError("manifest too small: %d < %d header bytes" % (len(data), HEADER_SIZE))
-    magic, header_version, body_size, sig_size, key_id, sig_alg = struct.unpack_from(
+    magic, header_version, body_size, sig_size, cert_size, sig_alg = struct.unpack_from(
         HEADER_STRUCT, data, 0)
     if magic != MAGIC:
         raise OtaError("bad magic %r (expected %r)" % (magic, MAGIC))
@@ -146,16 +174,20 @@ def parse_manifest(data: bytes) -> Manifest:
     spec = algorithm_for(sig_alg)
     if sig_size != spec.sig_size:
         raise OtaError("sig_size %d != %d for %s" % (sig_size, spec.sig_size, spec.name))
+    if cert_size != CERT_SIZE:
+        raise OtaError("cert_size %d != %d" % (cert_size, CERT_SIZE))
 
-    body_end = HEADER_SIZE + body_size + sig_size
+    body_end = BODY_OFFSET + body_size + sig_size
     if body_end + CRC_SIZE > len(data):
         raise OtaError("manifest truncated: needs %d bytes, have %d" % (body_end + CRC_SIZE, len(data)))
     crc_stored = struct.unpack_from("<I", data, body_end)[0]
     if (binascii.crc32(data[:body_end]) & 0xFFFFFFFF) != crc_stored:
         raise OtaError("crc32 mismatch (corrupt manifest)")
 
-    body_bytes = data[HEADER_SIZE : HEADER_SIZE + body_size]
-    signature = data[HEADER_SIZE + body_size : body_end]
+    certificate = bytes(data[HEADER_SIZE:BODY_OFFSET])
+    _check_certificate(certificate)
+    body_bytes = data[BODY_OFFSET : BODY_OFFSET + body_size]
+    signature = data[BODY_OFFSET + body_size : body_end]
     try:
         body = json.loads(body_bytes)
     except (ValueError, RecursionError) as e:   # JSONDecodeError/UnicodeDecodeError; deep nesting
@@ -165,7 +197,7 @@ def parse_manifest(data: bytes) -> Manifest:
         # a bare list or number is a malformed manifest, never a 500 or an AttributeError.
         raise OtaError("manifest body is not a JSON object")
 
-    return Manifest(body=body, key_id=key_id, sig_alg=sig_alg,
+    return Manifest(body=body, certificate=certificate, sig_alg=sig_alg,
                     signature=bytes(signature), header_version=header_version)
 
 
