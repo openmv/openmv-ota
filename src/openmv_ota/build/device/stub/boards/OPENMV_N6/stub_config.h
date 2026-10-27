@@ -69,11 +69,15 @@ static const stub_pin_t stub_pins[] = {
 };
 #define STUB_PINS_COUNT             (sizeof(stub_pins) / sizeof(stub_pins[0]))
 
-// Debug UARTs by the firmware's machine.UART id (TX only).
+// Debug UARTs by the firmware's machine.UART id (TX only), on the kernel clock the
+// firmware's uart_init0 selects for every UART (IC14, see port_uart_init).
 static const stub_uart_t stub_uarts[] = {
-    { .id = 3, .uart = USART3, .gpio = GPIOB, .pin = GPIO_PIN_10, .alt = GPIO_AF7_USART3 },
-    { .id = 4, .uart = UART4,  .gpio = GPIOA, .pin = GPIO_PIN_12, .alt = GPIO_AF8_UART4 },
-    { .id = 7, .uart = UART7,  .gpio = GPIOE, .pin = GPIO_PIN_8,  .alt = GPIO_AF8_UART7 },
+    { .id = 3, .uart = USART3, .gpio = GPIOB, .pin = GPIO_PIN_10, .alt = GPIO_AF7_USART3,
+      .clk = LL_RCC_USART3_CLKSOURCE_IC14 },
+    { .id = 4, .uart = UART4,  .gpio = GPIOA, .pin = GPIO_PIN_12, .alt = GPIO_AF8_UART4,
+      .clk = LL_RCC_UART4_CLKSOURCE_IC14 },
+    { .id = 7, .uart = UART7,  .gpio = GPIOE, .pin = GPIO_PIN_8,  .alt = GPIO_AF8_UART7,
+      .clk = LL_RCC_UART7_CLKSOURCE_IC14 },
 };
 #define STUB_UARTS_COUNT            (sizeof(stub_uarts) / sizeof(stub_uarts[0]))
 
