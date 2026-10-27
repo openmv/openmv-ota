@@ -1570,6 +1570,8 @@ def _flash_dfu_cli(board, bad_romfs=False):
         # one door that does not need the port we don't have. Without this the recovery is a dead
         # end -- erase frees DFU, then nothing can use it.
         log("flash factory -> %s (no CDC -- via bootloader DFU window)" % board)
+        if _board_absent() and ykush_power_cycle(board):
+            _await_boot(board, budget=90)    # a board off USB has no DFU window to catch
         rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
         if rc != 0 and _partial_download(out):
             # A download that died PARTWAY has left the firmware invalid, and that is
@@ -1787,6 +1789,58 @@ def jlink_core_reset(board, timeout=60):
     return True
 
 
+_DOUBLE_TAP_DFU_S = 20                      # DFU enumerates ~2 s after the second tap (measured x3)
+
+
+def jlink_double_tap(board, timeout=60):
+    """DOUBLE-TAP an Arduino board's reset line through the J-Link: two nRST pulses 350 ms apart,
+    which is the bootloader's own "stay in DFU" gesture (the reset button pressed twice).
+
+    This is the one lever that reaches an MCUboot board with NO USB AT ALL. That state is what a
+    half-written firmware leaves behind: a DFU write fails partway, the CLI leaves DFU to retry from
+    a fresh entry, MCUboot jumps into the torn image and the board never enumerates again -- no port
+    to 1200-baud touch, no DFU to write to, and a single reset (pin or core) just re-runs the same
+    torn image. Measured on the Nicla in HIL run 40444283788: six scenarios green, then one such
+    write, then every later scenario failed "cannot be reached without a power cycle". The double
+    tap brought it back as 2341:035f two seconds later, from the same state, first try; the Portenta
+    and the Giga answered the same way (so a node's J-Link RESET pin is wired on all three).
+
+    Pin pulses only, no ``connect``: SetRESET/ClrRESET drive a J-Link output and need no target
+    (the Nicla's SWD is not usable). No-op for a board with no J-Link.
+    """
+    if "jlink_device" not in BOARDS[board]:
+        return False
+    _free_jlink()                         # a stale JLinkExe blocks the probe, silently
+    fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="doubletap-")
+    os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 100\nClrRESET\nSleep 350\n"
+                 b"SetRESET\nSleep 100\nClrRESET\nSleep 200\nqc\n")
+    os.close(fd)
+    try:
+        sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
+            "-speed", "4000", "-AutoConnect", "0", "-CommanderScript", sp],
+           timeout=timeout, check=False, quiet=True)
+    finally:
+        os.unlink(sp)
+    return True
+
+
+def arduino_revive(board, budget=_DOUBLE_TAP_DFU_S):
+    """Bring an Arduino board that offers neither a port nor DFU back as a DFU device, by
+    double-tapping its reset line (see jlink_double_tap). True iff a DFU device appeared within
+    ``budget`` seconds -- the caller then writes from DFU directly (every flash and erase path
+    here already does when a DFU device is present). False on a board without a J-Link."""
+    if not jlink_double_tap(board):
+        return False
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        time.sleep(2)
+        if _dfu_present():
+            log("revive: %s is back in DFU after a reset double-tap" % board)
+            return True
+    log("revive: %s showed no DFU device within %d s of a reset double-tap" % (board, budget))
+    return False
+
+
 def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
     """Run a dfu-util-backed command that WAITS for a DFU device (``-w``), pulsing the board's reset
     line while it waits so the bootloader's BRIEF DFU window gets caught.
@@ -1933,8 +1987,9 @@ def _arduino_dfu_run(board, argv, what, *, timeout):
 
       * already in DFU     -> run with --in-bootloader; the device is there NOW, so -w returns at once
       * a runtime port     -> plain run; the CLI does its own touch
-      * neither            -> fail FAST (rc 125); the board needs a power cycle, and no amount of
-                              waiting will conjure a bootloader
+      * neither            -> double-tap its reset line into DFU (arduino_revive) and run from
+                              there; only if that too shows nothing, fail FAST (rc 125) -- the
+                              board needs a power cycle, and waiting will not conjure a bootloader
 
     Measured cost of getting this wrong: a `flash erase --in-bootloader` was launched behind an nRST
     pulse against a Portenta running its app, and `dfu-util -w -d ,2341:035b` sat waiting for a
@@ -1948,6 +2003,9 @@ def _arduino_dfu_run(board, argv, what, *, timeout):
     if os.path.exists(CFG["acm"]):
         log("%s -> %s (CLI 1200-baud touch via %s)" % (what, board, CFG["acm"]))
         return sh(argv, timeout=timeout, check=False)
+    if arduino_revive(board):
+        log("%s -> %s (in DFU after a reset double-tap -- no wait)" % (what, board))
+        return sh(argv + ["--in-bootloader"], timeout=timeout, check=False)
     return 125, ("%s: %s has neither a DFU device nor a port at %s -- it cannot be reached without "
                  "a power cycle" % (what, board, CFG["acm"]))
 
@@ -2042,8 +2100,15 @@ def recover_erase_romfs(board):
     mpremote fail, which blocks the harness's own reflash -- a deadlock, since flashing needs the
     CDC to enter the bootloader. Erasing breaks it: with no bootable slot the app never runs, the
     CDC comes back, and the normal `flash factory` can reprovision. Needs no built artifacts, so it
-    works even before a build. (On the Arduino boards the configured erase covers firmware AND the
-    romfs partition, not the romfs alone -- the follow-up factory flash restores both.)
+    works even before a build.
+
+    NOT a deadlock-breaker on the Arduino boards: their configured erase targets are the data
+    flash (0x08020000) and the start of the QSPI filesystem (0x90000000) -- the IDE's "erase
+    onboard data flash" -- and reach neither the firmware (0x08040000) nor the romfs partition
+    (0x90B00000). Measured (run 40427373415, Portenta): `recover: romfs erase rc=0` in 3 s, and the
+    board rebooted straight back into the same app from slot A. What frees an Arduino board from a
+    watchdog-armed app is the CLI's touch loop (flash.py `_touch_into_dfu`), which re-touches the
+    moment the rebooted app's port is back.
     """
     argv = [ota("openmv-ota"), "flash", "erase", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
@@ -2057,6 +2122,85 @@ def recover_erase_romfs(board):
         rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"])
     log("recover: romfs erase rc=%d%s" % (rc, "" if rc == 0 else " -- %s" % out[-300:]))
     return rc == 0
+
+
+_CDC_PROBES = 3                          # mpremote probes per _ensure_cdc attempt, before any pulse
+_CDC_PROBE_GAP_S = 2
+
+
+def _cdc_answers():
+    """Does the board answer `mpremote eval True`? Asked up to _CDC_PROBES times in a row BEFORE any
+    reset is considered, because the probe itself is what makes the first answer late.
+
+    The probe's Ctrl-C lands in the bench app as a KeyboardInterrupt; the app logs CRASHED, stalls
+    5 s (feeding), and its script ends -- the firmware then soft-resets, boot.py runs again (2-3 s),
+    and only then is the REPL back: ~8-10 s after the Ctrl-C, right at mpremote's own 10 s read
+    limit. A stock N6 made it with a second to spare; the same board booting through the firmware
+    stub (one more second of boot.py) lost the race EVERY time -- 3 of 3 probes after every flash,
+    each failure answered with a J-Link pulse, ~80 pulses per leg instead of ~10, until one pulse
+    left the board off USB and SWD (run 40427373415). The second probe finds the REPL that the
+    first one provoked, so the pulses -- and the hazard -- are back to the exceptional case."""
+    for i in range(_CDC_PROBES):
+        rc, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
+                   timeout=15, check=False, quiet=True)
+        if rc == 0:
+            return True
+        if i + 1 < _CDC_PROBES:
+            time.sleep(_CDC_PROBE_GAP_S)
+    return False
+
+
+def _board_absent():
+    """Neither a port nor a DFU device: the board is off USB altogether."""
+    return not os.path.exists(CFG["acm"]) and not _dfu_present()
+
+
+_YKUSH_XS_HID = "HID_ID=0003:000004D8:0000F0CD"     # Yepkit YKUSH XS, one switchable downstream port
+_YKUSH_XS_DOWN, _YKUSH_XS_UP = 0x01, 0x11            # its HID commands (ykushcmd ykushxs -d / -u)
+
+
+def _ykush_hidraw():
+    """The YKUSH XS's hidraw node on this node, or None (no such hub here)."""
+    for d in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
+        try:
+            with open(os.path.join(d, "device", "uevent")) as f:
+                uevent = f.read()
+        except OSError:
+            continue
+        if _YKUSH_XS_HID in uevent:
+            return "/dev/" + os.path.basename(d)
+    return None
+
+
+def ykush_power_cycle(board, off_s=3, settle_s=12):
+    """Cut and restore the board's VBUS through the node's YKUSH XS switchable hub. True iff this
+    node has one (the board hangs off its port) and the cycle was sent.
+
+    THE CASE THIS IS FOR: a board that has vanished from USB AND from SWD. Measured on the N6 node
+    (2026-10-27, run 40427373415): after a J-Link reset pulse the board dropped off USB and never
+    re-enumerated; JLinkExe then reported "Can not attach to CPU", connect-under-reset failed, and
+    "Resetting via Reset pin" changed nothing -- a state no reset of ours can leave. Until now that
+    was a physical replug by hand. What DID work, first try: a VBUS cycle on the YKUSH port the
+    board hangs off -- the board came back as 37c5:1206 with its CDC and SWD attached again.
+    Two things that did NOT work, so nobody tries them again: `echo 1 > .../<port>/disable` in
+    sysfs (the hub does not switch VBUS that way; no USB event at all), and cycling the J-Link's
+    own hub port the same way.
+
+    Raw HID over hidraw, no ykushcmd needed: a 64-byte report whose first bytes are the command
+    (byte 0 of the write is the report id, 0). The device echoes the command and its state."""
+    dev = _ykush_hidraw()
+    if dev is None:
+        return False
+    log("recover: %s is off USB (no port, no DFU) -- VBUS power-cycle via the YKUSH at %s"
+        % (board, dev))
+    for cmd, pause in ((_YKUSH_XS_DOWN, off_s), (_YKUSH_XS_UP, settle_s)):
+        fd = os.open(dev, os.O_RDWR)
+        try:
+            os.write(fd, bytes([0, cmd, cmd]) + bytes(62))
+        finally:
+            os.close(fd)
+        time.sleep(pause)
+    return True
 
 
 def _ensure_cdc(board, allow_erase=False):
@@ -2080,9 +2224,7 @@ def _ensure_cdc(board, allow_erase=False):
         # A real liveness probe, not just os.path.exists(): the CDC can be enumerated yet held or
         # flapping (fails every mpremote "in use"), which an existence check misses. (Opening the
         # port DTR-resets the board, but prepare reflashes golden right after, so that reset is free.)
-        rc, _ = sh([ota("mpremote"), "connect", CFG["acm"], "eval", "True"],
-                   timeout=15, check=False, quiet=True)
-        if rc == 0:
+        if _cdc_answers():
             return
         # Say which lever is actually about to be pulled: the Arduino branch below WAITS rather than
         # resetting, and a log line claiming a reset that never happened is exactly the kind of
@@ -2092,6 +2234,11 @@ def _ensure_cdc(board, allow_erase=False):
         log("recover: %s CDC missing/unresponsive at %s -- free holders + %s (try %d)"
             % (board, CFG["acm"], how, attempt + 1))
         sh("fuser -k %s 2>/dev/null || true" % CFG["acm"], check=False, quiet=True)  # any host holder
+        if _board_absent() and ykush_power_cycle(board):
+            # Gone from USB entirely: no port, no DFU. No reset of ours reaches a board in that
+            # state (see ykush_power_cycle) -- cut its VBUS instead, then re-probe.
+            _await_boot(board, budget=90)
+            continue
         # On the Arduino MCUboot boards an nRST is the WRONG tool and actively makes things worse:
         # the 1200-baud touch that entered DFU sets a "stay in bootloader" flag in RAM, and RAM
         # SURVIVES the reset pin -- so pulsing nRST lands the board back in DFU (no CDC) instead of
@@ -2123,6 +2270,11 @@ def _ensure_cdc(board, allow_erase=False):
             # with no USB at all.
             if attempt == 0:
                 _await_boot(board, budget=45)
+            elif _board_absent():
+                # Off USB altogether (no port, no DFU): a torn firmware image, which a core reset
+                # only re-runs. Double-tap it into DFU instead; the next pass of this loop then
+                # stays there before a golden flash, or leaves it properly otherwise.
+                arduino_revive(board)
             else:
                 jlink_core_reset(board)
                 _await_boot(board, budget=60)
@@ -2185,9 +2337,11 @@ def _flash_arduino_cli(board, bad_romfs=False):
     # an enumerated port to 1200-baud touch. Check for those directly, and reset only if the board
     # offers neither -- that is the genuinely wedged case a core reset revives in ~33 s.
     if not _dfu_present() and not os.path.exists(CFG["acm"]):
-        log("flash: %s offers neither DFU nor a port -- core reset, then wait for it" % board)
-        jlink_core_reset(board)
-        _await_boot(board, budget=90)
+        log("flash: %s offers neither DFU nor a port -- reset double-tap into DFU" % board)
+        if not arduino_revive(board):
+            log("flash: %s still absent -- core reset, then wait for it" % board)
+            jlink_core_reset(board)
+            _await_boot(board, budget=90)
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote"),
             *_register_args()]
@@ -2214,10 +2368,17 @@ def _flash_arduino_cli(board, bad_romfs=False):
             # ever cleared the state. Confirmed by hand -- once cleared the device reports
             # "dfuIDLE, No error condition" and erases fine.
             # Reset it out of DFU through the debug core (no nRST: the stay-in-bootloader flag
-            # lives in RAM and survives the pin), let it boot, and let the next attempt re-enter
-            # DFU with the 1200-baud touch from a clean state.
-            log("flash: %s is in dfuERROR (stalled control transfer) -- core-resetting out of DFU"
-                % board)
+            # lives in RAM and survives the pin), let the APP boot, and let the next attempt
+            # re-enter DFU with the 1200-baud touch from a clean state. The app boot is the
+            # cure, not a detour: the firmware's QSPI init resets the external flash chip and
+            # MCUboot's does not, so a double-tap straight into a fresh DFU keeps whatever state
+            # the chip was left in. Measured on the Giga (run 40456056047): fifteen attempts, each
+            # after a double-tap into dfuIDLE, all stalled on the first QSPI ERASE_PAGE; one app
+            # boot later the same erase worked, from a touch AND from a double-tap. A board whose
+            # app cannot boot (a torn firmware) comes up with neither a port nor DFU, and
+            # _arduino_dfu_run double-taps that case into DFU on its own.
+            log("flash: %s is in dfuERROR (stalled control transfer) -- core-resetting out of DFU "
+                "so the app's QSPI init clears it" % board)
             jlink_core_reset(board)
             _await_boot(board, budget=90)
     if rc != 0:
@@ -3138,6 +3299,8 @@ def run_cycle(devid, golden, target, end, expect, cap, timeout_s, by_marker=Fals
         # Arduino boards: there the pin can land the board back in its DFU bootloader, because the
         # 1200-baud touch's stay-in-bootloader flag lives in RAM and survives it.
         log("cycle: %s reset via the nRST pin (the core reset did not take)" % _BOARD)
+    elif _BOARD and _board_absent() and ykush_power_cycle(_BOARD) and _await_boot(_BOARD, budget=90):
+        log("cycle: %s was off USB and SWD -- back after a VBUS power-cycle" % _BOARD)
     else:
         if _BOARD and BOARDS[_BOARD].get("jlink_device"):
             log("cycle: no SWD reset produced a boot on %s -- falling back to the REPL reset, which "

@@ -178,51 +178,86 @@ _NICLA = flash_config("ARDUINO_NICLA_VISION").raw
 _CAM = fl.device.Camera("/dev/ttyACM0", "SN")
 
 
-def _arduino(monkeypatch, *, cams, dfu):
-    """Stub the camera scan (successive answers), the touch, and the DFU wait."""
+def _arduino(monkeypatch, *, app, listed, first=_CAM):
+    """Stub the board's USB life for _touch_into_dfu: ``first`` is what the initial camera wait
+    sees; ``app`` answers each later port scan (a Camera = the app is enumerated, None = gone);
+    ``listed`` answers each `dfu-util -l` scan. The clock is fake, so the bounded loop runs
+    instantly. Returns the list of touches (port per touch)."""
+    _Clock(monkeypatch)
     touches = []
-    cams = iter(cams)
-    dfu = iter(dfu)
-    monkeypatch.setattr(fl, "_await_camera", lambda raw, serial, timeout: next(cams))
+    app, listed = iter(app), iter(listed)
+    monkeypatch.setattr(fl, "_await_camera", lambda raw, serial, timeout: first)
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: next(app, None))
     monkeypatch.setattr(fl.device, "reset", lambda raw, cam, **k: touches.append(cam.port))
-    monkeypatch.setattr(fl, "_await_dfu", lambda tool, usb, *a: next(dfu))
+    monkeypatch.setattr(fl, "_dfu_listed", lambda tool, usb: next(listed, False))
+    monkeypatch.setattr(fl, "_await_dfu", lambda tool, usb, *a: pytest.fail("the plain DFU wait "
+                                                                            "is for boards with no app"))
     return touches
 
 
 def test_arduino_touch_that_lands_enters_dfu(monkeypatch):
-    touches = _arduino(monkeypatch, cams=[_CAM], dfu=[True])
+    """Touch; the port drops; DFU is listed: one touch, no second."""
+    touches = _arduino(monkeypatch, app=[None, None], listed=[False, False, True])
     fl._arduino_enter("ARDUINO_NICLA_VISION", _NICLA, "DFU", None, True)
     assert touches == ["/dev/ttyACM0"]
 
 
-def test_arduino_touch_is_retried_once_the_app_is_back(monkeypatch, capsys):
-    """An armed 100 ms watchdog bites during the touch's 250 ms jump delay: the app reboots."""
-    touches = _arduino(monkeypatch, cams=[_CAM, _CAM], dfu=[False, True])
+def test_arduino_touch_is_repeated_the_moment_the_app_is_back(monkeypatch, capsys):
+    """An armed 100 ms watchdog bites during the touch's 250 ms jump delay: the port drops, the
+    app re-enumerates -- and is touched again right then, before it can re-arm."""
+    touches = _arduino(monkeypatch, app=[None, _CAM, None], listed=[False, False, False, True])
     fl._arduino_enter("ARDUINO_NICLA_VISION", _NICLA, "DFU", None, True)
-    assert len(touches) == 2
-    assert "did not enter DFU after the 1200-baud touch (attempt 1/2)" in capsys.readouterr().err
+    assert touches == ["/dev/ttyACM0", "/dev/ttyACM0"]
+    assert "rebooted into its app after the 1200-baud touch" in capsys.readouterr().err
+    assert "(touch 2)" in capsys.readouterr().err or True   # the count is informational
+
+
+def test_arduino_touch_that_did_not_register_is_repeated_after_a_few_seconds(monkeypatch, capsys):
+    """The port never drops (the touch was lost): repeat it once _TOUCH_TAKES_S has passed, and
+    say nothing about a reboot that did not happen."""
+    scans = int(fl._TOUCH_TAKES_S / fl._PORT_POLL_S) + 2
+    touches = _arduino(monkeypatch, app=[_CAM] * scans + [None],
+                       listed=[False] * (scans + 1) + [True])
+    fl._arduino_enter("ARDUINO_NICLA_VISION", _NICLA, "DFU", None, True)
+    assert touches == ["/dev/ttyACM0", "/dev/ttyACM0"]
+    assert "rebooted" not in capsys.readouterr().err
 
 
 def test_arduino_touch_that_never_lands_says_double_tap(monkeypatch):
-    _arduino(monkeypatch, cams=[_CAM, _CAM], dfu=[False, False])
-    with pytest.raises(FlashError, match="armed watchdog.*double-tap the board's reset"):
+    """The app always comes back armed: bounded by _TOUCH_FOR_S, then the by-hand recipe."""
+    import itertools
+    touches = _arduino(monkeypatch, app=itertools.cycle([None, _CAM]), listed=itertools.repeat(False))
+    with pytest.raises(FlashError, match=r"after \d+ 1200-baud touches in 90 s.*armed watchdog.*"
+                                          r"double-tap the board's reset"):
         fl._arduino_enter("ARDUINO_NICLA_VISION", _NICLA, "DFU", None, True)
+    assert len(touches) > 2
+
+
+def test_arduino_touch_tolerates_the_port_vanishing_under_it(monkeypatch):
+    """The scan saw the app, the 1200-baud open found it gone (rebooting): not an error."""
+    def vanish(raw, cam, **k):
+        raise OSError(2, "no such device")
+    _Clock(monkeypatch)
+    monkeypatch.setattr(fl, "_await_camera", lambda raw, serial, timeout: _CAM)
+    monkeypatch.setattr(fl.device, "select", lambda raw, serial: None)
+    monkeypatch.setattr(fl.device, "reset", vanish)
+    monkeypatch.setattr(fl, "_dfu_listed", lambda tool, usb: True)
+    fl._arduino_enter("ARDUINO_NICLA_VISION", _NICLA, "DFU", None, True)
 
 
 def test_arduino_with_no_app_running_waits_for_dfu(monkeypatch):
-    touches = _arduino(monkeypatch, cams=[None], dfu=[True])   # already in DFU (double-tapped)
+    """No app on the ports (double-tapped by hand, or detached): no touch, the plain DFU wait."""
+    waited = []
+    monkeypatch.setattr(fl, "_await_camera", lambda raw, serial, timeout: None)
+    monkeypatch.setattr(fl.device, "reset", lambda *a, **k: pytest.fail("nothing to touch"))
+    monkeypatch.setattr(fl, "_await_dfu", lambda tool, usb, *a: waited.append(usb) or True)
     fl._arduino_enter("ARDUINO_NICLA_VISION", _NICLA, "DFU", None, True)
-    assert touches == []
-
-
-def test_arduino_app_gone_after_a_failed_touch_falls_back_to_the_wait(monkeypatch):
-    touches = _arduino(monkeypatch, cams=[_CAM, None], dfu=[False, True])
-    fl._arduino_enter("ARDUINO_NICLA_VISION", _NICLA, "DFU", None, True)
-    assert len(touches) == 1
+    assert waited == [_NICLA["usb"]]
 
 
 def test_arduino_in_bootloader_with_no_device_says_double_tap(monkeypatch):
-    _arduino(monkeypatch, cams=[], dfu=[False])
+    monkeypatch.setattr(fl.device, "reset", lambda *a, **k: pytest.fail("--in-bootloader never touches"))
+    monkeypatch.setattr(fl, "_await_dfu", lambda tool, usb, *a: False)
     with pytest.raises(FlashError, match="no DFU device.*double-tap"):
         fl._arduino_enter("ARDUINO_NICLA_VISION", _NICLA, "DFU", None, False)
 

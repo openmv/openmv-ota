@@ -46,9 +46,10 @@ settles briefly before it starts, rather than handing the wait to
 `dfu-util -w`, which can open the device before it has finished enumerating.
 
 An Arduino app that arms a short watchdog can reboot before the 1200-baud touch
-takes effect. `flash` touches again once the app is back; if that fails too, it
-says so: double-tap the board's reset button to enter the bootloader and rerun
-with `--in-bootloader`. A write that fails because the bootloader has wedged is
+takes effect. `flash` watches the port and touches again the moment the app
+re-enumerates, before it can re-arm; it keeps that up for 90 s and then says
+so: double-tap the board's reset button to enter the bootloader and rerun with
+`--in-bootloader`. A write that fails because the bootloader has wedged is
 retried once from a fresh entry.
 
 ## What each board uses
