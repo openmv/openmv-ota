@@ -69,6 +69,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The check-in names the boot stub.** `openmv_ota.status()` and the check-in body carry
   `stub: {version, reason}` from the install record `boot.py` followed (None without a stub),
   so the server can see which stubs the fleet runs before a release raises `min_stub`.
+- **The server keeps the boot stub a camera reports, and gates releases on it.** A check-in's
+  `stub` lands on the device row as `stub_version` and `stub_reason` (the install reason
+  decoded to `normal`, `trial`, `reverted` or `reinstalled`; `null` for a board without a
+  stub, and a camera reflashed with stock firmware clears it), in `GET /devices` and
+  `client devices`. The signed manifest now carries the trailer's `min_stub`, the server
+  stores it per release (`min_stub` on `GET /releases`), and the offer gate -- rollouts and
+  pins alike -- declines to offer a release to a camera whose stub is older than it needs,
+  or that has none. The device installer refuses such a manifest before any download
+  (reason `stub`), the way the stub itself would after a download and a failed trial.
 - **`boot.py` follows a stub record past its own mark policy.** A record naming a slot that
   verifies (signature, certificate, board, body hash) is followed even when this firmware's
   attempt budget, floors or pending/confirmed marks would refuse the slot: the stub applied
@@ -183,6 +192,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`flash` reaches an Arduino board whose app arms a watchdog.** The 1200-baud touch makes
+  the firmware jump to the bootloader 250 ms later; an app with a 100 ms watchdog armed resets
+  first, and the app re-arms about 6 s after it boots. `flash` used to wait 20 s for DFU and 60 s
+  more for the port before touching again, so the second touch always met a re-armed app and
+  the command failed with "did not enter its DFU bootloader after 2 1200-baud touches". It now
+  watches the port and touches again the moment the app re-enumerates, before it can re-arm,
+  for up to 90 s (measured on the Portenta H7, Giga and Nicla Vision: DFU within 2-3 s, two
+  touches).
 - **A reset in the middle of a secure-element exchange no longer strands a camera's keys.** The
   interrupted SE050 refused every request until its power was cut, so the camera could not sign
   a check-in until someone power-cycled it. The OpenMV Cam RT1062 now cuts the chip's power
