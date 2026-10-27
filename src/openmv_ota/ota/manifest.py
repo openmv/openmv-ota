@@ -31,6 +31,7 @@ The JSON body schema (``schema`` == ``SCHEMA``)::
     publish_seq           int     the account's publish counter (0 = unused); what a
                                   PRODUCT_ID 0 camera compares instead of the version
     min_platform_version  int     firmware floor (0 = none)
+    min_stub              int     the oldest boot stub that can install this image (0 = none)
     size                  int     reconstructed full-slot image size, bytes
     sha256                str     sha256 (hex) of the reconstructed full-slot image
     representations       list    transports that all reconstruct that one image:
@@ -170,14 +171,18 @@ def parse_manifest(data: bytes) -> Manifest:
 
 # --- pure policy (mirrored by the device installer, pinned by tests) ---------
 
-def update_reject_reason(body, product_id, platform_version, rollback_floor, account_id=""):
+def update_reject_reason(body, product_id, platform_version, rollback_floor, account_id="",
+                         stub_version=None):
     """The device-relative pre-flight check, applied to an *already signature-verified*
     manifest body before any download/erase. Mirrors the image trailer's checks in
     ``boot.evaluate_slot`` (board cross-flash guard, platform floor, anti-rollback), so
     the manifest rejects the same updates the image's own trailer would on boot — just
     earlier. ``account_id`` (when the device has one baked in) additionally rejects a
     manifest from a different account -- defense in depth behind the server's account
-    scoping and the signature. Returns a short reason string to reject, or ``None``."""
+    scoping and the signature. ``stub_version`` is the boot stub that chose this boot (None
+    on a board without one): an image whose ``min_stub`` it does not meet is rejected
+    (``stub``) -- the stub itself would refuse to install it, after a download and a trial
+    boot nobody wants. Returns a short reason string to reject, or ``None``."""
     if body.get("schema") != SCHEMA:
         return "schema"
     if product_id and body.get("product_id", 0) != product_id:
@@ -187,6 +192,9 @@ def update_reject_reason(body, product_id, platform_version, rollback_floor, acc
     mpv = body.get("min_platform_version", 0)
     if mpv and mpv > platform_version:
         return "compat"
+    need = body.get("min_stub", 0)
+    if need and (stub_version is None or stub_version < need):
+        return "stub"
     # The key this camera orders by -- the mirror of boot.rollback_key. A camera built
     # with a real product_id can only ever be offered its own product's images, so its
     # own version sequence orders them; PRODUCT_ID 0 turns that guard off, so such a

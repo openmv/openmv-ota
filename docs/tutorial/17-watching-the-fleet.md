@@ -233,6 +233,7 @@ $ openmv-ota client release list --limit 1
       "payload_version": 16908288,
       "publish_seq": 0,
       "min_platform_version": 84017152,
+      "min_stub": 0,
       "image_sha256": "5d41402abc4b2a76b9719d911017c592a9c25e1e6cf1d5f4f34eaa1f5f5f4b2c",
       "image_size": 1467392,
       "representations": [

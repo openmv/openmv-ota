@@ -78,6 +78,10 @@ class Release(_Row):
     version: str = ""
     payload_version: int = 0
     min_platform_version: int = 0
+    min_stub: int = 0
+    """The oldest boot stub that can install this release's image (``0`` = no stub
+    involved). The server offers the release only to cameras whose ``stub_version`` meets
+    it; the camera refuses it before any download if offered anyway."""
     image_sha256: str = ""
     image_size: int = 0
     representations: Any = None

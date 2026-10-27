@@ -234,6 +234,20 @@ def test_reject_rollback():
                                 rollback_floor=floor) == "rollback"
 
 
+def test_reject_stub_floor():
+    """An image that needs a newer boot stub is refused before any download -- the stub itself
+    would refuse it on boot, after the download and a failed trial. A board with no stub (None)
+    cannot take a stub-gated image either."""
+    gated = _body(min_stub=2)
+    assert update_reject_reason(gated, product_id=7, platform_version=0, rollback_floor=0) == "stub"
+    assert update_reject_reason(gated, product_id=7, platform_version=0, rollback_floor=0,
+                                stub_version=1) == "stub"
+    assert update_reject_reason(gated, product_id=7, platform_version=0, rollback_floor=0,
+                                stub_version=2) is None
+    assert update_reject_reason(_body(), product_id=7, platform_version=0, rollback_floor=0,
+                                stub_version=None) is None       # no stub needed, none present
+
+
 def test_accept_when_all_clear():
     assert update_reject_reason(_body(), product_id=7, platform_version=(9 << 24),
                                 rollback_floor=0) is None

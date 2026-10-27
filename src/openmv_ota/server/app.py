@@ -46,7 +46,7 @@ from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter, SharedRateLimiter
 from .schemas import CheckAnswer, Health, KeykeeperChain, Ok
-from .rollout import (fallback_payload_version, offers_update, ramp_action,
+from .rollout import (fallback_payload_version, offers_update, ramp_action, stub_meets,
                       running_body_sha256, settled, should_autopause, soak_elapsed_s)
 from .storage import build_storage
 from .verify import Registration, build_verifier
@@ -586,7 +586,8 @@ def _decide(state, checkin, cohort, existing=None, account_id=""):
         on, offering = _ordering(checkin, rel)
         if (rel is None or rel["account_id"] != account_id
                 or offering <= on
-                or not settled(checkin.slots)):
+                or not settled(checkin.slots)
+                or not stub_meets(_stub_fields(checkin.stub)[0], rel.get("min_stub", 0))):
             return None, rel, False, None
         return None, rel, True, _offer(state, rel)
     ro = ms.active_rollout(checkin.product_id, cohort, account_id=account_id)
@@ -600,7 +601,8 @@ def _decide(state, checkin, cohort, existing=None, account_id=""):
         current_payload_version=on,
         release_payload_version=offering, rollout_state=ro["state"],
         rollout_percent=ro["percent"], rollout_id=ro["rollout_id"], device_id=checkin.device_id,
-        allow_downgrade=state.settings.test_offer_downgrades, slots=checkin.slots)
+        allow_downgrade=state.settings.test_offer_downgrades, slots=checkin.slots,
+        stub_version=_stub_fields(checkin.stub)[0], min_stub=rel.get("min_stub", 0))
     if not offered:
         return ro, rel, False, None
     return ro, rel, True, _offer(state, rel)

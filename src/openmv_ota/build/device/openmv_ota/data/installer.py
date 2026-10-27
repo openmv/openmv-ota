@@ -633,10 +633,14 @@ def _manifest_parse(data):
             "signature": signature, "region": region}
 
 
-def _update_reject(body, product_id, platform_version, rollback_floor, account_id=""):
+def _update_reject(body, product_id, platform_version, rollback_floor, account_id="",
+                   stub_version=None):
     """Device-relative pre-flight check on a verified manifest body -- the mirror of
     boot.evaluate_slot's image checks (and openmv_ota.ota.manifest.update_reject_reason).
-    Returns a reason string to reject, or None to proceed."""
+    ``stub_version`` is the boot stub that chose this boot (None without one): an image
+    whose min_stub it does not meet is refused here, before any download, rather than by
+    the stub after a download and a failed trial. Returns a reason string to reject, or
+    None to proceed."""
     if body.get("schema") != _MANIFEST_SCHEMA:
         return "schema"
     if product_id and body.get("product_id", 0) != product_id:
@@ -646,6 +650,9 @@ def _update_reject(body, product_id, platform_version, rollback_floor, account_i
     mpv = body.get("min_platform_version", 0)
     if mpv and mpv > platform_version:
         return "compat"
+    need = body.get("min_stub", 0)
+    if need and (stub_version is None or stub_version < need):
+        return "stub"
     # The key this camera orders by -- see openmv_ota.ota.manifest.update_reject_reason.
     key = body.get("publish_seq", 0) if product_id == 0 else body.get("payload_version", 0)
     if key < rollback_floor:
@@ -1656,8 +1663,10 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
             raise OSError("manifest signature does not verify")
 
         body_dict = m["body"]
+        last_stub = getattr(cfg, "last_stub", None)       # (stub_version, reason) from boot.py
         reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
-                                getattr(cfg, "ACCOUNT_ID", ""))
+                                getattr(cfg, "ACCOUNT_ID", ""),
+                                last_stub[0] if last_stub else None)
         if reason is not None:
             log.warning("install: reject vetting")   # rejected: witness the boundary
             raise OSError("manifest rejected (%s)" % reason)

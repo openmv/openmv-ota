@@ -51,9 +51,10 @@ def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0,
 BID = 7
 
 def _seed(store, *, pv=0x02000000, percent=100, storage=None, manifest=b"MANI", image=b"IMG",
-          account_id=""):
+          account_id="", min_stub=0):
     store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
-                      payload_version=pv, min_platform_version=0, image_sha256="ab" * 32,
+                      payload_version=pv, min_platform_version=0, min_stub=min_stub,
+                      image_sha256="ab" * 32,
                       image_size=len(image),
                       representations=[{"format": "full", "url": "OPENMV_N6-ota.img.gz",
                                         "size": len(image)}],
@@ -275,6 +276,20 @@ def test_mid_trial_device_is_not_offered_a_pin_either(tmp_path):
     c = TestClient(app)
     assert camera.check(c, _checkin(slots=_TRIAL)).json()["update"] is False
     assert camera.check(c, _checkin(slots=_SETTLED)).json()["release_id"] == "rel1"
+
+
+def test_a_stub_gated_release_is_offered_only_to_cameras_whose_stub_can_install_it(tmp_path):
+    """min_stub is a hard gate on the offer: a camera with no stub, or an older one, would only
+    download an image its stub refuses on boot. Pins are held to the same gate."""
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, storage=storage, percent=100, min_stub=2)
+    c = TestClient(app)
+    assert camera.check(c, _checkin()).json()["update"] is False                  # no stub
+    assert camera.check(c, _checkin(stub={"version": 1, "reason": 0})).json()["update"] is False
+    assert camera.check(c, _checkin(stub={"version": 2, "reason": 0})).json()["update"] is True
+    store.set_cohort_pin(BID, "__default__", "rel1")
+    assert camera.check(c, _checkin(stub={"version": 1, "reason": 0})).json()["update"] is False
+    assert camera.check(c, _checkin(stub={"version": 3, "reason": 0})).json()["release_id"] == "rel1"
 
 
 def test_fallback_version_is_recorded_and_survives_a_silent_checkin(tmp_path):

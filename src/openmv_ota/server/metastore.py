@@ -527,6 +527,11 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE devices ADD COLUMN stub_version INTEGER",
         "ALTER TABLE devices ADD COLUMN stub_reason TEXT",
     ],
+    [   # v37 -- the oldest boot stub a release's image needs (its manifest's min_stub, 0 = none).
+        # The offer gate reads it against the camera's stub_version: a release is never offered
+        # to a camera whose stub cannot install it.
+        "ALTER TABLE releases ADD COLUMN min_stub INTEGER NOT NULL DEFAULT 0",
+    ],
 ]
 
 # The most unclaimed boards remembered per account (see migration v35).
@@ -776,18 +781,19 @@ class SqlMetadataStore:
                     min_platform_version, image_sha256, image_size, representations,
                     manifest_key, image_key, delta_key=None, key_id=None, uploaded_by=None,
                     account_id="", dev=0, sbom_key=None, publish_seq=0,
-                    display_name="") -> None:
+                    display_name="", min_stub=0) -> None:
         self.execute(
             "INSERT INTO releases (release_id, product_id, product, version, payload_version, "
             "publish_seq, "
             "min_platform_version, image_sha256, image_size, representations, manifest_key, "
             "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id, dev, sbom_key, "
-            "display_name, download_size) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "display_name, download_size, min_stub) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (release_id, product_id, product, version, payload_version, publish_seq,
              min_platform_version,
              image_sha256, image_size, json.dumps(representations), manifest_key, image_key,
              delta_key, key_id, uploaded_by, _now_iso(), account_id, dev, sbom_key,
-             display_name, _download_size(representations)))
+             display_name, _download_size(representations), int(min_stub or 0)))
 
     def get_release(self, release_id: str) -> dict | None:
         r = _d(self.query_one("SELECT * FROM releases WHERE release_id = ?", (release_id,)))

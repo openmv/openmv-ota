@@ -75,7 +75,8 @@ def _check_body(body, max_size: int) -> None:
     This is not a schema for the device; it is the minimum the SERVER needs to be true.
     (That the body is an object at all, parse_manifest already guarantees.)"""
     for name, required in (("product_id", True), ("payload_version", True), ("size", True),
-                           ("publish_seq", False), ("min_platform_version", False)):
+                           ("publish_seq", False), ("min_platform_version", False),
+                           ("min_stub", False)):
         v = body.get(name, None if required else 0)
         if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= _I64_MAX:
             _refuse("manifest %s must be an integer in 0..2**63-1" % name)
@@ -350,6 +351,7 @@ async def publish_release(request: Request, background: BackgroundTasks,
                    version=body.get("version"), payload_version=payload_version,
                    publish_seq=publish_seq,
                    min_platform_version=body.get("min_platform_version", 0),
+                   min_stub=body.get("min_stub", 0),
                    image_sha256=body["sha256"], image_size=body["size"], representations=reps,
                    manifest_key=manifest_key, image_key=image_key,
                    key_id=parsed.key_id,   # which signing key vouches for these bytes
