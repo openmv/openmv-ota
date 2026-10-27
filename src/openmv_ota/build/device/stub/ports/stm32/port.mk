@@ -25,7 +25,8 @@ CFLAGS += -D$(MCU) \
           -DCMSIS_MCU_H='<$(MCU_LOWER).h>' \
           -DSTM32_HAL_H='<stm32$(HAL_SERIES)xx_hal.h>'
 
-CFLAGS += -I$(CMSIS_DIR)/include \
+CFLAGS += -I$(OMV_DIR)/boards/$(BOARD) \
+          -I$(CMSIS_DIR)/include \
           -I$(CMSIS_DIR)/include/st \
           -I$(HAL_DIR)/include \
           -I$(HAL_DIR)/include/Legacy

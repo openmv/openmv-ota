@@ -192,6 +192,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The N6 boot stub's debug UART printed one byte and went silent.** The bootloader leaves
+  PLL3 off, and with it off the STM32N6's USART kernel-clock mux never delivers a clock to the
+  USART, whichever source is selected: the transmitter never acknowledges enable and the first
+  byte sits in the data register until the firmware's clock setup turns PLL3 on. The stub now
+  brings the clock tree up the way the firmware does, from the firmware's own board macros
+  (`board_config.h`: the oscillators and PLL3/PLL4 the board names, IC14 from PLL1) and runs
+  every UART from IC14 as `uart_init0` does, with the baud taken from the HAL's view of that
+  clock. The stub's Makefile adds the firmware's board directory to its include path for it.
 - **`flash` reaches an Arduino board whose app arms a watchdog.** The 1200-baud touch makes
   the firmware jump to the bootloader 250 ms later; an app with a 100 ms watchdog armed resets
   first, and the app re-arms about 6 s after it boots. `flash` used to wait 20 s for DFU and 60 s

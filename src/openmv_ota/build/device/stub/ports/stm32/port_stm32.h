@@ -22,6 +22,7 @@ typedef struct {
     GPIO_TypeDef *gpio;         // TX pin
     uint16_t pin;
     uint16_t alt;
+    uint32_t clk;               // kernel clock selector (an LL_RCC_*_CLKSOURCE_*)
 } stub_uart_t;
 
 // Used by the copied bootloader flash driver (xspi.c).

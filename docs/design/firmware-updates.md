@@ -98,7 +98,10 @@ code that depends on them.
     programmer access is out of scope.
 14. **Debug output.** `boot.py` logs through `openmv_log` (standard `logging`,
     off by default; a build-time flag points it at a `machine.UART`). The stub
-    gets a tiny polled UART driver on the UART the trailer names (none = silent). Both the stub and `boot.py` show state on the status LED every
+    gets a tiny polled UART driver on the UART the trailer names (none = silent); it
+    clocks that UART the way the firmware does, from the firmware's board macros
+    (on the N6 the board's oscillators and PLL3/PLL4, IC14 from PLL1), because the
+    bootloader's clock tree leaves the USART kernel-clock mux without a clock. Both the stub and `boot.py` show state on the status LED every
     camera has: one pattern per phase (verifying, installing, trial boot, stopped
     with nothing to boot).
 15. **Order:** N6 first (our bootloader, reliable DFU, spare flash; firmware is in

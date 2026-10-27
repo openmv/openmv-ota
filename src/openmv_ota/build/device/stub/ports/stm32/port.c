@@ -11,6 +11,7 @@
 #include "stub.h"
 #include "port.h"
 #include "port_stm32.h"
+#include "board_config.h"               // the firmware's board: oscillators, PLLs, ICs
 
 uint32_t SystemCoreClock = HSI_VALUE;
 
@@ -172,21 +173,19 @@ int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
 
 // ---- Debug UART (TX only, polled) --------------------------------------------
 //
-// Registers, not HAL_UART_Init: that waits on TEACK with a ~9 hour timeout, and on the
-// N6 TEACK did not rise for a kernel clock the bootloader never set up. The stub must
-// never park on its debug output, so every wait here is bounded by the tick.
+// Registers, not HAL_UART_Init: that waits on TEACK with a ~9 hour timeout. The stub
+// must never park on its debug output, so every wait here is bounded by the tick.
 
 static USART_TypeDef *uart_inst = NULL;
 
-// Bus clock on; the kernel clock stays whatever is selected (reset: the APB clock), and
-// the baud is computed from THAT clock, as the HAL reads it back from the RCC.
+// Bus clock on; returns the RCC_PERIPHCLK id the HAL reports the kernel clock under.
 #define UART_CLOCK(inst, name, periph) \
     if (uart == inst) { \
         __HAL_RCC_##name##_CLK_ENABLE(); \
-        return HAL_RCCEx_GetPeriphCLKFreq(periph); \
+        return periph; \
     }
 
-static uint32_t uart_bus_clock(USART_TypeDef *uart) {
+static uint64_t uart_bus_clock(USART_TypeDef *uart) {
     #ifdef USART1
     UART_CLOCK(USART1, USART1, RCC_PERIPHCLK_USART1)
     #endif
@@ -214,6 +213,71 @@ static uint32_t uart_bus_clock(USART_TypeDef *uart) {
     return 0;
 }
 
+// The clock tree the UART needs, set up the way the firmware sets it up -- from the
+// same board macros (board_config.h in the firmware's board directory), so the stub
+// follows the board. On the N6 that is the oscillators and PLL3/PLL4 the board names
+// (HAL_RCC_OscConfig in system_stm32n6.c) and IC14 from PLL1; then every UART runs
+// from IC14 (uart_init0). The bootloader leaves PLL3 off, and with it off the USART
+// kernel-clock mux never delivers a clock, whichever source is selected: TEACK never
+// rises and the first byte sits in TDR until the firmware turns PLL3 on. PLL1 is left
+// alone, like the firmware does: the CPU is running from it.
+static void uart_clock_init(void) {
+    static bool done = false;
+    if (done) {
+        return;
+    }
+    done = true;
+    #if defined(STM32N6)
+    RCC_OscInitTypeDef osc = {0};
+    osc.PLL1.PLLState = RCC_PLL_NONE;
+    osc.PLL2.PLLState = RCC_PLL_NONE;
+    osc.PLL3.PLLState = RCC_PLL_NONE;
+    osc.PLL4.PLLState = RCC_PLL_NONE;
+    #if defined(OMV_OSC_PLL3SOURCE)
+    osc.PLL3.PLLState = RCC_PLL_ON;
+    osc.PLL3.PLLSource = OMV_OSC_PLL3SOURCE;
+    osc.PLL3.PLLM = OMV_OSC_PLL3M;
+    osc.PLL3.PLLN = OMV_OSC_PLL3N;
+    osc.PLL3.PLLP1 = OMV_OSC_PLL3P1;
+    osc.PLL3.PLLP2 = OMV_OSC_PLL3P2;
+    osc.PLL3.PLLFractional = OMV_OSC_PLL3FRAC;
+    #endif
+    #if defined(OMV_OSC_PLL4SOURCE)
+    osc.PLL4.PLLState = RCC_PLL_ON;
+    osc.PLL4.PLLSource = OMV_OSC_PLL4SOURCE;
+    osc.PLL4.PLLM = OMV_OSC_PLL4M;
+    osc.PLL4.PLLN = OMV_OSC_PLL4N;
+    osc.PLL4.PLLP1 = OMV_OSC_PLL4P1;
+    osc.PLL4.PLLP2 = OMV_OSC_PLL4P2;
+    osc.PLL4.PLLFractional = OMV_OSC_PLL4FRAC;
+    #endif
+    #if defined(OMV_OSC_LSE_STATE)
+    osc.LSEState = OMV_OSC_LSE_STATE;
+    osc.OscillatorType |= RCC_OSCILLATORTYPE_LSE;
+    #endif
+    #if defined(OMV_OSC_HSE_STATE)
+    osc.HSEState = OMV_OSC_HSE_STATE;
+    osc.OscillatorType |= RCC_OSCILLATORTYPE_HSE;
+    #endif
+    #if defined(OMV_OSC_LSI_STATE)
+    osc.LSIState = OMV_OSC_LSI_STATE;
+    osc.OscillatorType |= RCC_OSCILLATORTYPE_LSI;
+    #endif
+    #if defined(OMV_OSC_HSI_STATE)
+    osc.HSIState = OMV_OSC_HSI_STATE;
+    osc.OscillatorType |= RCC_OSCILLATORTYPE_HSI;
+    osc.HSIDiv = OMV_OSC_HSI_DIV;
+    osc.HSICalibrationValue = OMV_OSC_HSI_CAL;
+    #endif
+    (void) HAL_RCC_OscConfig(&osc);            // a failure leaves the log silent, nothing more
+    #if defined(OMV_RCC_IC14_SOURCE)
+    LL_RCC_IC14_SetSource(OMV_RCC_IC14_SOURCE);
+    LL_RCC_IC14_SetDivider(OMV_RCC_IC14_CLKDIV);
+    LL_RCC_IC14_Enable();
+    #endif
+    #endif
+}
+
 int port_uart_init(uint32_t id, uint32_t baud) {
     const stub_uart_t *u = NULL;
     for (size_t i = 0; i < STUB_UARTS_COUNT; i++) {
@@ -224,9 +288,13 @@ int port_uart_init(uint32_t id, uint32_t baud) {
     if (u == NULL || baud == 0) {
         return -1;
     }
-    // The kernel clock stays at its reset selection (the APB clock), which is what the
-    // firmware's machine.UART runs from too.
-    uint32_t clk = uart_bus_clock(u->uart);
+    uart_clock_init();
+    uint64_t periph = uart_bus_clock(u->uart);
+    if (periph == 0) {
+        return -1;
+    }
+    LL_RCC_SetClockSource(u->clk);
+    uint32_t clk = HAL_RCCEx_GetPeriphCLKFreq(periph);
     if (clk == 0 || clk / baud < 16 || clk / baud > 0xFFFF) {
         return -1;
     }
