@@ -150,6 +150,15 @@ class Device(_Row):
     body_sha256: str | None = None
     """The RUNNING slot's exact bytes (its trailer's body_sha256, hex) as the device reported
     them. A delta base matches by version AND these bytes; ``null`` = the device did not say."""
+    stub_version: int | None = None
+    """The boot stub that installed and chose this camera's running firmware, as the camera
+    last reported it. A stub never updates itself, so the fleet carries mixed versions forever,
+    and a release reaches only the cameras whose stub meets its ``min_stub``. ``null`` = a board
+    with no stub, or a camera that did not say."""
+    stub_reason: str | None = None
+    """Why the stub installed what is running: ``normal``, ``trial``, ``reverted`` (the other
+    slot failed its trial) or ``reinstalled`` (the firmware area was corrupt). ``null`` with
+    ``stub_version``."""
 
 
 class FleetBase(_Row):

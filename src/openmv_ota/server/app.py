@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 from openmv_ota import __version__
 from openmv_ota.ota import checkin_sig
+from openmv_ota.ota.install_record import REASONS as STUB_REASONS
 
 from . import capability
 from . import datalog as datalog_mod
@@ -471,6 +472,27 @@ class CheckIn(BaseModel):
     # single-image device and from any older payload, which is why every reader treats an empty
     # list as "unknown" rather than as "no fallback".
     slots: list[dict] = []
+    # The boot stub that installed and chose the running firmware, on a board that has one:
+    # ``{"version": <stub version>, "reason": <install reason code>}``. The fleet carries mixed
+    # stub versions forever (a stub never updates itself), and a stub installs only releases
+    # whose ``min_stub`` it meets -- so this is what an operator reads to know which cameras a
+    # release can reach. None (or absent) = no stub, or a boot the stub did not record.
+    stub: dict | None = None
+
+
+def _stub_fields(stub) -> tuple[int | None, str | None]:
+    """The device-row columns from a check-in's ``stub``: ``(version, reason)``, the reason
+    decoded to the install record's word (``normal``, ``trial``, ``reverted``, ``reinstalled``)
+    so a reader never has to know the codes. Anything that is not a well-formed report
+    reads as "did not say" rather than failing the check-in -- the camera is the one party
+    this endpoint must never refuse over a cosmetic field."""
+    if not isinstance(stub, dict):
+        return None, None
+    version, reason = stub.get("version"), stub.get("reason")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        return None, None
+    word = STUB_REASONS.get(reason) if isinstance(reason, int) else None
+    return version, word or "unknown"
 
 
 class Feedback(BaseModel):
@@ -922,6 +944,7 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         body_sha256=running_body_sha256(checkin.slots),
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
         publish_seq=checkin.publish_seq, orders_by_seq=checkin.orders_by_seq,
+        stub=_stub_fields(checkin.stub),
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
         account_id=account_id)
     if manifest_url:

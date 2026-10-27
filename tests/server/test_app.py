@@ -288,6 +288,35 @@ def test_fallback_version_is_recorded_and_survives_a_silent_checkin(tmp_path):
     assert store.get_device("dev1")["fallback_payload_version"] == 0x00FF0000
 
 
+def test_stub_is_recorded_decoded_and_cleared_when_the_camera_stops_reporting_one(tmp_path):
+    """A stub board reports {version, reason}; the row keeps the version and the reason's WORD.
+    Unlike the slot columns this is not coalesced: a camera reflashed with stock firmware
+    stops reporting a stub, and the fleet view must say so."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+    camera.check(c, _checkin(stub={"version": 2, "reason": 1}))
+    dev = store.get_device("dev1")
+    assert (dev["stub_version"], dev["stub_reason"]) == (2, "trial")
+    camera.check(c, _checkin(stub={"version": 2, "reason": 9}))         # a code this server lacks
+    assert store.get_device("dev1")["stub_reason"] == "unknown"
+    camera.check(c, _checkin())
+    dev = store.get_device("dev1")
+    assert (dev["stub_version"], dev["stub_reason"]) == (None, None)
+
+
+def test_a_malformed_stub_report_never_refuses_the_checkin(tmp_path):
+    """The camera is the one party this endpoint must never refuse over a cosmetic field."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+    for bad in ({"version": "2"}, {"version": True}, {"version": -1, "reason": 0}, {}):
+        camera.check(c, _checkin(stub=bad))
+        dev = store.get_device("dev1")
+        assert (dev["stub_version"], dev["stub_reason"]) == (None, None), bad
+    camera.check(c, _checkin(stub={"version": 3}))                     # a version with no reason
+    assert (store.get_device("dev1")["stub_version"],
+            store.get_device("dev1")["stub_reason"]) == (3, "unknown")
+
+
 def test_running_body_sha_is_recorded_and_survives_a_silent_checkin(tmp_path):
     """The RUNNING slot's exact bytes land on the device record -- what GET /fleet/bases
     aggregates -- and a slots-less check-in keeps the last report, like the fallback column."""

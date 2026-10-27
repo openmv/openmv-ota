@@ -795,8 +795,20 @@ def test_fleet_devices_audit(tmp_path):
     # the packed number is what the store keeps; a READER gets it decoded, so nobody has to
     # work out that 16777216 means 1.0.0 to answer "what would this device fall back to"
     assert dev["fallback_payload_version"] == 0x01000000 and dev["fallback_version"] == "1.0.0"
+    assert (dev["stub_version"], dev["stub_reason"]) == (None, None)   # no stub on this board
     events = c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
     assert events[0]["action"] == "release.publish"
+
+
+def test_device_row_carries_the_boot_stub(tmp_path):
+    """A stub board's row says which stub installed its firmware and why -- the one fact an
+    operator needs to know which cameras a release with a min_stub can reach."""
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="d1", product_id=BID, board="OPENMV_N6", current_version="1.0.0",
+                        stub=(1, "reverted"))
+    c = TestClient(app)
+    dev = c.get("/api/v1/admin/devices/d1", headers=AUTH).json()
+    assert (dev["stub_version"], dev["stub_reason"]) == (1, "reverted")
 
 
 def test_fleet_breakdowns_and_cohort_filter(tmp_path):
