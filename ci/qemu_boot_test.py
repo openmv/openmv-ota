@@ -636,10 +636,12 @@ def _installer_script() -> str:
 
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
+    pub = bytes.fromhex(public_point_hex(priv.public_key()))
+    cert = host_cert.issue(_ROOT_PRIV, 0, host_cert.KIND_OTA, 0, pub)    # root-signed leaf
     body = {"schema": 1, "product_id": 0, "payload_version": 0, "min_platform_version": 0,
             "sha256": "ab" * 32,
             "representations": [{"format": "full", "url": "https://x/f.gz", "size": 9}]}
-    man = Manifest(body=body, key_id=0x0100, sig_alg=ES256)
+    man = Manifest(body=body, certificate=host_cert.pack(cert), sig_alg=ES256)
     man.signature = sign_region(priv, signed_region(man), spec)
     manifest_bytes = pack_manifest(man)
 
