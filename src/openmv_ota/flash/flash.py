@@ -359,9 +359,9 @@ def _arduino_files(board: str, op: str, raw: dict, out_dir: Path) -> dict:
     return files
 
 
-_TOUCH_TRIES = 2          # 1200-baud touches before giving up on automatic DFU entry
-_TOUCH_DFU_WAIT_S = 20    # MCUboot's DFU device enumerates within a few seconds of a touch that took
-_REBOOT_WAIT_S = 60       # a touch that did NOT take reboots the app (the Nicla is back in ~33 s)
+_TOUCH_FOR_S = 90         # the whole touch dance: touch, watch the app reboot, touch again
+_TOUCH_TAKES_S = 3        # a touch that registered drops the port within this long (the jump is 250 ms out)
+_REBOOT_WAIT_S = 60       # an app rebooted out of DFU is back on its port within this (the Nicla in ~33 s)
 _PORT_POLL_S = 0.5
 
 _DOUBLE_TAP = ("double-tap the board's reset button to enter its bootloader (the LED pulses), "
@@ -378,31 +378,68 @@ def _await_camera(raw: dict, serial: str | None, timeout: float) -> device.Camer
         time.sleep(_PORT_POLL_S)
 
 
-def _arduino_enter(board: str, raw: dict, tool: str, serial: str | None,
-                   enter_bootloader: bool, first_wait: float = 0) -> None:
-    """Get an Arduino board into its MCUboot DFU bootloader, or raise saying how to by hand.
+def _touch(raw: dict, cam: device.Camera) -> None:
+    """One 1200-baud touch; a port that vanished between the scan and the open is fine (the board
+    is rebooting, and the loop in _touch_into_dfu sees it come back)."""
+    try:
+        device.reset(raw, cam, mpremote=[])
+    except OSError:                              # pyserial's SerialException is an OSError
+        pass
+
+
+def _touch_into_dfu(board: str, raw: dict, tool: str, serial: str | None,
+                    cam: device.Camera) -> None:
+    """Touch the running app into MCUboot's DFU, re-touching THE MOMENT the app is back.
 
     The 1200-baud touch is answered by the firmware's USB stack, which schedules the jump 250 ms
     later -- and an app with an armed short watchdog (100 ms) is reset by it first, so the board
-    reboots into the app instead (measured on the Nicla and the Giga). Nothing on the host can
-    feed that watchdog, and mpremote's machine.bootloader() fares no better (its Ctrl-C stops the
-    app, the watchdog then bites). What the host CAN do is try again once the app is back: a
-    second touch lands before an app that arms its watchdog late. Bounded, then a clear message."""
+    reboots into the app instead (measured on the Nicla, the Giga and the Portenta). Nothing on
+    the host can feed that watchdog. What the host CAN do is touch again as soon as the port
+    re-enumerates: the app arms its watchdog only once it is up (seconds after boot), and a touch
+    inside that window lands. So this watches the port, not a clock: port gone -> the touch
+    registered (DFU appears within a few seconds, or the app is rebooting); port back -> touch at
+    once. A touch that never drops the port did not register and is repeated after a few seconds.
+
+    Measured cost of the old "touch, wait 20 s for DFU, wait for the app, touch again" sequence:
+    on every HIL board left running a watchdog scenario it failed 2 of 2 touches EVERY time -- the
+    DFU wait outlasted the window, so the second touch always met an armed watchdog again -- and
+    the boards stayed stuck across runs; only a touch that happened to land on a freshly rebooted
+    board (the harness's own recovery erase) ever got through."""
+    usb = raw["usb"]
+    deadline = time.monotonic() + _TOUCH_FOR_S
+    touches, touched_at, gone = 1, time.monotonic(), False
+    _touch(raw, cam)
+    while time.monotonic() < deadline:
+        if _dfu_listed(tool, usb):
+            time.sleep(_DFU_SETTLE_S)
+            return
+        cam = device.select(raw, serial)
+        if cam is None:
+            gone = True                          # the touch registered: DFU, or a reboot, is coming
+        elif gone or time.monotonic() - touched_at >= _TOUCH_TAKES_S:
+            if gone:
+                print("warning: %s rebooted into its app after the 1200-baud touch (an armed "
+                      "watchdog?) -- touching again while it is fresh (touch %d)"
+                      % (board, touches + 1), file=sys.stderr)
+            _touch(raw, cam)
+            touches, touched_at, gone = touches + 1, time.monotonic(), False
+        time.sleep(_PORT_POLL_S)
+    raise FlashError("%s did not enter its DFU bootloader after %d 1200-baud touches in %d s (an "
+                     "app with an armed watchdog reboots before the touch lands): %s"
+                     % (board, touches, _TOUCH_FOR_S, _DOUBLE_TAP))
+
+
+def _arduino_enter(board: str, raw: dict, tool: str, serial: str | None,
+                   enter_bootloader: bool, first_wait: float = 0) -> None:
+    """Get an Arduino board into its MCUboot DFU bootloader, or raise saying how to by hand.
+    A running app is touched (see _touch_into_dfu); no app means the board is already in DFU, or
+    detached -- wait for the bootloader, bounded."""
     usb = raw["usb"]
     if enter_bootloader:
-        for attempt in range(_TOUCH_TRIES):
-            cam = _await_camera(raw, serial, first_wait if attempt == 0 else _REBOOT_WAIT_S)
-            if cam is None:
-                break                            # not running: already in DFU, or detached
-            device.reset(raw, cam, mpremote=[])  # the 1200-baud touch
-            if _await_dfu(tool, usb, _TOUCH_DFU_WAIT_S):
-                return
-            print("warning: %s did not enter DFU after the 1200-baud touch (attempt %d/%d)"
-                  % (board, attempt + 1, _TOUCH_TRIES), file=sys.stderr)
-        else:
-            raise FlashError("%s did not enter its DFU bootloader after %d 1200-baud touches (an "
-                             "app with an armed watchdog reboots before the touch lands): %s"
-                             % (board, _TOUCH_TRIES, _DOUBLE_TAP))
+        cam = _await_camera(raw, serial, first_wait)
+        if cam is not None:
+            _touch_into_dfu(board, raw, tool, serial, cam)
+            return
     if not _await_dfu(tool, usb):
         raise FlashError("%s: no DFU device (%s) appeared within %d s -- %s"
                          % (board, usb, _DFU_WAIT_S, _DOUBLE_TAP))
