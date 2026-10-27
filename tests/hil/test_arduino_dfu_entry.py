@@ -89,10 +89,26 @@ def test_no_dfu_and_no_port_fails_fast(board, monkeypatch):
     wait here is exactly what burned the 11 minutes."""
     monkeypatch.setattr(ota_cycle, "_dfu_present", lambda: False)
     monkeypatch.setattr(os.path, "exists", lambda p: False)
+    monkeypatch.setattr(ota_cycle, "arduino_revive", lambda b: False)   # the double-tap showed nothing
     monkeypatch.setattr(ota_cycle, "sh",
                         lambda *a, **k: pytest.fail("must not run a dfu-util command"))
     rc, out = ota_cycle._arduino_dfu_run(board, ["openmv-ota"], "t", timeout=5)
     assert rc != 0 and "power cycle" in out
+
+
+@pytest.mark.parametrize("board", _ARDUINO)
+def test_no_dfu_and_no_port_double_taps_into_dfu_first(board, monkeypatch):
+    """A board off USB altogether is a torn firmware image, not a lost cause: double-tap its reset
+    line into DFU and write from there (--in-bootloader), the way an already-in-DFU board is."""
+    monkeypatch.setattr(ota_cycle, "_dfu_present", lambda: False)
+    monkeypatch.setattr(os.path, "exists", lambda p: False)
+    revived, ran = [], []
+    monkeypatch.setattr(ota_cycle, "arduino_revive", lambda b: revived.append(b) or True)
+    monkeypatch.setattr(ota_cycle, "sh", lambda cmd, **k: ran.append(cmd) or (0, ""))
+    monkeypatch.setattr(ota_cycle, "log", lambda m: None)
+    rc, _ = ota_cycle._arduino_dfu_run(board, ["openmv-ota"], "t", timeout=5)
+    assert rc == 0 and revived == [board]
+    assert ran == [["openmv-ota", "--in-bootloader"]]
 
 
 def test_dfu_present_never_waits():
@@ -149,6 +165,7 @@ def test_ensure_cdc_waits_before_it_resets(board, monkeypatch):
     board from no-USB-at-all in ~33 s, so it belongs on the later attempts."""
     monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: False)
     monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: False)
+    monkeypatch.setattr(ota_cycle, "_board_absent", lambda: False)     # a port, just not answering
     monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (1, ""))
     order = []
     monkeypatch.setattr(ota_cycle, "_await_boot", lambda b, **k: order.append("wait") or False)
@@ -158,6 +175,26 @@ def test_ensure_cdc_waits_before_it_resets(board, monkeypatch):
     ota_cycle._ensure_cdc(board)
     assert order[0] == "wait", "the first attempt must not reset a board that may just be booting"
     assert "reset" in order, "a wedged board must eventually get the reset that revives it"
+
+
+@pytest.mark.parametrize("board", _ARDUINO)
+def test_ensure_cdc_double_taps_a_board_that_is_off_usb(board, monkeypatch):
+    """No port AND no DFU is a torn firmware image (run 40444283788): a core reset just re-runs it.
+    After the patient first attempt, the board gets a reset double-tap into DFU instead."""
+    monkeypatch.setattr(ota_cycle, "_cdc_responsive", lambda *a, **k: False)
+    monkeypatch.setattr(ota_cycle, "_dfu_leave", lambda b: False)
+    monkeypatch.setattr(ota_cycle, "_board_absent", lambda: True)
+    monkeypatch.setattr(ota_cycle, "ykush_power_cycle", lambda b: False)   # no hub on this node
+    monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: (1, ""))
+    order = []
+    monkeypatch.setattr(ota_cycle, "_await_boot", lambda b, **k: order.append("wait") or False)
+    monkeypatch.setattr(ota_cycle, "arduino_revive", lambda b: order.append("revive") or True)
+    monkeypatch.setattr(ota_cycle, "jlink_core_reset",
+                        lambda *a, **k: pytest.fail("a core reset only re-runs the torn image"))
+    monkeypatch.setattr(ota_cycle, "jlink_reset_pulse",
+                        lambda *a, **k: pytest.fail("never the single nRST pulse on an Arduino"))
+    ota_cycle._ensure_cdc(board)
+    assert order == ["wait", "revive", "revive"]
 
 
 @pytest.mark.parametrize("board", _ARDUINO)
@@ -593,17 +630,19 @@ def test_a_stalled_dfu_device_is_reset_out_of_dfu_not_just_retried():
     because nothing ever cleared the state. Confirmed by hand: once cleared it reports "dfuIDLE,
     No error condition" and erases normally.
 
-    So the retry has to RECOVER, not repeat: core-reset out of DFU (never the nRST pin -- the
-    stay-in-bootloader flag lives in RAM and survives it) and let the next attempt re-enter with
-    the 1200-baud touch.
+    So the retry has to RECOVER, not repeat: double-tap the board into a fresh DFU (booting out of
+    DFU is wrong when the torn write was the firmware's -- MCUboot runs the torn image and the board
+    is gone from USB), with a core reset + boot only as the fallback.
     """
     import inspect
     src = inspect.getsource(ota_cycle._flash_arduino_cli)
     body = "\n".join(line.split("#")[0] for line in src.splitlines())
     assert "LIBUSB_ERROR_PIPE" in body, "the wedged case must be detected"
     at = body.index("LIBUSB_ERROR_PIPE")
-    assert "jlink_core_reset(board)" in body[at:], "and recovered by resetting out of DFU"
-    assert "jlink_reset_pulse" not in body, "never the nRST pin on an Arduino board"
+    assert "arduino_revive(board)" in body[at:], "and recovered by a double-tap into a fresh DFU"
+    assert body.index("arduino_revive(board)", at) < body.index("jlink_core_reset(board)", at), (
+        "the core reset is the fallback, not the first move")
+    assert "jlink_reset_pulse" not in body, "never the single nRST pulse on an Arduino board"
 
 
 @pytest.mark.parametrize("board", _ARDUINO)

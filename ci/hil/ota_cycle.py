@@ -1789,6 +1789,58 @@ def jlink_core_reset(board, timeout=60):
     return True
 
 
+_DOUBLE_TAP_DFU_S = 20                      # DFU enumerates ~2 s after the second tap (measured x3)
+
+
+def jlink_double_tap(board, timeout=60):
+    """DOUBLE-TAP an Arduino board's reset line through the J-Link: two nRST pulses 350 ms apart,
+    which is the bootloader's own "stay in DFU" gesture (the reset button pressed twice).
+
+    This is the one lever that reaches an MCUboot board with NO USB AT ALL. That state is what a
+    half-written firmware leaves behind: a DFU write fails partway, the CLI leaves DFU to retry from
+    a fresh entry, MCUboot jumps into the torn image and the board never enumerates again -- no port
+    to 1200-baud touch, no DFU to write to, and a single reset (pin or core) just re-runs the same
+    torn image. Measured on the Nicla in HIL run 40444283788: six scenarios green, then one such
+    write, then every later scenario failed "cannot be reached without a power cycle". The double
+    tap brought it back as 2341:035f two seconds later, from the same state, first try; the Portenta
+    and the Giga answered the same way (so a node's J-Link RESET pin is wired on all three).
+
+    Pin pulses only, no ``connect``: SetRESET/ClrRESET drive a J-Link output and need no target
+    (the Nicla's SWD is not usable). No-op for a board with no J-Link.
+    """
+    if "jlink_device" not in BOARDS[board]:
+        return False
+    _free_jlink()                         # a stale JLinkExe blocks the probe, silently
+    fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="doubletap-")
+    os.write(fd, b"si SWD\nspeed 4000\nSetRESET\nSleep 100\nClrRESET\nSleep 350\n"
+                 b"SetRESET\nSleep 100\nClrRESET\nSleep 200\nqc\n")
+    os.close(fd)
+    try:
+        sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
+            "-speed", "4000", "-AutoConnect", "0", "-CommanderScript", sp],
+           timeout=timeout, check=False, quiet=True)
+    finally:
+        os.unlink(sp)
+    return True
+
+
+def arduino_revive(board, budget=_DOUBLE_TAP_DFU_S):
+    """Bring an Arduino board that offers neither a port nor DFU back as a DFU device, by
+    double-tapping its reset line (see jlink_double_tap). True iff a DFU device appeared within
+    ``budget`` seconds -- the caller then writes from DFU directly (every flash and erase path
+    here already does when a DFU device is present). False on a board without a J-Link."""
+    if not jlink_double_tap(board):
+        return False
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        time.sleep(2)
+        if _dfu_present():
+            log("revive: %s is back in DFU after a reset double-tap" % board)
+            return True
+    log("revive: %s showed no DFU device within %d s of a reset double-tap" % (board, budget))
+    return False
+
+
 def dfu_reset_catch(board, argv, *, settle=2.0, timeout=900):
     """Run a dfu-util-backed command that WAITS for a DFU device (``-w``), pulsing the board's reset
     line while it waits so the bootloader's BRIEF DFU window gets caught.
@@ -1935,8 +1987,9 @@ def _arduino_dfu_run(board, argv, what, *, timeout):
 
       * already in DFU     -> run with --in-bootloader; the device is there NOW, so -w returns at once
       * a runtime port     -> plain run; the CLI does its own touch
-      * neither            -> fail FAST (rc 125); the board needs a power cycle, and no amount of
-                              waiting will conjure a bootloader
+      * neither            -> double-tap its reset line into DFU (arduino_revive) and run from
+                              there; only if that too shows nothing, fail FAST (rc 125) -- the
+                              board needs a power cycle, and waiting will not conjure a bootloader
 
     Measured cost of getting this wrong: a `flash erase --in-bootloader` was launched behind an nRST
     pulse against a Portenta running its app, and `dfu-util -w -d ,2341:035b` sat waiting for a
@@ -1950,6 +2003,9 @@ def _arduino_dfu_run(board, argv, what, *, timeout):
     if os.path.exists(CFG["acm"]):
         log("%s -> %s (CLI 1200-baud touch via %s)" % (what, board, CFG["acm"]))
         return sh(argv, timeout=timeout, check=False)
+    if arduino_revive(board):
+        log("%s -> %s (in DFU after a reset double-tap -- no wait)" % (what, board))
+        return sh(argv + ["--in-bootloader"], timeout=timeout, check=False)
     return 125, ("%s: %s has neither a DFU device nor a port at %s -- it cannot be reached without "
                  "a power cycle" % (what, board, CFG["acm"]))
 
@@ -2214,6 +2270,11 @@ def _ensure_cdc(board, allow_erase=False):
             # with no USB at all.
             if attempt == 0:
                 _await_boot(board, budget=45)
+            elif _board_absent():
+                # Off USB altogether (no port, no DFU): a torn firmware image, which a core reset
+                # only re-runs. Double-tap it into DFU instead; the next pass of this loop then
+                # stays there before a golden flash, or leaves it properly otherwise.
+                arduino_revive(board)
             else:
                 jlink_core_reset(board)
                 _await_boot(board, budget=60)
@@ -2276,9 +2337,11 @@ def _flash_arduino_cli(board, bad_romfs=False):
     # an enumerated port to 1200-baud touch. Check for those directly, and reset only if the board
     # offers neither -- that is the genuinely wedged case a core reset revives in ~33 s.
     if not _dfu_present() and not os.path.exists(CFG["acm"]):
-        log("flash: %s offers neither DFU nor a port -- core reset, then wait for it" % board)
-        jlink_core_reset(board)
-        _await_boot(board, budget=90)
+        log("flash: %s offers neither DFU nor a port -- reset double-tap into DFU" % board)
+        if not arduino_revive(board):
+            log("flash: %s still absent -- core reset, then wait for it" % board)
+            jlink_core_reset(board)
+            _await_boot(board, budget=90)
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote"),
             *_register_args()]
@@ -2304,13 +2367,16 @@ def _flash_arduino_cli(board, bad_romfs=False):
             # EVERY later scenario in the leg failed the same way, on both legs, because nothing
             # ever cleared the state. Confirmed by hand -- once cleared the device reports
             # "dfuIDLE, No error condition" and erases fine.
-            # Reset it out of DFU through the debug core (no nRST: the stay-in-bootloader flag
-            # lives in RAM and survives the pin), let it boot, and let the next attempt re-enter
-            # DFU with the 1200-baud touch from a clean state.
-            log("flash: %s is in dfuERROR (stalled control transfer) -- core-resetting out of DFU"
-                % board)
-            jlink_core_reset(board)
-            _await_boot(board, budget=90)
+            # Double-tap it back into a FRESH DFU (dfuIDLE) rather than resetting it out of DFU:
+            # booting is exactly the wrong move when the failed write was the firmware's -- MCUboot
+            # jumps into the torn image and the board is gone from USB (the Nicla, run 40444283788).
+            # The next attempt then writes from DFU directly. A core reset + boot stays as the
+            # fallback for a board whose double-tap showed nothing.
+            log("flash: %s is in dfuERROR (stalled control transfer) -- reset double-tap into a "
+                "fresh DFU" % board)
+            if not arduino_revive(board):
+                jlink_core_reset(board)
+                _await_boot(board, budget=90)
     if rc != 0:
         raise RuntimeError("arduino flash factory failed rc=%d after 3 attempts: %s"
                            % (rc, out[-400:]))
