@@ -519,6 +519,19 @@ _MIGRATIONS: list[list[str]] = [
         "CREATE INDEX IF NOT EXISTS unclaimed_devices_account "
         "ON unclaimed_devices (account_id, last_seen)",
     ],
+    [   # v36 -- the boot stub. On a board whose firmware is installed by a stub, the camera
+        # reports the stub that chose its running firmware (version + why it installed). The
+        # fleet carries mixed stub versions forever, and a release's min_stub decides which
+        # cameras can take it, so the version is fleet data, not telemetry. NULL = no stub, or
+        # the camera did not say.
+        "ALTER TABLE devices ADD COLUMN stub_version INTEGER",
+        "ALTER TABLE devices ADD COLUMN stub_reason TEXT",
+    ],
+    [   # v37 -- the oldest boot stub a release's image needs (its manifest's min_stub, 0 = none).
+        # The offer gate reads it against the camera's stub_version: a release is never offered
+        # to a camera whose stub cannot install it.
+        "ALTER TABLE releases ADD COLUMN min_stub INTEGER NOT NULL DEFAULT 0",
+    ],
 ]
 
 # The most unclaimed boards remembered per account (see migration v35).
@@ -768,18 +781,19 @@ class SqlMetadataStore:
                     min_platform_version, image_sha256, image_size, representations,
                     manifest_key, image_key, delta_key=None, key_id=None, uploaded_by=None,
                     account_id="", dev=0, sbom_key=None, publish_seq=0,
-                    display_name="") -> None:
+                    display_name="", min_stub=0) -> None:
         self.execute(
             "INSERT INTO releases (release_id, product_id, product, version, payload_version, "
             "publish_seq, "
             "min_platform_version, image_sha256, image_size, representations, manifest_key, "
             "image_key, delta_key, key_id, uploaded_by, uploaded_at, account_id, dev, sbom_key, "
-            "display_name, download_size) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "display_name, download_size, min_stub) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (release_id, product_id, product, version, payload_version, publish_seq,
              min_platform_version,
              image_sha256, image_size, json.dumps(representations), manifest_key, image_key,
              delta_key, key_id, uploaded_by, _now_iso(), account_id, dev, sbom_key,
-             display_name, _download_size(representations)))
+             display_name, _download_size(representations), int(min_stub or 0)))
 
     def get_release(self, release_id: str) -> dict | None:
         r = _d(self.query_one("SELECT * FROM releases WHERE release_id = ?", (release_id,)))
@@ -992,22 +1006,25 @@ class SqlMetadataStore:
                       representation=None, fallback_reason=None, confirmed=None,
                       last_offered_release_id=None, registrar_ref=None, account_id="",
                       streams=None, fallback_payload_version=None, body_sha256=None,
-                      publish_seq=0, orders_by_seq=False) -> None:
+                      publish_seq=0, orders_by_seq=False, stub=(None, None)) -> None:
         # One statement, not select-then-insert: the store's lock covers a statement, not a
         # handler, so two first check-ins of the same new device (a retry racing the request it
         # retried) both saw no row and the second INSERT died on the primary key -- a 500 to the
         # camera. ON CONFLICT makes the second one the UPDATE it was always meant to be.
         # cohort is admin-controlled, so a check-in never changes it. COALESCE on the update
         # side: a device that stops reporting slots (or never did) keeps whatever it last told
-        # us, rather than having its fallback silently blanked.
+        # us, rather than having its fallback silently blanked. The stub columns are NOT
+        # coalesced: a camera reflashed with stock firmware stops reporting a stub, and the
+        # row must say so, or an operator plans a stub-gated release around a stub that is gone.
         now = _now_iso()
+        stub_version, stub_reason = stub
         self.execute(
             "INSERT INTO devices (device_id, product_id, board, cohort, current_version, "
             "current_payload_version, slot, representation, fallback_reason, confirmed, "
             "last_offered_release_id, registrar_ref, account_id, streams, "
             "fallback_payload_version, body_sha256, publish_seq, orders_by_seq, "
-            "first_seen, last_seen) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "stub_version, stub_reason, first_seen, last_seen) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (device_id) DO UPDATE SET "
             "product_id = excluded.product_id, board = excluded.board, "
             "current_version = excluded.current_version, "
@@ -1023,11 +1040,13 @@ class SqlMetadataStore:
             "devices.fallback_payload_version), "
             "body_sha256 = COALESCE(excluded.body_sha256, devices.body_sha256), "
             "publish_seq = excluded.publish_seq, orders_by_seq = excluded.orders_by_seq, "
+            "stub_version = excluded.stub_version, stub_reason = excluded.stub_reason, "
             "last_seen = excluded.last_seen",
             (device_id, product_id, board, cohort, current_version, current_payload_version,
              slot, representation, fallback_reason, confirmed, last_offered_release_id,
              registrar_ref, account_id, ",".join(streams or ()), fallback_payload_version,
-             body_sha256, int(publish_seq or 0), 1 if orders_by_seq else 0, now, now,
+             body_sha256, int(publish_seq or 0), 1 if orders_by_seq else 0,
+             stub_version, stub_reason, now, now,
              ",".join(streams) if streams else None))
 
     def count_on_payload(self, account_id: str, product_id: int, payload_version: int) -> int:

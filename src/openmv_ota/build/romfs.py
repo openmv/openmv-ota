@@ -1142,6 +1142,11 @@ def _manifest_body(p, tr, image: bytes, reps: list[dict]) -> dict:
         # a PRODUCT_ID 0 camera orders by has to be in both.
         "publish_seq": tr.publish_seq,
         "min_platform_version": 0,   # a v4 slot carries its own firmware; nothing to require
+        # The oldest boot stub that can install this image (0 = no stub involved). A stub never
+        # updates itself, so the fleet carries mixed versions forever: the server declines to
+        # offer this release to a camera whose stub is older, and the camera refuses it before
+        # any download if offered anyway -- the same number the stub itself checks on boot.
+        "min_stub": tr.min_stub,
         "size": len(image),
         "sha256": hashlib.sha256(image).hexdigest(),
         "representations": reps,

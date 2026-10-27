@@ -1132,6 +1132,19 @@ def test_update_reject_mirrors_host(body, board, plat, floor):
             == update_reject_reason(body, board, plat, floor))
 
 
+@pytest.mark.parametrize(("min_stub", "stub_version", "expect"), [
+    (2, None, "stub"),        # a stub-gated image on a board with no stub
+    (2, 1, "stub"),           # ...or an older stub
+    (2, 2, None),             # the stub meets it
+    (0, None, None),          # no stub needed
+])
+def test_update_reject_stub_mirrors_host(min_stub, stub_version, expect):
+    from openmv_ota.ota.manifest import update_reject_reason
+    body = {"schema": 1, "product_id": 7, "payload_version": 10, "min_stub": min_stub}
+    got = inst("_update_reject")(body, 7, 0, 0, "", stub_version)
+    assert got == expect == update_reject_reason(body, 7, 0, 0, "", stub_version)
+
+
 @pytest.mark.parametrize(("body_account", "dev_account", "expect"), [
     ("acctB", "acctA", "account"),      # mismatch -> reject, mirroring the host
     ("acctA", "acctA", None),           # match -> pass

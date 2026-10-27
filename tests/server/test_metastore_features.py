@@ -91,6 +91,18 @@ def test_device_upsert_insert_then_update():
     assert s.get_device("missing") is None
 
 
+def test_device_stub_is_overwritten_not_coalesced():
+    """The stub columns follow the LATEST report: a camera reflashed with stock firmware reports
+    no stub, and the row must say so (unlike the slot columns, which keep the last report)."""
+    s = _store()
+    s.upsert_device(device_id="d1", product_id=BID, stub=(1, "normal"))
+    d = s.get_device("d1")
+    assert (d["stub_version"], d["stub_reason"]) == (1, "normal")
+    s.upsert_device(device_id="d1", product_id=BID)
+    d = s.get_device("d1")
+    assert (d["stub_version"], d["stub_reason"]) == (None, None)
+
+
 def test_device_cohort_not_reset_by_checkin():
     s = _store()
     s.upsert_device(device_id="d1", product_id=1, cohort="beta")

@@ -26,6 +26,11 @@ packs it to `/rom/lib/openmv_ota/`. It exposes:
     whether deltas are actually being applied,
   - `pending` / `tried` / `confirmed` / `trial` — the running slot's trial state.
     (`tried` is informational only — the attempt region is what `boot.py` counts.)
+  - `stub` — on a board whose firmware the boot stub installs: `{'version', 'reason'}`,
+    the stub that chose this boot and why it installed (`0` normal, `1` trial, `2`
+    reverted, `3` reinstalled), read from the install record. `None` on a board without
+    a stub. It rides in the check-in too, so the fleet view shows which stub each camera
+    carries.
 - **`slots()`** — every slot, newest first: `slot`, `running`, `payload_version`,
   `counter`, `confirmed`, `pending`. This is the half `status()` cannot tell you — **what
   the device would fall back to** — and it is what the check-in reports so a fleet operator
@@ -164,7 +169,10 @@ blocks, or deny the download.
 [`build ota-romfs`](08-release-artifacts.md#build-ota-romfs) produces beside the
 image and any deltas: it names the image's size/sha256 and the available
 **representations**, and binds `product_id`/`payload_version`/
-`min_platform_version` under the same ECDSA key as the image. Host the artifacts
+`min_platform_version`/`min_stub` under the same ECDSA key as the image. (`min_stub`
+is the oldest boot stub that can install the image; a camera whose stub is older
+refuses the manifest with reason `stub` before downloading anything, and the server
+does not offer it such a release in the first place.) Host the artifacts
 beside each other; representation URLs are **relative filenames**, resolved
 on-device against the manifest's own URL, so the signed manifest moves between
 hosts without re-signing. (The device also accepts absolute `https://` URLs in

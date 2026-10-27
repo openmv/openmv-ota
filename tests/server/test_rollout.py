@@ -45,6 +45,10 @@ def test_offers_update_gates():
     assert offers_update(**{**base, "release_payload_version": 1}) is False   # equal
     assert offers_update(**{**base, "release_payload_version": 0}) is False   # older
     assert offers_update(**{**base, "rollout_percent": 0}) is False           # not staged
+    # the release needs a boot stub the camera lacks, or an older one than it needs
+    assert offers_update(**{**base, "min_stub": 2}) is False
+    assert offers_update(**{**base, "min_stub": 2, "stub_version": 1}) is False
+    assert offers_update(**{**base, "min_stub": 2, "stub_version": 2}) is True
 
 
 def _slots(running_pending, running_confirmed, n=2):

@@ -78,10 +78,18 @@ def settled(slots: list[dict] | None) -> bool:
     return not (running.get("pending") and not running.get("confirmed"))
 
 
+def stub_meets(stub_version: int | None, min_stub: int) -> bool:
+    """Whether a camera's boot stub (None = no stub, or it did not say) can install an image
+    that needs ``min_stub`` (0 = any). A stub never updates itself, so this is a hard gate: the
+    stub would refuse the image on boot, after the download and a trial nobody wants."""
+    return not min_stub or (stub_version is not None and stub_version >= min_stub)
+
+
 def offers_update(*, current_payload_version: int, release_payload_version: int,
                   rollout_state: str, rollout_percent: float, rollout_id: str,
                   device_id: str, allow_downgrade: bool = False,
-                  slots: list[dict] | None = None) -> bool:
+                  slots: list[dict] | None = None,
+                  stub_version: int | None = None, min_stub: int = 0) -> bool:
     """Whether the active rollout's release should be offered to this device (all gates pure).
 
     ``allow_downgrade`` (the server's TEST-ONLY ``test_offer_downgrades``) relaxes the
@@ -93,6 +101,8 @@ def offers_update(*, current_payload_version: int, release_payload_version: int,
     if not allow_downgrade and release_payload_version <= current_payload_version:  # anti-rollback
         return False
     if not settled(slots):                          # mid-trial: its fallback is worth more
+        return False
+    if not stub_meets(stub_version, min_stub):      # its stub could not install the image
         return False
     return staged_in(rollout_id, device_id, rollout_percent)
 

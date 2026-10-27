@@ -51,9 +51,10 @@ def _app(tmp_path, *, registered=True, base_url="https://ota.test", rate=0,
 BID = 7
 
 def _seed(store, *, pv=0x02000000, percent=100, storage=None, manifest=b"MANI", image=b"IMG",
-          account_id=""):
+          account_id="", min_stub=0):
     store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
-                      payload_version=pv, min_platform_version=0, image_sha256="ab" * 32,
+                      payload_version=pv, min_platform_version=0, min_stub=min_stub,
+                      image_sha256="ab" * 32,
                       image_size=len(image),
                       representations=[{"format": "full", "url": "OPENMV_N6-ota.img.gz",
                                         "size": len(image)}],
@@ -277,6 +278,20 @@ def test_mid_trial_device_is_not_offered_a_pin_either(tmp_path):
     assert camera.check(c, _checkin(slots=_SETTLED)).json()["release_id"] == "rel1"
 
 
+def test_a_stub_gated_release_is_offered_only_to_cameras_whose_stub_can_install_it(tmp_path):
+    """min_stub is a hard gate on the offer: a camera with no stub, or an older one, would only
+    download an image its stub refuses on boot. Pins are held to the same gate."""
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, storage=storage, percent=100, min_stub=2)
+    c = TestClient(app)
+    assert camera.check(c, _checkin()).json()["update"] is False                  # no stub
+    assert camera.check(c, _checkin(stub={"version": 1, "reason": 0})).json()["update"] is False
+    assert camera.check(c, _checkin(stub={"version": 2, "reason": 0})).json()["update"] is True
+    store.set_cohort_pin(BID, "__default__", "rel1")
+    assert camera.check(c, _checkin(stub={"version": 1, "reason": 0})).json()["update"] is False
+    assert camera.check(c, _checkin(stub={"version": 3, "reason": 0})).json()["release_id"] == "rel1"
+
+
 def test_fallback_version_is_recorded_and_survives_a_silent_checkin(tmp_path):
     app, store, storage, v = _app(tmp_path)
     c = TestClient(app)
@@ -286,6 +301,35 @@ def test_fallback_version_is_recorded_and_survives_a_silent_checkin(tmp_path):
     # blanking the operator's view of the fleet
     camera.check(c, _checkin())
     assert store.get_device("dev1")["fallback_payload_version"] == 0x00FF0000
+
+
+def test_stub_is_recorded_decoded_and_cleared_when_the_camera_stops_reporting_one(tmp_path):
+    """A stub board reports {version, reason}; the row keeps the version and the reason's WORD.
+    Unlike the slot columns this is not coalesced: a camera reflashed with stock firmware
+    stops reporting a stub, and the fleet view must say so."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+    camera.check(c, _checkin(stub={"version": 2, "reason": 1}))
+    dev = store.get_device("dev1")
+    assert (dev["stub_version"], dev["stub_reason"]) == (2, "trial")
+    camera.check(c, _checkin(stub={"version": 2, "reason": 9}))         # a code this server lacks
+    assert store.get_device("dev1")["stub_reason"] == "unknown"
+    camera.check(c, _checkin())
+    dev = store.get_device("dev1")
+    assert (dev["stub_version"], dev["stub_reason"]) == (None, None)
+
+
+def test_a_malformed_stub_report_never_refuses_the_checkin(tmp_path):
+    """The camera is the one party this endpoint must never refuse over a cosmetic field."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+    for bad in ({"version": "2"}, {"version": True}, {"version": -1, "reason": 0}, {}):
+        camera.check(c, _checkin(stub=bad))
+        dev = store.get_device("dev1")
+        assert (dev["stub_version"], dev["stub_reason"]) == (None, None), bad
+    camera.check(c, _checkin(stub={"version": 3}))                     # a version with no reason
+    assert (store.get_device("dev1")["stub_version"],
+            store.get_device("dev1")["stub_reason"]) == (3, "unknown")
 
 
 def test_running_body_sha_is_recorded_and_survives_a_silent_checkin(tmp_path):

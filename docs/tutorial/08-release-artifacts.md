@@ -255,7 +255,8 @@ openmv-ota build inspect build/OPENMV_N6-factory-romfs.img   # prints slots A + 
 
 Decodes the signed trailer and prints it: product / board / `product_id` /
 `board_name`, the app version (and the `payload_version` / `min_platform_version`
-it encodes, shown as semver), the publish counter when the image carries one, the
+it encodes, shown as semver), the oldest boot stub that can install it (`min_stub`,
+on a board with a stub), the publish counter when the image carries one, the
 signing key and algorithm, the body size + SHA-256, and a provenance line. `--json` dumps the full structure for scripting.
 It does no crypto — it just reads the trailer.
 

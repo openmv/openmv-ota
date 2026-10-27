@@ -155,6 +155,8 @@ $ openmv-ota client device list --cohort beta --limit 1
       "body_sha256": "9c2ff6a1c4f0f9be55b9e9c25e1e6cf1d5f4f34eaa1f5f5f4b2c9c25e1e6cf1d",
       "publish_seq": 0,
       "orders_by_seq": 0,
+      "stub_version": 1,
+      "stub_reason": "normal",
       "fallback_version": "1.1.0"
     }
   ],
@@ -164,6 +166,9 @@ $ openmv-ota client device list --cohort beta --limit 1
 
 Versions appear twice on purpose: the packed number is what the device reports and what
 comparisons use; the decoded form (`current_version`, `fallback_version`) is for you.
+`stub_version` and `stub_reason` describe the boot stub on a board that has one: the stub
+that installed the running firmware, and why it installed (`normal`, `trial`, `reverted`,
+`reinstalled`). Both are `null` on a board without a stub.
 Filters: `--product-id`, `--cohort`; pages with `--limit`/`--offset`, and `total` always
 counts the whole scoped fleet so a full page is distinguishable from a complete list.
 One camera by id, same row shape:
@@ -228,6 +233,7 @@ $ openmv-ota client release list --limit 1
       "payload_version": 16908288,
       "publish_seq": 0,
       "min_platform_version": 84017152,
+      "min_stub": 0,
       "image_sha256": "5d41402abc4b2a76b9719d911017c592a9c25e1e6cf1d5f4f34eaa1f5f5f4b2c",
       "image_size": 1467392,
       "representations": [
